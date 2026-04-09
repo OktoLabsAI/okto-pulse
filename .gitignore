@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Node
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+frontend/dist/
+frontend_dist/
+
+# Claude Code
+.claude/
+
+# SQLite
+*.db
+
+# Lock files
+*.lock
+
+# Test
+.pytest_cache/
+htmlcov/
+.coverage
+test-results/
+
+# MCP config
+.mcp.json
+
+# TypeScript build info
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+*.png
+.playwright-mcp/

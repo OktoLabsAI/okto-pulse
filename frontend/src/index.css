@@ -1,0 +1,309 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   Okto Pulse — Design System
+   Aesthetic: Refined Technical (Linear / Raycast inspired)
+   ========================================================================== */
+
+/* ---------- Base ---------- */
+
+:root {
+  --kanban-not-started: #64748b;
+  --kanban-started: #0ea5e9;
+  --kanban-in-progress: #f59e0b;
+  --kanban-on-hold: #ef4444;
+  --kanban-done: #10b981;
+  --kanban-cancelled: #94a3b8;
+
+  /* Glass */
+  --glass-bg: rgba(255, 255, 255, 0.7);
+  --glass-border: rgba(255, 255, 255, 0.2);
+
+  /* Noise overlay */
+  --noise-opacity: 0.02;
+}
+
+html.dark {
+  color-scheme: dark;
+  --glass-bg: rgba(15, 23, 42, 0.75);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --noise-opacity: 0.03;
+}
+
+body {
+  font-family: 'General Sans', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle noise texture on main backgrounds */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  opacity: var(--noise-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Hide scrollbar but keep scroll functionality */
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+
+/* ---------- Typography ---------- */
+
+h1, h2, h3, h4, h5, h6,
+.font-display {
+  font-family: 'Satoshi', system-ui, sans-serif;
+}
+
+/* ---------- Dark mode form elements ---------- */
+
+.dark input,
+.dark select,
+.dark textarea {
+  @apply bg-surface-800 border-surface-700 text-surface-100;
+}
+
+.dark input::placeholder,
+.dark textarea::placeholder {
+  @apply text-surface-500;
+}
+
+/* ---------- Prose (markdown) dark mode ---------- */
+
+.dark .prose { @apply text-surface-300; }
+.dark .prose strong { @apply text-surface-100; }
+.dark .prose code { @apply text-surface-200 bg-surface-800; }
+.dark .prose a { @apply text-accent-400; }
+.dark .prose h1, .dark .prose h2, .dark .prose h3, .dark .prose h4 { @apply text-surface-100; }
+.dark .prose blockquote { @apply border-surface-600 text-surface-400; }
+.dark .prose pre { @apply bg-surface-900; }
+.dark .prose li::marker { @apply text-surface-500; }
+.dark .prose hr { @apply border-surface-700; }
+.dark .prose th { @apply text-surface-200; }
+.dark .prose td { @apply text-surface-300; }
+.dark .prose thead { @apply border-surface-600; }
+.dark .prose tbody tr { @apply border-surface-700; }
+
+/* ---------- Kanban ---------- */
+
+.kanban-column {
+  @apply rounded-xl p-3 min-w-[280px] max-w-[320px] flex flex-col;
+  background: rgba(241, 245, 249, 0.6);
+  backdrop-filter: blur(8px);
+}
+
+.dark .kanban-column {
+  background: rgba(30, 41, 59, 0.5);
+}
+
+.kanban-column-header {
+  @apply font-display font-semibold text-xs uppercase tracking-wider mb-3 pb-2;
+  border-bottom: 2px solid transparent;
+}
+
+.kanban-card {
+  @apply rounded-xl p-3 mb-2 cursor-grab
+         transition-all duration-200 ease-out;
+  background: white;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.03), 0 1px 2px -1px rgb(0 0 0 / 0.03);
+}
+
+.dark .kanban-card {
+  background: rgba(30, 41, 59, 0.8);
+  border-color: rgba(51, 65, 85, 0.6);
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.15);
+}
+
+.kanban-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px -2px rgb(0 0 0 / 0.08), 0 2px 6px -2px rgb(0 0 0 / 0.04);
+  border-color: rgba(14, 165, 233, 0.3);
+}
+
+.dark .kanban-card:hover {
+  box-shadow: 0 4px 12px -2px rgb(0 0 0 / 0.25);
+  border-color: rgba(14, 165, 233, 0.25);
+}
+
+.kanban-card.dragging {
+  @apply opacity-40 cursor-grabbing;
+  transform: rotate(2deg) scale(1.02);
+}
+
+/* ---------- Status Badges ---------- */
+
+.status-badge {
+  @apply text-xs px-2 py-0.5 rounded-full font-medium;
+}
+
+.status-not_started { @apply bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300; }
+.status-started { @apply bg-accent-100 text-accent-700 dark:bg-accent-900/40 dark:text-accent-300; }
+.status-in_progress { @apply bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300; }
+.status-on_hold { @apply bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300; }
+.status-done { @apply bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300; }
+.status-cancelled { @apply bg-surface-100 text-surface-500 dark:bg-surface-800 dark:text-surface-400; }
+
+/* ---------- Modal ---------- */
+
+.modal-overlay {
+  @apply fixed inset-0 flex items-center justify-center z-50;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  animation: fadeIn 0.15s ease-out;
+}
+
+.modal-content {
+  @apply rounded-2xl shadow-2xl max-w-4xl w-full h-[90vh] overflow-hidden flex flex-col;
+  background: white;
+  border: 1px solid rgba(226, 232, 240, 0.5);
+  animation: slideUp 0.2s ease-out;
+}
+
+.dark .modal-content {
+  background: #0f172a;
+  border-color: rgba(51, 65, 85, 0.5);
+}
+
+.modal-header {
+  @apply px-6 py-4 border-b flex items-center justify-between shrink-0;
+  border-color: rgba(226, 232, 240, 0.5);
+}
+
+.dark .modal-header {
+  border-color: rgba(51, 65, 85, 0.5);
+}
+
+.modal-body {
+  @apply px-6 py-4 overflow-y-auto flex-1 min-h-0;
+}
+
+.modal-footer {
+  @apply px-6 py-4 border-t flex justify-end gap-2;
+  border-color: rgba(226, 232, 240, 0.5);
+}
+
+.dark .modal-footer {
+  border-color: rgba(51, 65, 85, 0.5);
+}
+
+/* ---------- Buttons ---------- */
+
+.btn {
+  @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 ease-out text-sm;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn-primary {
+  @apply text-white;
+  background: linear-gradient(135deg, #0ea5e9, #0284c7);
+  box-shadow: 0 1px 3px 0 rgb(14 165 233 / 0.2);
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+  box-shadow: 0 4px 12px -2px rgb(14 165 233 / 0.3);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: scale(0.97) translateY(0);
+}
+
+.btn-secondary {
+  @apply text-surface-700 dark:text-surface-300;
+  background: rgba(241, 245, 249, 0.8);
+  border: 1px solid rgba(226, 232, 240, 0.6);
+}
+
+.dark .btn-secondary {
+  background: rgba(30, 41, 59, 0.6);
+  border-color: rgba(51, 65, 85, 0.6);
+}
+
+.btn-secondary:hover {
+  background: rgba(226, 232, 240, 0.8);
+  border-color: rgba(203, 213, 225, 0.8);
+}
+
+.dark .btn-secondary:hover {
+  background: rgba(51, 65, 85, 0.6);
+  border-color: rgba(71, 85, 105, 0.8);
+}
+
+.btn-danger {
+  @apply bg-red-600 text-white hover:bg-red-500;
+  box-shadow: 0 1px 3px 0 rgb(239 68 68 / 0.2);
+}
+
+/* ---------- Scrollbar ---------- */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply rounded-full;
+  background: rgba(148, 163, 184, 0.3);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(71, 85, 105, 0.4);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 85, 105, 0.6);
+}
+
+/* ---------- List item animations ---------- */
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* Staggered list items — add .animate-list to parent */
+.animate-list > * {
+  animation: slideUp 0.25s ease-out both;
+}
+.animate-list > *:nth-child(1) { animation-delay: 0ms; }
+.animate-list > *:nth-child(2) { animation-delay: 30ms; }
+.animate-list > *:nth-child(3) { animation-delay: 60ms; }
+.animate-list > *:nth-child(4) { animation-delay: 90ms; }
+.animate-list > *:nth-child(5) { animation-delay: 120ms; }
+.animate-list > *:nth-child(6) { animation-delay: 150ms; }
+.animate-list > *:nth-child(7) { animation-delay: 180ms; }
+.animate-list > *:nth-child(8) { animation-delay: 210ms; }
+.animate-list > *:nth-child(n+9) { animation-delay: 240ms; }
