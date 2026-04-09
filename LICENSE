@@ -3,7 +3,7 @@ Elastic License 2.0
 Acceptance. By using the software, you agree to all of the terms and
 conditions below.
 
-Copyright 2024-2026 Okto Labs (Techridy Soluções em TI Ltda)
+Copyright 2024-2026 Okto Labs
 
 1. Grant of License. The licensor grants you a non-exclusive, royalty-free,
 worldwide, non-sublicensable, non-transferable license to use, copy,
@@ -58,7 +58,7 @@ the software, under any kind of legal claim.
 
 9. Definitions.
 
-"Licensor" means Okto Labs (Techridy Soluções em TI Ltda) and its
+"Licensor" means Okto Labs and its
 affiliates.
 
 "Software" means the software the licensor makes available under these
@@ -74,3 +74,36 @@ term "control" means ownership of substantially all the assets of an entity.
 "Your licenses" means the licenses granted to you in Section 1.
 
 "Use" means anything you do with the software in violation of these terms.
+
+
+Addendum: SaaS and Competing Service Definition
+================================================
+
+For the purposes of Section 2 ("Limitations"), the following constitute
+providing the software as a "hosted or managed service":
+
+(a) Offering a hosted platform, application, or API where end users
+    interact with the features or functionality of the software, whether
+    directly or through a wrapper, proxy, or abstraction layer.
+
+(b) Providing the software as a white-label, embedded, or rebranded
+    offering to third parties.
+
+(c) Operating a multi-tenant service where the software's capabilities
+    are a primary value driver for the service offering.
+
+The following are expressly PERMITTED:
+
+(a) Using the software internally within your organization, including
+    for commercial purposes, without restriction.
+
+(b) Using the software to manage your own projects, teams, or products,
+    even in a commercial context.
+
+(c) Integrating the software's MCP tools with AI agents for your own
+    use or your organization's use.
+
+(d) Modifying the software for personal or internal organizational use.
+
+If you are unsure whether your intended use constitutes a competing service,
+contact the licensor at dev@oktolabs.com.br for clarification.

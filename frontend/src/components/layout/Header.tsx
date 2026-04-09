@@ -357,7 +357,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
               </h3>
               <div className="text-xs text-surface-600 dark:text-surface-400 leading-relaxed space-y-2">
                 <p className="font-medium text-surface-700 dark:text-surface-300">Elastic License 2.0</p>
-                <p>Copyright 2024–2026 Okto Labs (Techridy Soluções em TI Ltda)</p>
+                <p>Copyright 2024–2026 Okto Labs</p>
                 <p>
                   <strong>Grant of License.</strong> The licensor grants you a non-exclusive, royalty-free,
                   worldwide, non-sublicensable, non-transferable license to use, copy, distribute, make

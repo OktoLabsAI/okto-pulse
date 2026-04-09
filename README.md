@@ -147,4 +147,4 @@ The **Ecosystem edition** adds multi-user collaboration, Clerk authentication, P
 
 [Elastic License 2.0](https://github.com/okto-labs/okto-pulse/blob/main/LICENSE) — free for personal and commercial use. You may not provide this software to third parties as a hosted or managed service.
 
-Copyright 2024-2026 Okto Labs (Techridy Soluções em TI Ltda)
+Copyright 2024-2026 Okto Labs
