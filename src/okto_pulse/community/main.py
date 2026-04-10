@@ -125,7 +125,7 @@ def create_community_app():
 
 
 # Lazy module-level app for uvicorn import (created on first access)
-app: FastAPI | None = None
+app = None
 
 
 def _get_app() -> FastAPI:
