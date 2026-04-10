@@ -128,7 +128,7 @@ def create_community_app():
 app = None
 
 
-def _get_app() -> FastAPI:
+def _get_app():
     global app
     if app is None:
         app = create_community_app()
