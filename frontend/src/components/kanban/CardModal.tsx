@@ -5,6 +5,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { exportCard, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import {
   useDashboardStore,
@@ -12,7 +13,7 @@ import {
   useIsCardModalOpen,
   useColumns,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, BugSeverity } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, BugSeverity, Spec } from '@/types';
 import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
@@ -53,6 +54,7 @@ export function CardModal({ boardId }: CardModalProps) {
   const [dependencies, setDependencies] = useState<{ id: string; title: string; status: string }[]>([]);
   const [dependents, setDependents] = useState<{ id: string; title: string; status: string }[]>([]);
   const [parentSpec, setParentSpec] = useState<{ id: string; title: string } | null>(null);
+  const [fullSpec, setFullSpec] = useState<Spec | null>(null);
   const [specScenarios, setSpecScenarios] = useState<TestScenario[]>([]);
   const [specRules, setSpecRules] = useState<any[]>([]);
   const [specContracts, setSpecContracts] = useState<any[]>([]);
@@ -74,14 +76,16 @@ export function CardModal({ boardId }: CardModalProps) {
           api.getSpec(data.spec_id)
             .then((spec) => {
               setParentSpec({ id: spec.id, title: spec.title });
+              setFullSpec(spec);
               setSpecScenarios(spec.test_scenarios || []);
               setSpecRules(spec.business_rules || []);
               setSpecContracts(spec.api_contracts || []);
               setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
             })
-            .catch(() => { setParentSpec(null); setSpecScenarios([]); });
+            .catch(() => { setParentSpec(null); setFullSpec(null); setSpecScenarios([]); });
         } else {
           setParentSpec(null);
+          setFullSpec(null);
           setSpecScenarios([]);
         }
       })
@@ -324,6 +328,14 @@ export function CardModal({ boardId }: CardModalProps) {
             </button>
           )}
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => { if (!card) return; const md = exportCard(card, fullSpec); downloadMarkdown(md, `${card.card_type === 'bug' ? 'bug' : 'task'}_${slugify(card.title)}.md`); }}
+              disabled={!card}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
+              title="Download Markdown"
+            >
+              <Download size={16} />
+            </button>
             <button onClick={handleRefresh} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh card">
               <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
             </button>

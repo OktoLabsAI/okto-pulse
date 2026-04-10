@@ -29,8 +29,10 @@ import {
   Monitor,
   Maximize2,
   Minimize2,
+  Download,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { exportIdeation, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import type {
@@ -913,6 +915,14 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
             <span className="text-xs text-gray-400 shrink-0">v{ideation.version}</span>
           </div>
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => { const md = exportIdeation(ideation); downloadMarkdown(md, `ideation_${slugify(ideation.title)}_v${ideation.version}.md`); }}
+              disabled={loading}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
+              title="Download Markdown"
+            >
+              <Download size={16} />
+            </button>
             <button onClick={loadIdeation} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>

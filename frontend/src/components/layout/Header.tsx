@@ -358,40 +358,92 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
               <div className="text-xs text-surface-600 dark:text-surface-400 leading-relaxed space-y-2">
                 <p className="font-medium text-surface-700 dark:text-surface-300">Elastic License 2.0</p>
                 <p>Copyright 2024–2026 Okto Labs</p>
+
                 <p>
-                  <strong>Grant of License.</strong> The licensor grants you a non-exclusive, royalty-free,
+                  <strong>1. Grant of License.</strong> The licensor grants you a non-exclusive, royalty-free,
                   worldwide, non-sublicensable, non-transferable license to use, copy, distribute, make
-                  available, and prepare derivative works of the software, subject to the limitations below.
+                  available, and prepare derivative works of the software, in each case subject to the
+                  limitations and conditions below.
                 </p>
                 <p>
-                  <strong>Limitations.</strong> You may not provide the software to third parties as a hosted
+                  <strong>2. Limitations.</strong> You may not provide the software to third parties as a hosted
                   or managed service, where the service provides users with access to any substantial set of
                   the features or functionality of the software. You may not move, change, disable, or
                   circumvent the license key functionality in the software, and you may not remove or obscure
-                  any functionality protected by the license key. You may not alter, remove, or obscure any
-                  licensing, copyright, or other notices of the licensor.
+                  any functionality in the software that is protected by the license key. You may not alter,
+                  remove, or obscure any licensing, copyright, or other notices of the licensor in the software.
                 </p>
                 <p>
-                  <strong>Termination.</strong> If you violate these terms, your licenses terminate
-                  automatically. If the licensor notifies you and you cease violation within 30 days,
-                  your licenses are reinstated retroactively. A second violation terminates all licenses
-                  permanently.
+                  <strong>3. Patent License.</strong> The licensor grants you a license, under any patent claims
+                  the licensor can license, or becomes able to license, to make, have made, use, sell, offer for
+                  sale, import and have imported the software. However, this license does not cover any patent
+                  claims that you cause to be infringed by modifications or additions to the software. If you or
+                  your company make any written claim that the software infringes or contributes to infringement
+                  of any patent, your patent license for the software granted under these terms ends immediately.
                 </p>
                 <p>
-                  <strong>Limitation on Liability.</strong> The software comes as is, without any warranty
-                  or condition, and the licensor will not be liable to you for any damages arising out of
-                  these terms or the use or nature of the software.
+                  <strong>4. Distribution.</strong> You may not alter, remove, or obscure any licensing,
+                  copyright, or other notices of the licensor in the software. Any distribution of the software
+                  must include a copy of these terms and conditions, and anyone who receives the software from
+                  you is bound by these terms and conditions.
                 </p>
-                <p className="text-surface-400 dark:text-surface-500 pt-1">
-                  Full license text at{' '}
-                  <a
-                    href="https://github.com/okto-labs/okto-pulse/blob/main/LICENSE"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-accent-500 hover:underline"
-                  >
-                    github.com/okto-labs/okto-pulse
-                  </a>
+                <p>
+                  <strong>5. Notices.</strong> You must include a copy of these terms with any distribution of
+                  the software. If you modify the software, you must mark the modifications clearly and include
+                  the date of the modifications.
+                </p>
+                <p>
+                  <strong>6. Termination.</strong> If you violate these terms, your licenses will terminate
+                  automatically. If the licensor notifies you of your violation, and you cease all violation of
+                  this license no later than 30 days after you receive that notice, your licenses will be
+                  reinstated retroactively. However, if you violate these terms after the reinstatement, all of
+                  your licenses will terminate permanently.
+                </p>
+                <p>
+                  <strong>7. No Other Rights.</strong> Except as expressly stated herein, no other rights or
+                  licenses are granted, express or implied.
+                </p>
+                <p>
+                  <strong>8. Limitation on Liability.</strong> As far as the law allows, the software comes as
+                  is, without any warranty or condition, and the licensor will not be liable to you for any
+                  damages arising out of these terms or the use or nature of the software, under any kind of
+                  legal claim.
+                </p>
+                <p>
+                  <strong>9. Definitions.</strong> "Licensor" means Okto Labs and its affiliates. "Software"
+                  means the software the licensor makes available under these terms, including any portions,
+                  modifications, or derivative works. "You" means you, individually. "Your company" means any
+                  legal entity, sole proprietorship, or other organization that you work for, plus all other
+                  organizations that control, are controlled by, or are under common control with that
+                  organization.
+                </p>
+
+                <hr className="border-surface-200 dark:border-surface-700 my-3" />
+
+                <p className="font-medium text-surface-700 dark:text-surface-300">
+                  Addendum: SaaS and Competing Service Definition
+                </p>
+                <p>
+                  For the purposes of Section 2, the following constitute providing the software as a
+                  "hosted or managed service":
+                </p>
+                <ul className="list-disc list-inside space-y-1 pl-1">
+                  <li>Offering a hosted platform, application, or API where end users interact with the
+                  features or functionality of the software, whether directly or through a wrapper, proxy,
+                  or abstraction layer.</li>
+                  <li>Providing the software as a white-label, embedded, or rebranded offering to third parties.</li>
+                  <li>Operating a multi-tenant service where the software's capabilities are a primary value
+                  driver for the service offering.</li>
+                </ul>
+                <p>The following are expressly <strong>permitted</strong>:</p>
+                <ul className="list-disc list-inside space-y-1 pl-1">
+                  <li>Using the software internally within your organization, including for commercial purposes.</li>
+                  <li>Using the software to manage your own projects, teams, or products.</li>
+                  <li>Integrating the software's MCP tools with AI agents for your own use.</li>
+                  <li>Modifying the software for personal or internal organizational use.</li>
+                </ul>
+                <p className="text-surface-400 dark:text-surface-500">
+                  Contact: dev@oktolabs.com.br
                 </p>
               </div>
             </div>

@@ -35,8 +35,10 @@ import {
   Minimize2,
   Scale,
   FileCode,
+  Download,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { exportSpec, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import type { Spec, SpecStatus, SpecSkill, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario } from '@/types';
@@ -1417,6 +1419,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
             <span className="text-xs text-gray-400 shrink-0">v{spec.version}</span>
           </div>
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => { const md = exportSpec(spec); downloadMarkdown(md, `spec_${slugify(spec.title)}_v${spec.version}.md`); }}
+              disabled={loading}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
+              title="Download Markdown"
+            >
+              <Download size={16} />
+            </button>
             <button onClick={loadSpec} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>

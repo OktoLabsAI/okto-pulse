@@ -29,8 +29,10 @@ import {
   Monitor,
   Maximize2,
   Minimize2,
+  Download,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { exportRefinement, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import type { Refinement, RefinementStatus, RefinementQAItem, RefinementHistoryEntry, RefinementSnapshot, RefinementSnapshotSummary, RefinementKnowledgeSummary } from '@/types';
@@ -934,6 +936,14 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
             <span className="text-xs text-gray-400 shrink-0">v{refinement.version}</span>
           </div>
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => { const md = exportRefinement(refinement); downloadMarkdown(md, `refinement_${slugify(refinement.title)}_v${refinement.version}.md`); }}
+              disabled={loading}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
+              title="Download Markdown"
+            >
+              <Download size={16} />
+            </button>
             <button onClick={loadRefinement} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>
