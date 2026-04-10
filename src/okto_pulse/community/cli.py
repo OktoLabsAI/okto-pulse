@@ -18,7 +18,12 @@ DEFAULT_MCP_PORT = 8101
 
 def _is_port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(("localhost", port)) == 0
+        s.settimeout(0.5)
+        try:
+            s.bind(("0.0.0.0", port))
+            return False  # bind succeeded → port is free
+        except OSError:
+            return True  # bind failed → port is in use
 
 
 def cmd_init(args):

@@ -121,27 +121,31 @@ def create_community_app():
 
     app.router.lifespan_context = community_lifespan
 
-    has_frontend = FRONTEND_DIR.exists() and (FRONTEND_DIR / "index.html").exists()
-    if has_frontend:
-        print(f"  Frontend: http://localhost:{settings.port}")
-    else:
-        print(f"  Frontend: not embedded (serve frontend separately or rebuild)")
-
     return app
 
 
-# Module-level app for uvicorn import
-app = create_community_app()
+# Lazy module-level app for uvicorn import (created on first access)
+app: FastAPI | None = None
+
+
+def _get_app() -> FastAPI:
+    global app
+    if app is None:
+        app = create_community_app()
+    return app
 
 
 def run():
     """Run the community API + Frontend server."""
+    global app
     settings = CommunitySettings()
+    app = create_community_app()
     uvicorn.run(
-        "okto_pulse.community.main:app",
+        "okto_pulse.community.main:_get_app",
         host=settings.host,
         port=settings.port,
         reload=settings.debug,
+        factory=True,
     )
 
 
