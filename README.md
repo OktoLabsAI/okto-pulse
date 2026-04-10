@@ -132,7 +132,7 @@ All data lives in `~/.okto-pulse/`:
 ## From Source
 
 ```bash
-git clone https://github.com/okto-labs/okto-pulse.git
+git clone https://github.com/OktoLabsAI/okto-pulse.git
 cd okto-pulse
 pip install -e packages/core -e packages/community
 okto-pulse init
@@ -145,6 +145,6 @@ The **Ecosystem edition** adds multi-user collaboration, Clerk authentication, P
 
 ## License
 
-[Elastic License 2.0](https://github.com/okto-labs/okto-pulse/blob/main/LICENSE) — free for personal and commercial use. You may not provide this software to third parties as a hosted or managed service.
+[Elastic License 2.0](https://github.com/OktoLabsAI/okto-pulse/blob/main/LICENSE) — free for personal and commercial use. You may not provide this software to third parties as a hosted or managed service.
 
 Copyright 2024-2026 Okto Labs

@@ -442,8 +442,9 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                   <li>Integrating the software's MCP tools with AI agents for your own use.</li>
                   <li>Modifying the software for personal or internal organizational use.</li>
                 </ul>
-                <p className="text-surface-400 dark:text-surface-500">
-                  Contact: dev@oktolabs.com.br
+                <p className="text-surface-400 dark:text-surface-500 pt-1">
+                  <a href="https://github.com/OktoLabsAI/okto-pulse" target="_blank" rel="noopener noreferrer" className="text-accent-500 hover:underline">github.com/OktoLabsAI/okto-pulse</a>
+                  {' '} | Contact: dev@oktolabs.com.br
                 </p>
               </div>
             </div>
