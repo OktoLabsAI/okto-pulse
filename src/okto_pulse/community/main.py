@@ -73,7 +73,13 @@ def _mount_frontend(app, frontend_dir: Path) -> None:
     # SPA catch-all: any path not handled by API routes serves index.html
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(request: Request, full_path: str):
-        # Don't intercept API or health routes (they're already mounted with higher priority)
+        # Let /assets requests fall through to the mounted StaticFiles
+        if full_path.startswith("assets/"):
+            asset_path = frontend_dir / full_path
+            if asset_path.exists():
+                return FileResponse(str(asset_path))
+            from fastapi.responses import Response
+            return Response(status_code=404)
         if index_html.exists():
             return FileResponse(str(index_html))
         return {"error": "Frontend not available"}
