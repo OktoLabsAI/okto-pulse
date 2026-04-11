@@ -130,28 +130,19 @@ def create_community_app():
     return app
 
 
-# Lazy module-level app for uvicorn import (created on first access)
-app = None
-
-
-def _get_app():
-    global app
-    if app is None:
-        app = create_community_app()
-    return app
+# Module-level app created on import — uvicorn needs "module:app" reference.
+# The print was moved to cmd_serve in cli.py to avoid showing wrong port.
+app = create_community_app()
 
 
 def run():
     """Run the community API + Frontend server."""
-    global app
     settings = CommunitySettings()
-    app = create_community_app()
     uvicorn.run(
-        "okto_pulse.community.main:_get_app",
+        "okto_pulse.community.main:app",
         host=settings.host,
         port=settings.port,
         reload=settings.debug,
-        factory=True,
     )
 
 
