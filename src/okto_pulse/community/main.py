@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 import uvicorn
-from fastapi import Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import event, text
@@ -49,8 +48,10 @@ def _configure_sqlite_pragmas(engine) -> None:
 def _mount_frontend(app, frontend_dir: Path) -> None:
     """Mount the pre-built frontend SPA on the FastAPI app.
 
-    - /assets/* → static files (JS, CSS, images)
-    - Everything else not matching /api/* or /health → index.html (SPA routing)
+    Uses Starlette middleware approach to avoid route-ordering issues:
+    - /assets/* → StaticFiles mount (correct MIME types)
+    - /api/*, /health, /docs, /openapi.json → pass through to FastAPI
+    - Everything else → index.html (SPA routing)
     """
     if not frontend_dir.exists():
         return
@@ -59,30 +60,27 @@ def _mount_frontend(app, frontend_dir: Path) -> None:
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
 
-    # Serve other static files at root (favicon, etc.)
-    for static_file in frontend_dir.iterdir():
-        if static_file.is_file() and static_file.name != "index.html":
-            name = static_file.name
-
-            @app.get(f"/{name}", include_in_schema=False)
-            async def serve_static(file_path=str(static_file)):
-                return FileResponse(file_path)
-
     index_html = frontend_dir / "index.html"
+    if not index_html.exists():
+        return
 
-    # SPA catch-all: any path not handled by API routes serves index.html
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(request: Request, full_path: str):
-        # Let /assets requests fall through to the mounted StaticFiles
-        if full_path.startswith("assets/"):
-            asset_path = frontend_dir / full_path
-            if asset_path.exists():
-                return FileResponse(str(asset_path))
-            from fastapi.responses import Response
-            return Response(status_code=404)
-        if index_html.exists():
-            return FileResponse(str(index_html))
-        return {"error": "Frontend not available"}
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import Response as StarletteResponse
+
+    _API_PREFIXES = ("/api/", "/health", "/docs", "/openapi.json", "/redoc", "/mcp")
+
+    class SPAMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            response = await call_next(request)
+            # If the response is 404 and the path is not an API/asset path,
+            # serve index.html for SPA client-side routing
+            if response.status_code == 404:
+                path = request.url.path
+                if not any(path.startswith(p) for p in _API_PREFIXES) and not path.startswith("/assets"):
+                    return FileResponse(str(index_html))
+            return response
+
+    app.add_middleware(SPAMiddleware)
 
 
 def create_community_app():
