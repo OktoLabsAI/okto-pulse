@@ -2,8 +2,8 @@
  * ContractsTab - API contracts management for specs
  */
 
-import { useState } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronUp, FileCode, Pencil, Link, Unlink } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Plus, Trash2, ChevronDown, ChevronUp, FileCode, Pencil, Link, Unlink, CheckCircle, XCircle } from 'lucide-react';
 import type { Spec, ApiContract, CardSummaryForSpec } from '@/types';
 
 interface ContractsTabProps {
@@ -98,6 +98,16 @@ export function ContractsTab({ spec, onUpdate, onSpecUpdate, specCards, onLinkTa
   const contracts = spec.api_contracts || [];
   const frs = spec.functional_requirements || [];
   const brs = spec.business_rules || [];
+
+  // Coverage: contracts with at least one linked task
+  const coverage = useMemo(() => {
+    const withTasks = contracts.filter((c) => (c.linked_task_ids?.length ?? 0) > 0);
+    return {
+      covered: withTasks.length,
+      total: contracts.length,
+      pct: contracts.length > 0 ? Math.round((withTasks.length / contracts.length) * 100) : 0,
+    };
+  }, [contracts]);
 
   const resetForm = () => {
     setFormMethod('GET');
@@ -293,6 +303,61 @@ export function ContractsTab({ spec, onUpdate, onSpecUpdate, specCards, onLinkTa
 
   return (
     <div className="space-y-4">
+      {/* Contract Task Linkage Coverage */}
+      {contracts.length > 0 && (
+        <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+              Contract Task Coverage ({coverage.covered}/{coverage.total})
+            </h4>
+            {coverage.covered === coverage.total && coverage.total > 0 ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 font-medium">
+                100% linked
+              </span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 font-medium">
+                {coverage.pct}% linked
+              </span>
+            )}
+          </div>
+          {/* Progress bar */}
+          <div className="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden mb-2">
+            <div
+              className={`h-full transition-all duration-500 rounded-full ${coverage.covered === coverage.total && coverage.total > 0 ? 'bg-green-500' : 'bg-amber-500'}`}
+              style={{ width: `${coverage.pct}%` }}
+            />
+          </div>
+          {/* Contract list with coverage */}
+          <div className="space-y-1 max-h-48 overflow-y-auto">
+            {contracts.map((contract) => {
+              const taskCount = contract.linked_task_ids?.length ?? 0;
+              const linked = taskCount > 0;
+              const methodColor = METHOD_COLORS[contract.method] || 'bg-gray-500 text-white';
+              return (
+                <div key={contract.id} className="flex items-center gap-2 text-xs">
+                  {linked ? (
+                    <CheckCircle className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                  ) : (
+                    <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0" />
+                  )}
+                  <span className={`text-[9px] px-1 py-0.5 rounded font-mono font-bold shrink-0 ${methodColor}`}>
+                    {contract.method}
+                  </span>
+                  <span className={`flex-1 font-mono truncate ${linked ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'}`}>
+                    {contract.path}
+                  </span>
+                  {linked && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 shrink-0">
+                      {taskCount} task{taskCount !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Skip contract coverage toggle */}
       {onSpecUpdate && (
         <div className="flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/20">

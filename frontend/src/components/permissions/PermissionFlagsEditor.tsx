@@ -15,6 +15,7 @@ const ENTITY_LABELS: Record<string, string> = {
   card: 'Cards',
   ideation: 'Ideations',
   refinement: 'Refinements',
+  sprint: 'Sprints',
   profile: 'Profile',
   guidelines: 'Guidelines',
 };
@@ -25,6 +26,7 @@ const ENTITY_COLORS: Record<string, string> = {
   card: 'text-green-600 dark:text-green-400',
   ideation: 'text-amber-600 dark:text-amber-400',
   refinement: 'text-cyan-600 dark:text-cyan-400',
+  sprint: 'text-orange-600 dark:text-orange-400',
   profile: 'text-gray-600 dark:text-gray-400',
   guidelines: 'text-pink-600 dark:text-pink-400',
 };

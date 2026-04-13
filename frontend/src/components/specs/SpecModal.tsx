@@ -41,7 +41,8 @@ import toast from 'react-hot-toast';
 import { exportSpec, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
-import type { Spec, SpecStatus, SpecSkill, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario } from '@/types';
+import type { Spec, SpecStatus, SpecSkill, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings } from '@/types';
+import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { MockupsTab } from './MockupsTab';
 import { RulesTab } from './RulesTab';
 import { ContractsTab } from './ContractsTab';
@@ -1471,9 +1472,22 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     } catch { toast.error('Failed to load spec'); } finally { setLoading(false); }
   };
 
+  const boardSettings = (currentBoard?.settings || {}) as BoardSettings;
+  const requireSpecValidation = Boolean(boardSettings.require_spec_validation);
+  const [showSubmitValidationModal, setShowSubmitValidationModal] = useState(false);
+
   const handleMoveSpec = async (status: SpecStatus) => {
     if (!spec) return;
-    // Intercept approved→validated: show gate validation modal
+    // Spec Validation Gate: when the board opts in, intercept approved→validated
+    // to show the new SubmitSpecValidationModal. The modal calls the backend gate
+    // which runs coverage checks and then computes outcome — on success the spec
+    // is promoted to validated automatically, so we just refetch after.
+    if (status === 'validated' && spec.status === 'approved' && requireSpecValidation) {
+      setShowSubmitValidationModal(true);
+      return;
+    }
+    // Legacy path (pre-gate): direct move_spec with coverage gate feedback in the
+    // existing validate modal.
     if (status === 'validated' && spec.status === 'approved') {
       setShowValidateModal(true);
       setValidateResult({ success: false, error: null });
@@ -1483,7 +1497,6 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
         setSpec(updated);
         onChanged();
         setValidateResult({ success: true, error: null });
-        // After successful validation, check if sprint suggestion makes sense
         if (updated.cards && updated.cards.length >= 6) {
           try {
             const result = await api.suggestSprints(updated.board_id, specId);
@@ -1522,11 +1535,13 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   };
 
   const getNextStatuses = (current: SpecStatus): SpecStatus[] => {
+    // Spec Validation Gate adds direct approved→draft and validated→draft
+    // transitions to unlock content editing in 1 click after a passed validation.
     const flow: Record<SpecStatus, SpecStatus[]> = {
       draft: ['review', 'cancelled'],
       review: ['approved', 'draft', 'cancelled'],
-      approved: ['validated', 'review', 'cancelled'],
-      validated: ['in_progress', 'approved', 'cancelled'],
+      approved: ['validated', 'review', 'draft', 'cancelled'],
+      validated: ['in_progress', 'approved', 'draft', 'cancelled'],
       in_progress: ['done', 'validated', 'cancelled'],
       done: ['draft'],
       cancelled: ['draft'],
@@ -2041,6 +2056,27 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
             )}
           </div>
         </div>
+      )}
+
+      {/* Spec Validation Gate — submission modal (opens when board opts in and user clicks Validate) */}
+      {showSubmitValidationModal && spec && (
+        <SubmitSpecValidationModal
+          specId={spec.id}
+          specTitle={spec.title}
+          settings={boardSettings}
+          onClose={() => setShowSubmitValidationModal(false)}
+          onSubmitted={async () => {
+            setShowSubmitValidationModal(false);
+            // Refetch the spec to reflect the new status and current_validation_id
+            try {
+              const updated = await api.getSpec(specId);
+              setSpec(updated);
+              onChanged();
+            } catch {
+              // Non-fatal; user can manually refresh
+            }
+          }}
+        />
       )}
     </div>
   );

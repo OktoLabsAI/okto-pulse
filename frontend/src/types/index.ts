@@ -869,6 +869,55 @@ export interface BoardSettings {
   min_confidence: number;
   min_completeness: number;
   max_drift: number;
+  // Spec Validation Gate settings (opt-in, default false)
+  require_spec_validation?: boolean;
+  min_spec_completeness?: number;
+  min_spec_assertiveness?: number;
+  max_spec_ambiguity?: number;
+}
+
+// Spec Validation Gate
+export interface SpecValidation {
+  id: string;
+  spec_id: string;
+  board_id: string;
+  reviewer_id: string;
+  reviewer_name?: string | null;
+  completeness: number;
+  completeness_justification: string;
+  assertiveness: number;
+  assertiveness_justification: string;
+  ambiguity: number;
+  ambiguity_justification: string;
+  general_justification: string;
+  recommendation: 'approve' | 'reject';
+  outcome: 'success' | 'failed';
+  threshold_violations: string[];
+  resolved_thresholds?: {
+    min_spec_completeness: number;
+    min_spec_assertiveness: number;
+    max_spec_ambiguity: number;
+  } | null;
+  created_at: string;
+  spec_status?: string | null;
+  active?: boolean | null;
+}
+
+export interface SpecValidationSubmitPayload {
+  completeness: number;
+  completeness_justification: string;
+  assertiveness: number;
+  assertiveness_justification: string;
+  ambiguity: number;
+  ambiguity_justification: string;
+  general_justification: string;
+  recommendation: 'approve' | 'reject';
+}
+
+export interface SpecValidationList {
+  spec_id: string;
+  current_validation_id: string | null;
+  validations: SpecValidation[];
 }
 
 // Guideline types

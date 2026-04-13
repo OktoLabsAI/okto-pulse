@@ -59,6 +59,16 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     ? { max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3, skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false, skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false, skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false, skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false, require_task_validation: currentBoard.settings.require_task_validation ?? false, min_confidence: currentBoard.settings.min_confidence ?? 70, min_completeness: currentBoard.settings.min_completeness ?? 80, max_drift: currentBoard.settings.max_drift ?? 50 }
     : { max_scenarios_per_card: 3, skip_test_coverage_global: false, skip_rules_coverage_global: false, skip_trs_coverage_global: false, skip_contract_coverage_global: false, require_task_validation: false, min_confidence: 70, min_completeness: 80, max_drift: 50 };
 
+  // Local draft state for numeric gate inputs — committed on blur to avoid
+  // refresh-on-keystroke wiping partial values while the user is typing.
+  const [minConfidenceDraft, setMinConfidenceDraft] = useState<string>(String(settings.min_confidence));
+  const [minCompletenessDraft, setMinCompletenessDraft] = useState<string>(String(settings.min_completeness));
+  const [maxDriftDraft, setMaxDriftDraft] = useState<string>(String(settings.max_drift));
+
+  useEffect(() => { setMinConfidenceDraft(String(settings.min_confidence)); }, [settings.min_confidence]);
+  useEffect(() => { setMinCompletenessDraft(String(settings.min_completeness)); }, [settings.min_completeness]);
+  useEffect(() => { setMaxDriftDraft(String(settings.max_drift)); }, [settings.max_drift]);
+
   const updateSettings = async (patch: Partial<BoardSettings>) => {
     if (!currentBoard) return;
     const newSettings = { ...settings, ...patch };
@@ -69,6 +79,18 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     } catch {
       toast.error('Failed to update settings');
     }
+  };
+
+  const commitNumericSetting = (key: 'min_confidence' | 'min_completeness' | 'max_drift', raw: string) => {
+    const parsed = Math.min(100, Math.max(0, Number(raw)));
+    const safe = Number.isFinite(parsed) ? parsed : settings[key];
+    if (safe === settings[key]) {
+      if (key === 'min_confidence') setMinConfidenceDraft(String(safe));
+      if (key === 'min_completeness') setMinCompletenessDraft(String(safe));
+      if (key === 'max_drift') setMaxDriftDraft(String(safe));
+      return;
+    }
+    updateSettings({ [key]: safe } as Partial<BoardSettings>);
   };
 
   return (
@@ -359,8 +381,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                                 type="number"
                                 min={0}
                                 max={100}
-                                value={settings.min_confidence}
-                                onChange={(e) => updateSettings({ min_confidence: Math.min(100, Math.max(0, Number(e.target.value))) })}
+                                value={minConfidenceDraft}
+                                onChange={(e) => setMinConfidenceDraft(e.target.value)}
+                                onBlur={(e) => commitNumericSetting('min_confidence', e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                                 className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                               />
                               <span className="text-[10px] text-gray-400">/ 100</span>
@@ -375,8 +399,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                                 type="number"
                                 min={0}
                                 max={100}
-                                value={settings.min_completeness}
-                                onChange={(e) => updateSettings({ min_completeness: Math.min(100, Math.max(0, Number(e.target.value))) })}
+                                value={minCompletenessDraft}
+                                onChange={(e) => setMinCompletenessDraft(e.target.value)}
+                                onBlur={(e) => commitNumericSetting('min_completeness', e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                                 className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                               />
                               <span className="text-[10px] text-gray-400">/ 100</span>
@@ -391,8 +417,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                                 type="number"
                                 min={0}
                                 max={100}
-                                value={settings.max_drift}
-                                onChange={(e) => updateSettings({ max_drift: Math.min(100, Math.max(0, Number(e.target.value))) })}
+                                value={maxDriftDraft}
+                                onChange={(e) => setMaxDriftDraft(e.target.value)}
+                                onBlur={(e) => commitNumericSetting('max_drift', e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                                 className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                               />
                               <span className="text-[10px] text-gray-400">/ 100</span>

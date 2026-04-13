@@ -1008,5 +1008,18 @@ export function useDashboardApi() {
         body: JSON.stringify(data),
       });
     },
+
+    // ==================== SPEC VALIDATION GATE ====================
+
+    async submitSpecValidation(specId: string, data: any): Promise<any> {
+      return apiClient.fetchJson(`/specs/${specId}/validation`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async listSpecValidations(specId: string): Promise<any> {
+      return apiClient.fetchJson(`/specs/${specId}/validations`);
+    },
   };
 }
