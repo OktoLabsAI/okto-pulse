@@ -30,11 +30,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/OktoLabsAI/okto-pulse"
-Documentation = "https://github.com/OktoLabsAI/okto-pulse#readme"
-Repository = "https://github.com/OktoLabsAI/okto-pulse"
-Issues = "https://github.com/OktoLabsAI/okto-pulse/issues"
-Changelog = "https://github.com/OktoLabsAI/okto-pulse/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/okto-labs/okto-pulse"
+Documentation = "https://github.com/okto-labs/okto-pulse#readme"
+Repository = "https://github.com/okto-labs/okto-pulse"
+Issues = "https://github.com/okto-labs/okto-pulse/issues"
+Changelog = "https://github.com/okto-labs/okto-pulse/blob/main/CHANGELOG.md"
 
 [project.readme]
 file = "README.md"
