@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
-dist/
+/dist/
 build/
 .eggs/
 *.egg
@@ -26,9 +26,8 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Build artifacts
+# Build artifacts (NOT src/okto_pulse/community/frontend_dist/ — that's the embedded SPA)
 frontend/dist/
-frontend_dist/
 
 # Claude Code
 .claude/
