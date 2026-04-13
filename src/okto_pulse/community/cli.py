@@ -70,12 +70,12 @@ def cmd_init(args):
                 print(f"\n  Board created: {board.name}")
                 print(f"  Agent created: {agent.name}")
                 print(f"  API Key: {api_key}")
-                print(f"  MCP URL: http://localhost:{settings.mcp_port}/mcp?api_key={api_key}")
+                print(f"  MCP URL: http://127.0.0.1:{settings.mcp_port}/mcp?api_key={api_key}")
 
                 mcp_config = {
                     "mcpServers": {
                         "okto-pulse": {
-                            "url": f"http://localhost:{settings.mcp_port}/mcp?api_key={api_key}"
+                            "url": f"http://127.0.0.1:{settings.mcp_port}/mcp?api_key={api_key}"
                         }
                     }
                 }
@@ -93,7 +93,7 @@ def cmd_init(args):
                         mcp_config = {
                             "mcpServers": {
                                 "okto-pulse": {
-                                    "url": f"http://localhost:{settings.mcp_port}/mcp?api_key={agent.api_key}"
+                                    "url": f"http://127.0.0.1:{settings.mcp_port}/mcp?api_key={agent.api_key}"
                                 }
                             }
                         }
@@ -159,10 +159,10 @@ def cmd_serve(args):
 
     print("Starting Okto Pulse Community...")
     if has_frontend:
-        print(f"  App:  http://localhost:{api_port}  (API + Frontend)")
+        print(f"  App:  http://127.0.0.1:{api_port}  (API + Frontend)")
     else:
-        print(f"  API:  http://localhost:{api_port}  (no frontend embedded)")
-    print(f"  MCP:  http://localhost:{mcp_port}")
+        print(f"  API:  http://127.0.0.1:{api_port}  (no frontend embedded)")
+    print(f"  MCP:  http://127.0.0.1:{mcp_port}")
     print("  Press Ctrl+C to stop.\n")
 
     api_process.start()
