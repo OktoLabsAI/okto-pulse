@@ -23,7 +23,7 @@ import { useDashboardApi } from '@/services/api';
 
 interface EntityDetailProps {
   boardId: string;
-  entityType: 'ideation' | 'spec' | 'refinement';
+  entityType: 'ideation' | 'spec' | 'refinement' | 'sprint';
   entityId: string;
   from: string;
   to: string;
@@ -82,6 +82,30 @@ interface RefinementData {
   out_of_scope: string[] | null;
   specs: { id: string; title: string; status: string }[];
   knowledge_bases: { id: string; title: string }[];
+}
+
+interface SprintAnalytics {
+  sprint_id: string;
+  title: string;
+  status: string;
+  spec_id: string;
+  spec_version: number;
+  tasks_total: number;
+  tasks_done: number;
+  tasks_cancelled: number;
+  tasks_in_progress: number;
+  progress: number;
+  avg_completeness: number | null;
+  avg_drift: number | null;
+  avg_cycle_hours: number | null;
+  cards: { id: string; title: string; status: string | null; card_type: string; completeness: number | null; drift: number | null; cycle_hours: number | null }[];
+  evaluations_total: number;
+  evaluations_non_stale: number;
+  approvals: number;
+  avg_eval_score: number | null;
+  scoped_scenarios: { id: string; title: string; status: string }[];
+  scenario_coverage: number;
+  comparison: { sprint_id: string; title: string; status: string; tasks_total: number; tasks_done: number; avg_completeness: number | null; avg_drift: number | null; is_current: boolean }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -643,13 +667,152 @@ function RefinementDetailView({ data }: { data: RefinementData }) {
   );
 }
 
+function SprintDetailView({ data }: { data: SprintAnalytics }) {
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <Card>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              {statusBadge(data.status)}
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white truncate">{data.title}</h2>
+            </div>
+            <div className="flex items-center gap-3 mt-1 text-xs text-gray-500 dark:text-gray-400">
+              <span>Spec v{data.spec_version}</span>
+              <span>Tasks: {data.tasks_done}/{data.tasks_total}</span>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-2xl font-bold text-gray-900 dark:text-white">{data.progress}%</div>
+            <div className="text-xs text-gray-500">Progress</div>
+          </div>
+        </div>
+      </Card>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Card>
+          <p className="text-xs text-gray-500 dark:text-gray-400">Avg Completeness</p>
+          <p className={`text-lg font-bold ${completenessColor(data.avg_completeness)}`}>
+            {data.avg_completeness != null ? `${data.avg_completeness}%` : '—'}
+          </p>
+        </Card>
+        <Card>
+          <p className="text-xs text-gray-500 dark:text-gray-400">Avg Drift</p>
+          <p className={`text-lg font-bold ${driftColor(data.avg_drift)}`}>
+            {data.avg_drift != null ? `${data.avg_drift}%` : '—'}
+          </p>
+        </Card>
+        <Card>
+          <p className="text-xs text-gray-500 dark:text-gray-400">Avg Cycle Time</p>
+          <p className="text-lg font-bold text-gray-900 dark:text-white">
+            {data.avg_cycle_hours != null ? `${data.avg_cycle_hours}h` : '—'}
+          </p>
+        </Card>
+        <Card>
+          <p className="text-xs text-gray-500 dark:text-gray-400">Eval Score</p>
+          <p className={`text-lg font-bold ${completenessColor(data.avg_eval_score)}`}>
+            {data.avg_eval_score != null ? `${data.avg_eval_score}/100` : '—'}
+          </p>
+          <p className="text-[10px] text-gray-400">{data.approvals} approval(s)</p>
+        </Card>
+      </div>
+
+      {/* Test Scenario Coverage */}
+      {data.scoped_scenarios.length > 0 && (
+        <Card>
+          <SectionTitle>Test Coverage ({data.scenario_coverage}%)</SectionTitle>
+          <div className="space-y-1">
+            {data.scoped_scenarios.map(sc => (
+              <div key={sc.id} className="flex items-center gap-2 text-xs py-0.5">
+                {sc.status === 'passed' ? (
+                  <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
+                ) : (
+                  <Clock className="w-3.5 h-3.5 text-amber-500" />
+                )}
+                <span className="text-gray-700 dark:text-gray-300 truncate">{sc.title}</span>
+                <span className="ml-auto text-gray-400">{sc.status}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Cards */}
+      <Card>
+        <SectionTitle>Tasks ({data.tasks_total})</SectionTitle>
+        <div className="space-y-1">
+          {data.cards.map(c => (
+            <div key={c.id} className="flex items-center gap-2 text-xs py-1 border-b border-gray-100 dark:border-gray-700 last:border-0">
+              <span className={`w-2 h-2 rounded-full ${
+                c.status === 'done' ? 'bg-emerald-500' :
+                c.status === 'in_progress' ? 'bg-blue-500' :
+                c.status === 'cancelled' ? 'bg-red-500' : 'bg-gray-400'
+              }`} />
+              <span className="text-gray-700 dark:text-gray-300 truncate flex-1">{c.title}</span>
+              {c.completeness != null && (
+                <span className={`${completenessColor(c.completeness)}`}>{c.completeness}%</span>
+              )}
+              {c.drift != null && (
+                <span className={`${driftColor(c.drift)}`}>d{c.drift}%</span>
+              )}
+              {c.cycle_hours != null && (
+                <span className="text-gray-400">{c.cycle_hours}h</span>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* Sprint Comparison */}
+      {data.comparison.length > 1 && (
+        <Card>
+          <SectionTitle>Sprint Comparison</SectionTitle>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left py-1.5 pr-3">Sprint</th>
+                  <th className="text-right py-1.5 px-2">Status</th>
+                  <th className="text-right py-1.5 px-2">Done/Total</th>
+                  <th className="text-right py-1.5 px-2">Completeness</th>
+                  <th className="text-right py-1.5 pl-2">Drift</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.comparison.map(row => (
+                  <tr key={row.sprint_id} className={`border-b border-gray-100 dark:border-gray-700/50 last:border-0 ${row.is_current ? 'bg-blue-50 dark:bg-blue-900/10' : ''}`}>
+                    <td className="py-1.5 pr-3 text-gray-900 dark:text-white font-medium truncate max-w-[150px]">
+                      {row.title} {row.is_current && <span className="text-blue-500 text-[10px]">(current)</span>}
+                    </td>
+                    <td className="text-right py-1.5 px-2">{statusBadge(row.status)}</td>
+                    <td className="text-right py-1.5 px-2 text-gray-600 dark:text-gray-400">{row.tasks_done}/{row.tasks_total}</td>
+                    <td className={`text-right py-1.5 px-2 ${completenessColor(row.avg_completeness)}`}>
+                      {row.avg_completeness != null ? `${row.avg_completeness}%` : '—'}
+                    </td>
+                    <td className={`text-right py-1.5 pl-2 ${driftColor(row.avg_drift)}`}>
+                      {row.avg_drift != null ? `${row.avg_drift}%` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+
 // ---------------------------------------------------------------------------
 // Main Component
 // ---------------------------------------------------------------------------
 
 export function EntityDetail({ boardId, entityType, entityId, from, to }: EntityDetailProps) {
   const api = useDashboardApi();
-  const [data, setData] = useState<SpecAnalytics | IdeationAnalytics | RefinementData | null>(null);
+  const [data, setData] = useState<SpecAnalytics | IdeationAnalytics | RefinementData | SprintAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -726,6 +889,7 @@ export function EntityDetail({ boardId, entityType, entityId, from, to }: Entity
   if (entityType === 'spec') return <SpecDetailView data={data as SpecAnalytics} />;
   if (entityType === 'ideation') return <IdeationDetailView data={data as IdeationAnalytics} />;
   if (entityType === 'refinement') return <RefinementDetailView data={data as RefinementData} />;
+  if (entityType === 'sprint') return <SprintDetailView data={data as SprintAnalytics} />;
 
   return null;
 }

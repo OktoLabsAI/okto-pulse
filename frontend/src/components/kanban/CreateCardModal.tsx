@@ -40,6 +40,10 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
   // Card type
   const [cardType, setCardType] = useState<CardType>('normal');
 
+  // Test fields
+  const [testScenarios, setTestScenarios] = useState<{ id: string; title: string; status: string }[]>([]);
+  const [selectedScenarioIds, setSelectedScenarioIds] = useState<string[]>([]);
+
   // Bug fields
   const [originTaskId, setOriginTaskId] = useState('');
   const [severity, setSeverity] = useState<BugSeverity>('major');
@@ -59,15 +63,31 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
       .then((agents) => setBoardMembers(agents.map((a) => ({ id: a.id, name: a.name }))))
       .catch(() => {});
 
-    // Load specs that accept card creation (approved + in_progress for tasks, + done for bugs)
+    // Load specs that accept card creation (approved + validated + in_progress for tasks, + done for bugs)
     Promise.all([
       api.listSpecs(boardId, 'approved'),
+      api.listSpecs(boardId, 'validated'),
       api.listSpecs(boardId, 'in_progress'),
       api.listSpecs(boardId, 'done'),
-    ]).then(([approved, inProgress, done]) => {
-      setSpecs([...approved, ...inProgress, ...done]);
+    ]).then(([approved, validated, inProgress, done]) => {
+      setSpecs([...approved, ...validated, ...inProgress, ...done]);
     }).catch(() => {});
   }, [boardId]);
+
+  // Load test scenarios when spec changes and card type is test
+  useEffect(() => {
+    if (cardType === 'test' && selectedSpecId) {
+      api.getSpec(selectedSpecId).then((spec) => {
+        const scenarios = (spec.test_scenarios || []).map((s: any) => ({
+          id: s.id, title: s.title, status: s.status,
+        }));
+        setTestScenarios(scenarios);
+      }).catch(() => setTestScenarios([]));
+    } else {
+      setTestScenarios([]);
+      setSelectedScenarioIds([]);
+    }
+  }, [cardType, selectedSpecId]);
 
   // When card type changes to bug, auto-select spec from origin task
   useEffect(() => {
@@ -88,6 +108,10 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
     }
     if (!selectedSpecId) {
       toast.error('A spec must be selected');
+      return;
+    }
+    if (cardType === 'test' && selectedScenarioIds.length === 0) {
+      toast.error('Select at least one test scenario');
       return;
     }
     if (cardType === 'bug') {
@@ -117,9 +141,14 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
         labels: labels ? labels.split(',').map((l) => l.trim()).filter(Boolean) : undefined,
         // Spec
         spec_id: selectedSpecId,
+        // Card type
+        ...(cardType !== 'normal' ? { card_type: cardType } : {}),
+        // Test fields
+        ...(cardType === 'test' ? {
+          test_scenario_ids: selectedScenarioIds,
+        } : {}),
         // Bug fields
         ...(cardType === 'bug' ? {
-          card_type: 'bug',
           origin_task_id: originTaskId,
           severity,
           expected_behavior: expectedBehavior.trim(),
@@ -194,6 +223,17 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
                 </button>
                 <button
                   type="button"
+                  onClick={() => setCardType('test')}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                    cardType === 'test'
+                      ? 'bg-purple-50 border-purple-300 text-purple-700 dark:bg-purple-900/30 dark:border-purple-600 dark:text-purple-300'
+                      : 'bg-white border-gray-300 text-gray-600 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-600'
+                  }`}
+                >
+                  Test
+                </button>
+                <button
+                  type="button"
                   onClick={() => setCardType('bug')}
                   className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors inline-flex items-center justify-center gap-1.5 ${
                     cardType === 'bug'
@@ -222,6 +262,8 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
                 {specs
                   .filter((s) => cardType === 'bug'
                     ? ['approved', 'in_progress', 'done'].includes(s.status)
+                    : cardType === 'test'
+                    ? ['approved', 'validated', 'in_progress'].includes(s.status)
                     : ['approved', 'in_progress'].includes(s.status))
                   .map((s) => (
                   <option key={s.id} value={s.id}>{s.title} ({s.status})</option>
@@ -231,6 +273,47 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
                 <p className="text-xs text-gray-400 mt-0.5">Auto-resolved from origin task</p>
               )}
             </div>
+
+            {/* Test: Scenario selector */}
+            {cardType === 'test' && selectedSpecId && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Test Scenarios * <span className="text-xs text-gray-400 font-normal">({selectedScenarioIds.length} selected, max 3)</span>
+                </label>
+                {testScenarios.length === 0 ? (
+                  <p className="text-xs text-gray-400">No test scenarios in this spec</p>
+                ) : (
+                  <div className="max-h-40 overflow-y-auto border border-gray-200 dark:border-gray-600 rounded-lg p-2 space-y-1">
+                    {testScenarios.map((s) => (
+                      <label
+                        key={s.id}
+                        className={`flex items-center gap-2 p-1.5 rounded text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 ${
+                          selectedScenarioIds.includes(s.id) ? 'bg-purple-50 dark:bg-purple-900/20' : ''
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedScenarioIds.includes(s.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              if (selectedScenarioIds.length < 3) {
+                                setSelectedScenarioIds([...selectedScenarioIds, s.id]);
+                              } else {
+                                toast.error('Max 3 scenarios per card');
+                              }
+                            } else {
+                              setSelectedScenarioIds(selectedScenarioIds.filter((id) => id !== s.id));
+                            }
+                          }}
+                          className="rounded border-gray-300 dark:border-gray-600"
+                        />
+                        <span className="text-gray-800 dark:text-gray-200 truncate">{s.title}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Bug: Origin Task selector */}
             {cardType === 'bug' && (

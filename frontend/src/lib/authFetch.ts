@@ -56,9 +56,12 @@ export class AuthenticatedFetch {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(
-        errorData.detail || errorData.message || `HTTP ${response.status}: ${response.statusText}`
-      );
+      // Extract detail: direct field, or nested in backend_error (BFF proxy pattern)
+      const detail = errorData.backend_error?.detail ?? errorData.detail;
+      const message = typeof detail === 'string' ? detail
+        : typeof detail === 'object' && detail !== null ? JSON.stringify(detail, null, 2)
+        : errorData.error || errorData.message || `HTTP ${response.status}: ${response.statusText}`;
+      throw new Error(message);
     }
 
     return response.json();

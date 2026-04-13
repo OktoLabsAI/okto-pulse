@@ -6,7 +6,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { format } from 'date-fns';
 import { enUS } from 'date-fns/locale';
-import { Bug, Calendar, GripVertical, FileText, AlertCircle, Check } from 'lucide-react';
+import { Bug, FlaskConical, Calendar, GripVertical, FileText, AlertCircle, Check, ShieldCheck, ShieldX } from 'lucide-react';
 import type { CardSummary } from '@/types';
 import { PRIORITY_COLORS, PRIORITY_LABELS, BUG_SEVERITY_LABELS, BUG_SEVERITY_COLORS } from '@/types';
 
@@ -33,6 +33,18 @@ export function KanbanCard({ card, onClick, nameMap }: KanbanCardProps) {
   } = useSortable({ id: card.id, disabled: !!card.archived });
 
   const isBug = card.card_type === 'bug';
+  const isTest = card.card_type === 'test';
+  const isInValidation = card.status === 'validation';
+  const hasFailedValidation = card.status === 'not_started'
+    && card.validations?.some((v) => v.verdict === 'fail');
+  const validationAttemptCount = hasFailedValidation
+    ? (card.validations?.filter((v) => v.verdict === 'fail').length ?? 0) + 1
+    : 0;
+  const hasPassed = card.status === 'done'
+    && card.validations?.some((v) => v.verdict === 'pass');
+  const passedEntry = hasPassed
+    ? card.validations?.find((v) => v.verdict === 'pass')
+    : null;
 
   const priorityColor = card.priority && card.priority !== 'none'
     ? PRIORITY_COLORS[card.priority]?.borderColor
@@ -41,8 +53,10 @@ export function KanbanCard({ card, onClick, nameMap }: KanbanCardProps) {
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
-    ...(priorityColor && !isBug ? { borderRight: `4px solid ${priorityColor}` } : {}),
+    ...(priorityColor && !isBug && !isTest && !isInValidation ? { borderRight: `4px solid ${priorityColor}` } : {}),
     ...(isBug ? { borderLeft: '4px solid #ef4444' } : {}),
+    ...(isTest ? { borderLeft: '4px solid #8b5cf6' } : {}),
+    ...(isInValidation && !isBug && !isTest ? { borderLeft: '4px solid #8b5cf6' } : {}),
   };
 
   const formattedDueDate = card.due_date
@@ -56,7 +70,7 @@ export function KanbanCard({ card, onClick, nameMap }: KanbanCardProps) {
     <div
       ref={setNodeRef}
       style={style}
-      className={`kanban-card ${isDragging ? 'dragging' : ''} ${isBug ? 'border-red-300 dark:border-red-500/40' : ''} ${card.archived ? 'opacity-50' : ''}`}
+      className={`kanban-card ${isDragging ? 'dragging' : ''} ${isBug ? 'border-red-300 dark:border-red-500/40' : ''} ${isTest ? 'border-purple-300 dark:border-purple-500/40' : ''} ${isInValidation && !isBug && !isTest ? 'border-violet-300 dark:border-violet-500/40' : ''} ${card.archived ? 'opacity-50' : ''}`}
       {...attributes}
     >
       <div className="flex items-start gap-2">
@@ -72,6 +86,30 @@ export function KanbanCard({ card, onClick, nameMap }: KanbanCardProps) {
               <span className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 uppercase tracking-wide">
                 <Bug size={10} />
                 bug
+              </span>
+            )}
+            {isTest && (
+              <span className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 uppercase tracking-wide">
+                <FlaskConical size={10} />
+                test
+              </span>
+            )}
+            {isInValidation && (
+              <span className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 uppercase tracking-wide">
+                <ShieldCheck size={10} />
+                validation
+              </span>
+            )}
+            {hasFailedValidation && (
+              <span className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 uppercase tracking-wide">
+                <ShieldX size={10} />
+                validation failed
+              </span>
+            )}
+            {hasPassed && (
+              <span className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 uppercase tracking-wide">
+                <ShieldCheck size={10} />
+                validated
               </span>
             )}
             <h4 className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">
@@ -121,6 +159,16 @@ export function KanbanCard({ card, onClick, nameMap }: KanbanCardProps) {
             </div>
           ) : null}
 
+          {/* Test card: scenario count */}
+          {isTest && card.test_scenario_ids && card.test_scenario_ids.length > 0 && (
+            <div className="flex gap-1 mt-1.5">
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 inline-flex items-center gap-0.5">
+                <FlaskConical size={9} />
+                {card.test_scenario_ids.length} scenario{card.test_scenario_ids.length > 1 ? 's' : ''} linked
+              </span>
+            </div>
+          )}
+
           {/* Bug: test task indicator */}
           {isBug && (
             <div className="flex gap-1 mt-1.5">
@@ -135,6 +183,29 @@ export function KanbanCard({ card, onClick, nameMap }: KanbanCardProps) {
                   No test task — blocked from in_progress
                 </span>
               )}
+            </div>
+          )}
+
+          {/* Validation detail badges */}
+          {hasFailedValidation && (
+            <div className="flex gap-1 mt-1.5">
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 inline-flex items-center gap-0.5">
+                <ShieldX size={9} />
+                {validationAttemptCount === 2 ? '2nd' : validationAttemptCount === 3 ? '3rd' : `${validationAttemptCount}th`} attempt
+              </span>
+            </div>
+          )}
+          {hasPassed && passedEntry && (
+            <div className="flex gap-1 mt-1.5 flex-wrap">
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Confidence: ${passedEntry.confidence}%`}>
+                Conf: {passedEntry.confidence}%
+              </span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Completeness: ${passedEntry.completeness}%`}>
+                Compl: {passedEntry.completeness}%
+              </span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Drift: ${passedEntry.drift}%`}>
+                Drift: {passedEntry.drift}%
+              </span>
             </div>
           )}
 

@@ -1,17 +1,19 @@
 /**
  * HelpPanel - In-app user guide with quickstart and deep-dive sections.
+ * Content adapts based on edition (community vs ecosystem).
  */
 
 import { useState } from 'react';
-import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Bot } from 'lucide-react';
+import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Users, Bot } from 'lucide-react';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
-import logoLight from '@/assets/logo-light.jpg';
-import logoDark from '@/assets/logo-dark.jpg';
+import logoLight from '@/assets/logo-light.png';
+import logoDark from '@/assets/logo-dark.png';
 
 interface HelpPanelProps {
   onClose: () => void;
 }
 
+const isEcosystem = typeof __AUTH_MODE__ !== 'undefined' && __AUTH_MODE__ === 'clerk';
 
 interface Section {
   id: string;
@@ -26,8 +28,73 @@ function getSections(): Section[] {
       id: 'quickstart',
       title: 'Quickstart',
       icon: <Rocket size={16} />,
-      content: `
-## Welcome to Okto Pulse
+      content: isEcosystem ? `
+## Welcome to Okto Pulse (Ecosystem)
+
+Okto Pulse is a **spec-driven project management tool** designed for AI-assisted software development. It guides you from raw ideas to shipped code through a structured pipeline:
+
+**Ideation** → **Refinement** → **Spec** → **Tasks**
+
+### Get started
+
+#### Step 1 — Create a board
+
+Click **"+ New Dashboard"** in the sidebar or menu. A board is your project workspace where ideations, specs, and tasks live.
+
+#### Step 2 — Create an agent and connect it via MCP
+
+This is the most important step. AI agents (Claude Code, Cursor, Windsurf, etc.) interact with your board through the **MCP protocol**. Without an agent connected, you won't get the full AI-assisted experience.
+
+1. Open the **Menu** (☰) → **Agents**
+2. In the **"My Agents"** tab, fill in the agent name (e.g. "Claude Code") and click **Create**
+3. The system generates an **API Key** (starts with \`dash_\`) — **copy it immediately**, it's only shown once
+4. Switch to the **"Board Access"** tab
+5. Select your agent from the dropdown and click **Grant Access** to link it to the current board
+6. Back in "My Agents", click the **MCP config** button and choose your tool format (Claude Code, Cursor, VS Code, Windsurf, etc.)
+7. Copy the generated config into your tool's MCP configuration file
+
+**Example \`.mcp.json\` for Claude Code / Claude Desktop:**
+
+\`\`\`json
+{
+  "mcpServers": {
+    "okto-pulse": {
+      "url": "http://localhost:8101/mcp?api_key=dash_your_key_here"
+    }
+  }
+}
+\`\`\`
+
+> **Important:** The agent must have board access to interact with it. One agent can access multiple boards.
+
+#### Step 3 — Create your first ideation
+
+Go to the **Ideations** tab and describe your idea. The AI agent can now help you evaluate, refine, and spec it out through MCP tools.
+
+#### Step 4 — Let the pipeline guide you
+
+Evaluate the ideation → refine if needed → write a spec with acceptance criteria and test scenarios → break it into task cards on the Kanban board.
+
+### Multi-user collaboration
+
+You can **share boards** with other team members:
+- Click **Share** in the menu to invite collaborators
+- Each member sees the same board in real-time
+- Activity logs track who did what and when
+- Each team member can have their own agents connected
+
+### The pipeline at a glance
+
+| Stage | Purpose | Key actions |
+|-------|---------|-------------|
+| **Ideation** | Capture the idea | Write, ask questions, evaluate complexity |
+| **Refinement** | Deepen analysis (medium/large ideas) | Break down scope, add knowledge, make decisions |
+| **Spec** | Define what to build | Acceptance criteria, test scenarios, business rules, API contracts |
+| **Tasks** | Build it | Kanban cards, dependencies, conclusions, bug tracking |
+
+> **Tip:** Each stage has a Q&A system — use it to clarify doubts and document decisions before moving forward.
+` : `
+## Welcome to Okto Pulse (Community)
 
 Okto Pulse is a **spec-driven project management tool** designed for AI-assisted software development. It guides you from raw ideas to shipped code through a structured pipeline:
 
@@ -128,7 +195,92 @@ Remember to update the MCP URL in your \`.mcp.json\` if you change the MCP port.
       id: 'agents',
       title: 'Agents & MCP',
       icon: <Bot size={16} />,
-      content: `
+      content: isEcosystem ? `
+## Agents & MCP — Connect AI tools to your board
+
+Agents are the bridge between AI tools (Claude Code, Cursor, Windsurf, etc.) and your Okto Pulse boards. Each agent has its own identity, API key, and board access permissions.
+
+### How it works
+
+\`\`\`
+Your AI Tool (Claude Code, Cursor, etc.)
+    ↓ MCP protocol
+Okto Pulse MCP Server (port 8101)
+    ↓ API key authentication
+Agent identity resolved → board access checked
+    ↓
+119+ tools available (create cards, move specs, add comments, etc.)
+\`\`\`
+
+### Creating an agent
+
+1. Open **Menu** (☰) → **Agents**
+2. In the **"My Agents"** tab, enter:
+   - **Name** — e.g. "Claude Code", "Cursor Agent", "CI Bot"
+   - **Description** — optional, what this agent does
+   - **Objective** — optional, the agent's primary goal
+3. Click **Create**
+4. **Copy the API key immediately** — it starts with \`dash_\` and is only shown once
+
+### Granting board access
+
+An agent needs explicit access to each board it should interact with:
+
+1. Open **Menu** (☰) → **Agents** → **"Board Access"** tab
+2. Select an agent from the dropdown (only agents without access are shown)
+3. Click **Grant Access**
+
+To revoke access, click **Revoke** next to the agent in the same tab.
+
+> One agent can access multiple boards. One board can have multiple agents.
+
+### Configuring your AI tool
+
+Click the **MCP config** button next to your agent to get a pre-formatted config snippet. Supported formats:
+
+| Tool | Config location |
+|------|----------------|
+| **Claude Code** | \`.mcp.json\` in project root (auto-detected) |
+| **Claude Desktop** | Claude Desktop settings → MCP servers |
+| **Cursor** | Cursor preferences → MCP settings |
+| **VS Code** | \`.vscode/mcp.json\` |
+| **Windsurf** | \`.mcp.json\` in project root |
+| **Cline** | Cline settings → MCP servers |
+
+**Example \`.mcp.json\`:**
+
+\`\`\`json
+{
+  "mcpServers": {
+    "okto-pulse": {
+      "url": "http://localhost:8101/mcp?api_key=dash_your_key_here"
+    }
+  }
+}
+\`\`\`
+
+### API key management
+
+- **Regenerate key** — If a key is compromised, click **Regenerate** in the Agents panel. The old key stops working immediately.
+- **Key format** — Always starts with \`dash_\` followed by 48 hex characters
+- **Storage** — Keys are hashed (SHA256) in the database. Okto Pulse cannot recover a lost key — regenerate instead.
+
+### Agent activity tracking
+
+Every action taken by an agent is logged in the activity feed:
+- Which agent performed the action
+- What changed (card moved, comment added, etc.)
+- When it happened
+
+View activity in **Analytics** or the board's activity log.
+
+### Multiple agents per board
+
+A common setup is to have different agents for different purposes:
+- **Development agent** — Creates cards, moves tasks, adds conclusions
+- **Review agent** — Reviews specs, asks questions, adds comments
+- **CI/CD agent** — Reports test results, creates bug cards
+` : `
 ## Agents & MCP — Connect AI tools to your board
 
 Agents are the bridge between AI tools (Claude Code, Cursor, Windsurf, etc.) and your Okto Pulse boards. The Community edition comes with a **default agent pre-configured**.
@@ -551,6 +703,52 @@ All coverage checks can be bypassed:
     },
   ];
 
+  if (isEcosystem) {
+    sections.push({
+      id: 'collaboration',
+      title: 'Collaboration',
+      icon: <Users size={16} />,
+      content: `
+## Collaboration — Multi-user boards (Ecosystem)
+
+The Ecosystem edition supports **multiple users** working on the same board simultaneously.
+
+### Sharing a board
+
+1. Open the **Share** option from the menu
+2. Invite team members by email
+3. Each member gets access to the full board: ideations, refinements, specs, and tasks
+
+### Activity tracking
+
+Every action on the board is logged with:
+- **Who** did it (user name)
+- **What** changed (card moved, spec updated, comment added, etc.)
+- **When** it happened
+
+View the activity log from the board's analytics or the activity panel.
+
+### Agents
+
+AI agents can be connected to a board to automate work:
+- Agents appear in the **Agents** panel (menu → Agents)
+- Each agent has its own identity, objective, and permissions
+- Agents can create cards, move tasks, add comments, and more — all tracked in the activity log
+
+### Mentions
+
+Use the comment system to discuss decisions. Mentions are tracked and appear in your notification summary.
+
+### Shared vs personal boards
+
+- **My Boards** — Boards you created (visible only to you and invited members)
+- **Shared with me** — Boards others invited you to
+
+Both appear in the sidebar for quick switching.
+`,
+    });
+  }
+
   return sections;
 }
 
@@ -577,7 +775,7 @@ export function HelpPanel({ onClose }: HelpPanelProps) {
                 Help Guide
               </h2>
               <p className="text-[10px] text-gray-400 mt-0.5">
-                Community Edition
+                {isEcosystem ? 'Ecosystem Edition' : 'Community Edition'}
               </p>
             </div>
           </div>

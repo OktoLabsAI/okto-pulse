@@ -3,12 +3,16 @@
  */
 
 import { useState } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronUp, FileCode, Pencil } from 'lucide-react';
-import type { Spec, ApiContract } from '@/types';
+import { Plus, Trash2, ChevronDown, ChevronUp, FileCode, Pencil, Link, Unlink } from 'lucide-react';
+import type { Spec, ApiContract, CardSummaryForSpec } from '@/types';
 
 interface ContractsTabProps {
   spec: Spec;
   onUpdate: (contracts: ApiContract[]) => void;
+  onSpecUpdate?: (data: Record<string, unknown>) => Promise<void>;
+  specCards?: CardSummaryForSpec[];
+  onLinkTask?: (contractId: string, cardId: string) => Promise<void>;
+  onUnlinkTask?: (contractId: string, cardId: string) => Promise<void>;
 }
 
 const METHOD_COLORS: Record<string, string> = {
@@ -43,7 +47,39 @@ function tryParseJSONArray(str: string): Array<Record<string, unknown>> | null {
   }
 }
 
-export function ContractsTab({ spec, onUpdate }: ContractsTabProps) {
+function LinkTaskPicker({ contractId, linkedIds, cards, onLink }: {
+  contractId: string;
+  linkedIds: string[];
+  cards: CardSummaryForSpec[];
+  onLink: (contractId: string, cardId: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const available = cards.filter((c) => !linkedIds.includes(c.id));
+  if (available.length === 0) return null;
+  return (
+    <div className="mt-1">
+      <button onClick={() => setOpen(!open)} className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400">
+        {open ? 'Cancel' : '+ Link task'}
+      </button>
+      {open && (
+        <div className="mt-1 border border-gray-200 dark:border-gray-700 rounded p-1.5 max-h-32 overflow-y-auto space-y-0.5">
+          {available.map((c) => (
+            <button
+              key={c.id}
+              onClick={async () => { await onLink(contractId, c.id); setOpen(false); }}
+              className="w-full text-left px-2 py-1 rounded text-[11px] text-gray-600 dark:text-gray-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 truncate flex items-center gap-1"
+            >
+              <Link size={9} className="shrink-0 text-gray-400" />
+              {c.title}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ContractsTab({ spec, onUpdate, onSpecUpdate, specCards, onLinkTask, onUnlinkTask }: ContractsTabProps) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -257,6 +293,22 @@ export function ContractsTab({ spec, onUpdate }: ContractsTabProps) {
 
   return (
     <div className="space-y-4">
+      {/* Skip contract coverage toggle */}
+      {onSpecUpdate && (
+        <div className="flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/20">
+          <div>
+            <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip contract coverage requirement</span>
+            <p className="text-[10px] text-gray-400">Allow validation without full API contract→Task coverage</p>
+          </div>
+          <button
+            onClick={() => onSpecUpdate({ skip_contract_coverage: !spec.skip_contract_coverage })}
+            className={`relative w-10 h-5 rounded-full transition-colors ${spec.skip_contract_coverage ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${spec.skip_contract_coverage ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
+      )}
+
       {/* Contracts list */}
       {contracts.length === 0 && !adding && (
         <div className="text-center py-6">
@@ -385,16 +437,56 @@ export function ContractsTab({ spec, onUpdate }: ContractsTabProps) {
                     })}
                   </div>
                 )}
-                {contract.linked_task_ids && contract.linked_task_ids.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    <span className="text-[10px] text-gray-400 mr-1">Linked Tasks:</span>
-                    {contract.linked_task_ids.map((taskId, i) => (
-                      <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300">
-                        {taskId.slice(0, 8)}…
-                      </span>
-                    ))}
+                {/* Linked tasks with link/unlink controls */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] text-gray-400">Linked Tasks:</span>
                   </div>
-                )}
+                  {contract.linked_task_ids && contract.linked_task_ids.length > 0 ? (
+                    <div className="space-y-1">
+                      {contract.linked_task_ids.map((taskId) => {
+                        const card = specCards?.find((c) => c.id === taskId);
+                        return (
+                          <div key={taskId} className="flex items-center justify-between px-2 py-1 rounded bg-green-50 dark:bg-green-900/10 text-xs group">
+                            <span className="text-gray-700 dark:text-gray-300 truncate">
+                              {card ? card.title : taskId.slice(0, 12) + '...'}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              {card && (
+                                <span className={`text-[10px] px-1 py-0.5 rounded ${
+                                  card.status === 'done' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' :
+                                  card.status === 'in_progress' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' :
+                                  'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+                                }`}>
+                                  {card.status.replace('_', ' ')}
+                                </span>
+                              )}
+                              {onUnlinkTask && (
+                                <button
+                                  onClick={async () => { await onUnlinkTask(contract.id, taskId); }}
+                                  className="p-0.5 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                                  title="Unlink task"
+                                >
+                                  <Unlink size={10} />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-gray-400 italic">No tasks linked</p>
+                  )}
+                  {onLinkTask && specCards && specCards.length > 0 && (
+                    <LinkTaskPicker
+                      contractId={contract.id}
+                      linkedIds={contract.linked_task_ids || []}
+                      cards={specCards}
+                      onLink={onLinkTask}
+                    />
+                  )}
+                </div>
               </div>
             )}
           </div>

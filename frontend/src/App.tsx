@@ -9,8 +9,8 @@ import { IdeationsPanel } from '@/components/ideations';
 import { RefinementsPanel } from '@/components/refinements';
 import { SpecsPanel } from '@/components/specs';
 import { AnalyticsPage } from '@/components/analytics';
-import logoLight from '@/assets/logo-light.jpg';
-import logoDark from '@/assets/logo-dark.jpg';
+import logoLight from '@/assets/logo-light.png';
+import logoDark from '@/assets/logo-dark.png';
 
 function App() {
   const api = useDashboardApi();

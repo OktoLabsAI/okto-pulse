@@ -40,7 +40,7 @@ import { REFINEMENT_STATUSES, REFINEMENT_STATUS_LABELS } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
-import { ContextSelector, buildRefinementItems, compileSelectedContext, type SelectableItem } from '@/components/shared/ContextSelector';
+import { ContextSelector, buildRefinementItems, type SelectableItem } from '@/components/shared/ContextSelector';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 
@@ -855,22 +855,20 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
 
   const [showSpecSelector, setShowSpecSelector] = useState(false);
 
-  const handleSpecSelectorConfirm = async (selectedItems: SelectableItem[], title: string) => {
+  const handleDeriveSpec = async () => {
     if (!refinement) return;
     setDerivingSpec(true);
     try {
-      const compiledContext = compileSelectedContext(selectedItems);
-      await api.createSpec(refinement.board_id, {
-        title,
-        context: compiledContext,
-        ideation_id: refinement.ideation_id,
-        refinement_id: refinementId,
-        labels: refinement.labels || undefined,
-      });
+      // Use derive endpoint — propagates KBs, mockups, and compiles context server-side
+      await api.deriveSpecFromRefinement(refinementId);
       toast.success('Spec draft created');
       await loadRefinement();
       onChanged();
     } catch { toast.error('Failed to create spec'); } finally { setDerivingSpec(false); }
+  };
+
+  const handleSpecSelectorConfirm = async (_selectedItems: SelectableItem[], _title: string) => {
+    await handleDeriveSpec();
     setShowSpecSelector(false);
   };
 
@@ -1095,7 +1093,16 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
             </div>
           )}
 
-          {activeTab === 'mockups' && <MockupsTab screenMockups={refinement.screen_mockups} expanded={expanded} />}
+          {activeTab === 'mockups' && (
+            <MockupsTab
+              screenMockups={refinement.screen_mockups}
+              expanded={expanded}
+              onUpdate={async (mockups) => {
+                await api.updateRefinement(refinementId, { screen_mockups: mockups });
+                await loadRefinement();
+              }}
+            />
+          )}
           {activeTab === 'knowledge' && <KnowledgeTab refinementId={refinementId} />}
           {activeTab === 'versions' && <VersionsTab refinementId={refinementId} />}
           {activeTab === 'history' && <HistoryTab refinementId={refinementId} />}
@@ -1121,7 +1128,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
               )}
               {canDeriveSpec && (
                 <button
-                  onClick={() => setShowSpecSelector(true)}
+                  onClick={handleDeriveSpec}
                   disabled={derivingSpec}
                   className="flex items-center gap-1.5 text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 mt-3"
                 >
@@ -1140,7 +1147,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
           </button>
           <div className="flex gap-2">
             {canDeriveSpec && (
-              <button onClick={() => setShowSpecSelector(true)} disabled={derivingSpec} className="btn btn-primary flex items-center gap-1.5">
+              <button onClick={handleDeriveSpec} disabled={derivingSpec} className="btn btn-primary flex items-center gap-1.5">
                 <Zap size={16} />
                 {derivingSpec ? 'Creating...' : 'Create Spec Draft'}
               </button>

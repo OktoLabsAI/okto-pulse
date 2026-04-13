@@ -19,6 +19,7 @@ import type {
   SpecKnowledgeSummary,
   SpecSkillSummary,
   ConclusionEntry,
+  ValidationEntry,
 } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -295,6 +296,85 @@ export function exportRefinement(refinement: Refinement): string {
   return md;
 }
 
+/** Generate Markdown for a Sprint with parent spec context. */
+export function exportSprint(sprint: any, parentSpec: any): string {
+  let md = `# Sprint: ${sprint.title}\n\n`;
+
+  md += metaTable([
+    ['Status', sprint.status],
+    ['Version', `v${sprint.version}`],
+    ['Spec Version', `v${sprint.spec_version}`],
+    ['Spec', parentSpec?.title || sprint.spec_id || 'N/A'],
+    ...(sprint.start_date ? [['Start Date', sprint.start_date] as [string, string]] : []),
+    ...(sprint.end_date ? [['End Date', sprint.end_date] as [string, string]] : []),
+  ]);
+
+  if (sprint.objective) md += `## Objective\n\n${sprint.objective}\n\n`;
+  if (sprint.expected_outcome) md += `## Expected Outcome\n\n${sprint.expected_outcome}\n\n`;
+  if (sprint.description) md += `## Description\n\n${sprint.description}\n\n`;
+
+  // Progress
+  const cards = sprint.cards || [];
+  const done = cards.filter((c: any) => c.status === 'done').length;
+  const total = cards.length;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  md += `## Progress\n\n**${pct}%** complete (${done}/${total} cards done)\n\n`;
+
+  // Cards
+  if (cards.length > 0) {
+    md += `## Cards\n\n| Title | Status | Type |\n|-------|--------|------|\n`;
+    for (const c of cards) {
+      md += `| ${c.title} | ${c.status} | ${c.card_type || 'normal'} |\n`;
+    }
+    md += '\n';
+  }
+
+  // Scoped Test Scenarios
+  if (sprint.test_scenario_ids?.length && parentSpec?.test_scenarios?.length) {
+    const scoped = parentSpec.test_scenarios.filter((ts: any) =>
+      sprint.test_scenario_ids.includes(ts.id) ||
+      ts.linked_task_ids?.some((id: string) => cards.some((c: any) => c.id === id))
+    );
+    if (scoped.length > 0) {
+      md += `## Scoped Test Scenarios\n\n`;
+      for (const ts of scoped) {
+        md += `### ${ts.title}\n- **Given:** ${ts.given}\n- **When:** ${ts.when}\n- **Then:** ${ts.then}\n- **Status:** ${ts.status}\n\n`;
+      }
+    }
+  }
+
+  // Scoped Business Rules
+  if (sprint.business_rule_ids?.length && parentSpec?.business_rules?.length) {
+    const scoped = parentSpec.business_rules.filter((br: any) =>
+      sprint.business_rule_ids.includes(br.id) ||
+      br.linked_task_ids?.some((id: string) => cards.some((c: any) => c.id === id))
+    );
+    if (scoped.length > 0) {
+      md += `## Scoped Business Rules\n\n`;
+      for (const br of scoped) {
+        md += `### ${br.title}\n- **When:** ${br.when}\n- **Then:** ${br.then}\n\n`;
+      }
+    }
+  }
+
+  // Evaluations
+  if (sprint.evaluations?.length) {
+    md += `## Evaluations\n\n`;
+    for (const ev of sprint.evaluations) {
+      md += `### ${ev.evaluator_name} — ${ev.recommendation} (${ev.overall_score}/100)\n`;
+      if (ev.overall_justification) md += `${ev.overall_justification}\n`;
+      md += '\n';
+    }
+  }
+
+  // Labels
+  if (sprint.labels?.length) {
+    md += `## Labels\n\n${sprint.labels.join(', ')}\n\n`;
+  }
+
+  return md;
+}
+
 /** Generate Markdown for a Spec. */
 export function exportSpec(spec: Spec): string {
   let md = `# ${spec.title}\n\n`;
@@ -377,6 +457,21 @@ export function exportCard(card: Card, spec?: Spec | null): string {
     md += `## Conclusions\n\n${entries}`;
   }
 
+  // Validations
+  if (card.validations?.length) {
+    const entries = card.validations.map((v: ValidationEntry, i: number) => {
+      let e = `### Validation ${i + 1} — ${v.verdict === 'pass' ? 'PASSED' : 'FAILED'}\n\n`;
+      e += `| Metric | Score |\n|--------|-------|\n`;
+      e += `| Confidence | ${v.confidence} |\n`;
+      e += `| Completeness | ${v.completeness} |\n`;
+      e += `| Drift | ${v.drift} |\n\n`;
+      if (v.summary) e += `**Summary:** ${v.summary}\n\n`;
+      e += `*Reviewer: ${v.evaluator_id} | ${fmtDate(v.created_at)}*\n\n`;
+      return e;
+    }).join('');
+    md += `## Validations\n\n${entries}`;
+  }
+
   // Dependencies
   // Note: Card type doesn't include dependency data directly; we show what we have
   // from comments/QA context
@@ -407,6 +502,15 @@ export function exportCard(card: Card, spec?: Spec | null): string {
     md += renderApiContracts(spec.api_contracts);
     md += renderKnowledgeBases(spec.knowledge_bases || []);
     md += renderSkills(spec.skills);
+  }
+
+  // Card-own knowledge bases
+  if (card.knowledge_bases?.length) {
+    md += `## Card Knowledge Bases\n\n`;
+    for (const kb of card.knowledge_bases) {
+      md += `### ${kb.title}${kb.source === 'spec' ? ' (from spec)' : ''}\n\n`;
+      md += `${kb.content}\n\n`;
+    }
   }
 
   md += renderMockups(card.screen_mockups);

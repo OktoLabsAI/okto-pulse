@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale } from 'lucide-react';
+import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportCard, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
@@ -19,6 +19,7 @@ import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
+import { CardKnowledgeTab } from './CardKnowledgeTab';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -47,7 +48,7 @@ export function CardModal({ boardId }: CardModalProps) {
 
   const [card, setCard] = useState<Card | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'tests' | 'mockups' | 'conclusion' | 'qa' | 'comments' | 'activity'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'tests' | 'mockups' | 'knowledge' | 'conclusion' | 'validations' | 'qa' | 'comments' | 'activity'>('details');
   const [expanded, setExpanded] = useState(false);
   const [boardMembers, setBoardMembers] = useState<{ id: string; name: string }[]>([]);
   const [seenStatus, setSeenStatus] = useState<Record<string, { agent_name: string; seen_at: string }[]>>({});
@@ -60,6 +61,7 @@ export function CardModal({ boardId }: CardModalProps) {
   const [specContracts, setSpecContracts] = useState<any[]>([]);
   const [specTRs, setSpecTRs] = useState<any[]>([]);
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
+  const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
   const [conclusionDraft, setConclusionDraft] = useState('');
   const [conclusionCompleteness, setConclusionCompleteness] = useState(100);
@@ -81,6 +83,10 @@ export function CardModal({ boardId }: CardModalProps) {
               setSpecRules(spec.business_rules || []);
               setSpecContracts(spec.api_contracts || []);
               setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
+              // Load full KB content for knowledge tab
+              Promise.all(
+                (spec.knowledge_bases || []).map((kb: any) => api.getSpecKnowledge(spec.id, kb.id).catch(() => null))
+              ).then((kbs) => setSpecKBsFull(kbs.filter(Boolean) as any[])).catch(() => {});
             })
             .catch(() => { setParentSpec(null); setFullSpec(null); setSpecScenarios([]); });
         } else {
@@ -313,7 +319,55 @@ export function CardModal({ boardId }: CardModalProps) {
                 BUG
               </span>
             )}
-            <h2 className="font-semibold text-lg whitespace-pre-wrap break-words line-clamp-3">
+            {card?.card_type === 'test' && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-bold bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 uppercase tracking-wide shrink-0">
+                <FlaskConical size={14} />
+                TEST
+              </span>
+            )}
+            <h2
+              className="font-semibold text-lg whitespace-pre-wrap break-words line-clamp-3 cursor-text hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1 -mx-1 outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white dark:focus:bg-gray-700"
+              contentEditable={!isLoading && !!card}
+              suppressContentEditableWarning
+              onBlur={async (e) => {
+                if (!card) return;
+                const newTitle = (e.currentTarget.textContent || '').trim();
+                if (!newTitle || newTitle === card.title) {
+                  e.currentTarget.textContent = card.title;
+                  return;
+                }
+                try {
+                  const updated = await api.updateCard(card.id, { title: newTitle });
+                  setCard(updated);
+                  updateCardInColumn({
+                    id: updated.id,
+                    board_id: updated.board_id,
+                    spec_id: updated.spec_id,
+                    title: updated.title,
+                    description: updated.description,
+                    status: updated.status,
+                    priority: updated.priority,
+                    position: updated.position,
+                    assignee_id: updated.assignee_id,
+                    created_by: updated.created_by,
+                    created_at: updated.created_at,
+                    updated_at: updated.updated_at,
+                    due_date: updated.due_date,
+                    labels: updated.labels,
+                    test_scenario_ids: updated.test_scenario_ids,
+                    conclusions: updated.conclusions,
+                  });
+                  toast.success('Title updated');
+                } catch {
+                  e.currentTarget.textContent = card.title;
+                  toast.error('Failed to update title');
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
+                if (e.key === 'Escape') { e.currentTarget.textContent = card?.title || ''; e.currentTarget.blur(); }
+              }}
+            >
               {isLoading ? 'Loading...' : card?.title}
             </h2>
           </div>
@@ -356,8 +410,8 @@ export function CardModal({ boardId }: CardModalProps) {
             {/* Tabs */}
             <div className="flex border-b border-gray-200 dark:border-gray-700 px-6">
               {(card.card_type === 'bug'
-                ? ['details', 'tests', 'mockups', 'conclusion', 'qa', 'comments', 'activity'] as const
-                : ['details', 'mockups', 'conclusion', 'qa', 'comments', 'activity'] as const
+                ? ['details', 'tests', 'mockups', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
+                : ['details', 'mockups', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
               ).map((tab) => (
                 <button
                   key={tab}
@@ -383,6 +437,17 @@ export function CardModal({ boardId }: CardModalProps) {
                   )}
                   {tab === 'mockups' && `Mockups${card.screen_mockups?.length ? ` (${card.screen_mockups.length})` : ''}`}
                   {tab === 'conclusion' && `Conclusion${card.conclusions?.length ? ` (${card.conclusions.length})` : ''}`}
+                  {tab === 'validations' && (
+                    <>
+                      <Shield size={13} className="inline mr-1" />
+                      Validations
+                      {(card.validations?.length ?? 0) > 0 && (
+                        <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-violet-500 text-white text-[9px] px-1">
+                          {card.validations!.length}
+                        </span>
+                      )}
+                    </>
+                  )}
                   {tab === 'qa' && `Q&A (${card.qa_items.length})`}
                   {tab === 'comments' && `Comments (${card.comments.length})`}
                   {tab === 'activity' && 'Activity'}
@@ -849,6 +914,18 @@ export function CardModal({ boardId }: CardModalProps) {
                 </div>
               )}
 
+              {/* Knowledge Tab */}
+              {activeTab === 'knowledge' && (
+                <CardKnowledgeTab
+                  card={card}
+                  specKnowledgeBases={specKBsFull}
+                  onUpdate={async (kbs) => {
+                    const updated = await api.updateCard(card.id, { knowledge_bases: kbs } as any);
+                    setCard(updated);
+                  }}
+                />
+              )}
+
               {/* Q&A Tab */}
               {activeTab === 'qa' && (
                 <QATab card={card} setCard={setCard} api={api} members={boardMembers} seenStatus={seenStatus} />
@@ -918,6 +995,11 @@ export function CardModal({ boardId }: CardModalProps) {
                     </div>
                   )}
                 </div>
+              )}
+
+              {/* Validations Tab */}
+              {activeTab === 'validations' && (
+                <ValidationsTab card={card} setCard={setCard} api={api} members={boardMembers} />
               )}
 
               {/* Activity Tab */}
@@ -1484,6 +1566,293 @@ function QATab({ card, setCard, api, members, seenStatus }: { card: Card; setCar
           <p className="text-gray-400 dark:text-gray-500 text-sm text-center py-4">
             No questions yet
           </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Validations Tab Component
+function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: (c: Card) => void; api: ReturnType<typeof useDashboardApi>; members: { id: string; name: string }[] }) {
+  const [confidence, setConfidence] = useState(80);
+  const [completeness, setCompleteness] = useState(80);
+  const [drift, setDrift] = useState(20);
+  const [confidenceJustification, setConfidenceJustification] = useState('');
+  const [completenessJustification, setCompletenessJustification] = useState('');
+  const [driftJustification, setDriftJustification] = useState('');
+  const [generalJustification, setGeneralJustification] = useState('');
+  const [verdict, setVerdict] = useState<'pass' | 'fail'>('pass');
+  const [submitting, setSubmitting] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    try {
+      const data = {
+        verdict,
+        confidence,
+        completeness,
+        drift,
+        confidence_justification: confidenceJustification.trim(),
+        completeness_justification: completenessJustification.trim(),
+        drift_justification: driftJustification.trim(),
+        summary: generalJustification.trim() || null,
+      };
+      const updated = await api.submitTaskValidation(card.id, data);
+      setCard(updated);
+      // Reset form
+      setConfidence(80);
+      setCompleteness(80);
+      setDrift(20);
+      setConfidenceJustification('');
+      setCompletenessJustification('');
+      setDriftJustification('');
+      setGeneralJustification('');
+      setVerdict('pass');
+      toast.success('Validation submitted');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to submit validation');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const scoreColor = (score: number, isInverse = false) => {
+    const effective = isInverse ? 100 - score : score;
+    if (effective >= 80) return 'bg-green-500';
+    if (effective >= 60) return 'bg-blue-500';
+    if (effective >= 40) return 'bg-amber-500';
+    return 'bg-red-500';
+  };
+
+  const scoreBadgeColor = (score: number, isInverse = false) => {
+    const effective = isInverse ? 100 - score : score;
+    if (effective >= 80) return 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300';
+    if (effective >= 60) return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300';
+    if (effective >= 40) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300';
+    return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300';
+  };
+
+  const validations = card.validations || [];
+
+  return (
+    <div className="space-y-6">
+      {/* Section A: Submit Validation Form — only when status === 'validation' */}
+      {card.status === 'validation' && (
+        <div className="bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-700 rounded-xl p-5 space-y-5">
+          <h3 className="text-sm font-semibold text-violet-800 dark:text-violet-200 flex items-center gap-2">
+            <Shield size={16} />
+            Submit Validation
+          </h3>
+
+          {/* Confidence */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-2 mb-1">
+              Confidence
+              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${scoreBadgeColor(confidence)}`}>{confidence}</span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={confidence}
+              onChange={(e) => setConfidence(Number(e.target.value))}
+              className="w-full"
+            />
+            <textarea
+              value={confidenceJustification}
+              onChange={(e) => setConfidenceJustification(e.target.value)}
+              placeholder="Justify the confidence score..."
+              className="w-full mt-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-xs dark:bg-gray-700 resize-none text-gray-900 dark:text-gray-100"
+              rows={2}
+            />
+          </div>
+
+          {/* Completeness */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-2 mb-1">
+              Completeness
+              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${scoreBadgeColor(completeness)}`}>{completeness}</span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={completeness}
+              onChange={(e) => setCompleteness(Number(e.target.value))}
+              className="w-full"
+            />
+            <textarea
+              value={completenessJustification}
+              onChange={(e) => setCompletenessJustification(e.target.value)}
+              placeholder="Justify the completeness score..."
+              className="w-full mt-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-xs dark:bg-gray-700 resize-none text-gray-900 dark:text-gray-100"
+              rows={2}
+            />
+          </div>
+
+          {/* Drift */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-2 mb-1">
+              Drift
+              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${scoreBadgeColor(drift, true)}`}>{drift}</span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={drift}
+              onChange={(e) => setDrift(Number(e.target.value))}
+              className="w-full"
+            />
+            <textarea
+              value={driftJustification}
+              onChange={(e) => setDriftJustification(e.target.value)}
+              placeholder="Justify the drift score..."
+              className="w-full mt-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-xs dark:bg-gray-700 resize-none text-gray-900 dark:text-gray-100"
+              rows={2}
+            />
+          </div>
+
+          {/* General Justification */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">General Justification</label>
+            <textarea
+              value={generalJustification}
+              onChange={(e) => setGeneralJustification(e.target.value)}
+              placeholder="Overall validation summary..."
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-xs dark:bg-gray-700 resize-none text-gray-900 dark:text-gray-100"
+              rows={3}
+            />
+          </div>
+
+          {/* Approve/Reject Toggle */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setVerdict('pass')}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                verdict === 'pass'
+                  ? 'bg-green-600 text-white ring-2 ring-green-300 dark:ring-green-700'
+                  : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
+              }`}
+            >
+              <CheckCircle size={16} />
+              Approve
+            </button>
+            <button
+              onClick={() => setVerdict('fail')}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                verdict === 'fail'
+                  ? 'bg-red-600 text-white ring-2 ring-red-300 dark:ring-red-700'
+                  : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
+              }`}
+            >
+              <XCircle size={16} />
+              Reject
+            </button>
+          </div>
+
+          {/* Submit */}
+          <button
+            onClick={handleSubmit}
+            disabled={submitting}
+            className={`w-full py-2.5 rounded-lg text-sm font-medium transition-colors ${
+              verdict === 'pass'
+                ? 'bg-green-600 hover:bg-green-700 text-white'
+                : 'bg-red-600 hover:bg-red-700 text-white'
+            } disabled:opacity-50`}
+          >
+            {submitting ? 'Submitting...' : `Submit Validation (${verdict === 'pass' ? 'Approve' : 'Reject'})`}
+          </button>
+        </div>
+      )}
+
+      {/* Section B: Validation History — always visible */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
+          <Clock size={14} />
+          Validation History
+        </h3>
+
+        {validations.length === 0 ? (
+          <div className="text-center py-8">
+            <Shield size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
+            <p className="text-sm text-gray-500 dark:text-gray-400">No validations yet</p>
+            {card.status !== 'validation' && (
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                Move this card to "Validation" status to submit a validation
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {[...validations].reverse().map((v) => {
+              const isExpanded = expandedId === v.id;
+              return (
+                <div key={v.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+                  <div
+                    className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/30"
+                    onClick={() => setExpandedId(isExpanded ? null : v.id)}
+                  >
+                    <div className={`w-2 h-2 rounded-full shrink-0 ${v.verdict === 'pass' ? 'bg-green-500' : 'bg-red-500'}`} />
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0 ${
+                      v.verdict === 'pass'
+                        ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                        : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                    }`}>
+                      {v.verdict === 'pass' ? 'SUCCESS' : 'FAILED'}
+                    </span>
+                    <span className="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">
+                      {v.summary || (v.verdict === 'pass' ? 'Validation passed' : 'Validation failed')}
+                    </span>
+                    <div className="flex items-center gap-2 shrink-0 text-[10px] text-gray-400">
+                      <span className="px-1 py-0.5 rounded bg-violet-100 text-violet-600 dark:bg-violet-900/30 dark:text-violet-300">
+                        {resolveActorName(v.evaluator_id, members)}
+                      </span>
+                      <span>{v.created_at ? new Date(v.created_at).toLocaleString() : ''}</span>
+                    </div>
+                    <span className="text-gray-400 shrink-0">
+                      {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </span>
+                  </div>
+
+                  {isExpanded && (
+                    <div className="px-4 py-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 space-y-3">
+                      {/* Score bars */}
+                      {[
+                        { label: 'Confidence', value: v.confidence, inverse: false },
+                        { label: 'Completeness', value: v.completeness, inverse: false },
+                        { label: 'Drift', value: v.drift, inverse: true },
+                      ].map((metric) => (
+                        <div key={metric.label}>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">{metric.label}</span>
+                            <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${scoreBadgeColor(metric.value, metric.inverse)}`}>
+                              {metric.value}
+                            </span>
+                          </div>
+                          <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${scoreColor(metric.value, metric.inverse)}`}
+                              style={{ width: `${metric.value}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+
+                      {/* Summary */}
+                      {v.summary && (
+                        <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Summary</p>
+                          <p className="text-sm text-gray-700 dark:text-gray-300">{v.summary}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>

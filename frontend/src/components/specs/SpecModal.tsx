@@ -46,12 +46,14 @@ import { MockupsTab } from './MockupsTab';
 import { RulesTab } from './RulesTab';
 import { ContractsTab } from './ContractsTab';
 import { TechnicalRequirementsTab } from './TechnicalRequirementsTab';
+import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
 import { SPEC_STATUSES, SPEC_STATUS_LABELS } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { RefinementModal } from '@/components/refinements/RefinementModal';
 import { EditableField } from '@/components/shared/EditableField';
+import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 
 interface SpecModalProps {
   specId: string;
@@ -60,12 +62,13 @@ interface SpecModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'mockups' | 'qa' | 'skills' | 'knowledge' | 'cards' | 'history';
+type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'mockups' | 'qa' | 'skills' | 'knowledge' | 'cards' | 'sprints' | 'history';
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
   review: <Clock size={14} />,
   approved: <CheckCircle2 size={14} />,
+  validated: <CheckCircle2 size={14} />,
   in_progress: <Settings size={14} />,
   done: <CheckCircle2 size={14} />,
   cancelled: <Ban size={14} />,
@@ -75,6 +78,7 @@ const STATUS_COLORS: Record<SpecStatus, string> = {
   draft: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
   review: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300',
   approved: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+  validated: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
   in_progress: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
   done: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
   cancelled: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
@@ -1031,6 +1035,63 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
    Skills Tab
    ============================================================ */
 
+function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<typeof useDashboardApi> }) {
+  const [details, setDetails] = useState<Record<string, any>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (sprints.length === 0) { setLoading(false); return; }
+    Promise.all(sprints.map(s => api.getSprint(s.id).catch(() => null)))
+      .then(results => {
+        const map: Record<string, any> = {};
+        for (const r of results) { if (r) map[r.id] = r; }
+        setDetails(map);
+      })
+      .finally(() => setLoading(false));
+  }, [sprints.length]);
+
+  if (loading) return <p className="text-sm text-gray-400 text-center py-6">Loading sprints...</p>;
+  if (sprints.length === 0) return <p className="text-sm text-gray-400 text-center py-6">No sprints linked to this spec</p>;
+
+  return (
+    <div className="space-y-3">
+      {sprints.map((sprint: any) => {
+        const detail = details[sprint.id];
+        const cards = detail?.cards || [];
+        const total = cards.length;
+        const done = cards.filter((c: any) => c.status === 'done').length;
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        return (
+          <div key={sprint.id} className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium text-white ${
+                  sprint.status === 'closed' ? 'bg-green-500' :
+                  sprint.status === 'active' ? 'bg-blue-500' :
+                  sprint.status === 'review' ? 'bg-amber-500' :
+                  sprint.status === 'cancelled' ? 'bg-red-500' : 'bg-gray-500'
+                }`}>{sprint.status}</span>
+                <span className="text-sm font-medium text-gray-900 dark:text-white">{sprint.title}</span>
+              </div>
+              <span className="text-xs font-bold text-gray-600 dark:text-gray-300">{pct}%</span>
+            </div>
+            <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2 mb-1">
+              <div
+                className={`h-2 rounded-full transition-all ${pct === 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : 'bg-amber-500'}`}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between mt-1">
+              <p className="text-[10px] text-gray-400">{done}/{total} cards done · v{sprint.version}</p>
+              {sprint.objective && <p className="text-[10px] text-gray-500 truncate max-w-[60%]">{sprint.objective}</p>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SkillsTab({ specId }: { specId: string }) {
   const api = useDashboardApi();
   const [skills, setSkills] = useState<SpecSkill[]>([]);
@@ -1292,6 +1353,64 @@ function KnowledgeTab({ specId }: { specId: string }) {
 }
 
 /* ============================================================
+   Validation Error Display — parses gate errors into readable items
+   ============================================================ */
+
+function ValidationErrorDisplay({ error }: { error: string }) {
+  // Try to extract structured info from the error message
+  // Backend returns: "Cannot validate spec: N test scenario(s)... REQUIRED ACTION: ..."
+  // Or Pydantic: [{"type":"enum","loc":["body","status"],"msg":"..."}]
+
+  // Split on "REQUIRED ACTION:" to separate issue from fix
+  const reqIdx = error.indexOf('REQUIRED ACTION:');
+  const issue = reqIdx > 0 ? error.slice(0, reqIdx).trim() : error;
+  const action = reqIdx > 0 ? error.slice(reqIdx + 16).trim() : null;
+
+  // Try to detect gate type from keywords
+  let gateType = 'unknown';
+  if (error.includes('test scenario')) { gateType = 'Test Coverage'; }
+  else if (error.includes('business rule')) { gateType = 'Rules Coverage'; }
+  else if (error.includes('technical requirement') || error.includes('TR')) { gateType = 'TRs Coverage'; }
+  else if (error.includes('api contract') || error.includes('contract')) { gateType = 'Contract Coverage'; }
+  else if (error.includes('evaluation') || error.includes('approval')) { gateType = 'Qualitative Validation'; }
+  else if (error.includes('state machine') || error.includes('transition')) { gateType = 'State Transition'; }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        The following gate must be satisfied before the spec can be validated:
+      </p>
+
+      {/* Gate type badge */}
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 font-semibold uppercase tracking-wide">
+          {gateType}
+        </span>
+      </div>
+
+      {/* Issue description */}
+      <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+        <p className="text-sm text-red-800 dark:text-red-200 leading-relaxed">
+          {issue}
+        </p>
+      </div>
+
+      {/* Required action */}
+      {action && (
+        <div className="bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+          <p className="text-[10px] font-semibold text-amber-700 dark:text-amber-300 uppercase tracking-wide mb-1">
+            Required Action
+          </p>
+          <p className="text-sm text-amber-800 dark:text-amber-200 leading-relaxed">
+            {action}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    Main SpecModal
    ============================================================ */
 
@@ -1303,6 +1422,11 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   const [movingTo, setMovingTo] = useState<SpecStatus | null>(null);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [expanded, setExpanded] = useState(false);
+  const [showValidateModal, setShowValidateModal] = useState(false);
+  const [validateResult, setValidateResult] = useState<{ success: boolean; error: string | null }>({ success: false, error: null });
+  const [validating, setValidating] = useState(false);
+  const [sprintSuggestions, setSprintSuggestions] = useState<any[] | null>(null);
+  const [linkedSprints, setLinkedSprints] = useState<any[]>([]);
 
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
@@ -1339,11 +1463,44 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           setParentRefinement({ id: refinement.id, title: refinement.title, version: refinement.version });
         } catch { setParentRefinement(null); }
       } else { setParentRefinement(null); }
+      // Load linked sprints
+      try {
+        const sprints = await api.listSprints(data.board_id, data.id);
+        setLinkedSprints(sprints);
+      } catch { setLinkedSprints([]); }
     } catch { toast.error('Failed to load spec'); } finally { setLoading(false); }
   };
 
   const handleMoveSpec = async (status: SpecStatus) => {
     if (!spec) return;
+    // Intercept approved→validated: show gate validation modal
+    if (status === 'validated' && spec.status === 'approved') {
+      setShowValidateModal(true);
+      setValidateResult({ success: false, error: null });
+      setValidating(true);
+      try {
+        const updated = await api.moveSpec(specId, { status });
+        setSpec(updated);
+        onChanged();
+        setValidateResult({ success: true, error: null });
+        // After successful validation, check if sprint suggestion makes sense
+        if (updated.cards && updated.cards.length >= 6) {
+          try {
+            const result = await api.suggestSprints(updated.board_id, specId);
+            if (result.suggestions && result.suggestions.length > 1) {
+              setSprintSuggestions(result.suggestions);
+            }
+          } catch {
+            // Suggestion is optional, don't block on failure
+          }
+        }
+      } catch (err: any) {
+        setValidateResult({ success: false, error: err?.message || 'Validation failed' });
+      } finally {
+        setValidating(false);
+      }
+      return;
+    }
     setMovingTo(status);
     try {
       const updated = await api.moveSpec(specId, { status });
@@ -1368,8 +1525,9 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     const flow: Record<SpecStatus, SpecStatus[]> = {
       draft: ['review', 'cancelled'],
       review: ['approved', 'draft', 'cancelled'],
-      approved: ['in_progress', 'draft', 'cancelled'],
-      in_progress: ['done', 'cancelled'],
+      approved: ['validated', 'review', 'cancelled'],
+      validated: ['in_progress', 'approved', 'cancelled'],
+      in_progress: ['done', 'validated', 'cancelled'],
       done: ['draft'],
       cancelled: ['draft'],
     };
@@ -1402,6 +1560,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     { id: 'skills', label: 'Skills', icon: <Wrench size={14} />, count: spec.skills?.length || 0 },
     { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={14} />, count: spec.knowledge_bases?.length || 0 },
     { id: 'cards', label: 'Cards', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
+    { id: 'sprints', label: 'Sprints', icon: <Layers size={14} />, count: linkedSprints.length },
     { id: 'history', label: 'Activity', icon: <History size={14} /> },
   ];
 
@@ -1443,20 +1602,22 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
         {nextStatuses.length > 0 && (
           <div className="px-6 py-2.5 border-b border-gray-100 dark:border-gray-700/50 flex items-center gap-2 flex-wrap">
             <span className="text-xs text-gray-500 dark:text-gray-400">Move to:</span>
-            {nextStatuses.map((status) => (
-              <button
-                key={status}
-                onClick={() => handleMoveSpec(status)}
-                disabled={movingTo !== null}
-                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-colors
-                  ${STATUS_COLORS[status]} hover:ring-2 hover:ring-offset-1 hover:ring-gray-300 dark:hover:ring-gray-600
-                  disabled:opacity-50`}
-              >
-                <ChevronRight size={12} />
-                {SPEC_STATUS_LABELS[status]}
-                {movingTo === status && '...'}
-              </button>
-            ))}
+            {nextStatuses
+              .filter((s) => !(s === 'validated' && spec.status === 'approved'))
+              .map((status) => (
+                <button
+                  key={status}
+                  onClick={() => handleMoveSpec(status)}
+                  disabled={movingTo !== null}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-colors
+                    ${STATUS_COLORS[status]} hover:ring-2 hover:ring-offset-1 hover:ring-gray-300 dark:hover:ring-gray-600
+                    disabled:opacity-50`}
+                >
+                  <ChevronRight size={12} />
+                  {SPEC_STATUS_LABELS[status]}
+                  {movingTo === status && '...'}
+                </button>
+              ))}
           </div>
         )}
 
@@ -1598,6 +1759,33 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                   ))}
                 </div>
               )}
+
+              {/* Validation Gate Override */}
+              <ValidationGateOverride
+                title="Validation Gate"
+                requireValue={(spec as any).require_task_validation ?? null}
+                minConfidence={(spec as any).validation_min_confidence ?? null}
+                minCompleteness={(spec as any).validation_min_completeness ?? null}
+                maxDrift={(spec as any).validation_max_drift ?? null}
+                parentLabel="Board default"
+                onUpdate={async (patch) => {
+                  try {
+                    const updated = await api.updateSpec(specId, patch as any);
+                    setSpec(updated);
+                  } catch { toast.error('Failed to update validation gate'); }
+                }}
+              />
+
+              {/* Sprints summary — details in Sprints tab */}
+              {linkedSprints.length > 0 && (
+                <button
+                  onClick={() => setActiveTab('sprints')}
+                  className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
+                >
+                  <Layers size={12} />
+                  {linkedSprints.length} sprint{linkedSprints.length > 1 ? 's' : ''} linked — view details
+                </button>
+              )}
             </div>
           )}
 
@@ -1644,6 +1832,21 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                   setSpec(updated);
                 } catch { toast.error('Failed to update API contracts'); }
               }}
+              onSpecUpdate={async (data) => {
+                try {
+                  const updated = await api.updateSpec(specId, data as any);
+                  setSpec(updated);
+                } catch { toast.error('Failed to update spec'); }
+              }}
+              specCards={spec.cards || []}
+              onLinkTask={async (contractId, cardId) => {
+                const updated = await api.linkTaskToSpecItem(specId, 'api_contracts', contractId, cardId);
+                setSpec(updated);
+              }}
+              onUnlinkTask={async (contractId, cardId) => {
+                const updated = await api.unlinkTaskFromSpecItem(specId, 'api_contracts', contractId, cardId);
+                setSpec(updated);
+              }}
             />
           )}
           {activeTab === 'trs' && spec && (
@@ -1672,11 +1875,25 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
               }}
             />
           )}
-          {activeTab === 'mockups' && spec && <MockupsTab screenMockups={spec.screen_mockups} expanded={expanded} />}
+          {activeTab === 'mockups' && spec && (
+            <MockupsTab
+              screenMockups={spec.screen_mockups}
+              expanded={expanded}
+              onUpdate={async (mockups) => {
+                const updated = await api.updateSpec(specId, { screen_mockups: mockups });
+                setSpec(updated);
+              }}
+            />
+          )}
           {activeTab === 'history' && <HistoryTab specId={specId} />}
           {activeTab === 'qa' && <QATab specId={specId} mentionables={mentionables} />}
           {activeTab === 'skills' && <SkillsTab specId={specId} />}
           {activeTab === 'knowledge' && <KnowledgeTab specId={specId} />}
+
+          {activeTab === 'sprints' && (
+            <SpecSprintsTab sprints={linkedSprints} api={api} />
+          )}
+
 
           {activeTab === 'cards' && (
             <div className="space-y-2">
@@ -1705,7 +1922,40 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           <button onClick={handleDelete} className="text-sm text-red-500 hover:text-red-700 dark:hover:text-red-400">
             Delete spec
           </button>
-          <button onClick={onClose} className="btn btn-secondary">Close</button>
+          <div className="flex items-center gap-2">
+            {spec.status === 'approved' && (
+              <button
+                onClick={() => handleMoveSpec('validated' as SpecStatus)}
+                disabled={validating}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-colors
+                  bg-purple-500 text-white hover:bg-purple-600 shadow-sm hover:shadow-md
+                  disabled:opacity-50"
+              >
+                <CheckCircle2 size={16} />
+                {validating ? 'Validating...' : 'Validate'}
+              </button>
+            )}
+            {['validated', 'in_progress'].includes(spec.status) && (spec.cards?.length || 0) >= 4 && (
+              <button
+                onClick={async () => {
+                  try {
+                    const result = await api.suggestSprints(spec.board_id, specId);
+                    if (result.suggestions?.length > 1) {
+                      setSprintSuggestions(result.suggestions);
+                    } else {
+                      toast('Not enough tasks to split into sprints', { icon: 'ℹ️' });
+                    }
+                  } catch { toast.error('Failed to generate suggestions'); }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                  bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
+              >
+                <Layers size={14} />
+                Suggest Sprints
+              </button>
+            )}
+            <button onClick={onClose} className="btn btn-secondary">Close</button>
+          </div>
         </div>
       </div>
 
@@ -1725,6 +1975,72 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           onClose={() => setViewingRefinementId(null)}
           onChanged={loadSpec}
         />
+      )}
+
+      {/* Sprint Suggestion Modal */}
+      {sprintSuggestions && spec && (
+        <SprintSuggestionModal
+          boardId={spec.board_id}
+          specId={specId}
+          suggestions={sprintSuggestions}
+          onClose={() => setSprintSuggestions(null)}
+          onSkip={() => setSprintSuggestions(null)}
+          onCreated={() => { setSprintSuggestions(null); loadSpec(); }}
+        />
+      )}
+
+      {/* Validation Gate Results Modal */}
+      {showValidateModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={() => !validating && setShowValidateModal(false)}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              {validating ? (
+                <>
+                  <RefreshCw size={20} className="text-purple-500 animate-spin" />
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Running validation gates...</h3>
+                </>
+              ) : validateResult.success ? (
+                <>
+                  <CheckCircle2 size={20} className="text-green-500" />
+                  <h3 className="text-lg font-semibold text-green-700 dark:text-green-400">Validation Passed</h3>
+                </>
+              ) : (
+                <>
+                  <Ban size={20} className="text-red-500" />
+                  <h3 className="text-lg font-semibold text-red-700 dark:text-red-400">Validation Failed</h3>
+                </>
+              )}
+            </div>
+
+            {!validating && (
+              <div className="space-y-3">
+                {validateResult.success ? (
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    All coverage gates passed. Spec has been moved to <span className="font-semibold text-purple-600">Validated</span>.
+                  </p>
+                ) : (
+                  <ValidationErrorDisplay error={validateResult.error || ''} />
+                )}
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    onClick={() => setShowValidateModal(false)}
+                    className="btn btn-secondary text-sm"
+                  >
+                    Close
+                  </button>
+                  {!validateResult.success && (
+                    <button
+                      onClick={() => { setShowValidateModal(false); setActiveTab('tests'); }}
+                      className="btn btn-primary text-sm"
+                    >
+                      Review Coverage
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

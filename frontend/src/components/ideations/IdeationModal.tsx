@@ -1074,7 +1074,16 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
             </div>
           )}
 
-          {activeTab === 'mockups' && <MockupsTab screenMockups={ideation.screen_mockups} expanded={expanded} />}
+          {activeTab === 'mockups' && (
+            <MockupsTab
+              screenMockups={ideation.screen_mockups}
+              expanded={expanded}
+              onUpdate={async (mockups) => {
+                await api.updateIdeation(ideationId, { screen_mockups: mockups });
+                await loadIdeation();
+              }}
+            />
+          )}
           {activeTab === 'qa' && <QATab ideationId={ideationId} mentionables={mentionables} />}
           {activeTab === 'versions' && <VersionsTab ideationId={ideationId} />}
           {activeTab === 'history' && <HistoryTab ideationId={ideationId} />}

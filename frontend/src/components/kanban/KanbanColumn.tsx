@@ -24,6 +24,7 @@ const columnColors: Record<CardStatus, string> = {
   not_started: 'border-t-gray-400',
   started: 'border-t-blue-500',
   in_progress: 'border-t-amber-500',
+  validation: 'border-t-violet-500',
   on_hold: 'border-t-red-500',
   done: 'border-t-green-500',
   cancelled: 'border-t-gray-500',

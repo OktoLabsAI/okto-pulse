@@ -7,6 +7,7 @@ export type CardStatus =
   | 'not_started'
   | 'started'
   | 'in_progress'
+  | 'validation'
   | 'on_hold'
   | 'done'
   | 'cancelled';
@@ -15,6 +16,7 @@ export const CARD_STATUSES: CardStatus[] = [
   'not_started',
   'started',
   'in_progress',
+  'validation',
   'on_hold',
   'done',
   'cancelled',
@@ -24,6 +26,7 @@ export const STATUS_LABELS: Record<CardStatus, string> = {
   not_started: 'Not Started',
   started: 'Started',
   in_progress: 'In Progress',
+  validation: 'Validation',
   on_hold: 'On Hold',
   done: 'Done',
   cancelled: 'Cancelled',
@@ -55,7 +58,7 @@ export const PRIORITY_COLORS: Record<CardPriority, { badge: string; borderColor:
 };
 
 // Card type
-export type CardType = 'normal' | 'bug';
+export type CardType = 'normal' | 'bug' | 'test';
 
 // Bug severity
 export type BugSeverity = 'critical' | 'major' | 'minor';
@@ -124,16 +127,17 @@ export interface Comment {
 }
 
 // Spec status
-export type SpecStatus = 'draft' | 'review' | 'approved' | 'in_progress' | 'done' | 'cancelled';
+export type SpecStatus = 'draft' | 'review' | 'approved' | 'validated' | 'in_progress' | 'done' | 'cancelled';
 
 export const SPEC_STATUSES: SpecStatus[] = [
-  'draft', 'review', 'approved', 'in_progress', 'done', 'cancelled',
+  'draft', 'review', 'approved', 'validated', 'in_progress', 'done', 'cancelled',
 ];
 
 export const SPEC_STATUS_LABELS: Record<SpecStatus, string> = {
   draft: 'Draft',
   review: 'Review',
   approved: 'Approved',
+  validated: 'Validated',
   in_progress: 'In Progress',
   done: 'Done',
   cancelled: 'Cancelled',
@@ -146,6 +150,110 @@ export interface CardSummaryForSpec {
   status: CardStatus;
   priority: CardPriority;
   assignee_id: string | null;
+  card_type?: CardType;
+  sprint_id?: string | null;
+}
+
+// Sprint Status
+export type SprintStatus = 'draft' | 'active' | 'review' | 'closed' | 'cancelled';
+
+export const SPRINT_STATUSES: SprintStatus[] = [
+  'draft', 'active', 'review', 'closed', 'cancelled',
+];
+
+export const SPRINT_STATUS_LABELS: Record<SprintStatus, string> = {
+  draft: 'Draft',
+  active: 'Active',
+  review: 'Review',
+  closed: 'Closed',
+  cancelled: 'Cancelled',
+};
+
+export const SPRINT_STATUS_COLORS: Record<SprintStatus, string> = {
+  draft: 'bg-gray-500',
+  active: 'bg-blue-500',
+  review: 'bg-amber-500',
+  closed: 'bg-green-500',
+  cancelled: 'bg-red-500',
+};
+
+export interface Sprint {
+  id: string;
+  spec_id: string;
+  board_id: string;
+  title: string;
+  description: string | null;
+  objective: string | null;
+  expected_outcome: string | null;
+  status: SprintStatus;
+  spec_version: number;
+  start_date: string | null;
+  end_date: string | null;
+  test_scenario_ids: string[] | null;
+  business_rule_ids: string[] | null;
+  evaluations: any[] | null;
+  skip_test_coverage: boolean;
+  skip_rules_coverage: boolean;
+  skip_qualitative_validation: boolean;
+  validation_threshold: number | null;
+  version: number;
+  labels: string[] | null;
+  archived: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  cards: CardSummaryForSpec[];
+  qa_items: SprintQAItem[];
+}
+
+export interface SprintSummary {
+  id: string;
+  spec_id: string;
+  board_id: string;
+  title: string;
+  description: string | null;
+  status: SprintStatus;
+  spec_version: number;
+  start_date: string | null;
+  end_date: string | null;
+  test_scenario_ids: string[] | null;
+  business_rule_ids: string[] | null;
+  version: number;
+  labels: string[] | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  archived: boolean;
+}
+
+export interface SprintQAItem {
+  id: string;
+  sprint_id: string;
+  question: string;
+  question_type: string;
+  choices: any[] | null;
+  allow_free_text: boolean;
+  answer: string | null;
+  selected: string[] | null;
+  asked_by: string;
+  answered_by: string | null;
+  created_at: string;
+  answered_at: string | null;
+}
+
+export interface CreateSprintRequest {
+  title: string;
+  description?: string;
+  spec_id: string;
+  test_scenario_ids?: string[];
+  business_rule_ids?: string[];
+  start_date?: string;
+  end_date?: string;
+  labels?: string[];
+}
+
+export interface MoveSprintRequest {
+  status: SprintStatus;
 }
 
 // Ideation Status
@@ -401,6 +509,16 @@ export interface ScreenMockup {
   order: number;
 }
 
+export interface CardKnowledgeBase {
+  id: string;
+  title: string;
+  description: string | null;
+  content: string;
+  mime_type: string;
+  source: 'manual' | 'spec';
+  source_id?: string;
+}
+
 // Spec History
 export interface SpecHistoryChange {
   field: string;
@@ -514,6 +632,9 @@ export interface Spec {
   screen_mockups: ScreenMockup[] | null;
   skip_test_coverage: boolean;
   skip_rules_coverage?: boolean;
+  skip_contract_coverage?: boolean;
+  skip_qualitative_validation?: boolean;
+  validation_threshold?: number;
   archived?: boolean;
   pre_archive_status?: string | null;
   status: SpecStatus;
@@ -620,6 +741,7 @@ export interface Card {
   id: string;
   board_id: string;
   spec_id: string | null;
+  sprint_id: string | null;
   title: string;
   description: string | null;
   details: string | null;
@@ -634,6 +756,7 @@ export interface Card {
   labels: string[] | null;
   test_scenario_ids: string[] | null;
   screen_mockups: ScreenMockup[] | null;
+  knowledge_bases: CardKnowledgeBase[] | null;
   conclusions: ConclusionEntry[] | null;
   attachments: Attachment[];
   qa_items: QAItem[];
@@ -647,6 +770,19 @@ export interface Card {
   steps_to_reproduce?: string | null;
   action_plan?: string | null;
   linked_test_task_ids?: string[] | null;
+  validations?: ValidationEntry[] | null;
+}
+
+// Validation entry (from backend validation lifecycle)
+export interface ValidationEntry {
+  id: string;
+  verdict: 'pass' | 'fail';
+  confidence: number;
+  completeness: number;
+  drift: number;
+  summary: string | null;
+  evaluator_id: string;
+  created_at: string;
 }
 
 // Card for column view (simplified)
@@ -667,12 +803,23 @@ export interface CardSummary {
   labels: string[] | null;
   test_scenario_ids: string[] | null;
   conclusions: ConclusionEntry[] | null;
+  validations?: ValidationEntry[] | null;
   // Bug card fields (for kanban display — optional for backwards compat)
   card_type?: CardType;
   origin_task_id?: string | null;
   severity?: BugSeverity | null;
   linked_test_task_ids?: string[] | null;
   archived?: boolean;
+}
+
+// Permission Preset
+export interface PermissionPreset {
+  id: string;
+  name: string;
+  description: string | null;
+  is_builtin: boolean;
+  flags: Record<string, Record<string, Record<string, boolean>>>;
+  created_at: string;
 }
 
 // Agent (global, always includes api_key)
@@ -684,6 +831,8 @@ export interface Agent {
   api_key: string;
   is_active: boolean;
   permissions: string[] | null;
+  permission_flags: Record<string, Record<string, Record<string, boolean>>> | null;
+  preset_id: string | null;
   created_by: string;
   created_at: string;
   last_used_at: string | null;
@@ -715,6 +864,11 @@ export interface BoardSettings {
   skip_test_coverage_global: boolean;
   skip_rules_coverage_global: boolean;
   skip_trs_coverage_global: boolean;
+  skip_contract_coverage_global: boolean;
+  require_task_validation: boolean;
+  min_confidence: number;
+  min_completeness: number;
+  max_drift: number;
 }
 
 // Guideline types
@@ -804,8 +958,10 @@ export interface UpdateCardRequest {
   assignee_id?: string;
   due_date?: string;
   labels?: string[];
+  sprint_id?: string | null;
   test_scenario_ids?: string[];
   screen_mockups?: ScreenMockup[];
+  knowledge_bases?: CardKnowledgeBase[];
   // Bug card fields
   severity?: BugSeverity;
   expected_behavior?: string;
@@ -840,6 +996,8 @@ export interface CreateAgentRequest {
   description?: string;
   objective?: string;
   permissions?: string[];
+  preset_id?: string;
+  permission_flags?: Record<string, Record<string, Record<string, boolean>>>;
 }
 
 export interface UpdateAgentRequest {
@@ -848,6 +1006,8 @@ export interface UpdateAgentRequest {
   objective?: string;
   is_active?: boolean;
   permissions?: string[];
+  preset_id?: string;
+  permission_flags?: Record<string, Record<string, Record<string, boolean>>>;
 }
 
 export interface CreateQARequest {
@@ -921,6 +1081,9 @@ export interface UpdateSpecRequest {
   api_contracts?: ApiContract[];
   screen_mockups?: ScreenMockup[];
   skip_test_coverage?: boolean;
+  skip_contract_coverage?: boolean;
+  skip_qualitative_validation?: boolean;
+  validation_threshold?: number;
   assignee_id?: string;
   labels?: string[];
 }

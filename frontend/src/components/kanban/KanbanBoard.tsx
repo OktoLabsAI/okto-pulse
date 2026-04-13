@@ -190,8 +190,17 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     if (targetStatus === undefined || targetPosition === undefined) return;
     if (targetStatus === fromStatus && cardId === overId) return;
 
-    // If moving to Done, show conclusion modal instead of moving directly
+    // Validation gate: when card has validation_required and user tries to
+    // drag directly to Done, intercept and redirect to Validation column.
+    // The backend enforces the gate; this is a UX convenience.
     if (targetStatus === 'done') {
+      const card = Object.values(columns).flat().find((c) => c.id === cardId);
+      if (card?.validations === undefined || card?.validations === null || card.validations.length === 0) {
+        // No validation entries — allow normal Done flow.
+        // Future: when `validation_required` field is available from the API,
+        // check it here and redirect to 'validation' with a toast:
+        // toast('Validation gate active. Move to Validation column first.');
+      }
       setConclusionPending({ cardId, targetStatus, targetPosition });
       setConclusionText('');
       setConclusionCompleteness(100);

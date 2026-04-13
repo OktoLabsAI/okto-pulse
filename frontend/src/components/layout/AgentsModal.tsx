@@ -7,7 +7,9 @@ import { X, Plus, Copy, RefreshCw, Trash2, Key, FileJson, Terminal, Shield, Chev
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
-import type { Agent, AgentSummary } from '@/types';
+import { PermissionFlagsEditor, PermissionDiffView } from '@/components/permissions';
+import type { FlagsMap } from '@/components/permissions';
+import type { Agent, AgentSummary, PermissionPreset } from '@/types';
 
 type McpFormat = 'claude' | 'cursor' | 'vscode' | 'windsurf' | 'claude-cli' | 'okto-cli';
 type Tab = 'my-agents' | 'board-access';
@@ -56,15 +58,25 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   const [newAgentName, setNewAgentName] = useState('');
   const [newAgentDescription, setNewAgentDescription] = useState('');
   const [newAgentObjective, setNewAgentObjective] = useState('');
+  const [newAgentPresetId, setNewAgentPresetId] = useState('');
   const [expandedAgentId, setExpandedAgentId] = useState<string | null>(null);
   const [grantAgentId, setGrantAgentId] = useState('');
+  const [presets, setPresets] = useState<PermissionPreset[]>([]);
 
-  // Load my agents on open
+  // Load my agents and presets on open
   useEffect(() => {
     if (isOpen) {
       loadMyAgents();
+      loadPresets();
     }
   }, [isOpen]);
+
+  const loadPresets = async () => {
+    try {
+      const data = await api.listPresets();
+      setPresets(data);
+    } catch { /* ignore */ }
+  };
 
   // Load board agents when switching to board-access tab
   useEffect(() => {
@@ -107,12 +119,14 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
         name: newAgentName.trim(),
         description: newAgentDescription.trim() || undefined,
         objective: newAgentObjective.trim() || undefined,
+        preset_id: newAgentPresetId || undefined,
       });
       setMyAgents((prev) => [...prev, agent]);
       setExpandedAgentId(agent.id);
       setNewAgentName('');
       setNewAgentDescription('');
       setNewAgentObjective('');
+      setNewAgentPresetId('');
       setShowCreateForm(false);
       toast.success('Agent created!');
     } catch {
@@ -256,6 +270,21 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                       placeholder="E.g.: Review PRs and create feedback cards"
                     />
                   </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">Permission Preset</label>
+                    <select
+                      value={newAgentPresetId}
+                      onChange={(e) => setNewAgentPresetId(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 text-gray-700 dark:text-gray-300 rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                    >
+                      <option value="">Full Control (default)</option>
+                      {presets.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}{p.is_builtin ? ' (built-in)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <div className="flex gap-2">
                     <button type="submit" className="btn btn-primary">
                       Create Agent
@@ -357,6 +386,46 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                               ID: {agent.id} • {agent.is_active ? 'Active' : 'Inactive'}
                             </p>
 
+                            {/* Permissions */}
+                            <div>
+                              <label className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Permissions</label>
+                              <div className="mt-1 space-y-2">
+                                <div className="flex items-center gap-2">
+                                  <select
+                                    value={agent.preset_id || ''}
+                                    onChange={async (e) => {
+                                      try {
+                                        await api.updateAgent(agent.id, { preset_id: e.target.value || undefined } as any);
+                                        await loadMyAgents();
+                                        toast.success('Preset updated');
+                                      } catch { toast.error('Failed to update preset'); }
+                                    }}
+                                    className="flex-1 px-2 py-1.5 border border-gray-300 text-gray-700 dark:text-gray-300 rounded text-xs dark:bg-gray-700 dark:border-gray-600"
+                                  >
+                                    <option value="">Full Control</option>
+                                    {presets.map((p) => (
+                                      <option key={p.id} value={p.id}>
+                                        {p.name}{p.is_builtin ? ' (built-in)' : ''}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                {/* Permission flags editor */}
+                                {agent.permission_flags && (
+                                  <PermissionFlagsEditor
+                                    flags={agent.permission_flags as FlagsMap}
+                                    onChange={async (newFlags) => {
+                                      try {
+                                        await api.updateAgent(agent.id, { permission_flags: newFlags } as any);
+                                        await loadMyAgents();
+                                        toast.success('Permissions updated');
+                                      } catch { toast.error('Failed to update'); }
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            </div>
+
                             {/* MCP Config buttons */}
                             <div>
                               <label className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">MCP Configuration</label>
@@ -451,28 +520,105 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {boardAgents.map((agent) => (
-                    <div
-                      key={agent.id}
-                      className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-lg"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-medium text-gray-900 dark:text-gray-100">{agent.name}</h4>
-                        {agent.description && (
-                          <p className="text-sm text-gray-500 dark:text-gray-400 truncate">{agent.description}</p>
-                        )}
-                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
-                          {agent.is_active ? 'Active' : 'Inactive'}
-                        </p>
+                  {boardAgents.map((agent) => {
+                    const isBoardExpanded = expandedAgentId === `board-${agent.id}`;
+                    return (
+                      <div key={agent.id} className="bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-lg overflow-hidden">
+                        <div className="flex items-center justify-between p-3">
+                          <button
+                            onClick={() => setExpandedAgentId(isBoardExpanded ? null : `board-${agent.id}`)}
+                            className="flex-1 min-w-0 text-left flex items-center gap-2"
+                          >
+                            <ChevronRight size={14} className={`shrink-0 transition-transform ${isBoardExpanded ? 'rotate-90' : ''}`} />
+                            <div className="min-w-0">
+                              <h4 className="font-medium text-gray-900 dark:text-gray-100">{agent.name}</h4>
+                              {agent.description && (
+                                <p className="text-sm text-gray-500 dark:text-gray-400 truncate">{agent.description}</p>
+                              )}
+                              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                                {agent.is_active ? 'Active' : 'Inactive'}
+                              </p>
+                            </div>
+                          </button>
+                          <button
+                            onClick={() => handleRevokeAccess(agent.id)}
+                            className="px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded border border-red-200 dark:border-red-800 shrink-0"
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                        {isBoardExpanded && (() => {
+                          const myAgent = myAgents.find((a) => a.id === agent.id);
+                          const baseFlags = myAgent?.permission_flags as FlagsMap | undefined;
+                          return (
+                            <div className="px-3 pb-3 border-t border-gray-200 dark:border-gray-700 space-y-2">
+                              <div className="mt-2">
+                                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                                  Permission Overrides (ceiling model)
+                                </label>
+                                <p className="text-[10px] text-gray-400 mt-0.5 mb-1.5">
+                                  Restrict agent permissions on this board. Overrides can only remove permissions, never add.
+                                </p>
+                                <div className="flex items-center gap-2 mb-2">
+                                  <select
+                                    defaultValue=""
+                                    onChange={async (e) => {
+                                      if (!currentBoard) return;
+                                      const presetId = e.target.value;
+                                      if (!presetId) {
+                                        try {
+                                          await api.updateAgentBoardOverrides(agent.id, currentBoard.id, null);
+                                          toast.success('Overrides cleared');
+                                          loadBoardAgents();
+                                        } catch { toast.error('Failed'); }
+                                        return;
+                                      }
+                                      const preset = presets.find((p) => p.id === presetId);
+                                      if (preset) {
+                                        try {
+                                          await api.updateAgentBoardOverrides(agent.id, currentBoard.id, preset.flags);
+                                          toast.success(`Overrides set to ${preset.name}`);
+                                          loadBoardAgents();
+                                        } catch { toast.error('Failed'); }
+                                      }
+                                    }}
+                                    className="flex-1 px-2 py-1.5 border border-gray-300 text-gray-700 dark:text-gray-300 rounded text-xs dark:bg-gray-700 dark:border-gray-600"
+                                  >
+                                    <option value="">No overrides (full agent permissions)</option>
+                                    {presets.map((p) => (
+                                      <option key={p.id} value={p.id}>
+                                        Restrict to: {p.name}{p.is_builtin ? ' (built-in)' : ''}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    onClick={async () => {
+                                      if (!currentBoard) return;
+                                      try {
+                                        await api.updateAgentBoardOverrides(agent.id, currentBoard.id, null);
+                                        toast.success('Overrides cleared');
+                                        loadBoardAgents();
+                                      } catch { toast.error('Failed'); }
+                                    }}
+                                    className="text-[10px] px-2 py-1 rounded bg-gray-200 text-gray-600 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-400 shrink-0"
+                                  >
+                                    Clear
+                                  </button>
+                                </div>
+                                {/* Diff view when base flags available */}
+                                {baseFlags && (
+                                  <PermissionDiffView
+                                    baseFlags={baseFlags}
+                                    effectiveFlags={baseFlags}
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
-                      <button
-                        onClick={() => handleRevokeAccess(agent.id)}
-                        className="px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded border border-red-200 dark:border-red-800"
-                      >
-                        Revoke
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </>

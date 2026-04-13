@@ -643,6 +643,13 @@ export function useDashboardApi() {
       await apiClient.fetch(`/agents/${agentId}/boards/${boardId}`, { method: 'DELETE' });
     },
 
+    async updateAgentBoardOverrides(agentId: string, boardId: string, overrides: Record<string, any> | null): Promise<any> {
+      return apiClient.fetchJson(`/agents/${agentId}/boards/${boardId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ permission_overrides: overrides }),
+      });
+    },
+
     // ==================== ATTACHMENTS ====================
 
     async uploadAttachment(boardId: string, cardId: string, file: File): Promise<Attachment> {
@@ -903,6 +910,103 @@ export function useDashboardApi() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+    },
+    // ==================== PERMISSION PRESETS ====================
+
+    async listPresets(): Promise<any[]> {
+      return apiClient.fetchJson<any[]>('/presets');
+    },
+
+    async getPreset(presetId: string): Promise<any> {
+      return apiClient.fetchJson(`/presets/${presetId}`);
+    },
+
+    async createPreset(data: { name: string; description?: string; flags: Record<string, any> }): Promise<any> {
+      return apiClient.fetchJson('/presets', { method: 'POST', body: JSON.stringify(data) });
+    },
+
+    async updatePreset(presetId: string, data: { name?: string; description?: string; flags?: Record<string, any> }): Promise<any> {
+      return apiClient.fetchJson(`/presets/${presetId}`, { method: 'PUT', body: JSON.stringify(data) });
+    },
+
+    async deletePreset(presetId: string): Promise<void> {
+      await apiClient.fetch(`/presets/${presetId}`, { method: 'DELETE' });
+    },
+
+    // ---- Sprints ----
+    async listSprints(boardId: string, specId: string): Promise<any[]> {
+      return apiClient.fetchJson(`/boards/${boardId}/specs/${specId}/sprints`);
+    },
+
+    async listBoardSprints(boardId: string, status?: string, specId?: string, includeArchived?: boolean): Promise<any[]> {
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      if (specId) params.set('spec_id', specId);
+      if (includeArchived) params.set('include_archived', 'true');
+      const qs = params.toString();
+      return apiClient.fetchJson(`/boards/${boardId}/sprints${qs ? `?${qs}` : ''}`);
+    },
+
+    async createSprint(boardId: string, specId: string, data: any): Promise<any> {
+      return apiClient.fetchJson(`/boards/${boardId}/specs/${specId}/sprints`, {
+        method: 'POST', body: JSON.stringify(data),
+      });
+    },
+
+    async assignTasksToSprint(sprintId: string, cardIds: string[]): Promise<any> {
+      return apiClient.fetchJson(`/sprints/${sprintId}/assign-tasks`, {
+        method: 'POST', body: JSON.stringify({ card_ids: cardIds }),
+      });
+    },
+
+    async unassignTasksFromSprint(sprintId: string, cardIds: string[]): Promise<any> {
+      return apiClient.fetchJson(`/sprints/${sprintId}/unassign-tasks`, {
+        method: 'POST', body: JSON.stringify({ card_ids: cardIds }),
+      });
+    },
+
+    async getSprint(sprintId: string): Promise<any> {
+      return apiClient.fetchJson(`/sprints/${sprintId}`);
+    },
+
+    async updateSprint(sprintId: string, data: any): Promise<any> {
+      return apiClient.fetchJson(`/sprints/${sprintId}`, {
+        method: 'PATCH', body: JSON.stringify(data),
+      });
+    },
+
+    async moveSprint(sprintId: string, data: { status: string }): Promise<any> {
+      return apiClient.fetchJson(`/sprints/${sprintId}/move`, {
+        method: 'POST', body: JSON.stringify(data),
+      });
+    },
+
+    async deleteSprint(sprintId: string): Promise<void> {
+      await apiClient.fetch(`/sprints/${sprintId}`, { method: 'DELETE' });
+    },
+
+    async submitSprintEvaluation(sprintId: string, evaluation: any): Promise<any> {
+      return apiClient.fetchJson(`/sprints/${sprintId}/evaluations`, {
+        method: 'POST', body: JSON.stringify(evaluation),
+      });
+    },
+
+    async listSprintHistory(sprintId: string): Promise<any[]> {
+      return apiClient.fetchJson(`/sprints/${sprintId}/history`);
+    },
+
+    async suggestSprints(boardId: string, specId: string, threshold?: number): Promise<any> {
+      const params = threshold ? `?threshold=${threshold}` : '';
+      return apiClient.fetchJson(`/boards/${boardId}/specs/${specId}/sprints/suggest${params}`);
+    },
+
+    // ==================== TASK VALIDATION ====================
+
+    async submitTaskValidation(cardId: string, data: any): Promise<any> {
+      return apiClient.fetchJson(`/cards/${cardId}/validate`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
     },
   };
 }
