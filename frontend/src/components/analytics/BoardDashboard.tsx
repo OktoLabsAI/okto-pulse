@@ -218,7 +218,7 @@ interface BoardDashboardProps {
   boardId: string;
   from: string;
   to: string;
-  onSelectEntity: (type: 'ideation' | 'spec' | 'refinement', id: string, name: string) => void;
+  onSelectEntity: (type: 'ideation' | 'spec' | 'refinement' | 'card', id: string, name: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -823,11 +823,10 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
                   </tr>
                 ) : (
                   sortedEntities.map((item) => {
-                    const entityType = activeTab === 'card' ? 'refinement' : activeTab;
                     return (
                       <tr
                         key={item.id}
-                        onClick={() => onSelectEntity(entityType as 'ideation' | 'spec' | 'refinement', item.id, item.title)}
+                        onClick={() => onSelectEntity(activeTab, item.id, item.title)}
                         className="border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30 cursor-pointer transition-colors"
                       >
                         <td className="py-2 pr-2 max-w-[200px] truncate text-gray-800 dark:text-gray-100 font-medium">

@@ -13,7 +13,7 @@ interface AnalyticsState {
   level: AnalyticsLevel;
   boardId?: string;
   boardName?: string;
-  entityType?: 'ideation' | 'spec' | 'refinement';
+  entityType?: 'ideation' | 'spec' | 'refinement' | 'card';
   entityId?: string;
   entityName?: string;
 }
@@ -49,7 +49,7 @@ export function AnalyticsPage() {
   };
 
   const navigateToEntity = (
-    entityType: 'ideation' | 'spec' | 'refinement',
+    entityType: 'ideation' | 'spec' | 'refinement' | 'card',
     entityId: string,
     entityName: string,
   ) => {

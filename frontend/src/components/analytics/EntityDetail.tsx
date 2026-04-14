@@ -23,10 +23,26 @@ import { useDashboardApi } from '@/services/api';
 
 interface EntityDetailProps {
   boardId: string;
-  entityType: 'ideation' | 'spec' | 'refinement' | 'sprint';
+  entityType: 'ideation' | 'spec' | 'refinement' | 'sprint' | 'card';
   entityId: string;
   from: string;
   to: string;
+}
+
+interface CardAnalytics {
+  card_id: string;
+  title: string;
+  status: string | null;
+  is_test: boolean;
+  card_type: string;
+  spec_id: string | null;
+  completeness: number | null;
+  drift: number | null;
+  conclusions: any[] | null;
+  cycle_hours: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+  validations?: any[] | null;
 }
 
 interface SpecAnalytics {
@@ -812,7 +828,7 @@ function SprintDetailView({ data }: { data: SprintAnalytics }) {
 
 export function EntityDetail({ boardId, entityType, entityId, from, to }: EntityDetailProps) {
   const api = useDashboardApi();
-  const [data, setData] = useState<SpecAnalytics | IdeationAnalytics | RefinementData | SprintAnalytics | null>(null);
+  const [data, setData] = useState<SpecAnalytics | IdeationAnalytics | RefinementData | SprintAnalytics | CardAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -890,6 +906,177 @@ export function EntityDetail({ boardId, entityType, entityId, from, to }: Entity
   if (entityType === 'ideation') return <IdeationDetailView data={data as IdeationAnalytics} />;
   if (entityType === 'refinement') return <RefinementDetailView data={data as RefinementData} />;
   if (entityType === 'sprint') return <SprintDetailView data={data as SprintAnalytics} />;
+  if (entityType === 'card') return <CardDetailView data={data as CardAnalytics} />;
 
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Card detail view
+// ---------------------------------------------------------------------------
+
+function CardDetailView({ data }: { data: CardAnalytics }) {
+  const hasConclusions = Array.isArray(data.conclusions) && data.conclusions.length > 0;
+  const latestConcl = hasConclusions ? data.conclusions![data.conclusions!.length - 1] : null;
+  const hasValidations = Array.isArray(data.validations) && data.validations.length > 0;
+
+  const statusColor = (() => {
+    if (data.status === 'done') return 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300';
+    if (data.status === 'validation') return 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300';
+    if (data.status === 'in_progress') return 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300';
+    if (data.status === 'cancelled') return 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400';
+    return 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300';
+  })();
+
+  const typeColor = (() => {
+    if (data.card_type === 'test') return 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300';
+    if (data.card_type === 'bug') return 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300';
+    return 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300';
+  })();
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <Card>
+        <div className="flex items-start gap-3 mb-3">
+          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusColor}`}>
+            {data.status || 'unknown'}
+          </span>
+          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${typeColor}`}>
+            {data.card_type}
+          </span>
+          <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100 flex-1">{data.title}</h2>
+          {data.cycle_hours !== null && (
+            <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+              <Clock className="w-3.5 h-3.5" />
+              Cycle: {data.cycle_hours}h
+            </span>
+          )}
+        </div>
+        {data.spec_id && (
+          <div className="text-xs text-gray-500 dark:text-gray-400">
+            Spec: <span className="font-mono">{data.spec_id.slice(0, 8)}</span>
+          </div>
+        )}
+      </Card>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Card>
+          <div className="flex items-center gap-1.5 mb-1">
+            <Target className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-[10px] uppercase text-gray-500 dark:text-gray-400">Completeness</span>
+          </div>
+          <div className="text-xl font-bold text-gray-800 dark:text-gray-100">
+            {data.completeness !== null ? `${data.completeness}%` : '--'}
+          </div>
+        </Card>
+        <Card>
+          <div className="flex items-center gap-1.5 mb-1">
+            <AlertTriangle className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-[10px] uppercase text-gray-500 dark:text-gray-400">Drift</span>
+          </div>
+          <div className="text-xl font-bold text-gray-800 dark:text-gray-100">
+            {data.drift !== null ? `${data.drift}%` : '--'}
+          </div>
+        </Card>
+        <Card>
+          <div className="flex items-center gap-1.5 mb-1">
+            <MessageSquare className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-[10px] uppercase text-gray-500 dark:text-gray-400">Conclusions</span>
+          </div>
+          <div className="text-xl font-bold text-gray-800 dark:text-gray-100">
+            {hasConclusions ? data.conclusions!.length : 0}
+          </div>
+        </Card>
+        <Card>
+          <div className="flex items-center gap-1.5 mb-1">
+            <CheckCircle className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-[10px] uppercase text-gray-500 dark:text-gray-400">Validations</span>
+          </div>
+          <div className="text-xl font-bold text-gray-800 dark:text-gray-100">
+            {hasValidations ? data.validations!.length : 0}
+          </div>
+        </Card>
+      </div>
+
+      {/* Conclusion body */}
+      {latestConcl && (
+        <Card>
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">Latest Conclusion</h3>
+          <p className="text-sm text-gray-600 dark:text-gray-300 whitespace-pre-wrap">{latestConcl.text}</p>
+          {latestConcl.completeness_justification && (
+            <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700/50 space-y-2">
+              <div>
+                <div className="text-[10px] uppercase text-gray-400">Completeness justification</div>
+                <div className="text-xs text-gray-600 dark:text-gray-300">{latestConcl.completeness_justification}</div>
+              </div>
+              {latestConcl.drift_justification && (
+                <div>
+                  <div className="text-[10px] uppercase text-gray-400">Drift justification</div>
+                  <div className="text-xs text-gray-600 dark:text-gray-300">{latestConcl.drift_justification}</div>
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Validation history timeline */}
+      {hasValidations && (
+        <Card>
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">Task Validation History</h3>
+          <div className="space-y-3">
+            {data.validations!.map((v: any, idx: number) => {
+              const isSuccess = v.outcome === 'success' || v.verdict === 'pass';
+              return (
+                <div key={v.id || idx} className="border-l-2 border-gray-200 dark:border-gray-700 pl-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                      isSuccess
+                        ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
+                        : 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300'
+                    }`}>
+                      {isSuccess ? 'success' : 'failed'}
+                    </span>
+                    <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                      {v.created_at ? new Date(v.created_at).toLocaleString() : ''}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-xs mb-1">
+                    <div>
+                      <span className="text-gray-400">confidence:</span>{' '}
+                      <span className="font-semibold text-gray-700 dark:text-gray-200">{v.confidence ?? '--'}%</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400">completeness:</span>{' '}
+                      <span className="font-semibold text-gray-700 dark:text-gray-200">{v.completeness ?? v.estimated_completeness ?? '--'}%</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400">drift:</span>{' '}
+                      <span className="font-semibold text-gray-700 dark:text-gray-200">{v.drift ?? v.estimated_drift ?? '--'}%</span>
+                    </div>
+                  </div>
+                  {v.threshold_violations && v.threshold_violations.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {v.threshold_violations.map((t: string, i: number) => (
+                        <span key={i} className="text-[9px] px-1 py-0.5 rounded bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-300">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {(v.general_justification || v.summary) && (
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 italic">
+                      {v.general_justification || v.summary}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
 }
