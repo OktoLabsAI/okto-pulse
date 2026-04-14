@@ -8,6 +8,7 @@ import { KanbanBoard } from '@/components/kanban';
 import { IdeationsPanel } from '@/components/ideations';
 import { RefinementsPanel } from '@/components/refinements';
 import { SpecsPanel } from '@/components/specs';
+import { SprintsPanel } from '@/components/sprints';
 import { AnalyticsPage } from '@/components/analytics';
 import logoLight from '@/assets/logo-light.png';
 import logoDark from '@/assets/logo-dark.png';
@@ -30,7 +31,7 @@ function App() {
   const [portalBarVisible, setPortalBarVisible] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [activeTab, setActiveTab] = useState<'ideations' | 'refinements' | 'specs' | 'tasks'>('ideations');
+  const [activeTab, setActiveTab] = useState<'ideations' | 'refinements' | 'specs' | 'sprints' | 'tasks'>('ideations');
   const [showAnalytics, setShowAnalytics] = useState(false);
 
   useEffect(() => {
@@ -168,6 +169,7 @@ function App() {
                   { id: 'ideations' as const, label: 'Ideations' },
                   { id: 'refinements' as const, label: 'Refinements' },
                   { id: 'specs' as const, label: 'Specs' },
+                  { id: 'sprints' as const, label: 'Sprints' },
                   { id: 'tasks' as const, label: 'Tasks' },
                 ]).map((tab) => (
                   <button
@@ -189,6 +191,7 @@ function App() {
                 {activeTab === 'ideations' && <IdeationsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'refinements' && <RefinementsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'specs' && <SpecsPanel key={refreshKey} boardId={currentBoard.id} />}
+                {activeTab === 'sprints' && <SprintsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'tasks' && <KanbanBoard boardId={currentBoard.id} />}
               </div>
             </>
