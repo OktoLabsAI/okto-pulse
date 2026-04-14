@@ -56,18 +56,25 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   }, [showSettings, showMenu]);
 
   const settings: BoardSettings = currentBoard?.settings
-    ? { max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3, skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false, skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false, skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false, skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false, require_task_validation: currentBoard.settings.require_task_validation ?? false, min_confidence: currentBoard.settings.min_confidence ?? 70, min_completeness: currentBoard.settings.min_completeness ?? 80, max_drift: currentBoard.settings.max_drift ?? 50 }
-    : { max_scenarios_per_card: 3, skip_test_coverage_global: false, skip_rules_coverage_global: false, skip_trs_coverage_global: false, skip_contract_coverage_global: false, require_task_validation: false, min_confidence: 70, min_completeness: 80, max_drift: 50 };
+    ? { max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3, skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false, skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false, skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false, skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false, require_task_validation: currentBoard.settings.require_task_validation ?? false, min_confidence: currentBoard.settings.min_confidence ?? 70, min_completeness: currentBoard.settings.min_completeness ?? 80, max_drift: currentBoard.settings.max_drift ?? 50, require_spec_validation: currentBoard.settings.require_spec_validation ?? false, min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80, min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80, max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30 }
+    : { max_scenarios_per_card: 3, skip_test_coverage_global: false, skip_rules_coverage_global: false, skip_trs_coverage_global: false, skip_contract_coverage_global: false, require_task_validation: false, min_confidence: 70, min_completeness: 80, max_drift: 50, require_spec_validation: false, min_spec_completeness: 80, min_spec_assertiveness: 80, max_spec_ambiguity: 30 };
 
   // Local draft state for numeric gate inputs — committed on blur to avoid
   // refresh-on-keystroke wiping partial values while the user is typing.
   const [minConfidenceDraft, setMinConfidenceDraft] = useState<string>(String(settings.min_confidence));
   const [minCompletenessDraft, setMinCompletenessDraft] = useState<string>(String(settings.min_completeness));
   const [maxDriftDraft, setMaxDriftDraft] = useState<string>(String(settings.max_drift));
+  // Spec Validation Gate draft inputs — same onBlur pattern as the Task Gate.
+  const [minSpecCompletenessDraft, setMinSpecCompletenessDraft] = useState<string>(String(settings.min_spec_completeness ?? 80));
+  const [minSpecAssertivenessDraft, setMinSpecAssertivenessDraft] = useState<string>(String(settings.min_spec_assertiveness ?? 80));
+  const [maxSpecAmbiguityDraft, setMaxSpecAmbiguityDraft] = useState<string>(String(settings.max_spec_ambiguity ?? 30));
 
   useEffect(() => { setMinConfidenceDraft(String(settings.min_confidence)); }, [settings.min_confidence]);
   useEffect(() => { setMinCompletenessDraft(String(settings.min_completeness)); }, [settings.min_completeness]);
   useEffect(() => { setMaxDriftDraft(String(settings.max_drift)); }, [settings.max_drift]);
+  useEffect(() => { setMinSpecCompletenessDraft(String(settings.min_spec_completeness ?? 80)); }, [settings.min_spec_completeness]);
+  useEffect(() => { setMinSpecAssertivenessDraft(String(settings.min_spec_assertiveness ?? 80)); }, [settings.min_spec_assertiveness]);
+  useEffect(() => { setMaxSpecAmbiguityDraft(String(settings.max_spec_ambiguity ?? 30)); }, [settings.max_spec_ambiguity]);
 
   const updateSettings = async (patch: Partial<BoardSettings>) => {
     if (!currentBoard) return;
@@ -81,13 +88,20 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     }
   };
 
-  const commitNumericSetting = (key: 'min_confidence' | 'min_completeness' | 'max_drift', raw: string) => {
+  type NumericSettingKey = 'min_confidence' | 'min_completeness' | 'max_drift' | 'min_spec_completeness' | 'min_spec_assertiveness' | 'max_spec_ambiguity';
+
+  const commitNumericSetting = (key: NumericSettingKey, raw: string) => {
     const parsed = Math.min(100, Math.max(0, Number(raw)));
-    const safe = Number.isFinite(parsed) ? parsed : settings[key];
-    if (safe === settings[key]) {
+    const current = (settings[key] ?? 0) as number;
+    const safe = Number.isFinite(parsed) ? parsed : current;
+    if (safe === current) {
+      // Re-sync draft in case of invalid input (e.g. empty string)
       if (key === 'min_confidence') setMinConfidenceDraft(String(safe));
       if (key === 'min_completeness') setMinCompletenessDraft(String(safe));
       if (key === 'max_drift') setMaxDriftDraft(String(safe));
+      if (key === 'min_spec_completeness') setMinSpecCompletenessDraft(String(safe));
+      if (key === 'min_spec_assertiveness') setMinSpecAssertivenessDraft(String(safe));
+      if (key === 'max_spec_ambiguity') setMaxSpecAmbiguityDraft(String(safe));
       return;
     }
     updateSettings({ [key]: safe } as Partial<BoardSettings>);
@@ -420,6 +434,90 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                                 value={maxDriftDraft}
                                 onChange={(e) => setMaxDriftDraft(e.target.value)}
                                 onBlur={(e) => commitNumericSetting('max_drift', e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                              />
+                              <span className="text-[10px] text-gray-400">/ 100</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Spec Validation Gate */}
+                    <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+                      <h4 className="text-xs font-semibold text-gray-800 dark:text-gray-200 mb-3 flex items-center gap-1.5">
+                        <Shield size={12} />
+                        Spec Validation Gate
+                      </h4>
+
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
+                            Require spec validation
+                          </label>
+                          <p className="text-[10px] text-gray-400">
+                            Specs must pass Completeness/Assertiveness/Ambiguity gate before Validated
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => updateSettings({ require_spec_validation: !settings.require_spec_validation })}
+                          className={`relative w-10 h-5 rounded-full transition-colors ${settings.require_spec_validation ? 'bg-violet-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                        >
+                          <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.require_spec_validation ? 'translate-x-5' : ''}`} />
+                        </button>
+                      </div>
+
+                      {settings.require_spec_validation && (
+                        <div className="space-y-2.5 pl-1">
+                          <div>
+                            <label className="text-[10px] font-medium text-gray-500 dark:text-gray-400 block mb-1">
+                              Min Completeness
+                            </label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                value={minSpecCompletenessDraft}
+                                onChange={(e) => setMinSpecCompletenessDraft(e.target.value)}
+                                onBlur={(e) => commitNumericSetting('min_spec_completeness', e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                              />
+                              <span className="text-[10px] text-gray-400">/ 100</span>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-medium text-gray-500 dark:text-gray-400 block mb-1">
+                              Min Assertiveness
+                            </label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                value={minSpecAssertivenessDraft}
+                                onChange={(e) => setMinSpecAssertivenessDraft(e.target.value)}
+                                onBlur={(e) => commitNumericSetting('min_spec_assertiveness', e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                              />
+                              <span className="text-[10px] text-gray-400">/ 100</span>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-medium text-gray-500 dark:text-gray-400 block mb-1">
+                              Max Ambiguity <span className="text-gray-400">(lower is better)</span>
+                            </label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                value={maxSpecAmbiguityDraft}
+                                onChange={(e) => setMaxSpecAmbiguityDraft(e.target.value)}
+                                onBlur={(e) => commitNumericSetting('max_spec_ambiguity', e.target.value)}
                                 onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                                 className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                               />
