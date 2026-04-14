@@ -30,14 +30,19 @@ interface FunnelData {
   refinements: number;
   specs: number;
   specs_done: number;
+  sprints: number;
   cards: number;
   cards_impl: number;
   cards_test: number;
+  cards_bug: number;
   done: number;
   rules_count: number;
   contracts_count: number;
   specs_with_rules: number;
   specs_with_contracts: number;
+  spec_status_breakdown: Record<string, number>;
+  sprint_status_breakdown: Record<string, number>;
+  card_status_breakdown: Record<string, number>;
   bugs_total: number;
   bugs_open: number;
   bugs_by_severity: { critical: number; major: number; minor: number };
@@ -46,8 +51,114 @@ interface FunnelData {
 interface QualityPoint {
   card_id: string;
   title: string;
+  card_type?: string;
   completeness: number;
   drift: number;
+  confidence?: number;
+  outcome?: string;
+}
+
+interface QualityResponse {
+  conclusion_reported: QualityPoint[];
+  validation_reported: QualityPoint[];
+}
+
+interface ValidationsResponse {
+  spec_validation_gate: {
+    total_submitted: number;
+    total_success: number;
+    total_failed: number;
+    success_rate: number | null;
+    avg_attempts_per_spec: number | null;
+    avg_scores: { completeness: number | null; assertiveness: number | null; ambiguity: number | null };
+    rejection_reasons: { completeness_below: number; assertiveness_below: number; ambiguity_above: number; reject_recommendation: number };
+    specs_with_validation: number;
+    per_spec: Array<{
+      spec_id: string;
+      title: string;
+      status: string;
+      attempts: number;
+      last_outcome: string | null;
+      last_completeness: number | null;
+      last_assertiveness: number | null;
+      last_ambiguity: number | null;
+      success_count: number;
+      failed_count: number;
+      rejection_reasons: Record<string, number>;
+      current_validation_id: string | null;
+    }>;
+  };
+  task_validation_gate: {
+    total_submitted: number;
+    total_success: number;
+    total_failed: number;
+    success_rate: number | null;
+    avg_attempts_per_card: number | null;
+    first_pass_rate: number | null;
+    avg_scores: { confidence: number | null; completeness: number | null; drift: number | null };
+    rejection_reasons: { confidence_below: number; completeness_below: number; drift_above: number; reject_recommendation: number };
+    cards_with_validation: number;
+    per_card: Array<{
+      card_id: string;
+      title: string;
+      card_type: string;
+      spec_id: string | null;
+      sprint_id: string | null;
+      status: string;
+      attempts: number;
+      last_outcome: string | null;
+      last_confidence: number | null;
+      last_completeness: number | null;
+      last_drift: number | null;
+      success_count: number;
+      failed_count: number;
+      rejection_reasons: Record<string, number>;
+    }>;
+  };
+  spec_evaluation: {
+    total_submitted: number;
+    approve_rate: number | null;
+    avg_overall_score: number | null;
+    specs_with_evaluation: number;
+  };
+  sprint_evaluation: {
+    total_submitted: number;
+    approve_rate: number | null;
+    avg_overall_score: number | null;
+    sprints_with_evaluation: number;
+  };
+}
+
+interface SprintsResponse {
+  summary: {
+    total_sprints: number;
+    status_breakdown: Record<string, number>;
+    avg_completion_rate: number | null;
+    sprint_evaluation: {
+      total_submitted: number;
+      approve_rate: number | null;
+      avg_overall_score: number | null;
+    };
+  };
+  sprints: Array<{
+    sprint_id: string;
+    title: string;
+    status: string;
+    spec_id: string;
+    total_cards: number;
+    done_cards: number;
+    completion_rate: number;
+    card_status_breakdown: Record<string, number>;
+    evaluations_count: number;
+    last_evaluation: { overall_score: number | null; recommendation: string | null; evaluator_name: string | null; created_at: string | null } | null;
+    task_validation_gate: {
+      total_submitted: number;
+      total_success: number;
+      total_failed: number;
+      rejection_reasons: Record<string, number>;
+      first_pass_rate: number | null;
+    };
+  }>;
 }
 
 interface CoverageSpec {
@@ -245,6 +356,8 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   const [quality, setQuality] = useState<QualityPoint[]>([]);
   const [coverage, setCoverage] = useState<CoverageSpec[]>([]);
   const [agents, setAgents] = useState<AgentRow[]>([]);
+  const [validations, setValidations] = useState<ValidationsResponse | null>(null);
+  const [sprints, setSprints] = useState<SprintsResponse | null>(null);
   const [entities, setEntities] = useState<Record<EntityTab, EntityListResponse | null>>({
     spec: null,
     ideation: null,
@@ -267,13 +380,20 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       api.getBoardAnalyticsQuality(boardId, from, to),
       api.getBoardAnalyticsCoverage(boardId, from, to),
       api.getBoardAnalyticsAgents(boardId, from, to),
+      api.getBoardAnalyticsValidations(boardId, from, to),
+      api.getBoardAnalyticsSprints(boardId, from, to),
     ])
-      .then(([funnelRes, qualityRes, coverageRes, agentsRes]) => {
+      .then(([funnelRes, qualityRes, coverageRes, agentsRes, validationsRes, sprintsRes]) => {
         if (cancelled) return;
         setFunnel(funnelRes as FunnelData);
-        setQuality(qualityRes as QualityPoint[]);
+        // Quality endpoint now returns {conclusion_reported, validation_reported}.
+        // Prefer validation data; fall back to conclusions when absent.
+        const q = qualityRes as QualityResponse;
+        setQuality(q.validation_reported.length > 0 ? q.validation_reported : q.conclusion_reported);
         setCoverage(coverageRes as CoverageSpec[]);
         setAgents(agentsRes as AgentRow[]);
+        setValidations(validationsRes as ValidationsResponse);
+        setSprints(sprintsRes as SprintsResponse);
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load board analytics');
@@ -785,6 +905,284 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
             )}
           </div>
         </div>
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Validation Gates panel                                             */}
+      {/* ------------------------------------------------------------------ */}
+      {validations && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">
+            Validation Gates
+          </h3>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Spec Validation Gate */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-xs font-bold text-violet-700 dark:text-violet-300 uppercase tracking-wide">
+                  Spec Validation Gate
+                </h4>
+                <span className="text-[10px] text-gray-500">
+                  {validations.spec_validation_gate.total_submitted} submitted · {validations.spec_validation_gate.specs_with_validation} specs
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-2 mb-3">
+                <MiniStat label="success rate" value={validations.spec_validation_gate.success_rate} unit="%" />
+                <MiniStat label="avg complete" value={validations.spec_validation_gate.avg_scores.completeness} unit="%" />
+                <MiniStat label="avg assert" value={validations.spec_validation_gate.avg_scores.assertiveness} unit="%" />
+                <MiniStat label="avg ambig" value={validations.spec_validation_gate.avg_scores.ambiguity} unit="%" invert />
+              </div>
+              <RejectionReasonsBar reasons={validations.spec_validation_gate.rejection_reasons} color="violet" />
+              {validations.spec_validation_gate.per_spec.length > 0 && (
+                <div className="mt-3 max-h-48 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-white dark:bg-gray-800">
+                      <tr className="text-left text-[10px] uppercase text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                        <th className="py-1 font-medium">Spec</th>
+                        <th className="py-1 font-medium text-center">Attempts</th>
+                        <th className="py-1 font-medium text-center">Last</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {validations.spec_validation_gate.per_spec.slice(0, 10).map((s) => (
+                        <tr key={s.spec_id} className="border-b border-gray-100 dark:border-gray-700/50">
+                          <td className="py-1.5 truncate max-w-[180px]" title={s.title}>{s.title}</td>
+                          <td className="py-1.5 text-center text-gray-600 dark:text-gray-400">{s.attempts}</td>
+                          <td className="py-1.5 text-center">
+                            {s.last_outcome && (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                s.last_outcome === 'success'
+                                  ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
+                                  : 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300'
+                              }`}>
+                                {s.last_outcome}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Task Validation Gate */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-xs font-bold text-blue-700 dark:text-blue-300 uppercase tracking-wide">
+                  Task Validation Gate
+                </h4>
+                <span className="text-[10px] text-gray-500">
+                  {validations.task_validation_gate.total_submitted} submitted · {validations.task_validation_gate.cards_with_validation} cards
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-2 mb-3">
+                <MiniStat label="success rate" value={validations.task_validation_gate.success_rate} unit="%" />
+                <MiniStat label="avg conf" value={validations.task_validation_gate.avg_scores.confidence} unit="%" />
+                <MiniStat label="avg complete" value={validations.task_validation_gate.avg_scores.completeness} unit="%" />
+                <MiniStat label="avg drift" value={validations.task_validation_gate.avg_scores.drift} unit="%" invert />
+              </div>
+              <RejectionReasonsBar reasons={validations.task_validation_gate.rejection_reasons} color="blue" />
+              {validations.task_validation_gate.per_card.length > 0 && (
+                <div className="mt-3 max-h-48 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-white dark:bg-gray-800">
+                      <tr className="text-left text-[10px] uppercase text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                        <th className="py-1 font-medium">Card</th>
+                        <th className="py-1 font-medium text-center">Attempts</th>
+                        <th className="py-1 font-medium text-center">Last</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {validations.task_validation_gate.per_card.slice(0, 10).map((c) => (
+                        <tr key={c.card_id} className="border-b border-gray-100 dark:border-gray-700/50">
+                          <td className="py-1.5 truncate max-w-[180px]" title={c.title}>{c.title}</td>
+                          <td className="py-1.5 text-center text-gray-600 dark:text-gray-400">{c.attempts}</td>
+                          <td className="py-1.5 text-center">
+                            {c.last_outcome && (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                c.last_outcome === 'success' || c.last_outcome === 'pass'
+                                  ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
+                                  : 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300'
+                              }`}>
+                                {c.last_outcome}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Sprints panel                                                      */}
+      {/* ------------------------------------------------------------------ */}
+      {sprints && sprints.summary.total_sprints > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+              Sprints
+            </h3>
+            <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
+              <span>{sprints.summary.total_sprints} total</span>
+              <span>·</span>
+              <span>avg completion: {sprints.summary.avg_completion_rate !== null ? `${sprints.summary.avg_completion_rate}%` : '--'}</span>
+              {sprints.summary.sprint_evaluation.total_submitted > 0 && (
+                <>
+                  <span>·</span>
+                  <span>eval approve: {sprints.summary.sprint_evaluation.approve_rate !== null ? `${sprints.summary.sprint_evaluation.approve_rate}%` : '--'}</span>
+                </>
+              )}
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-[10px] uppercase text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                  <th className="py-2 font-medium">Sprint</th>
+                  <th className="py-2 font-medium text-center">Status</th>
+                  <th className="py-2 font-medium text-center">Cards</th>
+                  <th className="py-2 font-medium text-center">Completion</th>
+                  <th className="py-2 font-medium text-center">Task Gate</th>
+                  <th className="py-2 font-medium text-center">Last Eval</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sprints.sprints.map((sp) => (
+                  <tr key={sp.sprint_id} className="border-b border-gray-100 dark:border-gray-700/50">
+                    <td className="py-2 truncate max-w-[250px]" title={sp.title}>{sp.title}</td>
+                    <td className="py-2 text-center">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        sp.status === 'active' ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' :
+                        sp.status === 'closed' ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' :
+                        sp.status === 'review' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300' :
+                        'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
+                      }`}>{sp.status}</span>
+                    </td>
+                    <td className="py-2 text-center text-gray-600 dark:text-gray-400">
+                      {sp.done_cards}/{sp.total_cards}
+                    </td>
+                    <td className="py-2 text-center">
+                      <div className="flex items-center justify-center gap-1.5">
+                        <div className="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                          <div className="h-full bg-indigo-500" style={{ width: `${sp.completion_rate}%` }} />
+                        </div>
+                        <span className="text-[10px] font-medium">{sp.completion_rate}%</span>
+                      </div>
+                    </td>
+                    <td className="py-2 text-center">
+                      {sp.task_validation_gate.total_submitted > 0 ? (
+                        <span className="text-[10px]">
+                          <span className="text-green-600 dark:text-green-400">{sp.task_validation_gate.total_success}</span>
+                          /
+                          <span className="text-red-500 dark:text-red-400">{sp.task_validation_gate.total_failed}</span>
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className="py-2 text-center">
+                      {sp.last_evaluation ? (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          sp.last_evaluation.recommendation === 'approve'
+                            ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
+                            : 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300'
+                        }`}>
+                          {sp.last_evaluation.recommendation} ({sp.last_evaluation.overall_score}%)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-gray-400">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Validation gate helpers
+// ---------------------------------------------------------------------------
+
+function MiniStat({ label, value, unit, invert = false }: { label: string; value: number | null; unit?: string; invert?: boolean }) {
+  const colorClass = (() => {
+    if (value === null) return 'text-gray-400';
+    if (invert) {
+      if (value <= 20) return 'text-green-600 dark:text-green-400';
+      if (value <= 50) return 'text-amber-600 dark:text-amber-400';
+      return 'text-red-600 dark:text-red-400';
+    }
+    if (value >= 80) return 'text-green-600 dark:text-green-400';
+    if (value >= 60) return 'text-blue-600 dark:text-blue-400';
+    if (value >= 40) return 'text-amber-600 dark:text-amber-400';
+    return 'text-red-600 dark:text-red-400';
+  })();
+
+  return (
+    <div className="bg-gray-50 dark:bg-gray-900/40 rounded p-2">
+      <div className="text-[9px] uppercase text-gray-400 dark:text-gray-500 truncate">{label}</div>
+      <div className={`text-sm font-bold ${colorClass}`}>
+        {value !== null ? `${value}${unit ?? ''}` : '--'}
+      </div>
+    </div>
+  );
+}
+
+const REASON_LABEL_MAP: Record<string, string> = {
+  completeness_below: 'completeness',
+  assertiveness_below: 'assertiveness',
+  ambiguity_above: 'ambiguity',
+  confidence_below: 'confidence',
+  drift_above: 'drift',
+  reject_recommendation: 'rejected',
+};
+
+function RejectionReasonsBar({ reasons, color }: { reasons: Record<string, number>; color: 'violet' | 'blue' }) {
+  const entries = Object.entries(reasons).filter(([, v]) => v > 0);
+  if (entries.length === 0) {
+    return (
+      <div className="text-[10px] text-gray-400 dark:text-gray-500 italic">
+        No rejections recorded
+      </div>
+    );
+  }
+  const total = entries.reduce((acc, [, v]) => acc + (v as number), 0);
+  const barColor = color === 'violet' ? 'bg-violet-500' : 'bg-blue-500';
+
+  return (
+    <div>
+      <div className="text-[10px] text-gray-500 dark:text-gray-400 mb-1">
+        Rejection reasons ({total} total, multi-count)
+      </div>
+      <div className="flex flex-col gap-1">
+        {entries.sort(([, a], [, b]) => (b as number) - (a as number)).map(([reason, count]) => {
+          const pct = total > 0 ? ((count as number) / total) * 100 : 0;
+          return (
+            <div key={reason} className="flex items-center gap-2">
+              <span className="w-24 text-[10px] text-gray-600 dark:text-gray-400 shrink-0">
+                {REASON_LABEL_MAP[reason] ?? reason}
+              </span>
+              <div className="flex-1 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                <div className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
+              </div>
+              <span className="text-[10px] font-medium text-gray-600 dark:text-gray-400 w-8 text-right">
+                {String(count)}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

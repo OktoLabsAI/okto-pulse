@@ -858,6 +858,32 @@ export function useDashboardApi() {
       return apiClient.fetchJson(`/boards/${boardId}/analytics/entity/${entityType}/${entityId}?${params.toString()}`);
     },
 
+    // --- Validation gate panel (spec + task gates, spec evaluation, sprint evaluation)
+    async getBoardAnalyticsValidations(boardId: string, from?: string, to?: string): Promise<any> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/validations?${params.toString()}`);
+    },
+
+    // --- Sprint analytics panel (summary + per-sprint breakdown)
+    async getBoardAnalyticsSprints(boardId: string, from?: string, to?: string): Promise<any> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/sprints?${params.toString()}`);
+    },
+
+    // --- Per-spec analytics detail (validation timeline, task gate summary)
+    async getBoardAnalyticsSpecDetail(boardId: string, specId: string): Promise<any> {
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/spec/${specId}`);
+    },
+
+    // --- Per-sprint analytics detail (kanban distribution, task gate, evals)
+    async getBoardAnalyticsSprintDetail(boardId: string, sprintId: string): Promise<any> {
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/sprint/${sprintId}`);
+    },
+
     async exportOverviewCsv(from?: string, to?: string): Promise<void> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);

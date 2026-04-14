@@ -31,6 +31,7 @@ interface FunnelData {
   ideations: number;
   refinements: number;
   specs: number;
+  sprints: number;
   cards: number;
   done: number;
 }
@@ -39,6 +40,8 @@ interface VelocityWeek {
   week: string;
   impl: number;
   test: number;
+  bug: number;
+  validation_bounce: number;
 }
 
 interface BoardStat {
@@ -47,9 +50,71 @@ interface BoardStat {
   ideations: number;
   refinements: number;
   specs: number;
+  sprints: number;
   cards: number;
   cards_done: number;
   bugs: number;
+}
+
+interface SpecValidationGateData {
+  total_submitted: number;
+  total_success: number;
+  total_failed: number;
+  success_rate: number | null;
+  avg_attempts_per_spec: number | null;
+  avg_scores: {
+    completeness: number | null;
+    assertiveness: number | null;
+    ambiguity: number | null;
+  };
+  rejection_reasons: {
+    completeness_below: number;
+    assertiveness_below: number;
+    ambiguity_above: number;
+    reject_recommendation: number;
+  };
+  specs_with_validation: number;
+}
+
+interface TaskValidationGateData {
+  total_submitted: number;
+  total_success: number;
+  total_failed: number;
+  success_rate: number | null;
+  avg_attempts_per_card: number | null;
+  first_pass_rate: number | null;
+  avg_scores: {
+    confidence: number | null;
+    completeness: number | null;
+    drift: number | null;
+  };
+  rejection_reasons: {
+    confidence_below: number;
+    completeness_below: number;
+    drift_above: number;
+    reject_recommendation: number;
+  };
+  cards_with_validation: number;
+}
+
+interface SpecEvaluationData {
+  total_submitted: number;
+  total_approve: number;
+  total_reject: number;
+  total_request_changes: number;
+  approve_rate: number | null;
+  avg_overall_score: number | null;
+  avg_dimension_scores: Record<string, number | null>;
+  specs_with_evaluation: number;
+}
+
+interface SprintEvaluationData {
+  total_submitted: number;
+  total_approve: number;
+  total_reject: number;
+  approve_rate: number | null;
+  avg_overall_score: number | null;
+  sprints_with_evaluation: number;
 }
 
 interface OverviewData {
@@ -58,14 +123,21 @@ interface OverviewData {
   total_specs: number;
   specs_done: number;
   specs_with_tests: number;
+  total_sprints: number;
+  spec_status_breakdown: Record<string, number>;
+  sprint_status_breakdown: Record<string, number>;
+  card_status_breakdown: Record<string, number>;
   total_business_rules: number;
   total_api_contracts: number;
   specs_with_rules: number;
   specs_with_contracts: number;
   total_cards_impl: number;
   total_cards_test: number;
-  avg_completeness: number | null;
-  avg_drift: number | null;
+  total_cards_bug: number;
+  spec_validation_gate: SpecValidationGateData;
+  task_validation_gate: TaskValidationGateData;
+  spec_evaluation: SpecEvaluationData;
+  sprint_evaluation: SprintEvaluationData;
   funnel: FunnelData;
   velocity: VelocityWeek[];
   boards: BoardStat[];
@@ -440,41 +512,126 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
           }
         />
 
-        {/* Avg Completeness */}
+        {/* Sprints */}
+        <KpiCard
+          icon={<Target className="w-4 h-4 text-indigo-500" />}
+          title="Sprints"
+          value={data.total_sprints ?? 0}
+          badge={`${data.sprint_status_breakdown?.active ?? 0} active`}
+          badgeColor="bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"
+          extra={
+            <span className="text-[10px] text-gray-400 dark:text-gray-500">
+              {data.sprint_status_breakdown?.closed ?? 0} closed
+            </span>
+          }
+        />
+
+        {/* Avg Completeness — from Task Validation Gate (reviewer-reported) */}
         <div
-          className={`rounded-lg border border-gray-200 dark:border-gray-700 p-4 ${completenessBg(data.avg_completeness)}`}
+          className={`rounded-lg border border-gray-200 dark:border-gray-700 p-4 ${completenessBg(data.task_validation_gate?.avg_scores?.completeness ?? null)}`}
         >
           <div className="flex items-center gap-1.5 mb-1">
             <Target className="w-4 h-4 text-gray-400" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
               Avg Completeness
             </span>
+            <span className="text-[9px] text-gray-400 ml-auto">validated</span>
           </div>
           <div className="flex items-end gap-2">
-            <span className={`text-2xl font-bold ${completenessColor(data.avg_completeness)}`}>
-              {data.avg_completeness !== null ? `${data.avg_completeness}%` : '--'}
+            <span className={`text-2xl font-bold ${completenessColor(data.task_validation_gate?.avg_scores?.completeness ?? null)}`}>
+              {data.task_validation_gate?.avg_scores?.completeness !== null && data.task_validation_gate?.avg_scores?.completeness !== undefined
+                ? `${data.task_validation_gate.avg_scores.completeness}%`
+                : '--'}
             </span>
-            <TrendIndicator value={data.avg_completeness} />
+            <TrendIndicator value={data.task_validation_gate?.avg_scores?.completeness ?? null} />
           </div>
         </div>
 
-        {/* Avg Drift */}
+        {/* Avg Drift — from Task Validation Gate */}
         <div
-          className={`rounded-lg border border-gray-200 dark:border-gray-700 p-4 ${driftBg(data.avg_drift)}`}
+          className={`rounded-lg border border-gray-200 dark:border-gray-700 p-4 ${driftBg(data.task_validation_gate?.avg_scores?.drift ?? null)}`}
         >
           <div className="flex items-center gap-1.5 mb-1">
             <AlertTriangle className="w-4 h-4 text-gray-400" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
               Avg Drift
             </span>
+            <span className="text-[9px] text-gray-400 ml-auto">validated</span>
           </div>
           <div className="flex items-end gap-2">
-            <span className={`text-2xl font-bold ${driftColor(data.avg_drift)}`}>
-              {data.avg_drift !== null ? `${data.avg_drift}%` : '--'}
+            <span className={`text-2xl font-bold ${driftColor(data.task_validation_gate?.avg_scores?.drift ?? null)}`}>
+              {data.task_validation_gate?.avg_scores?.drift !== null && data.task_validation_gate?.avg_scores?.drift !== undefined
+                ? `${data.task_validation_gate.avg_scores.drift}%`
+                : '--'}
             </span>
-            <TrendIndicator value={data.avg_drift !== null ? -data.avg_drift : null} />
+            <TrendIndicator value={data.task_validation_gate?.avg_scores?.drift !== null && data.task_validation_gate?.avg_scores?.drift !== undefined ? -data.task_validation_gate.avg_scores.drift : null} />
           </div>
         </div>
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Validation Gates row — 4 cards (Spec Val, Task Val, Spec Eval,     */}
+      {/* Sprint Eval — D5: separated)                                       */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <ValidationGateCard
+          title="Spec Validation Gate"
+          subtitle="approved → validated (semantic)"
+          total={data.spec_validation_gate?.total_submitted ?? 0}
+          successRate={data.spec_validation_gate?.success_rate ?? null}
+          failedCount={data.spec_validation_gate?.total_failed ?? 0}
+          avgLabel="avg completeness"
+          avgValue={data.spec_validation_gate?.avg_scores?.completeness ?? null}
+          attemptsLabel="attempts/spec"
+          attemptsValue={data.spec_validation_gate?.avg_attempts_per_spec ?? null}
+          topReasons={Object.entries(data.spec_validation_gate?.rejection_reasons ?? {})
+            .filter(([, v]) => v > 0)
+            .sort(([, a], [, b]) => (b as number) - (a as number))
+            .slice(0, 3)}
+          accent="violet"
+        />
+        <ValidationGateCard
+          title="Task Validation Gate"
+          subtitle="in_progress → done (per card)"
+          total={data.task_validation_gate?.total_submitted ?? 0}
+          successRate={data.task_validation_gate?.success_rate ?? null}
+          failedCount={data.task_validation_gate?.total_failed ?? 0}
+          avgLabel="first-pass rate"
+          avgValue={data.task_validation_gate?.first_pass_rate ?? null}
+          attemptsLabel="attempts/card"
+          attemptsValue={data.task_validation_gate?.avg_attempts_per_card ?? null}
+          topReasons={Object.entries(data.task_validation_gate?.rejection_reasons ?? {})
+            .filter(([, v]) => v > 0)
+            .sort(([, a], [, b]) => (b as number) - (a as number))
+            .slice(0, 3)}
+          accent="blue"
+        />
+        <ValidationGateCard
+          title="Spec Evaluation"
+          subtitle="validated → in_progress (breakdown)"
+          total={data.spec_evaluation?.total_submitted ?? 0}
+          successRate={data.spec_evaluation?.approve_rate ?? null}
+          failedCount={(data.spec_evaluation?.total_reject ?? 0) + (data.spec_evaluation?.total_request_changes ?? 0)}
+          avgLabel="avg overall"
+          avgValue={data.spec_evaluation?.avg_overall_score ?? null}
+          attemptsLabel="specs evaluated"
+          attemptsValue={data.spec_evaluation?.specs_with_evaluation ?? null}
+          topReasons={[]}
+          accent="emerald"
+        />
+        <ValidationGateCard
+          title="Sprint Evaluation"
+          subtitle="qualitative sprint review"
+          total={data.sprint_evaluation?.total_submitted ?? 0}
+          successRate={data.sprint_evaluation?.approve_rate ?? null}
+          failedCount={data.sprint_evaluation?.total_reject ?? 0}
+          avgLabel="avg overall"
+          avgValue={data.sprint_evaluation?.avg_overall_score ?? null}
+          attemptsLabel="sprints evaluated"
+          attemptsValue={data.sprint_evaluation?.sprints_with_evaluation ?? null}
+          topReasons={[]}
+          accent="amber"
+        />
       </div>
 
       {/* ------------------------------------------------------------------ */}
@@ -707,4 +864,127 @@ function formatWeekLabel(isoDate: string): string {
   } catch {
     return isoDate;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Validation Gate card
+// ---------------------------------------------------------------------------
+
+type GateAccent = 'violet' | 'blue' | 'emerald' | 'amber';
+
+const GATE_ACCENT_MAP: Record<GateAccent, { border: string; bg: string; text: string; bar: string }> = {
+  violet: { border: 'border-violet-200 dark:border-violet-800', bg: 'bg-violet-50 dark:bg-violet-900/20', text: 'text-violet-700 dark:text-violet-300', bar: 'bg-violet-500' },
+  blue: { border: 'border-blue-200 dark:border-blue-800', bg: 'bg-blue-50 dark:bg-blue-900/20', text: 'text-blue-700 dark:text-blue-300', bar: 'bg-blue-500' },
+  emerald: { border: 'border-emerald-200 dark:border-emerald-800', bg: 'bg-emerald-50 dark:bg-emerald-900/20', text: 'text-emerald-700 dark:text-emerald-300', bar: 'bg-emerald-500' },
+  amber: { border: 'border-amber-200 dark:border-amber-800', bg: 'bg-amber-50 dark:bg-amber-900/20', text: 'text-amber-700 dark:text-amber-300', bar: 'bg-amber-500' },
+};
+
+const REASON_LABELS: Record<string, string> = {
+  completeness_below: 'completeness',
+  assertiveness_below: 'assertiveness',
+  ambiguity_above: 'ambiguity',
+  confidence_below: 'confidence',
+  drift_above: 'drift',
+  reject_recommendation: 'rejected',
+};
+
+function ValidationGateCard({
+  title,
+  subtitle,
+  total,
+  successRate,
+  failedCount,
+  avgLabel,
+  avgValue,
+  attemptsLabel,
+  attemptsValue,
+  topReasons,
+  accent,
+}: {
+  title: string;
+  subtitle: string;
+  total: number;
+  successRate: number | null;
+  failedCount: number;
+  avgLabel: string;
+  avgValue: number | null;
+  attemptsLabel: string;
+  attemptsValue: number | null;
+  topReasons: [string, unknown][];
+  accent: GateAccent;
+}) {
+  const a = GATE_ACCENT_MAP[accent];
+  const successPct = successRate ?? 0;
+
+  return (
+    <div className={`rounded-lg border ${a.border} ${a.bg} p-4 flex flex-col`}>
+      <div className="flex items-start justify-between mb-2">
+        <div>
+          <h4 className={`text-xs font-bold ${a.text} uppercase tracking-wide`}>{title}</h4>
+          <p className="text-[10px] text-gray-500 dark:text-gray-400">{subtitle}</p>
+        </div>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-full bg-white/60 dark:bg-black/30 ${a.text} font-semibold`}>
+          {total} submitted
+        </span>
+      </div>
+
+      {total > 0 ? (
+        <>
+          {/* Success bar */}
+          <div className="mb-3">
+            <div className="flex items-center justify-between text-[10px] mb-1">
+              <span className="text-gray-500 dark:text-gray-400">success</span>
+              <span className={`font-semibold ${a.text}`}>
+                {successRate !== null ? `${successRate}%` : '--'}
+              </span>
+            </div>
+            <div className="h-1.5 bg-white/60 dark:bg-black/30 rounded-full overflow-hidden">
+              <div
+                className={`h-full ${a.bar} transition-all duration-500`}
+                style={{ width: `${successPct}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[9px] text-gray-400 dark:text-gray-500 mt-1">
+              <span>{failedCount} failed</span>
+            </div>
+          </div>
+
+          {/* Dual stat */}
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            <div>
+              <div className="text-[9px] uppercase text-gray-400 dark:text-gray-500">{avgLabel}</div>
+              <div className="text-sm font-bold text-gray-800 dark:text-gray-100">
+                {avgValue !== null ? `${avgValue}${avgLabel.includes('rate') || avgLabel.includes('avg') ? (avgLabel.includes('attempt') || avgLabel.includes('evaluated') ? '' : '%') : ''}` : '--'}
+              </div>
+            </div>
+            <div>
+              <div className="text-[9px] uppercase text-gray-400 dark:text-gray-500">{attemptsLabel}</div>
+              <div className="text-sm font-bold text-gray-800 dark:text-gray-100">
+                {attemptsValue !== null ? attemptsValue : '--'}
+              </div>
+            </div>
+          </div>
+
+          {/* Top rejection reasons */}
+          {topReasons.length > 0 && (
+            <div className="mt-auto pt-2 border-t border-white/40 dark:border-black/20">
+              <div className="text-[9px] uppercase text-gray-400 dark:text-gray-500 mb-1">top rejection reasons</div>
+              <div className="flex flex-wrap gap-1">
+                {topReasons.map(([reason, count]) => (
+                  <span
+                    key={reason}
+                    className="text-[9px] px-1.5 py-0.5 rounded bg-white/70 dark:bg-black/30 text-gray-700 dark:text-gray-300 font-medium"
+                  >
+                    {REASON_LABELS[reason] ?? reason}: {String(count)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="text-center text-xs text-gray-400 dark:text-gray-500 py-4">No submissions yet</div>
+      )}
+    </div>
+  );
 }
