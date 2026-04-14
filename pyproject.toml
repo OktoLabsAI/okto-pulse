@@ -1,6 +1,6 @@
 [project]
 name = "okto-pulse"
-version = "0.1.0"
+version = "0.1.1"
 description = "Okto Pulse — spec-driven project management with AI agents via MCP. Local-first, single command setup."
 requires-python = ">=3.11"
 license = {text = "Elastic-2.0"}
@@ -26,7 +26,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "okto-pulse-core>=0.1.0",
+    "okto-pulse-core>=0.1.1,<1.0.0",
 ]
 
 [project.urls]
