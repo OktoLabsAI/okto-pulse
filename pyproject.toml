@@ -5,7 +5,7 @@ description = "Okto Pulse — spec-driven project management with AI agents via 
 requires-python = ">=3.11"
 license = {text = "Elastic-2.0"}
 authors = [
-    {name = "Okto Labs", email = "dev@oktolabs.com.br"},
+    {name = "Okto Labs", email = "contact@oktolabs.ai"},
 ]
 keywords = [
     "kanban", "project-management", "mcp", "ai-agents", "spec-driven",

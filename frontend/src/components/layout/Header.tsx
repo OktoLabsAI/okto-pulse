@@ -629,7 +629,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     <li>Integrating the software's MCP tools with AI agents for your own or your organization's use.</li>
                     <li>Modifying the software for personal or internal organizational use.</li>
                   </ul>
-                  <p className="mt-2 text-surface-400">Contact <a href="mailto:dev@oktolabs.com.br" className="text-accent-500 hover:underline">dev@oktolabs.com.br</a> for clarification.</p>
+                  <p className="mt-2 text-surface-400">Contact <a href="mailto:contact@oktolabs.ai" className="text-accent-500 hover:underline">contact@oktolabs.ai</a> for clarification.</p>
                 </div>
 
                 <p className="text-surface-400 dark:text-surface-500 pt-2 border-t border-surface-200/30 dark:border-[#142840]">
