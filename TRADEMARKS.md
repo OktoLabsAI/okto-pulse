@@ -41,7 +41,7 @@ The OktoLabs logo files included in this repository (`logo-light.jpg`, `logo-dar
 
 For trademark usage requests or questions:
 
-- Email: contact@oktolabs.ai
+- Email: dev@oktolabs.ai
 - GitHub: https://github.com/OktoLabsAI
 
 ---

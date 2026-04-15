@@ -395,7 +395,10 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                     value={agent.preset_id || ''}
                                     onChange={async (e) => {
                                       try {
-                                        await api.updateAgent(agent.id, { preset_id: e.target.value || undefined } as any);
+                                        // Send explicit null (not undefined) so JSON.stringify keeps the
+                                        // field — the backend uses its presence to reset permission_flags
+                                        // from the chosen preset (or to full registry when null).
+                                        await api.updateAgent(agent.id, { preset_id: e.target.value || null } as any);
                                         await loadMyAgents();
                                         toast.success('Preset updated');
                                       } catch { toast.error('Failed to update preset'); }
