@@ -9,8 +9,9 @@ import { GuidelinesPanel } from '@/components/guidelines';
 import { HelpPanel } from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
 import { useCurrentBoard } from '@/store/dashboard';
-import logoLight from '@/assets/logo-light.png';
-import logoDark from '@/assets/logo-dark.png';
+import pulseWordmark from '@/assets/pulse-wordmark.svg';
+import pulseIcon from '@/assets/pulse-icon.svg';
+import oktolabsIcon from '@/assets/oktolabs-icon.svg';
 import { useTheme } from '@/hooks/useTheme';
 import { useDashboardApi } from '@/services/api';
 import toast from 'react-hot-toast';
@@ -121,11 +122,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
               {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
             </button>
           )}
-          <div className="flex items-center gap-2">
-            <img src={theme === 'dark' ? logoDark : logoLight} alt="Okto Pulse" className="h-7 w-7 rounded" />
-            <h1 className="text-xl font-bold text-surface-900 dark:text-white font-display tracking-tight">
-              Okto Pulse
-            </h1>
+          <div className="flex items-center">
+            <img src={pulseWordmark} alt="Okto Pulse" className="h-7 w-auto" />
           </div>
           {currentBoard && (
             <span className="text-sm text-gray-500 dark:text-gray-400">
@@ -578,12 +576,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
             </button>
 
             <div className="flex flex-col items-center px-8 pt-8 pb-6">
-              <img src={theme === 'dark' ? logoDark : logoLight} alt="Okto Labs" className="w-[200px] h-[200px] object-contain rounded-xl" />
+              <img src={pulseIcon} alt="Okto Pulse" className="w-[160px] h-[160px] object-contain" />
               <h2 className="text-xl font-bold text-surface-900 dark:text-white mt-4 font-display">
                 Okto Pulse
               </h2>
               <p className="text-sm text-surface-500 dark:text-surface-400 mt-1">
-                Community Edition — v0.1.0
+                Community Edition — v0.1.2
               </p>
             </div>
 
@@ -592,7 +590,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                 License — Elastic License 2.0
               </h3>
               <div className="text-xs text-surface-600 dark:text-surface-400 leading-relaxed space-y-3">
-                <p className="font-medium text-surface-700 dark:text-surface-300">Copyright 2024–2026 Okto Labs</p>
+                <p className="font-medium text-surface-700 dark:text-surface-300 flex items-center gap-2">
+                  <img src={oktolabsIcon} alt="Okto Labs" className="h-4 w-4" />
+                  Copyright 2024–2026 Okto Labs
+                </p>
 
                 <p><strong>Acceptance.</strong> By using the software, you agree to all of the terms and conditions below.</p>
 
