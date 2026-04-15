@@ -139,10 +139,6 @@ okto-pulse init
 okto-pulse serve
 ```
 
-## Ecosystem Edition
-
-The **Ecosystem edition** adds multi-user collaboration, Clerk authentication, PostgreSQL, and portal integration. It's available for teams and organizations — contact [Okto Labs](https://oktolabs.com.br) for details.
-
 ## License
 
 [Elastic License 2.0](https://github.com/OktoLabsAI/okto-pulse/blob/main/LICENSE) — free for personal and commercial use. You may not provide this software to third parties as a hosted or managed service.
