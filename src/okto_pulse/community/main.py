@@ -1,5 +1,12 @@
 """Community edition application entry point."""
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=r"urllib3.*or chardet.*doesn't match a supported version",
+    category=Warning,
+)
+
 import os
 import sys
 from contextlib import asynccontextmanager

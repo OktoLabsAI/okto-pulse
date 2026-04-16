@@ -1,5 +1,12 @@
 """Okto Pulse Community CLI — setup and run the local-first edition."""
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=r"urllib3.*or chardet.*doesn't match a supported version",
+    category=Warning,
+)
+
 import argparse
 import asyncio
 import json
