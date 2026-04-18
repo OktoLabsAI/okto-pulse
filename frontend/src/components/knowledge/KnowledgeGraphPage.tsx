@@ -25,6 +25,9 @@ import { PendingQueueTree } from './PendingQueueTree';
 import { KGSyncIndicator } from './KGSyncIndicator';
 import { SettingsView } from './SettingsView';
 import { GlobalSearchView } from './GlobalSearchView';
+import { KGRefreshButton } from './KGRefreshButton';
+import { KGQueueProgressToast } from './KGQueueProgressToast';
+import { NodeDetailModal } from './NodeDetailModal';
 import { useKgLiveEvents } from '@/hooks/useKgLiveEvents';
 import type { KGNode, KGEdge } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
@@ -48,6 +51,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
   const [edges, setEdges] = useState<KGEdge[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<KGNode | null>(null);
+  const [modalNode, setModalNode] = useState<KGNode | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,23 +90,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     },
   });
 
-  // Keyboard shortcut: `R` reloads the graph when the user isn't typing.
-  // Skips when focus is inside an input/textarea/contenteditable so the key
-  // doesn't shadow normal typing.
-  useEffect(() => {
-    if (subView !== 'graph') return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key !== 'r' && e.key !== 'R') return;
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
-                t.isContentEditable)) return;
-      e.preventDefault();
-      loadGraph(nodeLimit);
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [subView, nodeLimit, loadGraph]);
+  // Keyboard shortcut `R` is wired by KGRefreshButton itself via `shortcut`.
 
   const handleNodeLimitChange = useCallback((limit: number) => {
     setSelectedNode(null);
@@ -225,32 +213,13 @@ export function KnowledgeGraphPage({ boardId }: Props) {
                   loadGraph(nodeLimit);
                 }}
               />
-            <button
-              type="button"
-              onClick={() => loadGraph(nodeLimit)}
-              disabled={loading}
-              data-testid="kg-refresh"
-              aria-label="Refresh graph"
-              title="Refresh graph (R)"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md shadow-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait"
-            >
-              <svg
-                className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <polyline points="23 4 23 10 17 10" />
-                <polyline points="1 20 1 14 7 14" />
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
-                <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14" />
-              </svg>
-              {loading ? 'Refreshing…' : 'Refresh'}
-            </button>
+            <KGRefreshButton
+              onRefresh={() => loadGraph(nodeLimit)}
+              loading={loading}
+              label="Refresh"
+              shortcut
+              testId="kg-refresh"
+            />
             </div>
             <GraphCanvas
               nodes={nodes}
@@ -260,6 +229,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
               initialSelectedNodeId={selectedNode?.id ?? null}
               onClearFilters={handleClearFilters}
               onOpenSpec={handleOpenSpec}
+              onShowDetails={setModalNode}
             />
             {nextCursor && (
               <button
@@ -300,6 +270,16 @@ export function KnowledgeGraphPage({ boardId }: Props) {
           />
         </div>
       )}
+
+      {modalNode && (
+        <NodeDetailModal
+          node={modalNode}
+          boardId={boardId}
+          onClose={() => setModalNode(null)}
+        />
+      )}
+
+      <KGQueueProgressToast progress={liveEvents.queueProgress} />
     </div>
   );
 }

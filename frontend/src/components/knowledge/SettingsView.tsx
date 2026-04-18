@@ -6,6 +6,7 @@
 import { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import * as kgApi from '@/services/kg-api';
+import { KGRefreshButton } from './KGRefreshButton';
 
 interface Props {
   boardId: string;
@@ -83,9 +84,16 @@ export function SettingsView({ boardId }: Props) {
 
   return (
     <div className="p-6 max-w-2xl">
-      <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-6">
-        Knowledge Graph Settings
-      </h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+          Knowledge Graph Settings
+        </h2>
+        <KGRefreshButton
+          onRefresh={loadSettings}
+          loading={loading}
+          testId="settings-refresh"
+        />
+      </div>
 
       {isStub && (
         <div

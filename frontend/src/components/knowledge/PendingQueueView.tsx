@@ -5,6 +5,7 @@
 
 import { useState, useEffect } from 'react';
 import * as kgApi from '@/services/kg-api';
+import { KGRefreshButton } from './KGRefreshButton';
 
 interface Props {
   boardId: string;
@@ -99,12 +100,11 @@ export function PendingQueueView({ boardId }: Props) {
           <span className="text-xs text-gray-500">
             {pendingCount} pending, {claimedCount} in progress
           </span>
-          <button
-            onClick={loadPending}
-            className="text-sm text-blue-600 hover:underline"
-          >
-            Refresh
-          </button>
+          <KGRefreshButton
+            onRefresh={loadPending}
+            loading={loading}
+            testId="pending-refresh"
+          />
         </div>
       </div>
 

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as kgApi from '@/services/kg-api';
 import type { PendingTreeNode, PendingTreeLevels } from '@/services/kg-api';
 import { RetryFromHereDialog } from './RetryFromHereDialog';
+import { KGRefreshButton } from './KGRefreshButton';
 
 interface Props {
   boardId: string;
@@ -270,14 +271,12 @@ export function PendingQueueTree({ boardId, initialData }: Props) {
         >
           Collapse all
         </button>
-        <button
-          type="button"
-          onClick={() => void refetch()}
-          className="text-xs text-gray-600 hover:underline"
-          data-testid="pending-tree-refresh"
-        >
-          Refresh
-        </button>
+        <KGRefreshButton
+          onRefresh={() => void refetch()}
+          loading={loading}
+          testId="pending-tree-refresh"
+          className="text-xs"
+        />
       </div>
       <div className="flex-1 overflow-auto" role="tree">
         {data.tree.map((node) => (

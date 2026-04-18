@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import * as kgApi from '@/services/kg-api';
 import { NODE_TYPE_CONFIG, type KGNodeType } from '@/types/knowledge-graph';
+import { NodeDetailModal } from './NodeDetailModal';
 
 interface Props {
   boardId: string;
@@ -26,6 +27,7 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [selected, setSelected] = useState<SearchResult | null>(null);
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -43,7 +45,7 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
   }
 
   return (
-    <div className="p-6 max-w-3xl">
+    <div className="p-6 max-w-3xl flex flex-col h-full">
       <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">
         Global Discovery
       </h2>
@@ -51,7 +53,7 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
         Search across all accessible boards for decisions, constraints, and learnings using natural language.
       </p>
 
-      <form onSubmit={handleSearch} className="flex gap-2 mb-6">
+      <form onSubmit={handleSearch} className="flex gap-2 mb-6 shrink-0">
         <input
           type="text"
           value={query}
@@ -76,7 +78,10 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
       )}
 
       {results.length > 0 && (
-        <div className="space-y-2">
+        <div
+          className="space-y-2 flex-1 overflow-y-auto pr-1"
+          data-testid="global-search-results"
+        >
           <div className="text-xs text-gray-500 dark:text-gray-400 mb-3">
             {results.length} result{results.length !== 1 ? 's' : ''} found
           </div>
@@ -84,9 +89,12 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
             const nt = (r.node_type ?? '') as KGNodeType;
             const cfg = NODE_TYPE_CONFIG[nt];
             return (
-              <div
+              <button
                 key={`${r.board_id}-${r.id}-${i}`}
-                className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                type="button"
+                onClick={() => setSelected(r)}
+                data-testid={`global-search-result-${r.id}`}
+                className="w-full text-left border border-gray-200 dark:border-gray-700 rounded-lg p-3 hover:bg-gray-50 dark:hover:bg-gray-800/50 focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
@@ -117,10 +125,18 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
                     {Math.round(r.similarity * 100)}% match
                   </div>
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
+      )}
+
+      {selected && (
+        <NodeDetailModal
+          boardId={selected.board_id}
+          nodeId={selected.id}
+          onClose={() => setSelected(null)}
+        />
       )}
     </div>
   );

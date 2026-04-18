@@ -295,7 +295,7 @@ export interface IdeationQAItem {
   id: string;
   ideation_id: string;
   question: string;
-  question_type: 'text' | 'choice' | 'multi_choice';
+  question_type: 'text' | 'choice' | 'single_choice' | 'multi_choice';
   choices: { id: string; label: string }[] | null;
   allow_free_text: boolean;
   answer: string | null;
@@ -311,7 +311,7 @@ export interface RefinementQAItem {
   id: string;
   refinement_id: string;
   question: string;
-  question_type: 'text' | 'choice' | 'multi_choice';
+  question_type: 'text' | 'choice' | 'single_choice' | 'multi_choice';
   choices: { id: string; label: string }[] | null;
   allow_free_text: boolean;
   answer: string | null;
@@ -549,7 +549,7 @@ export interface SpecQAItem {
   id: string;
   spec_id: string;
   question: string;
-  question_type: 'text' | 'choice' | 'multi_choice';
+  question_type: 'text' | 'choice' | 'single_choice' | 'multi_choice';
   choices: SpecQAChoiceOption[] | null;
   allow_free_text: boolean;
   answer: string | null;

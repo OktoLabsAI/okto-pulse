@@ -6,6 +6,7 @@
 import { useState, useEffect } from 'react';
 import type { AuditEntry } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
+import { KGRefreshButton } from './KGRefreshButton';
 
 interface Props {
   boardId: string;
@@ -74,12 +75,11 @@ export function AuditLogView({ boardId }: Props) {
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
           Audit Log
         </h2>
-        <button
-          onClick={loadAudit}
-          className="text-sm text-blue-600 hover:underline"
-        >
-          Refresh
-        </button>
+        <KGRefreshButton
+          onRefresh={loadAudit}
+          loading={loading}
+          testId="audit-refresh"
+        />
       </div>
 
       <div className="space-y-3">

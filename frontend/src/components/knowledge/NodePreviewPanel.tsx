@@ -18,11 +18,14 @@ interface Props {
   node: KGNode | null;
   onClose: () => void;
   onOpenSpec?: (specRef: string) => void;
+  /** Called when the user clicks "Show more" — promotes the inline preview
+   *  to a full NodeDetailModal rendered by the parent. */
+  onShowDetails?: (node: KGNode) => void;
 }
 
 const SPEC_REF_PATTERN = /^spec:/i;
 
-export function NodePreviewPanel({ node, onClose, onOpenSpec }: Props) {
+export function NodePreviewPanel({ node, onClose, onOpenSpec, onShowDetails }: Props) {
   const specRef = useMemo(() => {
     if (!node?.source_artifact_ref) return null;
     return SPEC_REF_PATTERN.test(node.source_artifact_ref)
@@ -95,16 +98,28 @@ export function NodePreviewPanel({ node, onClose, onOpenSpec }: Props) {
         </div>
       )}
 
-      {specRef && onOpenSpec && (
-        <button
-          type="button"
-          onClick={() => onOpenSpec(specRef)}
-          data-testid="kg-preview-open-spec"
-          className="w-full px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
-        >
-          Open in spec
-        </button>
-      )}
+      <div className="flex flex-col gap-1.5">
+        {onShowDetails && (
+          <button
+            type="button"
+            onClick={() => onShowDetails(node)}
+            data-testid="kg-preview-show-more"
+            className="w-full px-3 py-1.5 text-xs bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+          >
+            Show more
+          </button>
+        )}
+        {specRef && onOpenSpec && (
+          <button
+            type="button"
+            onClick={() => onOpenSpec(specRef)}
+            data-testid="kg-preview-open-spec"
+            className="w-full px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            Open in spec
+          </button>
+        )}
+      </div>
     </aside>
   );
 }

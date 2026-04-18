@@ -40,10 +40,21 @@ export interface UseKgLiveEventsOptions {
   enabled?: boolean;
 }
 
+export interface KgQueueProgress {
+  pending: number;
+  claimed: number;
+  done: number;
+  failed: number;
+  paused: number;
+  total: number;
+}
+
 export interface UseKgLiveEventsReturn {
   connectionState: KgConnectionState;
   unseenCommits: number;
   lastEvent: KgLiveEvent | null;
+  /** Last `kg.queue.progress` snapshot, or null if none received yet. */
+  queueProgress: KgQueueProgress | null;
   markSeen: () => void;
   flushNow: () => void;
 }
@@ -57,6 +68,7 @@ export function useKgLiveEvents(
   const [connectionState, setConnectionState] = useState<KgConnectionState>('connecting');
   const [unseenCommits, setUnseenCommits] = useState(0);
   const [lastEvent, setLastEvent] = useState<KgLiveEvent | null>(null);
+  const [queueProgress, setQueueProgress] = useState<KgQueueProgress | null>(null);
 
   const sourceRef = useRef<EventSource | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -97,6 +109,29 @@ export function useKgLiveEvents(
       /* malformed event — drop */
     }
   }, [flushBurst]);
+
+  const handleProgress = useCallback((evt: MessageEvent) => {
+    try {
+      const data: KgLiveEvent = JSON.parse(evt.data);
+      const payload = data.payload as KgQueueProgress | undefined;
+      if (
+        payload &&
+        typeof payload.pending === 'number' &&
+        typeof payload.total === 'number'
+      ) {
+        setQueueProgress({
+          pending: payload.pending ?? 0,
+          claimed: payload.claimed ?? 0,
+          done: payload.done ?? 0,
+          failed: payload.failed ?? 0,
+          paused: payload.paused ?? 0,
+          total: payload.total ?? 0,
+        });
+      }
+    } catch {
+      /* malformed event — drop */
+    }
+  }, []);
 
   const startPolling = useCallback(() => {
     if (pollingRef.current) return;
@@ -158,6 +193,7 @@ export function useKgLiveEvents(
     });
     es.addEventListener('kg.session.committed', handleCommit as EventListener);
     es.addEventListener('kg.board.cleared', handleCommit as EventListener);
+    es.addEventListener('kg.queue.progress', handleProgress as EventListener);
 
     es.onerror = () => {
       failuresRef.current += 1;
@@ -171,7 +207,7 @@ export function useKgLiveEvents(
         setTimeout(subscribe, 1_000 * failuresRef.current);
       }
     };
-  }, [boardId, handleCommit, startPolling]);
+  }, [boardId, handleCommit, handleProgress, startPolling]);
 
   // Subscribe on mount / boardId change.
   useEffect(() => {
@@ -196,6 +232,7 @@ export function useKgLiveEvents(
     connectionState,
     unseenCommits,
     lastEvent,
+    queueProgress,
     markSeen,
     flushNow: flushBurst,
   };

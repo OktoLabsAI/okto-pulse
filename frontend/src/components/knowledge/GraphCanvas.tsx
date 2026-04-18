@@ -21,7 +21,7 @@
  *   filtered-empty     → data-empty-state="filtered" + clear-filters CTA (AC-19)
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -61,6 +61,8 @@ interface Props {
   onClearFilters?: () => void;
   /** Navigate to a spec reference when "Open in spec" is clicked from the preview panel (S5.2). */
   onOpenSpec?: (specRef: string) => void;
+  /** Promote the inline preview to a full modal when "Show more" is clicked. */
+  onShowDetails?: (node: KGNode) => void;
 }
 
 function prefersDarkMode(): boolean {
@@ -77,12 +79,17 @@ export function GraphCanvas({
   initialSelectedNodeId = null,
   onClearFilters,
   onOpenSpec,
+  onShowDetails,
 }: Props) {
   // Selection is internal to the canvas — parent lives independently of it.
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedNodeId);
   // Hover state drives the NodeTooltip (S5.1 / AC-7).
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [isDark, setIsDark] = useState<boolean>(() => prefersDarkMode());
+  // Drag overrides — user-moved positions persist across re-layouts but NOT
+  // across full graph reloads (no backend persistence per Fase 1 decision).
+  const dragOverridesRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const [dragTick, setDragTick] = useState(0);
 
   // Allow parents to programmatically clear/set selection through a prop change.
   useEffect(() => {
@@ -153,7 +160,8 @@ export function GraphCanvas({
   const rfNodes: RFNode<KGNodeData>[] = useMemo(() => {
     const hasSelection = selectedId !== null && filteredNodeIds.has(selectedId);
     return filteredNodes.map((n) => {
-      const pos = positions.get(n.id) ?? { x: 0, y: 0 };
+      const override = dragOverridesRef.current.get(n.id);
+      const pos = override ?? positions.get(n.id) ?? { x: 0, y: 0 };
       const isSelected = n.id === selectedId;
       const isConnectedToSelected = connectedNodeIds.has(n.id);
       return {
@@ -168,7 +176,9 @@ export function GraphCanvas({
         } satisfies KGNodeData,
       };
     });
-  }, [filteredNodes, positions, selectedId, connectedNodeIds, filteredNodeIds]);
+    // dragTick forces recompute after a drag-stop commits a new override.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredNodes, positions, selectedId, connectedNodeIds, filteredNodeIds, dragTick]);
 
   const rfEdges: RFEdge[] = useMemo(() => {
     return filteredEdges.map((e) => {
@@ -226,6 +236,21 @@ export function GraphCanvas({
     setSelectedId(null);
     onNodeClick?.(null);
   }, [onNodeClick]);
+
+  const handleNodeDragStop: NodeMouseHandler = useCallback((_event, rfNode) => {
+    dragOverridesRef.current.set(rfNode.id, {
+      x: rfNode.position.x,
+      y: rfNode.position.y,
+    });
+    setDragTick((t) => t + 1);
+  }, []);
+
+  // Wipe drag overrides when the graph shape changes (new load / filter that
+  // changes the node set). Keeps user layout during selection/hover churn but
+  // not across data refetches — AC for Fase 1.3.
+  useEffect(() => {
+    dragOverridesRef.current = new Map();
+  }, [nodes]);
 
   const selectedNode = useMemo(() => {
     if (!selectedId) return null;
@@ -289,7 +314,9 @@ export function GraphCanvas({
         onNodeDoubleClick={handleNodeDoubleClick}
         onNodeMouseEnter={handleNodeMouseEnter}
         onNodeMouseLeave={handleNodeMouseLeave}
+        onNodeDragStop={handleNodeDragStop}
         onPaneClick={handlePaneClick}
+        nodesDraggable
         fitView
         fitViewOptions={{ padding: 0.2 }}
         minZoom={0.1}
@@ -318,6 +345,7 @@ export function GraphCanvas({
         node={selectedNode}
         onClose={handlePreviewClose}
         onOpenSpec={onOpenSpec}
+        onShowDetails={onShowDetails}
       />
     </div>
   );

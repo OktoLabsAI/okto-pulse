@@ -485,7 +485,9 @@ function ChoiceAnswerForm({
   const [freeText, setFreeText] = useState('');
 
   const toggleOption = (optId: string) => {
-    if (qa.question_type === 'choice') {
+    // `single_choice` is an alias of `choice` — accept both for single-select.
+    const isSingle = qa.question_type === 'choice' || qa.question_type === 'single_choice';
+    if (isSingle) {
       setSel([optId]);
     } else {
       setSel((prev) => prev.includes(optId) ? prev.filter((s) => s !== optId) : [...prev, optId]);
