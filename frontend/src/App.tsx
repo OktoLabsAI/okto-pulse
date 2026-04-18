@@ -10,6 +10,7 @@ import { RefinementsPanel } from '@/components/refinements';
 import { SpecsPanel } from '@/components/specs';
 import { SprintsPanel } from '@/components/sprints';
 import { AnalyticsPage } from '@/components/analytics';
+import { GlobalKGActivityIndicator } from '@/components/knowledge/GlobalKGActivityIndicator';
 import logoLight from '@/assets/logo-light.png';
 import logoDark from '@/assets/logo-dark.png';
 
@@ -229,6 +230,10 @@ function App() {
           boardName={currentBoard.name}
         />
       )}
+
+      {/* Cross-app indicator: reflects KG consolidation work for the current
+          board in every tab, not only when the KG page is mounted. */}
+      <GlobalKGActivityIndicator boardId={currentBoard?.id ?? null} />
 
       {/* Analytics fullscreen overlay */}
       {showAnalytics && (

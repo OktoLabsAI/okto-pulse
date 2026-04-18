@@ -26,7 +26,6 @@ import { KGSyncIndicator } from './KGSyncIndicator';
 import { SettingsView } from './SettingsView';
 import { GlobalSearchView } from './GlobalSearchView';
 import { KGRefreshButton } from './KGRefreshButton';
-import { KGQueueProgressToast } from './KGQueueProgressToast';
 import { NodeDetailModal } from './NodeDetailModal';
 import { useKgLiveEvents } from '@/hooks/useKgLiveEvents';
 import type { KGNode, KGEdge } from '@/types/knowledge-graph';
@@ -279,7 +278,8 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         />
       )}
 
-      <KGQueueProgressToast progress={liveEvents.queueProgress} />
+      {/* Queue progress now surfaced globally via GlobalKGActivityIndicator
+          in App.tsx — removed the per-page toast to avoid duplication. */}
     </div>
   );
 }

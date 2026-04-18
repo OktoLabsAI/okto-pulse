@@ -24,7 +24,7 @@ function makeNode(id: string, overrides: Partial<KGNode> = {}): KGNode {
     title: `Node ${id}`,
     content: '',
     source_confidence: 0.8,
-    validation_status: 'corroborated',
+    relevance_score: 0.85,
     node_type: 'Decision',
     created_at: '2026-04-16T10:00:00',
     ...overrides,
@@ -42,28 +42,28 @@ function makeEdge(source: string, target: string): KGEdge {
   };
 }
 
-describe('computeChargeStrength (ts_385e02af)', () => {
-  it('sparse graph (10 nodes, 3 edges) returns the -400 floor', () => {
-    expect(computeChargeStrength(10, 3)).toBe(-400);
+describe('computeChargeStrength (post-v0.3 spacing bump)', () => {
+  // Constants: CHARGE_FLOOR=-900, CHARGE_DENSITY_COEFFICIENT=300
+  it('sparse graph (10 nodes, 3 edges) returns the -900 floor', () => {
+    expect(computeChargeStrength(10, 3)).toBe(-900);
   });
 
-  it('dense graph (100 nodes, 200 edges) still clamps at the -400 floor because 120*2=240 < 400', () => {
-    expect(computeChargeStrength(100, 200)).toBe(-Math.max(400, 240));
-    expect(computeChargeStrength(100, 200)).toBe(-400);
+  it('dense graph (100 nodes, 200 edges) still clamps at the floor (300*2=600 < 900)', () => {
+    expect(computeChargeStrength(100, 200)).toBe(-900);
   });
 
-  it('very dense graph scales beyond the floor (5 nodes, 50 edges → 120*10=1200)', () => {
-    expect(computeChargeStrength(5, 50)).toBe(-1200);
+  it('very dense graph scales beyond the floor (5 nodes, 50 edges → 300*10=3000)', () => {
+    expect(computeChargeStrength(5, 50)).toBe(-3000);
   });
 
   it('zero nodes does not divide by zero — uses Math.max(nodeCount, 1) as denominator', () => {
     expect(() => computeChargeStrength(0, 5)).not.toThrow();
-    expect(computeChargeStrength(0, 5)).toBe(-Math.max(400, 120 * 5));
-    expect(computeChargeStrength(0, 5)).toBe(-600);
+    // 300 * 5 = 1500; max(900, 1500) = 1500
+    expect(computeChargeStrength(0, 5)).toBe(-1500);
   });
 
-  it('zero edges collapses the density term to 0 and returns -400', () => {
-    expect(computeChargeStrength(10, 0)).toBe(-400);
+  it('zero edges collapses the density term to 0 and returns the floor', () => {
+    expect(computeChargeStrength(10, 0)).toBe(-900);
   });
 });
 

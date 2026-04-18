@@ -37,6 +37,7 @@ import {
   FileCode,
   Download,
   Network,
+  ShieldCheck,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportSpec, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
@@ -49,6 +50,7 @@ import { RulesTab } from './RulesTab';
 import { ContractsTab } from './ContractsTab';
 import { TechnicalRequirementsTab } from './TechnicalRequirementsTab';
 import { KGValidationTab } from './KGValidationTab';
+import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
 import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
 import { SPEC_STATUSES, SPEC_STATUS_LABELS } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
@@ -65,7 +67,7 @@ interface SpecModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'mockups' | 'qa' | 'skills' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation';
+type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'mockups' | 'qa' | 'skills' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg';
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -1580,7 +1582,8 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={14} />, count: spec.knowledge_bases?.length || 0 },
     { id: 'cards', label: 'Cards', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
     { id: 'sprints', label: 'Sprints', icon: <Layers size={14} />, count: linkedSprints.length },
-    { id: 'validation', label: 'Validation', icon: <Network size={14} /> },
+    { id: 'validation', label: 'Validation', icon: <ShieldCheck size={14} /> },
+    { id: 'kg', label: 'KG Graph', icon: <Network size={14} /> },
     { id: 'history', label: 'Activity', icon: <History size={14} /> },
   ];
 
@@ -1906,6 +1909,11 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
             />
           )}
           {activeTab === 'validation' && spec && (
+            <div className="p-4 space-y-4">
+              <SpecValidationHistoryPanel specId={specId} />
+            </div>
+          )}
+          {activeTab === 'kg' && spec && (
             <KGValidationTab boardId={spec.board_id} specId={specId} />
           )}
           {activeTab === 'history' && <HistoryTab specId={specId} />}

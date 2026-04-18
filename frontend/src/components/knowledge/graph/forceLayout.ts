@@ -24,11 +24,15 @@ import {
 } from 'd3-force';
 import type { KGEdge, KGNode } from '@/types/knowledge-graph';
 
-export const SIMULATION_TICKS = 300;
-export const LINK_DISTANCE = 120;
-export const COLLIDE_RADIUS = 50;
-export const CHARGE_FLOOR = -400;
-export const CHARGE_DENSITY_COEFFICIENT = 120;
+// Spacing constants — tuned after user feedback that nodes were
+// overlapping at the default density. Tripled the link distance, ~2x
+// the collision radius, and pushed the charge floor deeper so dense
+// graphs (1 edge per node or more) still keep neighbours visibly apart.
+export const SIMULATION_TICKS = 400;
+export const LINK_DISTANCE = 220;
+export const COLLIDE_RADIUS = 110;
+export const CHARGE_FLOOR = -900;
+export const CHARGE_DENSITY_COEFFICIENT = 300;
 
 export interface NodePosition {
   x: number;
