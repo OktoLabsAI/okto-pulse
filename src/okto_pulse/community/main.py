@@ -267,6 +267,18 @@ def create_community_app():
         # so we must start every worker the core lifespan would have —
         # otherwise outbox events pile up (breaking Global Discovery) and
         # stale sessions leak.
+
+        # Event Bus dispatcher: import events package first so handler
+        # decorators populate the registry BEFORE the drain loop starts.
+        from okto_pulse.core import events as _events  # noqa: F401
+        from okto_pulse.core.events.dispatcher import (
+            EventDispatcher,
+            set_dispatcher,
+        )
+        event_dispatcher = EventDispatcher(get_session_factory())
+        await event_dispatcher.start()
+        set_dispatcher(event_dispatcher)
+
         from okto_pulse.core.kg.workers.consolidation import get_consolidation_worker
         consolidation_worker = get_consolidation_worker(get_session_factory())
         await consolidation_worker.start()
@@ -293,6 +305,10 @@ def create_community_app():
         try:
             yield
         finally:
+            # Stop dispatcher FIRST so in-flight handlers finish before the
+            # workers they depend on (consolidation) shut down.
+            await event_dispatcher.stop(timeout=5.0)
+            set_dispatcher(None)
             if outbox_worker is not None:
                 await outbox_worker.stop()
             if cleanup_worker is not None:
