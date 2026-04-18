@@ -7,6 +7,7 @@ import { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import * as kgApi from '@/services/kg-api';
 import { KGRefreshButton } from './KGRefreshButton';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface Props {
   boardId: string;
@@ -30,6 +31,7 @@ interface BoardKGSettings {
 }
 
 export function SettingsView({ boardId }: Props) {
+  const perms = usePermissions(boardId);
   const [settings, setSettings] = useState<BoardKGSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -170,27 +172,30 @@ export function SettingsView({ boardId }: Props) {
         />
       </div>
 
-      {/* Danger zone */}
-      <div className="mt-10 pt-6 border-t border-red-200 dark:border-red-900/30">
-        <h3 className="text-sm font-medium text-red-600 dark:text-red-400 uppercase tracking-wider mb-3">
-          Danger Zone
-        </h3>
-        <button
-          onClick={async () => {
-            if (!confirm('This will permanently delete all KG data for this board. Continue?')) return;
-            try {
-              await kgApi.deleteKG(boardId);
-              toast.success('Knowledge graph data deleted');
-              loadSettings();
-            } catch (err: any) {
-              toast.error(err.message || 'Failed to delete KG data');
-            }
-          }}
-          className="px-4 py-2 text-sm border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20"
-        >
-          Delete KG Data
-        </button>
-      </div>
+      {/* Danger zone — gated by kg.admin.wipe_board. Hidden entirely for
+          presets without write access so the button never noise-clicks to 403. */}
+      {perms.has('kg.admin.wipe_board') && (
+        <div className="mt-10 pt-6 border-t border-red-200 dark:border-red-900/30">
+          <h3 className="text-sm font-medium text-red-600 dark:text-red-400 uppercase tracking-wider mb-3">
+            Danger Zone
+          </h3>
+          <button
+            onClick={async () => {
+              if (!confirm('This will permanently delete all KG data for this board. Continue?')) return;
+              try {
+                await kgApi.deleteKG(boardId);
+                toast.success('Knowledge graph data deleted');
+                loadSettings();
+              } catch (err: any) {
+                toast.error(err.message || 'Failed to delete KG data');
+              }
+            }}
+            className="px-4 py-2 text-sm border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20"
+          >
+            Delete KG Data
+          </button>
+        </div>
+      )}
     </div>
   );
 }

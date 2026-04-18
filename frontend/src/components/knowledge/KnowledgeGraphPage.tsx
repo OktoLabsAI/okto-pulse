@@ -189,6 +189,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
           nodeCount={nodes.length}
           nodeLimit={nodeLimit}
           onNodeLimitChange={handleNodeLimitChange}
+          boardId={boardId}
         />
       </div>
 

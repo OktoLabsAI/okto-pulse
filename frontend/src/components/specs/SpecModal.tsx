@@ -45,6 +45,7 @@ import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import type { Spec, SpecStatus, SpecSkill, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
+import { usePermissions } from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
 import { RulesTab } from './RulesTab';
 import { ContractsTab } from './ContractsTab';
@@ -1424,6 +1425,7 @@ function ValidationErrorDisplay({ error }: { error: string }) {
 export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: SpecModalProps) {
   const api = useDashboardApi();
   const currentBoard = useCurrentBoard();
+  const perms = usePermissions(_boardId || currentBoard?.id);
   const [spec, setSpec] = useState<Spec | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<SpecStatus | null>(null);
@@ -1954,7 +1956,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
             Delete spec
           </button>
           <div className="flex items-center gap-2">
-            {spec.status === 'approved' && (
+            {spec.status === 'approved' && perms.has('spec.validation.submit') && (
               <button
                 onClick={() => handleMoveSpec('validated' as SpecStatus)}
                 disabled={validating}

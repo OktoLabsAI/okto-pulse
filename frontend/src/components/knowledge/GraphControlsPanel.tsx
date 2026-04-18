@@ -14,6 +14,7 @@ import {
   EDGE_TYPE_CONFIG,
   NODE_TYPE_CONFIG,
 } from '@/types/knowledge-graph';
+import { usePermissions } from '@/hooks/usePermissions';
 
 type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'settings' | 'global';
 
@@ -34,6 +35,8 @@ interface Props {
   nodeLimit: number;
   /** Notified when the user picks a new page size — parent refetches. */
   onNodeLimitChange: (limit: number) => void;
+  /** Board scope for permission resolution. Fail-open if absent. */
+  boardId?: string;
 }
 
 const SUB_VIEWS: { key: SubView; label: string }[] = [
@@ -48,6 +51,15 @@ const SUB_VIEWS: { key: SubView; label: string }[] = [
 const ALL_NODE_TYPES = Object.keys(NODE_TYPE_CONFIG) as KGNodeType[];
 export const NODE_LIMIT_OPTIONS = [50, 100, 200, 500] as const;
 
+// Maps each sub-view to the permission flag that gates its visibility.
+// Absent entry = always visible.
+const SUB_VIEW_GATES: Partial<Record<SubView, string>> = {
+  settings: 'kg.admin.settings_read',
+  pending: 'kg.session.propose',
+  pending_tree: 'kg.session.propose',
+  global: 'kg.query.global',
+};
+
 export function GraphControlsPanel({
   filters,
   onFiltersChange,
@@ -56,8 +68,16 @@ export function GraphControlsPanel({
   nodeCount,
   nodeLimit,
   onNodeLimitChange,
+  boardId,
 }: Props) {
+  const perms = usePermissions(boardId);
   const updateFilters = (patch: Partial<Filters>) => onFiltersChange({ ...filters, ...patch });
+
+  const visibleSubViews = SUB_VIEWS.filter((sv) => {
+    const requiredFlag = SUB_VIEW_GATES[sv.key];
+    if (!requiredFlag) return true;
+    return perms.has(requiredFlag);
+  });
 
   return (
     <div className="p-4 space-y-6" role="navigation" aria-label="Knowledge graph controls">
@@ -65,7 +85,7 @@ export function GraphControlsPanel({
       <div>
         <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Views</h3>
         <div className="space-y-1">
-          {SUB_VIEWS.map((sv) => (
+          {visibleSubViews.map((sv) => (
             <button
               key={sv.key}
               onClick={() => onSubViewChange(sv.key)}
