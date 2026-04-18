@@ -9,7 +9,7 @@
  * - reviewer + timestamp
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Check, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -22,6 +22,14 @@ interface SpecValidationHistoryPanelProps {
 
 export function SpecValidationHistoryPanel({ specId, refreshKey = 0 }: SpecValidationHistoryPanelProps) {
   const api = useDashboardApi();
+  // `useDashboardApi()` rebuilds its object every render, so keeping `api`
+  // in the effect deps would loop forever: effect fires → setLoading(true)
+  // → re-render → new api ref → cleanup cancels the in-flight request →
+  // effect fires again → repeat. Pin the latest api to a ref and depend
+  // only on the stable inputs (specId, refreshKey).
+  const apiRef = useRef(api);
+  apiRef.current = api;
+
   const [data, setData] = useState<SpecValidationList | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -29,7 +37,7 @@ export function SpecValidationHistoryPanel({ specId, refreshKey = 0 }: SpecValid
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api.listSpecValidations(specId)
+    apiRef.current.listSpecValidations(specId)
       .then((res: SpecValidationList) => {
         if (!cancelled) setData(res);
       })
@@ -40,7 +48,7 @@ export function SpecValidationHistoryPanel({ specId, refreshKey = 0 }: SpecValid
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [specId, refreshKey, api]);
+  }, [specId, refreshKey]);
 
   if (loading) {
     return <div className="text-xs text-gray-500 dark:text-gray-400 p-3">Loading validation history…</div>;
