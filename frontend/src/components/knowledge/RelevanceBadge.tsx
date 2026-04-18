@@ -12,8 +12,6 @@
  * KGValidationTab so the colour coding stays consistent across the IDE.
  */
 
-import React from 'react';
-
 export interface RelevanceBadgeProps {
   score: number | null | undefined;
   /** Compact variant — tighter padding + no label suffix */
