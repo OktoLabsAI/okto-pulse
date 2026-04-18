@@ -22,7 +22,7 @@ const BASE_NODE: KGNode = {
   title: 'Canonical test node',
   content: 'Body used by every snapshot so diffs focus on the wrapper.',
   source_confidence: 0.82,
-  validation_status: 'corroborated',
+  relevance_score: 0.85,
   node_type: 'Decision',
   created_at: '2026-04-15T10:00:00',
 };

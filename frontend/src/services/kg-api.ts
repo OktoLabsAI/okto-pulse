@@ -250,6 +250,23 @@ export async function deleteKG(boardId: string) {
   return kgFetch<void>(`/boards/${boardId}/kg`, { method: 'DELETE' });
 }
 
+// v0.3.0 R3 — manual relevance boost (+0.3, clamped at 1.5)
+export interface BoostNodeResponse {
+  node_id: string;
+  node_type: string;
+  score_before: number;
+  score_after: number;
+  boosted_at: string;
+  boosted_by: string;
+}
+
+export async function boostNode(boardId: string, nodeId: string) {
+  return kgFetch<BoostNodeResponse>(
+    `/boards/${boardId}/nodes/${nodeId}/boost`,
+    { method: 'POST' }
+  );
+}
+
 // Schema
 export async function getSchemaInfo(boardId?: string, includeInternal = false) {
   const qs = new URLSearchParams();

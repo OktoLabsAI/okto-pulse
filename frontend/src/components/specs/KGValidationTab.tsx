@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import * as kgApi from '@/services/kg-api';
 import { NODE_TYPE_CONFIG, type KGNode, type KGEdge, type KGNodeType } from '@/types/knowledge-graph';
 import { NodeDetailModal } from '@/components/knowledge/NodeDetailModal';
+import { RelevanceBadge } from '@/components/knowledge/RelevanceBadge';
 
 interface Props {
   boardId: string;
@@ -21,8 +22,9 @@ interface Props {
 interface NodeTypeSummary {
   type: KGNodeType;
   total: number;
-  validated: number;
-  unvalidated: number;
+  high: number;
+  mid: number;
+  low: number;
   avgConfidence: number;
 }
 
@@ -77,14 +79,17 @@ export function KGValidationTab({ boardId, specId }: Props) {
     }
     return Array.from(buckets.entries())
       .map(([type, ns]) => {
-        const validated = ns.filter((n) => n.validation_status !== 'unvalidated').length;
+        const high = ns.filter((n) => (n.relevance_score ?? 0.5) >= 0.7).length;
+        const low = ns.filter((n) => (n.relevance_score ?? 0.5) < 0.3).length;
+        const mid = ns.length - high - low;
         const avg =
           ns.reduce((s, n) => s + (n.source_confidence ?? 0), 0) / (ns.length || 1);
         return {
           type,
           total: ns.length,
-          validated,
-          unvalidated: ns.length - validated,
+          high,
+          mid,
+          low,
           avgConfidence: avg,
         };
       })
@@ -99,8 +104,9 @@ export function KGValidationTab({ boardId, specId }: Props) {
     return Array.from(buckets.entries()).sort((a, b) => b[1] - a[1]);
   }, [edges]);
 
-  const totalValidated = summaries.reduce((s, x) => s + x.validated, 0);
-  const totalUnvalidated = summaries.reduce((s, x) => s + x.unvalidated, 0);
+  const totalHigh = summaries.reduce((s, x) => s + x.high, 0);
+  const totalMid = summaries.reduce((s, x) => s + x.mid, 0);
+  const totalLow = summaries.reduce((s, x) => s + x.low, 0);
 
   if (loading) {
     return (
@@ -138,10 +144,11 @@ export function KGValidationTab({ boardId, specId }: Props) {
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-4 gap-3">
         <Metric label="Nodes derived" value={nodes.length} />
-        <Metric label="Validated" value={totalValidated} tone="ok" />
-        <Metric label="Unvalidated" value={totalUnvalidated} tone={totalUnvalidated > 0 ? 'warn' : 'neutral'} />
+        <Metric label="High relevance" value={totalHigh} tone="ok" />
+        <Metric label="Mid" value={totalMid} tone="neutral" />
+        <Metric label="Low" value={totalLow} tone={totalLow > 0 ? 'warn' : 'neutral'} />
       </div>
 
       <section>
@@ -164,18 +171,24 @@ export function KGValidationTab({ boardId, specId }: Props) {
                   <span>{cfg?.icon ?? ''}</span>
                   <span>{s.type}</span>
                 </span>
-                <div className="flex-1 grid grid-cols-3 gap-2 text-xs text-gray-700 dark:text-gray-300">
+                <div className="flex-1 grid grid-cols-4 gap-2 text-xs text-gray-700 dark:text-gray-300">
                   <span>
                     <span className="font-medium">{s.total}</span> total
                   </span>
                   <span>
-                    <span className="font-medium text-green-700 dark:text-green-400">
-                      {s.validated}
+                    <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                      {s.high}
                     </span>{' '}
-                    validated
+                    high
                   </span>
-                  <span className={s.unvalidated > 0 ? 'text-amber-700 dark:text-amber-400' : ''}>
-                    <span className="font-medium">{s.unvalidated}</span> pending
+                  <span>
+                    <span className="font-medium text-amber-700 dark:text-amber-400">
+                      {s.mid}
+                    </span>{' '}
+                    mid
+                  </span>
+                  <span className={s.low > 0 ? 'text-rose-700 dark:text-rose-400' : ''}>
+                    <span className="font-medium">{s.low}</span> low
                   </span>
                 </div>
                 <div className="text-xs text-gray-500">
@@ -234,15 +247,8 @@ export function KGValidationTab({ boardId, specId }: Props) {
                 <span className="text-[10px] uppercase text-gray-400 shrink-0">
                   {n.node_type}
                 </span>
-                <span
-                  className={
-                    'text-[10px] shrink-0 ' +
-                    (n.validation_status === 'unvalidated'
-                      ? 'text-amber-600 dark:text-amber-400'
-                      : 'text-green-700 dark:text-green-400')
-                  }
-                >
-                  {n.validation_status}
+                <span className="shrink-0">
+                  <RelevanceBadge score={n.relevance_score} compact />
                 </span>
               </button>
             );

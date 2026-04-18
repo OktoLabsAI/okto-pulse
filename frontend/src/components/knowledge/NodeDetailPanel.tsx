@@ -9,6 +9,7 @@ import toast from 'react-hot-toast';
 import type { KGNode } from '@/types/knowledge-graph';
 import { NODE_TYPE_CONFIG } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
+import { RelevanceBadge } from './RelevanceBadge';
 
 interface Props {
   node: KGNode;
@@ -74,6 +75,29 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
     }
   }
 
+  const [boosting, setBoosting] = useState(false);
+  const [optimisticScore, setOptimisticScore] = useState<number | null>(null);
+
+  async function handleBoost() {
+    setBoosting(true);
+    const before = typeof optimisticScore === 'number' ? optimisticScore : node.relevance_score ?? 0.5;
+    const optimistic = Math.min(1.5, before + 0.3);
+    setOptimisticScore(optimistic);
+    try {
+      const data = await kgApi.boostNode(boardId, node.id);
+      setOptimisticScore(data.score_after);
+      toast.success(`Score boosted: ${data.score_before.toFixed(2)} → ${data.score_after.toFixed(2)}`);
+    } catch (err: any) {
+      setOptimisticScore(before);
+      toast.error(err.message || 'Failed to boost node');
+    } finally {
+      setBoosting(false);
+    }
+  }
+
+  const displayScore =
+    typeof optimisticScore === 'number' ? optimisticScore : node.relevance_score ?? 0.5;
+
   return (
     <div className="p-4" role="complementary" aria-label="Node detail panel">
       <div className="flex items-center justify-between mb-4">
@@ -121,10 +145,24 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
           </p>
         </div>
         <div className="bg-gray-50 dark:bg-gray-800 p-2 rounded">
-          <span className="text-gray-500">Validation</span>
-          <p className="font-semibold text-gray-900 dark:text-gray-100">
-            {node.validation_status}
-          </p>
+          <span className="text-gray-500">Relevance</span>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <RelevanceBadge score={displayScore} compact />
+            <button
+              type="button"
+              onClick={handleBoost}
+              disabled={boosting || displayScore >= 1.5}
+              className="px-2 py-0.5 text-xs rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-400 text-white font-medium"
+              title="Adds +0.3 to the relevance score (clamped at 1.5)"
+            >
+              {boosting ? '...' : 'Boost'}
+            </button>
+          </div>
+          {typeof node.query_hits === 'number' && (
+            <p className="mt-1 text-[10px] text-gray-500">
+              hits: {node.query_hits}
+            </p>
+          )}
         </div>
       </div>
 

@@ -13,6 +13,7 @@
 import { useMemo } from 'react';
 import type { KGNode } from '@/types/knowledge-graph';
 import { NODE_TYPE_CONFIG } from '@/types/knowledge-graph';
+import { RelevanceBadge } from './RelevanceBadge';
 
 interface Props {
   node: KGNode | null;
@@ -84,8 +85,10 @@ export function NodePreviewPanel({ node, onClose, onOpenSpec, onShowDetails }: P
           </div>
         </div>
         <div className="bg-gray-50 dark:bg-gray-800 rounded px-2 py-1">
-          <div className="text-gray-500">Validation</div>
-          <div className="font-semibold">{node.validation_status}</div>
+          <div className="text-gray-500">Relevance</div>
+          <div className="mt-0.5">
+            <RelevanceBadge score={node.relevance_score} compact />
+          </div>
         </div>
       </div>
 

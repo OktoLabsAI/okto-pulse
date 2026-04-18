@@ -18,7 +18,7 @@ const BASE_NODE: KGNode = {
   title: 'Pick PostgreSQL over Mongo',
   content: 'We chose Postgres because relational queries dominate our access pattern.',
   source_confidence: 0.87,
-  validation_status: 'corroborated',
+  relevance_score: 0.85,
   node_type: 'Decision',
   source_artifact_ref: 'spec:dc9075a9',
   created_at: '2026-04-16T00:00:00',

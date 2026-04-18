@@ -19,7 +19,7 @@ const NODE: KGNode = {
   content: 'Turning on strict fixes a long list of implicit-any issues.',
   justification: 'Fewer production bugs, better IDE hints.',
   source_confidence: 0.72,
-  validation_status: 'human_validated',
+  relevance_score: 0.85,
   node_type: 'Decision',
   source_artifact_ref: 'spec:abcd-1234',
 };
@@ -32,7 +32,7 @@ describe('NodePreviewPanel — S5.2 / AC-8', () => {
     expect(container.querySelector('[data-testid="kg-preview-panel"]')).toBeNull();
   });
 
-  it('renders title, content, justification, and validation_status', () => {
+  it('renders title, content, justification, and relevance score', () => {
     const { getByText, getByTestId } = render(
       <NodePreviewPanel node={NODE} onClose={() => {}} />,
     );
@@ -40,7 +40,7 @@ describe('NodePreviewPanel — S5.2 / AC-8', () => {
     expect(getByText('Adopt TypeScript strict mode')).toBeTruthy();
     expect(getByText(/Turning on strict/)).toBeTruthy();
     expect(getByText(/Fewer production bugs/)).toBeTruthy();
-    expect(getByText('human_validated')).toBeTruthy();
+    expect(getByTestId('relevance-badge')).toBeTruthy();
     expect(getByText('72%')).toBeTruthy();
   });
 

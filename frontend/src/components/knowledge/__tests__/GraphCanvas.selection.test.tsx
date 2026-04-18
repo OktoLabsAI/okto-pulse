@@ -37,7 +37,7 @@ const NODE: KGNode = {
   title: 'Selected node',
   content: '',
   source_confidence: 1,
-  validation_status: 'corroborated',
+  relevance_score: 0.85,
   node_type: 'Decision',
   created_at: '2026-04-16T00:00:00',
 };

@@ -13,8 +13,6 @@ export type KGEdgeType =
   | 'mentions' | 'depends_on' | 'violates' | 'implements'
   | 'tests' | 'validates';
 
-export type ValidationStatus = 'unvalidated' | 'corroborated' | 'human_validated';
-
 export interface KGNode {
   id: string;
   title: string;
@@ -22,7 +20,10 @@ export interface KGNode {
   justification?: string;
   source_artifact_ref?: string;
   source_confidence: number;
-  validation_status: ValidationStatus;
+  /** v0.3.0: continuous relevance in [0.0, 1.5] replaces validation_status. */
+  relevance_score: number;
+  query_hits?: number;
+  last_queried_at?: string | null;
   created_at?: string;
   superseded_by?: string;
   node_type: KGNodeType;
