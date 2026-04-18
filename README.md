@@ -32,6 +32,27 @@ pip install okto-pulse
 
 Requires Python 3.11+.
 
+#### Embedding model download
+
+On first run, Okto Pulse downloads the `all-MiniLM-L6-v2` sentence-transformers
+model (~90 MB) into the Hugging Face cache (`~/.cache/huggingface/` by default).
+This is the embedder that powers semantic search in the Knowledge Graph and is
+a mandatory dependency of the community edition — no extras flag required.
+
+If the download fails (offline install, proxy, disk full) the server still
+starts, but falls back to a deterministic hash-based stub and the Settings tab
+shows a "Running in stub mode — semantic search disabled" banner. Re-run
+`okto-pulse serve` with network access restored to re-attempt the download.
+
+You can verify the embedder is healthy with:
+
+```bash
+python scripts/smoke_embedding.py
+```
+
+It exits 0 when the model is loaded and 1 otherwise, printing a diagnostic line
+with the current provider/model state.
+
 ### 2. Initialize
 
 ```bash

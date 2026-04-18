@@ -23,8 +23,19 @@ const MCP_CONSUMERS: { format: McpFormat; label: string; file: string; icon: 'js
   { format: 'windsurf', label: 'Windsurf / Cline', file: 'cline_mcp_settings.json', icon: 'json' },
 ];
 
+// Get MCP base URL from runtime configuration (injected by server)
+function getMcpBaseUrl(): string {
+  if (typeof window !== 'undefined' && (window as any).OKTO_PULSE_CONFIG?.MCP_URL) {
+    return (window as any).OKTO_PULSE_CONFIG.MCP_URL;
+  }
+  // Fallback to build-time env var or default
+  const mcpPort = import.meta.env.VITE_MCP_PORT || '8101';
+  return `http://127.0.0.1:${mcpPort}`;
+}
+
 function getMcpConfigJson(format: McpFormat, apiKey: string): string {
-  const url = `http://localhost:8101/mcp?api_key=${apiKey}`;
+  const mcpUrl = getMcpBaseUrl();
+  const url = `${mcpUrl}/mcp?api_key=${apiKey}`;
 
   if (format === 'claude-cli') {
     return `claude mcp add -t http okto-pulse "${url}"`;
@@ -464,7 +475,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
               {/* MCP Server info */}
               <div className="border-t pt-4">
                 <p className="text-xs text-gray-400 dark:text-gray-500">
-                  MCP Server: <code>http://localhost:8101/mcp</code>
+                  MCP Server: <code>{getMcpBaseUrl()}/mcp</code>
                 </p>
               </div>
             </>

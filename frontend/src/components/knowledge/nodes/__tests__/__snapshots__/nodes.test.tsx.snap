@@ -1,0 +1,1817 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`KG node components — base render (AC-2) > renders APIContract node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-apicontract"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <rect
+        fill="#EC48991A"
+        height="78"
+        rx="4"
+        ry="4"
+        stroke="#EC4899"
+        stroke-width="2"
+        width="138"
+        x="1"
+        y="1"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(236, 72, 153); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-radio"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"
+        />
+        <path
+          d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"
+        />
+        <circle
+          cx="12"
+          cy="12"
+          r="2"
+        />
+        <path
+          d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"
+        />
+        <path
+          d="M19.1 4.9C23 8.8 23 15.1 19.1 19"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — base render (AC-2) > renders Alternative node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-alternative"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <rect
+        fill="#6B72801A"
+        height="78"
+        rx="4"
+        ry="4"
+        stroke="#6B7280"
+        stroke-dasharray="6 4"
+        stroke-width="2"
+        width="138"
+        x="1"
+        y="1"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(107, 114, 128); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-git-branch"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <line
+          x1="6"
+          x2="6"
+          y1="3"
+          y2="15"
+        />
+        <circle
+          cx="18"
+          cy="6"
+          r="3"
+        />
+        <circle
+          cx="6"
+          cy="18"
+          r="3"
+        />
+        <path
+          d="M18 9a9 9 0 0 1-9 9"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — base render (AC-2) > renders Assumption node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-assumption"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <polygon
+        fill="#F59E0B1A"
+        points="70,2 138,40 70,78 2,40"
+        stroke="#F59E0B"
+        stroke-width="2"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(245, 158, 11); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-circle-help"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <circle
+          cx="12"
+          cy="12"
+          r="10"
+        />
+        <path
+          d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"
+        />
+        <path
+          d="M12 17h.01"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — base render (AC-2) > renders Bug node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-bug"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <polygon
+        fill="#DC26261A"
+        points="70,2 138,40 70,78 2,40"
+        stroke="#DC2626"
+        stroke-width="2"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(220, 38, 38); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-bug"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="m8 2 1.88 1.88"
+        />
+        <path
+          d="M14.12 3.88 16 2"
+        />
+        <path
+          d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"
+        />
+        <path
+          d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"
+        />
+        <path
+          d="M12 20v-9"
+        />
+        <path
+          d="M6.53 9C4.6 8.8 3 7.1 3 5"
+        />
+        <path
+          d="M6 13H2"
+        />
+        <path
+          d="M3 21c0-2.1 1.7-3.9 3.8-4"
+        />
+        <path
+          d="M20.97 5c0 2.1-1.6 3.8-3.5 4"
+        />
+        <path
+          d="M22 13h-4"
+        />
+        <path
+          d="M17.2 17c2.1.1 3.8 1.9 3.8 4"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — base render (AC-2) > renders Constraint node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-constraint"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <polygon
+        fill="#EF44441A"
+        points="28,1 112,1 138,20 138,60 112,79 28,79 2,60 2,20"
+        stroke="#EF4444"
+        stroke-width="2"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(239, 68, 68); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-shield"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — base render (AC-2) > renders Criterion node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-criterion"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <polygon
+        fill="#10B9811A"
+        points="21,1 119,1 138,40 119,79 21,79 2,40"
+        stroke="#10B981"
+        stroke-width="2"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(16, 185, 129); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-square-check-big"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M21 10.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h12.5"
+        />
+        <path
+          d="m9 11 3 3L22 4"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — base render (AC-2) > renders Decision node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-decision"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <rect
+        fill="#3B82F61A"
+        height="78"
+        rx="12"
+        ry="12"
+        stroke="#3B82F6"
+        stroke-width="2"
+        width="138"
+        x="1"
+        y="1"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(59, 130, 246); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-gavel"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="m14.5 12.5-8 8a2.119 2.119 0 1 1-3-3l8-8"
+        />
+        <path
+          d="m16 16 6-6"
+        />
+        <path
+          d="m8 8 6-6"
+        />
+        <path
+          d="m9 7 8 8"
+        />
+        <path
+          d="m21 11-8-8"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — base render (AC-2) > renders Entity node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-entity"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <ellipse
+        cx="70"
+        cy="40"
+        fill="#06B6D41A"
+        rx="68"
+        ry="38"
+        stroke="#06B6D4"
+        stroke-width="2"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(6, 182, 212); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-tag"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"
+        />
+        <circle
+          cx="7.5"
+          cy="7.5"
+          fill="currentColor"
+          r=".5"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — base render (AC-2) > renders Learning node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-learning"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <rect
+        fill="#7C3AED1A"
+        height="78"
+        rx="12"
+        ry="12"
+        stroke="#7C3AED"
+        stroke-width="2"
+        width="138"
+        x="1"
+        y="1"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(124, 58, 237); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-lightbulb"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"
+        />
+        <path
+          d="M9 18h6"
+        />
+        <path
+          d="M10 22h4"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — base render (AC-2) > renders Requirement node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-requirement"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <rect
+        fill="#8B5CF61A"
+        height="78"
+        rx="12"
+        ry="12"
+        stroke="#8B5CF6"
+        stroke-width="2"
+        width="138"
+        x="1"
+        y="1"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(139, 92, 246); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-clipboard-list"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <rect
+          height="4"
+          rx="1"
+          ry="1"
+          width="8"
+          x="8"
+          y="2"
+        />
+        <path
+          d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
+        />
+        <path
+          d="M12 11h4"
+        />
+        <path
+          d="M12 16h4"
+        />
+        <path
+          d="M8 11h.01"
+        />
+        <path
+          d="M8 16h.01"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — base render (AC-2) > renders TestScenario node with canonical data 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-testscenario"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <rect
+        fill="#14B8A61A"
+        height="78"
+        rx="4"
+        ry="4"
+        stroke="#14B8A6"
+        stroke-width="2"
+        width="138"
+        x="1"
+        y="1"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(20, 184, 166); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-flask-conical"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M10 2v7.527a2 2 0 0 1-.211.896L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.069-10.127A2 2 0 0 1 14 9.527V2"
+        />
+        <path
+          d="M8.5 2h7"
+        />
+        <path
+          d="M7 16h10"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — selection visuals (AC-3) > applies selected styling when isSelected=true 1`] = `
+<div
+  data-connected="false"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="true"
+  data-testid="kg-node-decision"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out; filter: drop-shadow(0 0 6px #3B82F6);"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <rect
+        fill="#3B82F61A"
+        height="78"
+        rx="12"
+        ry="12"
+        stroke="#3B82F6"
+        stroke-width="2"
+        width="138"
+        x="1"
+        y="1"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(59, 130, 246); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-gavel"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="m14.5 12.5-8 8a2.119 2.119 0 1 1-3-3l8-8"
+        />
+        <path
+          d="m16 16 6-6"
+        />
+        <path
+          d="m8 8 6-6"
+        />
+        <path
+          d="m9 7 8 8"
+        />
+        <path
+          d="m21 11-8-8"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — selection visuals (AC-3) > fades unconnected nodes when hasSelection && !isConnectedToSelected 1`] = `
+<div
+  data-connected="false"
+  data-faded="true"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-decision"
+  style="position: relative; width: 140px; height: 80px; opacity: 0.8; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <rect
+        fill="#3B82F61A"
+        height="78"
+        rx="12"
+        ry="12"
+        stroke="#3B82F6"
+        stroke-width="2"
+        width="138"
+        x="1"
+        y="1"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(59, 130, 246); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-gavel"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="m14.5 12.5-8 8a2.119 2.119 0 1 1-3-3l8-8"
+        />
+        <path
+          d="m16 16 6-6"
+        />
+        <path
+          d="m8 8 6-6"
+        />
+        <path
+          d="m9 7 8 8"
+        />
+        <path
+          d="m21 11-8-8"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;
+
+exports[`KG node components — selection visuals (AC-3) > keeps neighbours full opacity when isConnectedToSelected=true 1`] = `
+<div
+  data-connected="true"
+  data-faded="false"
+  data-node-id="node-42"
+  data-selected="false"
+  data-testid="kg-node-decision"
+  style="position: relative; width: 140px; height: 80px; opacity: 1; transition: opacity 120ms ease-out, filter 120ms ease-out;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0px; pointer-events: none;"
+  >
+    <svg
+      style="width: 100%; height: 100%; display: block;"
+      viewBox="0 0 140 80"
+    >
+      <rect
+        fill="#3B82F61A"
+        height="78"
+        rx="12"
+        ry="12"
+        stroke="#3B82F6"
+        stroke-width="2"
+        width="138"
+        x="1"
+        y="1"
+      />
+    </svg>
+  </div>
+  <div
+    style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 6px 10px; text-align: center; color: rgb(17, 24, 39); font-family: system-ui, sans-serif; font-size: 12px; font-weight: 500; gap: 4px;"
+  >
+    <span
+      aria-hidden="true"
+      style="color: rgb(59, 130, 246); display: inline-flex; align-items: center; justify-content: center; font-size: 14px;"
+    >
+      <svg
+        class="lucide lucide-gavel"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="14"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="m14.5 12.5-8 8a2.119 2.119 0 1 1-3-3l8-8"
+        />
+        <path
+          d="m16 16 6-6"
+        />
+        <path
+          d="m8 8 6-6"
+        />
+        <path
+          d="m9 7 8 8"
+        />
+        <path
+          d="m21 11-8-8"
+        />
+      </svg>
+    </span>
+    <span
+      style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      title="Canonical test node"
+    >
+      Canonical test node
+    </span>
+  </div>
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-top"
+    data-handlepos="top"
+    data-id="1-null-s-top-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-right"
+    data-handlepos="right"
+    data-id="1-null-s-right-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-s-bottom-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan source connectable connectablestart connectableend connectionindicator"
+    data-handleid="s-left"
+    data-handlepos="left"
+    data-id="1-null-s-left-source"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-top nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-top"
+    data-handlepos="top"
+    data-id="1-null-t-top-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-right nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-right"
+    data-handlepos="right"
+    data-id="1-null-t-right-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-bottom nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-bottom"
+    data-handlepos="bottom"
+    data-id="1-null-t-bottom-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+  <div
+    class="react-flow__handle react-flow__handle-left nodrag nopan target connectable connectablestart connectableend connectionindicator"
+    data-handleid="t-left"
+    data-handlepos="left"
+    data-id="1-null-t-left-target"
+    style="width: 6px; height: 6px; background: transparent; border: medium;"
+  />
+</div>
+`;

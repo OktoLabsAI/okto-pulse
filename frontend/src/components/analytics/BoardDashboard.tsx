@@ -17,6 +17,7 @@ import {
   AlertTriangle,
   FlaskConical,
   Bug,
+  Clock,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 
@@ -46,6 +47,7 @@ interface FunnelData {
   bugs_total: number;
   bugs_open: number;
   bugs_by_severity: { critical: number; major: number; minor: number };
+  avg_cycle_hours: number | null;
 }
 
 interface QualityPoint {
@@ -255,6 +257,12 @@ function driftBg(v: number | null): string {
   if (v <= 25) return 'bg-blue-50 dark:bg-blue-900/30';
   if (v <= 50) return 'bg-amber-50 dark:bg-amber-900/30';
   return 'bg-red-50 dark:bg-red-900/30';
+}
+
+function formatCycleTime(hours: number): string {
+  if (hours < 1) return `${Math.round(hours * 60)}m`;
+  if (hours < 24) return `${hours.toFixed(1)}h`;
+  return `${(hours / 24).toFixed(1)}d`;
 }
 
 function coverageBarColor(pct: number): string {
@@ -506,7 +514,7 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       {/* ------------------------------------------------------------------ */}
       {/* KPI Cards                                                          */}
       {/* ------------------------------------------------------------------ */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
         {/* Ideations */}
         <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
           <div className="flex items-center gap-1.5 mb-1">
@@ -591,6 +599,18 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           }`}>
             {funnel?.bugs_open ?? 0} open
           </span>
+        </div>
+
+        {/* Cycle Time */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Clock className="w-4 h-4 text-gray-400" />
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Cycle Time</span>
+          </div>
+          <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">
+            {funnel?.avg_cycle_hours != null ? formatCycleTime(funnel.avg_cycle_hours) : '--'}
+          </span>
+          <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">avg done tasks</p>
         </div>
       </div>
 

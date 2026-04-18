@@ -2,7 +2,8 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# Remove lock file to fix npm optional deps bug, then install fresh
+RUN rm -f package-lock.json && npm install
 COPY . .
 ARG VITE_CLERK_PUBLISHABLE_KEY
 ARG VITE_API_BASE_URL=/api/v1

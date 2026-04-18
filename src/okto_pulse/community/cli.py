@@ -51,7 +51,8 @@ def cmd_init(args):
     from okto_pulse.core.infra.storage import FileSystemStorageProvider, configure_storage
     from okto_pulse.community.auth import LocalAuthProvider
     from okto_pulse.community.seed import seed_community_defaults
-    from sqlalchemy import event
+    from sqlalchemy import event, select
+    from okto_pulse.core.models.db import Agent, Board
 
     configure_settings(settings)
     configure_auth(LocalAuthProvider())
@@ -70,64 +71,141 @@ def cmd_init(args):
 
     async def _init():
         await init_db()
+        board_id = None
         async with get_session_factory()() as db:
             result = await seed_community_defaults(db)
             if result:
                 board, agent, api_key = result
+                board_id = board.id
                 print(f"\n  Board created: {board.name}")
                 print(f"  Agent created: {agent.name}")
                 print(f"  API Key: {api_key}")
-                print(f"  MCP URL: http://127.0.0.1:{settings.mcp_port}/mcp?api_key={api_key}")
-
-                mcp_config = {
-                    "mcpServers": {
-                        "okto-pulse": {
-                            "url": f"http://127.0.0.1:{settings.mcp_port}/mcp?api_key={api_key}"
-                        }
-                    }
-                }
-                mcp_json_path = Path.cwd() / ".mcp.json"
-                mcp_json_path.write_text(json.dumps(mcp_config, indent=2))
-                print(f"\n  .mcp.json generated at: {mcp_json_path}")
             else:
                 print("\n  Already initialized (seed exists).")
-                from sqlalchemy import select
-                from okto_pulse.core.models.db import Agent
-                async with get_session_factory()() as db2:
-                    result = await db2.execute(select(Agent).limit(1))
-                    agent = result.scalar_one_or_none()
-                    if agent and agent.api_key:
-                        mcp_config = {
-                            "mcpServers": {
-                                "okto-pulse": {
-                                    "url": f"http://127.0.0.1:{settings.mcp_port}/mcp?api_key={agent.api_key}"
-                                }
-                            }
-                        }
-                        mcp_json_path = Path.cwd() / ".mcp.json"
-                        mcp_json_path.write_text(json.dumps(mcp_config, indent=2))
-                        print(f"  .mcp.json updated at: {mcp_json_path}")
+                # Fetch the default board for KG bootstrap
+                board_result = await db.execute(select(Board).limit(1))
+                board_row = board_result.scalar_one_or_none()
+                if board_row:
+                    board_id = board_row.id
+
+        # Bootstrap Knowledge Graph (Kuzu) for the board so the graph
+        # schema and vector indexes are ready before the first agent call.
+        if board_id:
+            try:
+                from okto_pulse.core.kg.schema import bootstrap_board_graph
+                handle = bootstrap_board_graph(board_id)
+                print(f"  Knowledge Graph: {handle.path} (schema {handle.schema_version})")
+            except Exception as exc:
+                print(f"  Knowledge Graph: bootstrap skipped ({exc})")
 
         await close_db()
 
     asyncio.run(_init())
     print("\nRun 'okto-pulse serve' to start the server.")
 
+    # Handle --agents flag: generate .mcp.json with specified agents
+    agents_param = getattr(args, "agents", None)
+    if agents_param is not None:  # None = not specified, [] = specified but empty (all agents)
+        _generate_mcp_json(settings.mcp_port, agents_param)
+
+
+def _generate_mcp_json(mcp_port: int, agent_names: list[str] | None):
+    """Generate .mcp.json with specified agents (or all if agent_names is empty)."""
+    import asyncio
+    from sqlalchemy import select
+    from okto_pulse.core.infra.database import create_database, init_db, get_session_factory, close_db
+    from okto_pulse.core.models.db import Agent
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.community.auth import LocalAuthProvider
+    from okto_pulse.core.infra.storage import FileSystemStorageProvider, configure_storage
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+    configure_auth(LocalAuthProvider())
+    configure_storage(FileSystemStorageProvider(settings.upload_dir))
+    create_database(settings.database_url, echo=False)
+
+    async def _fetch_agents():
+        await init_db()
+        async with get_session_factory()() as db:
+            # Fetch all active agents with API keys
+            result = await db.execute(
+                select(Agent).where(Agent.api_key.isnot(None)).order_by(Agent.name)
+            )
+            all_agents = result.scalars().all()
+
+            if not all_agents:
+                print("\n  ⚠ No agents found with API keys.")
+                print("  Create agents via the web interface (Menu → Agents) first.")
+                await close_db()
+                return None
+
+            # Filter by name if specified
+            if agent_names:  # Specific names provided
+                name_set = {name.strip() for name in agent_names}
+                found_agents = [a for a in all_agents if a.name in name_set]
+                missing = name_set - {a.name for a in found_agents}
+
+                if not found_agents:
+                    print(f"\n  ⚠ No matching agents found: {', '.join(sorted(name_set))}")
+                    print(f"  Available agents: {', '.join(a.name for a in all_agents)}")
+                    await close_db()
+                    return None
+
+                if missing:
+                    print(f"\n  ⚠ Agents not found: {', '.join(sorted(missing))}")
+
+                agents_to_export = found_agents
+            else:  # No names provided = export all
+                agents_to_export = all_agents
+
+            await close_db()
+            return agents_to_export
+
+    agents = asyncio.run(_fetch_agents())
+    if agents is None:
+        return
+
+    # Build mcp.json with multiple agents
+    mcp_config = {"mcpServers": {}}
+    for agent in agents:
+        # Use a sanitized name for the server key (replace spaces with hyphens)
+        server_key = agent.name.lower().replace(" ", "-").replace("_", "-")
+        mcp_config["mcpServers"][server_key] = {
+            "url": f"http://127.0.0.1:{mcp_port}/mcp?api_key={agent.api_key}"
+        }
+
+    mcp_json_path = Path.cwd() / ".mcp.json"
+    mcp_json_path.write_text(json.dumps(mcp_config, indent=2))
+
+    agent_list = ", ".join(f"\"{a.name}\"" for a in agents)
+    print(f"\n  ✓ .mcp.json generated at: {mcp_json_path}")
+    print(f"  Agents exported: {agent_list}")
+
 
 # Module-level process targets (must be picklable for Windows multiprocessing spawn).
 # Port overrides are passed via environment variables since these functions take no args.
-def _serve_api():
+def _serve_api(api_port: int | None = None):
     """Start the API server. Reads OKTO_PULSE_PORT env for port override."""
-    port = int(os.environ.get("OKTO_PULSE_PORT", DEFAULT_API_PORT))
+    if api_port is None:
+        port = int(os.environ.get("OKTO_PULSE_PORT", DEFAULT_API_PORT))
+    else:
+        port = api_port
     os.environ["PORT"] = str(port)
+    os.environ["OKTO_PULSE_PORT"] = str(port)  # Ensure child processes see it
     from okto_pulse.community.main import run
     run()
 
 
-def _serve_mcp():
+def _serve_mcp(mcp_port: int | None = None):
     """Start the MCP server. Reads OKTO_PULSE_MCP_PORT env for port override."""
-    port = int(os.environ.get("OKTO_PULSE_MCP_PORT", DEFAULT_MCP_PORT))
+    if mcp_port is None:
+        port = int(os.environ.get("OKTO_PULSE_MCP_PORT", DEFAULT_MCP_PORT))
+    else:
+        port = mcp_port
     os.environ["MCP_PORT"] = str(port)
+    os.environ["OKTO_PULSE_MCP_PORT"] = str(port)  # Ensure consistency
     from okto_pulse.community.main import run_mcp
     run_mcp()
 
@@ -146,12 +224,12 @@ def cmd_serve(args):
 
     has_frontend = FRONTEND_DIR.exists() and (FRONTEND_DIR / "index.html").exists()
 
-    # Pass ports to child processes via environment variables
+    # Set environment variables early (before any imports in subprocesses)
     os.environ["OKTO_PULSE_PORT"] = str(api_port)
     os.environ["OKTO_PULSE_MCP_PORT"] = str(mcp_port)
 
-    api_process = Process(target=_serve_api, name="okto-pulse-api")
-    mcp_process = Process(target=_serve_mcp, name="okto-pulse-mcp")
+    api_process = Process(target=_serve_api, args=(api_port,), name="okto-pulse-api")
+    mcp_process = Process(target=_serve_mcp, args=(mcp_port,), name="okto-pulse-mcp")
 
     def _shutdown(sig, frame):
         print("\nShutting down...")
@@ -225,6 +303,238 @@ def cmd_status(args):
     print(f"  MCP server ({mcp_port}):  {'running' if mcp_up else 'stopped'}")
 
 
+def cmd_verify_pipeline(args):
+    """Run the 5 pipeline health checks against a board.
+
+    Opens a short-lived DB session, calls the pure check functions in
+    ``okto_pulse.core.kg.health`` and renders either a compact table (default)
+    or JSON (``--json``). Exit code 0 iff every layer reports ``healthy=True``.
+    """
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core.infra.database import (
+        create_database,
+        get_session_factory,
+        init_db,
+        close_db,
+    )
+    from okto_pulse.core.kg.health import (
+        check_global,
+        check_kuzu,
+        check_kuzu_node_refs,
+        check_outbox,
+        check_queue,
+    )
+    from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
+
+    board_id: str = args.board_id
+    emit_json: bool = bool(getattr(args, "json", False))
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+    create_database(settings.database_url, echo=False)
+
+    async def _run() -> list:
+        await init_db()
+        factory = get_session_factory()
+        configure_kg_registry(session_factory=factory)
+        try:
+            async with factory() as db:
+                queue_h = await check_queue(db, board_id)
+                kuzu_h = check_kuzu(board_id)
+                refs_h = await check_kuzu_node_refs(
+                    db, board_id, kuzu_total=kuzu_h.counts.get("total")
+                )
+                outbox_h = await check_outbox(db, board_id)
+                global_h = check_global(board_id)
+            return [queue_h, kuzu_h, refs_h, outbox_h, global_h]
+        finally:
+            await close_db()
+
+    layers = asyncio.run(_run())
+
+    if emit_json:
+        payload = {
+            "board_id": board_id,
+            "all_healthy": all(L.healthy for L in layers),
+            "layers": [
+                {
+                    "layer": L.layer,
+                    "healthy": L.healthy,
+                    "counts": L.counts,
+                    "details": L.details,
+                }
+                for L in layers
+            ],
+        }
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(f"Pipeline health for board {board_id}")
+        name_w = max(len(L.layer) for L in layers)
+        for L in layers:
+            mark = "OK " if L.healthy else "BAD"
+            print(f"  [{mark}] {L.layer.ljust(name_w)}  {L.details}")
+        ok_count = sum(1 for L in layers if L.healthy)
+        print(f"\n  {ok_count}/{len(layers)} layers healthy")
+
+    sys.exit(0 if all(L.healthy for L in layers) else 1)
+
+
+def cmd_kg_backfill(args):
+    """Run the Layer 1 deterministic worker against a board.
+
+    In `--dry-run` mode (default) prints a diff of what WOULD be emitted
+    without touching Kùzu — satisfies the `CLI dry-run reporta diff sem
+    escrever` business rule of spec c48a5c33. `--apply` flips to write
+    mode (requires feature flag `kg_consolidation_v2` enabled on the board).
+    """
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core.infra.database import (
+        create_database,
+        get_session_factory,
+        init_db,
+        close_db,
+    )
+    from okto_pulse.core.kg.workers.deterministic_worker import DeterministicWorker
+    from okto_pulse.core.models.db import Card, Spec, Sprint
+    from sqlalchemy import select
+
+    board_id: str = args.board_id
+    apply_writes: bool = bool(getattr(args, "apply", False))
+    artifact_filter: str = getattr(args, "artifact_type", "") or ""
+    emit_json: bool = bool(getattr(args, "json", False))
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+    create_database(settings.database_url, echo=False)
+
+    async def _load() -> dict:
+        await init_db()
+        factory = get_session_factory()
+        try:
+            async with factory() as db:
+                specs_q = select(Spec).where(Spec.board_id == board_id)
+                sprints_q = select(Sprint).where(Sprint.board_id == board_id)
+                cards_q = select(Card).where(Card.board_id == board_id)
+                spec_rows = (await db.execute(specs_q)).scalars().all()
+                sprint_rows = (await db.execute(sprints_q)).scalars().all()
+                card_rows = (await db.execute(cards_q)).scalars().all()
+                return {
+                    "specs": [_spec_to_dict(s) for s in spec_rows],
+                    "sprints": [_sprint_to_dict(s) for s in sprint_rows],
+                    "cards": [_card_to_dict(c) for c in card_rows],
+                }
+        finally:
+            await close_db()
+
+    data = asyncio.run(_load())
+
+    worker = DeterministicWorker()
+    summary = {
+        "board_id": board_id,
+        "dry_run": not apply_writes,
+        "artifacts": {"spec": 0, "sprint": 0, "card": 0},
+        "nodes_total": 0,
+        "edges_total": 0,
+        "missing_link_candidates": 0,
+        "per_artifact": [],
+    }
+
+    targets: list[tuple[str, dict]] = []
+    if artifact_filter in ("", "spec"):
+        targets.extend(("spec", s) for s in data["specs"])
+    if artifact_filter in ("", "sprint"):
+        targets.extend(("sprint", s) for s in data["sprints"])
+    if artifact_filter in ("", "card"):
+        targets.extend(("card", c) for c in data["cards"])
+
+    for art_type, artifact in targets:
+        try:
+            result = worker.process_artifact(art_type, artifact)
+        except Exception as exc:
+            summary["per_artifact"].append({
+                "artifact_type": art_type, "artifact_id": artifact.get("id"),
+                "error": str(exc),
+            })
+            continue
+        summary["artifacts"][art_type] += 1
+        summary["nodes_total"] += len(result.nodes)
+        summary["edges_total"] += len(result.edges)
+        summary["missing_link_candidates"] += len(result.missing_link_candidates)
+        summary["per_artifact"].append({
+            "artifact_type": art_type,
+            "artifact_id": artifact.get("id"),
+            "nodes": len(result.nodes),
+            "edges": len(result.edges),
+            "missing_link_candidates": len(result.missing_link_candidates),
+            "deterministic_edge_ratio": result.deterministic_edge_ratio(),
+            "content_hash": result.content_hash,
+        })
+
+    if apply_writes:
+        # Feature flag + write path lives in another card; for now emit a
+        # visible warning so the operator knows the diff is still a diff.
+        summary["apply_warning"] = (
+            "apply path not wired yet — use dry-run output as the authoritative "
+            "diff; writes will land when kg_consolidation_v2 integration ships"
+        )
+
+    if emit_json:
+        print(json.dumps(summary, indent=2, default=str))
+    else:
+        mode = "DRY-RUN" if not apply_writes else "APPLY (noop — wiring pending)"
+        print(f"KG backfill [{mode}] for board {board_id}")
+        print(f"  Artifacts scanned:")
+        for k, v in summary["artifacts"].items():
+            print(f"    {k:<8} {v}")
+        print(f"  Nodes to emit: {summary['nodes_total']}")
+        print(f"  Edges to emit: {summary['edges_total']}")
+        print(f"  Missing link candidates: {summary['missing_link_candidates']}")
+        if summary.get("apply_warning"):
+            print(f"  WARN: {summary['apply_warning']}")
+
+    sys.exit(0)
+
+
+def _spec_to_dict(s):
+    return {
+        "id": s.id,
+        "title": s.title,
+        "description": s.description,
+        "context": s.context,
+        "functional_requirements": s.functional_requirements,
+        "technical_requirements": s.technical_requirements,
+        "acceptance_criteria": s.acceptance_criteria,
+        "test_scenarios": s.test_scenarios,
+        "business_rules": s.business_rules,
+        "api_contracts": s.api_contracts,
+    }
+
+
+def _sprint_to_dict(s):
+    return {
+        "id": s.id,
+        "title": s.title,
+        "description": s.description,
+        "objective": getattr(s, "objective", None),
+        "expected_outcome": getattr(s, "expected_outcome", None),
+        "spec_id": s.spec_id,
+    }
+
+
+def _card_to_dict(c):
+    return {
+        "id": c.id,
+        "title": c.title,
+        "description": c.description,
+        "card_type": str(c.card_type) if c.card_type else "normal",
+        "origin_task_id": getattr(c, "origin_task_id", None),
+        "sprint_id": getattr(c, "sprint_id", None),
+        "spec_id": c.spec_id,
+    }
+
+
 def cmd_reset(args):
     """Reset all data — delete DB and uploads, re-seed."""
     from okto_pulse.community.config import CommunitySettings
@@ -258,29 +568,40 @@ def main():
         description="Okto Pulse Community — local-first kanban board with MCP support for AI agents",
     )
 
-    # Global port options (shared across subcommands)
-    port_group = parser.add_argument_group("port configuration")
-    port_group.add_argument(
-        "--api-port", type=int, default=DEFAULT_API_PORT,
-        help=f"API + Frontend server port (default: {DEFAULT_API_PORT})",
-    )
-    port_group.add_argument(
-        "--mcp-port", type=int, default=DEFAULT_MCP_PORT,
-        help=f"MCP server port (default: {DEFAULT_MCP_PORT})",
-    )
-
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # init
     sub_init = subparsers.add_parser("init", help="Initialize data directory and seed database")
+    sub_init.add_argument(
+        "--agents",
+        nargs="*",
+        metavar="NAME",
+        help="Export specific agents to .mcp.json (comma-separated names, or all if empty)",
+    )
     sub_init.set_defaults(func=cmd_init)
 
     # serve
     sub_serve = subparsers.add_parser("serve", help="Start API + Frontend + MCP servers")
+    sub_serve.add_argument(
+        "--api-port", type=int, default=DEFAULT_API_PORT,
+        help=f"API + Frontend server port (default: {DEFAULT_API_PORT})",
+    )
+    sub_serve.add_argument(
+        "--mcp-port", type=int, default=DEFAULT_MCP_PORT,
+        help=f"MCP server port (default: {DEFAULT_MCP_PORT})",
+    )
     sub_serve.set_defaults(func=cmd_serve)
 
     # status
     sub_status = subparsers.add_parser("status", help="Show service status and DB metrics")
+    sub_status.add_argument(
+        "--api-port", type=int, default=DEFAULT_API_PORT,
+        help=f"API server port (default: {DEFAULT_API_PORT})",
+    )
+    sub_status.add_argument(
+        "--mcp-port", type=int, default=DEFAULT_MCP_PORT,
+        help=f"MCP server port (default: {DEFAULT_MCP_PORT})",
+    )
     sub_status.set_defaults(func=cmd_status)
 
     # reset
@@ -288,9 +609,55 @@ def main():
     sub_reset.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
     sub_reset.set_defaults(func=cmd_reset)
 
+    # verify-pipeline
+    sub_verify = subparsers.add_parser(
+        "verify-pipeline",
+        help="Run health checks on all 5 Kanban-KG pipeline layers for a board",
+    )
+    sub_verify.add_argument(
+        "board_id",
+        help="Board ID to inspect (UUID string — see 'okto-pulse status')",
+    )
+    sub_verify.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of the default table",
+    )
+    sub_verify.set_defaults(func=cmd_verify_pipeline)
+
+    # kg — knowledge graph operations (backfill, migrate, metrics wire-up later)
+    sub_kg = subparsers.add_parser(
+        "kg",
+        help="Knowledge graph operations (Layer 1 backfill, migration, metrics)",
+    )
+    kg_subparsers = sub_kg.add_subparsers(dest="kg_command", help="KG sub-commands")
+
+    sub_backfill = kg_subparsers.add_parser(
+        "backfill",
+        help="Re-extract all deterministic nodes + edges for a board (dry-run by default)",
+    )
+    sub_backfill.add_argument("board_id", help="Target board UUID")
+    sub_backfill.add_argument(
+        "--apply", action="store_true",
+        help="Apply writes to Kùzu (default: dry-run diff only)",
+    )
+    sub_backfill.add_argument(
+        "--artifact-type", default="",
+        choices=("", "spec", "sprint", "card"),
+        help="Limit to one artifact type (default: all)",
+    )
+    sub_backfill.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON instead of table",
+    )
+    sub_backfill.set_defaults(func=cmd_kg_backfill)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
+        sys.exit(1)
+    if args.command == "kg" and not getattr(args, "kg_command", None):
+        sub_kg.print_help()
         sys.exit(1)
 
     args.func(args)

@@ -10,6 +10,11 @@ class CommunitySettings(CoreSettings):
     host: str = "127.0.0.1"  # Community is local-only — bind to loopback
     data_dir: str = ""  # Default set in validator
 
+    # Community ships sentence-transformers as a mandatory dep (pyproject.toml),
+    # so override the core default of "stub" — semantic KG search needs real
+    # embeddings out of the box. Users can still flip to "stub" via env.
+    kg_embedding_mode: str = "sentence-transformers"
+
     @model_validator(mode="after")
     def _derive_paths(self) -> "CommunitySettings":
         if not self.data_dir:

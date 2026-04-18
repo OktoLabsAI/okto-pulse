@@ -23,6 +23,7 @@ const ENTITY_BG: Record<string, string> = {
   refinement: 'bg-cyan-50 text-cyan-600 dark:bg-cyan-900/20 dark:text-cyan-300',
   profile: 'bg-gray-50 text-gray-600 dark:bg-gray-700/50 dark:text-gray-400',
   guidelines: 'bg-pink-50 text-pink-600 dark:bg-pink-900/20 dark:text-pink-300',
+  kg: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-300',
 };
 
 export function PresetListModal({ onClose }: PresetListModalProps) {

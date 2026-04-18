@@ -52,3 +52,17 @@ tsconfig.tsbuildinfo
 *.tsbuildinfo
 *.png
 .playwright-mcp/
+
+# Local editable-install virtualenv used for development server
+.venv/
+
+# Runtime logs
+*.log
+
+# PyInstaller output (root-level mirror of the embedded SPA)
+/frontend_dist/
+
+# Scratch test scripts kept in repo root during development
+/test_demo_seed.py
+/test_fallback_search.py
+/test_vector_index.py

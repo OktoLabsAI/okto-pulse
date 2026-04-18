@@ -92,3 +92,23 @@ export const NODE_TYPE_CONFIG: Record<KGNodeType, {
   Learning:     { color: '#7C3AED', darkColor: '#8B5CF6', shape: 'rounded-lg', icon: '💡' },
   Alternative:  { color: '#6B7280', darkColor: '#9CA3AF', shape: 'dashed',     icon: '↔️' },
 };
+
+/**
+ * Edge type visual config — one entry for each of the 10 KGEdgeType values.
+ * `color` drives the chip swatch in GraphControlsPanel AND the stroke in
+ * GraphCanvas so the two stay visually consistent (Spec 8 / S4.4).
+ */
+export const EDGE_TYPE_CONFIG: Record<KGEdgeType, { color: string; label: string }> = {
+  supersedes:   { color: '#8B5CF6', label: 'supersedes' },
+  contradicts:  { color: '#EF4444', label: 'contradicts' },
+  derives_from: { color: '#3B82F6', label: 'derives_from' },
+  relates_to:   { color: '#6B7280', label: 'relates_to' },
+  mentions:     { color: '#94A3B8', label: 'mentions' },
+  depends_on:   { color: '#F59E0B', label: 'depends_on' },
+  violates:     { color: '#DC2626', label: 'violates' },
+  implements:   { color: '#10B981', label: 'implements' },
+  tests:        { color: '#14B8A6', label: 'tests' },
+  validates:    { color: '#7C3AED', label: 'validates' },
+};
+
+export const ALL_EDGE_TYPES = Object.keys(EDGE_TYPE_CONFIG) as KGEdgeType[];

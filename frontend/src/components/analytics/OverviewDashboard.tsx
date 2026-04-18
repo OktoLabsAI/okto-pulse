@@ -20,6 +20,7 @@ import {
   Scale,
   Globe,
   Bug,
+  Clock,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 
@@ -33,6 +34,8 @@ interface FunnelData {
   specs: number;
   sprints: number;
   cards: number;
+  tests: number;
+  bugs: number;
   done: number;
 }
 
@@ -141,6 +144,12 @@ interface OverviewData {
   funnel: FunnelData;
   velocity: VelocityWeek[];
   boards: BoardStat[];
+  // Quality: self-reported (with validation fallback)
+  avg_completeness: number | null;
+  avg_drift: number | null;
+  // Cycle time
+  avg_cycle_hours: number | null;
+  cycle_time: { ideation: number | null; spec: number | null; sprint: number | null; card: number | null } | null;
   // Bug metrics
   total_bugs: number;
   bugs_open: number;
@@ -381,7 +390,7 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
   }, [from, to]);
 
   // Derived values
-  const totalCards = data ? data.total_cards_impl + data.total_cards_test : 0;
+  const totalCards = data ? data.total_cards_impl + data.total_cards_test + data.total_cards_bug : 0;
   const donePct = data && totalCards > 0 ? ((data.funnel.done / totalCards) * 100) : 0;
 
   const ideationsDonePct = useMemo(() => {
@@ -410,12 +419,14 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
 
   // Funnel conversion percentages
   const funnelConversions = useMemo(() => {
-    if (!data) return { ref: null, spec: null, card: null, done: null };
+    if (!data) return { ref: null, spec: null, card: null, test: null, bug: null, done: null };
     const f = data.funnel;
     return {
       ref: f.ideations > 0 ? (f.refinements / f.ideations) * 100 : null,
       spec: f.refinements > 0 ? (f.specs / f.refinements) * 100 : null,
       card: f.specs > 0 ? (f.cards / f.specs) * 100 : null,
+      test: f.cards > 0 ? (f.tests / f.cards) * 100 : null,
+      bug: f.cards > 0 ? (f.bugs / f.cards) * 100 : null,
       done: f.cards > 0 ? (f.done / f.cards) * 100 : null,
     };
   }, [data]);
@@ -438,7 +449,7 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
       {/* ------------------------------------------------------------------ */}
       {/* KPI Cards                                                          */}
       {/* ------------------------------------------------------------------ */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-5 gap-4">
         {/* Total Ideations */}
         <KpiCard
           icon={<Lightbulb className="w-4 h-4 text-amber-500" />}
@@ -468,7 +479,7 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
           title="Tasks"
           value={totalCards}
           extra={
-            <div className="flex items-center gap-3 mt-0.5">
+            <div className="flex items-center gap-3 mt-0.5 flex-wrap">
               <span className="flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
                 <span className="w-2 h-2 rounded-full bg-violet-500 inline-block" />
                 Impl: {data.total_cards_impl}
@@ -477,6 +488,12 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
                 <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
                 Tests: {data.total_cards_test}
               </span>
+              {data.total_cards_bug > 0 && (
+                <span className="flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
+                  <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+                  Bugs: {data.total_cards_bug}
+                </span>
+              )}
             </div>
           }
         />
@@ -526,46 +543,71 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
           }
         />
 
-        {/* Avg Completeness — from Task Validation Gate (reviewer-reported) */}
+        {/* Avg Completeness — self-reported with validation fallback */}
         <div
-          className={`rounded-lg border border-gray-200 dark:border-gray-700 p-4 ${completenessBg(data.task_validation_gate?.avg_scores?.completeness ?? null)}`}
+          className={`rounded-lg border border-gray-200 dark:border-gray-700 p-4 ${completenessBg(data.avg_completeness ?? null)}`}
         >
           <div className="flex items-center gap-1.5 mb-1">
             <Target className="w-4 h-4 text-gray-400" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
               Avg Completeness
             </span>
-            <span className="text-[9px] text-gray-400 ml-auto">validated</span>
           </div>
           <div className="flex items-end gap-2">
-            <span className={`text-2xl font-bold ${completenessColor(data.task_validation_gate?.avg_scores?.completeness ?? null)}`}>
-              {data.task_validation_gate?.avg_scores?.completeness !== null && data.task_validation_gate?.avg_scores?.completeness !== undefined
-                ? `${data.task_validation_gate.avg_scores.completeness}%`
-                : '--'}
+            <span className={`text-2xl font-bold ${completenessColor(data.avg_completeness ?? null)}`}>
+              {data.avg_completeness != null ? `${data.avg_completeness}%` : '--'}
             </span>
-            <TrendIndicator value={data.task_validation_gate?.avg_scores?.completeness ?? null} />
+            <TrendIndicator value={data.avg_completeness ?? null} />
           </div>
         </div>
 
-        {/* Avg Drift — from Task Validation Gate */}
+        {/* Avg Drift */}
         <div
-          className={`rounded-lg border border-gray-200 dark:border-gray-700 p-4 ${driftBg(data.task_validation_gate?.avg_scores?.drift ?? null)}`}
+          className={`rounded-lg border border-gray-200 dark:border-gray-700 p-4 ${driftBg(data.avg_drift ?? null)}`}
         >
           <div className="flex items-center gap-1.5 mb-1">
             <AlertTriangle className="w-4 h-4 text-gray-400" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
               Avg Drift
             </span>
-            <span className="text-[9px] text-gray-400 ml-auto">validated</span>
           </div>
           <div className="flex items-end gap-2">
-            <span className={`text-2xl font-bold ${driftColor(data.task_validation_gate?.avg_scores?.drift ?? null)}`}>
-              {data.task_validation_gate?.avg_scores?.drift !== null && data.task_validation_gate?.avg_scores?.drift !== undefined
-                ? `${data.task_validation_gate.avg_scores.drift}%`
-                : '--'}
+            <span className={`text-2xl font-bold ${driftColor(data.avg_drift ?? null)}`}>
+              {data.avg_drift != null ? `${data.avg_drift}%` : '--'}
             </span>
-            <TrendIndicator value={data.task_validation_gate?.avg_scores?.drift !== null && data.task_validation_gate?.avg_scores?.drift !== undefined ? -data.task_validation_gate.avg_scores.drift : null} />
+            <TrendIndicator value={data.avg_drift != null ? -data.avg_drift : null} />
           </div>
+        </div>
+
+        {/* Avg Cycle Time */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Clock className="w-4 h-4 text-gray-400" />
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              Avg Cycle Time
+            </span>
+          </div>
+          <div className="flex items-end gap-2">
+            <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">
+              {data.avg_cycle_hours != null ? formatCycleTime(data.avg_cycle_hours) : '--'}
+            </span>
+          </div>
+          {data.cycle_time && (
+            <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+              {data.cycle_time.ideation != null && (
+                <span className="text-[10px] text-gray-400">Ideation: {formatCycleTime(data.cycle_time.ideation)}</span>
+              )}
+              {data.cycle_time.spec != null && (
+                <span className="text-[10px] text-gray-400">Spec: {formatCycleTime(data.cycle_time.spec)}</span>
+              )}
+              {data.cycle_time.sprint != null && (
+                <span className="text-[10px] text-gray-400">Sprint: {formatCycleTime(data.cycle_time.sprint)}</span>
+              )}
+              {data.cycle_time.card != null && (
+                <span className="text-[10px] text-gray-400">Task: {formatCycleTime(data.cycle_time.card)}</span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -673,8 +715,26 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
               colors=""
               splitImpl={data.total_cards_impl}
               splitTest={data.total_cards_test}
-              splitBug={data.total_bugs}
+              splitBug={data.total_cards_bug}
             />
+            {data.funnel.tests > 0 && (
+              <FunnelBar
+                label="Tests"
+                count={data.funnel.tests}
+                maxCount={data.funnel.ideations}
+                conversionPct={funnelConversions.test}
+                colors="bg-emerald-500"
+              />
+            )}
+            {data.funnel.bugs > 0 && (
+              <FunnelBar
+                label="Bugs"
+                count={data.funnel.bugs}
+                maxCount={data.funnel.ideations}
+                conversionPct={funnelConversions.bug}
+                colors="bg-red-500"
+              />
+            )}
             <FunnelBar
               label="Done"
               count={data.funnel.done}
@@ -687,7 +747,7 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
             <div className="flex gap-3">
               <span className="flex items-center gap-1 text-[10px] text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-violet-500" /> Implementation</span>
               <span className="flex items-center gap-1 text-[10px] text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" /> Tests</span>
-              {(data.total_bugs ?? 0) > 0 && (
+              {(data.total_cards_bug ?? 0) > 0 && (
                 <span className="flex items-center gap-1 text-[10px] text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-red-500" /> Bugs</span>
               )}
             </div>
@@ -855,6 +915,12 @@ function KpiCard({
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function formatCycleTime(hours: number): string {
+  if (hours < 1) return `${Math.round(hours * 60)}m`;
+  if (hours < 24) return `${hours.toFixed(1)}h`;
+  return `${(hours / 24).toFixed(1)}d`;
+}
 
 function formatWeekLabel(isoDate: string): string {
   try {

@@ -1,102 +1,324 @@
 /**
- * GraphCanvas — wrapper over React Flow (@xyflow/react) for KG visualization.
+ * GraphCanvas — interactive KG visualization using React Flow (@xyflow/react).
  *
- * Abstracts the library so a future swap (e.g. to D3/Sigma) only changes this file.
- * Supports: force-directed layout (default), node click, search highlight,
- * viewport culling via React Flow's built-in virtualization.
+ * Spec 8 / Sprint 3 + Sprint 4 + Sprint 5.
+ * - Positions come from the memoized force simulation (./graph/forceLayout).
+ * - Node components come from ./nodes, dispatched via the module-scope
+ *   `nodeTypes` map so React Flow never re-mounts them.
+ * - Selection state lives *inside* GraphCanvas (useState) so selection
+ *   never triggers a parent-level refetch. Parents are notified via the
+ *   optional `onSelect` prop (double-click) or `onNodeClick` (any click).
+ *
+ * Selection interaction matrix (AC-4):
+ *   click on node      → toggle selection (clicking same node clears it)
+ *   double-click node  → emit onSelect(node)
+ *   click empty pane   → clear selection
+ *
+ * Sprint 5 additions:
+ *   hover on a node    → NodeTooltip appears bottom-left (AC-7)
+ *   single-click       → NodePreviewPanel appears top-left (AC-8)
+ *   MiniMap            → uses NODE_TYPE_CONFIG color / darkColor per theme (AC-18)
+ *   filtered-empty     → data-empty-state="filtered" + clear-filters CTA (AC-19)
  */
 
-import { useMemo, useCallback } from 'react';
-import type { KGNode, KGEdge, KGNodeType } from '@/types/knowledge-graph';
-import { NODE_TYPE_CONFIG } from '@/types/knowledge-graph';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  type Node as RFNode,
+  type Edge as RFEdge,
+  type NodeMouseHandler,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import type { KGNode, KGEdge, KGNodeType, KGEdgeType } from '@/types/knowledge-graph';
+import { NODE_TYPE_CONFIG, EDGE_TYPE_CONFIG } from '@/types/knowledge-graph';
+import { nodeTypes } from './nodes';
+import type { KGNodeData } from './nodes/types';
+import { computeForceLayout } from './graph/forceLayout';
+import { NodeTooltip } from './NodeTooltip';
+import { NodePreviewPanel } from './NodePreviewPanel';
+
+export interface GraphCanvasFilters {
+  types: KGNodeType[];
+  edgeTypes: KGEdgeType[];
+  minConfidence: number;
+  searchQuery: string;
+}
 
 interface Props {
   nodes: KGNode[];
   edges: KGEdge[];
-  selectedNodeId: string | null;
-  onNodeClick: (node: KGNode) => void;
-  filters: {
-    types: KGNodeType[];
-    minConfidence: number;
-    searchQuery: string;
-  };
+  filters: GraphCanvasFilters;
+  /** Fired on every single-click (used by parent to clear detail panel if needed). */
+  onNodeClick?: (node: KGNode | null) => void;
+  /** Fired on double-click — the canonical "open detail panel" signal. */
+  onSelect?: (node: KGNode) => void;
+  /** Optional initial selection (e.g. deep-link). Updates push new value into internal state. */
+  initialSelectedNodeId?: string | null;
+  /** When `filteredNodes.length === 0` but `nodes.length > 0`, parent can offer to reset filters (S5.4). */
+  onClearFilters?: () => void;
+  /** Navigate to a spec reference when "Open in spec" is clicked from the preview panel (S5.2). */
+  onOpenSpec?: (specRef: string) => void;
 }
 
-/**
- * MVP: renders a simple list-based graph view. When @xyflow/react is installed,
- * this component switches to the full React Flow canvas. The abstraction layer
- * means the API contract stays the same.
- */
-export function GraphCanvas({ nodes, edges, selectedNodeId, onNodeClick, filters }: Props) {
+function prefersDarkMode(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+export function GraphCanvas({
+  nodes,
+  edges,
+  filters,
+  onNodeClick,
+  onSelect,
+  initialSelectedNodeId = null,
+  onClearFilters,
+  onOpenSpec,
+}: Props) {
+  // Selection is internal to the canvas — parent lives independently of it.
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedNodeId);
+  // Hover state drives the NodeTooltip (S5.1 / AC-7).
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [isDark, setIsDark] = useState<boolean>(() => prefersDarkMode());
+
+  // Allow parents to programmatically clear/set selection through a prop change.
+  useEffect(() => {
+    setSelectedId(initialSelectedNodeId);
+  }, [initialSelectedNodeId]);
+
+  // React to OS-level theme changes so MiniMap colors stay in sync (S5.3).
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = (e: MediaQueryListEvent) => setIsDark(e.matches);
+    mq.addEventListener?.('change', handler);
+    return () => mq.removeEventListener?.('change', handler);
+  }, []);
+
   const filteredNodes = useMemo(() => {
     let result = nodes;
     if (filters.types.length > 0) {
-      result = result.filter(n => filters.types.includes(n.node_type));
+      result = result.filter((n) => filters.types.includes(n.node_type));
     }
     if (filters.minConfidence > 0) {
-      result = result.filter(n => n.source_confidence >= filters.minConfidence);
+      result = result.filter((n) => n.source_confidence >= filters.minConfidence);
     }
     if (filters.searchQuery) {
       const q = filters.searchQuery.toLowerCase();
-      result = result.filter(n =>
-        n.title.toLowerCase().includes(q) ||
-        (n.content?.toLowerCase().includes(q) ?? false)
+      result = result.filter(
+        (n) =>
+          n.title.toLowerCase().includes(q) ||
+          (n.content?.toLowerCase().includes(q) ?? false),
       );
     }
     return result;
   }, [nodes, filters]);
 
-  const handleNodeClick = useCallback((node: KGNode) => {
-    onNodeClick(node);
+  const filteredNodeIds = useMemo(
+    () => new Set(filteredNodes.map((n) => n.id)),
+    [filteredNodes],
+  );
+
+  const filteredEdges = useMemo(() => {
+    return edges.filter((e) => {
+      if (!filteredNodeIds.has(e.source) || !filteredNodeIds.has(e.target)) {
+        return false;
+      }
+      if (filters.edgeTypes.length > 0 && !filters.edgeTypes.includes(e.edge_type)) {
+        return false;
+      }
+      return true;
+    });
+  }, [edges, filteredNodeIds, filters.edgeTypes]);
+
+  // Layout only depends on graph *shape*, not on selection — AC-15.
+  const positions = useMemo(
+    () => computeForceLayout(filteredNodes, filteredEdges),
+    [filteredNodes, filteredEdges],
+  );
+
+  const connectedNodeIds = useMemo(() => {
+    if (!selectedId) return new Set<string>();
+    const set = new Set<string>();
+    for (const e of filteredEdges) {
+      if (e.source === selectedId) set.add(e.target);
+      if (e.target === selectedId) set.add(e.source);
+    }
+    return set;
+  }, [filteredEdges, selectedId]);
+
+  const rfNodes: RFNode<KGNodeData>[] = useMemo(() => {
+    const hasSelection = selectedId !== null && filteredNodeIds.has(selectedId);
+    return filteredNodes.map((n) => {
+      const pos = positions.get(n.id) ?? { x: 0, y: 0 };
+      const isSelected = n.id === selectedId;
+      const isConnectedToSelected = connectedNodeIds.has(n.id);
+      return {
+        id: n.id,
+        type: n.node_type,
+        position: pos,
+        data: {
+          kgNode: n,
+          isSelected,
+          isConnectedToSelected,
+          hasSelection,
+        } satisfies KGNodeData,
+      };
+    });
+  }, [filteredNodes, positions, selectedId, connectedNodeIds, filteredNodeIds]);
+
+  const rfEdges: RFEdge[] = useMemo(() => {
+    return filteredEdges.map((e) => {
+      const cfg = EDGE_TYPE_CONFIG[e.edge_type];
+      const touchesSelection =
+        selectedId !== null && (e.source === selectedId || e.target === selectedId);
+      return {
+        id: e.id || `${e.source}-${e.edge_type}-${e.target}`,
+        source: e.source,
+        target: e.target,
+        label: e.edge_type,
+        type: 'default',
+        // Edges animate when (a) they are *always* noisy (contradicts) or (b)
+        // they are attached to the currently-selected node (S4.3).
+        animated: e.edge_type === 'contradicts' || touchesSelection,
+        style: {
+          stroke: cfg?.color ?? '#9CA3AF',
+          strokeWidth: touchesSelection ? 2 : 1.5,
+          opacity: selectedId === null || touchesSelection ? 1 : 0.5,
+        },
+        labelStyle: { fontSize: 10, fill: '#6B7280' },
+      };
+    });
+  }, [filteredEdges, selectedId]);
+
+  const handleNodeClick: NodeMouseHandler = useCallback(
+    (_event, rfNode) => {
+      setSelectedId((current) => (current === rfNode.id ? null : rfNode.id));
+      if (onNodeClick) {
+        const kgNode = nodes.find((n) => n.id === rfNode.id) ?? null;
+        onNodeClick(kgNode);
+      }
+    },
+    [nodes, onNodeClick],
+  );
+
+  const handleNodeDoubleClick: NodeMouseHandler = useCallback(
+    (_event, rfNode) => {
+      if (!onSelect) return;
+      const kgNode = nodes.find((n) => n.id === rfNode.id);
+      if (kgNode) onSelect(kgNode);
+    },
+    [nodes, onSelect],
+  );
+
+  const handleNodeMouseEnter: NodeMouseHandler = useCallback((_event, rfNode) => {
+    setHoveredId(rfNode.id);
+  }, []);
+
+  const handleNodeMouseLeave: NodeMouseHandler = useCallback(() => {
+    setHoveredId(null);
+  }, []);
+
+  const handlePaneClick = useCallback(() => {
+    setSelectedId(null);
+    onNodeClick?.(null);
   }, [onNodeClick]);
 
-  return (
-    <div className="h-full overflow-auto p-4" role="region" aria-label={`Knowledge graph with ${filteredNodes.length} nodes`}>
-      {/* MVP: Grid layout. Production: React Flow canvas */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-        {filteredNodes.map(node => {
-          const config = NODE_TYPE_CONFIG[node.node_type] || NODE_TYPE_CONFIG.Decision;
-          const isSelected = node.id === selectedNodeId;
-          const isHighlighted = filters.searchQuery &&
-            node.title.toLowerCase().includes(filters.searchQuery.toLowerCase());
+  const selectedNode = useMemo(() => {
+    if (!selectedId) return null;
+    return filteredNodes.find((n) => n.id === selectedId) ?? null;
+  }, [filteredNodes, selectedId]);
 
-          return (
-            <button
-              key={node.id}
-              onClick={() => handleNodeClick(node)}
-              className={`
-                p-3 rounded-lg border-2 text-left transition-all text-sm
-                ${isSelected ? 'ring-2 ring-blue-500 border-blue-500' : 'border-gray-200 dark:border-gray-700'}
-                ${isHighlighted ? 'border-yellow-400 ring-2 ring-yellow-400' : ''}
-                hover:shadow-md dark:bg-gray-800 bg-white
-              `}
-              aria-label={`${node.node_type}: ${node.title}`}
-              tabIndex={0}
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <span
-                  className="w-3 h-3 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: config.color }}
-                  aria-hidden="true"
-                />
-                <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">
-                  {config.icon} {node.node_type}
-                </span>
-              </div>
-              <p className="font-medium text-gray-900 dark:text-gray-100 line-clamp-2">
-                {node.title}
-              </p>
-              <div className="flex items-center gap-2 mt-1 text-xs text-gray-400">
-                <span>conf: {(node.source_confidence * 100).toFixed(0)}%</span>
-                <span>{node.validation_status}</span>
-              </div>
-            </button>
-          );
-        })}
+  const hoveredNode = useMemo(() => {
+    if (!hoveredId) return null;
+    return filteredNodes.find((n) => n.id === hoveredId) ?? null;
+  }, [filteredNodes, hoveredId]);
+
+  const handlePreviewClose = useCallback(() => {
+    setSelectedId(null);
+    onNodeClick?.(null);
+  }, [onNodeClick]);
+
+  // S5.4 — distinguish "no data yet" (nodes empty) from "filters hid everything"
+  // (nodes > 0 but filteredNodes = 0). Parent controls the "yet" case; we render
+  // the filtered variant in-canvas with a clear-filters CTA.
+  if (filteredNodes.length === 0) {
+    const isFilteredEmpty = nodes.length > 0;
+    return (
+      <div
+        className="h-full flex flex-col items-center justify-center gap-3"
+        data-testid="kg-canvas-empty"
+        data-empty-state={isFilteredEmpty ? 'filtered' : 'yet'}
+      >
+        <p className="text-gray-400 dark:text-gray-500 text-sm">
+          {isFilteredEmpty
+            ? 'No nodes match current filters.'
+            : 'No nodes to display.'}
+        </p>
+        {isFilteredEmpty && onClearFilters && (
+          <button
+            type="button"
+            onClick={onClearFilters}
+            data-testid="kg-clear-filters"
+            className="px-4 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
-      {filteredNodes.length === 0 && (
-        <p className="text-center text-gray-400 mt-8">No nodes match current filters.</p>
-      )}
+    );
+  }
+
+  return (
+    <div
+      className="h-full w-full relative"
+      role="region"
+      aria-label={`Knowledge graph with ${filteredNodes.length} nodes`}
+      data-testid="kg-canvas"
+      data-selected-id={selectedId ?? ''}
+      data-empty-state="populated"
+    >
+      <ReactFlow
+        nodes={rfNodes}
+        edges={rfEdges}
+        nodeTypes={nodeTypes}
+        onNodeClick={handleNodeClick}
+        onNodeDoubleClick={handleNodeDoubleClick}
+        onNodeMouseEnter={handleNodeMouseEnter}
+        onNodeMouseLeave={handleNodeMouseLeave}
+        onPaneClick={handlePaneClick}
+        fitView
+        fitViewOptions={{ padding: 0.2 }}
+        minZoom={0.1}
+        maxZoom={2}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background gap={20} size={1} />
+        <Controls />
+        <MiniMap
+          nodeColor={(node) => {
+            const kgNode = (node.data as KGNodeData | undefined)?.kgNode;
+            const nodeType = kgNode?.node_type ?? (node.type as KGNodeType);
+            const cfg = NODE_TYPE_CONFIG[nodeType];
+            if (!cfg) return '#6B7280';
+            return isDark ? cfg.darkColor : cfg.color;
+          }}
+          maskColor={isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.1)'}
+          pannable
+          zoomable
+          style={{ height: 80, width: 120 }}
+          data-testid="kg-minimap"
+        />
+      </ReactFlow>
+      <NodeTooltip node={hoveredNode} />
+      <NodePreviewPanel
+        node={selectedNode}
+        onClose={handlePreviewClose}
+        onOpenSpec={onOpenSpec}
+      />
     </div>
   );
 }

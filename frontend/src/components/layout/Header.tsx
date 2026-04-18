@@ -4,12 +4,14 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { authAdapter, portalAdapter } from '@/adapters';
-import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield } from 'lucide-react';
+import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network } from 'lucide-react';
 import { GuidelinesPanel } from '@/components/guidelines';
 import { HelpPanel } from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
+import { KnowledgeGraphPage } from '@/components/knowledge';
 import { useCurrentBoard } from '@/store/dashboard';
 import pulseWordmark from '@/assets/pulse-wordmark.svg';
+import pulseWordmarkLight from '@/assets/pulse-wordmark-light.svg';
 import pulseIcon from '@/assets/pulse-icon.svg';
 import oktolabsIcon from '@/assets/oktolabs-icon.svg';
 import { useTheme } from '@/hooks/useTheme';
@@ -42,6 +44,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const [showHelp, setShowHelp] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
+  const [showKnowledgeGraph, setShowKnowledgeGraph] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -123,7 +126,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
             </button>
           )}
           <div className="flex items-center">
-            <img src={pulseWordmark} alt="Okto Pulse" className="h-7 w-auto" />
+            <img src={pulseWordmarkLight} alt="Okto Pulse" className="h-7 w-auto dark:hidden" />
+            <img src={pulseWordmark} alt="Okto Pulse" className="h-7 w-auto hidden dark:block" />
           </div>
           {currentBoard && (
             <span className="text-sm text-gray-500 dark:text-gray-400">
@@ -175,6 +179,15 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     >
                       <BookOpen size={14} />
                       Guidelines
+                    </button>
+
+                    {/* Knowledge Graph */}
+                    <button
+                      onClick={() => { setShowMenu(false); setShowKnowledgeGraph(true); }}
+                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                    >
+                      <Network size={14} />
+                      Knowledge Graph
                     </button>
 
                     {/* Analytics */}
@@ -560,6 +573,27 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
       {showPresets && (
         <PresetListModal onClose={() => setShowPresets(false)} />
+      )}
+
+      {showKnowledgeGraph && currentBoard && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-surface-950">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-surface-200 dark:border-gray-800">
+            <div className="flex items-center gap-2">
+              <Network size={18} className="text-blue-500" />
+              <h2 className="text-lg font-semibold text-surface-900 dark:text-white">Knowledge Graph</h2>
+              <span className="text-sm text-gray-500 dark:text-gray-400">/ {currentBoard.name}</span>
+            </div>
+            <button
+              onClick={() => setShowKnowledgeGraph(false)}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10 rounded-lg"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-hidden">
+            <KnowledgeGraphPage boardId={currentBoard.id} />
+          </div>
+        </div>
       )}
 
       {showAbout && (

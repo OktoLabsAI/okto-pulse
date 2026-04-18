@@ -3,9 +3,9 @@
  * Thin wrapper over fetch with typed responses from types/knowledge-graph.ts.
  */
 
-import type { KGNode, KGEdge, KGStats, KGSettings, AuditEntry, ContradictionPair } from '@/types/knowledge-graph';
+import type { KGNode, KGEdge, KGStats, KGSettings, AuditEntry } from '@/types/knowledge-graph';
 
-const KG_BASE = '/api/v1/api/kg';
+const KG_BASE = '/api/v1/kg';
 
 async function kgFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(`${KG_BASE}${path}`, {
@@ -18,6 +18,9 @@ async function kgFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }));
     throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
+  }
+  if (resp.status === 204 || resp.headers.get('Content-Length') === '0') {
+    return undefined as T;
   }
   return resp.json();
 }
@@ -44,18 +47,25 @@ export async function getNodeDetail(boardId: string, nodeId: string) {
 }
 
 // Graph (for visualization)
+export interface SubgraphResponse {
+  nodes: KGNode[];
+  edges: KGEdge[];
+  metadata: Record<string, unknown>;
+  next_cursor: string | null;
+}
+
 export async function getSubgraph(boardId: string, params?: {
   center?: string;
   depth?: number;
-  max_nodes?: number;
+  limit?: number;
+  cursor?: string;
 }) {
   const qs = new URLSearchParams();
   if (params?.center) qs.set('center', params.center);
   if (params?.depth) qs.set('depth', String(params.depth));
-  if (params?.max_nodes) qs.set('max_nodes', String(params.max_nodes));
-  return kgFetch<{ nodes: KGNode[]; edges: KGEdge[]; metadata: Record<string, unknown> }>(
-    `/boards/${boardId}/graph?${qs}`
-  );
+  if (params?.limit) qs.set('limit', String(params.limit));
+  if (params?.cursor) qs.set('cursor', params.cursor);
+  return kgFetch<SubgraphResponse>(`/boards/${boardId}/graph?${qs}`);
 }
 
 // Stats
@@ -77,10 +87,67 @@ export async function undoSession(boardId: string, sessionId: string, force = fa
   });
 }
 
+// Similar nodes
+export async function findSimilar(boardId: string, topic: string, topK = 10) {
+  return kgFetch<{
+    results: Array<{
+      id: string;
+      title: string;
+      source_artifact_ref?: string;
+      similarity: number;
+      combined_score: number;
+    }>;
+    total: number;
+  }>(`/boards/${boardId}/similar?topic=${encodeURIComponent(topic)}&top_k=${topK}`);
+}
+
+// Supersedence chain
+export async function getSupersedenceChain(boardId: string, decisionId: string) {
+  return kgFetch<{
+    chain: Array<{
+      id: string;
+      title: string;
+      created_at?: string;
+      superseded_by?: string;
+      superseded_at?: string;
+    }>;
+    depth: number;
+    current_active: string;
+  }>(`/boards/${boardId}/supersedence/${decisionId}`);
+}
+
+// Contradictions
+export async function findContradictions(boardId: string, nodeId?: string, limit = 50) {
+  const qs = new URLSearchParams();
+  if (nodeId) qs.set('node_id', nodeId);
+  qs.set('limit', String(limit));
+  return kgFetch<{
+    contradictions: Array<{
+      id_a: string;
+      title_a: string;
+      id_b: string;
+      title_b: string;
+      confidence: number;
+    }>;
+    total: number;
+  }>(`/boards/${boardId}/contradictions?${qs}`);
+}
+
 // Global search
-export async function globalSearch(query: string, limit = 20) {
-  return kgFetch<{ results: Array<{ board_id: string; id: string; title: string; similarity: number }>; total: number }>(
-    `/global/search?q=${encodeURIComponent(query)}&limit=${limit}`
+export async function globalSearch(query: string, limit = 20, minSimilarity = 0.3) {
+  return kgFetch<{
+    results: Array<{
+      board_id: string;
+      id: string;
+      digest_id?: string;
+      title: string;
+      summary?: string;
+      node_type?: string;
+      similarity: number;
+    }>;
+    total: number;
+  }>(
+    `/global/search?q=${encodeURIComponent(query)}&limit=${limit}&min_similarity=${minSimilarity}`
   );
 }
 
@@ -98,7 +165,7 @@ export async function updateKGSettings(boardId: string, settings: Partial<KGSett
 
 // Historical consolidation
 export async function startHistorical(boardId: string) {
-  return kgFetch<{ status: string; total_artifacts: number }>(`/boards/${boardId}/historical-consolidation/start`, {
+  return kgFetch<{ status: string; total_artifacts?: number; board_id?: string }>(`/boards/${boardId}/historical-consolidation/start`, {
     method: 'POST',
   });
 }
@@ -112,6 +179,69 @@ export async function cancelHistorical(boardId: string) {
 export async function getHistoricalProgress(boardId: string) {
   return kgFetch<{ enabled: boolean; status: string; total: number; progress: number }>(
     `/boards/${boardId}/historical-consolidation/progress`
+  );
+}
+
+// Pending queue
+export async function listPending(boardId: string) {
+  return kgFetch<{
+    entries: Array<{
+      id: string;
+      board_id: string;
+      artifact_id: string;
+      artifact_type: string;
+      priority: string;
+      source: string;
+      status: string;
+      triggered_at: string | null;
+      claimed_by_session_id: string | null;
+    }>;
+    count: number;
+  }>(`/boards/${boardId}/pending`);
+}
+
+// Pending queue — hierarchical tree (spec f33eb9ca)
+export interface PendingTreeNode {
+  id: string;
+  type: 'ideation' | 'refinement' | 'spec' | 'sprint' | 'card';
+  title: string;
+  status: string;
+  queue_entry_id?: string | null;
+  retry_count?: number;
+  age_seconds?: number;
+  layer?: string;
+  last_error?: string | null;
+  children: PendingTreeNode[];
+}
+
+export interface PendingTreeLevels {
+  ideations: { pending: number; in_progress: number; done: number; failed: number };
+  refinements: PendingTreeLevels['ideations'];
+  specs: PendingTreeLevels['ideations'];
+  sprints: PendingTreeLevels['ideations'];
+  cards: PendingTreeLevels['ideations'];
+}
+
+export async function getPendingTree(boardId: string, depth = 5) {
+  return kgFetch<{
+    board_id: string;
+    depth: number;
+    total_pending: number;
+    levels: PendingTreeLevels;
+    tree: PendingTreeNode[];
+  }>(`/boards/${boardId}/pending/tree?depth=${depth}`);
+}
+
+export async function retryPending(boardId: string, queueEntryId: string, recursive = false) {
+  return kgFetch<{
+    board_id: string;
+    queue_entry_id: string;
+    recursive: boolean;
+    reopened_count: number;
+    reopened_ids: string[];
+  }>(
+    `/boards/${boardId}/pending/${queueEntryId}/retry?recursive=${recursive}`,
+    { method: 'POST' },
   );
 }
 

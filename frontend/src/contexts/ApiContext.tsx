@@ -6,7 +6,7 @@ import React, { createContext, useContext, useMemo, useCallback, useEffect } fro
 import { AuthenticatedFetch, initAuthFetch } from '@/lib/authFetch';
 import { authAdapter } from '@/adapters';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api/v1';
+const API_BASE_URL = (typeof window !== 'undefined' && (window as any).OKTO_PULSE_CONFIG?.API_URL) || import.meta.env.VITE_API_URL || '/api/v1';
 
 interface ApiContextValue {
   apiClient: AuthenticatedFetch;

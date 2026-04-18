@@ -18,6 +18,7 @@ const ENTITY_LABELS: Record<string, string> = {
   sprint: 'Sprints',
   profile: 'Profile',
   guidelines: 'Guidelines',
+  kg: 'Knowledge Graphs',
 };
 
 const ENTITY_COLORS: Record<string, string> = {
@@ -29,6 +30,7 @@ const ENTITY_COLORS: Record<string, string> = {
   sprint: 'text-orange-600 dark:text-orange-400',
   profile: 'text-gray-600 dark:text-gray-400',
   guidelines: 'text-pink-600 dark:text-pink-400',
+  kg: 'text-indigo-600 dark:text-indigo-400',
 };
 
 type FlagValue = boolean;
