@@ -43,7 +43,10 @@ import { NodePreviewPanel } from './NodePreviewPanel';
 export interface GraphCanvasFilters {
   types: KGNodeType[];
   edgeTypes: KGEdgeType[];
-  minConfidence: number;
+  /** Minimum relevance_score (0..1) — slider in the controls panel.
+   *  Operates on KGNode.relevance_score (the conceptually-correct field
+   *  shown in the node detail panel as "Relevance"). */
+  minRelevance: number;
   searchQuery: string;
 }
 
@@ -59,6 +62,8 @@ interface Props {
   initialSelectedNodeId?: string | null;
   /** When `filteredNodes.length === 0` but `nodes.length > 0`, parent can offer to reset filters (S5.4). */
   onClearFilters?: () => void;
+  /** Lower the relevance threshold to a specific value (used by the empty-state CTA). */
+  onAdjustRelevance?: (value: number) => void;
   /** Navigate to a spec reference when "Open in spec" is clicked from the preview panel (S5.2). */
   onOpenSpec?: (specRef: string) => void;
   /** Promote the inline preview to a full modal when "Show more" is clicked. */
@@ -66,8 +71,12 @@ interface Props {
 }
 
 function prefersDarkMode(): boolean {
-  if (typeof window === 'undefined' || !window.matchMedia) return false;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  if (typeof window === 'undefined' || typeof document === 'undefined') return false;
+  // The app uses Tailwind's `class` strategy: dark mode is signalled by a
+  // `dark` class on <html>, not by the OS preference. Check that first and
+  // fall back to the OS hint only when the class isn't present.
+  if (document.documentElement.classList.contains('dark')) return true;
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
 }
 
 export function GraphCanvas({
@@ -78,6 +87,7 @@ export function GraphCanvas({
   onSelect,
   initialSelectedNodeId = null,
   onClearFilters,
+  onAdjustRelevance,
   onOpenSpec,
   onShowDetails,
 }: Props) {
@@ -96,13 +106,23 @@ export function GraphCanvas({
     setSelectedId(initialSelectedNodeId);
   }, [initialSelectedNodeId]);
 
-  // React to OS-level theme changes so MiniMap colors stay in sync (S5.3).
+  // React to theme toggles (Tailwind class strategy) AND OS-level changes
+  // so the MiniMap colors stay in sync regardless of which mechanism flipped
+  // the theme.
   useEffect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return;
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = (e: MediaQueryListEvent) => setIsDark(e.matches);
-    mq.addEventListener?.('change', handler);
-    return () => mq.removeEventListener?.('change', handler);
+    if (typeof window === 'undefined') return;
+    const sync = () => setIsDark(prefersDarkMode());
+    const observer = new MutationObserver(sync);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+    const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
+    mq?.addEventListener?.('change', sync);
+    return () => {
+      observer.disconnect();
+      mq?.removeEventListener?.('change', sync);
+    };
   }, []);
 
   const filteredNodes = useMemo(() => {
@@ -110,8 +130,8 @@ export function GraphCanvas({
     if (filters.types.length > 0) {
       result = result.filter((n) => filters.types.includes(n.node_type));
     }
-    if (filters.minConfidence > 0) {
-      result = result.filter((n) => n.source_confidence >= filters.minConfidence);
+    if (filters.minRelevance > 0) {
+      result = result.filter((n) => (n.relevance_score ?? 0) >= filters.minRelevance);
     }
     if (filters.searchQuery) {
       const q = filters.searchQuery.toLowerCase();
@@ -269,9 +289,18 @@ export function GraphCanvas({
 
   // S5.4 — distinguish "no data yet" (nodes empty) from "filters hid everything"
   // (nodes > 0 but filteredNodes = 0). Parent controls the "yet" case; we render
-  // the filtered variant in-canvas with a clear-filters CTA.
+  // the filtered variant in-canvas with a clear-filters CTA. When the relevance
+  // slider is what's hiding everything, also offer to lower it to the maximum
+  // relevance present so the user can see *something*.
   if (filteredNodes.length === 0) {
     const isFilteredEmpty = nodes.length > 0;
+    const maxRelevancePresent = isFilteredEmpty
+      ? nodes.reduce((m, n) => Math.max(m, n.relevance_score ?? 0), 0)
+      : 0;
+    const relevanceIsCulprit =
+      isFilteredEmpty &&
+      filters.minRelevance > 0 &&
+      maxRelevancePresent < filters.minRelevance;
     return (
       <div
         className="h-full flex flex-col items-center justify-center gap-3"
@@ -279,19 +308,35 @@ export function GraphCanvas({
         data-empty-state={isFilteredEmpty ? 'filtered' : 'yet'}
       >
         <p className="text-gray-400 dark:text-gray-500 text-sm">
-          {isFilteredEmpty
-            ? 'No nodes match current filters.'
-            : 'No nodes to display.'}
+          {relevanceIsCulprit
+            ? `Nenhum nó atende ao filtro de relevância (max presente: ${(maxRelevancePresent * 100).toFixed(0)}%, filtro: ${(filters.minRelevance * 100).toFixed(0)}%).`
+            : isFilteredEmpty
+              ? 'Nenhum nó corresponde aos filtros atuais.'
+              : 'Nenhum nó para exibir.'}
         </p>
-        {isFilteredEmpty && onClearFilters && (
-          <button
-            type="button"
-            onClick={onClearFilters}
-            data-testid="kg-clear-filters"
-            className="px-4 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700"
-          >
-            Clear filters
-          </button>
+        {isFilteredEmpty && (
+          <div className="flex gap-2">
+            {relevanceIsCulprit && onAdjustRelevance && (
+              <button
+                type="button"
+                onClick={() => onAdjustRelevance(maxRelevancePresent)}
+                data-testid="kg-adjust-relevance"
+                className="px-4 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700"
+              >
+                Reduzir para {(maxRelevancePresent * 100).toFixed(0)}%
+              </button>
+            )}
+            {onClearFilters && (
+              <button
+                type="button"
+                onClick={onClearFilters}
+                data-testid="kg-clear-filters"
+                className="px-4 py-1.5 text-xs rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-100 dark:hover:bg-gray-600"
+              >
+                Limpar filtros
+              </button>
+            )}
+          </div>
         )}
       </div>
     );
@@ -336,7 +381,13 @@ export function GraphCanvas({
           maskColor={isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.1)'}
           pannable
           zoomable
-          style={{ height: 80, width: 120 }}
+          style={{
+            height: 100,
+            width: 160,
+            backgroundColor: isDark ? '#0f172a' : '#ffffff',
+            border: `1px solid ${isDark ? '#334155' : '#e5e7eb'}`,
+            borderRadius: 6,
+          }}
           data-testid="kg-minimap"
         />
       </ReactFlow>

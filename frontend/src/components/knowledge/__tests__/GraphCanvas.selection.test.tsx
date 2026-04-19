@@ -28,7 +28,7 @@ import type { KGNode } from '@/types/knowledge-graph';
 const FILTERS: GraphCanvasFilters = {
   types: [],
   edgeTypes: [],
-  minConfidence: 0,
+  minRelevance: 0,
   searchQuery: '',
 };
 
@@ -95,9 +95,11 @@ describe('GraphCanvas — selection wiring (S4.1 / AC-4)', () => {
 
   it('renders the empty-state fallback when filters exclude every node', () => {
     const { container } = renderCanvas({
-      filters: { ...FILTERS, minConfidence: 1.01 },
+      filters: { ...FILTERS, minRelevance: 1.01 },
     });
-    expect(container.textContent).toContain('No nodes match current filters');
+    expect(container.textContent).toMatch(
+      /Nenhum nó (corresponde aos filtros|atende ao filtro)/,
+    );
     expect(container.querySelector('[data-testid="kg-canvas"]')).toBeNull();
   });
 

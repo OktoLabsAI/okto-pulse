@@ -19,7 +19,7 @@ function baseFilters(overrides: Partial<Filters> = {}): Filters {
   return {
     types: [],
     edgeTypes: [],
-    minConfidence: 0.5,
+    minRelevance: 0.5,
     searchQuery: '',
     ...overrides,
   };
@@ -82,10 +82,10 @@ describe('GraphControlsPanel — edge type chips (S4.4, AC-5)', () => {
   });
 });
 
-describe('GraphControlsPanel — confidence slider (S4.5, AC-6)', () => {
+describe('GraphControlsPanel — relevance slider (S4.5, AC-6)', () => {
   it('slider exposes min=0, max=1, step=0.05 and reflects filter value', () => {
-    renderPanel({ filters: baseFilters({ minConfidence: 0.25 }) });
-    const slider = screen.getByTestId('kg-confidence-slider') as HTMLInputElement;
+    renderPanel({ filters: baseFilters({ minRelevance: 0.25 }) });
+    const slider = screen.getByTestId('kg-relevance-slider') as HTMLInputElement;
     expect(slider.min).toBe('0');
     expect(slider.max).toBe('1');
     expect(slider.step).toBe('0.05');
@@ -94,12 +94,12 @@ describe('GraphControlsPanel — confidence slider (S4.5, AC-6)', () => {
 
   it('changing the slider emits the raw 0..1 number, not a percent', () => {
     const { onFiltersChange } = renderPanel();
-    fireEvent.change(screen.getByTestId('kg-confidence-slider'), {
+    fireEvent.change(screen.getByTestId('kg-relevance-slider'), {
       target: { value: '0.75' },
     });
     expect(onFiltersChange).toHaveBeenCalledTimes(1);
     const next = onFiltersChange.mock.calls[0][0] as Filters;
-    expect(next.minConfidence).toBeCloseTo(0.75, 5);
+    expect(next.minRelevance).toBeCloseTo(0.75, 5);
   });
 });
 

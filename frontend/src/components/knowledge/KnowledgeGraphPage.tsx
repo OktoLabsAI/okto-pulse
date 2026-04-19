@@ -41,7 +41,10 @@ const DEFAULT_NODE_LIMIT = 100;
 const DEFAULT_FILTERS: Filters = {
   types: [],
   edgeTypes: [],
-  minConfidence: 0.5,
+  // Default 0% so the slider doesn't hide nodes until the user opts in.
+  // Backend currently sends constant relevance_score for most nodes, so a
+  // non-zero default would silently filter without producing visible value.
+  minRelevance: 0,
   searchQuery: '',
 };
 
@@ -128,6 +131,10 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     setFilters(DEFAULT_FILTERS);
   }, []);
 
+  const handleAdjustRelevance = useCallback((value: number) => {
+    setFilters((prev) => ({ ...prev, minRelevance: value }));
+  }, []);
+
   const handleOpenSpec = useCallback((specRef: string) => {
     if (typeof window !== 'undefined') {
       window.location.href = `/specs/${specRef}`;
@@ -190,6 +197,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
           nodeLimit={nodeLimit}
           onNodeLimitChange={handleNodeLimitChange}
           boardId={boardId}
+          relevanceScores={nodes.map((n) => n.relevance_score ?? 0)}
         />
       </div>
 
@@ -213,13 +221,26 @@ export function KnowledgeGraphPage({ boardId }: Props) {
                   loadGraph(nodeLimit);
                 }}
               />
-            <KGRefreshButton
-              onRefresh={() => loadGraph(nodeLimit)}
-              loading={loading}
-              label="Refresh"
-              shortcut
-              testId="kg-refresh"
-            />
+              <KGRefreshButton
+                onRefresh={() => loadGraph(nodeLimit)}
+                loading={loading}
+                label="Refresh"
+                shortcut
+                testId="kg-refresh"
+              />
+              {nextCursor && (
+                <button
+                  type="button"
+                  onClick={handleLoadMore}
+                  disabled={loadingMore}
+                  data-testid="kg-load-more"
+                  className="px-3 py-1.5 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-wait"
+                >
+                  {loadingMore
+                    ? 'Carregando…'
+                    : `Carregar mais (${nodes.length}${nextCursor ? '+' : ''})`}
+                </button>
+              )}
             </div>
             <GraphCanvas
               nodes={nodes}
@@ -228,20 +249,10 @@ export function KnowledgeGraphPage({ boardId }: Props) {
               onSelect={setSelectedNode}
               initialSelectedNodeId={selectedNode?.id ?? null}
               onClearFilters={handleClearFilters}
+              onAdjustRelevance={handleAdjustRelevance}
               onOpenSpec={handleOpenSpec}
               onShowDetails={setModalNode}
             />
-            {nextCursor && (
-              <button
-                type="button"
-                onClick={handleLoadMore}
-                disabled={loadingMore}
-                data-testid="kg-load-more"
-                className="absolute bottom-4 right-4 px-4 py-2 rounded-md shadow bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-wait"
-              >
-                {loadingMore ? 'Loading…' : 'Load more'}
-              </button>
-            )}
           </>
         ) : subView === 'audit' ? (
           <AuditLogView boardId={boardId} />

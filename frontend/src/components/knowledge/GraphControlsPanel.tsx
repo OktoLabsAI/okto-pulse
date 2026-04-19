@@ -15,13 +15,15 @@ import {
   NODE_TYPE_CONFIG,
 } from '@/types/knowledge-graph';
 import { usePermissions } from '@/hooks/usePermissions';
+import { RelevanceHistogram } from './RelevanceHistogram';
 
 type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'settings' | 'global';
 
 export interface Filters {
   types: KGNodeType[];
   edgeTypes: KGEdgeType[];
-  minConfidence: number;
+  /** Minimum relevance_score (0..1) for the visibility slider. */
+  minRelevance: number;
   searchQuery: string;
 }
 
@@ -37,6 +39,8 @@ interface Props {
   onNodeLimitChange: (limit: number) => void;
   /** Board scope for permission resolution. Fail-open if absent. */
   boardId?: string;
+  /** Distribution data for the relevance mini-histogram below the slider. */
+  relevanceScores?: number[];
 }
 
 const SUB_VIEWS: { key: SubView; label: string }[] = [
@@ -69,6 +73,7 @@ export function GraphControlsPanel({
   nodeLimit,
   onNodeLimitChange,
   boardId,
+  relevanceScores = [],
 }: Props) {
   const perms = usePermissions(boardId);
   const updateFilters = (patch: Partial<Filters>) => onFiltersChange({ ...filters, ...patch });
@@ -114,11 +119,37 @@ export function GraphControlsPanel({
         />
       </div>
 
-      {/* Node type filter */}
+      {/* Node type filter — header shows page-vs-total context.
+          nodeCount is the size of the currently-loaded page (driven by
+          nodeLimit). When the user paginates with "Carregar mais" the count
+          grows; if it equals nodeLimit there's likely more on the server. */}
       <div>
-        <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">
-          Node Types ({nodeCount})
-        </h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs font-medium text-gray-500 uppercase">
+            Tipos de nó (mostrando {nodeCount})
+          </h3>
+          <div className="flex gap-1.5 text-[10px]">
+            <button
+              type="button"
+              onClick={() => updateFilters({ types: [] })}
+              data-testid="kg-node-types-all"
+              className="text-blue-600 hover:underline dark:text-blue-400"
+            >
+              Marcar todos
+            </button>
+            <span className="text-gray-400">·</span>
+            <button
+              type="button"
+              onClick={() =>
+                updateFilters({ types: ['__hide_all__' as KGNodeType] })
+              }
+              data-testid="kg-node-types-none"
+              className="text-blue-600 hover:underline dark:text-blue-400"
+            >
+              Desmarcar
+            </button>
+          </div>
+        </div>
         <div className="space-y-1 max-h-48 overflow-y-auto">
           {ALL_NODE_TYPES.map((nt) => {
             const config = NODE_TYPE_CONFIG[nt];
@@ -149,19 +180,35 @@ export function GraphControlsPanel({
             );
           })}
         </div>
-        {filters.types.length > 0 && (
-          <button
-            onClick={() => updateFilters({ types: [] })}
-            className="mt-2 text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400"
-          >
-            Show all types
-          </button>
-        )}
       </div>
 
-      {/* Edge type chips (S4.4) */}
+      {/* Edge type chips — active pills get a ✓ prefix + subtle ring so the
+          "all on by default" state is visually distinct from "I disabled some". */}
       <div>
-        <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Edge Types</h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs font-medium text-gray-500 uppercase">Tipos de aresta</h3>
+          <div className="flex gap-1.5 text-[10px]">
+            <button
+              type="button"
+              onClick={() => updateFilters({ edgeTypes: [] })}
+              data-testid="kg-edge-types-all"
+              className="text-blue-600 hover:underline dark:text-blue-400"
+            >
+              Marcar todos
+            </button>
+            <span className="text-gray-400">·</span>
+            <button
+              type="button"
+              onClick={() =>
+                updateFilters({ edgeTypes: ['__hide_all__' as KGEdgeType] })
+              }
+              data-testid="kg-edge-types-none"
+              className="text-blue-600 hover:underline dark:text-blue-400"
+            >
+              Desmarcar
+            </button>
+          </div>
+        </div>
         <div className="flex flex-wrap gap-1" role="group" aria-label="Edge type filter">
           {ALL_EDGE_TYPES.map((et) => {
             const active =
@@ -187,45 +234,50 @@ export function GraphControlsPanel({
                 }}
                 className={`px-2 py-0.5 rounded-full text-[11px] border transition ${
                   active
-                    ? 'text-white'
+                    ? 'text-white ring-1 ring-offset-0'
                     : 'text-gray-500 bg-transparent border-gray-300 dark:border-gray-600'
                 }`}
                 style={
                   active
-                    ? { backgroundColor: cfg.color, borderColor: cfg.color }
+                    ? {
+                        backgroundColor: cfg.color,
+                        borderColor: cfg.color,
+                        // @ts-expect-error -- CSS var consumed by Tailwind ring
+                        '--tw-ring-color': `${cfg.color}66`,
+                      }
                     : undefined
                 }
               >
+                {active && <span className="mr-0.5">✓</span>}
                 {cfg.label}
               </button>
             );
           })}
         </div>
-        {filters.edgeTypes.length > 0 && (
-          <button
-            onClick={() => updateFilters({ edgeTypes: [] })}
-            className="mt-2 text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400"
-          >
-            Show all edge types
-          </button>
-        )}
       </div>
 
-      {/* Confidence slider (S4.5: 0..1 step 0.05) */}
+      {/* Relevance slider — operates on KGNode.relevance_score, the same field
+          the node detail panel labels as "Relevance". The mini-histogram below
+          shows the distribution so users can see when the data is constant
+          (filter has nothing to act on) vs. when it would actually filter. */}
       <div>
         <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">
-          Min Confidence: {(filters.minConfidence * 100).toFixed(0)}%
+          Relevância mínima: {(filters.minRelevance * 100).toFixed(0)}%
         </h3>
         <input
           type="range"
           min={0}
           max={1}
           step={0.05}
-          value={filters.minConfidence}
-          onChange={(e) => updateFilters({ minConfidence: Number(e.target.value) })}
+          value={filters.minRelevance}
+          onChange={(e) => updateFilters({ minRelevance: Number(e.target.value) })}
           className="w-full"
-          aria-label="Minimum confidence filter"
-          data-testid="kg-confidence-slider"
+          aria-label="Filtro de relevância mínima"
+          data-testid="kg-relevance-slider"
+        />
+        <RelevanceHistogram
+          scores={relevanceScores}
+          threshold={filters.minRelevance}
         />
       </div>
 
