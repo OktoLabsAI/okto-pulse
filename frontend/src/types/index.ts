@@ -1129,6 +1129,7 @@ export interface CreateSpecRequest {
   functional_requirements?: string[];
   technical_requirements?: string[];
   acceptance_criteria?: string[];
+  decisions?: Decision[];
   status?: SpecStatus;
   assignee_id?: string;
   labels?: string[];

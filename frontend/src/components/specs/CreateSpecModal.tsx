@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { X, Plus, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
-import type { Spec } from '@/types';
+import type { Spec, Decision } from '@/types';
 
 interface CreateSpecModalProps {
   boardId: string;
@@ -91,6 +91,7 @@ export function CreateSpecModal({ boardId, onClose, onCreated }: CreateSpecModal
   const [funcReqs, setFuncReqs] = useState<string[]>([]);
   const [techReqs, setTechReqs] = useState<string[]>([]);
   const [acceptCriteria, setAcceptCriteria] = useState<string[]>([]);
+  const [decisionEntries, setDecisionEntries] = useState<string[]>([]);
   const [labels, setLabels] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -100,6 +101,20 @@ export function CreateSpecModal({ boardId, onClose, onCreated }: CreateSpecModal
 
     setSaving(true);
     try {
+      const decisions: Decision[] | undefined = decisionEntries.length > 0
+        ? decisionEntries.map((text) => ({
+            id: `dec_${Date.now().toString(16).slice(-8)}${Math.random().toString(16).slice(2, 4)}`,
+            title: text,
+            rationale: text,
+            context: null,
+            alternatives_considered: null,
+            supersedes_decision_id: null,
+            linked_requirements: null,
+            linked_task_ids: null,
+            status: 'active',
+            notes: null,
+          }))
+        : undefined;
       const spec = await api.createSpec(boardId, {
         title: title.trim(),
         description: description.trim() || undefined,
@@ -107,6 +122,7 @@ export function CreateSpecModal({ boardId, onClose, onCreated }: CreateSpecModal
         functional_requirements: funcReqs.length > 0 ? funcReqs : undefined,
         technical_requirements: techReqs.length > 0 ? techReqs : undefined,
         acceptance_criteria: acceptCriteria.length > 0 ? acceptCriteria : undefined,
+        decisions,
         labels: labels ? labels.split(',').map((l) => l.trim()).filter(Boolean) : undefined,
       });
       onCreated(spec);
@@ -185,6 +201,13 @@ export function CreateSpecModal({ boardId, onClose, onCreated }: CreateSpecModal
             placeholder="Add an acceptance criterion..."
             items={acceptCriteria}
             onChange={setAcceptCriteria}
+          />
+
+          <ListEditor
+            label="Decisions"
+            placeholder="Add a decision (e.g. 'Use Kùzu embedded over Neo4j')..."
+            items={decisionEntries}
+            onChange={setDecisionEntries}
           />
 
           <div>
