@@ -43,7 +43,7 @@ import toast from 'react-hot-toast';
 import { exportSpec, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
-import type { Spec, SpecStatus, SpecSkill, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings } from '@/types';
+import type { Spec, SpecStatus, SpecSkill, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings, Decision } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { usePermissions } from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
@@ -1775,6 +1775,61 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                     const updated = await api.updateSpec(specId, { acceptance_criteria: items });
                     setSpec(updated);
                   } catch { toast.error('Failed to update'); }
+                }}
+              />
+              {/* Decisions — contextual choices, same bulleted pattern as FR/AC.
+                  Only active decisions show in the list; supersedence/revocation
+                  happens via MCP tools + KG. Text is mapped to Decision.title
+                  (and rationale mirrors it by default). */}
+              <EditableRequirementsList
+                title="Decisions"
+                icon={<Lightbulb size={14} />}
+                items={(spec.decisions || [])
+                  .filter((d) => d.status === 'active')
+                  .map((d) => d.title)}
+                placeholder="Add a decision (e.g. 'Use Kùzu embedded over Neo4j')..."
+                onUpdate={async (items) => {
+                  try {
+                    const existing = spec.decisions || [];
+                    const byTitle = new Map(
+                      existing.filter((d) => d.status === 'active').map((d) => [d.title, d]),
+                    );
+                    const keptTitles = new Set(items);
+                    const next: Decision[] = [];
+                    // Preserve revoked/superseded history untouched.
+                    for (const d of existing) {
+                      if (d.status !== 'active') next.push(d);
+                    }
+                    // Walk incoming items in display order.
+                    for (const text of items) {
+                      const prior = byTitle.get(text);
+                      if (prior) {
+                        next.push(prior);
+                      } else {
+                        next.push({
+                          id: `dec_${Date.now().toString(16).slice(-8)}${Math.random().toString(16).slice(2, 4)}`,
+                          title: text,
+                          rationale: text,
+                          context: null,
+                          alternatives_considered: null,
+                          supersedes_decision_id: null,
+                          linked_requirements: null,
+                          linked_task_ids: null,
+                          status: 'active',
+                          notes: null,
+                        });
+                      }
+                    }
+                    // Active entries removed from the list become revoked
+                    // (soft-delete — preserves history).
+                    for (const [title, d] of byTitle) {
+                      if (!keptTitles.has(title)) {
+                        next.push({ ...d, status: 'revoked' });
+                      }
+                    }
+                    const updated = await api.updateSpec(specId, { decisions: next });
+                    setSpec(updated);
+                  } catch { toast.error('Failed to update decisions'); }
                 }}
               />
               {spec.labels && spec.labels.length > 0 && (

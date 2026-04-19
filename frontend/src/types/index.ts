@@ -452,6 +452,22 @@ export interface BusinessRule {
   notes: string | null;
 }
 
+// Decision — formalized design choice on a spec (spec b66d2562)
+export type DecisionStatus = 'active' | 'superseded' | 'revoked';
+
+export interface Decision {
+  id: string;
+  title: string;
+  rationale: string;
+  context: string | null;
+  alternatives_considered: string[] | null;
+  supersedes_decision_id: string | null;
+  linked_requirements: string[] | null;
+  linked_task_ids: string[] | null;
+  status: DecisionStatus;
+  notes: string | null;
+}
+
 // API Contract
 export interface ApiContract {
   id: string;
@@ -629,9 +645,11 @@ export interface Spec {
   test_scenarios: TestScenario[] | null;
   business_rules: BusinessRule[] | null;
   api_contracts: ApiContract[] | null;
+  decisions: Decision[] | null;
   screen_mockups: ScreenMockup[] | null;
   skip_test_coverage: boolean;
   skip_rules_coverage?: boolean;
+  skip_decisions_coverage?: boolean;
   skip_contract_coverage?: boolean;
   skip_qualitative_validation?: boolean;
   validation_threshold?: number;
@@ -1128,9 +1146,11 @@ export interface UpdateSpecRequest {
   test_scenarios?: TestScenario[];
   business_rules?: BusinessRule[];
   api_contracts?: ApiContract[];
+  decisions?: Decision[];
   screen_mockups?: ScreenMockup[];
   skip_test_coverage?: boolean;
   skip_contract_coverage?: boolean;
+  skip_decisions_coverage?: boolean;
   skip_qualitative_validation?: boolean;
   validation_threshold?: number;
   assignee_id?: string;
