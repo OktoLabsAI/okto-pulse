@@ -146,7 +146,7 @@ export function GraphControlsPanel({
               data-testid="kg-node-types-none"
               className="text-blue-600 hover:underline dark:text-blue-400"
             >
-              Desmarcar
+              Desmarcar todos
             </button>
           </div>
         </div>
@@ -205,7 +205,7 @@ export function GraphControlsPanel({
               data-testid="kg-edge-types-none"
               className="text-blue-600 hover:underline dark:text-blue-400"
             >
-              Desmarcar
+              Desmarcar todos
             </button>
           </div>
         </div>
