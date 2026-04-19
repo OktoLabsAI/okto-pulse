@@ -883,6 +883,7 @@ export interface BoardSettings {
   skip_rules_coverage_global: boolean;
   skip_trs_coverage_global: boolean;
   skip_contract_coverage_global: boolean;
+  skip_decisions_coverage_global: boolean;
   require_task_validation: boolean;
   min_confidence: number;
   min_completeness: number;

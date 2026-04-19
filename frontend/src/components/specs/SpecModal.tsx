@@ -35,6 +35,7 @@ import {
   Minimize2,
   Scale,
   FileCode,
+  GitBranch,
   Download,
   Network,
   ShieldCheck,
@@ -50,6 +51,7 @@ import { MockupsTab } from './MockupsTab';
 import { RulesTab } from './RulesTab';
 import { ContractsTab } from './ContractsTab';
 import { TechnicalRequirementsTab } from './TechnicalRequirementsTab';
+import { DecisionsTab } from './DecisionsTab';
 import { KGValidationTab } from './KGValidationTab';
 import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
 import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
@@ -68,7 +70,7 @@ interface SpecModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'mockups' | 'qa' | 'skills' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg';
+type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'decisions' | 'mockups' | 'qa' | 'skills' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg';
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -1578,6 +1580,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
     { id: 'trs', label: 'TRs', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
+    { id: 'decisions', label: 'Decisions', icon: <GitBranch size={14} />, count: spec.decisions?.length || 0 },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: spec.screen_mockups?.length || 0 },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: spec.qa_items?.length || 0, highlight: unansweredQA > 0 },
     { id: 'skills', label: 'Skills', icon: <Wrench size={14} />, count: spec.skills?.length || 0 },
@@ -1952,6 +1955,32 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                   const updated = await api.updateSpec(specId, patch as any);
                   setSpec(updated);
                 } catch { toast.error('Failed to update spec'); }
+              }}
+            />
+          )}
+          {activeTab === 'decisions' && spec && (
+            <DecisionsTab
+              spec={spec}
+              onUpdate={async (decisions) => {
+                try {
+                  const updated = await api.updateSpec(specId, { decisions } as any);
+                  setSpec(updated);
+                } catch { toast.error('Failed to update decisions'); }
+              }}
+              onSpecUpdate={async (patch) => {
+                try {
+                  const updated = await api.updateSpec(specId, patch as any);
+                  setSpec(updated);
+                } catch { toast.error('Failed to update spec'); }
+              }}
+              specCards={spec.cards || []}
+              onLinkTask={async (decisionId, cardId) => {
+                const updated = await api.linkTaskToSpecItem(specId, 'decisions', decisionId, cardId);
+                setSpec(updated);
+              }}
+              onUnlinkTask={async (decisionId, cardId) => {
+                const updated = await api.unlinkTaskFromSpecItem(specId, 'decisions', decisionId, cardId);
+                setSpec(updated);
               }}
             />
           )}

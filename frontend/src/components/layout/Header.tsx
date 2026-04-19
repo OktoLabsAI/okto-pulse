@@ -60,8 +60,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   }, [showSettings, showMenu]);
 
   const settings: BoardSettings = currentBoard?.settings
-    ? { max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3, skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false, skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false, skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false, skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false, require_task_validation: currentBoard.settings.require_task_validation ?? false, min_confidence: currentBoard.settings.min_confidence ?? 70, min_completeness: currentBoard.settings.min_completeness ?? 80, max_drift: currentBoard.settings.max_drift ?? 50, require_spec_validation: currentBoard.settings.require_spec_validation ?? false, min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80, min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80, max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30 }
-    : { max_scenarios_per_card: 3, skip_test_coverage_global: false, skip_rules_coverage_global: false, skip_trs_coverage_global: false, skip_contract_coverage_global: false, require_task_validation: false, min_confidence: 70, min_completeness: 80, max_drift: 50, require_spec_validation: false, min_spec_completeness: 80, min_spec_assertiveness: 80, max_spec_ambiguity: 30 };
+    ? { max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3, skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false, skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false, skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false, skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false, skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false, require_task_validation: currentBoard.settings.require_task_validation ?? false, min_confidence: currentBoard.settings.min_confidence ?? 70, min_completeness: currentBoard.settings.min_completeness ?? 80, max_drift: currentBoard.settings.max_drift ?? 50, require_spec_validation: currentBoard.settings.require_spec_validation ?? false, min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80, min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80, max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30 }
+    : { max_scenarios_per_card: 3, skip_test_coverage_global: false, skip_rules_coverage_global: false, skip_trs_coverage_global: false, skip_contract_coverage_global: false, skip_decisions_coverage_global: false, require_task_validation: false, min_confidence: 70, min_completeness: 80, max_drift: 50, require_spec_validation: false, min_spec_completeness: 80, min_spec_assertiveness: 80, max_spec_ambiguity: 30 };
 
   // Local draft state for numeric gate inputs — committed on blur to avoid
   // refresh-on-keystroke wiping partial values while the user is typing.
@@ -368,6 +368,23 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                         className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_contract_coverage_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
                       >
                         <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_contract_coverage_global ? 'translate-x-5' : ''}`} />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
+                          Skip decisions coverage (global)
+                        </label>
+                        <p className="text-[10px] text-gray-400">
+                          Bypass active-Decision → Task linkage for all specs
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => updateSettings({ skip_decisions_coverage_global: !settings.skip_decisions_coverage_global })}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_decisions_coverage_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_decisions_coverage_global ? 'translate-x-5' : ''}`} />
                       </button>
                     </div>
 
