@@ -15,13 +15,30 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Sparkles } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, Sparkles } from 'lucide-react';
 import * as kgApi from '@/services/kg-api';
 import * as discoveryApi from '@/services/discovery-api';
 import type { IntentExecutionResult } from '@/services/discovery-api';
 import { NODE_TYPE_CONFIG, type KGNodeType } from '@/types/knowledge-graph';
 import type { DiscoveryIntent } from '@/types/discovery';
 import { NodeDetailModal } from './NodeDetailModal';
+import { CardModal } from '@/components/kanban/CardModal';
+import { SpecModal } from '@/components/specs/SpecModal';
+import { IdeationModal } from '@/components/ideations/IdeationModal';
+import { RefinementModal } from '@/components/refinements/RefinementModal';
+import { SprintModal } from '@/components/sprints/SprintModal';
+import { useDashboardStore } from '@/store/dashboard';
+
+/** Entities a Global Discovery row can drill down into. `kg_node` is the
+ * catch-all for rows whose primary reference lives in the KG layer
+ * (decisions, learnings, free-form NL query hits, contradictions). */
+type OpenEntity =
+  | { type: 'card'; id: string }
+  | { type: 'spec'; id: string }
+  | { type: 'ideation'; id: string }
+  | { type: 'refinement'; id: string }
+  | { type: 'sprint'; id: string }
+  | { type: 'kg_node'; id: string };
 
 interface Props {
   boardId: string;
@@ -72,6 +89,46 @@ export function GlobalSearchView({ boardId }: Props) {
   const [pendingIntent, setPendingIntent] = useState<DiscoveryIntent | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
   const [intentError, setIntentError] = useState<string | null>(null);
+
+  // Drill-down state (ideação 33cb4fa3). Rows carry
+  // meta.entity_type + meta.entity_id; clicking "Open" renders the
+  // matching entity modal here (this view lives outside the KanbanBoard,
+  // so we can't rely on the card modal being mounted upstream).
+  const [openEntity, setOpenEntity] = useState<OpenEntity | null>(null);
+  const openCardFromStore = useDashboardStore((s) => s.openCardModal);
+  const closeCardFromStore = useDashboardStore((s) => s.closeCardModal);
+
+  const handleOpenEntity = (row: discoveryApi.IntentExecutionRow) => {
+    const meta = (row.meta || {}) as Record<string, unknown>;
+    const entityType = typeof meta.entity_type === 'string' ? meta.entity_type : null;
+    const entityId = typeof meta.entity_id === 'string' ? meta.entity_id : null;
+    if (!entityType || !entityId) return;
+
+    switch (entityType) {
+      case 'card':
+        openCardFromStore(entityId);
+        setOpenEntity({ type: 'card', id: entityId });
+        break;
+      case 'spec':
+      case 'ideation':
+      case 'refinement':
+      case 'sprint':
+      case 'kg_node':
+        setOpenEntity({ type: entityType, id: entityId });
+        break;
+      default:
+        // Unknown entity_type — fall back to NodeDetailModal so the row
+        // is still actionable. The row id is the best we've got.
+        setOpenEntity({ type: 'kg_node', id: entityId });
+    }
+  };
+
+  const handleCloseEntity = () => {
+    if (openEntity?.type === 'card') {
+      closeCardFromStore();
+    }
+    setOpenEntity(null);
+  };
   const [intentsOpen, setIntentsOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
     return window.localStorage.getItem('discovery-intents-open') !== '0';
@@ -514,32 +571,64 @@ export function GlobalSearchView({ boardId }: Props) {
                       <th className="text-left font-medium px-3 py-2">
                         Title / Summary
                       </th>
+                      <th className="text-right font-medium px-3 py-2 w-24">
+                        Open
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {intentResult.rows.map((r, i) => (
-                      <tr
-                        key={`${r.id}-${i}`}
-                        data-testid={`discovery-intent-row-${i}`}
-                        className="hover:bg-gray-50 dark:hover:bg-gray-800/50"
-                      >
-                        <td className="px-3 py-2 whitespace-nowrap align-top">
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide text-white bg-indigo-500">
-                            {r.type}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 align-top">
-                          <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                            {r.title || 'Untitled'}
-                          </div>
-                          {r.summary && (
-                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                              {r.summary}
+                    {intentResult.rows.map((r, i) => {
+                      const meta = (r.meta || {}) as Record<string, unknown>;
+                      const canOpen =
+                        typeof meta.entity_type === 'string' &&
+                        typeof meta.entity_id === 'string' &&
+                        (meta.entity_type as string).length > 0 &&
+                        (meta.entity_id as string).length > 0;
+                      return (
+                        <tr
+                          key={`${r.id}-${i}`}
+                          data-testid={`discovery-intent-row-${i}`}
+                          className="hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                        >
+                          <td className="px-3 py-2 whitespace-nowrap align-top">
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide text-white bg-indigo-500">
+                              {r.type}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                              {r.title || 'Untitled'}
                             </div>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                            {r.summary && (
+                              <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                {r.summary}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right align-top">
+                            {canOpen ? (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEntity(r)}
+                                data-testid={`discovery-intent-row-${i}-open`}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800"
+                                title={`Open ${meta.entity_type as string}`}
+                              >
+                                <ExternalLink size={12} />
+                                Open
+                              </button>
+                            ) : (
+                              <span
+                                className="text-[10px] text-gray-400"
+                                title="This row has no drill-down target"
+                              >
+                                —
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -883,6 +972,50 @@ export function GlobalSearchView({ boardId }: Props) {
           boardId={selected.board_id}
           nodeId={selected.id}
           onClose={() => setSelected(null)}
+        />
+      )}
+
+      {/* Ideação 33cb4fa3 — drill-down for Discovery result rows. Rendered
+          here (not upstream) because Knowledge view does not mount the
+          kanban/spec/sprint panels that usually host these modals. */}
+      {openEntity?.type === 'card' && (
+        <CardModal boardId={boardId} />
+      )}
+      {openEntity?.type === 'spec' && (
+        <SpecModal
+          specId={openEntity.id}
+          boardId={boardId}
+          onClose={handleCloseEntity}
+          onChanged={() => { /* read-only opener — no refresh needed here */ }}
+        />
+      )}
+      {openEntity?.type === 'ideation' && (
+        <IdeationModal
+          ideationId={openEntity.id}
+          boardId={boardId}
+          onClose={handleCloseEntity}
+          onChanged={() => { /* read-only opener — no refresh needed here */ }}
+        />
+      )}
+      {openEntity?.type === 'refinement' && (
+        <RefinementModal
+          refinementId={openEntity.id}
+          boardId={boardId}
+          onClose={handleCloseEntity}
+          onChanged={() => { /* read-only opener — no refresh needed here */ }}
+        />
+      )}
+      {openEntity?.type === 'sprint' && (
+        <SprintModal
+          sprintId={openEntity.id}
+          onClose={handleCloseEntity}
+        />
+      )}
+      {openEntity?.type === 'kg_node' && (
+        <NodeDetailModal
+          boardId={boardId}
+          nodeId={openEntity.id}
+          onClose={handleCloseEntity}
         />
       )}
     </div>
