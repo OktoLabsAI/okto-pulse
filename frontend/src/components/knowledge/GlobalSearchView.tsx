@@ -14,7 +14,7 @@
  * we just surface placeholder links to keep the v1 surface honest.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import * as kgApi from '@/services/kg-api';
 import * as discoveryApi from '@/services/discovery-api';
@@ -63,6 +63,8 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [selected, setSelected] = useState<SearchResult | null>(null);
+  const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
+  const resultsRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,19 +84,44 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
     };
   }, []);
 
-  async function handleSearch(e: React.FormEvent) {
-    e.preventDefault();
-    if (!query.trim()) return;
+  async function runSearch(text: string): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed) return;
     setLoading(true);
     setSearched(true);
+    setTypeFilter(new Set()); // reset filters on a new search
     try {
-      const data = await kgApi.globalSearch(query.trim(), 20);
+      const data = await kgApi.globalSearch(trimmed, 20);
       setResults(data.results || []);
     } catch {
       setResults([]);
     } finally {
       setLoading(false);
+      // Scroll the results panel into view after the state settles.
+      window.requestAnimationFrame(() => {
+        resultsRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        });
+      });
     }
+  }
+
+  async function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
+    await runSearch(query);
+  }
+
+  async function handleIntentClick(intent: DiscoveryIntent): Promise<void> {
+    setActiveIntent(intent);
+    // Seed the free-text box so the user can see / tweak what was asked, and
+    // immediately fire the semantic search so the cards produce a real
+    // result — not just informational text. The seed is the intent's
+    // description when present (richer signal for embeddings) and falls
+    // back to the label.
+    const seed = intent.description?.trim() || intent.label;
+    setQuery(seed);
+    await runSearch(seed);
   }
 
   // Group intents by category for display
@@ -109,13 +136,14 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
   const orderedCategories = Object.keys(intentsByCategory).sort();
 
   return (
-    <div className="p-6 max-w-4xl flex flex-col h-full overflow-y-auto">
+    <div className="p-6 flex flex-col h-full overflow-y-auto">
       <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">
         Global Discovery
       </h2>
       <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-        Pick a pre-built question below — or type your own in the free-text
-        box at the bottom to search the knowledge graph semantically.
+        Click a pre-built question to run it, or type your own in the
+        free-text box below. Results from either path land in the same
+        section at the bottom.
       </p>
 
       {/* Intent cards grid */}
@@ -135,15 +163,16 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
               <div className="text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
                 {humanizeCategory(cat)}
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-2.5">
                 {intentsByCategory[cat].map((intent) => {
                   const isActive = activeIntent?.id === intent.id;
                   return (
                     <button
                       key={intent.id}
                       type="button"
-                      onClick={() => setActiveIntent(intent)}
+                      onClick={() => handleIntentClick(intent)}
                       data-testid={`discovery-intent-${intent.name}`}
+                      title="Run this intent"
                       className={`text-left rounded-lg border px-3 py-2.5 transition-colors ${
                         isActive
                           ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
@@ -164,13 +193,25 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
                               {intent.description}
                             </div>
                           )}
-                          <div className="mt-1.5 text-[10px] font-mono text-gray-500 dark:text-gray-500">
-                            {intent.tool_binding}
+                          <div className="mt-1.5 flex items-center gap-2 text-[10px]">
                             {intent.is_seed && (
-                              <span className="ml-2 px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
+                              <span className="px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
                                 built-in
                               </span>
                             )}
+                            <span
+                              className={`font-medium ${
+                                isActive
+                                  ? 'text-blue-600 dark:text-blue-300'
+                                  : 'text-gray-500 dark:text-gray-500'
+                              }`}
+                            >
+                              {isActive && loading
+                                ? 'Running…'
+                                : isActive
+                                  ? 'Ran — see results below'
+                                  : 'Click to run'}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -184,27 +225,12 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
 
         {activeIntent && (
           <div
-            className="mt-4 p-3 rounded-lg border border-blue-300 dark:border-blue-500/40 bg-blue-50 dark:bg-blue-900/20 text-xs"
+            className="mt-3 text-xs text-gray-500 dark:text-gray-400"
             data-testid="discovery-intent-detail"
           >
-            <div className="font-medium text-gray-900 dark:text-gray-100 mb-1">
-              {activeIntent.label}
-            </div>
-            <div className="text-gray-600 dark:text-gray-300 mb-2">
-              {activeIntent.description ?? '—'}
-            </div>
-            <div className="font-mono text-[11px] text-gray-700 dark:text-gray-300">
-              Binding: {activeIntent.tool_binding}
-            </div>
-            {activeIntent.params_schema && (
-              <pre className="mt-1 text-[10px] font-mono bg-white/60 dark:bg-gray-900/40 rounded p-2 overflow-x-auto">
-                {JSON.stringify(activeIntent.params_schema, null, 2)}
-              </pre>
-            )}
-            <div className="mt-2 text-[10px] text-gray-500 dark:text-gray-400">
-              Execution is performed by the bound tool. The dedicated result
-              view (and saved searches) will land with the admin follow-up card.
-            </div>
+            Running <span className="font-medium text-gray-700 dark:text-gray-200">{activeIntent.label}</span>{' '}
+            — query seeded from the intent, executed against the KG semantic index. A richer result view (with
+            the intent's bound tool called directly and saved searches) ships with the admin follow-up card.
           </div>
         )}
       </section>
@@ -241,59 +267,151 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
           </div>
         )}
 
-        {results.length > 0 && (
-          <div
-            className="space-y-2 flex-1 overflow-y-auto pr-1"
-            data-testid="global-search-results"
-          >
-            <div className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              {results.length} result{results.length !== 1 ? 's' : ''} found
-            </div>
-            {results.map((r, i) => {
-              const nt = (r.node_type ?? '') as KGNodeType;
-              const cfg = NODE_TYPE_CONFIG[nt];
-              return (
-                <button
-                  key={`${r.board_id}-${r.id}-${i}`}
-                  type="button"
-                  onClick={() => setSelected(r)}
-                  data-testid={`global-search-result-${r.id}`}
-                  className="w-full text-left border border-gray-200 dark:border-gray-700 rounded-lg p-3 hover:bg-gray-50 dark:hover:bg-gray-800/50 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {cfg && (
-                          <span
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide text-white"
-                            style={{ backgroundColor: cfg.color }}
-                          >
-                            <span>{cfg.icon}</span>
-                            <span>{nt}</span>
-                          </span>
-                        )}
-                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                          {r.title || 'Untitled'}
-                        </div>
-                      </div>
-                      {r.summary && (
-                        <div className="text-xs text-gray-600 dark:text-gray-300 mt-1.5 line-clamp-2">
-                          {r.summary}
-                        </div>
-                      )}
-                      <div className="text-[10px] text-gray-500 dark:text-gray-400 mt-1.5 font-mono">
-                        Board: {r.board_id?.slice(0, 12)}... | Node: {r.id?.slice(0, 12)}...
-                      </div>
-                    </div>
-                    <div className="text-xs text-gray-400 whitespace-nowrap">
-                      {Math.round(r.similarity * 100)}% match
-                    </div>
+        {results.length > 0 && (() => {
+          // Build the set of types present in the current result set, so the
+          // filter chips are scoped to what the user actually got back.
+          const typesInResults = Array.from(
+            new Set(results.map((r) => r.node_type ?? 'Unknown')),
+          ).sort();
+          const filtered = typeFilter.size === 0
+            ? results
+            : results.filter((r) => typeFilter.has(r.node_type ?? 'Unknown'));
+          const toggleType = (t: string) => {
+            setTypeFilter((prev) => {
+              const next = new Set(prev);
+              if (next.has(t)) next.delete(t);
+              else next.add(t);
+              return next;
+            });
+          };
+          return (
+            <div
+              ref={resultsRef}
+              className="flex-1 overflow-y-auto"
+              data-testid="global-search-results"
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  <strong className="text-gray-700 dark:text-gray-200">
+                    {filtered.length}
+                  </strong>{' '}
+                  {filtered.length === 1 ? 'result' : 'results'}
+                  {typeFilter.size > 0 && ` (of ${results.length})`}
+                </div>
+                {activeIntent && (
+                  <div className="text-[10px] font-mono text-gray-500 dark:text-gray-500">
+                    mcp: {activeIntent.tool_binding}
                   </div>
-                </button>
-              );
-            })}
-          </div>
-        )}
+                )}
+              </div>
+
+              {/* Filter chips — one per type in the current result set */}
+              <div
+                className="flex flex-wrap gap-1.5 mb-3"
+                data-testid="discovery-result-filters"
+              >
+                {typesInResults.map((t) => {
+                  const cfg = NODE_TYPE_CONFIG[t as KGNodeType];
+                  const active = typeFilter.has(t);
+                  const count = results.filter(
+                    (r) => (r.node_type ?? 'Unknown') === t,
+                  ).length;
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => toggleType(t)}
+                      className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${
+                        active
+                          ? 'text-white border-transparent'
+                          : 'text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800'
+                      }`}
+                      style={
+                        active && cfg
+                          ? { backgroundColor: cfg.color }
+                          : undefined
+                      }
+                      aria-pressed={active}
+                    >
+                      {active && <span className="mr-0.5">✓</span>}
+                      <span>{t}</span>
+                      <span className="ml-1 opacity-70">({count})</span>
+                    </button>
+                  );
+                })}
+                {typeFilter.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setTypeFilter(new Set())}
+                    className="px-2 py-0.5 rounded-full text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
+
+              {/* Results table — Type | Title | Board | Match */}
+              <div className="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-50 dark:bg-gray-800/50 text-gray-500 dark:text-gray-400 uppercase tracking-wider text-[10px]">
+                      <th className="text-left font-medium px-3 py-2">Type</th>
+                      <th className="text-left font-medium px-3 py-2">
+                        Title / Summary
+                      </th>
+                      <th className="text-left font-medium px-3 py-2">Board</th>
+                      <th className="text-right font-medium px-3 py-2">Match</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                    {filtered.map((r, i) => {
+                      const nt = (r.node_type ?? 'Unknown') as KGNodeType;
+                      const cfg = NODE_TYPE_CONFIG[nt];
+                      return (
+                        <tr
+                          key={`${r.board_id}-${r.id}-${i}`}
+                          onClick={() => setSelected(r)}
+                          data-testid={`global-search-result-${r.id}`}
+                          className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                        >
+                          <td className="px-3 py-2 whitespace-nowrap align-top">
+                            {cfg ? (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide text-white"
+                                style={{ backgroundColor: cfg.color }}
+                              >
+                                <span aria-hidden>{cfg.icon}</span>
+                                <span>{nt}</span>
+                              </span>
+                            ) : (
+                              <span className="text-gray-400">{nt}</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                              {r.title || 'Untitled'}
+                            </div>
+                            {r.summary && (
+                              <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">
+                                {r.summary}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 align-top whitespace-nowrap text-[10px] font-mono text-gray-500 dark:text-gray-400">
+                            {r.board_id?.slice(0, 8)}…
+                          </td>
+                          <td className="px-3 py-2 align-top whitespace-nowrap text-right text-xs text-gray-500 dark:text-gray-400">
+                            {Math.round(r.similarity * 100)}%
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
       </section>
 
       {selected && (
