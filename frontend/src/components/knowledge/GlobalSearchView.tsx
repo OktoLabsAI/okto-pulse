@@ -22,23 +22,8 @@ import type { IntentExecutionResult } from '@/services/discovery-api';
 import { NODE_TYPE_CONFIG, type KGNodeType } from '@/types/knowledge-graph';
 import type { DiscoveryIntent } from '@/types/discovery';
 import { NodeDetailModal } from './NodeDetailModal';
-import { CardModal } from '@/components/kanban/CardModal';
-import { SpecModal } from '@/components/specs/SpecModal';
-import { IdeationModal } from '@/components/ideations/IdeationModal';
-import { RefinementModal } from '@/components/refinements/RefinementModal';
-import { SprintModal } from '@/components/sprints/SprintModal';
+import { useModalStack } from '@/contexts/ModalStackContext';
 import { useDashboardStore } from '@/store/dashboard';
-
-/** Entities a Global Discovery row can drill down into. `kg_node` is the
- * catch-all for rows whose primary reference lives in the KG layer
- * (decisions, learnings, free-form NL query hits, contradictions). */
-type OpenEntity =
-  | { type: 'card'; id: string }
-  | { type: 'spec'; id: string }
-  | { type: 'ideation'; id: string }
-  | { type: 'refinement'; id: string }
-  | { type: 'sprint'; id: string }
-  | { type: 'kg_node'; id: string };
 
 interface Props {
   boardId: string;
@@ -90,13 +75,12 @@ export function GlobalSearchView({ boardId }: Props) {
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
   const [intentError, setIntentError] = useState<string | null>(null);
 
-  // Drill-down state (ideação 33cb4fa3). Rows carry
-  // meta.entity_type + meta.entity_id; clicking "Open" renders the
-  // matching entity modal here (this view lives outside the KanbanBoard,
-  // so we can't rely on the card modal being mounted upstream).
-  const [openEntity, setOpenEntity] = useState<OpenEntity | null>(null);
-  const openCardFromStore = useDashboardStore((s) => s.openCardModal);
-  const closeCardFromStore = useDashboardStore((s) => s.closeCardModal);
+  // Drill-down (ideação 33cb4fa3 + c13f7bd3). Every row with
+  // meta.entity_type + meta.entity_id pushes onto the global modal
+  // stack — the stack renderer (App.tsx) handles rendering + back
+  // navigation. This view no longer owns any modal state.
+  const { push: pushModal } = useModalStack();
+  const openCardInStore = useDashboardStore((s) => s.openCardModal);
 
   const handleOpenEntity = (row: discoveryApi.IntentExecutionRow) => {
     const meta = (row.meta || {}) as Record<string, unknown>;
@@ -104,30 +88,14 @@ export function GlobalSearchView({ boardId }: Props) {
     const entityId = typeof meta.entity_id === 'string' ? meta.entity_id : null;
     if (!entityType || !entityId) return;
 
-    switch (entityType) {
-      case 'card':
-        openCardFromStore(entityId);
-        setOpenEntity({ type: 'card', id: entityId });
-        break;
-      case 'spec':
-      case 'ideation':
-      case 'refinement':
-      case 'sprint':
-      case 'kg_node':
-        setOpenEntity({ type: entityType, id: entityId });
-        break;
-      default:
-        // Unknown entity_type — fall back to NodeDetailModal so the row
-        // is still actionable. The row id is the best we've got.
-        setOpenEntity({ type: 'kg_node', id: entityId });
-    }
-  };
+    const valid = ['card', 'spec', 'ideation', 'refinement', 'sprint', 'kg_node'];
+    const type = valid.includes(entityType) ? entityType : 'kg_node';
 
-  const handleCloseEntity = () => {
-    if (openEntity?.type === 'card') {
-      closeCardFromStore();
+    if (type === 'card') {
+      // CardModal reads the id from the dashboard store, not props.
+      openCardInStore(entityId);
     }
-    setOpenEntity(null);
+    pushModal({ type: type as 'card' | 'spec' | 'ideation' | 'refinement' | 'sprint' | 'kg_node', id: entityId });
   };
   const [intentsOpen, setIntentsOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
@@ -972,50 +940,6 @@ export function GlobalSearchView({ boardId }: Props) {
           boardId={selected.board_id}
           nodeId={selected.id}
           onClose={() => setSelected(null)}
-        />
-      )}
-
-      {/* Ideação 33cb4fa3 — drill-down for Discovery result rows. Rendered
-          here (not upstream) because Knowledge view does not mount the
-          kanban/spec/sprint panels that usually host these modals. */}
-      {openEntity?.type === 'card' && (
-        <CardModal boardId={boardId} />
-      )}
-      {openEntity?.type === 'spec' && (
-        <SpecModal
-          specId={openEntity.id}
-          boardId={boardId}
-          onClose={handleCloseEntity}
-          onChanged={() => { /* read-only opener — no refresh needed here */ }}
-        />
-      )}
-      {openEntity?.type === 'ideation' && (
-        <IdeationModal
-          ideationId={openEntity.id}
-          boardId={boardId}
-          onClose={handleCloseEntity}
-          onChanged={() => { /* read-only opener — no refresh needed here */ }}
-        />
-      )}
-      {openEntity?.type === 'refinement' && (
-        <RefinementModal
-          refinementId={openEntity.id}
-          boardId={boardId}
-          onClose={handleCloseEntity}
-          onChanged={() => { /* read-only opener — no refresh needed here */ }}
-        />
-      )}
-      {openEntity?.type === 'sprint' && (
-        <SprintModal
-          sprintId={openEntity.id}
-          onClose={handleCloseEntity}
-        />
-      )}
-      {openEntity?.type === 'kg_node' && (
-        <NodeDetailModal
-          boardId={boardId}
-          nodeId={openEntity.id}
-          onClose={handleCloseEntity}
         />
       )}
     </div>

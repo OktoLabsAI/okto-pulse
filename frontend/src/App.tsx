@@ -11,6 +11,8 @@ import { SpecsPanel } from '@/components/specs';
 import { SprintsPanel } from '@/components/sprints';
 import { AnalyticsPage } from '@/components/analytics';
 import { GlobalKGActivityIndicator } from '@/components/knowledge/GlobalKGActivityIndicator';
+import { ModalStackProvider } from '@/contexts/ModalStackContext';
+import { ModalStackRenderer } from '@/components/modals/ModalStackRenderer';
 import logoLight from '@/assets/logo-light.png';
 import logoDark from '@/assets/logo-dark.png';
 
@@ -134,6 +136,7 @@ function App() {
   }
 
   return (
+    <ModalStackProvider>
     <div className="min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950">
       {portalAdapter.PortalBar && (
         <portalAdapter.PortalBar
@@ -252,7 +255,13 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Root-level drill-down modal renderer — ideação c13f7bd3.
+          Mounted here so it's visible from every tab (including
+          Knowledge, where the usual entity modals aren't hosted). */}
+      {currentBoard && <ModalStackRenderer boardId={currentBoard.id} />}
     </div>
+    </ModalStackProvider>
   );
 }
 

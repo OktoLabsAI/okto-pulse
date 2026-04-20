@@ -10,6 +10,7 @@ import type { KGNode } from '@/types/knowledge-graph';
 import { NODE_TYPE_CONFIG } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
 import { RelevanceBadge } from './RelevanceBadge';
+import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 
 interface Props {
   node: KGNode;
@@ -38,6 +39,20 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
   const [chain, setChain] = useState<ChainNode[] | null>(null);
   const [loadingSimilar, setLoadingSimilar] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Ideação c13f7bd3: clicking a Find-Similar or supersedence result
+  // pushes onto the global modal stack when available, so the current
+  // detail stays intact and a "← Back" appears on the next layer. If
+  // the panel is rendered outside the provider (standalone sidebar in
+  // KnowledgeGraphPage), we fall back to the legacy onNodeNavigate.
+  const modalStack = useOptionalModalStack();
+  const navigateToNode = (nodeId: string) => {
+    if (modalStack) {
+      modalStack.push({ type: 'kg_node', id: nodeId });
+    } else if (onNodeNavigate) {
+      onNodeNavigate(nodeId);
+    }
+  };
 
   async function handleFindSimilar() {
     if (!node.title) return;
@@ -224,7 +239,7 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
             {similar.map((s) => (
               <button
                 key={s.id}
-                onClick={() => onNodeNavigate?.(s.id)}
+                onClick={() => navigateToNode(s.id)}
                 className="w-full text-left p-2 rounded text-xs hover:bg-gray-50 dark:hover:bg-gray-800 border border-gray-100 dark:border-gray-800"
               >
                 <div className="font-medium text-gray-900 dark:text-gray-100 truncate">
@@ -255,7 +270,7 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
                   )}
                 </div>
                 <button
-                  onClick={() => onNodeNavigate?.(c.id)}
+                  onClick={() => navigateToNode(c.id)}
                   className="text-left text-xs hover:underline"
                 >
                   <span className="text-gray-900 dark:text-gray-100">{c.title}</span>
