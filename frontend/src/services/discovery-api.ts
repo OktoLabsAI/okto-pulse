@@ -9,6 +9,29 @@ import type {
   SearchHistoryEntry,
 } from '@/types/discovery';
 
+/** Row in the normalized payload returned by POST /intents/:id/execute. */
+export interface IntentExecutionRow {
+  id: string;
+  type: string;
+  title: string;
+  summary?: string | null;
+  meta?: Record<string, unknown>;
+}
+
+/** Payload returned by the real-tool execution endpoint. */
+export interface IntentExecutionResult {
+  rows: IntentExecutionRow[];
+  columns: string[];
+  total: number;
+  tool_binding: string;
+  params_echo: Record<string, unknown>;
+  execution: 'real_tool' | 'semantic_fallback';
+  intent_id: string;
+  intent_name: string;
+  /** Extra fields some executors include (e.g. `summary` for blockers). */
+  [extra: string]: unknown;
+}
+
 const BASE = '/api/v1/discovery';
 
 async function dFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -41,4 +64,19 @@ export async function listSearchHistory(
   boardId: string,
 ): Promise<SearchHistoryEntry[]> {
   return dFetch<SearchHistoryEntry[]>(`/boards/${boardId}/search-history`);
+}
+
+/**
+ * Execute an intent against its real tool_binding. Closes the "semantic
+ * fallback masking" gap from the v1 catalog (ideação a4f526df).
+ */
+export async function executeIntent(
+  intentId: string,
+  boardId: string,
+  params: Record<string, unknown> = {},
+): Promise<IntentExecutionResult> {
+  return dFetch<IntentExecutionResult>(`/intents/${intentId}/execute`, {
+    method: 'POST',
+    body: JSON.stringify({ board_id: boardId, params }),
+  });
 }
