@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Sparkles } from 'lucide-react';
+import { ChevronDown, ChevronRight, Sparkles } from 'lucide-react';
 import * as kgApi from '@/services/kg-api';
 import * as discoveryApi from '@/services/discovery-api';
 import { NODE_TYPE_CONFIG, type KGNodeType } from '@/types/knowledge-graph';
@@ -65,6 +65,17 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
   const [selected, setSelected] = useState<SearchResult | null>(null);
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
   const resultsRef = useRef<HTMLDivElement | null>(null);
+  const [intentsOpen, setIntentsOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return window.localStorage.getItem('discovery-intents-open') !== '0';
+  });
+  const toggleIntents = () => {
+    setIntentsOpen((prev) => {
+      const next = !prev;
+      window.localStorage.setItem('discovery-intents-open', next ? '1' : '0');
+      return next;
+    });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -145,136 +156,169 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
 
   return (
     <div className="p-6 flex flex-col h-full overflow-y-auto">
-      <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">
-        Global Discovery
-      </h2>
-      <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-        Click a pre-built question to run it, or type your own in the
-        free-text box below. Results from either path land in the same
-        section at the bottom.
-      </p>
+      <div className="flex items-baseline justify-between mb-4">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+          Global Discovery
+        </h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Type a semantic query above or expand the catalog below for
+          pre-built questions.
+        </p>
+      </div>
 
-      {/* Intent cards grid */}
-      <section className="mb-8" data-testid="discovery-intents">
-        {loadingIntents ? (
-          <div className="text-xs text-gray-500 dark:text-gray-500 py-4">
-            Loading intents…
-          </div>
-        ) : intents.length === 0 ? (
-          <div className="text-xs text-gray-500 dark:text-gray-500 py-4">
-            No intents configured yet. Ask an admin to seed the catalog or use
-            the free-text search below.
-          </div>
-        ) : (
-          orderedCategories.map((cat) => (
-            <div key={cat} className="mb-5">
-              <div className="text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-                {humanizeCategory(cat)}
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-2.5">
-                {intentsByCategory[cat].map((intent) => {
-                  const isActive = activeIntent?.id === intent.id;
-                  return (
-                    <button
-                      key={intent.id}
-                      type="button"
-                      onClick={() => handleIntentClick(intent)}
-                      data-testid={`discovery-intent-${intent.name}`}
-                      title="Run this intent"
-                      className={`text-left rounded-lg border px-3 py-2.5 transition-colors ${
-                        isActive
-                          ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                          : 'border-gray-200 dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500/60 hover:bg-gray-50 dark:hover:bg-gray-800/50'
-                      }`}
-                    >
-                      <div className="flex items-start gap-2">
-                        <Sparkles
-                          size={14}
-                          className="mt-0.5 text-blue-500 shrink-0"
-                        />
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                            {intent.label}
-                          </div>
-                          {intent.description && (
-                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">
-                              {intent.description}
-                            </div>
-                          )}
-                          <div className="mt-1.5 flex items-center gap-2 text-[10px]">
-                            {intent.is_seed && (
-                              <span className="px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
-                                built-in
-                              </span>
-                            )}
-                            <span
-                              className={`font-medium ${
-                                isActive
-                                  ? 'text-blue-600 dark:text-blue-300'
-                                  : 'text-gray-500 dark:text-gray-500'
-                              }`}
-                            >
-                              {isActive && loading
-                                ? 'Running…'
-                                : isActive
-                                  ? 'Ran — see results below'
-                                  : 'Click to run'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))
-        )}
-
-        {activeIntent && (
-          <div
-            className="mt-3 text-xs text-gray-500 dark:text-gray-400"
-            data-testid="discovery-intent-detail"
-          >
-            Running <span className="font-medium text-gray-700 dark:text-gray-200">{activeIntent.label}</span>{' '}
-            — query seeded from the intent, executed against the KG semantic index. A richer result view (with
-            the intent's bound tool called directly and saved searches) ships with the admin follow-up card.
-          </div>
-        )}
-      </section>
-
-      {/* Free-text semantic search — unchanged from v1 */}
-      <section className="border-t border-gray-200 dark:border-gray-700 pt-5">
-        <div className="text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-          Free semantic search
-        </div>
-        <form onSubmit={handleSearch} className="flex gap-2 mb-4 shrink-0">
+      {/* 1. Semantic search bar at the top */}
+      <section className="mb-4">
+        <form onSubmit={handleSearch} className="flex gap-2">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="e.g., authentication decisions, API rate limiting constraints..."
             className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            data-testid="discovery-search-input"
           />
           <button
             type="submit"
             disabled={loading || !query.trim()}
+            data-testid="discovery-search-submit"
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Searching...' : 'Search'}
+            {loading ? 'Searching…' : 'Search'}
           </button>
-          {(query || searched || activeIntent) && (
-            <button
-              type="button"
-              onClick={clearSearch}
-              data-testid="discovery-clear-inline"
-              title="Clear query, filters and results"
-              className="px-3 py-2 text-xs rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
-            >
-              Clear
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={clearSearch}
+            disabled={!query && !searched && !activeIntent}
+            data-testid="discovery-clear-inline"
+            title="Clear query, filters and results"
+            className="px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Clear
+          </button>
         </form>
+      </section>
+
+      {/* 2. Collapsible intent catalog */}
+      <section className="mb-6" data-testid="discovery-intents">
+        <button
+          type="button"
+          onClick={toggleIntents}
+          aria-expanded={intentsOpen}
+          aria-controls="discovery-intents-panel"
+          data-testid="discovery-intents-toggle"
+          className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-800 text-sm transition-colors"
+        >
+          <span className="flex items-center gap-2 text-gray-800 dark:text-gray-200">
+            {intentsOpen ? (
+              <ChevronDown size={16} className="text-gray-500" />
+            ) : (
+              <ChevronRight size={16} className="text-gray-500" />
+            )}
+            <span className="font-medium">Pre-built questions</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              ({intents.length} across {orderedCategories.length} categor
+              {orderedCategories.length === 1 ? 'y' : 'ies'})
+            </span>
+          </span>
+          <span className="text-[11px] text-gray-500 dark:text-gray-400">
+            {intentsOpen ? 'Click to collapse' : 'Click to expand'}
+          </span>
+        </button>
+
+        {intentsOpen && (
+          <div
+            id="discovery-intents-panel"
+            className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 p-4"
+          >
+            {loadingIntents ? (
+              <div className="text-xs text-gray-500 dark:text-gray-500 py-2">
+                Loading intents…
+              </div>
+            ) : intents.length === 0 ? (
+              <div className="text-xs text-gray-500 dark:text-gray-500 py-2">
+                No intents configured yet. Ask an admin to seed the catalog
+                or use the free-text search above.
+              </div>
+            ) : (
+              orderedCategories.map((cat, idx) => (
+                <div
+                  key={cat}
+                  className={idx === orderedCategories.length - 1 ? '' : 'mb-5'}
+                >
+                  <div className="text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+                    {humanizeCategory(cat)}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-2.5">
+                    {intentsByCategory[cat].map((intent) => {
+                      const isActive = activeIntent?.id === intent.id;
+                      return (
+                        <button
+                          key={intent.id}
+                          type="button"
+                          onClick={() => handleIntentClick(intent)}
+                          data-testid={`discovery-intent-${intent.name}`}
+                          title="Run this intent"
+                          className={`text-left rounded-lg border px-3 py-2.5 transition-colors ${
+                            isActive
+                              ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                              : 'border-gray-200 dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500/60 hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2">
+                            <Sparkles
+                              size={14}
+                              className="mt-0.5 text-blue-500 shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                {intent.label}
+                              </div>
+                              {intent.description && (
+                                <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">
+                                  {intent.description}
+                                </div>
+                              )}
+                              <div className="mt-1.5 flex items-center gap-2 text-[10px]">
+                                {intent.is_seed && (
+                                  <span className="px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
+                                    built-in
+                                  </span>
+                                )}
+                                <span
+                                  className={`font-medium ${
+                                    isActive
+                                      ? 'text-blue-600 dark:text-blue-300'
+                                      : 'text-gray-500 dark:text-gray-500'
+                                  }`}
+                                >
+                                  {isActive && loading
+                                    ? 'Running…'
+                                    : isActive
+                                      ? 'Ran — see results below'
+                                      : 'Click to run'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* 3. Results area */}
+      <section>
+        {!searched && !loading && (
+          <div className="text-xs text-gray-500 dark:text-gray-400 py-8 text-center border border-dashed border-gray-300 dark:border-gray-700 rounded-lg">
+            Run a search above or pick a pre-built question to see results
+            here.
+          </div>
+        )}
 
         {searched && !loading && results.length === 0 && (
           <div className="text-center text-gray-500 dark:text-gray-400 py-8">
