@@ -266,7 +266,7 @@ function App() {
       {/* Analytics fullscreen overlay */}
       {showAnalytics && (
         <div className="fixed inset-0 z-50 bg-gray-50 dark:bg-gray-900 flex flex-col">
-          <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-2 flex items-center justify-between shrink-0">
+          <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-8 py-3 flex items-center justify-between shrink-0">
             <h1 className="text-lg font-bold text-gray-900 dark:text-white">Analytics</h1>
             <button
               onClick={closeAnalytics}

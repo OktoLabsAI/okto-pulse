@@ -167,7 +167,7 @@ export function AnalyticsPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 px-8 py-6 max-w-[1920px] mx-auto">
       {/* Header row: Breadcrumb + DateFilter + Export */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <Breadcrumb segments={buildBreadcrumbSegments()} />
