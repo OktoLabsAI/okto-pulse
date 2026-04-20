@@ -284,130 +284,290 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
               return next;
             });
           };
+          const removeType = (t: string) => {
+            setTypeFilter((prev) => {
+              const next = new Set(prev);
+              next.delete(t);
+              return next;
+            });
+          };
+          // Top N results → satellites around the query anchor on the mini-graph.
+          const topSatellites = filtered.slice(0, 8);
+          const centerLabel = activeIntent
+            ? activeIntent.label.replace(/\?$/, '').slice(0, 28)
+            : (query.trim().slice(0, 28) || 'Query');
+          const activeFilterLabels = Array.from(typeFilter);
+          const availableDimensions = ['status', 'sprint', 'assignee'].filter(
+            (d) => !activeFilterLabels.includes(d),
+          );
+          const headingTitle = activeIntent
+            ? activeIntent.label
+            : `Search: "${query.trim()}"`;
+
           return (
             <div
               ref={resultsRef}
-              className="flex-1 overflow-y-auto"
+              className="flex-1"
               data-testid="global-search-results"
             >
-              <div className="flex items-center justify-between mb-3">
-                <div className="text-xs text-gray-500 dark:text-gray-400">
-                  <strong className="text-gray-700 dark:text-gray-200">
-                    {filtered.length}
-                  </strong>{' '}
-                  {filtered.length === 1 ? 'result' : 'results'}
-                  {typeFilter.size > 0 && ` (of ${results.length})`}
-                </div>
-                {activeIntent && (
-                  <div className="text-[10px] font-mono text-gray-500 dark:text-gray-500">
-                    mcp: {activeIntent.tool_binding}
+              {/* Result-panel container matching mockup gd-02-result */}
+              <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white/50 dark:bg-gray-900/40 p-5">
+                {/* Header — intent title on left, Save/Export on the right */}
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div className="min-w-0">
+                    <div className="text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      {activeIntent ? 'Intent' : 'Query'}
+                    </div>
+                    <div className="text-base font-medium text-gray-900 dark:text-gray-100">
+                      {headingTitle}
+                    </div>
+                    {activeIntent?.description && (
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-1">
+                        {activeIntent.description}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-
-              {/* Filter chips — one per type in the current result set */}
-              <div
-                className="flex flex-wrap gap-1.5 mb-3"
-                data-testid="discovery-result-filters"
-              >
-                {typesInResults.map((t) => {
-                  const cfg = NODE_TYPE_CONFIG[t as KGNodeType];
-                  const active = typeFilter.has(t);
-                  const count = results.filter(
-                    (r) => (r.node_type ?? 'Unknown') === t,
-                  ).length;
-                  return (
+                  <div className="flex gap-2 shrink-0">
                     <button
-                      key={t}
                       type="button"
-                      onClick={() => toggleType(t)}
-                      className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${
-                        active
-                          ? 'text-white border-transparent'
-                          : 'text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800'
-                      }`}
-                      style={
-                        active && cfg
-                          ? { backgroundColor: cfg.color }
-                          : undefined
-                      }
-                      aria-pressed={active}
+                      disabled
+                      title="Saved searches ship with the admin follow-up card"
+                      className="text-xs px-2.5 py-1 rounded bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 disabled:cursor-not-allowed"
                     >
-                      {active && <span className="mr-0.5">✓</span>}
-                      <span>{t}</span>
-                      <span className="ml-1 opacity-70">({count})</span>
+                      Save search
                     </button>
-                  );
-                })}
-                {typeFilter.size > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setTypeFilter(new Set())}
-                    className="px-2 py-0.5 rounded-full text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
-                  >
-                    clear
-                  </button>
-                )}
-              </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const blob = new Blob(
+                          [JSON.stringify(filtered, null, 2)],
+                          { type: 'application/json' },
+                        );
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `discovery-${Date.now()}.json`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      }}
+                      className="text-xs px-2.5 py-1 rounded bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                    >
+                      Export
+                    </button>
+                  </div>
+                </div>
 
-              {/* Results table — Type | Title | Board | Match */}
-              <div className="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="bg-gray-50 dark:bg-gray-800/50 text-gray-500 dark:text-gray-400 uppercase tracking-wider text-[10px]">
-                      <th className="text-left font-medium px-3 py-2">Type</th>
-                      <th className="text-left font-medium px-3 py-2">
-                        Title / Summary
-                      </th>
-                      <th className="text-left font-medium px-3 py-2">Board</th>
-                      <th className="text-right font-medium px-3 py-2">Match</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {filtered.map((r, i) => {
-                      const nt = (r.node_type ?? 'Unknown') as KGNodeType;
-                      const cfg = NODE_TYPE_CONFIG[nt];
-                      return (
-                        <tr
-                          key={`${r.board_id}-${r.id}-${i}`}
-                          onClick={() => setSelected(r)}
-                          data-testid={`global-search-result-${r.id}`}
-                          className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
-                        >
-                          <td className="px-3 py-2 whitespace-nowrap align-top">
-                            {cfg ? (
-                              <span
-                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide text-white"
-                                style={{ backgroundColor: cfg.color }}
+                {/* Filter chips — active ones show "type: X ✕", inactives
+                    show "+ dimension" as add-slots (matching mockup). */}
+                <div
+                  className="flex flex-wrap gap-2 mb-4 text-xs"
+                  data-testid="discovery-result-filters"
+                >
+                  {typesInResults.map((t) => {
+                    const cfg = NODE_TYPE_CONFIG[t as KGNodeType];
+                    const active = typeFilter.has(t);
+                    const count = results.filter(
+                      (r) => (r.node_type ?? 'Unknown') === t,
+                    ).length;
+                    return (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() =>
+                          active ? removeType(t) : toggleType(t)
+                        }
+                        aria-pressed={active}
+                        className={`px-2 py-1 rounded-full transition-colors ${
+                          active
+                            ? 'text-white border-transparent'
+                            : 'text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800'
+                        }`}
+                        style={
+                          active && cfg
+                            ? { backgroundColor: cfg.color }
+                            : undefined
+                        }
+                      >
+                        {active ? (
+                          <>
+                            type: {t} <span className="ml-1">✕</span>{' '}
+                            <span className="opacity-80">({count})</span>
+                          </>
+                        ) : (
+                          <>
+                            type: {t}{' '}
+                            <span className="opacity-70">({count})</span>
+                          </>
+                        )}
+                      </button>
+                    );
+                  })}
+                  {availableDimensions.map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      disabled
+                      title="Extra dimensions arrive when the admin UI lands"
+                      className="px-2 py-1 rounded-full border border-dashed border-gray-300 dark:border-gray-600 text-gray-400 dark:text-gray-500 disabled:cursor-not-allowed"
+                    >
+                      + {d}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Split content: table (7) + mini-graph + MCP (5) */}
+                <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+                  <div className="xl:col-span-7 min-w-0">
+                    <div className="mb-2 text-[11px] text-gray-500 dark:text-gray-400">
+                      <strong className="text-gray-700 dark:text-gray-200">
+                        {filtered.length}
+                      </strong>{' '}
+                      {filtered.length === 1 ? 'result' : 'results'}
+                      {typeFilter.size > 0 && ` (of ${results.length})`}
+                    </div>
+                    <div className="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="bg-gray-50 dark:bg-gray-800/50 text-gray-500 dark:text-gray-400 uppercase tracking-wider text-[10px]">
+                            <th className="text-left font-medium px-3 py-2">
+                              Type
+                            </th>
+                            <th className="text-left font-medium px-3 py-2">
+                              Title / Summary
+                            </th>
+                            <th className="text-right font-medium px-3 py-2">
+                              Match
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                          {filtered.map((r, i) => {
+                            const nt = (r.node_type ?? 'Unknown') as KGNodeType;
+                            const cfg = NODE_TYPE_CONFIG[nt];
+                            return (
+                              <tr
+                                key={`${r.board_id}-${r.id}-${i}`}
+                                onClick={() => setSelected(r)}
+                                data-testid={`global-search-result-${r.id}`}
+                                className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
                               >
-                                <span aria-hidden>{cfg.icon}</span>
-                                <span>{nt}</span>
-                              </span>
-                            ) : (
-                              <span className="text-gray-400">{nt}</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 align-top">
-                            <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                              {r.title || 'Untitled'}
-                            </div>
-                            {r.summary && (
-                              <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">
-                                {r.summary}
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 align-top whitespace-nowrap text-[10px] font-mono text-gray-500 dark:text-gray-400">
-                            {r.board_id?.slice(0, 8)}…
-                          </td>
-                          <td className="px-3 py-2 align-top whitespace-nowrap text-right text-xs text-gray-500 dark:text-gray-400">
-                            {Math.round(r.similarity * 100)}%
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                                <td className="px-3 py-2 whitespace-nowrap align-top">
+                                  {cfg ? (
+                                    <span
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide text-white"
+                                      style={{ backgroundColor: cfg.color }}
+                                    >
+                                      <span aria-hidden>{cfg.icon}</span>
+                                      <span>{nt}</span>
+                                    </span>
+                                  ) : (
+                                    <span className="text-gray-400">{nt}</span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2 align-top">
+                                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                    {r.title || 'Untitled'}
+                                  </div>
+                                  {r.summary && (
+                                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">
+                                      {r.summary}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2 align-top whitespace-nowrap text-right text-xs text-gray-500 dark:text-gray-400">
+                                  {Math.round(r.similarity * 100)}%
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="xl:col-span-5 flex flex-col min-w-0">
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                      Mini-graph (top {topSatellites.length} of {filtered.length})
+                    </div>
+                    <div className="relative h-[260px] rounded-md border border-gray-200 dark:border-gray-700 overflow-hidden bg-gray-50/60 dark:bg-gray-950/60">
+                      {/* center anchor */}
+                      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center z-10">
+                        <div className="h-10 w-10 rounded-full bg-cyan-500/80 border-2 border-cyan-300 dark:border-cyan-400" />
+                        <div className="text-[10px] mt-1 text-cyan-700 dark:text-cyan-200 text-center max-w-[140px] truncate">
+                          {centerLabel}
+                        </div>
+                      </div>
+                      {/* connecting lines */}
+                      <svg
+                        className="absolute inset-0 w-full h-full pointer-events-none"
+                        aria-hidden
+                      >
+                        {topSatellites.map((_, i) => {
+                          const n = Math.max(1, topSatellites.length);
+                          const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+                          const radiusX = 42; // % of container
+                          const radiusY = 38;
+                          const cx = 50 + radiusX * Math.cos(angle);
+                          const cy = 50 + radiusY * Math.sin(angle);
+                          return (
+                            <line
+                              key={i}
+                              x1="50%"
+                              y1="50%"
+                              x2={`${cx}%`}
+                              y2={`${cy}%`}
+                              stroke="currentColor"
+                              className="text-gray-300 dark:text-gray-700"
+                              strokeWidth="1"
+                              strokeDasharray="3 3"
+                            />
+                          );
+                        })}
+                      </svg>
+                      {/* satellite nodes */}
+                      {topSatellites.map((r, i) => {
+                        const n = Math.max(1, topSatellites.length);
+                        const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+                        const radiusX = 42;
+                        const radiusY = 38;
+                        const left = 50 + radiusX * Math.cos(angle);
+                        const top = 50 + radiusY * Math.sin(angle);
+                        const nt = (r.node_type ?? 'Unknown') as KGNodeType;
+                        const cfg = NODE_TYPE_CONFIG[nt];
+                        return (
+                          <button
+                            key={`${r.board_id}-${r.id}-${i}`}
+                            type="button"
+                            onClick={() => setSelected(r)}
+                            title={`${nt} — ${r.title}`}
+                            className="absolute -translate-x-1/2 -translate-y-1/2 h-6 w-6 rounded-full border border-black/20 dark:border-white/20 hover:scale-110 transition-transform focus:outline-none focus:ring-2 focus:ring-blue-400"
+                            style={{
+                              left: `${left}%`,
+                              top: `${top}%`,
+                              backgroundColor: cfg?.color ?? '#6B7280',
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
+                    <div className="mt-3 rounded-md bg-gray-100 dark:bg-gray-800/60 p-3 text-xs">
+                      <div className="text-gray-500 dark:text-gray-400 mb-1">
+                        MCP equivalent
+                      </div>
+                      <code className="text-blue-600 dark:text-cyan-300 font-mono text-[11px] break-all">
+                        {activeIntent
+                          ? `${activeIntent.tool_binding}(${
+                              activeIntent.params_schema
+                                ? Object.keys(activeIntent.params_schema)
+                                    .map((k) => `${k}=…`)
+                                    .join(', ')
+                                : ''
+                            })`
+                          : `okto_pulse_kg_query_global(q="${query.trim().slice(0, 40)}${query.trim().length > 40 ? '…' : ''}")`}
+                      </code>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           );
