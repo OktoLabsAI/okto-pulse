@@ -124,6 +124,14 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
     await runSearch(seed);
   }
 
+  function clearSearch(): void {
+    setQuery('');
+    setResults([]);
+    setSearched(false);
+    setActiveIntent(null);
+    setTypeFilter(new Set());
+  }
+
   // Group intents by category for display
   const intentsByCategory = intents.reduce<Record<string, DiscoveryIntent[]>>(
     (acc, it) => {
@@ -255,6 +263,17 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
           >
             {loading ? 'Searching...' : 'Search'}
           </button>
+          {(query || searched || activeIntent) && (
+            <button
+              type="button"
+              onClick={clearSearch}
+              data-testid="discovery-clear-inline"
+              title="Clear query, filters and results"
+              className="px-3 py-2 text-xs rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+            >
+              Clear
+            </button>
+          )}
         </form>
 
         {searched && !loading && results.length === 0 && (
@@ -328,6 +347,15 @@ export function GlobalSearchView({ boardId: _boardId }: Props) {
                     )}
                   </div>
                   <div className="flex gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={clearSearch}
+                      data-testid="discovery-clear"
+                      title="Clear the current query, filters and results"
+                      className="text-xs px-2.5 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-1"
+                    >
+                      <span aria-hidden>✕</span> Clear
+                    </button>
                     <button
                       type="button"
                       disabled
