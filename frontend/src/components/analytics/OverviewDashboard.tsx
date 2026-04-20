@@ -23,6 +23,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
+import { driftIconFor } from './driftIcon';
 
 // ---------------------------------------------------------------------------
 // Types matching backend GET /analytics/overview response
@@ -280,8 +281,8 @@ function LoadingSkeleton() {
 function FunnelBar({
   label,
   count,
-  maxCount,
-  conversionPct,
+  totalIdeations,
+  showConversion,
   colors,
   splitImpl,
   splitTest,
@@ -289,19 +290,22 @@ function FunnelBar({
 }: {
   label: string;
   count: number;
-  maxCount: number;
-  conversionPct: number | null;
+  totalIdeations: number;
+  showConversion: boolean;
   colors: string;
   splitImpl?: number;
   splitTest?: number;
   splitBug?: number;
 }) {
-  const pct = maxCount > 0 ? (count / maxCount) * 100 : 0;
+  // Denominador único: total_ideations. Valores >100% são exibidos sem clamp na
+  // label; a barra visual clampa em 100% apenas para não estourar o container.
+  const rawPct = totalIdeations > 0 ? (count / totalIdeations) * 100 : 0;
+  const visualPct = Math.min(rawPct, 100);
   const hasSegments = splitImpl !== undefined && splitTest !== undefined;
 
-  const implPct = hasSegments && count > 0 ? (splitImpl / count) * pct : 0;
-  const testPct = hasSegments && count > 0 ? (splitTest / count) * pct : 0;
-  const bugPct = hasSegments && splitBug && count > 0 ? (splitBug / count) * pct : 0;
+  const implPct = hasSegments && count > 0 ? (splitImpl / count) * visualPct : 0;
+  const testPct = hasSegments && count > 0 ? (splitTest / count) * visualPct : 0;
+  const bugPct = hasSegments && splitBug && count > 0 ? (splitBug / count) * visualPct : 0;
 
   return (
     <div className="flex items-center gap-3">
@@ -329,15 +333,15 @@ function FunnelBar({
         ) : (
           <div
             className={`h-full transition-all duration-500 ${colors}`}
-            style={{ width: `${pct}%` }}
+            style={{ width: `${visualPct}%` }}
           />
         )}
       </div>
-      <div className="w-24 shrink-0 flex items-center gap-1.5">
+      <div className="shrink-0 flex items-baseline gap-1.5 min-w-[11rem]">
         <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{count}</span>
-        {conversionPct !== null && (
+        {showConversion && totalIdeations > 0 && (
           <span className="text-[10px] text-gray-400 dark:text-gray-500">
-            ({conversionPct.toFixed(0)}%)
+            / {totalIdeations} ideations ({rawPct.toFixed(1)}%)
           </span>
         )}
       </div>
@@ -354,6 +358,26 @@ function TrendIndicator({ value }: { value: number | null }) {
   if (value > 0) return <TrendingUp className="w-3.5 h-3.5 text-green-500" />;
   if (value < 0) return <TrendingDown className="w-3.5 h-3.5 text-red-500" />;
   return <Minus className="w-3.5 h-3.5 text-gray-400" />;
+}
+
+// Drift semântico: drift baixo = bom; alto = ruim. Usa thresholds explícitos
+// (ver driftIcon.ts) em vez de inverter sinal como o TrendIndicator fazia.
+function DriftIcon({ value }: { value: number | null }) {
+  const v = driftIconFor(value);
+  if (!v) return <Minus className="w-3.5 h-3.5 text-gray-400" />;
+  const IconComp = v.icon;
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 text-[10px] ${v.colorClass}`}
+      data-testid="drift-icon"
+      data-drift-direction={v.direction}
+      data-drift-color={v.color}
+      title={v.label}
+    >
+      <IconComp className="w-3.5 h-3.5" />
+      <span>{v.label}</span>
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +415,6 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
 
   // Derived values
   const totalCards = data ? data.total_cards_impl + data.total_cards_test + data.total_cards_bug : 0;
-  const donePct = data && totalCards > 0 ? ((data.funnel.done / totalCards) * 100) : 0;
 
   const ideationsDonePct = useMemo(() => {
     if (!data || data.total_ideations === 0) return 0;
@@ -415,20 +438,6 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
       ...w,
       label: formatWeekLabel(w.week),
     }));
-  }, [data]);
-
-  // Funnel conversion percentages
-  const funnelConversions = useMemo(() => {
-    if (!data) return { ref: null, spec: null, card: null, test: null, bug: null, done: null };
-    const f = data.funnel;
-    return {
-      ref: f.ideations > 0 ? (f.refinements / f.ideations) * 100 : null,
-      spec: f.refinements > 0 ? (f.specs / f.refinements) * 100 : null,
-      card: f.specs > 0 ? (f.cards / f.specs) * 100 : null,
-      test: f.cards > 0 ? (f.tests / f.cards) * 100 : null,
-      bug: f.cards > 0 ? (f.bugs / f.cards) * 100 : null,
-      done: f.cards > 0 ? (f.done / f.cards) * 100 : null,
-    };
   }, [data]);
 
   if (loading) return <LoadingSkeleton />;
@@ -561,7 +570,7 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
           </div>
         </div>
 
-        {/* Avg Drift */}
+        {/* Avg Drift — ícone semântico (drift baixo = bom → verde/↓; alto = ruim → vermelho/↑) */}
         <div
           className={`rounded-lg border border-gray-200 dark:border-gray-700 p-4 ${driftBg(data.avg_drift ?? null)}`}
         >
@@ -575,7 +584,7 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
             <span className={`text-2xl font-bold ${driftColor(data.avg_drift ?? null)}`}>
               {data.avg_drift != null ? `${data.avg_drift}%` : '--'}
             </span>
-            <TrendIndicator value={data.avg_drift != null ? -data.avg_drift : null} />
+            <DriftIcon value={data.avg_drift ?? null} />
           </div>
         </div>
 
@@ -689,29 +698,29 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
             <FunnelBar
               label="Ideations"
               count={data.funnel.ideations}
-              maxCount={data.funnel.ideations}
-              conversionPct={null}
+              totalIdeations={data.funnel.ideations}
+              showConversion={false}
               colors="bg-amber-400"
             />
             <FunnelBar
               label="Refinements"
               count={data.funnel.refinements}
-              maxCount={data.funnel.ideations}
-              conversionPct={funnelConversions.ref}
+              totalIdeations={data.funnel.ideations}
+              showConversion={true}
               colors="bg-orange-400"
             />
             <FunnelBar
               label="Specs"
               count={data.funnel.specs}
-              maxCount={data.funnel.ideations}
-              conversionPct={funnelConversions.spec}
+              totalIdeations={data.funnel.ideations}
+              showConversion={true}
               colors="bg-blue-400"
             />
             <FunnelBar
               label="Tasks"
               count={data.funnel.cards}
-              maxCount={data.funnel.ideations}
-              conversionPct={funnelConversions.card}
+              totalIdeations={data.funnel.ideations}
+              showConversion={true}
               colors=""
               splitImpl={data.total_cards_impl}
               splitTest={data.total_cards_test}
@@ -721,8 +730,8 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
               <FunnelBar
                 label="Tests"
                 count={data.funnel.tests}
-                maxCount={data.funnel.ideations}
-                conversionPct={funnelConversions.test}
+                totalIdeations={data.funnel.ideations}
+                showConversion={true}
                 colors="bg-emerald-500"
               />
             )}
@@ -730,30 +739,25 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
               <FunnelBar
                 label="Bugs"
                 count={data.funnel.bugs}
-                maxCount={data.funnel.ideations}
-                conversionPct={funnelConversions.bug}
+                totalIdeations={data.funnel.ideations}
+                showConversion={true}
                 colors="bg-red-500"
               />
             )}
             <FunnelBar
               label="Done"
               count={data.funnel.done}
-              maxCount={data.funnel.ideations}
-              conversionPct={funnelConversions.done}
+              totalIdeations={data.funnel.ideations}
+              showConversion={true}
               colors="bg-green-500"
             />
           </div>
-          <div className="flex gap-3 mt-3 items-center justify-between">
-            <div className="flex gap-3">
-              <span className="flex items-center gap-1 text-[10px] text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-violet-500" /> Implementation</span>
-              <span className="flex items-center gap-1 text-[10px] text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" /> Tests</span>
-              {(data.total_cards_bug ?? 0) > 0 && (
-                <span className="flex items-center gap-1 text-[10px] text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-red-500" /> Bugs</span>
-              )}
-            </div>
-            <p className="text-[10px] text-gray-400 dark:text-gray-500">
-              {donePct.toFixed(0)}% overall completion
-            </p>
+          <div className="flex gap-3 mt-3 items-center">
+            <span className="flex items-center gap-1 text-[10px] text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-violet-500" /> Implementation</span>
+            <span className="flex items-center gap-1 text-[10px] text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" /> Tests</span>
+            {(data.total_cards_bug ?? 0) > 0 && (
+              <span className="flex items-center gap-1 text-[10px] text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-red-500" /> Bugs</span>
+            )}
           </div>
         </div>
 
@@ -839,7 +843,8 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
                 <button
                   key={b.board_id}
                   onClick={() => onSelectBoard(b.board_id, b.board_name)}
-                  className="text-left bg-white dark:bg-gray-800 rounded-lg border border-gray-200
+                  data-testid="boards-list-item"
+                  className="boards-list-item text-left bg-white dark:bg-gray-800 rounded-lg border border-gray-200
                     dark:border-gray-700 p-4 transition-all hover:border-blue-300
                     dark:hover:border-blue-500 hover:shadow-md focus:outline-none
                     focus:ring-2 focus:ring-blue-400/50"

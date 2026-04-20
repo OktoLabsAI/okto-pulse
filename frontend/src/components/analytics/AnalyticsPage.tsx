@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Download } from 'lucide-react';
 import { Breadcrumb } from './Breadcrumb';
 import { DateFilter } from './DateFilter';
@@ -28,12 +28,71 @@ function today(): string {
   return new Date().toISOString().split('T')[0];
 }
 
+// Deriva state inicial do pathname atual. O overlay já só monta AnalyticsPage
+// quando showAnalytics=true, então aqui só precisamos decidir entre overview e
+// drill. /analytics → overview; /analytics/boards/:id → board.
+function stateFromPath(pathname: string): AnalyticsState {
+  const boardMatch = pathname.match(/^\/analytics\/boards\/([^/]+)/);
+  if (boardMatch) {
+    return { level: 'board', boardId: boardMatch[1], boardName: '' };
+  }
+  return { level: 'overview' };
+}
+
+function pathFromState(state: AnalyticsState): string {
+  if (state.level === 'overview') return '/analytics';
+  if (state.level === 'board' && state.boardId) {
+    return `/analytics/boards/${state.boardId}`;
+  }
+  // entity ainda não tem URL própria — mantém a do board pai
+  if (state.boardId) return `/analytics/boards/${state.boardId}`;
+  return '/analytics';
+}
+
 export function AnalyticsPage() {
   const api = useDashboardApi();
-  const [state, setState] = useState<AnalyticsState>({ level: 'overview' });
+  const [state, setState] = useState<AnalyticsState>(() =>
+    stateFromPath(window.location.pathname),
+  );
   const [from, setFrom] = useState(daysAgo(30));
   const [to, setTo] = useState(today());
   const [exporting, setExporting] = useState(false);
+
+  // Sincroniza state com popstate (back/forward do browser).
+  useEffect(() => {
+    const handlePopstate = () => {
+      setState(stateFromPath(window.location.pathname));
+    };
+    window.addEventListener('popstate', handlePopstate);
+    return () => window.removeEventListener('popstate', handlePopstate);
+  }, []);
+
+  // Resolve o board name quando entramos via URL (deep-link) sem nome ainda.
+  useEffect(() => {
+    if (state.level !== 'overview' && state.boardId && !state.boardName) {
+      api.getBoard(state.boardId).then(
+        (b: { name: string }) => {
+          setState((prev) =>
+            prev.boardId === state.boardId && !prev.boardName
+              ? { ...prev, boardName: b.name }
+              : prev,
+          );
+        },
+        () => {
+          /* ignore — breadcrumb cai no fallback 'Board' */
+        },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.boardId, state.level]);
+
+  // Empurra nova URL quando o state muda por navegação interna (clique em board/entity).
+  const pushPath = useCallback((next: AnalyticsState) => {
+    const nextPath = pathFromState(next);
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({}, '', nextPath);
+    }
+  }, []);
 
   const handleDateChange = (newFrom: string, newTo: string) => {
     setFrom(newFrom);
@@ -41,11 +100,15 @@ export function AnalyticsPage() {
   };
 
   const navigateToOverview = () => {
-    setState({ level: 'overview' });
+    const next: AnalyticsState = { level: 'overview' };
+    setState(next);
+    pushPath(next);
   };
 
   const navigateToBoard = (boardId: string, boardName: string) => {
-    setState({ level: 'board', boardId, boardName });
+    const next: AnalyticsState = { level: 'board', boardId, boardName };
+    setState(next);
+    pushPath(next);
   };
 
   const navigateToEntity = (
@@ -64,7 +127,8 @@ export function AnalyticsPage() {
 
 
   const buildBreadcrumbSegments = () => {
-    const segments = [{ label: 'Analytics', onClick: navigateToOverview }];
+    const rootLabel = state.level === 'overview' ? 'Analytics (Global)' : 'Analytics';
+    const segments = [{ label: rootLabel, onClick: navigateToOverview }];
 
     if (state.level === 'board' || state.level === 'entity') {
       segments.push({

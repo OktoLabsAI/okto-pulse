@@ -35,7 +35,32 @@ function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState<'ideations' | 'refinements' | 'specs' | 'sprints' | 'tasks'>('ideations');
-  const [showAnalytics, setShowAnalytics] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(
+    () => typeof window !== 'undefined' && window.location.pathname.startsWith('/analytics'),
+  );
+
+  // Mantém showAnalytics sincronizado com back/forward do browser.
+  useEffect(() => {
+    const handlePopstate = () => {
+      setShowAnalytics(window.location.pathname.startsWith('/analytics'));
+    };
+    window.addEventListener('popstate', handlePopstate);
+    return () => window.removeEventListener('popstate', handlePopstate);
+  }, []);
+
+  const openAnalytics = () => {
+    if (!window.location.pathname.startsWith('/analytics')) {
+      window.history.pushState({}, '', '/analytics');
+    }
+    setShowAnalytics(true);
+  };
+
+  const closeAnalytics = () => {
+    if (window.location.pathname.startsWith('/analytics')) {
+      window.history.pushState({}, '', '/');
+    }
+    setShowAnalytics(false);
+  };
 
   useEffect(() => {
     if (isLoaded && isSignedIn) {
@@ -151,7 +176,7 @@ function App() {
         onRefreshBoard={refreshBoard}
         onDeleteBoard={deleteBoard}
         onBoardUpdated={refreshBoard}
-        onOpenAnalytics={() => setShowAnalytics(true)}
+        onOpenAnalytics={openAnalytics}
         isRefreshing={isRefreshing}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -244,7 +269,7 @@ function App() {
           <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-2 flex items-center justify-between shrink-0">
             <h1 className="text-lg font-bold text-gray-900 dark:text-white">Analytics</h1>
             <button
-              onClick={() => setShowAnalytics(false)}
+              onClick={closeAnalytics}
               className="btn btn-secondary text-sm"
             >
               ← Back to Board
