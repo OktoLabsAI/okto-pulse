@@ -30,6 +30,7 @@ import {
   type Node as RFNode,
   type Edge as RFEdge,
   type NodeMouseHandler,
+  type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { KGNode, KGEdge, KGNodeType, KGEdgeType } from '@/types/knowledge-graph';
@@ -100,6 +101,11 @@ export function GraphCanvas({
   // across full graph reloads (no backend persistence per Fase 1 decision).
   const dragOverridesRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const [dragTick, setDragTick] = useState(0);
+  // ReactFlow instance handle so we can refit the viewport when the node set
+  // changes (e.g. after "Carregar mais" appends a new page). React Flow only
+  // runs `fitView` once on mount; without this, newly-loaded nodes drift
+  // off-screen.
+  const rfInstanceRef = useRef<ReactFlowInstance<RFNode<KGNodeData>, RFEdge> | null>(null);
 
   // Allow parents to programmatically clear/set selection through a prop change.
   useEffect(() => {
@@ -272,6 +278,17 @@ export function GraphCanvas({
     dragOverridesRef.current = new Map();
   }, [nodes]);
 
+  // Re-fit the viewport when the visible node count changes (initial load,
+  // pagination, filter changes). Debounced to coalesce React Flow's own
+  // layout settling.
+  useEffect(() => {
+    if (filteredNodes.length === 0) return;
+    const handle = window.setTimeout(() => {
+      rfInstanceRef.current?.fitView({ padding: 0.2, duration: 350 });
+    }, 80);
+    return () => window.clearTimeout(handle);
+  }, [filteredNodes.length]);
+
   const selectedNode = useMemo(() => {
     if (!selectedId) return null;
     return filteredNodes.find((n) => n.id === selectedId) ?? null;
@@ -361,6 +378,10 @@ export function GraphCanvas({
         onNodeMouseLeave={handleNodeMouseLeave}
         onNodeDragStop={handleNodeDragStop}
         onPaneClick={handlePaneClick}
+        onInit={(instance) => {
+          rfInstanceRef.current = instance;
+        }}
+        colorMode={isDark ? 'dark' : 'light'}
         nodesDraggable
         fitView
         fitViewOptions={{ padding: 0.2 }}

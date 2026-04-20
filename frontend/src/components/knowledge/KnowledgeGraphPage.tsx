@@ -13,7 +13,7 @@
  * single-click preview is rendered by GraphCanvas itself (AC-8).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { GraphCanvas } from './GraphCanvas';
 import { NodeDetailPanel } from './NodeDetailPanel';
 import { GraphControlsPanel } from './GraphControlsPanel';
@@ -48,6 +48,11 @@ const DEFAULT_FILTERS: Filters = {
   searchQuery: '',
 };
 
+const SIDEBAR_WIDTH_KEY = 'kg-sidebar-width';
+const SIDEBAR_DEFAULT = 256;
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 520;
+
 export function KnowledgeGraphPage({ boardId }: Props) {
   const [nodes, setNodes] = useState<KGNode[]>([]);
   const [edges, setEdges] = useState<KGEdge[]>([]);
@@ -60,6 +65,15 @@ export function KnowledgeGraphPage({ boardId }: Props) {
   const [subView, setSubView] = useState<SubView>('graph');
   const [nodeLimit, setNodeLimit] = useState<number>(DEFAULT_NODE_LIMIT);
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    if (typeof window === 'undefined') return SIDEBAR_DEFAULT;
+    const stored = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    const parsed = stored ? Number(stored) : NaN;
+    return Number.isFinite(parsed) && parsed >= SIDEBAR_MIN && parsed <= SIDEBAR_MAX
+      ? parsed
+      : SIDEBAR_DEFAULT;
+  });
+  const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const loadGraph = useCallback(
     async (limit: number) => {
@@ -135,6 +149,40 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     setFilters((prev) => ({ ...prev, minRelevance: value }));
   }, []);
 
+  // Drag-to-resize on the divider between the controls panel and the canvas.
+  // Width is clamped + persisted to localStorage so it survives reloads.
+  const handleDividerMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      dragState.current = { startX: e.clientX, startWidth: sidebarWidth };
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    },
+    [sidebarWidth],
+  );
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const drag = dragState.current;
+      if (!drag) return;
+      const delta = e.clientX - drag.startX;
+      const next = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, drag.startWidth + delta));
+      setSidebarWidth(next);
+    };
+    const onUp = () => {
+      if (!dragState.current) return;
+      dragState.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [sidebarWidth]);
+
   const handleOpenSpec = useCallback((specRef: string) => {
     if (typeof window !== 'undefined') {
       window.location.href = `/specs/${specRef}`;
@@ -186,8 +234,11 @@ export function KnowledgeGraphPage({ boardId }: Props) {
 
   return (
     <div className="flex h-full">
-      {/* Left: Controls */}
-      <div className="w-64 border-r border-gray-200 dark:border-gray-700 overflow-y-auto">
+      {/* Left: Controls — width is user-resizable via the divider on the right. */}
+      <div
+        style={{ width: sidebarWidth, flexShrink: 0 }}
+        className="border-r border-gray-200 dark:border-gray-700 overflow-y-auto"
+      >
         <GraphControlsPanel
           filters={filters}
           onFiltersChange={setFilters}
@@ -200,6 +251,21 @@ export function KnowledgeGraphPage({ boardId }: Props) {
           relevanceScores={nodes.map((n) => n.relevance_score ?? 0)}
         />
       </div>
+
+      {/* Resizable divider — drag to widen/narrow the controls panel. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Redimensionar painel de controles"
+        data-testid="kg-sidebar-divider"
+        onMouseDown={handleDividerMouseDown}
+        onDoubleClick={() => {
+          setSidebarWidth(SIDEBAR_DEFAULT);
+          window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(SIDEBAR_DEFAULT));
+        }}
+        title="Arraste para redimensionar (duplo clique para resetar)"
+        className="w-1 cursor-col-resize bg-gray-200 dark:bg-gray-700 hover:bg-blue-500 dark:hover:bg-blue-500 transition-colors flex-shrink-0"
+      />
 
       {/* Center: Graph or sub-view */}
       <div className="flex-1 relative">
