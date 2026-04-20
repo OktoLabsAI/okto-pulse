@@ -40,7 +40,7 @@ export function RelevanceHistogram({ scores, threshold }: Props) {
   if (scores.length === 0) {
     return (
       <p className="text-[10px] text-gray-500 dark:text-gray-500 mt-2">
-        Sem dados de relevância para exibir.
+        No relevance data to display.
       </p>
     );
   }
@@ -50,7 +50,7 @@ export function RelevanceHistogram({ scores, threshold }: Props) {
       <div
         className="flex items-end gap-px h-8"
         role="img"
-        aria-label="Distribuição de relevância dos nós em 10 faixas"
+        aria-label="Node relevance distribution across 10 buckets"
       >
         {buckets.map((count, i) => {
           const heightPct = max === 0 ? 0 : Math.max(2, Math.round((count / max) * 100));
@@ -65,14 +65,14 @@ export function RelevanceHistogram({ scores, threshold }: Props) {
                   : 'bg-gray-300/60 dark:bg-gray-700/60'
               }`}
               style={{ height: `${heightPct}%` }}
-              title={`Faixa ${(i * BUCKET_WIDTH).toFixed(1)}–${bucketCeiling.toFixed(1)}: ${count} nó${count === 1 ? '' : 's'}`}
+              title={`Bucket ${(i * BUCKET_WIDTH).toFixed(1)}–${bucketCeiling.toFixed(1)}: ${count} node${count === 1 ? '' : 's'}`}
             />
           );
         })}
       </div>
       <div className="flex justify-between text-[9px] text-gray-500 dark:text-gray-500 mt-0.5">
         <span>0%</span>
-        <span>distribuição (n={scores.length})</span>
+        <span>distribution (n={scores.length})</span>
         <span>100%</span>
       </div>
     </div>

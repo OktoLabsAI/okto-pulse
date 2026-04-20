@@ -65,6 +65,9 @@ interface Props {
   onClearFilters?: () => void;
   /** Lower the relevance threshold to a specific value (used by the empty-state CTA). */
   onAdjustRelevance?: (value: number) => void;
+  /** Bumped by parent (e.g. when the sidebar collapses/expands) to request a
+   *  delayed re-fit once the surrounding layout transition has settled. */
+  refitTrigger?: number;
   /** Navigate to a spec reference when "Open in spec" is clicked from the preview panel (S5.2). */
   onOpenSpec?: (specRef: string) => void;
   /** Promote the inline preview to a full modal when "Show more" is clicked. */
@@ -91,6 +94,7 @@ export function GraphCanvas({
   onAdjustRelevance,
   onOpenSpec,
   onShowDetails,
+  refitTrigger = 0,
 }: Props) {
   // Selection is internal to the canvas — parent lives independently of it.
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedNodeId);
@@ -102,7 +106,7 @@ export function GraphCanvas({
   const dragOverridesRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const [dragTick, setDragTick] = useState(0);
   // ReactFlow instance handle so we can refit the viewport when the node set
-  // changes (e.g. after "Carregar mais" appends a new page). React Flow only
+  // changes (e.g. after "Load more" appends a new page). React Flow only
   // runs `fitView` once on mount; without this, newly-loaded nodes drift
   // off-screen.
   const rfInstanceRef = useRef<ReactFlowInstance<RFNode<KGNodeData>, RFEdge> | null>(null);
@@ -289,6 +293,17 @@ export function GraphCanvas({
     return () => window.clearTimeout(handle);
   }, [filteredNodes.length]);
 
+  // Re-fit after a surrounding layout transition (sidebar collapse/expand)
+  // completes. The 320ms delay matches the sidebar width transition; the
+  // fitView call itself runs another 350ms tween for a smooth re-frame.
+  useEffect(() => {
+    if (refitTrigger === 0 || filteredNodes.length === 0) return;
+    const handle = window.setTimeout(() => {
+      rfInstanceRef.current?.fitView({ padding: 0.2, duration: 350 });
+    }, 320);
+    return () => window.clearTimeout(handle);
+  }, [refitTrigger, filteredNodes.length]);
+
   const selectedNode = useMemo(() => {
     if (!selectedId) return null;
     return filteredNodes.find((n) => n.id === selectedId) ?? null;
@@ -326,10 +341,10 @@ export function GraphCanvas({
       >
         <p className="text-gray-400 dark:text-gray-500 text-sm">
           {relevanceIsCulprit
-            ? `Nenhum nó atende ao filtro de relevância (max presente: ${(maxRelevancePresent * 100).toFixed(0)}%, filtro: ${(filters.minRelevance * 100).toFixed(0)}%).`
+            ? `No nodes match the relevance filter (max present: ${(maxRelevancePresent * 100).toFixed(0)}%, filter: ${(filters.minRelevance * 100).toFixed(0)}%).`
             : isFilteredEmpty
-              ? 'Nenhum nó corresponde aos filtros atuais.'
-              : 'Nenhum nó para exibir.'}
+              ? 'No nodes match the current filters.'
+              : 'No nodes to display.'}
         </p>
         {isFilteredEmpty && (
           <div className="flex gap-2">
@@ -340,7 +355,7 @@ export function GraphCanvas({
                 data-testid="kg-adjust-relevance"
                 className="px-4 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700"
               >
-                Reduzir para {(maxRelevancePresent * 100).toFixed(0)}%
+                Lower to {(maxRelevancePresent * 100).toFixed(0)}%
               </button>
             )}
             {onClearFilters && (
@@ -350,7 +365,7 @@ export function GraphCanvas({
                 data-testid="kg-clear-filters"
                 className="px-4 py-1.5 text-xs rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-100 dark:hover:bg-gray-600"
               >
-                Limpar filtros
+                Clear filters
               </button>
             )}
           </div>

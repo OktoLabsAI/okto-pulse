@@ -98,7 +98,7 @@ describe('GraphCanvas — selection wiring (S4.1 / AC-4)', () => {
       filters: { ...FILTERS, minRelevance: 1.01 },
     });
     expect(container.textContent).toMatch(
-      /Nenhum nó (corresponde aos filtros|atende ao filtro)/,
+      /No nodes (match the current filters|match the relevance filter)/,
     );
     expect(container.querySelector('[data-testid="kg-canvas"]')).toBeNull();
   });

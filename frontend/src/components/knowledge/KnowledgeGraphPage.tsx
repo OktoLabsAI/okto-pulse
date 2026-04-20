@@ -81,12 +81,17 @@ export function KnowledgeGraphPage({ boardId }: Props) {
   });
   const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
 
+  const [refitTrigger, setRefitTrigger] = useState(0);
+
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((prev) => {
       const next = !prev;
       window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? '1' : '0');
       return next;
     });
+    // Re-fit the canvas after the width transition completes so the graph
+    // re-frames into the new available area.
+    setRefitTrigger((k) => k + 1);
   }, []);
 
   const loadGraph = useCallback(
@@ -248,66 +253,77 @@ export function KnowledgeGraphPage({ boardId }: Props) {
 
   return (
     <div className="flex h-full">
-      {/* Left: Controls — collapsible + width is user-resizable via the divider. */}
-      {!sidebarCollapsed && (
-        <>
-          <div
-            style={{ width: sidebarWidth, flexShrink: 0 }}
-            className="relative border-r border-gray-200 dark:border-gray-700 overflow-y-auto"
-          >
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              data-testid="kg-sidebar-collapse"
-              title="Ocultar painel de controles"
-              aria-label="Ocultar painel de controles"
-              className="absolute top-2 right-2 z-10 p-1 rounded text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-            >
-              <PanelLeftClose size={14} />
-            </button>
-            <GraphControlsPanel
-              filters={filters}
-              onFiltersChange={setFilters}
-              subView={subView}
-              onSubViewChange={setSubView}
-              nodeCount={nodes.length}
-              nodeLimit={nodeLimit}
-              onNodeLimitChange={handleNodeLimitChange}
-              boardId={boardId}
-              relevanceScores={nodes.map((n) => n.relevance_score ?? 0)}
-            />
-          </div>
-
-          {/* Resizable divider — drag to widen/narrow the controls panel. */}
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Redimensionar painel de controles"
-            data-testid="kg-sidebar-divider"
-            onMouseDown={handleDividerMouseDown}
-            onDoubleClick={() => {
-              setSidebarWidth(SIDEBAR_DEFAULT);
-              window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(SIDEBAR_DEFAULT));
-            }}
-            title="Arraste para redimensionar (duplo clique para resetar)"
-            className="w-1 cursor-col-resize bg-gray-200 dark:bg-gray-700 hover:bg-blue-500 dark:hover:bg-blue-500 transition-colors flex-shrink-0"
-          />
-        </>
-      )}
-
-      {/* Collapsed state: thin re-open strip pinned to the left edge. */}
-      {sidebarCollapsed && (
-        <button
-          type="button"
-          onClick={toggleSidebar}
-          data-testid="kg-sidebar-expand"
-          title="Mostrar painel de controles"
-          aria-label="Mostrar painel de controles"
-          className="w-7 flex-shrink-0 flex items-start justify-center pt-2 border-r border-gray-200 dark:border-gray-700 text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+      {/* Left: Controls panel — width animates between sidebarWidth and 0
+          when the user toggles collapse. The inner content keeps its full
+          width during the transition (via the inline style on the inner
+          wrapper) so it doesn't reflow as the outer width shrinks; the
+          outer overflow:hidden clips it cleanly. */}
+      <div
+        style={{ width: sidebarCollapsed ? 0 : sidebarWidth, flexShrink: 0 }}
+        className="relative border-r border-gray-200 dark:border-gray-700 overflow-hidden transition-[width] duration-300 ease-in-out"
+        data-testid="kg-sidebar"
+        data-collapsed={sidebarCollapsed}
+      >
+        <div
+          style={{ width: sidebarWidth, height: '100%' }}
+          className="overflow-y-auto"
         >
-          <PanelLeftOpen size={16} />
-        </button>
-      )}
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            data-testid="kg-sidebar-collapse"
+            title="Hide controls panel"
+            aria-label="Hide controls panel"
+            className="absolute top-2 right-2 z-10 p-1 rounded text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+          >
+            <PanelLeftClose size={14} />
+          </button>
+          <GraphControlsPanel
+            filters={filters}
+            onFiltersChange={setFilters}
+            subView={subView}
+            onSubViewChange={setSubView}
+            nodeCount={nodes.length}
+            nodeLimit={nodeLimit}
+            onNodeLimitChange={handleNodeLimitChange}
+            boardId={boardId}
+            relevanceScores={nodes.map((n) => n.relevance_score ?? 0)}
+          />
+        </div>
+      </div>
+
+      {/* Resizable divider — width animates to 0 alongside the panel so
+          the whole left column collapses smoothly. Drag is disabled in
+          collapsed state. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize controls panel"
+        data-testid="kg-sidebar-divider"
+        onMouseDown={sidebarCollapsed ? undefined : handleDividerMouseDown}
+        onDoubleClick={() => {
+          if (sidebarCollapsed) return;
+          setSidebarWidth(SIDEBAR_DEFAULT);
+          window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(SIDEBAR_DEFAULT));
+        }}
+        title="Drag to resize (double-click to reset)"
+        style={{ width: sidebarCollapsed ? 0 : 4 }}
+        className="cursor-col-resize bg-gray-200 dark:bg-gray-700 hover:bg-blue-500 dark:hover:bg-blue-500 transition-[width,background-color] duration-300 ease-in-out flex-shrink-0 overflow-hidden"
+      />
+
+      {/* Re-open strip — width animates 0 → 28 when collapsed. Always in
+          the DOM so the icon can fade in via the same transition. */}
+      <button
+        type="button"
+        onClick={toggleSidebar}
+        data-testid="kg-sidebar-expand"
+        title="Show controls panel"
+        aria-label="Show controls panel"
+        style={{ width: sidebarCollapsed ? 28 : 0 }}
+        className="flex-shrink-0 overflow-hidden flex items-start justify-center pt-2 border-r border-gray-200 dark:border-gray-700 text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 transition-[width] duration-300 ease-in-out"
+      >
+        <PanelLeftOpen size={16} />
+      </button>
 
       {/* Center: Graph or sub-view */}
       <div className="flex-1 relative">
@@ -345,8 +361,8 @@ export function KnowledgeGraphPage({ boardId }: Props) {
                   className="px-3 py-1.5 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-wait"
                 >
                   {loadingMore
-                    ? 'Carregando…'
-                    : `Carregar mais (${nodes.length}${nextCursor ? '+' : ''})`}
+                    ? 'Loading…'
+                    : `Load more (${nodes.length}${nextCursor ? '+' : ''})`}
                 </button>
               )}
             </div>
@@ -360,6 +376,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
               onAdjustRelevance={handleAdjustRelevance}
               onOpenSpec={handleOpenSpec}
               onShowDetails={setModalNode}
+              refitTrigger={refitTrigger}
             />
           </>
         ) : subView === 'audit' ? (

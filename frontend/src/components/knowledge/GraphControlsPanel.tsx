@@ -121,12 +121,12 @@ export function GraphControlsPanel({
 
       {/* Node type filter — header shows page-vs-total context.
           nodeCount is the size of the currently-loaded page (driven by
-          nodeLimit). When the user paginates with "Carregar mais" the count
+          nodeLimit). When the user paginates with "Load more" the count
           grows; if it equals nodeLimit there's likely more on the server. */}
       <div>
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-xs font-medium text-gray-500 uppercase">
-            Tipos de nó (mostrando {nodeCount})
+            Node Types (showing {nodeCount})
           </h3>
           <div className="flex gap-1.5 text-[10px]">
             <button
@@ -135,7 +135,7 @@ export function GraphControlsPanel({
               data-testid="kg-node-types-all"
               className="text-blue-600 hover:underline dark:text-blue-400"
             >
-              Marcar todos
+              Select all
             </button>
             <span className="text-gray-400">·</span>
             <button
@@ -146,7 +146,7 @@ export function GraphControlsPanel({
               data-testid="kg-node-types-none"
               className="text-blue-600 hover:underline dark:text-blue-400"
             >
-              Desmarcar todos
+              Clear all
             </button>
           </div>
         </div>
@@ -186,7 +186,7 @@ export function GraphControlsPanel({
           "all on by default" state is visually distinct from "I disabled some". */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-xs font-medium text-gray-500 uppercase">Tipos de aresta</h3>
+          <h3 className="text-xs font-medium text-gray-500 uppercase">Edge Types</h3>
           <div className="flex gap-1.5 text-[10px]">
             <button
               type="button"
@@ -194,7 +194,7 @@ export function GraphControlsPanel({
               data-testid="kg-edge-types-all"
               className="text-blue-600 hover:underline dark:text-blue-400"
             >
-              Marcar todos
+              Select all
             </button>
             <span className="text-gray-400">·</span>
             <button
@@ -205,7 +205,7 @@ export function GraphControlsPanel({
               data-testid="kg-edge-types-none"
               className="text-blue-600 hover:underline dark:text-blue-400"
             >
-              Desmarcar todos
+              Clear all
             </button>
           </div>
         </div>
@@ -262,7 +262,7 @@ export function GraphControlsPanel({
           (filter has nothing to act on) vs. when it would actually filter. */}
       <div>
         <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">
-          Relevância mínima: {(filters.minRelevance * 100).toFixed(0)}%
+          Min Relevance: {(filters.minRelevance * 100).toFixed(0)}%
         </h3>
         <input
           type="range"
@@ -272,7 +272,7 @@ export function GraphControlsPanel({
           value={filters.minRelevance}
           onChange={(e) => updateFilters({ minRelevance: Number(e.target.value) })}
           className="w-full"
-          aria-label="Filtro de relevância mínima"
+          aria-label="Minimum relevance filter"
           data-testid="kg-relevance-slider"
         />
         <RelevanceHistogram
