@@ -104,7 +104,11 @@ export function KGHelpModal({ onClose, initialSectionId }: KGHelpModalProps) {
             className="flex-1 overflow-y-auto px-6 py-4"
             data-testid={`kg-help-content-${current.id}`}
           >
-            <MarkdownContent content={current.content} />
+            {current.body.kind === 'markdown' ? (
+              <MarkdownContent content={current.body.text} />
+            ) : (
+              current.body.node
+            )}
           </div>
         </div>
       </div>

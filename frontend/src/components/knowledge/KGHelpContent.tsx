@@ -1,13 +1,15 @@
 /**
  * KG help content — canonical, English-only, bundled with the frontend.
- * Rendered by KGHelpModal via MarkdownContent. Keep sections short and
- * concrete; anything longer than ~500 words per section should probably
- * be split.
  *
- * Adding a new NodeType or RelationType? Update three places in lockstep:
+ * Sections can be either markdown strings (rendered by MarkdownContent)
+ * or React nodes (rendered verbatim). We use React nodes for the Node
+ * Types and Connection Types catalogues so the colored swatches render
+ * as real DOM — the markdown renderer strips raw HTML for XSS safety.
+ *
+ * Adding a new NodeType or RelationType? Update two places in lockstep:
  *   1. okto_labs_pulse_core/src/okto_pulse/core/kg/schema.py
  *   2. frontend/src/types/knowledge-graph.ts (NODE_TYPE_CONFIG or EDGE_TYPE_CONFIG)
- *   3. the Node Types / Connection Types section below
+ * The catalogues below resolve their rows from those configs automatically.
  * Bump SCHEMA_VERSION in frontend/src/constants/kg.ts to match backend.
  */
 
@@ -27,38 +29,107 @@ import {
   type KGNodeType,
 } from '@/types/knowledge-graph';
 
+export type KGHelpSectionBody =
+  | { kind: 'markdown'; text: string }
+  | { kind: 'react'; node: ReactNode };
+
 export interface KGHelpSection {
   id: string;
   title: string;
   icon: ReactNode;
-  content: string;
+  body: KGHelpSectionBody;
 }
 
 const ALL_NODE_TYPES = Object.keys(NODE_TYPE_CONFIG) as KGNodeType[];
 
-/** Build the Node Types section from NODE_TYPE_CONFIG so the help stays
- *  in sync with the canonical visual config (single source of truth). */
-function buildNodeTypesMarkdown(): string {
-  const rows = ALL_NODE_TYPES.map((type) => {
-    const cfg = NODE_TYPE_CONFIG[type];
-    return `### <span style="display:inline-block;width:10px;height:10px;border-radius:9999px;background:${cfg.color};vertical-align:middle;margin-right:6px"></span>${cfg.icon} ${type}\n\n${cfg.description}`;
-  }).join('\n\n');
-  return `The graph carries **${ALL_NODE_TYPES.length} node types**. Each one represents a different kind of artifact or claim on the board. The color + icon you see here match exactly what is drawn on the canvas and in the mini-map.\n\n${rows}`;
+function NodeTypesCatalog(): ReactNode {
+  return (
+    <div className="space-y-3 text-sm">
+      <p className="text-gray-600 dark:text-gray-400">
+        The graph carries <strong className="text-gray-800 dark:text-gray-200">
+        {ALL_NODE_TYPES.length} node types</strong>. Each one represents a
+        different kind of artifact or claim on the board. The color + icon
+        you see here match exactly what is drawn on the canvas and in the
+        mini-map.
+      </p>
+      <ul className="space-y-3 list-none pl-0">
+        {ALL_NODE_TYPES.map((type) => {
+          const cfg = NODE_TYPE_CONFIG[type];
+          return (
+            <li
+              key={type}
+              className="flex gap-3 items-start"
+              data-kg-help-node-type={type}
+            >
+              <span
+                className="mt-1 shrink-0 w-3 h-3 rounded-full border border-black/10 dark:border-white/10"
+                style={{ backgroundColor: cfg.color }}
+                aria-hidden
+              />
+              <div className="min-w-0">
+                <div className="font-semibold text-gray-800 dark:text-gray-200">
+                  <span aria-hidden className="mr-1">{cfg.icon}</span>
+                  {type}
+                </div>
+                <p className="text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">
+                  {cfg.description}
+                </p>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
-/** Build the Connection Types section from EDGE_TYPE_CONFIG for the same
- *  reason as above — the list below always matches what the canvas draws. */
-function buildEdgeTypesMarkdown(): string {
-  const rows = (ALL_EDGE_TYPES as KGEdgeType[])
-    .map((type) => {
-      const cfg = EDGE_TYPE_CONFIG[type];
-      return `### <span style="display:inline-block;width:20px;height:3px;background:${cfg.color};vertical-align:middle;margin-right:6px;border-radius:2px"></span>${type}\n\n${cfg.description}`;
-    })
-    .join('\n\n');
-  return `The graph carries **${ALL_EDGE_TYPES.length} connection types**. Each one expresses a different semantic link between nodes — from strong ones like \`supersedes\` (hierarchical replacement) to soft ones like \`relates_to\` (shared topic).\n\n${rows}`;
+function ConnectionTypesCatalog(): ReactNode {
+  return (
+    <div className="space-y-3 text-sm">
+      <p className="text-gray-600 dark:text-gray-400">
+        The graph carries <strong className="text-gray-800 dark:text-gray-200">
+        {ALL_EDGE_TYPES.length} connection types</strong>. Each one expresses
+        a different semantic link between nodes — from strong ones like{' '}
+        <code className="px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-xs">
+          supersedes
+        </code>{' '}
+        (hierarchical replacement) to soft ones like{' '}
+        <code className="px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-xs">
+          relates_to
+        </code>{' '}
+        (shared topic).
+      </p>
+      <ul className="space-y-3 list-none pl-0">
+        {(ALL_EDGE_TYPES as KGEdgeType[]).map((type) => {
+          const cfg = EDGE_TYPE_CONFIG[type];
+          return (
+            <li
+              key={type}
+              className="flex gap-3 items-start"
+              data-kg-help-edge-type={type}
+            >
+              <span
+                className="mt-2 shrink-0 w-5 h-[3px] rounded-sm"
+                style={{ backgroundColor: cfg.color }}
+                aria-hidden
+              />
+              <div className="min-w-0">
+                <div className="font-semibold text-gray-800 dark:text-gray-200 font-mono text-xs">
+                  {type}
+                </div>
+                <p className="text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">
+                  {cfg.description}
+                </p>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
-const OVERVIEW = `## What is the Knowledge Graph?
+const OVERVIEW_MD = `## What is the Knowledge Graph?
 
 The Knowledge Graph (KG) is the structural memory of your board. Every time
 you create or update an ideation, a refinement, a spec, a sprint, a card, or
@@ -85,7 +156,7 @@ density is tuned for engineers.
 Start by exploring the Node Types and Connection Types sections below —
 they are the vocabulary you will see everywhere on the canvas.`;
 
-const CONSOLIDATION_PROCESS = `Every artifact on the board becomes a KG node through a 5-step pipeline.
+const CONSOLIDATION_PROCESS_MD = `Every artifact on the board becomes a KG node through a 5-step pipeline.
 Nothing is written synchronously in the request thread — the heavy work
 happens in the background, so creating a card or updating a spec stays fast.
 
@@ -137,8 +208,8 @@ For artifacts that never entered the queue at all (created before the
 pipeline existed, or via an import), the badge reads **\`not_queued\`** and
 only a historical backfill can pick them up.`;
 
-const HOW_TO_EXPLORE = `The KG screen is a read-only visual query tool — you cannot mutate the
-graph here, only see it and ask questions of it. Five controls matter.
+const HOW_TO_EXPLORE_MD = `The KG screen is a read-only visual query tool — you cannot mutate the
+graph here, only see it and ask questions of it.
 
 ### Node type filter
 
@@ -198,30 +269,30 @@ export const KG_HELP_SECTIONS: KGHelpSection[] = [
     id: 'overview',
     title: 'Overview',
     icon: <BookOpen size={16} />,
-    content: OVERVIEW,
+    body: { kind: 'markdown', text: OVERVIEW_MD },
   },
   {
     id: 'node-types',
     title: 'Node Types',
     icon: <Boxes size={16} />,
-    content: buildNodeTypesMarkdown(),
+    body: { kind: 'react', node: <NodeTypesCatalog /> },
   },
   {
     id: 'connection-types',
     title: 'Connection Types',
     icon: <GitBranch size={16} />,
-    content: buildEdgeTypesMarkdown(),
+    body: { kind: 'react', node: <ConnectionTypesCatalog /> },
   },
   {
     id: 'consolidation-process',
     title: 'Consolidation Process',
     icon: <Workflow size={16} />,
-    content: CONSOLIDATION_PROCESS,
+    body: { kind: 'markdown', text: CONSOLIDATION_PROCESS_MD },
   },
   {
     id: 'how-to-explore',
     title: 'How to Explore',
     icon: <Compass size={16} />,
-    content: HOW_TO_EXPLORE,
+    body: { kind: 'markdown', text: HOW_TO_EXPLORE_MD },
   },
 ];
