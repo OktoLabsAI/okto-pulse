@@ -118,9 +118,15 @@ export function CreateRefinementModal({ boardId, ideationId: preselectedIdeation
     }
   };
 
+  const parsedInScope = inScope
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const inScopeValid = parsedInScope.length > 0;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !ideationId) return;
+    if (!title.trim() || !ideationId || !inScopeValid) return;
 
     setSaving(true);
     try {
@@ -128,7 +134,7 @@ export function CreateRefinementModal({ boardId, ideationId: preselectedIdeation
         ideation_id: ideationId,
         title: title.trim(),
         description: description.trim() || undefined,
-        in_scope: inScope.trim() ? inScope.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+        in_scope: parsedInScope,
         analysis: analysis.trim() || undefined,
         decisions: decisions.length > 0 ? decisions : undefined,
         labels: labels ? labels.split(',').map((l) => l.trim()).filter(Boolean) : undefined,
@@ -136,8 +142,14 @@ export function CreateRefinementModal({ boardId, ideationId: preselectedIdeation
       onCreated(refinement);
       toast.success('Refinement created');
       onClose();
-    } catch {
-      toast.error('Failed to create refinement');
+    } catch (err) {
+      // Surface the backend validation message when the frontend guard is
+      // bypassed somehow (e.g. direct API call from a test, or a race).
+      const detail =
+        err && typeof err === 'object' && 'detail' in err
+          ? String((err as { detail: unknown }).detail)
+          : 'Failed to create refinement';
+      toast.error(detail);
     } finally {
       setSaving(false);
     }
@@ -205,14 +217,27 @@ export function CreateRefinementModal({ boardId, ideationId: preselectedIdeation
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">In Scope (comma-separated)</label>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              In Scope (comma-separated) <span className="text-red-500">*</span>
+            </label>
             <input
               type="text"
               value={inScope}
               onChange={(e) => setInScope(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
+              required
+              aria-invalid={!inScopeValid}
+              className={`w-full px-3 py-2 border rounded-lg text-sm dark:bg-gray-700 ${
+                inScopeValid
+                  ? 'border-gray-300 dark:border-gray-600'
+                  : 'border-red-400 dark:border-red-500/60'
+              }`}
               placeholder="Auth flow, Token refresh, Session management"
             />
+            {!inScopeValid && (
+              <p className="mt-1 text-xs text-red-500">
+                At least one non-empty in-scope item is required.
+              </p>
+            )}
           </div>
 
           <div>
@@ -252,7 +277,7 @@ export function CreateRefinementModal({ boardId, ideationId: preselectedIdeation
           </button>
           <button
             onClick={handleSubmit}
-            disabled={!title.trim() || !ideationId || saving}
+            disabled={!title.trim() || !ideationId || !inScopeValid || saving}
             className="btn btn-primary"
           >
             {saving ? 'Creating...' : 'Create Refinement'}

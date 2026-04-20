@@ -254,11 +254,27 @@ export function GraphCanvas({
     [nodes, onSelect],
   );
 
+  // 500ms hover delay before showing the tooltip — scrubbing quickly across
+  // nodes should NOT flash a tooltip for each one. The pending timer is
+  // stored in a ref and cleared on leave / on enter of another node.
+  const hoverTimerRef = useRef<number | null>(null);
+  const clearHoverTimer = () => {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  };
   const handleNodeMouseEnter: NodeMouseHandler = useCallback((_event, rfNode) => {
-    setHoveredId(rfNode.id);
+    clearHoverTimer();
+    const id = rfNode.id;
+    hoverTimerRef.current = window.setTimeout(() => {
+      setHoveredId(id);
+      hoverTimerRef.current = null;
+    }, 500);
   }, []);
 
   const handleNodeMouseLeave: NodeMouseHandler = useCallback(() => {
+    clearHoverTimer();
     setHoveredId(null);
   }, []);
 

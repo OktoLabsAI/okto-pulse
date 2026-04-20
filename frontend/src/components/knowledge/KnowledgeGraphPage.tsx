@@ -14,8 +14,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { HelpCircle, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { GraphCanvas } from './GraphCanvas';
+import { KGHelpModal } from './KGHelpModal';
 import { NodeDetailPanel } from './NodeDetailPanel';
 import { GraphControlsPanel } from './GraphControlsPanel';
 import type { Filters } from './GraphControlsPanel';
@@ -80,6 +81,25 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
   });
   const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  // Shift+/ opens the help modal while the KG page is mounted. We bind on
+  // window but only while the page is active; preventDefault stops the
+  // browser Find-in-page from swallowing the keypress.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === '?' && !helpOpen) {
+        const target = e.target as HTMLElement | null;
+        const tag = target?.tagName ?? '';
+        // Ignore when the user is typing in an input / textarea / contentEditable
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+        e.preventDefault();
+        setHelpOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [helpOpen]);
 
   const [refitTrigger, setRefitTrigger] = useState(0);
 
@@ -352,6 +372,16 @@ export function KnowledgeGraphPage({ boardId }: Props) {
                 shortcut
                 testId="kg-refresh"
               />
+              <button
+                type="button"
+                onClick={() => setHelpOpen(true)}
+                data-testid="kg-help-button"
+                title="Help (Shift+/)"
+                aria-label="Open Knowledge Graph help"
+                className="p-1.5 rounded-md text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 transition-colors"
+              >
+                <HelpCircle size={18} />
+              </button>
               {nextCursor && (
                 <button
                   type="button"
@@ -414,6 +444,8 @@ export function KnowledgeGraphPage({ boardId }: Props) {
           onClose={() => setModalNode(null)}
         />
       )}
+
+      {helpOpen && <KGHelpModal onClose={() => setHelpOpen(false)} />}
 
       {/* Queue progress now surfaced globally via GlobalKGActivityIndicator
           in App.tsx — removed the per-page toast to avoid duplication. */}
