@@ -14,6 +14,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { GraphCanvas } from './GraphCanvas';
 import { NodeDetailPanel } from './NodeDetailPanel';
 import { GraphControlsPanel } from './GraphControlsPanel';
@@ -49,6 +50,7 @@ const DEFAULT_FILTERS: Filters = {
 };
 
 const SIDEBAR_WIDTH_KEY = 'kg-sidebar-width';
+const SIDEBAR_COLLAPSED_KEY = 'kg-sidebar-collapsed';
 const SIDEBAR_DEFAULT = 256;
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
@@ -73,7 +75,19 @@ export function KnowledgeGraphPage({ boardId }: Props) {
       ? parsed
       : SIDEBAR_DEFAULT;
   });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
+  });
   const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? '1' : '0');
+      return next;
+    });
+  }, []);
 
   const loadGraph = useCallback(
     async (limit: number) => {
@@ -234,38 +248,66 @@ export function KnowledgeGraphPage({ boardId }: Props) {
 
   return (
     <div className="flex h-full">
-      {/* Left: Controls — width is user-resizable via the divider on the right. */}
-      <div
-        style={{ width: sidebarWidth, flexShrink: 0 }}
-        className="border-r border-gray-200 dark:border-gray-700 overflow-y-auto"
-      >
-        <GraphControlsPanel
-          filters={filters}
-          onFiltersChange={setFilters}
-          subView={subView}
-          onSubViewChange={setSubView}
-          nodeCount={nodes.length}
-          nodeLimit={nodeLimit}
-          onNodeLimitChange={handleNodeLimitChange}
-          boardId={boardId}
-          relevanceScores={nodes.map((n) => n.relevance_score ?? 0)}
-        />
-      </div>
+      {/* Left: Controls — collapsible + width is user-resizable via the divider. */}
+      {!sidebarCollapsed && (
+        <>
+          <div
+            style={{ width: sidebarWidth, flexShrink: 0 }}
+            className="relative border-r border-gray-200 dark:border-gray-700 overflow-y-auto"
+          >
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              data-testid="kg-sidebar-collapse"
+              title="Ocultar painel de controles"
+              aria-label="Ocultar painel de controles"
+              className="absolute top-2 right-2 z-10 p-1 rounded text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+            >
+              <PanelLeftClose size={14} />
+            </button>
+            <GraphControlsPanel
+              filters={filters}
+              onFiltersChange={setFilters}
+              subView={subView}
+              onSubViewChange={setSubView}
+              nodeCount={nodes.length}
+              nodeLimit={nodeLimit}
+              onNodeLimitChange={handleNodeLimitChange}
+              boardId={boardId}
+              relevanceScores={nodes.map((n) => n.relevance_score ?? 0)}
+            />
+          </div>
 
-      {/* Resizable divider — drag to widen/narrow the controls panel. */}
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Redimensionar painel de controles"
-        data-testid="kg-sidebar-divider"
-        onMouseDown={handleDividerMouseDown}
-        onDoubleClick={() => {
-          setSidebarWidth(SIDEBAR_DEFAULT);
-          window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(SIDEBAR_DEFAULT));
-        }}
-        title="Arraste para redimensionar (duplo clique para resetar)"
-        className="w-1 cursor-col-resize bg-gray-200 dark:bg-gray-700 hover:bg-blue-500 dark:hover:bg-blue-500 transition-colors flex-shrink-0"
-      />
+          {/* Resizable divider — drag to widen/narrow the controls panel. */}
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Redimensionar painel de controles"
+            data-testid="kg-sidebar-divider"
+            onMouseDown={handleDividerMouseDown}
+            onDoubleClick={() => {
+              setSidebarWidth(SIDEBAR_DEFAULT);
+              window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(SIDEBAR_DEFAULT));
+            }}
+            title="Arraste para redimensionar (duplo clique para resetar)"
+            className="w-1 cursor-col-resize bg-gray-200 dark:bg-gray-700 hover:bg-blue-500 dark:hover:bg-blue-500 transition-colors flex-shrink-0"
+          />
+        </>
+      )}
+
+      {/* Collapsed state: thin re-open strip pinned to the left edge. */}
+      {sidebarCollapsed && (
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          data-testid="kg-sidebar-expand"
+          title="Mostrar painel de controles"
+          aria-label="Mostrar painel de controles"
+          className="w-7 flex-shrink-0 flex items-start justify-center pt-2 border-r border-gray-200 dark:border-gray-700 text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+        >
+          <PanelLeftOpen size={16} />
+        </button>
+      )}
 
       {/* Center: Graph or sub-view */}
       <div className="flex-1 relative">
