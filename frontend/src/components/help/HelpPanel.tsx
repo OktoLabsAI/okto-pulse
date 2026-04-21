@@ -30,8 +30,7 @@ const WEB_URL = typeof window !== 'undefined' && (window as any).OKTO_PULSE_CONF
       : `http://127.0.0.1:8100`);
 import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Users, Bot, GitBranch, Settings, CheckCircle, Network } from 'lucide-react';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
-import logoLight from '@/assets/logo-light.png';
-import logoDark from '@/assets/logo-dark.png';
+import pulseIcon from '@/assets/pulse-icon.svg';
 
 interface HelpPanelProps {
   onClose: () => void;
@@ -1159,8 +1158,7 @@ export function HelpPanel({ onClose }: HelpPanelProps) {
         {/* Sidebar navigation */}
         <nav className="w-56 shrink-0 border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex flex-col">
           <div className="px-4 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2.5">
-            <img src={logoLight} alt="Okto Pulse" className="h-8 w-8 rounded dark:hidden" />
-            <img src={logoDark} alt="Okto Pulse" className="h-8 w-8 rounded hidden dark:block" />
+            <img src={pulseIcon} alt="Okto Pulse" className="h-8 w-8" />
             <div>
               <h2 className="text-sm font-bold text-gray-800 dark:text-gray-200">
                 Help Guide

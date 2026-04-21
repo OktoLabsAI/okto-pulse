@@ -4,11 +4,12 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { authAdapter, portalAdapter } from '@/adapters';
-import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network } from 'lucide-react';
+import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network } from 'lucide-react';
 import { GuidelinesPanel } from '@/components/guidelines';
 import { HelpPanel } from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
 import { KnowledgeGraphPage } from '@/components/knowledge';
+import { RuntimeSettingsPanel } from '@/components/layout/RuntimeSettingsPanel';
 import { useCurrentBoard } from '@/store/dashboard';
 import pulseWordmark from '@/assets/pulse-wordmark.svg';
 import pulseWordmarkLight from '@/assets/pulse-wordmark-light.svg';
@@ -39,6 +40,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const { theme, toggle: toggleTheme } = useTheme();
   const api = useDashboardApi();
   const [showSettings, setShowSettings] = useState(false);
+  const [showRuntimeSettings, setShowRuntimeSettings] = useState(false);
   const [showGuidelines, setShowGuidelines] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -230,12 +232,23 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       Presets
                     </button>
 
-                    {/* Settings */}
+                    {/* Board (was "Settings" in ≤0.1.3 — renamed in 0.1.4 to
+                        free the "Settings" label for runtime config) */}
                     <button
                       onClick={() => { setShowMenu(false); setShowSettings(true); }}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                     >
                       <Settings size={14} />
+                      Board
+                    </button>
+
+                    {/* Settings (new in 0.1.4 — runtime Kùzu memory tuning) */}
+                    <button
+                      onClick={() => { setShowMenu(false); setShowRuntimeSettings(true); }}
+                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                      data-testid="menu-settings"
+                    >
+                      <SlidersHorizontal size={14} />
                       Settings
                     </button>
 
@@ -273,11 +286,11 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                 )}
               </div>
 
-              {/* Settings panel (opens from menu) */}
+              {/* Board panel (opens from menu — renamed from "Settings" in 0.1.4) */}
               {showSettings && (
                 <div className="fixed inset-0 z-50 flex items-start justify-end pt-16 pr-4" onClick={() => setShowSettings(false)}>
                   <div className="w-80 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-4 space-y-4" onClick={(e) => e.stopPropagation()}>
-                    <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Board Settings</h3>
+                    <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Board</h3>
 
                     <div>
                       <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">
@@ -588,6 +601,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         <HelpPanel onClose={() => setShowHelp(false)} />
       )}
 
+      {showRuntimeSettings && (
+        <RuntimeSettingsPanel onClose={() => setShowRuntimeSettings(false)} />
+      )}
+
       {showPresets && (
         <PresetListModal onClose={() => setShowPresets(false)} />
       )}
@@ -632,7 +649,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                 Okto Pulse
               </h2>
               <p className="text-sm text-surface-500 dark:text-surface-400 mt-1">
-                Community Edition — v0.1.2
+                Community Edition — v0.1.4
               </p>
             </div>
 
