@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 40" role="img" aria-label="Okto Pulse">
+  <defs>
+    <linearGradient id="pg" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="55%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1e40af"/>
+    </linearGradient>
+  </defs>
+  <!-- EKG pulse line accent -->
+  <path
+    d="M 2 22 L 10 22 L 13 22 L 16 10 L 20 34 L 24 16 L 28 22 L 36 22"
+    fill="none"
+    stroke="url(#pg)"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <!-- Okto (dark for light backgrounds) -->
+  <text
+    x="48"
+    y="30"
+    font-family="'IBM Plex Sans', system-ui, -apple-system, sans-serif"
+    font-weight="600"
+    font-size="26"
+    letter-spacing="-0.5"
+    fill="#1f2937"
+  >Okto</text>
+  <!-- Pulse (gradient) -->
+  <text
+    x="114"
+    y="30"
+    font-family="'IBM Plex Sans', system-ui, -apple-system, sans-serif"
+    font-weight="600"
+    font-size="26"
+    letter-spacing="-0.5"
+    fill="url(#pg)"
+  >Pulse</text>
+</svg>

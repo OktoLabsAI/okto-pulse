@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/assets/pulse-icon-DpkC5foU.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Okto Pulse</title>
+    <!-- Fonts: Satoshi (display) + General Sans (body) from Fontshare -->
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&f[]=general-sans@400,500,600&display=swap" rel="stylesheet" />
+    <script>
+      // Apply theme before first paint to avoid flash
+      (function() {
+        var t = localStorage.getItem('omniflow-theme');
+        if (t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-BBgXQrXi.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CN4ypwva.css">
+  </head>
+  <body class="bg-surface-50 dark:bg-surface-950 text-surface-900 dark:text-surface-100">
+    <div id="root"></div>
+  </body>
+</html>

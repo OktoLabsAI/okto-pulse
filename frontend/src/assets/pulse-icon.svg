@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Okto Pulse">
+  <defs>
+    <linearGradient id="pi" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="55%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1e40af"/>
+    </linearGradient>
+  </defs>
+  <!-- EKG / pulse waveform, centered, no frame -->
+  <path
+    d="M 2 16 L 8 16 L 11 16 L 13 6 L 16 26 L 19 9 L 22 16 L 30 16"
+    fill="none"
+    stroke="url(#pi)"
+    stroke-width="2.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
