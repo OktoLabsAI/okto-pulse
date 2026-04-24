@@ -12,17 +12,15 @@ import logging
 import os
 import sys
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
 import uvicorn
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import event, text
 
 from okto_pulse.core.app import create_app
-from okto_pulse.core.infra.config import configure_settings
+from okto_pulse.core.infra.config import configure_settings, get_settings
 from okto_pulse.core.infra.database import create_database, get_engine, get_session_factory, init_db, close_db
 from okto_pulse.core.infra.storage import FileSystemStorageProvider
 from okto_pulse.core.kg.embedding import SentenceTransformerProvider, StubEmbeddingProvider
@@ -83,7 +81,7 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
             last_exc = last_exc or TimeoutError("embedding preload budget exhausted")
             break
         try:
-            await asyncio.to_thread(_load)
+            _load()
             duration_ms = int((time.monotonic() - started) * 1000)
             _EMBEDDING_LOGGER.info(
                 "kg.embedding.loaded",
@@ -224,26 +222,8 @@ def create_community_app():
     auth = LocalAuthProvider()
     storage = FileSystemStorageProvider(settings.upload_dir)
 
-    app = create_app(
-        settings=settings,
-        auth_provider=auth,
-        storage_provider=storage,
-        cors_origins=settings.cors_origins_list,
-    )
-
-    # Configure SQLite pragmas AFTER create_database was called by create_app
-    _configure_sqlite_pragmas(get_engine())
-
-    # Bootstrap the KG provider registry with all embedded providers.
-    # session_factory auto-wires audit_repo + event_bus.
-    configure_kg_registry(session_factory=get_session_factory())
-
-    # Mount frontend (must be AFTER API routes so /api/v1/* takes precedence)
-    _mount_frontend(app, FRONTEND_DIR, api_port=api_port, mcp_port=mcp_port)
-
-    # Override lifespan to add seed + consolidation worker
-    @asynccontextmanager
-    async def community_lifespan(app_instance) -> AsyncGenerator[None, None]:
+    # Combined lifespan: seed data, preload embeddings, start KG workers
+    async def combined_lifespan(app_instance) -> AsyncGenerator[None, None]:
         await init_db()
         async with get_session_factory()() as db:
             result = await seed_community_defaults(db)
@@ -262,61 +242,63 @@ def create_community_app():
         # KG search doesn't pay the multi-second model-load cost synchronously.
         await _preload_embedding_model(settings)
 
-        # Start the KG background workers. Community's lifespan fully
-        # replaces the core lifespan (app.router.lifespan_context below),
-        # so we must start every worker the core lifespan would have —
-        # otherwise outbox events pile up (breaking Global Discovery) and
-        # stale sessions leak.
+        # Start the KG background workers
+        from okto_pulse.core.events.dispatcher import EventDispatcher, set_dispatcher
+        from okto_pulse.core.kg.workers.consolidation import ConsolidationWorker
+        from okto_pulse.core.kg.workers.cleanup import SessionCleanupWorker
+        from okto_pulse.core.kg.global_discovery.outbox_worker import OutboxWorker
+        from okto_pulse.core.services.settings_service import apply_persisted_settings_to_core_settings
 
-        # Event Bus dispatcher: import events package first so handler
-        # decorators populate the registry BEFORE the drain loop starts.
-        from okto_pulse.core import events as _events  # noqa: F401
-        from okto_pulse.core.events.dispatcher import (
-            EventDispatcher,
-            set_dispatcher,
-        )
+        await apply_persisted_settings_to_core_settings()
+
         event_dispatcher = EventDispatcher(get_session_factory())
         await event_dispatcher.start()
         set_dispatcher(event_dispatcher)
 
-        from okto_pulse.core.kg.workers.consolidation import get_consolidation_worker
-        consolidation_worker = get_consolidation_worker(get_session_factory())
-        await consolidation_worker.start()
-
         cleanup_worker = None
-        if getattr(settings, "kg_cleanup_enabled", True):
-            from okto_pulse.core.kg.workers import get_cleanup_worker
-            cleanup_worker = get_cleanup_worker()
+        consolidation_worker = None
+        outbox_worker = None
+
+        kg_settings = get_settings()
+        if getattr(kg_settings, "kg_cleanup_enabled", True):
+            cleanup_worker = SessionCleanupWorker(get_session_factory())
             await cleanup_worker.start()
 
-        outbox_worker = None
-        try:
-            from okto_pulse.core.kg.global_discovery.outbox_worker import (
-                get_outbox_worker,
-            )
-            outbox_worker = get_outbox_worker()
-            await outbox_worker.start()
-        except Exception as exc:  # noqa: BLE001 — log and continue
-            import logging
-            logging.getLogger("okto_pulse.community").warning(
-                "outbox_worker startup skipped: %s", exc,
-            )
+        consolidation_worker = ConsolidationWorker(get_session_factory())
+        await consolidation_worker.start()
 
-        try:
-            yield
-        finally:
-            # Stop dispatcher FIRST so in-flight handlers finish before the
-            # workers they depend on (consolidation) shut down.
-            await event_dispatcher.stop(timeout=5.0)
-            set_dispatcher(None)
-            if outbox_worker is not None:
-                await outbox_worker.stop()
-            if cleanup_worker is not None:
-                await cleanup_worker.stop()
+        outbox_worker = OutboxWorker(get_session_factory())
+        await outbox_worker.start()
+
+        yield
+
+        await event_dispatcher.stop(timeout=5.0)
+        set_dispatcher(None)
+        if outbox_worker:
+            await outbox_worker.stop()
+        if cleanup_worker:
+            await cleanup_worker.stop()
+        if consolidation_worker:
             await consolidation_worker.stop()
-            await close_db()
+        await close_db()
 
-    app.router.lifespan_context = community_lifespan
+    app = create_app(
+        settings=settings,
+        auth_provider=auth,
+        storage_provider=storage,
+        cors_origins=settings.cors_origins_list,
+        lifespan=combined_lifespan,
+    )
+
+    # Configure SQLite pragmas AFTER create_database was called by create_app
+    _configure_sqlite_pragmas(get_engine())
+
+    # Bootstrap the KG provider registry with all embedded providers.
+    # session_factory auto-wires audit_repo + event_bus.
+    configure_kg_registry(session_factory=get_session_factory())
+
+    # Mount frontend (must be AFTER API routes so /api/v1/* takes precedence)
+    _mount_frontend(app, FRONTEND_DIR, api_port=api_port, mcp_port=mcp_port)
 
     return app
 
@@ -366,6 +348,17 @@ def run_mcp():
     create_database(settings.database_url, echo=settings.debug)
     _configure_sqlite_pragmas(get_engine())
     configure_kg_registry(session_factory=get_session_factory())
+
+    # Preload the embedding model synchronously before the MCP server loop
+    # starts, so the first KG call doesn't trigger a multi-second model load
+    # on the event loop.
+    try:
+        registry = get_kg_registry()
+        provider = registry.embedding_provider
+        if hasattr(provider, '_get_model'):
+            provider._get_model()
+    except Exception:
+        pass  # degrade gracefully — stub provider will be used
 
     # Import MCP server functions AFTER configure_settings()
     from okto_pulse.core.mcp.server import run_mcp_server, register_session_factory

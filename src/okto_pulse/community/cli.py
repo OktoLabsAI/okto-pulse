@@ -409,6 +409,12 @@ def cmd_kg_backfill(args):
     configure_settings(settings)
     create_database(settings.database_url, echo=False)
 
+    # ── Path B: Apply ────────────────────────────────────────────────
+    if apply_writes:
+        asyncio.run(_apply_backfill(board_id, emit_json, settings))
+        sys.exit(0)
+
+    # ── Path A: Dry-run (unchanged) ──────────────────────────────────
     async def _load() -> dict:
         await init_db()
         factory = get_session_factory()
@@ -433,7 +439,7 @@ def cmd_kg_backfill(args):
     worker = DeterministicWorker()
     summary = {
         "board_id": board_id,
-        "dry_run": not apply_writes,
+        "dry_run": True,
         "artifacts": {"spec": 0, "sprint": 0, "card": 0},
         "nodes_total": 0,
         "edges_total": 0,
@@ -472,29 +478,113 @@ def cmd_kg_backfill(args):
             "content_hash": result.content_hash,
         })
 
-    if apply_writes:
-        # Feature flag + write path lives in another card; for now emit a
-        # visible warning so the operator knows the diff is still a diff.
-        summary["apply_warning"] = (
-            "apply path not wired yet — use dry-run output as the authoritative "
-            "diff; writes will land when kg_consolidation_v2 integration ships"
-        )
-
     if emit_json:
         print(json.dumps(summary, indent=2, default=str))
     else:
-        mode = "DRY-RUN" if not apply_writes else "APPLY (noop — wiring pending)"
-        print(f"KG backfill [{mode}] for board {board_id}")
-        print(f"  Artifacts scanned:")
+        print(f"KG backfill [DRY-RUN] for board {board_id}")
+        print("  Artifacts scanned:")
         for k, v in summary["artifacts"].items():
             print(f"    {k:<8} {v}")
         print(f"  Nodes to emit: {summary['nodes_total']}")
         print(f"  Edges to emit: {summary['edges_total']}")
         print(f"  Missing link candidates: {summary['missing_link_candidates']}")
-        if summary.get("apply_warning"):
-            print(f"  WARN: {summary['apply_warning']}")
 
     sys.exit(0)
+
+
+async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
+    """Apply path: enqueue all artifacts and drain the consolidation queue."""
+    from okto_pulse.core.infra.database import (
+        get_session_factory,
+        init_db,
+        close_db,
+    )
+    from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
+    from okto_pulse.core.kg.schema import bootstrap_board_graph
+    from okto_pulse.core.kg.governance import start_historical_consolidation
+    from okto_pulse.core.kg.workers.consolidation import ConsolidationWorker
+    from okto_pulse.core.models.db import ConsolidationQueue as CQ
+    from sqlalchemy import select
+
+    await init_db()
+    factory = get_session_factory()
+    configure_kg_registry(session_factory=factory)
+
+    try:
+        # Bootstrap Kùzu graph schema for this board
+        bootstrap_board_graph(board_id)
+
+        # Enqueue all artifacts via governance
+        async with factory() as db:
+            result = await start_historical_consolidation(db, board_id)
+        total_queued = result.get("total_artifacts", 0)
+
+        if total_queued == 0 and result.get("status") != "already_in_progress":
+            if emit_json:
+                print(json.dumps({
+                    "board_id": board_id,
+                    "status": "no_artifacts",
+                    "total_queued": 0,
+                    "total_processed": 0,
+                    "failed_count": 0,
+                }))
+            else:
+                print(f"KG backfill [APPLY] for board {board_id}")
+                print("  No eligible artifacts found (need done/approved specs or closed sprints)")
+            return
+
+        # Drain the queue via ConsolidationWorker
+        worker = ConsolidationWorker(factory)
+        total_processed = 0
+        batch_num = 0
+        while True:
+            processed = await worker.process_batch()
+            if processed == 0:
+                break
+            batch_num += 1
+            total_processed += processed
+            if not emit_json:
+                print(f"  Batch {batch_num}: processed {processed} entries")
+
+        # Check for failures
+        async with factory() as db:
+            failed = (await db.execute(
+                select(CQ).where(CQ.board_id == board_id, CQ.status == "failed")
+            )).scalars().all()
+        failed_count = len(failed)
+
+        if emit_json:
+            output = {
+                "board_id": board_id,
+                "status": "already_in_progress" if result.get("status") == "already_in_progress" else "completed",
+                "total_queued": total_queued,
+                "total_processed": total_processed,
+                "failed_count": failed_count,
+            }
+            if failed:
+                output["failures"] = [
+                    {
+                        "artifact_type": f.artifact_type,
+                        "artifact_id": f.artifact_id,
+                        "error": getattr(f, "error_message", None) or getattr(f, "last_error", None) or "unknown",
+                    }
+                    for f in failed
+                ]
+            print(json.dumps(output, indent=2, default=str))
+        else:
+            print(f"KG backfill [APPLY] for board {board_id}")
+            print(f"  Artifacts queued:   {total_queued}")
+            print(f"  Artifacts processed: {total_processed}")
+            if failed_count:
+                print(f"  Failed:              {failed_count}")
+                for f in failed:
+                    err = getattr(f, "error_message", None) or getattr(f, "last_error", None) or "unknown"
+                    print(f"    - {f.artifact_type}/{f.artifact_id}: {err}")
+            else:
+                print("  All entries processed successfully")
+
+    finally:
+        await close_db()
 
 
 def _spec_to_dict(s):
@@ -524,6 +614,7 @@ def _sprint_to_dict(s):
 
 
 def _card_to_dict(c):
+    p = getattr(c, "priority", None)
     return {
         "id": c.id,
         "title": c.title,
@@ -532,6 +623,7 @@ def _card_to_dict(c):
         "origin_task_id": getattr(c, "origin_task_id", None),
         "sprint_id": getattr(c, "sprint_id", None),
         "spec_id": c.spec_id,
+        "priority": str(p.value) if hasattr(p, "value") and p is not None else None,
     }
 
 
