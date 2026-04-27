@@ -1,0 +1,36 @@
+# Prod compose — installs pinned okto-pulse==0.1.5 from PyPI.
+# No sibling repo needed. Build context = this repo only.
+#
+# Usage (from okto-pulse/):
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d
+
+services:
+  okto-pulse:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: pypi-runtime
+      args:
+        OKTO_PULSE_VERSION: "0.1.5"
+    image: okto-pulse:0.1.5
+    container_name: okto-pulse
+    ports:
+      - "127.0.0.1:8100:8100"
+      - "127.0.0.1:8101:8101"
+    environment:
+      HOST: "0.0.0.0"
+      MCP_HOST: "0.0.0.0"
+      DATA_DIR: "/data"
+      KG_BASE_DIR: "/data"
+      HF_HOME: "/opt/hf-cache"
+      # Set MCP_TRACE_ENABLED=1 in your shell to record every MCP tool call to
+      # /data/mcp_traces/session_*.jsonl for replay testing. Off by default.
+      MCP_TRACE_ENABLED: "${MCP_TRACE_ENABLED:-}"
+      MCP_TRACE_DIR: "${MCP_TRACE_DIR:-/data/mcp_traces}"
+    volumes:
+      - okto-pulse-data:/data
+    restart: unless-stopped
+
+volumes:
+  okto-pulse-data:

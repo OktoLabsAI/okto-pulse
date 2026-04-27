@@ -1,0 +1,42 @@
+# When using docker-compose.yml (dev target), context = parent of okto-pulse/.
+# Patterns here are relative to that parent dir.
+# When using docker-compose.prod.yml, context = okto-pulse/. Patterns still work.
+
+# Git / VCS
+**/.git
+**/.gitignore
+
+# Python build / cache
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.test-logs
+**/*.egg-info
+**/build
+**/dist
+
+# Local dev state / DBs
+**/dashboard.db
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/.okto-pulse
+**/.okto-pulse-data
+
+# Frontend build artifacts
+# (src/okto_pulse/community/frontend_dist/ is the embedded SPA and IS included)
+okto-pulse/frontend/dist
+okto-pulse/frontend/node_modules
+
+# Large backup/scratch sibling dirs at workspace root (25+ GB each — keep out of context)
+okto-pulse.013
+okto-pulse-core.013
+
+# Editor / OS
+.DS_Store
+.vscode
+.idea
+**/*.swp
+**/.env
