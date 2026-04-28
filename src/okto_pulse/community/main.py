@@ -144,7 +144,15 @@ def _configure_sqlite_pragmas(engine) -> None:
         cursor.close()
 
 
-def _mount_frontend(app, frontend_dir: Path, api_port: int = 8100, mcp_port: int = 8101) -> None:
+def _mount_frontend(
+    app,
+    frontend_dir: Path,
+    api_port: int = 8100,
+    mcp_port: int = 8101,
+    public_host: str = "127.0.0.1",
+    public_api_port: int | None = None,
+    public_mcp_port: int | None = None,
+) -> None:
     """Mount the pre-built frontend SPA on the FastAPI app.
 
     Uses Starlette middleware approach to avoid route-ordering issues:
@@ -153,6 +161,8 @@ def _mount_frontend(app, frontend_dir: Path, api_port: int = 8100, mcp_port: int
     - Everything else → index.html (SPA routing)
 
     Injects runtime configuration for API and MCP ports to support custom ports.
+    Set PUBLIC_HOST / PUBLIC_API_PORT / PUBLIC_MCP_PORT env vars to override the
+    URLs the browser SPA uses (needed when behind a reverse proxy or NAT).
     """
     if not frontend_dir.exists():
         return
@@ -191,12 +201,18 @@ def _mount_frontend(app, frontend_dir: Path, api_port: int = 8100, mcp_port: int
                     return Response(content=injected_index_html, media_type="text/html")
             return response
 
-    # Inject runtime configuration BEFORE SPA middleware
+    # Inject runtime configuration BEFORE SPA middleware.
+    # PUBLIC_* env vars override the URLs the browser SPA uses — set them when
+    # the server is accessed through a different host/port than the internal bind
+    # (e.g. NAT, reverse proxy, or LAN deployment).
+    _pub_host = public_host
+    _pub_api_port = public_api_port if public_api_port is not None else api_port
+    _pub_mcp_port = public_mcp_port if public_mcp_port is not None else mcp_port
     config_script = f"""
 // Runtime configuration injected by server
 window.OKTO_PULSE_CONFIG = {{
-    API_URL: 'http://127.0.0.1:{api_port}/api/v1',
-    MCP_URL: 'http://127.0.0.1:{mcp_port}'
+    API_URL: 'http://{_pub_host}:{_pub_api_port}/api/v1',
+    MCP_URL: 'http://{_pub_host}:{_pub_mcp_port}'
 }};
 """
 
@@ -216,6 +232,14 @@ def create_community_app():
     # Read ports from environment (set by CLI) or use defaults
     api_port = int(os.environ.get("OKTO_PULSE_PORT", str(settings.port)))
     mcp_port = int(os.environ.get("OKTO_PULSE_MCP_PORT", str(settings.mcp_port)))
+    # Public-facing host/ports for the browser SPA config.js.
+    # Override when the container is accessed through a different host/port
+    # than the internal bind address (NAT, reverse proxy, LAN deployment).
+    public_host = os.environ.get("PUBLIC_HOST", "127.0.0.1")
+    public_api_port_env = os.environ.get("PUBLIC_API_PORT")
+    public_mcp_port_env = os.environ.get("PUBLIC_MCP_PORT")
+    public_api_port = int(public_api_port_env) if public_api_port_env else None
+    public_mcp_port = int(public_mcp_port_env) if public_mcp_port_env else None
 
     _ensure_data_dir(settings)
 
@@ -298,7 +322,13 @@ def create_community_app():
     configure_kg_registry(session_factory=get_session_factory())
 
     # Mount frontend (must be AFTER API routes so /api/v1/* takes precedence)
-    _mount_frontend(app, FRONTEND_DIR, api_port=api_port, mcp_port=mcp_port)
+    _mount_frontend(
+        app, FRONTEND_DIR,
+        api_port=api_port, mcp_port=mcp_port,
+        public_host=public_host,
+        public_api_port=public_api_port,
+        public_mcp_port=public_mcp_port,
+    )
 
     return app
 
