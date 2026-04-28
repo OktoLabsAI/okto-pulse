@@ -16,12 +16,15 @@ import { ModalStackProvider } from '@/contexts/ModalStackContext';
 import { ModalStackRenderer } from '@/components/modals/ModalStackRenderer';
 import { EvidenceGateSkipBanner } from '@/components/banners/EvidenceGateSkipBanner';
 import { getBoardSettings } from '@/services/board-settings-api';
+import { useTermsAcceptance } from '@/hooks/useTermsAcceptance';
+import { TermsAcceptanceModal } from '@/components/onboarding/TermsAcceptanceModal';
 import logoLight from '@/assets/logo-light.png';
 import logoDark from '@/assets/logo-dark.png';
 
 function App() {
   const api = useDashboardApi();
   const { isLoaded, isSignedIn } = authAdapter.useAuth();
+  const terms = useTermsAcceptance();
   const currentBoard = useDashboardStore((s) => s.currentBoard);
   const setBoards = useDashboardStore((s) => s.setBoards);
   const setSharedBoards = useDashboardStore((s) => s.setSharedBoards);
@@ -231,7 +234,10 @@ function App() {
 
   return (
     <ModalStackProvider>
-    <div className="min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950">
+    {terms.needsAcceptance && (
+      <TermsAcceptanceModal onAccept={terms.accept} />
+    )}
+    <div className={`min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950 ${terms.needsAcceptance ? 'pointer-events-none select-none' : ''}`}>
       {portalAdapter.PortalBar && (
         <portalAdapter.PortalBar
           visible={portalBarVisible}

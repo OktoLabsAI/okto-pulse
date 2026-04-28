@@ -19,6 +19,10 @@ import { useDashboardApi } from '@/services/api';
 import type { IdeationSummary, IdeationStatus, IdeationComplexity } from '@/types';
 import { IDEATION_STATUS_LABELS } from '@/types';
 import { sanitizePreview } from '@/lib/sanitizePreview';
+import { useListSearch } from '@/hooks/useListSearch';
+import { SearchInput } from '@/components/shared/SearchInput';
+import { useViewMode } from '@/hooks/useViewMode';
+import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { CreateIdeationModal } from './CreateIdeationModal';
 import { IdeationModal } from './IdeationModal';
 
@@ -59,6 +63,12 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
   const [filterStatus, setFilterStatus] = useState<string>('');
   const [showArchived, setShowArchived] = useState(false);
 
+  const search = useListSearch<IdeationSummary>(ideations, {
+    fields: ['title', 'description', 'problem_statement', 'labels'],
+    urlParam: 'q_ideations',
+  });
+  const { viewMode, setViewMode } = useViewMode('ideations', 'list');
+
   useEffect(() => {
     loadIdeations();
   }, [boardId, filterStatus, showArchived]);
@@ -90,9 +100,19 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Ideations</h2>
-          <span className="text-sm text-gray-400">({ideations.length})</span>
+          <span className="text-sm text-gray-400">
+            ({search.filtered.length}
+            {search.query ? ` of ${ideations.length}` : ''})
+          </span>
         </div>
         <div className="flex items-center gap-2">
+          <SearchInput
+            value={search.query}
+            onChange={search.setQuery}
+            placeholder="Search ideations…"
+            testId="ideations-search"
+          />
+          <ViewModeToggle value={viewMode} onChange={setViewMode} testId="ideations-view-mode" />
           <button
             onClick={() => setCreateOpen(true)}
             className="btn btn-primary flex items-center gap-1 text-sm"
@@ -131,7 +151,14 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
       </div>
 
       {/* Ideation list */}
-      <div className="flex-1 overflow-y-auto space-y-2 animate-list">
+      <div
+        className={`flex-1 overflow-y-auto animate-list ${
+          viewMode === 'grid'
+            ? 'grid gap-3 grid-cols-1 sm:grid-cols-2 md:grid-cols-3'
+            : 'space-y-2'
+        }`}
+        data-testid={`ideations-${viewMode}`}
+      >
         {loading ? (
           <div className="text-center text-gray-500 dark:text-gray-400 py-8">Loading ideations...</div>
         ) : ideations.length === 0 ? (
@@ -150,8 +177,17 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
               Create your first ideation
             </button>
           </div>
+        ) : search.filtered.length === 0 ? (
+          <div className="text-center py-12">
+            <p className="text-gray-500 dark:text-gray-400 mb-2">
+              No results for “{search.query}”
+            </p>
+            <button onClick={search.clear} className="btn btn-ghost text-sm">
+              Clear search
+            </button>
+          </div>
         ) : (
-          ideations.map((ideation) => (
+          search.filtered.map((ideation) => (
             <div
               key={ideation.id}
               onClick={() => setSelectedIdeationId(ideation.id)}

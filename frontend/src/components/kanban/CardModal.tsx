@@ -436,6 +436,7 @@ export function CardModal({ boardId }: CardModalProps) {
                     </>
                   )}
                   {tab === 'mockups' && `Mockups${card.screen_mockups?.length ? ` (${card.screen_mockups.length})` : ''}`}
+                  {tab === 'knowledge' && `Knowledge${card.knowledge_bases?.length ? ` (${card.knowledge_bases.length})` : ''}`}
                   {tab === 'conclusion' && `Conclusion${card.conclusions?.length ? ` (${card.conclusions.length})` : ''}`}
                   {tab === 'validations' && (
                     <>

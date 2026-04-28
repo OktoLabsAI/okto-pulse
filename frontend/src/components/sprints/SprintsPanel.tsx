@@ -8,6 +8,11 @@ import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { SprintStatus, SpecSummary } from '@/types';
 import { SPRINT_STATUS_LABELS, SPRINT_STATUS_COLORS, SPRINT_STATUSES } from '@/types';
+import { useListSearch } from '@/hooks/useListSearch';
+import { SearchInput } from '@/components/shared/SearchInput';
+import { useViewMode } from '@/hooks/useViewMode';
+import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
+import { HierarchicalList } from '@/components/shared/HierarchicalList';
 import { SprintModal } from './SprintModal';
 
 interface SprintsPanelProps {
@@ -65,20 +70,58 @@ export function SprintsPanel({ boardId }: SprintsPanelProps) {
     ...SPRINT_STATUSES.map(s => ({ value: s, label: SPRINT_STATUS_LABELS[s] })),
   ];
 
+  const search = useListSearch<any>(sprints, {
+    fields: ['title', 'description', 'labels'],
+    urlParam: 'q_sprints',
+  });
+  const { viewMode, setViewMode } = useViewMode('sprints', 'list');
+  const [groupBySpec, setGroupBySpec] = useState(true);
+  const specTitleById = (sid: string) => {
+    const s = specs.find((x) => x.id === sid);
+    if (s?.title) return s.title;
+    const sp = (sprints as any[]).find((x) => (x.spec_id ?? x.spec?.id) === sid)?.spec;
+    return sp?.title || sid;
+  };
+
   return (
     <div>
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-bold text-gray-900 dark:text-white">Sprints</h2>
-          <span className="text-sm text-gray-400">({sprints.length})</span>
+          <span className="text-sm text-gray-400">
+            ({search.filtered.length}
+            {search.query ? ` of ${sprints.length}` : ''})
+          </span>
         </div>
-        <button
-          onClick={() => setShowCreateForm(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-indigo-500 text-white hover:bg-indigo-600 transition-colors"
-        >
-          <Layers size={14} /> New Sprint
-        </button>
+        <div className="flex items-center gap-2">
+          <SearchInput
+            value={search.query}
+            onChange={search.setQuery}
+            placeholder="Search sprints…"
+            testId="sprints-search"
+          />
+          <ViewModeToggle value={viewMode} onChange={setViewMode} testId="sprints-view-mode" />
+          <button
+            type="button"
+            onClick={() => setGroupBySpec((v) => !v)}
+            data-testid="sprints-group-toggle"
+            className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
+              groupBySpec
+                ? 'bg-indigo-500 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300'
+            }`}
+            title="Group sprints by parent spec"
+          >
+            {groupBySpec ? 'Grouped by spec' : 'Flat list'}
+          </button>
+          <button
+            onClick={() => setShowCreateForm(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-indigo-500 text-white hover:bg-indigo-600 transition-colors"
+          >
+            <Layers size={14} /> New Sprint
+          </button>
+        </div>
       </div>
 
       {/* Create sprint form */}
@@ -190,11 +233,27 @@ export function SprintsPanel({ boardId }: SprintsPanelProps) {
           <p className="text-gray-500 dark:text-gray-400">No sprints found</p>
           <p className="text-sm text-gray-400 mt-1">Sprints are created from within a Spec</p>
         </div>
+      ) : search.filtered.length === 0 ? (
+        <div className="text-center py-12">
+          <p className="text-gray-500 dark:text-gray-400 mb-2">
+            No results for “{search.query}”
+          </p>
+          <button onClick={search.clear} className="btn btn-ghost text-sm">
+            Clear search
+          </button>
+        </div>
       ) : (
-        <div className="space-y-2">
-          {sprints.map(sprint => (
+        <HierarchicalList<any>
+          items={search.filtered}
+          viewMode={viewMode}
+          groupingEnabled={groupBySpec}
+          ungroupedLabel="No spec"
+          getItemKey={(s) => s.id}
+          getGroupKey={(s) => s.spec_id ?? s.spec?.id ?? null}
+          getGroupTitle={(k) => specTitleById(k)}
+          testId="sprints-list"
+          renderItem={(sprint) => (
             <div
-              key={sprint.id}
               onClick={() => setSelectedSprintId(sprint.id)}
               className="flex items-center gap-3 p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:border-blue-300 dark:hover:border-blue-600 transition-colors cursor-pointer group"
             >
@@ -207,7 +266,7 @@ export function SprintsPanel({ boardId }: SprintsPanelProps) {
                   <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">{sprint.description}</p>
                 )}
                 <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
-                  {sprint.spec && (
+                  {sprint.spec && !groupBySpec && (
                     <span>Spec: {sprint.spec.title?.substring(0, 40)}{sprint.spec.title?.length > 40 ? '...' : ''}</span>
                   )}
                   <span>v{sprint.spec_version}</span>
@@ -227,8 +286,8 @@ export function SprintsPanel({ boardId }: SprintsPanelProps) {
                 <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 transition-opacity" />
               </div>
             </div>
-          ))}
-        </div>
+          )}
+        />
       )}
 
       {/* Sprint detail modal */}

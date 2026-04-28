@@ -23,6 +23,8 @@ import {
   useCurrentBoard,
 } from '@/store/dashboard';
 import { CARD_STATUSES, type CardStatus, type CardSummary, type SpecSummary } from '@/types';
+import { useListSearch } from '@/hooks/useListSearch';
+import { SearchInput } from '@/components/shared/SearchInput';
 import { KanbanColumn } from './KanbanColumn';
 import { CardModal } from './CardModal';
 import { CreateCardModal } from './CreateCardModal';
@@ -112,7 +114,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
   };
 
   // Filter columns by spec
-  const filteredColumns = useMemo(() => {
+  const specFilteredColumns = useMemo(() => {
     if (specFilter.size === 0) return columns;
     const hasUnlinked = specFilter.has('__unlinked__');
     const specIds = new Set([...specFilter].filter((s) => s !== '__unlinked__'));
@@ -126,6 +128,26 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     }
     return filtered;
   }, [columns, specFilter]);
+
+  // Universal search across cards (title/description/labels). Applied on top
+  // of the spec filter so users can combine both.
+  const flatCards = useMemo(
+    () => Object.values(specFilteredColumns).flat(),
+    [specFilteredColumns],
+  );
+  const cardSearch = useListSearch<CardSummary>(flatCards, {
+    fields: ['title', 'description', 'labels'],
+    urlParam: 'q_cards',
+  });
+  const filteredColumns = useMemo(() => {
+    if (!cardSearch.query) return specFilteredColumns;
+    const allowed = new Set(cardSearch.filtered.map((c) => c.id));
+    const next: Record<CardStatus, CardSummary[]> = {} as any;
+    for (const status of CARD_STATUSES) {
+      next[status] = (specFilteredColumns[status] || []).filter((c) => allowed.has(c.id));
+    }
+    return next;
+  }, [specFilteredColumns, cardSearch.query, cardSearch.filtered]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -268,6 +290,18 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     <>
       {/* Spec filter bar */}
       <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+        <SearchInput
+          value={cardSearch.query}
+          onChange={cardSearch.setQuery}
+          placeholder="Search cards…"
+          testId="cards-search"
+          className="mr-2"
+        />
+        {cardSearch.query && (
+          <span className="text-[10px] text-gray-400">
+            {cardSearch.filtered.length} of {flatCards.length} cards
+          </span>
+        )}
         <Filter size={14} className="text-gray-400 shrink-0" />
 
         {/* Unlinked filter */}

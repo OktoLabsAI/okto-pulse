@@ -363,6 +363,14 @@ def create_community_app():
     # session_factory auto-wires audit_repo + event_bus.
     configure_kg_registry(session_factory=get_session_factory())
 
+    # System flags endpoint — used by the frontend to honor CLI/env terms pre-acceptance.
+    from okto_pulse.community.acceptance import acceptance_status
+
+    @app.get("/api/v1/me/system-flags")
+    def get_system_flags():
+        """Surface env/CLI-driven flags the SPA needs at boot time."""
+        return {"terms_acceptance": acceptance_status()}
+
     # Mount frontend (must be AFTER API routes so /api/v1/* takes precedence)
     _mount_frontend(
         app, FRONTEND_DIR,

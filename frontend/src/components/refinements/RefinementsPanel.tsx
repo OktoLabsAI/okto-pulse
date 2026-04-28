@@ -18,6 +18,10 @@ import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { IdeationSummary, RefinementSummary, RefinementStatus } from '@/types';
 import { REFINEMENT_STATUS_LABELS } from '@/types';
+import { useListSearch } from '@/hooks/useListSearch';
+import { SearchInput } from '@/components/shared/SearchInput';
+import { useViewMode } from '@/hooks/useViewMode';
+import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { CreateRefinementModal } from './CreateRefinementModal';
 import { RefinementModal } from './RefinementModal';
 
@@ -108,9 +112,24 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
     }
   });
 
+  const { viewMode, setViewMode } = useViewMode('refinements', 'list');
+  const search = useListSearch<GroupedRefinement>(allRefinements, {
+    matcher: (it, q) => {
+      const needle = q.toLowerCase();
+      const r = it.refinement;
+      return (
+        (r.title || '').toLowerCase().includes(needle) ||
+        (r.description || '').toLowerCase().includes(needle) ||
+        (r.labels || []).some((l) => (l || '').toLowerCase().includes(needle)) ||
+        (it.ideationTitle || '').toLowerCase().includes(needle)
+      );
+    },
+    urlParam: 'q_refinements',
+  });
+
   // Group by ideation for display
   const displayGroups = new Map<string, { ideationTitle: string; refinements: GroupedRefinement[] }>();
-  for (const item of allRefinements) {
+  for (const item of search.filtered) {
     const key = item.refinement.ideation_id;
     if (!displayGroups.has(key)) {
       displayGroups.set(key, { ideationTitle: item.ideationTitle, refinements: [] });
@@ -124,9 +143,19 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Refinements</h2>
-          <span className="text-sm text-gray-400">({allRefinements.length})</span>
+          <span className="text-sm text-gray-400">
+            ({search.filtered.length}
+            {search.query ? ` of ${allRefinements.length}` : ''})
+          </span>
         </div>
         <div className="flex items-center gap-2">
+          <SearchInput
+            value={search.query}
+            onChange={search.setQuery}
+            placeholder="Search refinements…"
+            testId="refinements-search"
+          />
+          <ViewModeToggle value={viewMode} onChange={setViewMode} testId="refinements-view-mode" />
           <button
             onClick={() => setCreateOpen(true)}
             className="btn btn-primary flex items-center gap-1 text-sm"
@@ -196,7 +225,14 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
               </div>
 
               {/* Refinement cards */}
-              <div className="space-y-2 ml-1">
+              <div
+                className={`ml-1 ${
+                  viewMode === 'grid'
+                    ? 'grid gap-3 grid-cols-1 sm:grid-cols-2 md:grid-cols-3'
+                    : 'space-y-2'
+                }`}
+                data-testid={`refinements-${viewMode}`}
+              >
                 {group.refinements.map(({ refinement }) => (
                   <div
                     key={refinement.id}

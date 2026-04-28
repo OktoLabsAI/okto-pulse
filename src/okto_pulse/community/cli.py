@@ -228,6 +228,18 @@ def cmd_serve(args):
     os.environ["OKTO_PULSE_PORT"] = str(api_port)
     os.environ["OKTO_PULSE_MCP_PORT"] = str(mcp_port)
 
+    # Terms-of-Use pre-acceptance via CLI flag or env var.
+    if getattr(args, "accept_terms", False):
+        os.environ["OKTO_PULSE_TERMS_ACCEPTED"] = "1"
+        from okto_pulse.community.acceptance import write_acceptance
+        rec = write_acceptance("cli")
+        print(f"Terms-of-Use pre-accepted via --accept-terms (version {rec['version']}).")
+    elif (os.environ.get("OKTO_PULSE_TERMS_ACCEPTED") or "").strip() == "1":
+        from okto_pulse.community.acceptance import write_acceptance, read_acceptance
+        if read_acceptance() is None:
+            rec = write_acceptance("env")
+            print(f"Terms-of-Use pre-accepted via env (version {rec['version']}).")
+
     api_process = Process(target=_serve_api, args=(api_port,), name="okto-pulse-api")
     mcp_process = Process(target=_serve_mcp, args=(mcp_port,), name="okto-pulse-mcp")
 
@@ -712,6 +724,12 @@ def main():
     sub_serve.add_argument(
         "--mcp-port", type=int, default=DEFAULT_MCP_PORT,
         help=f"MCP server port (default: {DEFAULT_MCP_PORT})",
+    )
+    sub_serve.add_argument(
+        "--accept-terms",
+        action="store_true",
+        help="Pre-accept the Terms-of-Use & License (skips the first-run modal). "
+             "Equivalent to setting OKTO_PULSE_TERMS_ACCEPTED=1.",
     )
     sub_serve.set_defaults(func=cmd_serve)
 
