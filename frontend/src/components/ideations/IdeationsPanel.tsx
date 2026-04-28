@@ -18,6 +18,7 @@ import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { IdeationSummary, IdeationStatus, IdeationComplexity } from '@/types';
 import { IDEATION_STATUS_LABELS } from '@/types';
+import { sanitizePreview } from '@/lib/sanitizePreview';
 import { CreateIdeationModal } from './CreateIdeationModal';
 import { IdeationModal } from './IdeationModal';
 
@@ -176,7 +177,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
                   </h3>
                   {ideation.problem_statement && (
                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
-                      {ideation.problem_statement}
+                      {sanitizePreview(ideation.problem_statement)}
                     </p>
                   )}
                   {/* Labels */}

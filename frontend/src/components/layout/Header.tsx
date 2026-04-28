@@ -4,7 +4,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { authAdapter, portalAdapter } from '@/adapters';
-import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network } from 'lucide-react';
+import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity } from 'lucide-react';
 import { GuidelinesPanel } from '@/components/guidelines';
 import { HelpPanel } from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
@@ -31,9 +31,10 @@ interface HeaderProps {
   onToggleSidebar?: () => void;
   onBoardUpdated?: () => void;
   onOpenAnalytics?: () => void;
+  onOpenKGHealth?: () => void;
 }
 
-export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoard, onDeleteBoard, isRefreshing, sidebarOpen, onToggleSidebar, onBoardUpdated, onOpenAnalytics }: HeaderProps) {
+export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoard, onDeleteBoard, isRefreshing, sidebarOpen, onToggleSidebar, onBoardUpdated, onOpenAnalytics, onOpenKGHealth }: HeaderProps) {
   const { isSignedIn, isLoaded } = authAdapter.useAuth();
   const AdapterUserButton = authAdapter.UserButton;
   const currentBoard = useCurrentBoard();
@@ -61,9 +62,21 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     return () => document.removeEventListener('mousedown', handler);
   }, [showSettings, showMenu]);
 
+  // NC-9 Wave 2 frontend: open the Board panel (not the RuntimeSettingsPanel)
+  // when the EvidenceGateSkipBanner link is clicked. The banner lives in
+  // App.tsx and dispatches this event globally. The skip_test_evidence_global
+  // toggle now lives inside the Board panel alongside the other skip toggles.
+  useEffect(() => {
+    const handler = () => {
+      setShowSettings(true);
+    };
+    window.addEventListener('okto:open-board-settings', handler);
+    return () => window.removeEventListener('okto:open-board-settings', handler);
+  }, []);
+
   const settings: BoardSettings = currentBoard?.settings
-    ? { max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3, skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false, skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false, skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false, skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false, skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false, require_task_validation: currentBoard.settings.require_task_validation ?? false, min_confidence: currentBoard.settings.min_confidence ?? 70, min_completeness: currentBoard.settings.min_completeness ?? 80, max_drift: currentBoard.settings.max_drift ?? 50, require_spec_validation: currentBoard.settings.require_spec_validation ?? false, min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80, min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80, max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30 }
-    : { max_scenarios_per_card: 3, skip_test_coverage_global: false, skip_rules_coverage_global: false, skip_trs_coverage_global: false, skip_contract_coverage_global: false, skip_decisions_coverage_global: false, require_task_validation: false, min_confidence: 70, min_completeness: 80, max_drift: 50, require_spec_validation: false, min_spec_completeness: 80, min_spec_assertiveness: 80, max_spec_ambiguity: 30 };
+    ? { max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3, skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false, skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false, skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false, skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false, skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false, skip_test_evidence_global: currentBoard.settings.skip_test_evidence_global ?? false, require_task_validation: currentBoard.settings.require_task_validation ?? false, min_confidence: currentBoard.settings.min_confidence ?? 70, min_completeness: currentBoard.settings.min_completeness ?? 80, max_drift: currentBoard.settings.max_drift ?? 50, require_spec_validation: currentBoard.settings.require_spec_validation ?? false, min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80, min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80, max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30 }
+    : { max_scenarios_per_card: 3, skip_test_coverage_global: false, skip_rules_coverage_global: false, skip_trs_coverage_global: false, skip_contract_coverage_global: false, skip_decisions_coverage_global: false, skip_test_evidence_global: false, require_task_validation: false, min_confidence: 70, min_completeness: 80, max_drift: 50, require_spec_validation: false, min_spec_completeness: 80, min_spec_assertiveness: 80, max_spec_ambiguity: 30 };
 
   // Local draft state for numeric gate inputs — committed on blur to avoid
   // refresh-on-keystroke wiping partial values while the user is typing.
@@ -89,6 +102,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       await api.updateBoard(currentBoard.id, { settings: newSettings } as any);
       onBoardUpdated?.();
       toast.success('Board settings updated');
+      // Bug fix (banner inversion): notify the global EvidenceGateSkipBanner
+      // listener AFTER the PATCH commits so its refetch reads the new value.
+      // Doing it from the toggle's onClick (before await) caused the App.tsx
+      // listener to read the *previous* value from the backend, which made
+      // the banner always reflect the state right before the click — i.e.
+      // marking made the banner stay hidden, unmarking made it appear.
+      window.dispatchEvent(new CustomEvent('okto:board-settings-changed'));
     } catch {
       toast.error('Failed to update settings');
     }
@@ -200,6 +220,18 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       <BarChart3 size={14} />
                       Analytics
                     </button>
+
+                    {/* KG Health (spec d754d004) */}
+                    {onOpenKGHealth && (
+                      <button
+                        onClick={() => { setShowMenu(false); onOpenKGHealth(); }}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                        data-testid="menu-kg-health"
+                      >
+                        <Activity size={14} />
+                        KG Health
+                      </button>
+                    )}
 
                     {/* Agents */}
                     <button
@@ -398,6 +430,35 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                         className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_decisions_coverage_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
                       >
                         <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_decisions_coverage_global ? 'translate-x-5' : ''}`} />
+                      </button>
+                    </div>
+
+                    {/* NC-9 evidence gate skip — opt-in, default OFF, scoped to this board */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
+                          Skip evidence requirement (global)
+                        </label>
+                        <p className="text-[10px] text-gray-400">
+                          Bypass evidence required to mark scenarios passed/automated/failed
+                        </p>
+                      </div>
+                      <button
+                        data-testid="toggle-skip-evidence"
+                        role="switch"
+                        aria-checked={settings.skip_test_evidence_global ?? false}
+                        onClick={() => {
+                          const next = !(settings.skip_test_evidence_global ?? false);
+                          // updateSettings now dispatches okto:board-settings-changed
+                          // itself, AFTER the PATCH commits. Calling dispatchEvent
+                          // here would race against the in-flight PATCH and make the
+                          // banner's refetch read the previous value (root cause of
+                          // the inverted banner bug).
+                          updateSettings({ skip_test_evidence_global: next });
+                        }}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_test_evidence_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_test_evidence_global ? 'translate-x-5' : ''}`} />
                       </button>
                     </div>
 
@@ -602,7 +663,9 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       )}
 
       {showRuntimeSettings && (
-        <RuntimeSettingsPanel onClose={() => setShowRuntimeSettings(false)} />
+        <RuntimeSettingsPanel
+          onClose={() => setShowRuntimeSettings(false)}
+        />
       )}
 
       {showPresets && (
@@ -649,7 +712,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                 Okto Pulse
               </h2>
               <p className="text-sm text-surface-500 dark:text-surface-400 mt-1">
-                Community Edition — v0.1.4
+                Community Edition — v0.1.5
               </p>
             </div>
 

@@ -494,6 +494,14 @@ export interface TechnicalRequirement {
 export type TestScenarioType = 'unit' | 'integration' | 'e2e' | 'manual';
 export type TestScenarioStatus = 'draft' | 'ready' | 'automated' | 'passed' | 'failed';
 
+export interface TestScenarioEvidence {
+  test_file_path?: string | null;
+  test_function?: string | null;
+  last_run_at?: string | null;
+  test_run_id?: string | null;
+  output_snippet?: string | null;
+}
+
 export interface TestScenario {
   id: string;
   title: string;
@@ -506,6 +514,7 @@ export interface TestScenario {
   status: TestScenarioStatus;
   linked_task_ids: string[] | null;
   created_at?: string;
+  evidence?: TestScenarioEvidence | null;
 }
 
 // Screen Mockups
@@ -893,6 +902,8 @@ export interface BoardSettings {
   min_spec_completeness?: number;
   min_spec_assertiveness?: number;
   max_spec_ambiguity?: number;
+  // NC-9 evidence gate bypass (Wave 2 spec 873e98cc, frontend spec 5cb09dbc)
+  skip_test_evidence_global?: boolean;
 }
 
 // Spec Validation Gate

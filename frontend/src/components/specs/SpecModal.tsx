@@ -46,6 +46,7 @@ import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import type { Spec, SpecStatus, SpecSkill, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings, Decision } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
+import { EvidenceBadge } from './EvidenceBadge';
 import { usePermissions } from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
 import { RulesTab } from './RulesTab';
@@ -389,6 +390,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
               >
                 {SCENARIO_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
+              <EvidenceBadge scenario={scenario} />
               {linkedCards > 0 ? (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 font-medium">
                   {linkedCards} task{linkedCards !== 1 ? 's' : ''}

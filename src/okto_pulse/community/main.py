@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 import time
+from datetime import timezone
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -269,7 +270,7 @@ def create_community_app():
         # Start the KG background workers
         from okto_pulse.core.events.dispatcher import EventDispatcher, set_dispatcher
         from okto_pulse.core.kg.workers.consolidation import ConsolidationWorker
-        from okto_pulse.core.kg.workers.cleanup import SessionCleanupWorker
+        from okto_pulse.core.kg.workers.cleanup import get_cleanup_worker
         from okto_pulse.core.kg.global_discovery.outbox_worker import OutboxWorker
         from okto_pulse.core.services.settings_service import apply_persisted_settings_to_core_settings
 
@@ -282,10 +283,14 @@ def create_community_app():
         cleanup_worker = None
         consolidation_worker = None
         outbox_worker = None
+        scheduler = None
 
         kg_settings = get_settings()
         if getattr(kg_settings, "kg_cleanup_enabled", True):
-            cleanup_worker = SessionCleanupWorker(get_session_factory())
+            # Singleton picks interval_seconds from settings — passing
+            # a session_factory positionally would shadow that field
+            # and crash asyncio.sleep() with a TypeError.
+            cleanup_worker = get_cleanup_worker()
             await cleanup_worker.start()
 
         consolidation_worker = ConsolidationWorker(get_session_factory())
@@ -294,8 +299,45 @@ def create_community_app():
         outbox_worker = OutboxWorker(get_session_factory())
         await outbox_worker.start()
 
+        # Daily decay tick scheduler (Ideação #4 IMPL-D, dec_bc0eaeec).
+        # Honor KG_DAILY_TICK_DISABLED for tests; soft-fail if APScheduler
+        # is unavailable (community ships it, but the catch keeps boot
+        # resilient if the wheel was stripped down).
+        if os.getenv("KG_DAILY_TICK_DISABLED") != "1":
+            try:
+                from apscheduler.schedulers.asyncio import AsyncIOScheduler
+                from apscheduler.triggers.interval import IntervalTrigger
+                from okto_pulse.core.app import _emit_daily_tick
+                from okto_pulse.core.infra.config import get_settings as _get_settings
+                from okto_pulse.core.kg.scheduler_singleton import set_scheduler
+
+                _interval_minutes = _get_settings().kg_decay_tick_interval_minutes
+                scheduler = AsyncIOScheduler(timezone=timezone.utc)
+                scheduler.add_job(
+                    _emit_daily_tick,
+                    # Spec 54399628 (Wave 2 NC f9732afc) — IntervalTrigger
+                    # honra setting persistido + hot-reload via singleton.
+                    trigger=IntervalTrigger(
+                        minutes=_interval_minutes,
+                        timezone=timezone.utc,
+                    ),
+                    id="kg_daily_tick",
+                    replace_existing=True,
+                    max_instances=1,
+                    coalesce=True,
+                )
+                scheduler.start()
+                set_scheduler(scheduler)
+            except Exception:
+                scheduler = None
+
         yield
 
+        if scheduler is not None:
+            try:
+                scheduler.shutdown(wait=False)
+            except Exception:
+                pass
         await event_dispatcher.stop(timeout=5.0)
         set_dispatcher(None)
         if outbox_worker:

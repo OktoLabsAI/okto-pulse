@@ -18,6 +18,7 @@ import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { SpecSummary, SpecStatus } from '@/types';
 import { SPEC_STATUS_LABELS } from '@/types';
+import { sanitizePreview } from '@/lib/sanitizePreview';
 import { CreateSpecModal } from './CreateSpecModal';
 import { SpecModal } from './SpecModal';
 
@@ -169,7 +170,7 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
                   </h3>
                   {spec.description && (
                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
-                      {spec.description}
+                      {sanitizePreview(spec.description)}
                     </p>
                   )}
                   {/* Labels */}

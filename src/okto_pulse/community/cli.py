@@ -627,6 +627,37 @@ def _card_to_dict(c):
     }
 
 
+def cmd_kg_dedup_entities(args):
+    """NC-8 (spec 7f23535f) — consolidate duplicate Kuzu nodes per
+    (node_type, source_artifact_ref).
+
+    Default writes to the graph; pass --dry-run for a no-op preview.
+    Output is a human-readable table by default; --json switches to
+    structured output for ops automation.
+    """
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core.kg.dedup_migration import (
+        format_report_table,
+        migrate_dedup_entities,
+    )
+
+    board_id: str = args.board_id
+    dry_run: bool = bool(getattr(args, "dry_run", False))
+    emit_json: bool = bool(getattr(args, "json", False))
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+
+    report = migrate_dedup_entities(board_id, dry_run=dry_run)
+
+    if emit_json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(format_report_table(report))
+    sys.exit(0)
+
+
 def cmd_reset(args):
     """Reset all data — delete DB and uploads, re-seed."""
     from okto_pulse.community.config import CommunitySettings
@@ -743,6 +774,22 @@ def main():
         help="Emit machine-readable JSON instead of table",
     )
     sub_backfill.set_defaults(func=cmd_kg_backfill)
+
+    # NC-8 (spec 7f23535f) — dedup-entities migration
+    sub_dedup = kg_subparsers.add_parser(
+        "dedup-entities",
+        help="Consolidate duplicate Kuzu nodes per (node_type, source_artifact_ref)",
+    )
+    sub_dedup.add_argument("board_id", help="Target board UUID")
+    sub_dedup.add_argument(
+        "--dry-run", action="store_true",
+        help="Report duplicates without modifying the graph",
+    )
+    sub_dedup.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON instead of table",
+    )
+    sub_dedup.set_defaults(func=cmd_kg_dedup_entities)
 
     args = parser.parse_args()
     if not args.command:
