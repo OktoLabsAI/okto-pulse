@@ -1,0 +1,42 @@
+# Okto Pulse — deploy dir compose
+# Used to BUILD the local image from source.
+# Run from inside deploy/ — context ".." resolves to the Oktolabs monorepo root.
+#
+# Usage:
+#   cd /home/maheidem/docker/opencode/work/Oktolabs/deploy
+#   docker compose build          # build okto-pulse:local
+#   docker compose build --no-cache  # force full rebuild
+#
+# After building, redeploy via Portainer (stack 62) or run rebuild.sh.
+
+services:
+  okto-pulse:
+    build:
+      context: ..
+      dockerfile: okto-pulse/Dockerfile
+      target: local-runtime
+    image: okto-pulse:local
+    container_name: okto-pulse
+    ports:
+      - "9100:8100"
+      - "9101:8101"
+    environment:
+      HOST: "0.0.0.0"
+      MCP_HOST: "0.0.0.0"
+      DATA_DIR: "/data"
+      KG_BASE_DIR: "/data"
+      HF_HOME: "/opt/hf-cache"
+      PUBLIC_HOST: "192.168.31.154"
+      PUBLIC_API_PORT: "9100"
+      PUBLIC_MCP_PORT: "9101"
+      MCP_TRACE_ENABLED: "1"
+      MCP_TRACE_DIR: "/data/mcp_traces"
+    volumes:
+      - /home/maheidem/docker/okto-pulse/data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/api/v1/kg/settings"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
