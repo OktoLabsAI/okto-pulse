@@ -44,4 +44,4 @@ If you are contributing on behalf of a company, please ensure an authorized repr
 
 Contact: dev@oktolabs.ai
 
-Copyright 2024-2026 Okto Labs. All rights reserved.
+Copyright 2026 Okto Labs. All rights reserved.

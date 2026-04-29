@@ -4,7 +4,7 @@
  */
 
 import { useState } from 'react';
-import { BookOpen, Plus, Link2, X, ChevronDown, ChevronUp, Eye, Code } from 'lucide-react';
+import { BookOpen, Plus, Link2, X, ChevronDown, ChevronUp, Eye, Code, Pencil, Download, Save } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { Card } from '@/types';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
@@ -21,12 +21,58 @@ export function CardKnowledgeTab({ card, specKnowledgeBases, onUpdate }: CardKno
   const [showLinkPicker, setShowLinkPicker] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  // Edit-in-place state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+
   // Add new KB form
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
   const newMimeType = 'text/markdown';
   const [previewMode, setPreviewMode] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  const startEdit = (kb: any) => {
+    setEditingId(kb.id);
+    setEditTitle(kb.title || '');
+    setEditContent(kb.content || '');
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditTitle('');
+    setEditContent('');
+  };
+
+  const saveEdit = async () => {
+    if (!editingId) return;
+    if (!editTitle.trim() || !editContent.trim()) return;
+    setSaving(true);
+    try {
+      const next = cardKBs.map((kb) =>
+        kb.id === editingId ? { ...kb, title: editTitle.trim(), content: editContent } : kb,
+      );
+      await onUpdate(next);
+      toast.success('Knowledge base updated');
+      cancelEdit();
+    } finally { setSaving(false); }
+  };
+
+  const downloadMarkdown = (kb: any) => {
+    const safeTitle = (kb.title || 'knowledge').replace(/[^A-Za-z0-9._-]+/g, '_');
+    const filename = `${safeTitle || 'knowledge'}.md`;
+    const body = `# ${kb.title || ''}\n\n> ${kb.description || ''}\n\n${kb.content || ''}\n`;
+    const blob = new Blob([body], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   const handleAddNew = async () => {
     if (!newTitle.trim() || !newContent.trim()) return;
@@ -174,7 +220,7 @@ export function CardKnowledgeTab({ card, specKnowledgeBases, onUpdate }: CardKno
       ) : (
         <div className="space-y-2">
           {cardKBs.map((kb: any) => (
-            <div key={kb.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+            <div key={kb.id} data-testid={`kb-row-${kb.id}`} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
               <div
                 className="flex items-center gap-2 p-2.5 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800"
                 onClick={() => setExpandedId(expandedId === kb.id ? null : kb.id)}
@@ -185,10 +231,60 @@ export function CardKnowledgeTab({ card, specKnowledgeBases, onUpdate }: CardKno
                   <span className="text-[9px] px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 rounded">from spec</span>
                 )}
                 <span className="text-[9px] text-gray-400">{kb.mime_type || 'text/markdown'}</span>
-                <button onClick={(e) => { e.stopPropagation(); handleDelete(kb.id); }} className="text-gray-400 hover:text-red-500 p-0.5"><X size={12} /></button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); startEdit(kb); }}
+                  className="text-gray-400 hover:text-indigo-600 p-0.5"
+                  aria-label="Edit"
+                  data-testid={`kb-edit-${kb.id}`}
+                >
+                  <Pencil size={12} />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); downloadMarkdown(kb); }}
+                  className="text-gray-400 hover:text-emerald-600 p-0.5"
+                  aria-label="Download markdown"
+                  data-testid={`kb-download-${kb.id}`}
+                >
+                  <Download size={12} />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDelete(kb.id); }}
+                  className="text-gray-400 hover:text-red-500 p-0.5"
+                  aria-label="Delete"
+                  data-testid={`kb-delete-${kb.id}`}
+                >
+                  <X size={12} />
+                </button>
                 {expandedId === kb.id ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
               </div>
-              {expandedId === kb.id && (
+              {editingId === kb.id ? (
+                <div className="px-3 pb-3 space-y-2 border-t border-gray-100 dark:border-gray-700 bg-indigo-50/30 dark:bg-indigo-900/10">
+                  <input
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                    data-testid={`kb-edit-title-${kb.id}`}
+                  />
+                  <textarea
+                    value={editContent}
+                    onChange={(e) => setEditContent(e.target.value)}
+                    rows={6}
+                    className="w-full px-3 py-2 text-xs font-mono border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 resize-y"
+                    data-testid={`kb-edit-content-${kb.id}`}
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button onClick={cancelEdit} className="btn btn-secondary text-xs">Cancel</button>
+                    <button
+                      onClick={saveEdit}
+                      disabled={!editTitle.trim() || !editContent.trim() || saving}
+                      className="btn btn-primary text-xs disabled:opacity-50 inline-flex items-center gap-1"
+                      data-testid={`kb-edit-save-${kb.id}`}
+                    >
+                      <Save size={11} /> {saving ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              ) : expandedId === kb.id && (
                 <div className="px-3 pb-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30">
                   <div className="pt-2 text-sm prose dark:prose-invert max-w-none">
                     <MarkdownContent content={kb.content} />

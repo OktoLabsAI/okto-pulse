@@ -494,6 +494,14 @@ export interface TechnicalRequirement {
 export type TestScenarioType = 'unit' | 'integration' | 'e2e' | 'manual';
 export type TestScenarioStatus = 'draft' | 'ready' | 'automated' | 'passed' | 'failed';
 
+export interface TestScenarioEvidence {
+  test_file_path?: string | null;
+  test_function?: string | null;
+  last_run_at?: string | null;
+  test_run_id?: string | null;
+  output_snippet?: string | null;
+}
+
 export interface TestScenario {
   id: string;
   title: string;
@@ -506,6 +514,7 @@ export interface TestScenario {
   status: TestScenarioStatus;
   linked_task_ids: string[] | null;
   created_at?: string;
+  evidence?: TestScenarioEvidence | null;
 }
 
 // Screen Mockups
@@ -576,38 +585,6 @@ export interface SpecQAItem {
   answered_at: string | null;
 }
 
-// Spec Skill
-export interface SkillSection {
-  id: string;
-  title: string;
-  description: string;
-  level: 'summary' | 'detail' | 'full';
-  content: string;
-}
-
-export interface SpecSkill {
-  id: string;
-  spec_id: string;
-  skill_id: string;
-  name: string;
-  description: string;
-  type: string;
-  version: string;
-  tags: string[] | null;
-  sections: SkillSection[] | null;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface SpecSkillSummary {
-  skill_id: string;
-  name: string;
-  description: string;
-  type: string;
-  tags: string[] | null;
-}
-
 // Spec Knowledge Base
 export interface SpecKnowledge {
   id: string;
@@ -663,7 +640,6 @@ export interface Spec {
   updated_at: string;
   labels: string[] | null;
   cards: CardSummaryForSpec[];
-  skills: SpecSkillSummary[];
   knowledge_bases: SpecKnowledgeSummary[];
   qa_items: SpecQAItem[];
 }
@@ -893,6 +869,8 @@ export interface BoardSettings {
   min_spec_completeness?: number;
   min_spec_assertiveness?: number;
   max_spec_ambiguity?: number;
+  // NC-9 evidence gate bypass (Wave 2 spec 873e98cc, frontend spec 5cb09dbc)
+  skip_test_evidence_global?: boolean;
 }
 
 // Spec Validation Gate
@@ -1208,17 +1186,6 @@ export interface UpdateRefinementRequest {
   labels?: string[];
 }
 
-
-// Spec Skill request types
-export interface CreateSpecSkillRequest {
-  skill_id: string;
-  name: string;
-  description: string;
-  type?: string;
-  version?: string;
-  tags?: string[];
-  sections?: SkillSection[];
-}
 
 // Spec Knowledge request types
 export interface CreateSpecKnowledgeRequest {

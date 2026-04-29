@@ -36,3 +36,22 @@ if (typeof globalThis.DOMMatrixReadOnly === 'undefined') {
   // @ts-expect-error — test-only stub
   globalThis.DOMMatrix = DOMMatrixStub;
 }
+
+// useTheme reads window.matchMedia at module-load time. jsdom does not
+// implement it; provide a noop stub so any test that imports a component
+// using useTheme can mount.
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: (_query: string) => ({
+      matches: false,
+      media: _query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  });
+}

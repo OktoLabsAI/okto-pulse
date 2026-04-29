@@ -3,7 +3,7 @@ Elastic License 2.0
 Acceptance. By using the software, you agree to all of the terms and
 conditions below.
 
-Copyright 2024-2026 Okto Labs
+Copyright 2026 Okto Labs
 
 1. Grant of License. The licensor grants you a non-exclusive, royalty-free,
 worldwide, non-sublicensable, non-transferable license to use, copy,
@@ -76,34 +76,126 @@ term "control" means ownership of substantially all the assets of an entity.
 "Use" means anything you do with the software in violation of these terms.
 
 
-Addendum: SaaS and Competing Service Definition
-================================================
+Addendum: SaaS, Competing Service, Internal Use, and Branding
+=============================================================
 
-For the purposes of Section 2 ("Limitations"), the following constitute
-providing the software as a "hosted or managed service":
+This addendum clarifies and supplements Section 2 ("Limitations") of the
+Elastic License 2.0. In case of conflict between the body of the license
+and this addendum, this addendum controls.
 
-(a) Offering a hosted platform, application, or API where end users
-    interact with the features or functionality of the software, whether
-    directly or through a wrapper, proxy, or abstraction layer.
+I. Hosted or Managed Service - PROHIBITED uses
+-----------------------------------------------
 
-(b) Providing the software as a white-label, embedded, or rebranded
+For the purposes of Section 2, the following constitute providing the
+software as a "hosted or managed service" and are PROHIBITED:
+
+(a) Operating a multi-tenant SaaS, platform, application, or API where
+    end users from more than one client organization interact with the
+    features or functionality of the software, whether directly or
+    through a wrapper, proxy, or abstraction layer.
+
+(b) Providing the software as a white-label, embedded, OEM, or rebranded
     offering to third parties.
 
-(c) Operating a multi-tenant service where the software's capabilities
-    are a primary value driver for the service offering.
+(c) Offering the software, any derivative work of it, or any substantial
+    portion of its features or functionality as a product, service, or
+    platform that competes with Okto Pulse, regardless of whether the
+    deployment is single-tenant or multi-tenant.
 
-The following are expressly PERMITTED:
+(d) Internal large-scale platform exposure - operating the software as
+    an internally hosted service that meets BOTH of the following
+    conditions simultaneously:
 
-(a) Using the software internally within your organization, including
-    for commercial purposes, without restriction.
+    (i)  the software, or modules extracted, externalized, or repackaged
+         from it, are exposed as a hosted service, API, or internal
+         platform to users within your organization who are not directly
+         involved in administering, developing, configuring, or using
+         the software for the projects, teams, or products it is
+         intended to manage; AND
 
-(b) Using the software to manage your own projects, teams, or products,
-    even in a commercial context.
+    (ii) the total population of such exposed users exceeds five hundred
+         (500) individuals.
 
-(c) Integrating the software's MCP tools with AI agents for your own
+    Both conditions (i) and (ii) must be met for this prohibition to
+    apply. Local, desktop, or workstation use of the software by any
+    number of individuals is never restricted by this clause.
+
+    This clause exists to prevent large organizations from extracting
+    modules of the software and serving them at scale as an internal
+    platform-as-a-service to their broader workforce. It is not intended
+    to limit normal collaborative use by project teams, no matter how
+    large the organization.
+
+II. PERMITTED uses
+-------------------
+
+The following are expressly permitted, including for commercial purposes
+and including when financial consideration is exchanged:
+
+(a) Using the software internally within your organization, without
+    any numeric or scale restriction, to manage your own projects,
+    teams, products, or operations.
+
+(b) Hosting a single-tenant deployment of the software for yourself or
+    for a single client organization. A single-tenant deployment may
+    serve multiple projects, teams, departments, or business units of
+    the same client organization within the same instance ("classic
+    single-tenant"). Each distinct client organization must receive its
+    own dedicated instance.
+
+(c) Providing consulting, integration, customization, deployment, or
+    managed operations services using the software, including charging
+    fees for such services, provided that:
+
+    (i)   each client deployment is single-tenant as defined in (b);
+    (ii)  the branding and attribution requirements in Section III are
+          fully honored in every deployment;
+    (iii) the offering does not constitute a competing service under
+          Section I(c) and does not exceed the thresholds of
+          Section I(d).
+
+(d) Integrating the software's MCP tools with AI agents for your own
     use or your organization's use.
 
-(d) Modifying the software for personal or internal organizational use.
+(e) Modifying the software for personal or internal organizational use,
+    including for commercial purposes, subject to Sections I and III.
 
-If you are unsure whether your intended use constitutes a competing service,
-contact the licensor at dev@oktolabs.ai for clarification.
+III. Branding and Attribution - REQUIRED preservation
+------------------------------------------------------
+
+You may not alter, remove, obscure, hide, replace, minimize, or
+otherwise diminish the visibility of any of the following in any
+distribution, deployment, or derivative work of the software:
+
+(a) The "Okto Labs" name and logo.
+(b) The "Okto Pulse" name and logo.
+(c) Copyright and licensing notices identifying Okto Labs as the
+    licensor.
+
+These elements MUST remain visible to end users in:
+
+(a) The web user interface, including but not limited to:
+    - login and authentication screens
+    - primary navigation and application chrome
+    - the application footer
+    - settings, admin, and operations consoles
+    - any "About", "Help", or "Powered by" surface
+
+(b) The command-line interface (CLI), including but not limited to:
+    - the output of `--version` and equivalent commands
+    - help and usage screens
+    - any startup banner, splash, or login output
+
+You MAY add your own branding, logos, or attributions alongside the
+required Okto Labs and Okto Pulse marks, but you may NOT replace,
+substitute, or visually subordinate them in a way that misrepresents
+the origin of the software.
+
+IV. Clarifications
+-------------------
+
+If you are unsure whether your intended use constitutes a competing
+service under Section I(c), an internal large-scale platform exposure
+under Section I(d), or otherwise requires a commercial license, contact
+the licensor at dev@oktolabs.ai for clarification or to negotiate a
+commercial agreement.

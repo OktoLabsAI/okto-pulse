@@ -4,7 +4,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { authAdapter, portalAdapter } from '@/adapters';
-import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network } from 'lucide-react';
+import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity } from 'lucide-react';
 import { GuidelinesPanel } from '@/components/guidelines';
 import { HelpPanel } from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
@@ -31,9 +31,10 @@ interface HeaderProps {
   onToggleSidebar?: () => void;
   onBoardUpdated?: () => void;
   onOpenAnalytics?: () => void;
+  onOpenKGHealth?: () => void;
 }
 
-export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoard, onDeleteBoard, isRefreshing, sidebarOpen, onToggleSidebar, onBoardUpdated, onOpenAnalytics }: HeaderProps) {
+export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoard, onDeleteBoard, isRefreshing, sidebarOpen, onToggleSidebar, onBoardUpdated, onOpenAnalytics, onOpenKGHealth }: HeaderProps) {
   const { isSignedIn, isLoaded } = authAdapter.useAuth();
   const AdapterUserButton = authAdapter.UserButton;
   const currentBoard = useCurrentBoard();
@@ -61,9 +62,21 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     return () => document.removeEventListener('mousedown', handler);
   }, [showSettings, showMenu]);
 
+  // NC-9 Wave 2 frontend: open the Board panel (not the RuntimeSettingsPanel)
+  // when the EvidenceGateSkipBanner link is clicked. The banner lives in
+  // App.tsx and dispatches this event globally. The skip_test_evidence_global
+  // toggle now lives inside the Board panel alongside the other skip toggles.
+  useEffect(() => {
+    const handler = () => {
+      setShowSettings(true);
+    };
+    window.addEventListener('okto:open-board-settings', handler);
+    return () => window.removeEventListener('okto:open-board-settings', handler);
+  }, []);
+
   const settings: BoardSettings = currentBoard?.settings
-    ? { max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3, skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false, skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false, skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false, skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false, skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false, require_task_validation: currentBoard.settings.require_task_validation ?? false, min_confidence: currentBoard.settings.min_confidence ?? 70, min_completeness: currentBoard.settings.min_completeness ?? 80, max_drift: currentBoard.settings.max_drift ?? 50, require_spec_validation: currentBoard.settings.require_spec_validation ?? false, min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80, min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80, max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30 }
-    : { max_scenarios_per_card: 3, skip_test_coverage_global: false, skip_rules_coverage_global: false, skip_trs_coverage_global: false, skip_contract_coverage_global: false, skip_decisions_coverage_global: false, require_task_validation: false, min_confidence: 70, min_completeness: 80, max_drift: 50, require_spec_validation: false, min_spec_completeness: 80, min_spec_assertiveness: 80, max_spec_ambiguity: 30 };
+    ? { max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3, skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false, skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false, skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false, skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false, skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false, skip_test_evidence_global: currentBoard.settings.skip_test_evidence_global ?? false, require_task_validation: currentBoard.settings.require_task_validation ?? false, min_confidence: currentBoard.settings.min_confidence ?? 70, min_completeness: currentBoard.settings.min_completeness ?? 80, max_drift: currentBoard.settings.max_drift ?? 50, require_spec_validation: currentBoard.settings.require_spec_validation ?? false, min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80, min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80, max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30 }
+    : { max_scenarios_per_card: 3, skip_test_coverage_global: false, skip_rules_coverage_global: false, skip_trs_coverage_global: false, skip_contract_coverage_global: false, skip_decisions_coverage_global: false, skip_test_evidence_global: false, require_task_validation: false, min_confidence: 70, min_completeness: 80, max_drift: 50, require_spec_validation: false, min_spec_completeness: 80, min_spec_assertiveness: 80, max_spec_ambiguity: 30 };
 
   // Local draft state for numeric gate inputs — committed on blur to avoid
   // refresh-on-keystroke wiping partial values while the user is typing.
@@ -89,6 +102,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       await api.updateBoard(currentBoard.id, { settings: newSettings } as any);
       onBoardUpdated?.();
       toast.success('Board settings updated');
+      // Bug fix (banner inversion): notify the global EvidenceGateSkipBanner
+      // listener AFTER the PATCH commits so its refetch reads the new value.
+      // Doing it from the toggle's onClick (before await) caused the App.tsx
+      // listener to read the *previous* value from the backend, which made
+      // the banner always reflect the state right before the click — i.e.
+      // marking made the banner stay hidden, unmarking made it appear.
+      window.dispatchEvent(new CustomEvent('okto:board-settings-changed'));
     } catch {
       toast.error('Failed to update settings');
     }
@@ -200,6 +220,18 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       <BarChart3 size={14} />
                       Analytics
                     </button>
+
+                    {/* KG Health (spec d754d004) */}
+                    {onOpenKGHealth && (
+                      <button
+                        onClick={() => { setShowMenu(false); onOpenKGHealth(); }}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                        data-testid="menu-kg-health"
+                      >
+                        <Activity size={14} />
+                        KG Health
+                      </button>
+                    )}
 
                     {/* Agents */}
                     <button
@@ -398,6 +430,35 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                         className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_decisions_coverage_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
                       >
                         <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_decisions_coverage_global ? 'translate-x-5' : ''}`} />
+                      </button>
+                    </div>
+
+                    {/* NC-9 evidence gate skip — opt-in, default OFF, scoped to this board */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
+                          Skip evidence requirement (global)
+                        </label>
+                        <p className="text-[10px] text-gray-400">
+                          Bypass evidence required to mark scenarios passed/automated/failed
+                        </p>
+                      </div>
+                      <button
+                        data-testid="toggle-skip-evidence"
+                        role="switch"
+                        aria-checked={settings.skip_test_evidence_global ?? false}
+                        onClick={() => {
+                          const next = !(settings.skip_test_evidence_global ?? false);
+                          // updateSettings now dispatches okto:board-settings-changed
+                          // itself, AFTER the PATCH commits. Calling dispatchEvent
+                          // here would race against the in-flight PATCH and make the
+                          // banner's refetch read the previous value (root cause of
+                          // the inverted banner bug).
+                          updateSettings({ skip_test_evidence_global: next });
+                        }}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_test_evidence_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_test_evidence_global ? 'translate-x-5' : ''}`} />
                       </button>
                     </div>
 
@@ -602,7 +663,9 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       )}
 
       {showRuntimeSettings && (
-        <RuntimeSettingsPanel onClose={() => setShowRuntimeSettings(false)} />
+        <RuntimeSettingsPanel
+          onClose={() => setShowRuntimeSettings(false)}
+        />
       )}
 
       {showPresets && (
@@ -649,18 +712,21 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                 Okto Pulse
               </h2>
               <p className="text-sm text-surface-500 dark:text-surface-400 mt-1">
-                Community Edition — v0.1.4
+                Community Edition — v0.1.5
+              </p>
+              <p className="text-[11px] text-surface-400 dark:text-surface-500 mt-0.5">
+                Elastic License 2.0 + SaaS/Branding Addendum + Trademark Policy
               </p>
             </div>
 
-            <div className="border-t border-surface-200/50 dark:border-[#142840] px-8 py-5 max-h-[50vh] overflow-y-auto">
+            <div className="border-t border-surface-200/50 dark:border-[#142840] px-8 py-5 max-h-[60vh] overflow-y-auto">
               <h3 className="text-xs font-semibold text-surface-500 dark:text-surface-400 uppercase tracking-wider mb-3 font-display">
                 License — Elastic License 2.0
               </h3>
               <div className="text-xs text-surface-600 dark:text-surface-400 leading-relaxed space-y-3">
                 <p className="font-medium text-surface-700 dark:text-surface-300 flex items-center gap-2">
                   <img src={oktolabsIcon} alt="Okto Labs" className="h-4 w-4" />
-                  Copyright 2024–2026 Okto Labs
+                  Copyright 2026 Okto Labs
                 </p>
 
                 <p><strong>Acceptance.</strong> By using the software, you agree to all of the terms and conditions below.</p>
@@ -669,7 +735,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
                 <p><strong>2. Limitations.</strong> You may not provide the software to third parties as a hosted or managed service, where the service provides users with access to any substantial set of the features or functionality of the software. You may not move, change, disable, or circumvent the license key functionality in the software, and you may not remove or obscure any functionality in the software that is protected by the license key. You may not alter, remove, or obscure any licensing, copyright, or other notices of the licensor in the software.</p>
 
-                <p><strong>3. Patent License.</strong> The licensor grants you a license, under any patent claims the licensor can license, or becomes able to license, to make, have made, use, sell, offer for sale, import and have imported the software. However, this license does not cover any patent claims that you cause to be infringed by modifications or additions to the software.</p>
+                <p><strong>3. Patent License.</strong> The licensor grants you a license, under any patent claims the licensor can license, or becomes able to license, to make, have made, use, sell, offer for sale, import and have imported the software. However, this license does not cover any patent claims that you cause to be infringed by modifications or additions to the software. If you or your company make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. Your company's patent license also ends immediately if your company makes any such written claim.</p>
 
                 <p><strong>4. Distribution.</strong> You may not alter, remove, or obscure any licensing, copyright, or other notices of the licensor in the software. Any distribution of the software must include a copy of these terms and conditions, and anyone who receives the software from you is bound by these terms and conditions.</p>
 
@@ -681,27 +747,123 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
                 <p><strong>8. Limitation on Liability.</strong> As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.</p>
 
-                <p><strong>9. Definitions.</strong> "Licensor" means Okto Labs and its affiliates. "Software" means the software the licensor makes available under these terms, including any portions, modifications, or derivative works. "You" means you, individually. "Your company" means any legal entity, sole proprietorship, or other organization that you work for, plus all other organizations that control, are controlled by, or are under common control with that organization.</p>
+                <p><strong>9. Definitions.</strong> "Licensor" means Okto Labs and its affiliates. "Software" means the software the licensor makes available under these terms, including any portions, modifications, or derivative works. "You" means you, individually. "Your company" means any legal entity, sole proprietorship, or other organization that you work for, plus all other organizations that control, are controlled by, or are under common control with that organization. The term "control" means ownership of substantially all the assets of an entity.</p>
+              </div>
 
-                <div className="border-t border-surface-200/30 dark:border-[#142840] pt-3 mt-3">
-                  <p className="font-semibold text-surface-700 dark:text-surface-300">Addendum: SaaS and Competing Service Definition</p>
-                  <p className="mt-2">For the purposes of Section 2, the following constitute providing the software as a "hosted or managed service":</p>
-                  <ul className="list-disc pl-4 mt-1 space-y-1">
-                    <li>Offering a hosted platform, application, or API where end users interact with the features or functionality of the software.</li>
-                    <li>Providing the software as a white-label, embedded, or rebranded offering to third parties.</li>
-                    <li>Operating a multi-tenant service where the software's capabilities are a primary value driver.</li>
-                  </ul>
-                  <p className="mt-2">The following are expressly <strong className="text-green-600 dark:text-green-400">PERMITTED</strong>:</p>
-                  <ul className="list-disc pl-4 mt-1 space-y-1">
-                    <li>Using the software internally within your organization, including for commercial purposes.</li>
-                    <li>Using the software to manage your own projects, teams, or products.</li>
-                    <li>Integrating the software's MCP tools with AI agents for your own or your organization's use.</li>
-                    <li>Modifying the software for personal or internal organizational use.</li>
-                  </ul>
-                  <p className="mt-2 text-surface-400">Contact <a href="mailto:dev@oktolabs.ai" className="text-accent-500 hover:underline">dev@oktolabs.ai</a> for clarification.</p>
-                </div>
+              {/* Addendum — SaaS / Competing / Internal / Branding */}
+              <h3 className="text-xs font-semibold text-surface-500 dark:text-surface-400 uppercase tracking-wider mt-5 mb-3 font-display">
+                Addendum — SaaS, Competing Service, Internal Use, Branding
+              </h3>
+              <div className="text-xs text-surface-600 dark:text-surface-400 leading-relaxed space-y-3">
+                <p className="text-[11px] italic text-surface-500 dark:text-surface-500">
+                  This addendum clarifies and supplements Section 2 ("Limitations"). In case of conflict between the body of the license and this addendum, this addendum controls.
+                </p>
 
-                <p className="text-surface-400 dark:text-surface-500 pt-2 border-t border-surface-200/30 dark:border-[#142840]">
+                <p className="font-semibold text-red-700 dark:text-red-400">I. Hosted or Managed Service — PROHIBITED uses</p>
+                <ul className="list-disc pl-4 space-y-1">
+                  <li><strong>(a)</strong> Operating a multi-tenant SaaS, platform, application, or API where end users from more than one client organization interact with the features or functionality of the software, whether directly or through a wrapper, proxy, or abstraction layer.</li>
+                  <li><strong>(b)</strong> Providing the software as a white-label, embedded, OEM, or rebranded offering to third parties.</li>
+                  <li><strong>(c)</strong> Offering the software, any derivative work of it, or any substantial portion of its features or functionality as a product, service, or platform that competes with Okto Pulse, regardless of whether the deployment is single-tenant or multi-tenant.</li>
+                  <li><strong>(d) Internal large-scale platform exposure</strong> — operating the software as an internally hosted service that meets <strong>BOTH</strong> of the following conditions simultaneously:
+                    <ul className="list-disc pl-4 mt-1 space-y-1">
+                      <li><strong>(i)</strong> the software, or modules extracted/externalized/repackaged from it, are exposed as a hosted service, API, or internal platform to users within your organization who are not directly involved in administering, developing, configuring, or using the software for the projects, teams, or products it is intended to manage; <strong>AND</strong></li>
+                      <li><strong>(ii)</strong> the total population of such exposed users exceeds <strong>five hundred (500)</strong> individuals.</li>
+                    </ul>
+                    <p className="mt-1 text-[11px] italic">Both conditions must be met. Local, desktop, or workstation use by any number of individuals is <strong>never</strong> restricted by this clause.</p>
+                  </li>
+                </ul>
+
+                <p className="font-semibold text-green-700 dark:text-green-400 pt-1">II. PERMITTED uses (incl. commercial)</p>
+                <ul className="list-disc pl-4 space-y-1">
+                  <li><strong>(a)</strong> Using the software internally within your organization, without any numeric or scale restriction, to manage your own projects, teams, products, or operations.</li>
+                  <li><strong>(b)</strong> Hosting a single-tenant deployment for yourself or a single client organization. Each distinct client organization must receive its own dedicated instance.</li>
+                  <li><strong>(c)</strong> Providing consulting, integration, customization, deployment, or managed-operations services using the software (including charging fees), provided that each client deployment is single-tenant, branding/attribution in Section III is honored, and it does not constitute a competing service or exceed the I(d) thresholds.</li>
+                  <li><strong>(d)</strong> Integrating the software's MCP tools with AI agents for your own or your organization's use.</li>
+                  <li><strong>(e)</strong> Modifying the software for personal or internal organizational use, including for commercial purposes, subject to Sections I and III.</li>
+                </ul>
+
+                <p className="font-semibold text-surface-700 dark:text-surface-300 pt-1">III. Branding and Attribution — REQUIRED preservation</p>
+                <p>You may <strong>not</strong> alter, remove, obscure, hide, replace, minimize, or otherwise diminish the visibility of:</p>
+                <ul className="list-disc pl-4 space-y-1">
+                  <li><strong>(a)</strong> The "Okto Labs" name and logo.</li>
+                  <li><strong>(b)</strong> The "Okto Pulse" name and logo.</li>
+                  <li><strong>(c)</strong> Copyright and licensing notices identifying Okto Labs as the licensor.</li>
+                </ul>
+                <p>These elements <strong>MUST</strong> remain visible in:</p>
+                <ul className="list-disc pl-4 space-y-1">
+                  <li><strong>Web UI</strong>: login/auth screens, primary navigation/chrome, footer, settings/admin/operations consoles, any "About"/"Help"/"Powered by" surface.</li>
+                  <li><strong>CLI</strong>: <code>--version</code> and equivalent output, help/usage screens, startup banner/splash/login output.</li>
+                </ul>
+                <p>You <strong>may</strong> add your own branding alongside the required Okto Labs and Okto Pulse marks, but you may <strong>not</strong> replace, substitute, or visually subordinate them in a way that misrepresents the origin of the software.</p>
+
+                <p className="font-semibold text-surface-700 dark:text-surface-300 pt-1">IV. Clarifications</p>
+                <p>If you are unsure whether your intended use constitutes a competing service under I(c), an internal large-scale platform exposure under I(d), or otherwise requires a commercial license, contact <a href="mailto:dev@oktolabs.ai" className="text-accent-500 hover:underline">dev@oktolabs.ai</a>.</p>
+              </div>
+
+              {/* Trademark Policy — synchronized with TRADEMARKS.md */}
+              <h3 className="text-xs font-semibold text-surface-500 dark:text-surface-400 uppercase tracking-wider mt-5 mb-3 font-display">
+                Trademark Policy
+              </h3>
+              <div className="text-xs text-surface-600 dark:text-surface-400 leading-relaxed space-y-3">
+                <p className="text-[11px] italic text-surface-500 dark:text-surface-500">
+                  Complements (and never overrides) the attribution obligations in Section III above. Governs the use of the marks as identifiers of <em>your own</em> product, service, company, or domain.
+                </p>
+
+                <p>The following are trademarks of <strong>Okto Labs</strong>:</p>
+                <ul className="list-disc pl-4 space-y-1">
+                  <li><strong>Okto Labs</strong> — the company name and brand</li>
+                  <li><strong>Okto Pulse</strong> — the product name</li>
+                  <li><strong>Okto Labs logo</strong> — the octopus/circuit design mark (all variants)</li>
+                  <li><strong>Okto Pulse logo</strong> — the product logo and all variants</li>
+                </ul>
+
+                <p className="font-semibold text-green-700 dark:text-green-400 pt-1">Permitted Use</p>
+                <ul className="list-disc pl-4 space-y-1">
+                  <li>Preserve and display the Okto Labs / Okto Pulse names and logos as required by Section III (mandatory).</li>
+                  <li>State that your project, fork, or derivative is "based on Okto Pulse", "powered by Okto Pulse", or "compatible with Okto Pulse".</li>
+                  <li>Describe consulting/integration/managed-ops services using factual references (e.g. "We host Okto Pulse for our clients", "Managed Okto Pulse deployment operated by [Your Company]").</li>
+                  <li>Use the Okto Pulse name in documentation, articles, comparisons, talks, academic work.</li>
+                </ul>
+
+                <p className="font-semibold text-red-700 dark:text-red-400 pt-1">Prohibited Use (without prior written authorization)</p>
+                <ul className="list-disc pl-4 space-y-1">
+                  <li>Use "Okto Pulse", "Okto Labs", "Okto", or any of the logos as part of <strong>your own</strong> product, service, company, or domain name (e.g. <code>oktopulse.example.com</code>, "AcmePulse", "PulseHub", "Okto-Plus").</li>
+                  <li>Create the impression that your product, service, company, or fork is endorsed, sponsored, certified, or affiliated with Okto Labs.</li>
+                  <li>Use any of the logos (or a confusingly similar mark) as the <strong>primary brand</strong> of your product, marketing, app store listings, or social presence.</li>
+                  <li>Offer a product/service under a name that combines "Okto" with "Pulse", "Labs", or similar terms.</li>
+                  <li>Modify, distort, recolor, or recompose the logos in a way that misrepresents the marks.</li>
+                </ul>
+
+                <p className="font-semibold text-surface-700 dark:text-surface-300 pt-1">Derivative Works and Forks</p>
+                <ul className="list-disc pl-4 space-y-1">
+                  <li>You <strong>must add</strong> your own distinct name, logo, and brand identity — and that name <strong>must not</strong> include "Okto", "Pulse", or any confusingly similar term.</li>
+                  <li>You <strong>must retain</strong> the Okto Labs and Okto Pulse names and logos in the web UI and CLI as attribution-of-origin (Section III). The required form is roughly: <em>"Powered by Okto Pulse — © Okto Labs"</em>, with the official logos.</li>
+                  <li>You <strong>must retain</strong> the copyright and license notices required by the LICENSE.</li>
+                  <li>You <strong>may</strong> describe your work factually as "based on Okto Pulse" or "a fork of Okto Pulse".</li>
+                </ul>
+                <p className="italic">In short: <strong>rename your fork, but keep the attribution.</strong></p>
+
+                <p className="font-semibold text-surface-700 dark:text-surface-300 pt-1">Logo Usage</p>
+                <p>Official assets under <code>frontend/src/assets/</code> are provided for two purposes only: (1) mandatory attribution use under Section III; (2) factual reference in documentation/articles/comparisons. Same assets <strong>may not</strong> be used as the primary brand of any third-party product, fork, marketing campaign, merchandise, or domain.</p>
+                <p className="text-[11px]">Canonical asset paths: <code>logo-light.png</code>, <code>logo-dark.png</code>, <code>oktolabs-icon.svg</code>, <code>pulse-icon.svg</code>, <code>pulse-wordmark.svg</code>, <code>pulse-wordmark-light.svg</code>, <code>favicon.jpg</code>.</p>
+
+                <p className="text-surface-400">Trademark requests: <a href="mailto:dev@oktolabs.ai" className="text-accent-500 hover:underline">dev@oktolabs.ai</a> · Full policy in <code>TRADEMARKS.md</code></p>
+              </div>
+
+              {/* Contributions — CLA */}
+              <h3 className="text-xs font-semibold text-surface-500 dark:text-surface-400 uppercase tracking-wider mt-5 mb-3 font-display">
+                Contributions — CLA
+              </h3>
+              <div className="text-xs text-surface-600 dark:text-surface-400 leading-relaxed space-y-2">
+                <p>Contributions are governed by the <strong>Contributor License Agreement</strong> (<code>CLA.md</code>).</p>
+                <p><strong>Grant of Rights.</strong> By submitting a pull request, you grant Okto Labs a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable license to use, reproduce, modify, display, perform, sublicense, and distribute your contribution as part of the project — and to relicense your contribution under any license, including proprietary licenses.</p>
+                <p><strong>Ownership.</strong> You retain copyright ownership of your contribution. The CLA grants a license, not a transfer.</p>
+                <p><strong>Representations.</strong> You represent that you are legally entitled to grant the above license, that the contribution is your original work (or you have the right to submit it), that it does not violate any third party's rights, and that you have employer authorization where applicable.</p>
+                <p><strong>How to sign.</strong> Submitting a pull request to any Okto Pulse repository indicates your agreement with the CLA — no separate signature is required.</p>
+              </div>
+
+              <div className="mt-5">
+                <p className="text-[11px] text-surface-400 dark:text-surface-500 pt-2 border-t border-surface-200/30 dark:border-[#142840]">
                   Source code at{' '}
                   <a
                     href="https://github.com/OktoLabsAI/okto-pulse"
@@ -711,6 +873,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                   >
                     github.com/OktoLabsAI/okto-pulse
                   </a>
+                  {' '} · Contact: <a href="mailto:dev@oktolabs.ai" className="text-accent-500 hover:underline">dev@oktolabs.ai</a>
                 </p>
               </div>
             </div>

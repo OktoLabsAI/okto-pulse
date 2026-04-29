@@ -12,15 +12,29 @@ import asyncio
 import json
 import os
 import shutil
-import signal
 import socket
 import sys
-from multiprocessing import Process
 from pathlib import Path
 
 # Default ports
 DEFAULT_API_PORT = 8100
 DEFAULT_MCP_PORT = 8101
+
+_BANNER_PATH = Path(__file__).parent / "banner.txt"
+
+
+def _print_banner() -> None:
+    """Print the Okto Pulse ASCII banner to stderr (kept off stdout to
+    avoid corrupting JSON pipes). Suppressed when ``OKTO_PULSE_NO_BANNER``
+    is set or the banner file is missing."""
+    if os.environ.get("OKTO_PULSE_NO_BANNER"):
+        return
+    try:
+        sys.stderr.write(_BANNER_PATH.read_text(encoding="utf-8"))
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+    except OSError:
+        pass
 
 
 def _is_port_in_use(port: int) -> bool:
@@ -184,36 +198,15 @@ def _generate_mcp_json(mcp_port: int, agent_names: list[str] | None):
     print(f"  Agents exported: {agent_list}")
 
 
-# Module-level process targets (must be picklable for Windows multiprocessing spawn).
-# Port overrides are passed via environment variables since these functions take no args.
-def _serve_api(api_port: int | None = None):
-    """Start the API server. Reads OKTO_PULSE_PORT env for port override."""
-    if api_port is None:
-        port = int(os.environ.get("OKTO_PULSE_PORT", DEFAULT_API_PORT))
-    else:
-        port = api_port
-    os.environ["PORT"] = str(port)
-    os.environ["OKTO_PULSE_PORT"] = str(port)  # Ensure child processes see it
-    from okto_pulse.community.main import run
-    run()
-
-
-def _serve_mcp(mcp_port: int | None = None):
-    """Start the MCP server. Reads OKTO_PULSE_MCP_PORT env for port override."""
-    if mcp_port is None:
-        port = int(os.environ.get("OKTO_PULSE_MCP_PORT", DEFAULT_MCP_PORT))
-    else:
-        port = mcp_port
-    os.environ["MCP_PORT"] = str(port)
-    os.environ["OKTO_PULSE_MCP_PORT"] = str(port)  # Ensure consistency
-    from okto_pulse.community.main import run_mcp
-    run_mcp()
-
-
 def cmd_serve(args):
-    """Start backend API (+ embedded frontend) and MCP server."""
-    from okto_pulse.community.main import FRONTEND_DIR
+    """Start the API + Frontend server and the MCP server.
 
+    Both servers run inside a single Python process (so the embedded Kùzu
+    DB is owned by exactly one OS process), but listen on two different
+    ports — ``--api-port`` for the REST API + UI, ``--mcp-port`` for the
+    MCP transport. Each port has its own uvicorn ``Server`` instance
+    driven concurrently via ``asyncio.gather``.
+    """
     api_port = args.api_port
     mcp_port = args.mcp_port
 
@@ -222,42 +215,40 @@ def cmd_serve(args):
     if _is_port_in_use(mcp_port):
         print(f"Warning: Port {mcp_port} is already in use. MCP server may fail to start.")
 
-    has_frontend = FRONTEND_DIR.exists() and (FRONTEND_DIR / "index.html").exists()
-
-    # Set environment variables early (before any imports in subprocesses)
+    # Ports go via env so create_community_app + the MCP runner read them.
+    # MUST be set BEFORE importing okto_pulse.community.main — that module
+    # evaluates `app = create_community_app()` at import time, which reads
+    # the env vars to inject /config.js with the correct API_URL/MCP_URL.
     os.environ["OKTO_PULSE_PORT"] = str(api_port)
     os.environ["OKTO_PULSE_MCP_PORT"] = str(mcp_port)
 
-    api_process = Process(target=_serve_api, args=(api_port,), name="okto-pulse-api")
-    mcp_process = Process(target=_serve_mcp, args=(mcp_port,), name="okto-pulse-mcp")
+    from okto_pulse.community.main import FRONTEND_DIR
+    has_frontend = FRONTEND_DIR.exists() and (FRONTEND_DIR / "index.html").exists()
 
-    def _shutdown(sig, frame):
-        print("\nShutting down...")
-        api_process.terminate()
-        mcp_process.terminate()
-        api_process.join(timeout=5)
-        mcp_process.join(timeout=5)
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
+    # Terms-of-Use pre-acceptance via CLI flag or env var.
+    if getattr(args, "accept_terms", False):
+        os.environ["OKTO_PULSE_TERMS_ACCEPTED"] = "1"
+        from okto_pulse.community.acceptance import write_acceptance
+        rec = write_acceptance("cli")
+        print(f"Terms-of-Use pre-accepted via --accept-terms (version {rec['version']}).")
+    elif (os.environ.get("OKTO_PULSE_TERMS_ACCEPTED") or "").strip() == "1":
+        from okto_pulse.community.acceptance import write_acceptance, read_acceptance
+        if read_acceptance() is None:
+            rec = write_acceptance("env")
+            print(f"Terms-of-Use pre-accepted via env (version {rec['version']}).")
 
     print("Starting Okto Pulse Community...")
     if has_frontend:
         print(f"  App:  http://127.0.0.1:{api_port}  (API + Frontend)")
     else:
         print(f"  API:  http://127.0.0.1:{api_port}  (no frontend embedded)")
-    print(f"  MCP:  http://127.0.0.1:{mcp_port}")
+    print(f"  MCP:  http://127.0.0.1:{mcp_port}/mcp")
     print("  Press Ctrl+C to stop.\n")
 
-    api_process.start()
-    mcp_process.start()
-
-    try:
-        api_process.join()
-        mcp_process.join()
-    except KeyboardInterrupt:
-        _shutdown(None, None)
+    # Single-process, dual-port: run() spawns two uvicorn Server instances
+    # via asyncio.gather. uvicorn handles SIGINT/SIGTERM natively for both.
+    from okto_pulse.community.main import run
+    run()
 
 
 def cmd_status(args):
@@ -409,6 +400,12 @@ def cmd_kg_backfill(args):
     configure_settings(settings)
     create_database(settings.database_url, echo=False)
 
+    # ── Path B: Apply ────────────────────────────────────────────────
+    if apply_writes:
+        asyncio.run(_apply_backfill(board_id, emit_json, settings))
+        sys.exit(0)
+
+    # ── Path A: Dry-run (unchanged) ──────────────────────────────────
     async def _load() -> dict:
         await init_db()
         factory = get_session_factory()
@@ -433,7 +430,7 @@ def cmd_kg_backfill(args):
     worker = DeterministicWorker()
     summary = {
         "board_id": board_id,
-        "dry_run": not apply_writes,
+        "dry_run": True,
         "artifacts": {"spec": 0, "sprint": 0, "card": 0},
         "nodes_total": 0,
         "edges_total": 0,
@@ -472,29 +469,113 @@ def cmd_kg_backfill(args):
             "content_hash": result.content_hash,
         })
 
-    if apply_writes:
-        # Feature flag + write path lives in another card; for now emit a
-        # visible warning so the operator knows the diff is still a diff.
-        summary["apply_warning"] = (
-            "apply path not wired yet — use dry-run output as the authoritative "
-            "diff; writes will land when kg_consolidation_v2 integration ships"
-        )
-
     if emit_json:
         print(json.dumps(summary, indent=2, default=str))
     else:
-        mode = "DRY-RUN" if not apply_writes else "APPLY (noop — wiring pending)"
-        print(f"KG backfill [{mode}] for board {board_id}")
-        print(f"  Artifacts scanned:")
+        print(f"KG backfill [DRY-RUN] for board {board_id}")
+        print("  Artifacts scanned:")
         for k, v in summary["artifacts"].items():
             print(f"    {k:<8} {v}")
         print(f"  Nodes to emit: {summary['nodes_total']}")
         print(f"  Edges to emit: {summary['edges_total']}")
         print(f"  Missing link candidates: {summary['missing_link_candidates']}")
-        if summary.get("apply_warning"):
-            print(f"  WARN: {summary['apply_warning']}")
 
     sys.exit(0)
+
+
+async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
+    """Apply path: enqueue all artifacts and drain the consolidation queue."""
+    from okto_pulse.core.infra.database import (
+        get_session_factory,
+        init_db,
+        close_db,
+    )
+    from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
+    from okto_pulse.core.kg.schema import bootstrap_board_graph
+    from okto_pulse.core.kg.governance import start_historical_consolidation
+    from okto_pulse.core.kg.workers.consolidation import ConsolidationWorker
+    from okto_pulse.core.models.db import ConsolidationQueue as CQ
+    from sqlalchemy import select
+
+    await init_db()
+    factory = get_session_factory()
+    configure_kg_registry(session_factory=factory)
+
+    try:
+        # Bootstrap Kùzu graph schema for this board
+        bootstrap_board_graph(board_id)
+
+        # Enqueue all artifacts via governance
+        async with factory() as db:
+            result = await start_historical_consolidation(db, board_id)
+        total_queued = result.get("total_artifacts", 0)
+
+        if total_queued == 0 and result.get("status") != "already_in_progress":
+            if emit_json:
+                print(json.dumps({
+                    "board_id": board_id,
+                    "status": "no_artifacts",
+                    "total_queued": 0,
+                    "total_processed": 0,
+                    "failed_count": 0,
+                }))
+            else:
+                print(f"KG backfill [APPLY] for board {board_id}")
+                print("  No eligible artifacts found (need done/approved specs or closed sprints)")
+            return
+
+        # Drain the queue via ConsolidationWorker
+        worker = ConsolidationWorker(factory)
+        total_processed = 0
+        batch_num = 0
+        while True:
+            processed = await worker.process_batch()
+            if processed == 0:
+                break
+            batch_num += 1
+            total_processed += processed
+            if not emit_json:
+                print(f"  Batch {batch_num}: processed {processed} entries")
+
+        # Check for failures
+        async with factory() as db:
+            failed = (await db.execute(
+                select(CQ).where(CQ.board_id == board_id, CQ.status == "failed")
+            )).scalars().all()
+        failed_count = len(failed)
+
+        if emit_json:
+            output = {
+                "board_id": board_id,
+                "status": "already_in_progress" if result.get("status") == "already_in_progress" else "completed",
+                "total_queued": total_queued,
+                "total_processed": total_processed,
+                "failed_count": failed_count,
+            }
+            if failed:
+                output["failures"] = [
+                    {
+                        "artifact_type": f.artifact_type,
+                        "artifact_id": f.artifact_id,
+                        "error": getattr(f, "error_message", None) or getattr(f, "last_error", None) or "unknown",
+                    }
+                    for f in failed
+                ]
+            print(json.dumps(output, indent=2, default=str))
+        else:
+            print(f"KG backfill [APPLY] for board {board_id}")
+            print(f"  Artifacts queued:   {total_queued}")
+            print(f"  Artifacts processed: {total_processed}")
+            if failed_count:
+                print(f"  Failed:              {failed_count}")
+                for f in failed:
+                    err = getattr(f, "error_message", None) or getattr(f, "last_error", None) or "unknown"
+                    print(f"    - {f.artifact_type}/{f.artifact_id}: {err}")
+            else:
+                print("  All entries processed successfully")
+
+    finally:
+        await close_db()
 
 
 def _spec_to_dict(s):
@@ -524,6 +605,7 @@ def _sprint_to_dict(s):
 
 
 def _card_to_dict(c):
+    p = getattr(c, "priority", None)
     return {
         "id": c.id,
         "title": c.title,
@@ -532,7 +614,39 @@ def _card_to_dict(c):
         "origin_task_id": getattr(c, "origin_task_id", None),
         "sprint_id": getattr(c, "sprint_id", None),
         "spec_id": c.spec_id,
+        "priority": str(p.value) if hasattr(p, "value") and p is not None else None,
     }
+
+
+def cmd_kg_dedup_entities(args):
+    """NC-8 (spec 7f23535f) — consolidate duplicate Kuzu nodes per
+    (node_type, source_artifact_ref).
+
+    Default writes to the graph; pass --dry-run for a no-op preview.
+    Output is a human-readable table by default; --json switches to
+    structured output for ops automation.
+    """
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core.kg.dedup_migration import (
+        format_report_table,
+        migrate_dedup_entities,
+    )
+
+    board_id: str = args.board_id
+    dry_run: bool = bool(getattr(args, "dry_run", False))
+    emit_json: bool = bool(getattr(args, "json", False))
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+
+    report = migrate_dedup_entities(board_id, dry_run=dry_run)
+
+    if emit_json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(format_report_table(report))
+    sys.exit(0)
 
 
 def cmd_reset(args):
@@ -563,6 +677,8 @@ def cmd_reset(args):
 
 
 def main():
+    _print_banner()
+
     parser = argparse.ArgumentParser(
         prog="okto-pulse",
         description="Okto Pulse Community — local-first kanban board with MCP support for AI agents",
@@ -589,6 +705,12 @@ def main():
     sub_serve.add_argument(
         "--mcp-port", type=int, default=DEFAULT_MCP_PORT,
         help=f"MCP server port (default: {DEFAULT_MCP_PORT})",
+    )
+    sub_serve.add_argument(
+        "--accept-terms",
+        action="store_true",
+        help="Pre-accept the Terms-of-Use & License (skips the first-run modal). "
+             "Equivalent to setting OKTO_PULSE_TERMS_ACCEPTED=1.",
     )
     sub_serve.set_defaults(func=cmd_serve)
 
@@ -651,6 +773,22 @@ def main():
         help="Emit machine-readable JSON instead of table",
     )
     sub_backfill.set_defaults(func=cmd_kg_backfill)
+
+    # NC-8 (spec 7f23535f) — dedup-entities migration
+    sub_dedup = kg_subparsers.add_parser(
+        "dedup-entities",
+        help="Consolidate duplicate Kuzu nodes per (node_type, source_artifact_ref)",
+    )
+    sub_dedup.add_argument("board_id", help="Target board UUID")
+    sub_dedup.add_argument(
+        "--dry-run", action="store_true",
+        help="Report duplicates without modifying the graph",
+    )
+    sub_dedup.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON instead of table",
+    )
+    sub_dedup.set_defaults(func=cmd_kg_dedup_entities)
 
     args = parser.parse_args()
     if not args.command:

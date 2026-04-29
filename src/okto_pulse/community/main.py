@@ -12,24 +12,25 @@ import logging
 import os
 import sys
 import time
-from contextlib import asynccontextmanager
+from datetime import timezone
 from pathlib import Path
 from typing import AsyncGenerator
 
 import uvicorn
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import event, text
 
 from okto_pulse.core.app import create_app
-from okto_pulse.core.infra.config import configure_settings
+from okto_pulse.core.infra.config import configure_settings, get_settings
 from okto_pulse.core.infra.database import create_database, get_engine, get_session_factory, init_db, close_db
 from okto_pulse.core.infra.storage import FileSystemStorageProvider
 from okto_pulse.core.kg.embedding import SentenceTransformerProvider, StubEmbeddingProvider
 from okto_pulse.core.kg.interfaces.registry import configure_kg_registry, get_kg_registry
-# NOTE: MCP server import moved into run_mcp() to avoid module-level settings cache
-# When okto_pulse.core.mcp.server is imported, it calls get_settings() which caches
-# a default instance. We need to call configure_settings() BEFORE that import happens.
+# NOTE: MCP server is imported lazily inside create_community_app (after
+# create_app has called configure_settings) and inside combined_lifespan
+# (after init_db). Module-level import would cache the default settings
+# singleton via get_settings() at import time and break runtime config.
+# Settings cache trap respected by Spec 23350275 (Fix C, BR5).
 from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.community.seed import seed_community_defaults
@@ -83,7 +84,7 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
             last_exc = last_exc or TimeoutError("embedding preload budget exhausted")
             break
         try:
-            await asyncio.to_thread(_load)
+            _load()
             duration_ms = int((time.monotonic() - started) * 1000)
             _EMBEDDING_LOGGER.info(
                 "kg.embedding.loaded",
@@ -146,7 +147,15 @@ def _configure_sqlite_pragmas(engine) -> None:
         cursor.close()
 
 
-def _mount_frontend(app, frontend_dir: Path, api_port: int = 8100, mcp_port: int = 8101) -> None:
+def _mount_frontend(
+    app,
+    frontend_dir: Path,
+    api_port: int = 8100,
+    mcp_port: int = 8101,
+    public_host: str = "127.0.0.1",
+    public_api_port: int | None = None,
+    public_mcp_port: int | None = None,
+) -> None:
     """Mount the pre-built frontend SPA on the FastAPI app.
 
     Uses Starlette middleware approach to avoid route-ordering issues:
@@ -155,6 +164,8 @@ def _mount_frontend(app, frontend_dir: Path, api_port: int = 8100, mcp_port: int
     - Everything else → index.html (SPA routing)
 
     Injects runtime configuration for API and MCP ports to support custom ports.
+    Set PUBLIC_HOST / PUBLIC_API_PORT / PUBLIC_MCP_PORT env vars to override the
+    URLs the browser SPA uses (needed when behind a reverse proxy or NAT).
     """
     if not frontend_dir.exists():
         return
@@ -193,12 +204,18 @@ def _mount_frontend(app, frontend_dir: Path, api_port: int = 8100, mcp_port: int
                     return Response(content=injected_index_html, media_type="text/html")
             return response
 
-    # Inject runtime configuration BEFORE SPA middleware
+    # Inject runtime configuration BEFORE SPA middleware.
+    # PUBLIC_* env vars override the URLs the browser SPA uses — set them when
+    # the server is accessed through a different host/port than the internal bind
+    # (e.g. NAT, reverse proxy, or LAN deployment).
+    _pub_host = public_host
+    _pub_api_port = public_api_port if public_api_port is not None else api_port
+    _pub_mcp_port = public_mcp_port if public_mcp_port is not None else mcp_port
     config_script = f"""
 // Runtime configuration injected by server
 window.OKTO_PULSE_CONFIG = {{
-    API_URL: 'http://127.0.0.1:{api_port}/api/v1',
-    MCP_URL: 'http://127.0.0.1:{mcp_port}'
+    API_URL: 'http://{_pub_host}:{_pub_api_port}/api/v1',
+    MCP_URL: 'http://{_pub_host}:{_pub_mcp_port}'
 }};
 """
 
@@ -218,32 +235,23 @@ def create_community_app():
     # Read ports from environment (set by CLI) or use defaults
     api_port = int(os.environ.get("OKTO_PULSE_PORT", str(settings.port)))
     mcp_port = int(os.environ.get("OKTO_PULSE_MCP_PORT", str(settings.mcp_port)))
+    # Public-facing host/ports for the browser SPA config.js.
+    # Override when the container is accessed through a different host/port
+    # than the internal bind address (NAT, reverse proxy, LAN deployment).
+    public_host = os.environ.get("PUBLIC_HOST", "127.0.0.1")
+    public_api_port_env = os.environ.get("PUBLIC_API_PORT")
+    public_mcp_port_env = os.environ.get("PUBLIC_MCP_PORT")
+    public_api_port = int(public_api_port_env) if public_api_port_env else None
+    public_mcp_port = int(public_mcp_port_env) if public_mcp_port_env else None
 
     _ensure_data_dir(settings)
 
     auth = LocalAuthProvider()
     storage = FileSystemStorageProvider(settings.upload_dir)
 
-    app = create_app(
-        settings=settings,
-        auth_provider=auth,
-        storage_provider=storage,
-        cors_origins=settings.cors_origins_list,
-    )
-
-    # Configure SQLite pragmas AFTER create_database was called by create_app
-    _configure_sqlite_pragmas(get_engine())
-
-    # Bootstrap the KG provider registry with all embedded providers.
-    # session_factory auto-wires audit_repo + event_bus.
-    configure_kg_registry(session_factory=get_session_factory())
-
-    # Mount frontend (must be AFTER API routes so /api/v1/* takes precedence)
-    _mount_frontend(app, FRONTEND_DIR, api_port=api_port, mcp_port=mcp_port)
-
-    # Override lifespan to add seed + consolidation worker
-    @asynccontextmanager
-    async def community_lifespan(app_instance) -> AsyncGenerator[None, None]:
+    # Combined lifespan: seed data, preload embeddings, start KG workers,
+    # register the MCP session factory so the mounted sub-app finds the DB.
+    async def combined_lifespan(app_instance) -> AsyncGenerator[None, None]:
         await init_db()
         async with get_session_factory()() as db:
             result = await seed_community_defaults(db)
@@ -255,68 +263,134 @@ def create_community_app():
                 print(f"  Board created: {board.name} ({board.id})")
                 print(f"  Agent created: {agent.name}")
                 print(f"  API Key: {api_key}")
-                print(f"  MCP URL: http://localhost:{settings.mcp_port}/mcp?api_key={api_key}")
+                print(f"  MCP URL: http://localhost:{mcp_port}/mcp?api_key={api_key}")
                 print(f"{'='*60}\n")
 
         # Preload the embedding model before serving requests so the first
         # KG search doesn't pay the multi-second model-load cost synchronously.
         await _preload_embedding_model(settings)
 
-        # Start the KG background workers. Community's lifespan fully
-        # replaces the core lifespan (app.router.lifespan_context below),
-        # so we must start every worker the core lifespan would have —
-        # otherwise outbox events pile up (breaking Global Discovery) and
-        # stale sessions leak.
+        # Start the KG background workers
+        from okto_pulse.core.events.dispatcher import EventDispatcher, set_dispatcher
+        from okto_pulse.core.kg.workers.consolidation import ConsolidationWorker
+        from okto_pulse.core.kg.workers.cleanup import get_cleanup_worker
+        from okto_pulse.core.kg.global_discovery.outbox_worker import OutboxWorker
+        from okto_pulse.core.services.settings_service import apply_persisted_settings_to_core_settings
 
-        # Event Bus dispatcher: import events package first so handler
-        # decorators populate the registry BEFORE the drain loop starts.
-        from okto_pulse.core import events as _events  # noqa: F401
-        from okto_pulse.core.events.dispatcher import (
-            EventDispatcher,
-            set_dispatcher,
-        )
+        await apply_persisted_settings_to_core_settings()
+
         event_dispatcher = EventDispatcher(get_session_factory())
         await event_dispatcher.start()
         set_dispatcher(event_dispatcher)
 
-        from okto_pulse.core.kg.workers.consolidation import get_consolidation_worker
-        consolidation_worker = get_consolidation_worker(get_session_factory())
-        await consolidation_worker.start()
-
         cleanup_worker = None
-        if getattr(settings, "kg_cleanup_enabled", True):
-            from okto_pulse.core.kg.workers import get_cleanup_worker
+        consolidation_worker = None
+        outbox_worker = None
+        scheduler = None
+
+        kg_settings = get_settings()
+        if getattr(kg_settings, "kg_cleanup_enabled", True):
+            # Singleton picks interval_seconds from settings — passing
+            # a session_factory positionally would shadow that field
+            # and crash asyncio.sleep() with a TypeError.
             cleanup_worker = get_cleanup_worker()
             await cleanup_worker.start()
 
-        outbox_worker = None
-        try:
-            from okto_pulse.core.kg.global_discovery.outbox_worker import (
-                get_outbox_worker,
-            )
-            outbox_worker = get_outbox_worker()
-            await outbox_worker.start()
-        except Exception as exc:  # noqa: BLE001 — log and continue
-            import logging
-            logging.getLogger("okto_pulse.community").warning(
-                "outbox_worker startup skipped: %s", exc,
-            )
+        consolidation_worker = ConsolidationWorker(get_session_factory())
+        await consolidation_worker.start()
 
-        try:
-            yield
-        finally:
-            # Stop dispatcher FIRST so in-flight handlers finish before the
-            # workers they depend on (consolidation) shut down.
-            await event_dispatcher.stop(timeout=5.0)
-            set_dispatcher(None)
-            if outbox_worker is not None:
-                await outbox_worker.stop()
-            if cleanup_worker is not None:
-                await cleanup_worker.stop()
+        outbox_worker = OutboxWorker(get_session_factory())
+        await outbox_worker.start()
+
+        # Daily decay tick scheduler (Ideação #4 IMPL-D, dec_bc0eaeec).
+        # Honor KG_DAILY_TICK_DISABLED for tests; soft-fail if APScheduler
+        # is unavailable (community ships it, but the catch keeps boot
+        # resilient if the wheel was stripped down).
+        if os.getenv("KG_DAILY_TICK_DISABLED") != "1":
+            try:
+                from apscheduler.schedulers.asyncio import AsyncIOScheduler
+                from apscheduler.triggers.interval import IntervalTrigger
+                from okto_pulse.core.app import _emit_daily_tick
+                from okto_pulse.core.infra.config import get_settings as _get_settings
+                from okto_pulse.core.kg.scheduler_singleton import set_scheduler
+
+                _interval_minutes = _get_settings().kg_decay_tick_interval_minutes
+                scheduler = AsyncIOScheduler(timezone=timezone.utc)
+                scheduler.add_job(
+                    _emit_daily_tick,
+                    # Spec 54399628 (Wave 2 NC f9732afc) — IntervalTrigger
+                    # honra setting persistido + hot-reload via singleton.
+                    trigger=IntervalTrigger(
+                        minutes=_interval_minutes,
+                        timezone=timezone.utc,
+                    ),
+                    id="kg_daily_tick",
+                    replace_existing=True,
+                    max_instances=1,
+                    coalesce=True,
+                )
+                scheduler.start()
+                set_scheduler(scheduler)
+            except Exception:
+                scheduler = None
+
+        # Spec 23350275 (Fix C): the MCP sub-app shares this process, this
+        # FastAPI app, and this database. Register the session factory now
+        # — the mount happens once below in create_community_app so the
+        # routing table is finalized before uvicorn starts serving.
+        # Lazy import preserves the settings cache trap: configure_settings
+        # has already run via create_app().
+        from okto_pulse.core.mcp.server import register_session_factory
+        register_session_factory(get_session_factory())
+
+        yield
+
+        if scheduler is not None:
+            try:
+                scheduler.shutdown(wait=False)
+            except Exception:
+                pass
+        await event_dispatcher.stop(timeout=5.0)
+        set_dispatcher(None)
+        if outbox_worker:
+            await outbox_worker.stop()
+        if cleanup_worker:
+            await cleanup_worker.stop()
+        if consolidation_worker:
             await consolidation_worker.stop()
-            await close_db()
+        await close_db()
 
-    app.router.lifespan_context = community_lifespan
+    app = create_app(
+        settings=settings,
+        auth_provider=auth,
+        storage_provider=storage,
+        cors_origins=settings.cors_origins_list,
+        lifespan=combined_lifespan,
+    )
+
+    # Configure SQLite pragmas AFTER create_database was called by create_app
+    _configure_sqlite_pragmas(get_engine())
+
+    # Bootstrap the KG provider registry with all embedded providers.
+    # session_factory auto-wires audit_repo + event_bus.
+    configure_kg_registry(session_factory=get_session_factory())
+
+    # System flags endpoint — used by the frontend to honor CLI/env terms pre-acceptance.
+    from okto_pulse.community.acceptance import acceptance_status
+
+    @app.get("/api/v1/me/system-flags")
+    def get_system_flags():
+        """Surface env/CLI-driven flags the SPA needs at boot time."""
+        return {"terms_acceptance": acceptance_status()}
+
+    # Mount frontend (must be AFTER API routes so /api/v1/* takes precedence)
+    _mount_frontend(
+        app, FRONTEND_DIR,
+        api_port=api_port, mcp_port=mcp_port,
+        public_host=public_host,
+        public_api_port=public_api_port,
+        public_mcp_port=public_mcp_port,
+    )
 
     return app
 
@@ -326,51 +400,74 @@ def create_community_app():
 app = create_community_app()
 
 
-def run():
-    """Run the community API + Frontend server."""
+async def _serve_dual(api_port: int, mcp_port: int) -> None:
+    """Run API+UI on `api_port` and MCP on `mcp_port` inside a single
+    Python process via two uvicorn `Server` instances driven by
+    ``asyncio.gather``.
+
+    Single-process is required to keep the Kùzu lock owned by exactly one
+    process (the embedded DB does not support multiple writers). The two
+    listeners share the same module-level state — including the
+    ``_global_db`` cache, the ``_mcp_session_factory`` registered by the
+    API lifespan, and the ``_active_api_key`` ``ContextVar`` — so the MCP
+    sub-app sees a fully-initialised runtime.
+    """
+    from okto_pulse.core.mcp.server import build_mcp_asgi_app
+
     settings = CommunitySettings()
 
-    # Read port from environment (set by CLI) or use settings
-    port = int(os.environ.get("PORT", os.environ.get("OKTO_PULSE_PORT", str(settings.port))))
-
-    uvicorn.run(
+    api_config = uvicorn.Config(
         "okto_pulse.community.main:app",
         host=settings.host,
-        port=port,
-        reload=settings.debug,
+        port=api_port,
         ws="wsproto",
+        log_level="info",
     )
+    # Disable uvicorn's per-server signal handlers — with two Servers in the
+    # same loop the default install_signal_handlers fires twice and only
+    # cleanly exits one of them on Ctrl+C. We drive shutdown ourselves below
+    # via should_exit so both listeners drain in parallel.
+    api_config.install_signal_handlers = False
+    api_server = uvicorn.Server(api_config)
+
+    mcp_config = uvicorn.Config(
+        build_mcp_asgi_app(),
+        host="127.0.0.1",
+        port=mcp_port,
+        ws="wsproto",
+        log_level="info",
+    )
+    mcp_config.install_signal_handlers = False
+    mcp_server = uvicorn.Server(mcp_config)
+
+    try:
+        await asyncio.gather(api_server.serve(), mcp_server.serve())
+    except asyncio.CancelledError:
+        # Ctrl+C reached the loop before our handler could flip should_exit.
+        # Ask both servers to drain and swallow the cancel — this is the
+        # expected shutdown path, not an error.
+        api_server.should_exit = True
+        mcp_server.should_exit = True
 
 
-def run_mcp():
-    """Run the MCP server for the community edition.
-
-    CRITICAL: Import MCP server module AFTER configure_settings() to ensure
-    the correct port configuration is cached before module-level get_settings()
-    calls happen.
+def run():
+    """Run the community API + Frontend + MCP server (single process,
+    two ports). Reads ``OKTO_PULSE_PORT`` / ``OKTO_PULSE_MCP_PORT`` env
+    vars (set by the CLI) and falls back to the settings defaults.
     """
-    import os
-    from okto_pulse.community.config import CommunitySettings
-
-    # Read ports from environment (set by CLI) BEFORE creating settings
-    # to avoid using hardcoded defaults
-    port = int(os.environ.get("MCP_PORT", os.environ.get("OKTO_PULSE_MCP_PORT", "8101")))
-
-    # Create settings and override MCP port if env var is set
     settings = CommunitySettings()
-    if port != 8101:  # Only override if env var was actually set
-        settings.mcp_port = port
-
-    _ensure_data_dir(settings)
-    configure_settings(settings)
-    create_database(settings.database_url, echo=settings.debug)
-    _configure_sqlite_pragmas(get_engine())
-    configure_kg_registry(session_factory=get_session_factory())
-
-    # Import MCP server functions AFTER configure_settings()
-    from okto_pulse.core.mcp.server import run_mcp_server, register_session_factory
-    register_session_factory(get_session_factory())
-    run_mcp_server()
+    api_port = int(
+        os.environ.get("PORT", os.environ.get("OKTO_PULSE_PORT", str(settings.port)))
+    )
+    mcp_port = int(
+        os.environ.get("MCP_PORT", os.environ.get("OKTO_PULSE_MCP_PORT", str(settings.mcp_port)))
+    )
+    try:
+        asyncio.run(_serve_dual(api_port, mcp_port))
+    except KeyboardInterrupt:
+        # Ctrl+C / SIGINT — shutdown is graceful from here; suppress the
+        # default Python traceback for a clean CLI exit.
+        print("\nOkto Pulse stopped.")
 
 
 if __name__ == "__main__":

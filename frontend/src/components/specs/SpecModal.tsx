@@ -1,5 +1,5 @@
 /**
- * SpecModal - View and edit a spec, derive cards, manage skills and knowledge bases
+ * SpecModal - View and edit a spec, derive cards, manage knowledge bases
  */
 
 import { useEffect, useState } from 'react';
@@ -15,7 +15,6 @@ import {
   Target,
   Link2,
   BookOpen,
-  Wrench,
   Plus,
   Trash2,
   ChevronDown,
@@ -44,8 +43,9 @@ import toast from 'react-hot-toast';
 import { exportSpec, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
-import type { Spec, SpecStatus, SpecSkill, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings, Decision } from '@/types';
+import type { Spec, SpecStatus, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings, Decision } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
+import { EvidenceBadge } from './EvidenceBadge';
 import { usePermissions } from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
 import { RulesTab } from './RulesTab';
@@ -70,7 +70,7 @@ interface SpecModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'decisions' | 'mockups' | 'qa' | 'skills' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg';
+type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'decisions' | 'mockups' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg';
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -200,8 +200,6 @@ const ACTION_LABELS: Record<string, string> = {
   updated: 'Updated',
   status_changed: 'Status changed',
   cards_derived: 'Cards derived',
-  skill_added: 'Skill added',
-  skill_removed: 'Skill removed',
   knowledge_added: 'Knowledge added',
   knowledge_removed: 'Knowledge removed',
   qa_added: 'Question added',
@@ -389,6 +387,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
               >
                 {SCENARIO_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
+              <EvidenceBadge scenario={scenario} />
               {linkedCards > 0 ? (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 font-medium">
                   {linkedCards} task{linkedCards !== 1 ? 's' : ''}
@@ -1041,10 +1040,6 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
   );
 }
 
-/* ============================================================
-   Skills Tab
-   ============================================================ */
-
 function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<typeof useDashboardApi> }) {
   const [details, setDetails] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
@@ -1098,140 +1093,6 @@ function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<type
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function SkillsTab({ specId }: { specId: string }) {
-  const api = useDashboardApi();
-  const [skills, setSkills] = useState<SpecSkill[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [adding, setAdding] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  // Add form
-  const [newSkillId, setNewSkillId] = useState('');
-  const [newName, setNewName] = useState('');
-  const [newDesc, setNewDesc] = useState('');
-  const [newContent, setNewContent] = useState('');
-  const [newTags, setNewTags] = useState('');
-
-  useEffect(() => { load(); }, [specId]);
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const data = await api.listSpecSkills(specId);
-      setSkills(data);
-    } catch { /* ignore */ } finally { setLoading(false); }
-  };
-
-  const handleAdd = async () => {
-    if (!newSkillId.trim() || !newName.trim() || !newDesc.trim()) return;
-    try {
-      await api.createSpecSkill(specId, {
-        skill_id: newSkillId.trim(),
-        name: newName.trim(),
-        description: newDesc.trim(),
-        tags: newTags ? newTags.split(',').map((t) => t.trim()).filter(Boolean) : undefined,
-        sections: newContent.trim() ? [{
-          id: 'main',
-          title: newName.trim(),
-          description: newDesc.trim(),
-          level: 'full' as const,
-          content: newContent.trim(),
-        }] : undefined,
-      });
-      toast.success('Skill added');
-      setAdding(false);
-      setNewSkillId(''); setNewName(''); setNewDesc(''); setNewContent(''); setNewTags('');
-      await load();
-    } catch { toast.error('Failed to add skill'); }
-  };
-
-  const handleDelete = async (skillId: string) => {
-    if (!confirm('Delete this skill?')) return;
-    try {
-      await api.deleteSpecSkill(specId, skillId);
-      toast.success('Skill deleted');
-      await load();
-    } catch { toast.error('Failed to delete skill'); }
-  };
-
-  if (loading) return <div className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Loading skills...</div>;
-
-  return (
-    <div className="space-y-3">
-      {skills.length === 0 && !adding && (
-        <div className="text-center py-6">
-          <Wrench size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-          <p className="text-sm text-gray-500 dark:text-gray-400">No skills attached</p>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Skills provide structured instructions for AI agents</p>
-        </div>
-      )}
-
-      {skills.map((skill) => (
-        <div key={skill.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-          <div
-            className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-700/50 cursor-pointer"
-            onClick={() => setExpandedId(expandedId === skill.id ? null : skill.id)}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <Wrench size={14} className="text-violet-500 shrink-0" />
-              <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{skill.name}</span>
-              <span className="text-xs text-gray-400 font-mono">{skill.skill_id}</span>
-              {skill.tags && skill.tags.map((tag, i) => (
-                <span key={i} className="text-[10px] px-1 py-0.5 rounded bg-violet-100 text-violet-600 dark:bg-violet-900/30 dark:text-violet-300">{tag}</span>
-              ))}
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
-              <button
-                onClick={(e) => { e.stopPropagation(); handleDelete(skill.skill_id); }}
-                className="p-1 text-gray-400 hover:text-red-500"
-              >
-                <Trash2 size={14} />
-              </button>
-              {expandedId === skill.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            </div>
-          </div>
-          {expandedId === skill.id && (
-            <div className="px-3 py-2 space-y-2">
-              <p className="text-sm text-gray-600 dark:text-gray-400">{skill.description}</p>
-              {skill.sections && skill.sections.map((sec) => (
-                <div key={sec.id} className="border-l-2 border-violet-300 dark:border-violet-600 pl-3 mt-2">
-                  <h5 className="text-xs font-semibold text-gray-700 dark:text-gray-300">{sec.title}</h5>
-                  {sec.description && <p className="text-xs text-gray-500 dark:text-gray-400">{sec.description}</p>}
-                  {sec.content && (
-                    <pre className="mt-1 text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
-                      {sec.content}
-                    </pre>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-
-      {adding ? (
-        <div className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
-          <div className="grid grid-cols-2 gap-2">
-            <input type="text" value={newSkillId} onChange={(e) => setNewSkillId(e.target.value)} placeholder="skill-id (slug)" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" />
-            <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Display name" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" />
-          </div>
-          <input type="text" value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="Description" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" />
-          <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Skill content / instructions..." className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" rows={4} />
-          <input type="text" value={newTags} onChange={(e) => setNewTags(e.target.value)} placeholder="Tags (comma-separated)" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" />
-          <div className="flex justify-end gap-2">
-            <button onClick={() => setAdding(false)} className="btn btn-secondary text-xs">Cancel</button>
-            <button onClick={handleAdd} disabled={!newSkillId.trim() || !newName.trim() || !newDesc.trim()} className="btn btn-primary text-xs">Add Skill</button>
-          </div>
-        </div>
-      ) : (
-        <button onClick={() => setAdding(true)} className="flex items-center gap-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300">
-          <Plus size={14} /> Add Skill
-        </button>
-      )}
     </div>
   );
 }
@@ -1583,7 +1444,6 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     { id: 'decisions', label: 'Decisions', icon: <GitBranch size={14} />, count: spec.decisions?.length || 0 },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: spec.screen_mockups?.length || 0 },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: spec.qa_items?.length || 0, highlight: unansweredQA > 0 },
-    { id: 'skills', label: 'Skills', icon: <Wrench size={14} />, count: spec.skills?.length || 0 },
     { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={14} />, count: spec.knowledge_bases?.length || 0 },
     { id: 'cards', label: 'Cards', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
     { id: 'sprints', label: 'Sprints', icon: <Layers size={14} />, count: linkedSprints.length },
@@ -2004,7 +1864,6 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           )}
           {activeTab === 'history' && <HistoryTab specId={specId} />}
           {activeTab === 'qa' && <QATab specId={specId} mentionables={mentionables} />}
-          {activeTab === 'skills' && <SkillsTab specId={specId} />}
           {activeTab === 'knowledge' && <KnowledgeTab specId={specId} />}
 
           {activeTab === 'sprints' && (

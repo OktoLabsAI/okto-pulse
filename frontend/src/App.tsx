@@ -11,14 +11,22 @@ import { SpecsPanel } from '@/components/specs';
 import { SprintsPanel } from '@/components/sprints';
 import { AnalyticsPage } from '@/components/analytics';
 import { GlobalKGActivityIndicator } from '@/components/knowledge/GlobalKGActivityIndicator';
+import { KGHealthView } from '@/components/knowledge/KGHealthView';
 import { ModalStackProvider } from '@/contexts/ModalStackContext';
 import { ModalStackRenderer } from '@/components/modals/ModalStackRenderer';
+import { EvidenceGateSkipBanner } from '@/components/banners/EvidenceGateSkipBanner';
+import { getBoardSettings } from '@/services/board-settings-api';
+import { useTermsAcceptance } from '@/hooks/useTermsAcceptance';
+import { TermsAcceptanceModal } from '@/components/onboarding/TermsAcceptanceModal';
+import { OnboardingModal } from '@/components/onboarding/OnboardingModal';
+import { isCompleted as isOnboardingCompleted } from '@/components/onboarding/onboardingStorage';
 import logoLight from '@/assets/logo-light.png';
 import logoDark from '@/assets/logo-dark.png';
 
 function App() {
   const api = useDashboardApi();
   const { isLoaded, isSignedIn } = authAdapter.useAuth();
+  const terms = useTermsAcceptance();
   const currentBoard = useDashboardStore((s) => s.currentBoard);
   const setBoards = useDashboardStore((s) => s.setBoards);
   const setSharedBoards = useDashboardStore((s) => s.setSharedBoards);
@@ -32,21 +40,84 @@ function App() {
   const [agentsModalOpen, setAgentsModalOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [portalBarVisible, setPortalBarVisible] = useState(true);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+
+  // Mount the OnboardingModal on the *first* render after Terms is accepted
+  // (or skipped via CLI/env), but only if the user has not completed it yet.
+  // Returning users (flag set) never see it — no flash, no nag.
+  useEffect(() => {
+    if (terms.loading) return;
+    if (terms.needsAcceptance) return;
+    if (isOnboardingCompleted()) return;
+    setOnboardingOpen(true);
+  }, [terms.loading, terms.needsAcceptance]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [skipEvidenceActive, setSkipEvidenceActive] = useState(false);
   const [activeTab, setActiveTab] = useState<'ideations' | 'refinements' | 'specs' | 'sprints' | 'tasks'>('ideations');
   const [showAnalytics, setShowAnalytics] = useState(
     () => typeof window !== 'undefined' && window.location.pathname.startsWith('/analytics'),
   );
+  const [showKGHealth, setShowKGHealth] = useState(
+    () => typeof window !== 'undefined' && window.location.pathname.startsWith('/kg-health'),
+  );
 
-  // Mantém showAnalytics sincronizado com back/forward do browser.
+  // Mantém showAnalytics e showKGHealth sincronizados com back/forward do browser.
   useEffect(() => {
     const handlePopstate = () => {
       setShowAnalytics(window.location.pathname.startsWith('/analytics'));
+      setShowKGHealth(window.location.pathname.startsWith('/kg-health'));
     };
     window.addEventListener('popstate', handlePopstate);
     return () => window.removeEventListener('popstate', handlePopstate);
   }, []);
+
+  // NC-9 Wave 2 frontend (spec 5cb09dbc): poll board settings to drive the
+  // EvidenceGateSkipBanner. Re-runs when the active board changes or when
+  // the operator toggles via the Board tab in RuntimeSettingsPanel (custom
+  // event refreshes the flag without a reload).
+  //
+  // Bug fix (board d0f6bab2): always reset to false on (re-)mount and on
+  // board switch BEFORE the new fetch resolves. Without this, switching
+  // from a board with skip=true to one with skip=false (or hitting a
+  // transient backend error from the lock-contention bug) left the banner
+  // "stuck" as SKIP ACTIVE because the catch path silently kept the prior
+  // value. Reset-then-refresh guarantees the banner reflects the GET, not
+  // the last-rendered state of a different board.
+  useEffect(() => {
+    setSkipEvidenceActive(false);
+    if (!currentBoard) {
+      return;
+    }
+    let active = true;
+    const refresh = () => {
+      getBoardSettings(currentBoard.id)
+        .then((s) => {
+          if (active) setSkipEvidenceActive(s?.skip_test_evidence_global ?? false);
+        })
+        .catch((err) => {
+          // Non-fatal: keep banner OFF so we never show a stale "skip
+          // active" warning when we can't actually confirm it from the
+          // backend. Logged for diagnostics.
+          if (active) {
+            setSkipEvidenceActive(false);
+            // eslint-disable-next-line no-console
+            console.warn('[evidence-gate] settings fetch failed:', err);
+          }
+        });
+    };
+    refresh();
+    const handler = () => refresh();
+    window.addEventListener('okto:board-settings-changed', handler);
+    return () => {
+      active = false;
+      window.removeEventListener('okto:board-settings-changed', handler);
+    };
+  }, [currentBoard?.id]);
+
+  const openBoardSettings = () => {
+    window.dispatchEvent(new CustomEvent('okto:open-board-settings'));
+  };
 
   const openAnalytics = () => {
     if (!window.location.pathname.startsWith('/analytics')) {
@@ -60,6 +131,20 @@ function App() {
       window.history.pushState({}, '', '/');
     }
     setShowAnalytics(false);
+  };
+
+  const openKGHealth = () => {
+    if (!window.location.pathname.startsWith('/kg-health')) {
+      window.history.pushState({}, '', '/kg-health');
+    }
+    setShowKGHealth(true);
+  };
+
+  const closeKGHealth = () => {
+    if (window.location.pathname.startsWith('/kg-health')) {
+      window.history.pushState({}, '', '/');
+    }
+    setShowKGHealth(false);
   };
 
   useEffect(() => {
@@ -162,13 +247,23 @@ function App() {
 
   return (
     <ModalStackProvider>
-    <div className="min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950">
+    {terms.needsAcceptance && (
+      <TermsAcceptanceModal onAccept={terms.accept} />
+    )}
+    {onboardingOpen && (
+      <OnboardingModal onClose={() => setOnboardingOpen(false)} />
+    )}
+    <div className={`min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950 ${terms.needsAcceptance ? 'pointer-events-none select-none' : ''}`}>
       {portalAdapter.PortalBar && (
         <portalAdapter.PortalBar
           visible={portalBarVisible}
           onToggleVisibility={() => setPortalBarVisible((v) => !v)}
         />
       )}
+      <EvidenceGateSkipBanner
+        skipActive={skipEvidenceActive}
+        onOpenBoardSettings={openBoardSettings}
+      />
       <Header
         onCreateBoard={() => setCreateBoardOpen(true)}
         onOpenAgents={() => setAgentsModalOpen(true)}
@@ -177,6 +272,7 @@ function App() {
         onDeleteBoard={deleteBoard}
         onBoardUpdated={refreshBoard}
         onOpenAnalytics={openAnalytics}
+        onOpenKGHealth={openKGHealth}
         isRefreshing={isRefreshing}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -278,6 +374,13 @@ function App() {
           <div className="flex-1 overflow-auto">
             <AnalyticsPage />
           </div>
+        </div>
+      )}
+
+      {/* KG Health fullscreen overlay (spec d754d004) */}
+      {showKGHealth && (
+        <div className="fixed inset-0 z-50 bg-gray-50 dark:bg-gray-900 flex flex-col">
+          <KGHealthView onClose={closeKGHealth} />
         </div>
       )}
 

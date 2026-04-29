@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 REPO_SRC = Path(__file__).parent.parent / "src"
-CORE_SRC = Path(__file__).parent.parent.parent / "okto_labs_pulse_core" / "src"
+CORE_SRC = Path(__file__).parent.parent.parent / "okto-pulse-core" / "src"
 
 # Ensure local source paths win over any site-packages install of okto-pulse
 # (the community edition was installed via wheel for runtime but tests need

@@ -17,7 +17,6 @@ import type {
   ScreenMockup,
   TechnicalRequirement,
   SpecKnowledgeSummary,
-  SpecSkillSummary,
   ConclusionEntry,
   ValidationEntry,
 } from '@/types';
@@ -212,16 +211,6 @@ function renderKnowledgeBases(kbs: (SpecKnowledgeSummary | { title: string; cont
 }
 
 // ---------------------------------------------------------------------------
-// Skills
-// ---------------------------------------------------------------------------
-
-function renderSkills(skills: SpecSkillSummary[] | null | undefined): string {
-  if (!skills?.length) return '';
-  const items = skills.map(s => `- **${s.name}** — ${s.description || 'No description'}`).join('\n');
-  return `## Skills\n\n${items}\n\n`;
-}
-
-// ---------------------------------------------------------------------------
 // Entity Generators
 // ---------------------------------------------------------------------------
 
@@ -405,7 +394,6 @@ export function exportSpec(spec: Spec): string {
   md += renderBusinessRules(spec.business_rules, spec.functional_requirements);
   md += renderApiContracts(spec.api_contracts);
   md += renderKnowledgeBases(spec.knowledge_bases || []);
-  md += renderSkills(spec.skills);
   md += renderMockups(spec.screen_mockups);
   md += renderQA(spec.qa_items || []);
 
@@ -501,7 +489,6 @@ export function exportCard(card: Card, spec?: Spec | null): string {
     md += renderBusinessRules(spec.business_rules, spec.functional_requirements);
     md += renderApiContracts(spec.api_contracts);
     md += renderKnowledgeBases(spec.knowledge_bases || []);
-    md += renderSkills(spec.skills);
   }
 
   // Card-own knowledge bases
