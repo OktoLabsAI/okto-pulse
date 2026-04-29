@@ -29,6 +29,7 @@ import {
   type QueueHealth,
 } from '@/services/queue-health-api';
 import { triggerKGTick } from '@/services/kg-tick-api';
+import { getKGHealth } from '@/services/kg-health-api';
 import { DeadLetterInspectorModal } from '@/components/knowledge/DeadLetterInspectorModal';
 import { useDashboardStore } from '@/store/dashboard';
 
@@ -108,6 +109,11 @@ export function RuntimeSettingsPanel({
   // Spec ed17b1fe (Wave 2 NC 1ede3471) — DLQ Inspector modal state.
   const [showDeadLetter, setShowDeadLetter] = useState(false);
   const currentBoard = useDashboardStore((s) => s.currentBoard);
+  // Bug fix — true quando o advisory lock global ``kg_daily_tick`` está
+  // acquired no backend. Polled enquanto o usuário está no Decay Tick tab
+  // para que "Save & run now" fique disabled mesmo se o usuário tiver
+  // acabado de chegar (cron, MCP ou outro tab podem ter disparado o tick).
+  const [tickInProgress, setTickInProgress] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -129,6 +135,37 @@ export function RuntimeSettingsPanel({
       active = false;
     };
   }, []);
+
+  // Bug fix — poll do tick_in_progress só enquanto o Decay Tick tab está
+  // ativo (a única superfície onde o "Save & run now" aparece). Intervalo
+  // 15 s é um trade-off entre responsividade e pressão no DB pool — o
+  // ``getKGHealth`` faz queries SQL pesadas (queue_depth aggregation) e
+  // queremos evitar saturar o pool junto com SSE streams + workers. O
+  // ``inFlightRef`` cooldown de 3 s + advisory lock no backend cobre o
+  // gap de detecção em cliques rápidos.
+  useEffect(() => {
+    if (activeTab !== 'decaytick' || !currentBoard) {
+      setTickInProgress(false);
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    const fetchOnce = async () => {
+      try {
+        const h = await getKGHealth(currentBoard.id, controller.signal);
+        if (!cancelled) setTickInProgress(Boolean(h.tick_in_progress));
+      } catch {
+        // Health degrades gracefully — botão fica habilitado se polling falha.
+      }
+    };
+    fetchOnce();
+    const id = window.setInterval(fetchOnce, 15000);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearInterval(id);
+    };
+  }, [activeTab, currentBoard]);
 
   const budgetMb =
     draft.kg_connection_pool_size * draft.kg_kuzu_buffer_pool_mb +
@@ -155,8 +192,20 @@ export function RuntimeSettingsPanel({
     setDraft(snapshotDraft(values));
   };
 
+  // Bug fix (Playwright E2E reproduzido):
+  //
+  // 1. `useRef` síncrono bloqueia rajada de cliques antes do re-render React.
+  // 2. Unlock do ref é DEFERRED por 3s no caminho que dispara o tick — o
+  //    endpoint retorna 202 quase imediatamente, sem cooldown o ref
+  //    liberaria antes do próximo click humano (>100ms). Para o `onSave`
+  //    puro (PUT), o unlock no finally já basta porque a request leva mais.
+  // 3. `tickInProgress` vindo do polling do `/kg/health` cobre cross-mount /
+  //    cross-tab (avaliado no `disabled` do botão e no entry guard).
+  const inFlightRef = useRef(false);
+
   const onSave = async () => {
-    if (outOfRange) return;
+    if (outOfRange || inFlightRef.current) return;
+    inFlightRef.current = true;
     setSaving(true);
     try {
       const resp = await putRuntimeSettings(draft);
@@ -170,6 +219,7 @@ export function RuntimeSettingsPanel({
     } catch (err: any) {
       toast.error(err?.message ?? 'Failed to save runtime settings');
     } finally {
+      inFlightRef.current = false;
       setSaving(false);
     }
   };
@@ -179,8 +229,14 @@ export function RuntimeSettingsPanel({
   // Decay Tick tab; surfaces 409 (tick_already_running) as an amber toast
   // so the operator knows settings were still saved.
   const onSaveAndRunNow = async () => {
-    if (outOfRange) return;
+    // tickInProgress vem do polling KG health (5s) e cobre cross-mount/
+    // cross-tab. inFlightRef cobre clique-rápido na mesma sessão.
+    if (outOfRange || inFlightRef.current || tickInProgress) return;
+    inFlightRef.current = true;
     setSaving(true);
+    // Cooldown lock — mantém o guard por 3s além do fetch para cobrir o
+    // gap entre o 202 do tick e o próximo poll do health (5s).
+    setTimeout(() => { inFlightRef.current = false; }, 3000);
     try {
       const resp = await putRuntimeSettings(draft);
       setValues(resp);
@@ -307,12 +363,17 @@ export function RuntimeSettingsPanel({
           {activeTab === 'decaytick' && (
             <button
               onClick={onSaveAndRunNow}
-              disabled={loading || saving || outOfRange}
+              disabled={loading || saving || outOfRange || tickInProgress}
               className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 inline-flex items-center gap-1"
               data-testid="save-and-run-now"
+              title={tickInProgress && !saving ? 'Tick is already running globally (cron, MCP or another tab)' : undefined}
             >
               <Play size={11} />
-              {saving ? 'Saving…' : 'Save & run now'}
+              {saving
+                ? 'Saving…'
+                : tickInProgress
+                  ? 'Tick in progress…'
+                  : 'Save & run now'}
             </button>
           )}
         </div>

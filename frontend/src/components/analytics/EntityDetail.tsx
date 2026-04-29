@@ -73,6 +73,14 @@ interface SpecAnalytics {
   rules_coverage: number;
   contracts_coverage: number;
   bugs_count?: number;
+  // Spec 233eaad3: shape estendido vindo de coverage_summary do endpoint
+  // board_spec_analytics. Cancelled-card filter aplicado via SSOT.
+  technical_requirements?: any[];
+  trs_coverage?: number;
+  trs_uncovered_indices?: number[];
+  decisions?: any[];
+  decisions_coverage?: number;
+  decisions_uncovered_ids?: string[];
 }
 
 interface IdeationAnalytics {
@@ -279,7 +287,7 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
             </div>
           )}
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
           <KpiMini label="Tasks" value={data.cards.length} icon={<FileText className="w-4 h-4" />} />
           <KpiMini
             label="Completeness"
@@ -306,6 +314,37 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
             value={`${(data.api_contracts || []).length} (${data.contracts_coverage ?? 0}%)`}
             icon={<Globe className="w-4 h-4" />}
           />
+          {/* Spec 233eaad3: TRs e Decisions KPIs com badge vermelho condicional */}
+          <div className="relative">
+            <KpiMini
+              label="TRs"
+              value={`${(data.technical_requirements || []).length} (${data.trs_coverage ?? 0}%)`}
+              icon={<Target className="w-4 h-4 text-purple-500" />}
+            />
+            {(data.trs_uncovered_indices?.length ?? 0) > 0 && (
+              <span
+                className="absolute top-1 right-1 px-1 py-0.5 rounded text-[8px] font-bold bg-red-500 text-white"
+                title={`${data.trs_uncovered_indices?.length} uncovered`}
+              >
+                !
+              </span>
+            )}
+          </div>
+          <div className="relative">
+            <KpiMini
+              label="Decisions"
+              value={`${(data.decisions || []).length} (${data.decisions_coverage ?? 0}%)`}
+              icon={<Scale className="w-4 h-4 text-indigo-500" />}
+            />
+            {(data.decisions_uncovered_ids?.length ?? 0) > 0 && (
+              <span
+                className="absolute top-1 right-1 px-1 py-0.5 rounded text-[8px] font-bold bg-red-500 text-white"
+                title={`${data.decisions_uncovered_ids?.length} uncovered`}
+              >
+                !
+              </span>
+            )}
+          </div>
           {(data.bugs_count ?? 0) > 0 && (
             <KpiMini
               label="Bugs"
@@ -385,6 +424,86 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
         </Card>
       </div>
 
+      {/* TR + Decisions Coverage panels (spec 233eaad3) */}
+      {((data.technical_requirements || []).length > 0 ||
+        (data.decisions || []).length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* TR Coverage */}
+          {(data.technical_requirements || []).length > 0 && (
+            <Card>
+              <SectionTitle>
+                TR Coverage ({((data.technical_requirements || []).length - (data.trs_uncovered_indices?.length ?? 0))}/{(data.technical_requirements || []).length})
+              </SectionTitle>
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {(data.technical_requirements || []).map((tr: any, idx: number) => {
+                  const covered = !(data.trs_uncovered_indices ?? []).includes(idx);
+                  const text = typeof tr === 'string' ? tr : (tr?.text || tr?.title || `TR #${idx}`);
+                  return (
+                    <div key={idx} className="flex items-start gap-2 text-xs">
+                      {covered ? (
+                        <CheckCircle className="w-3.5 h-3.5 text-purple-500 shrink-0 mt-0.5" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0 mt-0.5" />
+                      )}
+                      <span className={`${covered ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'} line-clamp-2 flex-1`}>
+                        {text}
+                      </span>
+                      {!covered && (
+                        <span className="px-1 py-0.5 rounded text-[9px] bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300">
+                          orphan
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* Decisions Coverage */}
+          {(data.decisions || []).length > 0 && (
+            <Card>
+              <SectionTitle>
+                Decisions Coverage ({((data.decisions || []).length - (data.decisions_uncovered_ids?.length ?? 0))}/{(data.decisions || []).length})
+              </SectionTitle>
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {(data.decisions || []).map((dec: any) => {
+                  const decId = typeof dec === 'object' ? dec?.id : null;
+                  const covered = decId && !(data.decisions_uncovered_ids ?? []).includes(decId);
+                  const title = typeof dec === 'object' ? (dec?.title || dec?.id || 'Decision') : String(dec);
+                  const status = typeof dec === 'object' ? dec?.status : null;
+                  const isSoftDeleted = status === 'revoked' || status === 'superseded';
+                  return (
+                    <div key={decId ?? title} className="flex items-start gap-2 text-xs">
+                      {covered ? (
+                        <CheckCircle className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0 mt-0.5" />
+                      )}
+                      <span className={`${covered ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'} line-clamp-2 flex-1`}>
+                        {title}
+                      </span>
+                      <div className="flex gap-1 shrink-0">
+                        {isSoftDeleted && (
+                          <span className="px-1 py-0.5 rounded text-[9px] bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                            {status}
+                          </span>
+                        )}
+                        {!covered && !isSoftDeleted && (
+                          <span className="px-1 py-0.5 rounded text-[9px] bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300">
+                            orphan
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
+
       {/* FR Coverage */}
       {data.fr_details && data.fr_details.length > 0 && (
         <Card>
@@ -410,6 +529,86 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
             ))}
           </div>
         </Card>
+      )}
+
+      {/* BR + API Contracts Coverage panels (bug 6f152627) */}
+      {((data.business_rules || []).length > 0 ||
+        (data.api_contracts || []).length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* BR Coverage */}
+          {(data.business_rules || []).length > 0 && (
+            <Card>
+              <SectionTitle>
+                BR Coverage ({(data.business_rules || []).filter((br: any) => (br?.linked_task_ids || []).length > 0).length}/{(data.business_rules || []).length})
+              </SectionTitle>
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {(data.business_rules || []).map((br: any, idx: number) => {
+                  const linkedTasks = (br?.linked_task_ids || []) as string[];
+                  const covered = linkedTasks.length > 0;
+                  const title = typeof br === 'object' ? (br?.title || br?.rule || `BR #${idx}`) : String(br);
+                  return (
+                    <div key={br?.id ?? idx} className="flex items-start gap-2 text-xs">
+                      {covered ? (
+                        <CheckCircle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0 mt-0.5" />
+                      )}
+                      <span className={`${covered ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'} line-clamp-2 flex-1`}>
+                        {title}
+                      </span>
+                      {covered ? (
+                        <span className="px-1 py-0.5 rounded text-[9px] bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 shrink-0">
+                          {linkedTasks.length} task{linkedTasks.length !== 1 ? 's' : ''}
+                        </span>
+                      ) : (
+                        <span className="px-1 py-0.5 rounded text-[9px] bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 shrink-0">
+                          orphan
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* API Contracts Coverage */}
+          {(data.api_contracts || []).length > 0 && (
+            <Card>
+              <SectionTitle>
+                API Contracts Coverage ({(data.api_contracts || []).filter((c: any) => (c?.linked_task_ids || []).length > 0).length}/{(data.api_contracts || []).length})
+              </SectionTitle>
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {(data.api_contracts || []).map((ct: any, idx: number) => {
+                  const linkedTasks = (ct?.linked_task_ids || []) as string[];
+                  const covered = linkedTasks.length > 0;
+                  const title = typeof ct === 'object' ? (ct?.title || ct?.endpoint || ct?.method || `Contract #${idx}`) : String(ct);
+                  return (
+                    <div key={ct?.id ?? idx} className="flex items-start gap-2 text-xs">
+                      {covered ? (
+                        <CheckCircle className="w-3.5 h-3.5 text-blue-500 shrink-0 mt-0.5" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0 mt-0.5" />
+                      )}
+                      <span className={`${covered ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'} line-clamp-2 flex-1`}>
+                        {title}
+                      </span>
+                      {covered ? (
+                        <span className="px-1 py-0.5 rounded text-[9px] bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 shrink-0">
+                          {linkedTasks.length} task{linkedTasks.length !== 1 ? 's' : ''}
+                        </span>
+                      ) : (
+                        <span className="px-1 py-0.5 rounded text-[9px] bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 shrink-0">
+                          orphan
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+        </div>
       )}
 
       {/* Tasks Table */}

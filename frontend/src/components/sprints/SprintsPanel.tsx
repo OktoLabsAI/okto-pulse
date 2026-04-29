@@ -252,6 +252,7 @@ export function SprintsPanel({ boardId }: SprintsPanelProps) {
           getGroupKey={(s) => s.spec_id ?? s.spec?.id ?? null}
           getGroupTitle={(k) => specTitleById(k)}
           testId="sprints-list"
+          groupIcon={Layers}
           renderItem={(sprint) => (
             <div
               onClick={() => setSelectedSprintId(sprint.id)}

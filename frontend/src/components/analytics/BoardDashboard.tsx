@@ -174,6 +174,15 @@ interface CoverageSpec {
   api_contracts_count: number;
   fr_with_rules_pct: number;
   fr_with_contracts_pct: number;
+  // Spec 233eaad3: 4 novos campos vindo do spec_coverage_summary —
+  // refletem cancelled-card filter (gates e dashboard usam mesma fonte).
+  decisions_coverage_pct?: number;
+  decisions_total?: number;
+  tr_task_linkage_pct?: number;
+  trs_total?: number;
+  // Bug 6f152627: AC/FR coverage explícitos para o painel nível 2.
+  ac_coverage_pct?: number;
+  fr_coverage_pct?: number;
 }
 
 interface AgentRow {
@@ -672,58 +681,77 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">
             Coverage by Spec
           </h3>
-          <div className="flex items-center gap-4 mb-3 text-[10px] text-gray-500 dark:text-gray-400">
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> Tests</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500 inline-block" /> BR Coverage</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block" /> Contract Coverage</span>
+          <div className="flex items-center gap-4 mb-3 text-[10px] text-gray-500 dark:text-gray-400 flex-wrap">
+            <span className="flex items-center gap-1" title="Acceptance Criteria covered by Test Scenarios"><span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> AC</span>
+            <span className="flex items-center gap-1" title="Functional Requirements covered by Business Rules"><span className="w-2 h-2 rounded-full bg-amber-500 inline-block" /> FR</span>
+            <span className="flex items-center gap-1" title="Technical Requirements with active linked tasks"><span className="w-2 h-2 rounded-full bg-purple-500 inline-block" /> TRs</span>
+            <span className="flex items-center gap-1" title="Decisions with active linked tasks"><span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" /> Decisions</span>
           </div>
           {coverageBars.length > 0 ? (
             <div className="space-y-3 max-h-[260px] overflow-y-auto pr-1">
-              {coverageBars.map((s) => (
-                <div key={s.spec_id}>
-                  <span className="text-xs text-gray-600 dark:text-gray-300 truncate block mb-1" title={s.title}>
-                    {s.title}
-                  </span>
-                  <div className="space-y-0.5">
-                    {/* Test coverage bar */}
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                        <div
-                          className={`h-full rounded transition-all duration-500 ${coverageBarColor(s.pct)}`}
-                          style={{ width: `${s.pct}%` }}
-                        />
+              {coverageBars.map((s) => {
+                const acPct = s.ac_coverage_pct ?? s.pct;
+                const frPct = s.fr_coverage_pct ?? s.fr_with_rules_pct ?? 0;
+                const trPct = s.tr_task_linkage_pct ?? 0;
+                const decPct = s.decisions_coverage_pct ?? 0;
+                return (
+                  <div key={s.spec_id}>
+                    <span className="text-xs text-gray-600 dark:text-gray-300 truncate block mb-1" title={s.title}>
+                      {s.title}
+                    </span>
+                    <div className="space-y-0.5">
+                      {/* AC coverage bar */}
+                      <div className="flex items-center gap-2" title={`ACs: ${s.covered_ac}/${s.total_ac} covered by Test Scenarios`}>
+                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
+                          <div
+                            className={`h-full rounded transition-all duration-500 ${coverageBarColor(acPct)}`}
+                            style={{ width: `${acPct}%` }}
+                          />
+                        </div>
+                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
+                          {acPct}%
+                        </span>
                       </div>
-                      <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                        {s.pct}%
-                      </span>
-                    </div>
-                    {/* BR coverage bar */}
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                        <div
-                          className="h-full rounded transition-all duration-500 bg-amber-500"
-                          style={{ width: `${s.fr_with_rules_pct ?? 0}%` }}
-                        />
+                      {/* FR coverage bar */}
+                      <div className="flex items-center gap-2" title={`FRs covered by Business Rules`}>
+                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
+                          <div
+                            className="h-full rounded transition-all duration-500 bg-amber-500"
+                            style={{ width: `${frPct}%` }}
+                          />
+                        </div>
+                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
+                          {frPct}%
+                        </span>
                       </div>
-                      <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                        {s.fr_with_rules_pct ?? 0}%
-                      </span>
-                    </div>
-                    {/* Contract coverage bar */}
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                        <div
-                          className="h-full rounded transition-all duration-500 bg-blue-500"
-                          style={{ width: `${s.fr_with_contracts_pct ?? 0}%` }}
-                        />
+                      {/* TR coverage bar (spec 233eaad3) */}
+                      <div className="flex items-center gap-2" title={`TRs: ${s.trs_total ?? 0} total`}>
+                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
+                          <div
+                            className="h-full rounded transition-all duration-500 bg-purple-500"
+                            style={{ width: `${trPct}%` }}
+                          />
+                        </div>
+                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
+                          {trPct}%
+                        </span>
                       </div>
-                      <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                        {s.fr_with_contracts_pct ?? 0}%
-                      </span>
+                      {/* Decisions coverage bar (spec 233eaad3) */}
+                      <div className="flex items-center gap-2" title={`Decisions: ${s.decisions_total ?? 0} total`}>
+                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
+                          <div
+                            className="h-full rounded transition-all duration-500 bg-indigo-500"
+                            style={{ width: `${decPct}%` }}
+                          />
+                        </div>
+                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
+                          {decPct}%
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="h-56 flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">

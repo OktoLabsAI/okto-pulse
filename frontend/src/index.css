@@ -307,3 +307,20 @@ h1, h2, h3, h4, h5, h6,
 .animate-list > *:nth-child(7) { animation-delay: 180ms; }
 .animate-list > *:nth-child(8) { animation-delay: 210ms; }
 .animate-list > *:nth-child(n+9) { animation-delay: 240ms; }
+
+/* Onboarding modal — Pulse gradient accent for key concepts (matches the
+   landing page hero treatment via background-clip: text). */
+.onboarding-accent {
+  background: linear-gradient(90deg, #22d3ee 0%, #3b82f6 55%, #1e40af 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-style: normal;
+  padding: 0 0.05em;
+}
+
+/* Mono utility for tags/eyebrows in the onboarding modal — matches the
+   IBM Plex Mono treatment used on the landing page. */
+.mono {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}

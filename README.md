@@ -199,4 +199,4 @@ Initial community release on PyPI. Full Ideation → Refinement → Spec → Tas
 
 [Elastic License 2.0](https://github.com/OktoLabsAI/okto-pulse/blob/main/LICENSE) — free for personal and commercial use. You may not provide this software to third parties as a hosted or managed service.
 
-Copyright 2024-2026 Okto Labs
+Copyright 2026 Okto Labs

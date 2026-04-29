@@ -10,7 +10,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, type LucideIcon } from 'lucide-react';
 import type { ViewMode } from '@/hooks/useViewMode';
 
 export interface HierarchicalListProps<T> {
@@ -35,6 +35,12 @@ export interface HierarchicalListProps<T> {
   className?: string;
   /** Optional testId for vitest selectors */
   testId?: string;
+  /**
+   * Lucide icon rendered next to the group title (purple accent).
+   * When set, the header follows the refinement-panel categorizer style:
+   * `<purple icon> <UPPERCASE tracking-wide title>`.
+   */
+  groupIcon?: LucideIcon;
 }
 
 const UNGROUPED = '__ungrouped__';
@@ -57,6 +63,7 @@ export function HierarchicalList<T>({
   gridCols = 3,
   className = '',
   testId = 'hierarchical-list',
+  groupIcon: GroupIcon,
 }: HierarchicalListProps<T>) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -130,7 +137,10 @@ export function HierarchicalList<T>({
               data-testid={`${testId}-group-header-${g.key}`}
             >
               {isCollapsed ? <ChevronRight size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
-              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{g.title || ungroupedLabel}</h3>
+              {GroupIcon && <GroupIcon size={14} className="text-indigo-500 shrink-0" />}
+              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide truncate">
+                {g.title || ungroupedLabel}
+              </h3>
               <span className="text-xs text-gray-400" data-testid={`${testId}-group-count-${g.key}`}>
                 ({g.items.length})
               </span>

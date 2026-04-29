@@ -524,7 +524,7 @@ Additional status: \`cancelled\`
 | Tab | Purpose |
 |-----|---------|
 | **Details** | Title, description, context (supports Markdown + Mermaid diagrams), functional & technical requirements, acceptance criteria |
-| **Test Scenarios** | Given/When/Then format with types (unit, integration, e2e, manual), status tracking, task linking |
+| **Test Scenarios** | Given/When/Then format with types (unit, integration, e2e, manual), status tracking, task linking, **EvidenceBadge** (✓/?) for scenarios in \`automated/passed/failed\` — see Test Evidence Gate in Governance |
 | **Business Rules** | When/Then format for domain logic, linked to functional requirements |
 | **API Contracts** | Endpoint definitions — method, path, request body, success/error responses |
 | **Technical Reqs** | Technical constraints and implementation details, linked to task cards |
@@ -584,11 +584,13 @@ Additional statuses: \`on_hold\`, \`cancelled\`
 
 ### Card types
 
-| Type | Purpose |
-|------|---------|
-| **Normal** | Regular implementation task |
-| **Bug** | Defect tracking (see Bug Tracking section) |
-| **Test** | Test implementation task |
+| Type | Purpose | Validation gate |
+|------|---------|-----------------|
+| **Normal** | Regular implementation task | Subject to Task Validation Gate when enabled |
+| **Bug** | Defect tracking (see Bug Tracking section) | Subject to gate; additional test-first workflow |
+| **Test** | Test implementation task | **Bypasses** the validation gate — moves directly through the kanban |
+
+> Only \`card_type=test\` cards count toward **scenario-coverage**. A normal card with \`test_scenario_ids\` is accepted by the server but does not satisfy coverage. Use \`test\` whenever the intent is scenario coverage.
 
 ### Task detail tabs
 
@@ -842,6 +844,22 @@ Pass → task moves to \`done\`. Fail → task returns to \`not_started\` for re
 | **Test task linked** | At least one new test task must be linked to the bug |
 | **New scenario required** | The test scenario must have been created *after* the bug card |
 
+### Test Evidence Gate (NC-9)
+
+Marking a test scenario as \`automated\`, \`passed\`, or \`failed\` requires **proof of real execution** — preventing "test theater" where statuses are flipped without running anything.
+
+| Field | Required (one of) |
+|-------|-------------------|
+| \`test_file_path\` | path to the test file (e.g. \`tests/test_auth.py\`) |
+| \`test_function\` | function name (e.g. \`test_login_with_invalid_token\`) |
+| \`last_run_at\` | ISO timestamp of the last run |
+| \`output_snippet\` | up to 80 chars of test output |
+| \`test_run_id\` | CI run ID or external test runner reference |
+
+When evidence is present, an inline **EvidenceBadge** (✓ green) appears next to the status. Without evidence the badge is **? gray** and the gate blocks the transition unless \`skip_test_evidence_global\` is ON. When the skip flag is active, an app-wide amber banner reminds operators that the gate is bypassed.
+
+The same evidence is required by the **sprint close** gate as defense-in-depth — a sprint cannot move to \`closed\` if any of its scoped scenarios lack evidence (and the skip flag is off).
+
 ### Overrides
 
 All coverage checks can be bypassed:
@@ -929,14 +947,15 @@ The Knowledge Graph (KG) extracts decisions, constraints, learnings, and relatio
 
 ### Accessing the Knowledge Graph
 
-Click the **Knowledge Graph** tab in the main navigation. The KG page has 5 sub-views, selectable from the left panel:
+Click the **Knowledge Graph** tab in the main navigation. The KG page has 6 sub-views, selectable from the left panel:
 
 | View | Purpose |
 |------|---------|
 | **Graph** | Interactive visualization with pan/zoom, node filtering, and edge rendering |
 | **Audit Log** | History of all consolidation sessions — who added what and when |
 | **Pending Queue** | Consolidation entries waiting to be processed |
-| **Settings** | KG configuration, provider status, danger zone |
+| **KG Health** | Provider/model status, schema version, queue depth, **manual tick** trigger, dedup snapshot |
+| **Settings** | KG configuration (GraphDB / Event Queue / Decay Tick tabs), provider status, danger zone |
 | **Global Search** | Cross-board semantic search by natural language query |
 
 ### Node types (11)
@@ -983,6 +1002,45 @@ Clicking a node reveals:
 - **Find Similar** — Semantic search for related decisions
 - **Show History** — Supersedence chain showing what replaced what (Decision nodes)
 
+### KG Health & Manual Tick
+
+The **KG Health** sub-view exposes runtime diagnostics:
+
+- **Provider / model** — embedder backend (sentence-transformers or stub fallback)
+- **Schema version** — current Kùzu schema (auto-migrated on hot path)
+- **Queue depth** — pending consolidation entries
+- **\`tick_in_progress\`** — \`true\` when the global advisory lock \`kg_daily_tick\` is held
+- **Dedup snapshot** — entity counts and recent dedup actions
+
+#### Run tick now
+
+The **"Run tick now"** button forces a decay/recompute pass without waiting for the scheduler. The button is disabled while a tick is already running (cross-mount/cross-tab safe — backed by the advisory lock + 3s cooldown). Use it after major changes to recompute relevance scores immediately.
+
+The same control surfaces in **Settings → Decay Tick** as **"Save & run now"**, which persists the 3 hot-reload settings (\`interval_minutes\`, \`staleness_days\`, \`max_age_days\`) and triggers a tick in one shot.
+
+### Dead Letter Queue (DLQ) Inspector
+
+When a consolidation entry fails 3 times, it lands in the DLQ. The **DLQ Inspector** modal (accessible from the Pending Queue view) lets you:
+- List DLQ rows with full error history (timestamp, exception class, traceback)
+- Inspect the original payload that triggered the failure
+- Read-only in MVP — reprocess is planned for a future release
+
+Use this to diagnose extractor regressions, embedder timeouts, or schema mismatches without tailing server logs.
+
+### Schema migration self-heal
+
+KG schema evolves across releases (e.g. v0.3.2 added \`human_curated\`, \`last_recomputed_at\`). The hot path **auto-migrates** on first read, so most users never notice. For boards stuck or pre-v0.3.2 graphs, a triplet is exposed:
+
+- **CLI** — \`okto-pulse kg migrate-schema\`
+- **MCP tool** — \`kg_migrate_schema\` (gemellar)
+- **REST** — \`POST /api/v1/kg/migrate-schema\`
+
+> **Important:** Never delete \`graph.kuzu\` manually — the migration preserves all nodes/edges. Deleting forces a full re-consolidation.
+
+### Cognitive extractors (opt-in)
+
+Beyond the structural extractors (Decision, Constraint, etc.), the KG can extract **Learning**, **Alternative**, and **Assumption** nodes via LLM. This is **opt-in** per board via \`cognitive_llm_config\` (provider + model + API key). When disabled, the system logs a structured event but does not call any LLM. Persistence in Kùzu for cognitive nodes is in v1 (DEFERRED — read the structured logs for now).
+
 ### AI agent integration
 
 MCP agents can query the Knowledge Graph via 15+ tools:
@@ -993,6 +1051,8 @@ MCP agents can query the Knowledge Graph via 15+ tools:
 - \`kg_get_supersedence_chain\` — See what replaced what
 - \`kg_query_cypher\` — Direct Cypher queries (read-only, safety-checked)
 - \`kg_query_natural\` — Natural language queries
+- \`kg_migrate_schema\` — Trigger schema migration
+- \`kg_trigger_tick\` — Force a decay tick (returns 202 + tick id)
 - And more (see the full MCP tool list)
 `,
     },
@@ -1015,6 +1075,7 @@ These flags bypass specific coverage checks for the entire board:
 | \`skip_rules_coverage_global\` | Business rules → functional requirements coverage |
 | \`skip_trs_coverage_global\` | Technical requirements → task card linkage |
 | \`skip_contract_coverage_global\` | API contract → task card linkage |
+| \`skip_test_evidence_global\` | **Test Evidence Gate** (NC-9) — when ON, test scenarios can be marked \`automated/passed/failed\` without proof of execution. A persistent amber banner appears app-wide until disabled. |
 
 ### Task Validation Gate thresholds
 
@@ -1039,6 +1100,18 @@ These flags bypass specific coverage checks for the entire board:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | \`max_scenarios_per_card\` | 5 | Maximum test scenarios per card (1–10) |
+
+### Runtime Settings Panel
+
+Beyond the static board settings above, the **Runtime Settings Panel** (Menu → Settings) exposes hot-reload knobs grouped into 3 tabs:
+
+| Tab | Controls |
+|-----|----------|
+| **GraphDB** | Kùzu connection pool, timeout, query limits |
+| **Event Queue** | \`kg_queue_min_interval_ms\` (0–1000), batch size, retry policy |
+| **Decay Tick** | \`interval_minutes\` (5–10080), \`staleness_days\` (1–365), \`max_age_days\` (0–365) — plus the **"Save & run now"** action that persists + triggers a tick atomically |
+
+Changes apply without restarting the server. The Decay Tick tab also polls \`/kg/health\` every 5s while open to surface \`tick_in_progress\` and disable conflicting buttons.
 
 ### Per-spec overrides
 

@@ -165,6 +165,7 @@ export function KGHealthView({
                 nodesRecomputed={data.nodes_recomputed_in_last_tick}
                 boardId={boardId}
                 onTickStarted={handleRefresh}
+                tickInProgress={data.tick_in_progress ?? false}
               />
               <QueueDeadLetterCard
                 queueDepth={data.queue_depth}
@@ -302,6 +303,12 @@ interface SchemaTickCardProps {
   boardId: string;
   /** Callback chamado após tick disparar com sucesso (para refresh natural). */
   onTickStarted: () => void;
+  /** Bug fix — true quando o advisory lock global ``kg_daily_tick`` está
+   *  acquired no backend. Vem de KGHealth.tick_in_progress, atualizado a
+   *  cada poll (30s). Garante que o botão fica desabilitado mesmo se o
+   *  usuário fechar o modal e voltar — ou se outra origem (cron/MCP)
+   *  estiver rodando o tick agora. */
+  tickInProgress: boolean;
 }
 
 function SchemaTickCard({
@@ -311,6 +318,7 @@ function SchemaTickCard({
   nodesRecomputed,
   boardId,
   onTickStarted,
+  tickInProgress,
 }: SchemaTickCardProps) {
   // Spec 54399628 (Wave 2 NC f9732afc) — botão "Run tick now" com 4 estados:
   // idle / running / success (toast + handleRefresh) / error (toast).
@@ -319,9 +327,27 @@ function SchemaTickCard({
   // após o callback async resolver.
   const [tickRunning, setTickRunning] = useState(false);
 
+  // Bug fix (Playwright E2E reproduzido):
+  //
+  // 1. `useRef` síncrono garante que cliques no mesmo macro-tick (antes do
+  //    React re-render) sejam bloqueados — o guard via state-only falhava
+  //    em rajadas de 10ms entre cliques.
+  // 2. A unlock do ref é DEFERRED por 3s mesmo após o `triggerKGTick`
+  //    resolver: o endpoint retorna 202 quase imediatamente, então sem o
+  //    cooldown o ref liberaria antes do próximo click humano (>100ms).
+  //    3s cobre o gap até o próximo poll do health (que verá
+  //    `tick_in_progress=true` via advisory lock e mantém o botão disabled).
+  // 3. `tickInProgress` vindo do health é a defesa cross-mount/cross-tab
+  //    (avaliado no botão `disabled` + entry guard).
+  const inFlightRef = useRef(false);
+
   const handleRunTickNow = useCallback(async () => {
-    if (tickRunning) return;
+    if (inFlightRef.current || tickRunning || tickInProgress) return;
+    inFlightRef.current = true;
     setTickRunning(true);
+    // Cooldown lock — mantém o guard por 3s além do fetch para cobrir o
+    // gap entre o 202 e o próximo poll do health.
+    setTimeout(() => { inFlightRef.current = false; }, 3000);
     try {
       await triggerKGTick(boardId);
       toast.success('Tick started — graph will update on next poll');
@@ -338,7 +364,7 @@ function SchemaTickCard({
     } finally {
       setTickRunning(false);
     }
-  }, [boardId, onTickStarted, tickRunning]);
+  }, [boardId, onTickStarted, tickRunning, tickInProgress]);
 
   const tickClasses =
     tickInfo.status === 'never'
@@ -376,19 +402,20 @@ function SchemaTickCard({
         <button
           type="button"
           onClick={handleRunTickNow}
-          disabled={tickRunning}
+          disabled={tickRunning || tickInProgress}
           className={`w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-            tickRunning
+            tickRunning || tickInProgress
               ? 'bg-surface-200 dark:bg-surface-700 text-surface-500 dark:text-surface-400 cursor-not-allowed'
               : 'bg-blue-600 hover:bg-blue-700 text-white'
           }`}
           data-testid="kg-tick-run-now"
           aria-label="Run KG decay tick now"
+          title={tickInProgress && !tickRunning ? 'Tick is already running globally (cron, MCP or another tab)' : undefined}
         >
-          {tickRunning ? (
+          {tickRunning || tickInProgress ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />
-              Running…
+              {tickInProgress && !tickRunning ? 'Tick in progress…' : 'Running…'}
             </>
           ) : (
             <>

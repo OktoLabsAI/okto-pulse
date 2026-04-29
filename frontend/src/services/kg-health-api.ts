@@ -28,6 +28,10 @@ export interface KGHealth {
   contradict_warn_count: number;
   last_decay_tick_at: string | null;
   nodes_recomputed_in_last_tick: number;
+  // True quando o advisory lock global ``kg_daily_tick`` está acquired —
+  // serve para desabilitar o botão "Run tick now" mesmo após remount do
+  // componente (single source of truth via backend).
+  tick_in_progress?: boolean;
 }
 
 const BASE = '/api/v1';

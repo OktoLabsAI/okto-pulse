@@ -18,6 +18,8 @@ import { EvidenceGateSkipBanner } from '@/components/banners/EvidenceGateSkipBan
 import { getBoardSettings } from '@/services/board-settings-api';
 import { useTermsAcceptance } from '@/hooks/useTermsAcceptance';
 import { TermsAcceptanceModal } from '@/components/onboarding/TermsAcceptanceModal';
+import { OnboardingModal } from '@/components/onboarding/OnboardingModal';
+import { isCompleted as isOnboardingCompleted } from '@/components/onboarding/onboardingStorage';
 import logoLight from '@/assets/logo-light.png';
 import logoDark from '@/assets/logo-dark.png';
 
@@ -38,6 +40,17 @@ function App() {
   const [agentsModalOpen, setAgentsModalOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [portalBarVisible, setPortalBarVisible] = useState(true);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+
+  // Mount the OnboardingModal on the *first* render after Terms is accepted
+  // (or skipped via CLI/env), but only if the user has not completed it yet.
+  // Returning users (flag set) never see it — no flash, no nag.
+  useEffect(() => {
+    if (terms.loading) return;
+    if (terms.needsAcceptance) return;
+    if (isOnboardingCompleted()) return;
+    setOnboardingOpen(true);
+  }, [terms.loading, terms.needsAcceptance]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [skipEvidenceActive, setSkipEvidenceActive] = useState(false);
@@ -236,6 +249,9 @@ function App() {
     <ModalStackProvider>
     {terms.needsAcceptance && (
       <TermsAcceptanceModal onAccept={terms.accept} />
+    )}
+    {onboardingOpen && (
+      <OnboardingModal onClose={() => setOnboardingOpen(false)} />
     )}
     <div className={`min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950 ${terms.needsAcceptance ? 'pointer-events-none select-none' : ''}`}>
       {portalAdapter.PortalBar && (

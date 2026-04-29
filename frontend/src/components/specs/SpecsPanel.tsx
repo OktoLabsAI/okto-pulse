@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Archive,
   ArchiveRestore,
+  Layers,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -227,6 +228,7 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
             getGroupKey={(s) => s.refinement_id ?? s.ideation_id ?? null}
             getGroupTitle={(k) => parentTitleById[k] || k}
             testId="specs-list"
+            groupIcon={Layers}
             renderItem={(spec) => (
               <div
                 onClick={() => setSelectedSpecId(spec.id)}
