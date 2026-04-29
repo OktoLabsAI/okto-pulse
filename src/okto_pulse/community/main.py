@@ -26,9 +26,11 @@ from okto_pulse.core.infra.database import create_database, get_engine, get_sess
 from okto_pulse.core.infra.storage import FileSystemStorageProvider
 from okto_pulse.core.kg.embedding import SentenceTransformerProvider, StubEmbeddingProvider
 from okto_pulse.core.kg.interfaces.registry import configure_kg_registry, get_kg_registry
-# NOTE: MCP server import moved into run_mcp() to avoid module-level settings cache
-# When okto_pulse.core.mcp.server is imported, it calls get_settings() which caches
-# a default instance. We need to call configure_settings() BEFORE that import happens.
+# NOTE: MCP server is imported lazily inside create_community_app (after
+# create_app has called configure_settings) and inside combined_lifespan
+# (after init_db). Module-level import would cache the default settings
+# singleton via get_settings() at import time and break runtime config.
+# Settings cache trap respected by Spec 23350275 (Fix C, BR5).
 from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.community.seed import seed_community_defaults
@@ -247,7 +249,8 @@ def create_community_app():
     auth = LocalAuthProvider()
     storage = FileSystemStorageProvider(settings.upload_dir)
 
-    # Combined lifespan: seed data, preload embeddings, start KG workers
+    # Combined lifespan: seed data, preload embeddings, start KG workers,
+    # register the MCP session factory so the mounted sub-app finds the DB.
     async def combined_lifespan(app_instance) -> AsyncGenerator[None, None]:
         await init_db()
         async with get_session_factory()() as db:
@@ -260,7 +263,7 @@ def create_community_app():
                 print(f"  Board created: {board.name} ({board.id})")
                 print(f"  Agent created: {agent.name}")
                 print(f"  API Key: {api_key}")
-                print(f"  MCP URL: http://localhost:{settings.mcp_port}/mcp?api_key={api_key}")
+                print(f"  MCP URL: http://localhost:{mcp_port}/mcp?api_key={api_key}")
                 print(f"{'='*60}\n")
 
         # Preload the embedding model before serving requests so the first
@@ -331,6 +334,15 @@ def create_community_app():
             except Exception:
                 scheduler = None
 
+        # Spec 23350275 (Fix C): the MCP sub-app shares this process, this
+        # FastAPI app, and this database. Register the session factory now
+        # — the mount happens once below in create_community_app so the
+        # routing table is finalized before uvicorn starts serving.
+        # Lazy import preserves the settings cache trap: configure_settings
+        # has already run via create_app().
+        from okto_pulse.core.mcp.server import register_session_factory
+        register_session_factory(get_session_factory())
+
         yield
 
         if scheduler is not None:
@@ -388,62 +400,56 @@ def create_community_app():
 app = create_community_app()
 
 
-def run():
-    """Run the community API + Frontend server."""
+async def _serve_dual(api_port: int, mcp_port: int) -> None:
+    """Run API+UI on `api_port` and MCP on `mcp_port` inside a single
+    Python process via two uvicorn `Server` instances driven by
+    ``asyncio.gather``.
+
+    Single-process is required to keep the Kùzu lock owned by exactly one
+    process (the embedded DB does not support multiple writers). The two
+    listeners share the same module-level state — including the
+    ``_global_db`` cache, the ``_mcp_session_factory`` registered by the
+    API lifespan, and the ``_active_api_key`` ``ContextVar`` — so the MCP
+    sub-app sees a fully-initialised runtime.
+    """
+    from okto_pulse.core.mcp.server import build_mcp_asgi_app
+
     settings = CommunitySettings()
 
-    # Read port from environment (set by CLI) or use settings
-    port = int(os.environ.get("PORT", os.environ.get("OKTO_PULSE_PORT", str(settings.port))))
-
-    uvicorn.run(
+    api_config = uvicorn.Config(
         "okto_pulse.community.main:app",
         host=settings.host,
-        port=port,
-        reload=settings.debug,
+        port=api_port,
         ws="wsproto",
+        log_level="info",
     )
+    api_server = uvicorn.Server(api_config)
+
+    mcp_config = uvicorn.Config(
+        build_mcp_asgi_app(),
+        host="127.0.0.1",
+        port=mcp_port,
+        ws="wsproto",
+        log_level="info",
+    )
+    mcp_server = uvicorn.Server(mcp_config)
+
+    await asyncio.gather(api_server.serve(), mcp_server.serve())
 
 
-def run_mcp():
-    """Run the MCP server for the community edition.
-
-    CRITICAL: Import MCP server module AFTER configure_settings() to ensure
-    the correct port configuration is cached before module-level get_settings()
-    calls happen.
+def run():
+    """Run the community API + Frontend + MCP server (single process,
+    two ports). Reads ``OKTO_PULSE_PORT`` / ``OKTO_PULSE_MCP_PORT`` env
+    vars (set by the CLI) and falls back to the settings defaults.
     """
-    import os
-    from okto_pulse.community.config import CommunitySettings
-
-    # Read ports from environment (set by CLI) BEFORE creating settings
-    # to avoid using hardcoded defaults
-    port = int(os.environ.get("MCP_PORT", os.environ.get("OKTO_PULSE_MCP_PORT", "8101")))
-
-    # Create settings and override MCP port if env var is set
     settings = CommunitySettings()
-    if port != 8101:  # Only override if env var was actually set
-        settings.mcp_port = port
-
-    _ensure_data_dir(settings)
-    configure_settings(settings)
-    create_database(settings.database_url, echo=settings.debug)
-    _configure_sqlite_pragmas(get_engine())
-    configure_kg_registry(session_factory=get_session_factory())
-
-    # Preload the embedding model synchronously before the MCP server loop
-    # starts, so the first KG call doesn't trigger a multi-second model load
-    # on the event loop.
-    try:
-        registry = get_kg_registry()
-        provider = registry.embedding_provider
-        if hasattr(provider, '_get_model'):
-            provider._get_model()
-    except Exception:
-        pass  # degrade gracefully — stub provider will be used
-
-    # Import MCP server functions AFTER configure_settings()
-    from okto_pulse.core.mcp.server import run_mcp_server, register_session_factory
-    register_session_factory(get_session_factory())
-    run_mcp_server()
+    api_port = int(
+        os.environ.get("PORT", os.environ.get("OKTO_PULSE_PORT", str(settings.port)))
+    )
+    mcp_port = int(
+        os.environ.get("MCP_PORT", os.environ.get("OKTO_PULSE_MCP_PORT", str(settings.mcp_port)))
+    )
+    asyncio.run(_serve_dual(api_port, mcp_port))
 
 
 if __name__ == "__main__":

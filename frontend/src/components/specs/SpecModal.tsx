@@ -200,8 +200,6 @@ const ACTION_LABELS: Record<string, string> = {
   updated: 'Updated',
   status_changed: 'Status changed',
   cards_derived: 'Cards derived',
-  skill_added: 'Skill added',
-  skill_removed: 'Skill removed',
   knowledge_added: 'Knowledge added',
   knowledge_removed: 'Knowledge removed',
   qa_added: 'Question added',
@@ -1041,10 +1039,6 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
     </div>
   );
 }
-
-/* ============================================================
-   Skills Tab
-   ============================================================ */
 
 function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<typeof useDashboardApi> }) {
   const [details, setDetails] = useState<Record<string, any>>({});

@@ -18,11 +18,15 @@ import {
   AssistantBindingSlide,
   ASSISTANT_BINDING_SLIDE_TITLE_ID,
 } from './AssistantBindingSlide';
+import {
+  StartIdeationSlide,
+  START_IDEATION_SLIDE_TITLE_ID,
+} from './StartIdeationSlide';
 
-type SlideState = 'slide-1' | 'slide-2' | 'slide-3' | 'closed';
+type SlideState = 'slide-1' | 'slide-2' | 'slide-3' | 'slide-4' | 'closed';
 type SlideEvent = { type: 'NEXT' | 'BACK' | 'CLOSE' };
 
-const TOTAL_SLIDES = 3;
+const TOTAL_SLIDES = 4;
 
 function reducer(state: SlideState, event: SlideEvent): SlideState {
   if (state === 'closed') return state;
@@ -30,9 +34,14 @@ function reducer(state: SlideState, event: SlideEvent): SlideState {
   if (event.type === 'NEXT') {
     if (state === 'slide-1') return 'slide-2';
     if (state === 'slide-2') return 'slide-3';
-    return 'closed';
+    if (state === 'slide-3') return 'slide-4';
+    // slide-4 is the last; closing happens via the CTA's close() path,
+    // not via NEXT (e.g. ArrowRight on the last slide is a no-op — AC4
+    // of spec c90a6e85).
+    return state;
   }
   if (event.type === 'BACK') {
+    if (state === 'slide-4') return 'slide-3';
     if (state === 'slide-3') return 'slide-2';
     if (state === 'slide-2') return 'slide-1';
     return state;
@@ -40,16 +49,18 @@ function reducer(state: SlideState, event: SlideEvent): SlideState {
   return state;
 }
 
-function slideIndex(state: SlideState): 1 | 2 | 3 | 0 {
+function slideIndex(state: SlideState): 1 | 2 | 3 | 4 | 0 {
   if (state === 'slide-1') return 1;
   if (state === 'slide-2') return 2;
   if (state === 'slide-3') return 3;
+  if (state === 'slide-4') return 4;
   return 0;
 }
 
 function slideTitleId(state: SlideState): string {
   if (state === 'slide-2') return QUICK_START_SLIDE_TITLE_ID;
   if (state === 'slide-3') return ASSISTANT_BINDING_SLIDE_TITLE_ID;
+  if (state === 'slide-4') return START_IDEATION_SLIDE_TITLE_ID;
   return WELCOME_SLIDE_TITLE_ID;
 }
 
@@ -123,9 +134,10 @@ export function OnboardingModal({ mcpUrl, onClose }: OnboardingModalProps) {
     ctaRef.current?.focus();
     if (liveRegionRef.current) {
       const labels = {
-        'slide-1': 'Slide 1 of 3: Welcome to Okto Pulse',
-        'slide-2': 'Slide 2 of 3: Quick start',
-        'slide-3': 'Slide 3 of 3: Assistant binding',
+        'slide-1': 'Slide 1 of 4: Welcome to Okto Pulse',
+        'slide-2': 'Slide 2 of 4: Quick start',
+        'slide-3': 'Slide 3 of 4: Assistant binding',
+        'slide-4': 'Slide 4 of 4: Start your first ideation',
       } as const;
       liveRegionRef.current.textContent = labels[state];
     }
@@ -160,7 +172,7 @@ export function OnboardingModal({ mcpUrl, onClose }: OnboardingModalProps) {
             data-testid="onboarding-step-indicator"
             className="mono text-[11px] uppercase tracking-[0.15em] text-gray-400 dark:text-gray-500"
           >
-            0{idx} / 03 &middot; Onboarding
+            0{idx} / 04 &middot; Onboarding
           </span>
           <div className="flex items-center gap-2.5">
             <button
@@ -189,6 +201,7 @@ export function OnboardingModal({ mcpUrl, onClose }: OnboardingModalProps) {
           {state === 'slide-1' && <WelcomeSlide />}
           {state === 'slide-2' && <QuickStartSlide />}
           {state === 'slide-3' && <AssistantBindingSlide mcpUrl={mcpUrl} />}
+          {state === 'slide-4' && <StartIdeationSlide />}
         </main>
 
         {/* Footer */}

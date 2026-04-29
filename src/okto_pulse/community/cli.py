@@ -12,10 +12,8 @@ import asyncio
 import json
 import os
 import shutil
-import signal
 import socket
 import sys
-from multiprocessing import Process
 from pathlib import Path
 
 # Default ports
@@ -200,36 +198,15 @@ def _generate_mcp_json(mcp_port: int, agent_names: list[str] | None):
     print(f"  Agents exported: {agent_list}")
 
 
-# Module-level process targets (must be picklable for Windows multiprocessing spawn).
-# Port overrides are passed via environment variables since these functions take no args.
-def _serve_api(api_port: int | None = None):
-    """Start the API server. Reads OKTO_PULSE_PORT env for port override."""
-    if api_port is None:
-        port = int(os.environ.get("OKTO_PULSE_PORT", DEFAULT_API_PORT))
-    else:
-        port = api_port
-    os.environ["PORT"] = str(port)
-    os.environ["OKTO_PULSE_PORT"] = str(port)  # Ensure child processes see it
-    from okto_pulse.community.main import run
-    run()
-
-
-def _serve_mcp(mcp_port: int | None = None):
-    """Start the MCP server. Reads OKTO_PULSE_MCP_PORT env for port override."""
-    if mcp_port is None:
-        port = int(os.environ.get("OKTO_PULSE_MCP_PORT", DEFAULT_MCP_PORT))
-    else:
-        port = mcp_port
-    os.environ["MCP_PORT"] = str(port)
-    os.environ["OKTO_PULSE_MCP_PORT"] = str(port)  # Ensure consistency
-    from okto_pulse.community.main import run_mcp
-    run_mcp()
-
-
 def cmd_serve(args):
-    """Start backend API (+ embedded frontend) and MCP server."""
-    from okto_pulse.community.main import FRONTEND_DIR
+    """Start the API + Frontend server and the MCP server.
 
+    Both servers run inside a single Python process (so the embedded Kùzu
+    DB is owned by exactly one OS process), but listen on two different
+    ports — ``--api-port`` for the REST API + UI, ``--mcp-port`` for the
+    MCP transport. Each port has its own uvicorn ``Server`` instance
+    driven concurrently via ``asyncio.gather``.
+    """
     api_port = args.api_port
     mcp_port = args.mcp_port
 
@@ -238,11 +215,15 @@ def cmd_serve(args):
     if _is_port_in_use(mcp_port):
         print(f"Warning: Port {mcp_port} is already in use. MCP server may fail to start.")
 
-    has_frontend = FRONTEND_DIR.exists() and (FRONTEND_DIR / "index.html").exists()
-
-    # Set environment variables early (before any imports in subprocesses)
+    # Ports go via env so create_community_app + the MCP runner read them.
+    # MUST be set BEFORE importing okto_pulse.community.main — that module
+    # evaluates `app = create_community_app()` at import time, which reads
+    # the env vars to inject /config.js with the correct API_URL/MCP_URL.
     os.environ["OKTO_PULSE_PORT"] = str(api_port)
     os.environ["OKTO_PULSE_MCP_PORT"] = str(mcp_port)
+
+    from okto_pulse.community.main import FRONTEND_DIR
+    has_frontend = FRONTEND_DIR.exists() and (FRONTEND_DIR / "index.html").exists()
 
     # Terms-of-Use pre-acceptance via CLI flag or env var.
     if getattr(args, "accept_terms", False):
@@ -256,36 +237,18 @@ def cmd_serve(args):
             rec = write_acceptance("env")
             print(f"Terms-of-Use pre-accepted via env (version {rec['version']}).")
 
-    api_process = Process(target=_serve_api, args=(api_port,), name="okto-pulse-api")
-    mcp_process = Process(target=_serve_mcp, args=(mcp_port,), name="okto-pulse-mcp")
-
-    def _shutdown(sig, frame):
-        print("\nShutting down...")
-        api_process.terminate()
-        mcp_process.terminate()
-        api_process.join(timeout=5)
-        mcp_process.join(timeout=5)
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
-
     print("Starting Okto Pulse Community...")
     if has_frontend:
         print(f"  App:  http://127.0.0.1:{api_port}  (API + Frontend)")
     else:
         print(f"  API:  http://127.0.0.1:{api_port}  (no frontend embedded)")
-    print(f"  MCP:  http://127.0.0.1:{mcp_port}")
+    print(f"  MCP:  http://127.0.0.1:{mcp_port}/mcp")
     print("  Press Ctrl+C to stop.\n")
 
-    api_process.start()
-    mcp_process.start()
-
-    try:
-        api_process.join()
-        mcp_process.join()
-    except KeyboardInterrupt:
-        _shutdown(None, None)
+    # Single-process, dual-port: run() spawns two uvicorn Server instances
+    # via asyncio.gather. uvicorn handles SIGINT/SIGTERM natively for both.
+    from okto_pulse.community.main import run
+    run()
 
 
 def cmd_status(args):

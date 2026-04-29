@@ -529,7 +529,6 @@ Additional status: \`cancelled\`
 | **API Contracts** | Endpoint definitions — method, path, request body, success/error responses |
 | **Technical Reqs** | Technical constraints and implementation details, linked to task cards |
 | **Mockups** | HTML/Tailwind screen mockups with types (page, modal, drawer, popover, panel) and design annotations |
-| **Skills** | Multi-section reusable knowledge blocks (prompts, guidelines) that agents can load |
 | **Knowledge Base** | Attach reference documents, technical notes, research, or file content |
 | **Q&A** | Text questions, choice boards (single/multi-select), free-text responses |
 | **Cards** | View all derived task cards, link/unlink cards |

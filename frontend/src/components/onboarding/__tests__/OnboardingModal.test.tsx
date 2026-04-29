@@ -38,7 +38,7 @@ function open(props: Partial<React.ComponentProps<typeof OnboardingModal>> = {})
 }
 
 describe('OnboardingModal — TS-3 (slide navigation)', () => {
-  it('renders slides 1, 2, 3 in order via Next, then dot indicator follows', () => {
+  it('renders slides 1, 2, 3, 4 in order via Next, then dot indicator follows', () => {
     open();
     // slide 1
     expect(screen.getByTestId('onboarding-modal').getAttribute('data-slide')).toBe('1');
@@ -52,15 +52,42 @@ describe('OnboardingModal — TS-3 (slide navigation)', () => {
     fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
     expect(screen.getByTestId('onboarding-modal').getAttribute('data-slide')).toBe('3');
     expect(screen.getByTestId('onboarding-dot-3').getAttribute('data-active')).toBe('true');
+
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
+    expect(screen.getByTestId('onboarding-modal').getAttribute('data-slide')).toBe('4');
+    expect(screen.getByTestId('onboarding-dot-4').getAttribute('data-active')).toBe('true');
   });
 
-  it('Back button is hidden on slide 1 and visible on slides 2/3', () => {
+  it('Back button is hidden on slide 1 and visible on slides 2/3/4', () => {
     open();
     expect(screen.queryByTestId('onboarding-back-button')).toBeNull();
     fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
     expect(screen.getByTestId('onboarding-back-button')).toBeTruthy();
     fireEvent.click(screen.getByTestId('onboarding-back-button'));
     expect(screen.getByTestId('onboarding-modal').getAttribute('data-slide')).toBe('1');
+  });
+
+  it('Back from slide 4 returns to slide 3', () => {
+    open();
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 2
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 3
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 4
+    expect(screen.getByTestId('onboarding-modal').getAttribute('data-slide')).toBe('4');
+    fireEvent.click(screen.getByTestId('onboarding-back-button'));
+    expect(screen.getByTestId('onboarding-modal').getAttribute('data-slide')).toBe('3');
+  });
+
+  it('ArrowRight on slide 4 is a no-op (modal stays open on slide 4)', () => {
+    const onClose = vi.fn();
+    open({ onClose });
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 2
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 3
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 4
+    expect(screen.getByTestId('onboarding-modal').getAttribute('data-slide')).toBe('4');
+    fireEvent.keyDown(document, { key: 'ArrowRight' });
+    // still on slide 4, modal not closed
+    expect(screen.getByTestId('onboarding-modal').getAttribute('data-slide')).toBe('4');
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
 
@@ -83,6 +110,7 @@ describe('OnboardingModal — TS-6 (English-only copy)', () => {
       'WelcomeSlide.tsx',
       'QuickStartSlide.tsx',
       'AssistantBindingSlide.tsx',
+      'StartIdeationSlide.tsx',
     ];
     // Minimal, conservative denylist — words that appear ONLY in Portuguese
     // copy. We avoid English false positives (e.g. "para", "you").
@@ -165,13 +193,20 @@ describe('OnboardingModal — TS-9 (Copy MCP URL writes to clipboard)', () => {
   });
 });
 
-describe('OnboardingModal — TS-11 (slide 3 CTA reads "Get started")', () => {
-  it('CTA label is exactly "Get started" on slide 3 (no arrow)', () => {
+describe('OnboardingModal — TS-11 (CTA label progression)', () => {
+  it('CTA shows "Next →" on slide 3 (no longer the last) and "Get started" on slide 4', () => {
     open();
+    // slide 1
+    expect(screen.getByTestId('onboarding-primary-cta').textContent).toBe('Next \u2192');
     fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
+    // slide 2
+    expect(screen.getByTestId('onboarding-primary-cta').textContent).toBe('Next \u2192');
     fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
-    const cta = screen.getByTestId('onboarding-primary-cta');
-    expect(cta.textContent).toBe('Get started');
+    // slide 3 — no longer the last, so still "Next →"
+    expect(screen.getByTestId('onboarding-primary-cta').textContent).toBe('Next \u2192');
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
+    // slide 4 — now the last, "Get started"
+    expect(screen.getByTestId('onboarding-primary-cta').textContent).toBe('Get started');
   });
 });
 
@@ -181,21 +216,70 @@ describe('OnboardingModal — TS-12 (dot indicator updates with active slide)', 
     expect(screen.getByTestId('onboarding-dot-1').getAttribute('data-active')).toBe('true');
     expect(screen.getByTestId('onboarding-dot-2').getAttribute('data-active')).toBe('false');
     expect(screen.getByTestId('onboarding-dot-3').getAttribute('data-active')).toBe('false');
+    expect(screen.getByTestId('onboarding-dot-4').getAttribute('data-active')).toBe('false');
 
     fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
     expect(screen.getByTestId('onboarding-dot-1').getAttribute('data-active')).toBe('false');
     expect(screen.getByTestId('onboarding-dot-2').getAttribute('data-active')).toBe('true');
     expect(screen.getByTestId('onboarding-dot-3').getAttribute('data-active')).toBe('false');
+    expect(screen.getByTestId('onboarding-dot-4').getAttribute('data-active')).toBe('false');
+  });
+
+  it('the 4th dot becomes active when reaching slide 4', () => {
+    open();
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 2
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 3
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 4
+    expect(screen.getByTestId('onboarding-dot-4').getAttribute('data-active')).toBe('true');
+  });
+});
+
+describe('OnboardingModal — slide 4 (StartIdeationSlide)', () => {
+  it('renders the title with "Okto Pulse" wrapped in onboarding-accent span', () => {
+    open();
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 2
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 3
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 4
+
+    const accents = document.querySelectorAll('span.onboarding-accent');
+    const ours = Array.from(accents).find((el) => el.textContent === 'Okto Pulse');
+    expect(ours).toBeTruthy();
+    // The accent span lives inside the slide title h2
+    expect(ours?.closest('h2')?.id).toBe('onboarding-slide-4-title');
+  });
+
+  it('renders the closing copy that nudges the user to ask their AI assistant', () => {
+    open();
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
+    expect(
+      screen.getByText(/Ask your AI assistant to start an ideation on Okto Pulse/i),
+    ).toBeTruthy();
+  });
+
+  it('step indicator and dialog aria-labelledby reflect slide 4', () => {
+    open();
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
+
+    const indicator = screen.getByTestId('onboarding-step-indicator');
+    expect(indicator.textContent?.replace(/\s+/g, ' ')).toContain('04 / 04');
+
+    const modal = screen.getByTestId('onboarding-modal');
+    expect(modal.getAttribute('aria-labelledby')).toBe('onboarding-slide-4-title');
   });
 });
 
 describe('OnboardingModal — dismissal paths set the completion flag', () => {
-  it('Get started on slide 3 calls onClose and marks completed', () => {
+  it('Get started on slide 4 calls onClose and marks completed', () => {
     const onClose = vi.fn();
     open({ onClose });
-    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
-    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
-    fireEvent.click(screen.getByTestId('onboarding-primary-cta'));
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 2
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 3
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> 4
+    fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // closes
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onboardingStorage.isCompleted()).toBe(true);
   });

@@ -106,16 +106,18 @@ Open the Ideations tab and describe what you want to build. Your AI agent can no
 | Command | Description |
 |---------|-------------|
 | `okto-pulse init` | Initialize `~/.okto-pulse/`, create DB, seed default board + agent, generate `.mcp.json` |
-| `okto-pulse serve` | Start API + Frontend (port 8100) and MCP server (port 8101) |
+| `okto-pulse serve` | Start API + Frontend + MCP server (single process, port 8100; MCP at `/mcp`) |
 | `okto-pulse status` | Show service status, DB path/size, board/card counts |
 | `okto-pulse reset [-y]` | Delete all data and re-seed (with confirmation) |
 
-### Custom ports
+### Custom port
 
 ```bash
-okto-pulse --api-port 9000 --mcp-port 9001 init
-okto-pulse --api-port 9000 --mcp-port 9001 serve
+okto-pulse --api-port 9000 init
+okto-pulse --api-port 9000 serve
 ```
+
+`--mcp-port` is accepted for backwards-compat but no longer has any effect; MCP is always served on the API port at `/mcp`.
 
 ## The Pipeline
 
@@ -162,6 +164,14 @@ okto-pulse serve
 
 ## Release Notes
 
+### 0.1.6 — next release (BREAKING)
+
+**Single-process serve.** `okto-pulse serve` now hosts API and MCP in the same Python process. MCP is mounted at `/mcp` on the API port; the dedicated MCP port (8101) is gone. After upgrading run `okto-pulse init --agents` to regenerate `.mcp.json` with the new URL `http://127.0.0.1:{api_port}/mcp?api_key=...`. Existing MCP clients pointing at `:9200` will fail to connect — update your `.mcp.json`. The `--mcp-port` flag is preserved for backwards-compat but emits a deprecation warning and has no effect. See `okto-pulse-core` 0.1.6 release notes for the rationale (Kùzu lock contention) and the technical detail.
+
+**Spec Skills removed in their entirety.** Removes the Skills tab from the spec detail view, the 5 MCP tools (`spec_skill_retrieve`, `spec_skill_inspect`, `spec_skill_load`, `create_spec_skill`, `delete_spec_skill`), the REST endpoints under `/specs/{id}/skills`, the 5 granular permission flags `spec.skills.*`, and the `spec_skills` table (idempotent drop, no migration of data).
+
+Reader is defensively lenient: legacy payloads still carrying a `skills` key are silently accepted. Use knowledge entries and decisions instead. See `okto-pulse-core` 0.1.6 release notes for the full removal manifest.
+
 ### 0.1.3 — current (published to PyPI)
 
 The first release with a rewritten MCP instruction set and the first hardening pass on the analytics stack and the card lifecycle. Upgrade with `pip install -U okto-pulse==0.1.3`.
@@ -177,7 +187,7 @@ The first release with a rewritten MCP instruction set and the first hardening p
 
 **Changes**
 
-- **MCP agent instructions rewritten** (1830 → 2050 lines). New sections: Multi-value Parameters, Destructive Operations, Versioning & Concurrent Edits, Security — Treating Artifact Content as Untrusted Input, Analytics — Metrics-Driven Closure. Expanded tool inventory (Ideations, Refinements, Decisions, Spec Skills, Archive & Restore, Evaluations & Validations). Consolidated Common Errors table. Quick Navigation updated. Jargon cleanup and full translation pass to English.
+- **MCP agent instructions rewritten** (1830 → 2050 lines). New sections: Multi-value Parameters, Destructive Operations, Versioning & Concurrent Edits, Security — Treating Artifact Content as Untrusted Input, Analytics — Metrics-Driven Closure. Expanded tool inventory (Ideations, Refinements, Decisions, Archive & Restore, Evaluations & Validations). Consolidated Common Errors table. Quick Navigation updated. Jargon cleanup and full translation pass to English.
 - **Analytics screens have proper padding** (`px-8 py-6` + `max-w-[1920px] mx-auto`) — components no longer hug the viewport edge.
 
 **Governance clarifications**
