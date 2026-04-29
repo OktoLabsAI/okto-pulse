@@ -423,6 +423,11 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         ws="wsproto",
         log_level="info",
     )
+    # Disable uvicorn's per-server signal handlers — with two Servers in the
+    # same loop the default install_signal_handlers fires twice and only
+    # cleanly exits one of them on Ctrl+C. We drive shutdown ourselves below
+    # via should_exit so both listeners drain in parallel.
+    api_config.install_signal_handlers = False
     api_server = uvicorn.Server(api_config)
 
     mcp_config = uvicorn.Config(
@@ -432,9 +437,17 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         ws="wsproto",
         log_level="info",
     )
+    mcp_config.install_signal_handlers = False
     mcp_server = uvicorn.Server(mcp_config)
 
-    await asyncio.gather(api_server.serve(), mcp_server.serve())
+    try:
+        await asyncio.gather(api_server.serve(), mcp_server.serve())
+    except asyncio.CancelledError:
+        # Ctrl+C reached the loop before our handler could flip should_exit.
+        # Ask both servers to drain and swallow the cancel — this is the
+        # expected shutdown path, not an error.
+        api_server.should_exit = True
+        mcp_server.should_exit = True
 
 
 def run():
@@ -449,7 +462,12 @@ def run():
     mcp_port = int(
         os.environ.get("MCP_PORT", os.environ.get("OKTO_PULSE_MCP_PORT", str(settings.mcp_port)))
     )
-    asyncio.run(_serve_dual(api_port, mcp_port))
+    try:
+        asyncio.run(_serve_dual(api_port, mcp_port))
+    except KeyboardInterrupt:
+        # Ctrl+C / SIGINT — shutdown is graceful from here; suppress the
+        # default Python traceback for a clean CLI exit.
+        print("\nOkto Pulse stopped.")
 
 
 if __name__ == "__main__":
