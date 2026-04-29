@@ -22,6 +22,22 @@ from pathlib import Path
 DEFAULT_API_PORT = 8100
 DEFAULT_MCP_PORT = 8101
 
+_BANNER_PATH = Path(__file__).parent / "banner.txt"
+
+
+def _print_banner() -> None:
+    """Print the Okto Pulse ASCII banner to stderr (kept off stdout to
+    avoid corrupting JSON pipes). Suppressed when ``OKTO_PULSE_NO_BANNER``
+    is set or the banner file is missing."""
+    if os.environ.get("OKTO_PULSE_NO_BANNER"):
+        return
+    try:
+        sys.stderr.write(_BANNER_PATH.read_text(encoding="utf-8"))
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+    except OSError:
+        pass
+
 
 def _is_port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -698,6 +714,8 @@ def cmd_reset(args):
 
 
 def main():
+    _print_banner()
+
     parser = argparse.ArgumentParser(
         prog="okto-pulse",
         description="Okto Pulse Community — local-first kanban board with MCP support for AI agents",

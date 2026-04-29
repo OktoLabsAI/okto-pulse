@@ -50,7 +50,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/okto_pulse"]
-artifacts = ["src/okto_pulse/community/frontend_dist/assets/*.png"]
+artifacts = [
+    "src/okto_pulse/community/frontend_dist/assets/*.png",
+    "src/okto_pulse/community/banner.txt",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [
