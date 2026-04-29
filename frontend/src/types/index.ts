@@ -585,38 +585,6 @@ export interface SpecQAItem {
   answered_at: string | null;
 }
 
-// Spec Skill
-export interface SkillSection {
-  id: string;
-  title: string;
-  description: string;
-  level: 'summary' | 'detail' | 'full';
-  content: string;
-}
-
-export interface SpecSkill {
-  id: string;
-  spec_id: string;
-  skill_id: string;
-  name: string;
-  description: string;
-  type: string;
-  version: string;
-  tags: string[] | null;
-  sections: SkillSection[] | null;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface SpecSkillSummary {
-  skill_id: string;
-  name: string;
-  description: string;
-  type: string;
-  tags: string[] | null;
-}
-
 // Spec Knowledge Base
 export interface SpecKnowledge {
   id: string;
@@ -672,7 +640,6 @@ export interface Spec {
   updated_at: string;
   labels: string[] | null;
   cards: CardSummaryForSpec[];
-  skills: SpecSkillSummary[];
   knowledge_bases: SpecKnowledgeSummary[];
   qa_items: SpecQAItem[];
 }
@@ -1219,17 +1186,6 @@ export interface UpdateRefinementRequest {
   labels?: string[];
 }
 
-
-// Spec Skill request types
-export interface CreateSpecSkillRequest {
-  skill_id: string;
-  name: string;
-  description: string;
-  type?: string;
-  version?: string;
-  tags?: string[];
-  sections?: SkillSection[];
-}
 
 // Spec Knowledge request types
 export interface CreateSpecKnowledgeRequest {

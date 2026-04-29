@@ -34,10 +34,8 @@ import type {
   CreateSpecRequest,
   UpdateSpecRequest,
   MoveSpecRequest,
-  SpecSkill,
   SpecKnowledge,
   SpecKnowledgeSummary,
-  CreateSpecSkillRequest,
   CreateSpecKnowledgeRequest,
   SpecQAItem,
   SpecHistoryEntry,
@@ -555,23 +553,6 @@ export function useDashboardApi() {
 
     async deleteSpecQuestion(specId: string, qaId: string): Promise<void> {
       await apiClient.fetch(`/specs/${specId}/qa/${qaId}`, { method: 'DELETE' });
-    },
-
-    // ==================== SPEC SKILLS ====================
-
-    async listSpecSkills(specId: string): Promise<SpecSkill[]> {
-      return apiClient.fetchJson<SpecSkill[]>(`/specs/${specId}/skills`);
-    },
-
-    async createSpecSkill(specId: string, data: CreateSpecSkillRequest): Promise<SpecSkill> {
-      return apiClient.fetchJson<SpecSkill>(`/specs/${specId}/skills`, {
-        method: 'POST',
-        body: JSON.stringify(data),
-      });
-    },
-
-    async deleteSpecSkill(specId: string, skillId: string): Promise<void> {
-      await apiClient.fetch(`/specs/${specId}/skills/${skillId}`, { method: 'DELETE' });
     },
 
     // ==================== SPEC KNOWLEDGE ====================
