@@ -115,8 +115,10 @@ jobs:
 
       - name: Pytest gate (kg suite, excluding e2e)
         working-directory: okto-pulse-core
+        # Scoped to tests/ to skip stray test_*.py files at repo root that
+        # collide with the canonical versions in tests/ during auto-discovery.
         run: |
-          python -m pytest -k "kg" -m "not e2e" --tb=short -q
+          python -m pytest tests/ -k "kg" -m "not e2e" --tb=short -q
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
