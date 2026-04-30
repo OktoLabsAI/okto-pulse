@@ -52,7 +52,7 @@ RUN pip install /wheels/okto_pulse_core-*.whl /wheels/okto_pulse-*.whl
 # =============================================================================
 
 FROM base AS pypi-install
-ARG OKTO_PULSE_VERSION=0.1.6
+ARG OKTO_PULSE_VERSION=0.1.7
 RUN pip install "okto-pulse==${OKTO_PULSE_VERSION}"
 
 # =============================================================================
