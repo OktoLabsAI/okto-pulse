@@ -1,12 +1,17 @@
 name: CI
 
 # PR + main CI for okto-pulse.
-# Runs the same pytest gate as the release pipeline plus a Dockerfile build verify,
-# but does NOT push any image. Gives early feedback on PRs and main commits before
-# you cut a release tag.
 #
-# The release pipeline (release.yml) re-runs these gates on the tagged commit, so
-# this workflow is purely about catching breakage early.
+# Aligned with the project's testing methodology: behavioral correctness is
+# gated by the release pipeline (Docker smoke + MCP replay on tag push).
+# This workflow is only an early signal that the Dockerfile still builds
+# end-to-end given the current sibling-repo state.
+#
+# Sibling-repo policy: prefer a core branch with the same name as the pulse
+# PR/branch (matches the way releases couple the two repos), fall back to
+# core's main if no such branch exists. This prevents the "PR has version
+# X.Y.Z but core@main is at X.Y.Z-1" dep-conflict failure that the naive
+# `ref: main` produced.
 
 on:
   push:
@@ -19,8 +24,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-and-build:
-    name: pytest + docker build verify
+  build-verify:
+    name: docker build verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -30,31 +35,29 @@ jobs:
         with:
           path: okto-pulse
 
-      # okto-pulse-core is a sibling repo that okto-pulse depends on at build time.
-      # On PR/main runs we just track core's main; release.yml pins to a matching tag.
-      - name: Checkout okto-pulse-core (main)
+      - name: Determine matching okto-pulse-core branch
+        id: core_ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass branch name through env var instead of inline interpolation
+          # to avoid script-injection via attacker-controlled branch names.
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if gh api "repos/OktoLabsAI/okto-pulse-core/branches/${BRANCH}" --silent 2>/dev/null; then
+            echo "Using matching core branch: ${BRANCH}"
+            echo "ref=${BRANCH}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No matching core branch (${BRANCH}), falling back to main"
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout okto-pulse-core @ ${{ steps.core_ref.outputs.ref }}
         uses: actions/checkout@v4
         with:
           repository: OktoLabsAI/okto-pulse-core
-          ref: main
+          ref: ${{ steps.core_ref.outputs.ref }}
           path: okto-pulse-core
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: okto-pulse-core/pyproject.toml
-
-      - name: Install okto-pulse-core + test deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ./okto-pulse-core
-          pip install pytest pytest-asyncio psutil httpx
-
-      # No pytest gate — see release.yml for rationale. PR/main CI relies
-      # on the build step alone here (catches import errors via wheel build).
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -62,6 +65,8 @@ jobs:
       # Build verify only — no GHCR push on PR/main.
       # Context is the workspace root because the Dockerfile uses sibling layout
       # (COPY okto-pulse-core/ and COPY okto-pulse/).
+      # No pytest gate — see release.yml for rationale (smoke + MCP replay
+      # on tag push is the behavioral gate).
       - name: Docker build (verify only, not pushed)
         uses: docker/build-push-action@v5
         with:
