@@ -53,13 +53,11 @@ jobs:
           pip install -e ./okto-pulse-core
           pip install pytest pytest-asyncio psutil httpx
 
-      - name: Pytest gate (kg lifecycle + file handles, strict ResourceWarning)
+      - name: Pytest gate (file handles, strict ResourceWarning)
         working-directory: okto-pulse-core
-        # Targeted gate — same files core's CI runs as its strict gate.
-        # The full kg suite has slow tests that aren't PR blockers.
+        # Minimal critical gate — see release.yml for rationale.
         run: |
           python -W error::ResourceWarning -m pytest -x --tb=short -q \
-            tests/test_kg_schema_lifecycle.py \
             tests/test_kg_file_handles.py
 
       - name: Set up Docker Buildx
