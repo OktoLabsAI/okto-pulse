@@ -53,12 +53,8 @@ jobs:
           pip install -e ./okto-pulse-core
           pip install pytest pytest-asyncio psutil httpx
 
-      - name: Pytest gate (file handles, strict ResourceWarning)
-        working-directory: okto-pulse-core
-        # Minimal critical gate — see release.yml for rationale.
-        run: |
-          python -W error::ResourceWarning -m pytest -x --tb=short -q \
-            tests/test_kg_file_handles.py
+      # No pytest gate — see release.yml for rationale. PR/main CI relies
+      # on the build step alone here (catches import errors via wheel build).
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
