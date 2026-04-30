@@ -33,6 +33,9 @@ on:
 permissions:
   contents: read
   packages: write
+  # Required for cosign keyless signing via Sigstore Fulcio (OIDC).
+  # Closes audit C5 (no image signing) and C6 (no SLSA provenance).
+  id-token: write
 
 # Don't cancel mid-publish — partial pushes leave half-tagged images on GHCR.
 concurrency:
@@ -131,6 +134,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Install cosign
+        # Pinned to commit SHA of v4.1.1 (released 2026-03-26) for
+        # supply-chain integrity. Used to sign + verify images keylessly
+        # via Sigstore Fulcio + Rekor.
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -161,6 +170,25 @@ jobs:
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # SLSA build provenance + CycloneDX SBOM, attached as image
+          # attestations. They travel with the image when pushed; consumers
+          # can verify via `cosign download attestation` (audit C6).
+          provenance: true
+          sbom: true
+
+      - name: Scan image for HIGH/CRITICAL vulns (trivy)
+        # Pinned to commit SHA of v0.36.0 (released 2026-04-22) for
+        # supply-chain integrity. Closes audit H6: no vulnerability scan
+        # of the released image. ignore-unfixed=true skips findings with
+        # no upstream fix yet — those would block every release on
+        # vendor patch latency.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          format: table
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
 
       - name: Spin up container
         run: |
@@ -242,12 +270,37 @@ jobs:
           echo "All replay gates passed"
 
       - name: Push tagged images to GHCR
+        env:
+          DOCKER_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           while IFS= read -r tag; do
             [ -z "$tag" ] && continue
             echo "Pushing $tag"
             docker push "$tag"
-          done <<< '${{ steps.meta.outputs.tags }}'
+          done <<< "$DOCKER_TAGS"
+
+      - name: Sign images (cosign keyless)
+        # Sign each pushed tag with a Sigstore-issued certificate (no
+        # long-lived keys). The certificate identity is the GitHub
+        # workflow URL; verification proves the image was built by THIS
+        # workflow on a tagged commit. Closes audit C5.
+        env:
+          COSIGN_YES: "true"
+          DOCKER_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Signing $tag"
+            cosign sign --yes "$tag"
+          done <<< "$DOCKER_TAGS"
+
+      - name: Verify signature (smoke check on the freshly signed image)
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+        run: |
+          cosign verify "$IMAGE_REF" \
+            --certificate-identity-regexp 'https://github.com/OktoLabsAI/okto-pulse/.*' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 
       - name: Cleanup container
         if: always()
@@ -256,22 +309,41 @@ jobs:
 
       - name: Job summary
         if: success()
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DOCKER_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           {
-            echo "## Released ${{ steps.version.outputs.tag }}"
+            echo "## Released ${TAG}"
             echo
             echo "### Image"
             echo '```'
-            echo '${{ env.IMAGE }}:${{ steps.version.outputs.version }}'
+            echo "${IMAGE}:${VERSION}"
             echo '```'
             echo
             echo "### All tags pushed"
             echo '```'
-            echo '${{ steps.meta.outputs.tags }}'
+            echo "${DOCKER_TAGS}"
             echo '```'
             echo
             echo "### Pull"
             echo '```bash'
-            echo 'docker pull ${{ env.IMAGE }}:${{ steps.version.outputs.version }}'
+            echo "docker pull ${IMAGE}:${VERSION}"
+            echo '```'
+            echo
+            echo "### Verify signature (cosign keyless)"
+            echo '```bash'
+            echo "cosign verify ${IMAGE}:${VERSION} \\"
+            echo "  --certificate-identity-regexp 'https://github.com/OktoLabsAI/okto-pulse/.*' \\"
+            echo "  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'"
+            echo '```'
+            echo
+            echo "### Inspect attestations (SBOM + SLSA provenance)"
+            echo '```bash'
+            echo "cosign download attestation ${IMAGE}:${VERSION} \\"
+            echo "  --predicate-type slsaprovenance"
+            echo "cosign download attestation ${IMAGE}:${VERSION} \\"
+            echo "  --predicate-type cyclonedx"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
