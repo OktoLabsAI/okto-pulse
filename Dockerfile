@@ -12,9 +12,9 @@
 #
 # Both targets:
 #   - Pre-download all-MiniLM-L6-v2 so the container starts offline-capable.
-#   - Patch the MCP server to bind 0.0.0.0 (the core hardcodes 127.0.0.1 which
-#     is unreachable from the host even with -p 8101:8101). Controlled at
-#     runtime via MCP_HOST env var (default 0.0.0.0).
+#   - Set MCP_HOST=0.0.0.0 (in docker-compose.yml) so the MCP server is
+#     reachable across the docker network. core/mcp/server.py reads MCP_HOST
+#     from the environment natively (default 127.0.0.1).
 #   - Correct data/KG dir env vars: DATA_DIR and KG_BASE_DIR (the legacy
 #     OKTO_PULSE_DATA_DIR env var is not read by the Python code).
 #
@@ -107,13 +107,9 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
     else \
         echo "WARNING: HF_MODEL_SHA256 not set — skipping integrity check. Pin the SHA above to enable." ; \
     fi
-# Patch: replace the hardcoded 127.0.0.1 in MCP server with an env-var lookup.
-# Uses find rather than importlib to avoid triggering the import chain at build time.
-# grep -q asserts the patch applied — fails the build if the line was renamed upstream.
-# (Phase 4a will move this into core source so the patch can be removed.)
-RUN SERVER_PY=$(find /usr/local/lib -name "server.py" -path "*/okto_pulse/core/mcp/server.py" | head -1) \
- && sed -i 's|host="127.0.0.1", port=port|host=os.environ.get("MCP_HOST", "0.0.0.0"), port=port|' "$SERVER_PY" \
- && grep -q 'MCP_HOST' "$SERVER_PY"
+# MCP host binding: read from MCP_HOST env var (default 127.0.0.1, set to
+# 0.0.0.0 in docker-compose.yml). Upstreamed into okto-pulse-core source
+# in OktoLabsAI/okto-pulse-core#10; no Dockerfile patch needed anymore.
 EXPOSE 8100 8101
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8100/api/v1/kg/settings || exit 1
@@ -140,9 +136,9 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
     else \
         echo "WARNING: HF_MODEL_SHA256 not set — skipping integrity check. Pin the SHA above to enable." ; \
     fi
-RUN SERVER_PY=$(find /usr/local/lib -name "server.py" -path "*/okto_pulse/core/mcp/server.py" | head -1) \
- && sed -i 's|host="127.0.0.1", port=port|host=os.environ.get("MCP_HOST", "0.0.0.0"), port=port|' "$SERVER_PY" \
- && grep -q 'MCP_HOST' "$SERVER_PY"
+# MCP host binding: read from MCP_HOST env var (default 127.0.0.1, set to
+# 0.0.0.0 in docker-compose.yml). Upstreamed into okto-pulse-core source
+# in OktoLabsAI/okto-pulse-core#10; no Dockerfile patch needed anymore.
 EXPOSE 8100 8101
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8100/api/v1/kg/settings || exit 1
