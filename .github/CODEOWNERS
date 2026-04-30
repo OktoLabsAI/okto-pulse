@@ -1,0 +1,15 @@
+# Code owners — auto-assigned as reviewers on PRs touching these paths.
+# https://docs.github.com/en/repositories/managing-your-repositories-settings-and-security/customizing-your-repository/about-code-owners
+
+# Default owner for everything.
+*                              @Maheidem
+
+# Build / CI / release infrastructure.
+/.github/                      @Maheidem
+/Dockerfile                    @Maheidem
+/deploy/                       @Maheidem
+/.github/replay-fixtures/      @Maheidem
+
+# Lockfile + dep manifests — changes to these alter what ships.
+/uv.lock                       @Maheidem
+/pyproject.toml                @Maheidem
