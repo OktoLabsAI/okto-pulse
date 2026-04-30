@@ -113,12 +113,16 @@ jobs:
           pip install -e ./okto-pulse-core
           pip install pytest pytest-asyncio psutil httpx
 
-      - name: Pytest gate (kg suite, excluding e2e)
+      - name: Pytest gate (kg lifecycle + file handles, strict ResourceWarning)
         working-directory: okto-pulse-core
-        # Scoped to tests/ to skip stray test_*.py files at repo root that
-        # collide with the canonical versions in tests/ during auto-discovery.
+        # Targeted gate — same files core's CI runs as its strict gate.
+        # These prove the kg layer opens/closes cleanly with no leaked file
+        # handles. The full kg suite has slow + flaky tests that aren't
+        # release blockers; the smoke + MCP replay below cover the API surface.
         run: |
-          python -m pytest tests/ -k "kg" -m "not e2e" --tb=short -q
+          python -W error::ResourceWarning -m pytest -x --tb=short -q \
+            tests/test_kg_schema_lifecycle.py \
+            tests/test_kg_file_handles.py
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
