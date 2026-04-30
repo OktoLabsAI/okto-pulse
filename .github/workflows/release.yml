@@ -237,15 +237,26 @@ jobs:
           echo "key=$API_KEY" >> "$GITHUB_OUTPUT"
           echo "API key extracted (masked)"
 
+      - name: Checkout mcp-replay-test (replay tool + trace fixtures)
+        # The replay script and the 2.6 MB long trace live in their own repo
+        # so okto-pulse stays small. Audit Phase 4d.
+        uses: actions/checkout@v6
+        with:
+          repository: OktoLabsAI/mcp-replay-test
+          path: mcp-replay-test
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run MCP replay smoke test
         # Behavioral mode = compare only success/failure, not response content.
         # No-strict = ignore dynamic field mismatches.
         # The replay tool exits 0 unless trace is unparseable. The actual gate
         # is the log + health check below; this step exercises the server.
+        env:
+          API_KEY: ${{ steps.apikey.outputs.key }}
         run: |
-          python okto-pulse/.github/replay-fixtures/mcp_replay.py \
-            --trace-file okto-pulse/.github/replay-fixtures/session_long.jsonl \
-            --api-key '${{ steps.apikey.outputs.key }}' \
+          python mcp-replay-test/tools/mcp_replay.py \
+            --trace-file mcp-replay-test/mcp-traces/session_3893d86c53d34716b9f53d358936f5db_20260428T012243.jsonl \
+            --api-key "$API_KEY" \
             --host 127.0.0.1 \
             --port 8101 \
             --behavioral \
