@@ -40,6 +40,8 @@ frontend/dist/
 
 # Lock files
 *.lock
+# Except uv.lock — committed for reproducible builds.
+!uv.lock
 
 # Test
 .pytest_cache/
