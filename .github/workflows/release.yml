@@ -218,15 +218,19 @@ jobs:
           docker logs okto-pulse-ci | tail -80
           exit 1
 
-      - name: Extract API key from container logs
+      - name: Extract API key from container
         id: apikey
         run: |
-          # The container prints the bootstrap API key (dash_<hex>) to stdout on
-          # first boot. Grep it out — proven reliable in the migration task.
-          API_KEY=$(docker logs okto-pulse-ci 2>&1 | grep -oE 'dash_[a-f0-9]+' | head -1 || true)
-          if [ -z "$API_KEY" ]; then
-            echo "::error::Could not find API key (dash_<hex>) in container logs"
-            docker logs okto-pulse-ci | tail -50
+          # Read the bootstrap key directly from the seeded DB inside the
+          # running container via the dedicated CLI subcommand. More
+          # robust than grepping logs (which is sensitive to log-format
+          # changes). Banner is printed to stderr so 2>/dev/null leaves
+          # only the key on stdout.
+          API_KEY=$(docker exec okto-pulse-ci okto-pulse api-key 2>/dev/null | tr -d '\r\n')
+          if [ -z "$API_KEY" ] || ! echo "$API_KEY" | grep -qE '^dash_[a-f0-9]+$'; then
+            echo "::error::okto-pulse api-key did not return a valid dash_<hex> key"
+            echo "::error::Got: '$API_KEY'"
+            docker logs okto-pulse-ci | tail -30
             exit 1
           fi
           echo "::add-mask::$API_KEY"
