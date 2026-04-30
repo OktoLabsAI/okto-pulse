@@ -322,6 +322,31 @@ jobs:
         run: |
           docker rm -f okto-pulse-ci 2>/dev/null || true
 
+      - name: Notify Slack on failure
+        # Posts a one-line failure to the webhook stored in the
+        # RELEASE_FAILURE_WEBHOOK repo secret. If the secret is unset,
+        # the step logs a warning and exits 0 (release pipeline state is
+        # already "failed" — we don't want this notification step to
+        # mask the original failure).
+        # Closes audit Phase 4e.
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.RELEASE_FAILURE_WEBHOOK }}
+          TAG: ${{ steps.version.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::RELEASE_FAILURE_WEBHOOK secret is not set — skipping Slack notification."
+            echo "::warning::To enable, run: gh secret set RELEASE_FAILURE_WEBHOOK -R OktoLabsAI/okto-pulse"
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error \
+            -X POST -H 'Content-Type: application/json' \
+            --data @- \
+            "$WEBHOOK" <<EOF
+          {"text": ":rotating_light: okto-pulse release \`${TAG:-(unknown)}\` failed.\nRun: ${RUN_URL}"}
+          EOF
+
       - name: Job summary
         if: success()
         env:
