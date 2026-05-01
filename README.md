@@ -99,6 +99,125 @@ Open the Ideations tab and describe what you want to build. Your AI agent can no
 
 The first time you sign in, a **4-slide onboarding tour** introduces the platform: welcome, quick-start, AI-assistant binding, and a final nudge to ask your agent to start an ideation. Dismissable; never shown again.
 
+## Run with Docker
+
+Prefer not to manage a Python install? A signed image is published to GitHub Container Registry on every release.
+
+### One-liner (published image)
+
+```bash
+docker run -d --name okto-pulse \
+  -e HOST=0.0.0.0 \
+  -e MCP_HOST=0.0.0.0 \
+  -p 8100:8100 \
+  -p 8101:8101 \
+  -v okto-pulse-data:/data \
+  ghcr.io/oktolabsai/okto-pulse:latest
+```
+
+Then open `http://localhost:8100` and find the bootstrap API key with:
+
+```bash
+docker exec okto-pulse okto-pulse api-key
+```
+
+The MCP endpoint is at `http://localhost:8101/mcp?api_key=<key>`.
+
+### Image tags
+
+| Tag | Mutability | Use |
+|-----|------------|-----|
+| `:0.1.12` | immutable | exact pin (recommended for prod) |
+| `:0.1` | mutable | minor track — picks up `0.1.x` patches |
+| `:latest` | mutable | floating |
+| `:sha-<short>` | immutable | hard SHA pin (for forensic / debugging) |
+
+Verify the image was built by the official release pipeline (Sigstore keyless signature):
+
+```bash
+cosign verify ghcr.io/oktolabsai/okto-pulse:0.1.12 \
+  --certificate-identity-regexp 'https://github.com/OktoLabsAI/okto-pulse/.*' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+```
+
+SLSA provenance and CycloneDX SBOM ship as image attestations:
+
+```bash
+cosign download attestation ghcr.io/oktolabsai/okto-pulse:0.1.12 \
+  --predicate-type slsaprovenance
+cosign download attestation ghcr.io/oktolabsai/okto-pulse:0.1.12 \
+  --predicate-type cyclonedx
+```
+
+### Compose
+
+The repo ships two compose files. Pick the one that matches your workflow.
+
+**`docker-compose.prod.yml`** — pulls a pinned `okto-pulse==X.Y.Z` from PyPI. Build context is this repo only (no sibling clone needed).
+
+```bash
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml logs -f
+```
+
+**`docker-compose.yml`** — builds wheels from the local `okto-pulse-core/` sibling. Use this when you're hacking on the engine or pulse together. Requires `okto-pulse-core/` cloned next to `okto-pulse/`.
+
+```bash
+# from okto-pulse/
+docker compose build
+docker compose up -d
+docker compose logs -f
+```
+
+To regenerate `.mcp.json` and copy it onto your host so Claude Code / Cursor / Windsurf can find the running MCP server:
+
+```bash
+docker compose exec okto-pulse okto-pulse init --agents claude
+docker compose cp okto-pulse:/app/.mcp.json ./.mcp.json
+```
+
+### Ports & networking
+
+| Port | Purpose | Inside-container default | Notes |
+|------|---------|--------------------------|-------|
+| 8100 | API + Frontend (SPA) | `127.0.0.1:8100` | Set `HOST=0.0.0.0` to expose across the docker network. |
+| 8101 | MCP server (HTTP) | `127.0.0.1:8101` | Set `MCP_HOST=0.0.0.0` to expose so AI tools outside the container can connect. |
+
+Both compose files set `HOST=0.0.0.0` and `MCP_HOST=0.0.0.0` already and bind host ports to `127.0.0.1` only — the container is reachable from your machine but not from the wider network. If you need access from a LAN host, change the `ports:` mapping to `"0.0.0.0:8100:8100"` etc., and put the host behind a real reverse proxy / auth layer.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOST` | `127.0.0.1` | API/UI uvicorn bind host. **Set to `0.0.0.0` in containers.** |
+| `MCP_HOST` | `127.0.0.1` | MCP uvicorn bind host. **Set to `0.0.0.0` in containers.** |
+| `DATA_DIR` | `~/.okto-pulse` | Where SQLite + KG live. Set to `/data` in containers and mount a volume. |
+| `KG_BASE_DIR` | derived from `DATA_DIR` | Per-board knowledge graphs. Same `/data` in containers. |
+| `HF_HOME` | `~/.cache/huggingface` | Sentence-transformers cache. Pre-warmed at `/opt/hf-cache` in the image. |
+| `MCP_TRACE_ENABLED` | unset (off) | Set to `1` to record every MCP tool call to `${MCP_TRACE_DIR}/session_*.jsonl` for replay testing. |
+| `MCP_TRACE_DIR` | `${DATA_DIR}/mcp_traces` | Where MCP traces are written when `MCP_TRACE_ENABLED=1`. |
+
+### Persistence
+
+The container writes everything to `/data` (`DATA_DIR=/data`):
+
+- `/data/data/pulse.db` — SQLite database (boards, agents, specs, sprints, cards, knowledge entries, …)
+- `/data/boards/<board-id>/graph.lbug` — embedded LadybugDB knowledge graph per board
+- `/data/uploads/` — attachment storage
+- `/data/mcp_traces/` — MCP request traces (only when `MCP_TRACE_ENABLED=1`)
+
+Mount `/data` to a named volume (recommended) or a host path. Do **not** mount over the bundled `/opt/hf-cache` — the embedding model is baked into the image at build time so the runtime is offline-capable.
+
+### Image internals (short version)
+
+- Base: `python:3.14-slim` pinned by digest.
+- Two build targets:
+  - **`local-runtime`** — wheels built from sibling source repos. Used by `docker-compose.yml` and the release pipeline's smoke step. Build context must be the parent of `okto-pulse/` so Docker can `COPY okto-pulse/` and `COPY okto-pulse-core/`.
+  - **`pypi-runtime`** — installs `okto-pulse==<ARG OKTO_PULSE_VERSION>` from PyPI. Used by `docker-compose.prod.yml`.
+- The `all-MiniLM-L6-v2` sentence-transformers model is downloaded at build time and its `model.safetensors` SHA256 is verified against a pinned constant — the resulting image runs offline.
+- See [`Dockerfile`](./Dockerfile) for the full build graph.
+
 ## CLI Commands
 
 | Command | Description |
