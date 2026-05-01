@@ -186,6 +186,9 @@ jobs:
         # of the released image. ignore-unfixed=true skips findings with
         # no upstream fix yet — those would block every release on
         # vendor patch latency.
+        # trivyignores: okto-pulse/.trivyignore lists CVEs that have been
+        # triaged and accepted (e.g., fastmcp 2.x CVEs whose fix requires
+        # a major-version bump tracked in a follow-up).
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
@@ -193,6 +196,7 @@ jobs:
           exit-code: '1'
           severity: 'HIGH,CRITICAL'
           ignore-unfixed: true
+          trivyignores: okto-pulse/.trivyignore
 
       - name: Spin up container
         run: |
