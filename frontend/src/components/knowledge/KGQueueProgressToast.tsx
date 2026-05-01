@@ -16,9 +16,10 @@ export function KGQueueProgressToast({ progress }: Props) {
   const activeWork = progress.pending + progress.claimed;
   if (activeWork === 0) return null;
 
-  const done = progress.done;
-  const total = activeWork + done + progress.failed;
-  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const processed = progress.processed ?? progress.done;
+  const remaining = progress.pending + progress.claimed + progress.paused;
+  const total = Math.max(progress.total, remaining + processed);
+  const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
 
   return (
     <div
@@ -45,7 +46,7 @@ export function KGQueueProgressToast({ progress }: Props) {
       <div className="grid grid-cols-4 gap-1 text-[11px] text-gray-600 dark:text-gray-400">
         <Stat label="Pending" value={progress.pending} />
         <Stat label="Running" value={progress.claimed} accent="blue" />
-        <Stat label="Done" value={progress.done} accent="green" />
+        <Stat label="Processed" value={processed} accent="green" />
         {progress.failed > 0 ? (
           <Stat label="Failed" value={progress.failed} accent="red" />
         ) : (

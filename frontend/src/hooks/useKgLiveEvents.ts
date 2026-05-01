@@ -44,6 +44,7 @@ export interface KgQueueProgress {
   pending: number;
   claimed: number;
   done: number;
+  processed?: number;
   failed: number;
   paused: number;
   total: number;
@@ -119,13 +120,27 @@ export function useKgLiveEvents(
         typeof payload.pending === 'number' &&
         typeof payload.total === 'number'
       ) {
-        setQueueProgress({
-          pending: payload.pending ?? 0,
-          claimed: payload.claimed ?? 0,
-          done: payload.done ?? 0,
-          failed: payload.failed ?? 0,
-          paused: payload.paused ?? 0,
-          total: payload.total ?? 0,
+        setQueueProgress((prev) => {
+          const next = {
+            pending: payload.pending ?? 0,
+            claimed: payload.claimed ?? 0,
+            done: payload.done ?? 0,
+            processed: payload.processed ?? payload.done ?? 0,
+            failed: payload.failed ?? 0,
+            paused: payload.paused ?? 0,
+            total: payload.total ?? 0,
+          };
+          const previousRemaining = prev ? prev.pending + prev.claimed + prev.paused : 0;
+          const stableTotal = previousRemaining > 0
+            ? Math.max(next.total, prev?.total ?? 0)
+            : next.total;
+          const remaining = next.pending + next.claimed + next.paused;
+          const inferredProcessed = Math.max(0, stableTotal - remaining);
+          return {
+            ...next,
+            total: stableTotal,
+            processed: Math.min(stableTotal, Math.max(next.processed ?? 0, inferredProcessed)),
+          };
         });
       }
     } catch {

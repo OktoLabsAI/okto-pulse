@@ -30,6 +30,7 @@ import {
   Maximize2,
   Minimize2,
   Download,
+  GitBranch,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportRefinement, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
@@ -43,6 +44,7 @@ import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { ContextSelector, buildRefinementItems, type SelectableItem } from '@/components/shared/ContextSelector';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
+import { ArchitectureTab } from '@/components/architecture';
 
 interface RefinementModalProps {
   refinementId: string;
@@ -51,7 +53,7 @@ interface RefinementModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'mockups' | 'qa' | 'knowledge' | 'specs' | 'versions' | 'history';
+type ModalTab = 'details' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'specs' | 'versions' | 'history';
 
 const STATUS_ICON: Record<RefinementStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -915,6 +917,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
   const tabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean }[] = [
     { id: 'details', label: 'Details', icon: <Layers size={14} /> },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: refinement.screen_mockups?.length || 0 },
+    { id: 'architecture', label: 'Architecture', icon: <GitBranch size={14} />, count: refinement.architecture_designs?.length || 0 },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: refinement.qa_items?.length || 0, highlight: unansweredQA > 0 },
     { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={14} />, count: refinement.knowledge_bases?.length || 0 },
     { id: 'specs', label: 'Specs', icon: <Link2 size={14} />, count: refinement.specs?.length || 0 },
@@ -1103,6 +1106,15 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
                 await api.updateRefinement(refinementId, { screen_mockups: mockups });
                 await loadRefinement();
               }}
+            />
+          )}
+          {activeTab === 'architecture' && (
+            <ArchitectureTab
+              parentType="refinement"
+              parentId={refinementId}
+              expanded={expanded}
+              screenMockups={refinement.screen_mockups || []}
+              onChanged={(items) => setRefinement((current) => current ? { ...current, architecture_designs: items } : current)}
             />
           )}
           {activeTab === 'knowledge' && <KnowledgeTab refinementId={refinementId} />}

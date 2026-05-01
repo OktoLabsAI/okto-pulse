@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle } from 'lucide-react';
+import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportCard, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
@@ -20,6 +20,7 @@ import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { CardKnowledgeTab } from './CardKnowledgeTab';
+import { ArchitectureTab } from '@/components/architecture';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -48,7 +49,7 @@ export function CardModal({ boardId }: CardModalProps) {
 
   const [card, setCard] = useState<Card | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'tests' | 'mockups' | 'knowledge' | 'conclusion' | 'validations' | 'qa' | 'comments' | 'activity'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'tests' | 'mockups' | 'architecture' | 'knowledge' | 'conclusion' | 'validations' | 'qa' | 'comments' | 'activity'>('details');
   const [expanded, setExpanded] = useState(false);
   const [boardMembers, setBoardMembers] = useState<{ id: string; name: string }[]>([]);
   const [seenStatus, setSeenStatus] = useState<Record<string, { agent_name: string; seen_at: string }[]>>({});
@@ -410,8 +411,8 @@ export function CardModal({ boardId }: CardModalProps) {
             {/* Tabs */}
             <div className="flex border-b border-gray-200 dark:border-gray-700 px-6">
               {(card.card_type === 'bug'
-                ? ['details', 'tests', 'mockups', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
-                : ['details', 'mockups', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
+                ? ['details', 'tests', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
+                : ['details', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
               ).map((tab) => (
                 <button
                   key={tab}
@@ -436,6 +437,12 @@ export function CardModal({ boardId }: CardModalProps) {
                     </>
                   )}
                   {tab === 'mockups' && `Mockups${card.screen_mockups?.length ? ` (${card.screen_mockups.length})` : ''}`}
+                  {tab === 'architecture' && (
+                    <>
+                      <GitBranch size={13} className="inline mr-1" />
+                      {`Architecture${card.architecture_designs?.length ? ` (${card.architecture_designs.length})` : ''}`}
+                    </>
+                  )}
                   {tab === 'knowledge' && `Knowledge${card.knowledge_bases?.length ? ` (${card.knowledge_bases.length})` : ''}`}
                   {tab === 'conclusion' && `Conclusion${card.conclusions?.length ? ` (${card.conclusions.length})` : ''}`}
                   {tab === 'validations' && (
@@ -912,6 +919,20 @@ export function CardModal({ boardId }: CardModalProps) {
               {activeTab === 'mockups' && (
                 <div className="modal-body">
                   <MockupsTab screenMockups={card.screen_mockups} expanded={expanded} />
+                </div>
+              )}
+
+              {/* Architecture Tab */}
+              {activeTab === 'architecture' && (
+                <div className="modal-body">
+                  <ArchitectureTab
+                    parentType="card"
+                    parentId={card.id}
+                    specIdForCopy={card.spec_id}
+                    expanded={expanded}
+                    screenMockups={card.screen_mockups || []}
+                    onChanged={(items) => setCard((current) => current ? { ...current, architecture_designs: items } : current)}
+                  />
                 </div>
               )}
 

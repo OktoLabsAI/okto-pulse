@@ -61,7 +61,25 @@ import type {
   RefinementKnowledgeSummary,
   Guideline,
   BoardGuidelineEntry,
+  ArchitectureParentType,
+  ArchitectureDesign,
+  ArchitectureDesignSummary,
+  CreateArchitectureDesignRequest,
+  UpdateArchitectureDesignRequest,
+  ArchitectureDiagramPayloadResponse,
+  ArchitectureDiagramFormat,
+  ArchitectureDiagramType,
 } from '@/types';
+
+function architectureParentPath(parentType: ArchitectureParentType, parentId: string): string {
+  const segment: Record<ArchitectureParentType, string> = {
+    ideation: 'ideations',
+    refinement: 'refinements',
+    spec: 'specs',
+    card: 'cards',
+  };
+  return `/${segment[parentType]}/${parentId}/architecture`;
+}
 
 export function useDashboardApi() {
   const apiClient = useApiClient();
@@ -288,6 +306,79 @@ export function useDashboardApi() {
         return item;
       });
       return this.updateSpec(specId, { [field]: updated } as any);
+    },
+
+    // ==================== ARCHITECTURE DESIGN ====================
+
+    async listArchitectureDesigns(parentType: ArchitectureParentType, parentId: string): Promise<ArchitectureDesignSummary[]> {
+      return apiClient.fetchJson<ArchitectureDesignSummary[]>(architectureParentPath(parentType, parentId));
+    },
+
+    async createArchitectureDesign(
+      parentType: ArchitectureParentType,
+      parentId: string,
+      data: CreateArchitectureDesignRequest,
+    ): Promise<ArchitectureDesign> {
+      return apiClient.fetchJson<ArchitectureDesign>(architectureParentPath(parentType, parentId), {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async getArchitectureDesign(designId: string, includePayloads = false): Promise<ArchitectureDesign> {
+      const qs = includePayloads ? '?include_payloads=true' : '';
+      return apiClient.fetchJson<ArchitectureDesign>(`/architecture/${designId}${qs}`);
+    },
+
+    async updateArchitectureDesign(designId: string, data: UpdateArchitectureDesignRequest): Promise<ArchitectureDesign> {
+      return apiClient.fetchJson<ArchitectureDesign>(`/architecture/${designId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async deleteArchitectureDesign(designId: string): Promise<void> {
+      await apiClient.fetch(`/architecture/${designId}`, { method: 'DELETE' });
+    },
+
+    async getArchitectureDiagramPayload(designId: string, diagramId: string): Promise<ArchitectureDiagramPayloadResponse> {
+      return apiClient.fetchJson<ArchitectureDiagramPayloadResponse>(`/architecture/${designId}/diagrams/${diagramId}/payload`);
+    },
+
+    async updateArchitectureDiagramPayload(
+      designId: string,
+      diagramId: string,
+      data: { payload: Record<string, unknown> | unknown[] | string; format?: ArchitectureDiagramFormat; change_summary?: string },
+    ): Promise<ArchitectureDesign> {
+      return apiClient.fetchJson<ArchitectureDesign>(`/architecture/${designId}/diagrams/${diagramId}/payload`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async importExcalidrawArchitectureDiagram(
+      designId: string,
+      data: {
+        title: string;
+        payload: Record<string, unknown>;
+        diagram_type?: ArchitectureDiagramType;
+        description?: string;
+        order_index?: number;
+        replace_diagram_id?: string | null;
+        change_summary?: string;
+      },
+    ): Promise<ArchitectureDesign> {
+      return apiClient.fetchJson<ArchitectureDesign>(`/architecture/${designId}/diagrams/import-excalidraw`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async copyArchitectureToCard(cardId: string, specId: string, designIds?: string[]): Promise<ArchitectureDesign[]> {
+      return apiClient.fetchJson<ArchitectureDesign[]>(`/cards/${cardId}/copy-architecture-from-spec/${specId}`, {
+        method: 'POST',
+        body: JSON.stringify({ design_ids: designIds && designIds.length > 0 ? designIds : null }),
+      });
     },
 
     // ==================== ARCHIVE ====================

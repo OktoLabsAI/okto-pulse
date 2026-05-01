@@ -33,9 +33,12 @@ from okto_pulse.core.kg.interfaces.registry import configure_kg_registry, get_kg
 # Settings cache trap respected by Spec 23350275 (Fix C, BR5).
 from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
+from okto_pulse.community.runtime import build_uvicorn_log_config, run_async_server
 from okto_pulse.community.seed import seed_community_defaults
 
 _EMBEDDING_LOGGER = logging.getLogger("okto_pulse.community.embedding")
+_STARTUP_LOGGER = logging.getLogger("uvicorn.error")
+_STARTUP_TIMEOUT_SECONDS = 30.0
 
 # Preload retry policy: 3 attempts, exponential backoff (2s, 4s, 8s), 30s total budget.
 # Only transient network errors retry. ImportError / OSError (disk full) / ValueError
@@ -400,6 +403,46 @@ def create_community_app():
 app = create_community_app()
 
 
+async def _wait_for_server_started(
+    server_name: str,
+    server: uvicorn.Server,
+    task: asyncio.Task[None],
+    timeout_seconds: float = _STARTUP_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while not server.started:
+        if task.done():
+            await task
+            raise RuntimeError(f"{server_name} server stopped before startup completed.")
+        if time.monotonic() >= deadline:
+            server.should_exit = True
+            raise TimeoutError(f"{server_name} server startup timed out after {timeout_seconds:.0f}s.")
+        await asyncio.sleep(0.05)
+
+
+def _log_ready_servers(api_port: int, mcp_port: int) -> None:
+    public_host = os.environ.get("PUBLIC_HOST", "127.0.0.1")
+    public_api_port = int(os.environ.get("PUBLIC_API_PORT") or api_port)
+    public_mcp_port = int(os.environ.get("PUBLIC_MCP_PORT") or mcp_port)
+
+    _STARTUP_LOGGER.info(
+        "API Server initialized successfully - http://%s:%s/api/v1",
+        public_host,
+        public_api_port,
+    )
+    _STARTUP_LOGGER.info(
+        "UI Server initialized successfully - http://%s:%s",
+        public_host,
+        public_api_port,
+    )
+    _STARTUP_LOGGER.info(
+        "MCP Server initialized successfully - http://%s:%s/mcp",
+        public_host,
+        public_mcp_port,
+    )
+    _STARTUP_LOGGER.info("Startup complete - The application is ready")
+
+
 async def _serve_dual(api_port: int, mcp_port: int) -> None:
     """Run API+UI on `api_port` and MCP on `mcp_port` inside a single
     Python process via two uvicorn `Server` instances driven by
@@ -415,6 +458,7 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     from okto_pulse.core.mcp.server import build_mcp_asgi_app
 
     settings = CommunitySettings()
+    uvicorn_log_config = build_uvicorn_log_config()
 
     api_config = uvicorn.Config(
         "okto_pulse.community.main:app",
@@ -422,6 +466,7 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         port=api_port,
         ws="wsproto",
         log_level="info",
+        log_config=uvicorn_log_config,
     )
     # Disable uvicorn's per-server signal handlers — with two Servers in the
     # same loop the default install_signal_handlers fires twice and only
@@ -436,18 +481,34 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         port=mcp_port,
         ws="wsproto",
         log_level="info",
+        log_config=uvicorn_log_config,
     )
     mcp_config.install_signal_handlers = False
     mcp_server = uvicorn.Server(mcp_config)
 
+    api_task = asyncio.create_task(api_server.serve(), name="api_ui_server")
+    mcp_task = asyncio.create_task(mcp_server.serve(), name="mcp_server")
+
     try:
-        await asyncio.gather(api_server.serve(), mcp_server.serve())
+        await _wait_for_server_started("API/UI", api_server, api_task)
+        await _wait_for_server_started("MCP", mcp_server, mcp_task)
+        _log_ready_servers(api_port, mcp_port)
+        await asyncio.gather(api_task, mcp_task)
     except asyncio.CancelledError:
         # Ctrl+C reached the loop before our handler could flip should_exit.
         # Ask both servers to drain and swallow the cancel — this is the
         # expected shutdown path, not an error.
         api_server.should_exit = True
         mcp_server.should_exit = True
+        await asyncio.gather(api_task, mcp_task, return_exceptions=True)
+    except BaseException:
+        api_server.should_exit = True
+        mcp_server.should_exit = True
+        for task in (api_task, mcp_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(api_task, mcp_task, return_exceptions=True)
+        raise
 
 
 def run():
@@ -463,7 +524,7 @@ def run():
         os.environ.get("MCP_PORT", os.environ.get("OKTO_PULSE_MCP_PORT", str(settings.mcp_port)))
     )
     try:
-        asyncio.run(_serve_dual(api_port, mcp_port))
+        run_async_server(_serve_dual(api_port, mcp_port))
     except KeyboardInterrupt:
         # Ctrl+C / SIGINT — shutdown is graceful from here; suppress the
         # default Python traceback for a clean CLI exit.

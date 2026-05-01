@@ -177,7 +177,16 @@ export async function cancelHistorical(boardId: string) {
 }
 
 export async function getHistoricalProgress(boardId: string) {
-  return kgFetch<{ enabled: boolean; status: string; total: number; progress: number }>(
+  return kgFetch<{
+    enabled: boolean;
+    status: string;
+    total: number;
+    progress: number;
+    pending?: number;
+    claimed?: number;
+    paused?: number;
+    failed?: number;
+  }>(
     `/boards/${boardId}/historical-consolidation/progress`
   );
 }

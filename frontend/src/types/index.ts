@@ -534,6 +534,127 @@ export interface ScreenMockup {
   order: number;
 }
 
+// Architecture Design
+export type ArchitectureParentType = 'ideation' | 'refinement' | 'spec' | 'card';
+export type ArchitectureDiagramType =
+  | 'context'
+  | 'container'
+  | 'component'
+  | 'sequence'
+  | 'deployment'
+  | 'data_flow'
+  | 'other';
+export type ArchitectureDiagramFormat =
+  | 'excalidraw_json'
+  | 'mermaid'
+  | 'svg'
+  | 'plantuml'
+  | 'c4'
+  | 'raw';
+
+export interface ArchitectureEntity {
+  id?: string | null;
+  name: string;
+  entity_type?: string | null;
+  responsibility?: string | null;
+  boundaries?: string | null;
+  technologies?: string[];
+  relationships?: string[];
+  notes?: string | null;
+}
+
+export interface ArchitectureInterface {
+  id?: string | null;
+  name: string;
+  description?: string | null;
+  participants?: string[];
+  direction?: string | null;
+  protocol?: string | null;
+  contract_type?: string | null;
+  request_schema?: Record<string, unknown> | null;
+  response_schema?: Record<string, unknown> | null;
+  event_schema?: Record<string, unknown> | null;
+  error_contract?: Record<string, unknown> | Record<string, unknown>[] | string | null;
+  schema_ref?: string | null;
+  notes?: string | null;
+}
+
+export interface ArchitectureDiagram {
+  id?: string | null;
+  title: string;
+  diagram_type: ArchitectureDiagramType;
+  format: ArchitectureDiagramFormat;
+  adapter_payload_ref?: string | null;
+  adapter_payload?: Record<string, unknown> | unknown[] | string | null;
+  description?: string | null;
+  order_index: number;
+  content_hash?: string | null;
+  preview_ref?: string | null;
+  render_metadata?: Record<string, unknown> | null;
+  size_bytes?: number | null;
+  source_diagram_id?: string | null;
+  source_payload_ref?: string | null;
+}
+
+export interface ArchitectureDesignSummary {
+  id: string;
+  board_id: string;
+  parent_type: ArchitectureParentType;
+  parent_id: string;
+  title: string;
+  version: number;
+  source_ref?: string | null;
+  source_version?: number | null;
+  source_design_id?: string | null;
+  stale: boolean;
+  breaking_change_flag: boolean;
+  requires_arch_review: boolean;
+  diagrams_count: number;
+  adapter_payload_refs: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ArchitectureDesign {
+  id: string;
+  board_id: string;
+  parent_type: ArchitectureParentType;
+  parent_id: string;
+  title: string;
+  global_description: string;
+  entities: ArchitectureEntity[];
+  interfaces: ArchitectureInterface[];
+  diagrams: ArchitectureDiagram[];
+  version: number;
+  source_ref?: string | null;
+  source_version?: number | null;
+  source_design_id?: string | null;
+  stale: boolean;
+  breaking_change_flag: boolean;
+  requires_arch_review: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ArchitectureDiagramPayloadResponse {
+  design_id: string;
+  diagram_id: string;
+  format: ArchitectureDiagramFormat;
+  content_hash: string;
+  size_bytes: number;
+  payload: Record<string, unknown> | unknown[] | string | null;
+}
+
+export type CreateArchitectureDesignRequest = Pick<
+  ArchitectureDesign,
+  'title' | 'global_description' | 'entities' | 'interfaces' | 'diagrams'
+> & Partial<Pick<ArchitectureDesign, 'source_ref' | 'source_version' | 'source_design_id'>>;
+
+export type UpdateArchitectureDesignRequest = Partial<CreateArchitectureDesignRequest> & {
+  change_summary?: string;
+};
+
 export interface CardKnowledgeBase {
   id: string;
   title: string;
@@ -624,6 +745,7 @@ export interface Spec {
   api_contracts: ApiContract[] | null;
   decisions: Decision[] | null;
   screen_mockups: ScreenMockup[] | null;
+  architecture_designs?: ArchitectureDesignSummary[];
   skip_test_coverage: boolean;
   skip_rules_coverage?: boolean;
   skip_decisions_coverage?: boolean;
@@ -659,6 +781,7 @@ export interface SpecSummary {
   created_at: string;
   updated_at: string;
   labels: string[] | null;
+  architecture_designs?: ArchitectureDesignSummary[];
   archived?: boolean;
 }
 
@@ -673,6 +796,7 @@ export interface Ideation {
   scope_assessment: { domains: number; ambiguity: number; dependencies: number } | null;
   complexity: IdeationComplexity | null;
   screen_mockups: ScreenMockup[] | null;
+  architecture_designs?: ArchitectureDesignSummary[];
   status: IdeationStatus;
   version: number;
   assignee_id: string | null;
@@ -701,6 +825,7 @@ export interface IdeationSummary {
   created_at: string;
   updated_at: string;
   labels: string[] | null;
+  architecture_designs?: ArchitectureDesignSummary[];
   archived?: boolean;
 }
 
@@ -716,6 +841,7 @@ export interface Refinement {
   analysis: string | null;
   decisions: string[] | null;
   screen_mockups: ScreenMockup[] | null;
+  architecture_designs?: ArchitectureDesignSummary[];
   status: RefinementStatus;
   version: number;
   assignee_id: string | null;
@@ -755,6 +881,7 @@ export interface Card {
   attachments: Attachment[];
   qa_items: QAItem[];
   comments: Comment[];
+  architecture_designs?: ArchitectureDesignSummary[];
   // Bug card fields (optional for backwards compat with existing cards)
   card_type?: CardType;
   origin_task_id?: string | null;
@@ -797,6 +924,7 @@ export interface CardSummary {
   labels: string[] | null;
   test_scenario_ids: string[] | null;
   conclusions: ConclusionEntry[] | null;
+  architecture_designs?: ArchitectureDesignSummary[];
   validations?: ValidationEntry[] | null;
   // Bug card fields (for kanban display — optional for backwards compat)
   card_type?: CardType;

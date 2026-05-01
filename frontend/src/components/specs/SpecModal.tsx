@@ -62,6 +62,7 @@ import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { RefinementModal } from '@/components/refinements/RefinementModal';
 import { EditableField } from '@/components/shared/EditableField';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
+import { ArchitectureTab } from '@/components/architecture';
 
 interface SpecModalProps {
   specId: string;
@@ -70,7 +71,7 @@ interface SpecModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'decisions' | 'mockups' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg';
+type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'decisions' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg';
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -1443,6 +1444,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     { id: 'trs', label: 'TRs', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
     { id: 'decisions', label: 'Decisions', icon: <GitBranch size={14} />, count: spec.decisions?.length || 0 },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: spec.screen_mockups?.length || 0 },
+    { id: 'architecture', label: 'Architecture', icon: <Network size={14} />, count: spec.architecture_designs?.length || 0 },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: spec.qa_items?.length || 0, highlight: unansweredQA > 0 },
     { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={14} />, count: spec.knowledge_bases?.length || 0 },
     { id: 'cards', label: 'Cards', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
@@ -1852,6 +1854,16 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                 const updated = await api.updateSpec(specId, { screen_mockups: mockups });
                 setSpec(updated);
               }}
+            />
+          )}
+          {activeTab === 'architecture' && spec && (
+            <ArchitectureTab
+              parentType="spec"
+              parentId={specId}
+              expanded={expanded}
+              locked={['validated', 'in_progress', 'done'].includes(spec.status)}
+              screenMockups={spec.screen_mockups || []}
+              onChanged={(items) => setSpec((current) => current ? { ...current, architecture_designs: items } : current)}
             />
           )}
           {activeTab === 'validation' && spec && (
