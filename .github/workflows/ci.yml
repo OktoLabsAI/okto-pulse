@@ -1,0 +1,77 @@
+name: CI
+
+# PR + main CI for okto-pulse.
+#
+# Aligned with the project's testing methodology: behavioral correctness is
+# gated by the release pipeline (Docker smoke + MCP replay on tag push).
+# This workflow is only an early signal that the Dockerfile still builds
+# end-to-end given the current sibling-repo state.
+#
+# Sibling-repo policy: prefer a core branch with the same name as the pulse
+# PR/branch (matches the way releases couple the two repos), fall back to
+# core's main if no such branch exists. This prevents the "PR has version
+# X.Y.Z but core@main is at X.Y.Z-1" dep-conflict failure that the naive
+# `ref: main` produced.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-verify:
+    name: docker build verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout okto-pulse
+        uses: actions/checkout@v6
+        with:
+          path: okto-pulse
+
+      - name: Determine matching okto-pulse-core branch
+        id: core_ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass branch name through env var instead of inline interpolation
+          # to avoid script-injection via attacker-controlled branch names.
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if gh api "repos/OktoLabsAI/okto-pulse-core/branches/${BRANCH}" --silent 2>/dev/null; then
+            echo "Using matching core branch: ${BRANCH}"
+            echo "ref=${BRANCH}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No matching core branch (${BRANCH}), falling back to main"
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout okto-pulse-core @ ${{ steps.core_ref.outputs.ref }}
+        uses: actions/checkout@v6
+        with:
+          repository: OktoLabsAI/okto-pulse-core
+          ref: ${{ steps.core_ref.outputs.ref }}
+          path: okto-pulse-core
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Build verify only — no GHCR push on PR/main.
+      # Context is the workspace root because the Dockerfile uses sibling layout
+      # (COPY okto-pulse-core/ and COPY okto-pulse/).
+      # No pytest gate — see release.yml for rationale (smoke + MCP replay
+      # on tag push is the behavioral gate).
+      - name: Docker build (verify only, not pushed)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: okto-pulse/Dockerfile
+          target: local-runtime
+          push: false
+          tags: okto-pulse:ci-${{ github.sha }}

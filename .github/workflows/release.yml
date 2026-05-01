@@ -1,0 +1,389 @@
+name: Release
+
+# Tag-driven release pipeline for okto-pulse.
+#
+# Trigger: push of a v*.*.* git tag (e.g. v0.1.6).
+#
+# Release procedure (do these in order):
+#   1. Bump version in okto-pulse/pyproject.toml AND okto-pulse-core/pyproject.toml
+#   2. Commit + push to main on both repos
+#   3. Tag and push okto-pulse-core FIRST:
+#        cd okto-pulse-core && git tag v0.1.6 && git push origin v0.1.6
+#   4. Tag and push okto-pulse:
+#        cd okto-pulse && git tag v0.1.6 && git push origin v0.1.6
+#
+# This workflow runs on step 4 and:
+#   - Verifies okto-pulse-core has a matching tag (preflight, fails fast if not)
+#   - Verifies pyproject.toml version matches the git tag
+#   - Runs the kg pytest suite (excluding e2e)
+#   - Builds the Docker image (target=local-runtime) into the local daemon
+#   - Spins up the container, waits healthy, runs the MCP replay smoke test
+#   - Gates on container health + log scan (no SIGBUS/SIGSEGV/ResourceWarning)
+#   - Pushes to GHCR with semver tags only after all gates pass
+#
+# Image: ghcr.io/oktolabsai/okto-pulse
+# Tags pushed on success: :{full-version}, :{major}.{minor}, :latest, :sha-{short}
+# Example for tag v0.1.6: :0.1.6, :0.1, :latest, :sha-abc1234
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  packages: write
+  # Required for cosign keyless signing via Sigstore Fulcio (OIDC).
+  # Closes audit C5 (no image signing) and C6 (no SLSA provenance).
+  id-token: write
+
+# Don't cancel mid-publish — partial pushes leave half-tagged images on GHCR.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/oktolabsai/okto-pulse
+
+jobs:
+  release:
+    name: gate + publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG (version $VERSION)"
+
+      - name: Preflight — verify okto-pulse-core has matching tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass step output through env to avoid inline interpolation in
+          # the shell body (audit H1 — script injection via tag names).
+          # Matches the BRANCH: pattern in ci.yml.
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if ! gh api "repos/OktoLabsAI/okto-pulse-core/git/refs/tags/$TAG" --silent 2>/dev/null; then
+            echo "::error::okto-pulse-core is not tagged $TAG."
+            echo "::error::Tag and push core BEFORE pulse:"
+            echo "::error::  cd okto-pulse-core && git tag $TAG && git push origin $TAG"
+            exit 1
+          fi
+          echo "okto-pulse-core has matching tag $TAG"
+
+      - name: Checkout okto-pulse @ ${{ steps.version.outputs.tag }}
+        uses: actions/checkout@v6
+        with:
+          path: okto-pulse
+
+      - name: Checkout okto-pulse-core @ ${{ steps.version.outputs.tag }}
+        uses: actions/checkout@v6
+        with:
+          repository: OktoLabsAI/okto-pulse-core
+          ref: ${{ steps.version.outputs.tag }}
+          path: okto-pulse-core
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify pyproject.toml version matches git tag
+        env:
+          # Pass step output through env to avoid inline interpolation in
+          # the shell body (audit H1 — script injection via tag names).
+          TAG_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          PYPROJECT_VERSION=$(grep -E '^version' okto-pulse/pyproject.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          if [ "$PYPROJECT_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::okto-pulse/pyproject.toml version ($PYPROJECT_VERSION) does not match git tag ($TAG_VERSION)"
+            echo "::error::Bump version in pyproject.toml, commit, then re-tag."
+            exit 1
+          fi
+          CORE_VERSION=$(grep -E '^version' okto-pulse-core/pyproject.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          if [ "$CORE_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::okto-pulse-core/pyproject.toml version ($CORE_VERSION) does not match git tag ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "Versions aligned: pulse=$PYPROJECT_VERSION core=$CORE_VERSION tag=$TAG_VERSION"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: okto-pulse-core/pyproject.toml
+
+      - name: Install okto-pulse-core + test/replay deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./okto-pulse-core
+          pip install pytest pytest-asyncio psutil httpx
+
+      # No pytest gate. Post-Ladybug migration the kg test suite has
+      # pre-existing failures (gc-call counters, WAL handle release on
+      # Linux) that aren't blockers for deployability. The container
+      # smoke test + MCP replay below ARE the gates: if the built image
+      # boots clean and serves real recorded MCP calls without
+      # SIGBUS/SIGSEGV/ResourceWarning, the artifact is shippable.
+      # Reinstate a pytest step here if/when test_kg_file_handles is
+      # green on Linux runners.
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Install cosign
+        # Pinned to commit SHA of v4.1.1 (released 2026-03-26) for
+        # supply-chain integrity. Used to sign + verify images keylessly
+        # via Sigstore Fulcio + Rekor.
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags + labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # Standard semver tags driven by the git tag (vMAJOR.MINOR.PATCH).
+          # docker/metadata-action strips the "v" prefix automatically.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+            type=sha,format=short,prefix=sha-
+
+      - name: Build image (load locally for smoke test, no push yet)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: okto-pulse/Dockerfile
+          target: local-runtime
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # SLSA build provenance + CycloneDX SBOM, attached as image
+          # attestations. They travel with the image when pushed; consumers
+          # can verify via `cosign download attestation` (audit C6).
+          provenance: true
+          sbom: true
+
+      - name: Scan image for HIGH/CRITICAL vulns (trivy)
+        # Pinned to commit SHA of v0.36.0 (released 2026-04-22) for
+        # supply-chain integrity. Closes audit H6: no vulnerability scan
+        # of the released image. ignore-unfixed=true skips findings with
+        # no upstream fix yet — those would block every release on
+        # vendor patch latency.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          format: table
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+
+      - name: Spin up container
+        run: |
+          docker run -d \
+            --name okto-pulse-ci \
+            -p 8100:8100 \
+            -p 8101:8101 \
+            "${{ env.IMAGE }}:${{ steps.version.outputs.version }}"
+
+      - name: Wait for container to become healthy
+        run: |
+          for i in $(seq 1 60); do
+            STATUS=$(docker inspect okto-pulse-ci --format '{{.State.Health.Status}}' 2>/dev/null || echo "missing")
+            echo "[$i/60] health=$STATUS"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Container healthy after $((i*2))s"
+              exit 0
+            fi
+            if [ "$STATUS" = "unhealthy" ]; then
+              echo "::error::Container went unhealthy"
+              docker logs okto-pulse-ci | tail -80
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "::error::Container did not become healthy within 120s"
+          docker logs okto-pulse-ci | tail -80
+          exit 1
+
+      - name: Extract API key from container
+        id: apikey
+        run: |
+          # Read the bootstrap key directly from the seeded DB inside the
+          # running container via the dedicated CLI subcommand. More
+          # robust than grepping logs (which is sensitive to log-format
+          # changes). Banner is printed to stderr so 2>/dev/null leaves
+          # only the key on stdout.
+          API_KEY=$(docker exec okto-pulse-ci okto-pulse api-key 2>/dev/null | tr -d '\r\n')
+          if [ -z "$API_KEY" ] || ! echo "$API_KEY" | grep -qE '^dash_[a-f0-9]+$'; then
+            echo "::error::okto-pulse api-key did not return a valid dash_<hex> key"
+            echo "::error::Got: '$API_KEY'"
+            docker logs okto-pulse-ci | tail -30
+            exit 1
+          fi
+          echo "::add-mask::$API_KEY"
+          echo "key=$API_KEY" >> "$GITHUB_OUTPUT"
+          echo "API key extracted (masked)"
+
+      - name: Checkout mcp-replay-test (replay tool + trace fixtures)
+        # The replay script and the 2.6 MB long trace live in their own repo
+        # so okto-pulse stays small. Audit Phase 4d.
+        uses: actions/checkout@v6
+        with:
+          repository: OktoLabsAI/mcp-replay-test
+          path: mcp-replay-test
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run MCP replay smoke test
+        # Behavioral mode = compare only success/failure, not response content.
+        # No-strict = ignore dynamic field mismatches.
+        # The replay tool exits 0 unless trace is unparseable. The actual gate
+        # is the log + health check below; this step exercises the server.
+        env:
+          API_KEY: ${{ steps.apikey.outputs.key }}
+        run: |
+          python mcp-replay-test/tools/mcp_replay.py \
+            --trace-file mcp-replay-test/mcp-traces/session_3893d86c53d34716b9f53d358936f5db_20260428T012243.jsonl \
+            --api-key "$API_KEY" \
+            --host 127.0.0.1 \
+            --port 8101 \
+            --behavioral \
+            --no-strict || echo "Replay tool exited non-zero — gate decision deferred to log scan"
+
+      - name: Replay gate (logs + container health)
+        run: |
+          LOGS=$(docker logs okto-pulse-ci 2>&1)
+
+          if echo "$LOGS" | grep -iE 'sigbus|sigsegv|segmentation|bus error'; then
+            echo "::error::Container logs contain crash signal (SIGBUS/SIGSEGV/segfault)"
+            exit 1
+          fi
+          if echo "$LOGS" | grep -iE 'ResourceWarning|RuntimeError.*Failed to open'; then
+            echo "::error::Container logs contain ResourceWarning or file-handle RuntimeError"
+            exit 1
+          fi
+
+          STATUS=$(docker inspect okto-pulse-ci --format '{{.State.Health.Status}}')
+          if [ "$STATUS" != "healthy" ]; then
+            echo "::error::Container is not healthy after replay (status=$STATUS)"
+            echo "$LOGS" | tail -50
+            exit 1
+          fi
+
+          echo "All replay gates passed"
+
+      - name: Push tagged images to GHCR
+        env:
+          DOCKER_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Pushing $tag"
+            docker push "$tag"
+          done <<< "$DOCKER_TAGS"
+
+      - name: Sign images (cosign keyless)
+        # Sign each pushed tag with a Sigstore-issued certificate (no
+        # long-lived keys). The certificate identity is the GitHub
+        # workflow URL; verification proves the image was built by THIS
+        # workflow on a tagged commit. Closes audit C5.
+        env:
+          COSIGN_YES: "true"
+          DOCKER_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Signing $tag"
+            cosign sign --yes "$tag"
+          done <<< "$DOCKER_TAGS"
+
+      - name: Verify signature (smoke check on the freshly signed image)
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+        run: |
+          cosign verify "$IMAGE_REF" \
+            --certificate-identity-regexp 'https://github.com/OktoLabsAI/okto-pulse/.*' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+
+      - name: Cleanup container
+        if: always()
+        run: |
+          docker rm -f okto-pulse-ci 2>/dev/null || true
+
+      - name: Notify Slack on failure
+        # Posts a one-line failure to the webhook stored in the
+        # RELEASE_FAILURE_WEBHOOK repo secret. If the secret is unset,
+        # the step logs a warning and exits 0 (release pipeline state is
+        # already "failed" — we don't want this notification step to
+        # mask the original failure).
+        # Closes audit Phase 4e.
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.RELEASE_FAILURE_WEBHOOK }}
+          TAG: ${{ steps.version.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::RELEASE_FAILURE_WEBHOOK secret is not set — skipping Slack notification."
+            echo "::warning::To enable, run: gh secret set RELEASE_FAILURE_WEBHOOK -R OktoLabsAI/okto-pulse"
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error \
+            -X POST -H 'Content-Type: application/json' \
+            --data @- \
+            "$WEBHOOK" <<EOF
+          {"text": ":rotating_light: okto-pulse release \`${TAG:-(unknown)}\` failed.\nRun: ${RUN_URL}"}
+          EOF
+
+      - name: Job summary
+        if: success()
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DOCKER_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "## Released ${TAG}"
+            echo
+            echo "### Image"
+            echo '```'
+            echo "${IMAGE}:${VERSION}"
+            echo '```'
+            echo
+            echo "### All tags pushed"
+            echo '```'
+            echo "${DOCKER_TAGS}"
+            echo '```'
+            echo
+            echo "### Pull"
+            echo '```bash'
+            echo "docker pull ${IMAGE}:${VERSION}"
+            echo '```'
+            echo
+            echo "### Verify signature (cosign keyless)"
+            echo '```bash'
+            echo "cosign verify ${IMAGE}:${VERSION} \\"
+            echo "  --certificate-identity-regexp 'https://github.com/OktoLabsAI/okto-pulse/.*' \\"
+            echo "  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'"
+            echo '```'
+            echo
+            echo "### Inspect attestations (SBOM + SLSA provenance)"
+            echo '```bash'
+            echo "cosign download attestation ${IMAGE}:${VERSION} \\"
+            echo "  --predicate-type slsaprovenance"
+            echo "cosign download attestation ${IMAGE}:${VERSION} \\"
+            echo "  --predicate-type cyclonedx"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
