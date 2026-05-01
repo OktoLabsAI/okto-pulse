@@ -294,6 +294,53 @@ def cmd_status(args):
     print(f"  MCP server ({mcp_port}):  {'running' if mcp_up else 'stopped'}")
 
 
+def cmd_api_key(args):
+    """Print the bootstrap API key (the dash_<hex> seeded by `okto-pulse init`).
+
+    Reads directly from the SQLite database to avoid coupling to the
+    running API server. Used by the release pipeline (release.yml) to
+    extract the key for replay smoke tests without grepping log output.
+
+    Exit codes:
+      0 — key printed
+      1 — DB missing, no agents seeded, or agent has no api_key
+
+    Output format: a single line containing the key on stdout. Banner
+    goes to stderr so this is safe to pipe.
+    """
+    import sqlite3
+    from okto_pulse.community.config import CommunitySettings
+
+    settings = CommunitySettings()
+    db_path = Path(settings.data_dir) / "data" / "pulse.db"
+
+    if not db_path.exists():
+        print(f"Database not found at {db_path}. Run 'okto-pulse init' first.", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # The default seed creates exactly one agent ("Local Agent") with a
+        # bootstrap dash_<hex> key. Take the oldest seeded agent so we keep
+        # returning the same value across restarts even if more agents are
+        # added later.
+        row = conn.execute(
+            "SELECT api_key FROM agents WHERE api_key IS NOT NULL "
+            "ORDER BY created_at ASC LIMIT 1"
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        print(f"Database not initialised: {exc}. Run 'okto-pulse init' first.", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+    if row is None or not row[0]:
+        print("No bootstrap API key found in database.", file=sys.stderr)
+        sys.exit(1)
+
+    print(row[0])
+
+
 def cmd_verify_pipeline(args):
     """Run the 5 pipeline health checks against a board.
 
@@ -725,6 +772,13 @@ def main():
         help=f"MCP server port (default: {DEFAULT_MCP_PORT})",
     )
     sub_status.set_defaults(func=cmd_status)
+
+    # api-key — print bootstrap dash_<hex> from the seeded DB.
+    sub_apikey = subparsers.add_parser(
+        "api-key",
+        help="Print the bootstrap API key (dash_<hex>) seeded by 'okto-pulse init'",
+    )
+    sub_apikey.set_defaults(func=cmd_api_key)
 
     # reset
     sub_reset = subparsers.add_parser("reset", help="Delete all data and re-seed")
