@@ -1,0 +1,16 @@
+# Documented CVE exceptions for the v0.1.12 release.
+#
+# Both CVEs are in fastmcp 2.14.7. Fixed in fastmcp 3.2.0 (major-version
+# upgrade). The okto-pulse-core pyproject pins fastmcp>=2.0.0,<3.0.0 because
+# the +622-line MCP server expansion in src/okto_pulse/core/mcp/server.py
+# was written against fastmcp 2.x APIs and a major-version migration needs
+# its own validation pass.
+#
+# Tracked separately for follow-up bump to fastmcp >=3.2.0,<4.0.0 (already
+# proposed by dependabot PR #16 in okto-pulse-core).
+#
+# Format: one CVE per line, # for comments. Comments after CVE on same line
+# are not part of the CVE id.
+
+CVE-2026-32871
+CVE-2026-27124
