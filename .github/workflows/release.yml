@@ -78,12 +78,12 @@ jobs:
           echo "okto-pulse-core has matching tag $TAG"
 
       - name: Checkout okto-pulse @ ${{ steps.version.outputs.tag }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: okto-pulse
 
       - name: Checkout okto-pulse-core @ ${{ steps.version.outputs.tag }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: OktoLabsAI/okto-pulse-core
           ref: ${{ steps.version.outputs.tag }}
