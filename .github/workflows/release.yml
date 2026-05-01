@@ -61,8 +61,11 @@ jobs:
       - name: Preflight — verify okto-pulse-core has matching tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass step output through env to avoid inline interpolation in
+          # the shell body (audit H1 — script injection via tag names).
+          # Matches the BRANCH: pattern in ci.yml.
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
           if ! gh api "repos/OktoLabsAI/okto-pulse-core/git/refs/tags/$TAG" --silent 2>/dev/null; then
             echo "::error::okto-pulse-core is not tagged $TAG."
             echo "::error::Tag and push core BEFORE pulse:"
@@ -85,9 +88,12 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify pyproject.toml version matches git tag
+        env:
+          # Pass step output through env to avoid inline interpolation in
+          # the shell body (audit H1 — script injection via tag names).
+          TAG_VERSION: ${{ steps.version.outputs.version }}
         run: |
           PYPROJECT_VERSION=$(grep -E '^version' okto-pulse/pyproject.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
-          TAG_VERSION="${{ steps.version.outputs.version }}"
           if [ "$PYPROJECT_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::okto-pulse/pyproject.toml version ($PYPROJECT_VERSION) does not match git tag ($TAG_VERSION)"
             echo "::error::Bump version in pyproject.toml, commit, then re-tag."
