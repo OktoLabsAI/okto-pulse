@@ -6,9 +6,7 @@ serialisers + the dispatcher shape + argparse wiring in isolation.
 
 from __future__ import annotations
 
-import importlib
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -88,9 +86,6 @@ def test_card_to_dict_handles_bug_fields():
 def test_cli_backfill_runs_worker_on_mock_data(monkeypatch, capsys):
     """End-to-end of the worker dispatch + reporting with a mocked loader."""
     from okto_pulse.community import cli as cli_mod
-    from okto_pulse.core.kg.workers.deterministic_worker import (
-        DeterministicWorker,
-    )
 
     # Short-circuit the async DB loader with in-memory dicts.
     fake_data = {

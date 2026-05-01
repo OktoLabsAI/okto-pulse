@@ -1,5 +1,7 @@
 """Okto Pulse Community CLI — setup and run the local-first edition."""
 
+# ruff: noqa: E402
+
 import warnings
 warnings.filterwarnings(
     "ignore",
@@ -14,6 +16,7 @@ import os
 import shutil
 import socket
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 # Default ports
@@ -21,6 +24,13 @@ DEFAULT_API_PORT = 8100
 DEFAULT_MCP_PORT = 8101
 
 _BANNER_PATH = Path(__file__).parent / "banner.txt"
+
+
+def _package_version(package_name: str) -> str:
+    try:
+        return version(package_name)
+    except PackageNotFoundError:
+        return "unknown"
 
 
 def _print_banner() -> None:
@@ -32,6 +42,10 @@ def _print_banner() -> None:
     try:
         sys.stderr.write(_BANNER_PATH.read_text(encoding="utf-8"))
         sys.stderr.write("\n")
+        sys.stderr.write(
+            f"Version {_package_version('okto-pulse')} "
+            f"({_package_version('okto-pulse-core')})\n\n"
+        )
         sys.stderr.flush()
     except OSError:
         pass
@@ -66,7 +80,7 @@ def cmd_init(args):
     from okto_pulse.community.auth import LocalAuthProvider
     from okto_pulse.community.seed import seed_community_defaults
     from sqlalchemy import event, select
-    from okto_pulse.core.models.db import Agent, Board
+    from okto_pulse.core.models.db import Board
 
     configure_settings(settings)
     configure_auth(LocalAuthProvider())
@@ -130,6 +144,7 @@ def _generate_mcp_json(mcp_port: int, agent_names: list[str] | None):
     from okto_pulse.core.infra.database import create_database, init_db, get_session_factory, close_db
     from okto_pulse.core.models.db import Agent
     from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.auth import configure_auth
     from okto_pulse.core.infra.config import configure_settings
     from okto_pulse.community.auth import LocalAuthProvider
     from okto_pulse.core.infra.storage import FileSystemStorageProvider, configure_storage

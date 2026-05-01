@@ -12,7 +12,7 @@ export interface RuntimeSettings {
   kg_kuzu_max_db_size_gb: number;
   kg_connection_pool_size: number;
   // Event Queue tab — hot-reload (no restart needed).
-  // Spec bdcda842 v0.1.6+: 5 new settings exposed by the worker pool.
+  // Spec bdcda842 v0.1.13+: 5 new settings exposed by the worker pool.
   kg_queue_max_concurrent_workers: number;
   kg_queue_min_interval_ms: number;
   kg_queue_claim_timeout_s: number;

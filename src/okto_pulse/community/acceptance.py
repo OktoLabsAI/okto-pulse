@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 # These two constants must stay in sync with ``frontend/src/constants/terms.ts``.
-TERMS_VERSION = "0.1.6"
+TERMS_VERSION = "0.1.13"
 TERMS_HASH = "tos-2026-04-28-elastic2-trademark"
 
 

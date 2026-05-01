@@ -38,6 +38,7 @@ def test_uvicorn_log_config_suppresses_only_ambiguous_startup_line():
     handler_filters = log_config["handlers"]["default"]["filters"]
 
     assert "suppress_ambiguous_startup_complete" in handler_filters
+    assert "suppress_expected_shutdown_noise" in handler_filters
 
     filter_ = SuppressAmbiguousStartupComplete()
     ambiguous_record = logging_record("Application startup complete.")
@@ -47,7 +48,86 @@ def test_uvicorn_log_config_suppresses_only_ambiguous_startup_line():
     assert filter_.filter(useful_record) is True
 
 
-def logging_record(message: str):
+def test_uvicorn_log_config_suppresses_expected_shutdown_noise_only_while_stopping():
+    from okto_pulse.community.runtime import (
+        SuppressExpectedShutdownNoise,
+        set_shutdown_log_suppression,
+    )
+
+    filter_ = SuppressExpectedShutdownNoise()
+    cancel_record = logging_record(
+        "Cancel 1 running task(s), timeout graceful shutdown exceeded"
+    )
+    incomplete_response_record = logging_record(
+        "ASGI callable returned without completing response."
+    )
+    exc = asyncio.CancelledError("Task cancelled, timeout graceful shutdown exceeded")
+    exception_record = logging_record(
+        "Exception in ASGI application\n",
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    useful_record = logging_record("Application shutdown complete.")
+
+    set_shutdown_log_suppression(False)
+    assert filter_.filter(cancel_record) is True
+
+    try:
+        set_shutdown_log_suppression(True)
+        assert filter_.filter(cancel_record) is False
+        assert filter_.filter(incomplete_response_record) is False
+        assert filter_.filter(exception_record) is False
+        assert filter_.filter(useful_record) is True
+    finally:
+        set_shutdown_log_suppression(False)
+
+
+def test_shutdown_timeout_env(monkeypatch):
+    from okto_pulse.community import main as main_mod
+
+    monkeypatch.delenv("OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("OKTO_PULSE_SHUTDOWN_TIMEOUT", raising=False)
+    assert main_mod._shutdown_timeout_seconds() == 5.0
+
+    monkeypatch.setenv("OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS", "2.5")
+    assert main_mod._shutdown_timeout_seconds() == 2.5
+
+    monkeypatch.setenv("OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS", "0")
+    assert main_mod._shutdown_timeout_seconds() == 5.0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_server_pair_forces_hung_tasks():
+    from okto_pulse.community import main as main_mod
+
+    class FakeServer:
+        should_exit = False
+        force_exit = False
+
+    async def never_finishes():
+        await asyncio.Event().wait()
+
+    api_server = FakeServer()
+    mcp_server = FakeServer()
+    api_task = asyncio.create_task(never_finishes())
+    mcp_task = asyncio.create_task(never_finishes())
+
+    await main_mod._shutdown_server_pair(
+        api_server,
+        mcp_server,
+        api_task,
+        mcp_task,
+        timeout_seconds=0.01,
+    )
+
+    assert api_server.should_exit is True
+    assert mcp_server.should_exit is True
+    assert api_server.force_exit is True
+    assert mcp_server.force_exit is True
+    assert api_task.done()
+    assert mcp_task.done()
+
+
+def logging_record(message: str, exc_info=None):
     import logging
 
     return logging.LogRecord(
@@ -57,5 +137,5 @@ def logging_record(message: str):
         lineno=1,
         msg=message,
         args=(),
-        exc_info=None,
+        exc_info=exc_info,
     )

@@ -1,4 +1,4 @@
-# Prod compose — installs pinned okto-pulse==0.1.6 from PyPI.
+# Prod compose — installs pinned okto-pulse==0.1.13 from PyPI.
 # No sibling repo needed. Build context = this repo only.
 #
 # Usage (from okto-pulse/):
@@ -12,8 +12,8 @@ services:
       dockerfile: Dockerfile
       target: pypi-runtime
       args:
-        OKTO_PULSE_VERSION: "0.1.6"
-    image: okto-pulse:0.1.6
+        OKTO_PULSE_VERSION: "0.1.13"
+    image: okto-pulse:0.1.13
     container_name: okto-pulse
     ports:
       - "127.0.0.1:8100:8100"
