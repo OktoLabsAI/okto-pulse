@@ -30,6 +30,7 @@ import {
   Maximize2,
   Minimize2,
   Download,
+  GitBranch,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportIdeation, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
@@ -54,6 +55,7 @@ import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { ContextSelector, buildIdeationItems, compileSelectedContext, type SelectableItem } from '@/components/shared/ContextSelector';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
+import { ArchitectureTab } from '@/components/architecture';
 
 interface IdeationModalProps {
   ideationId: string;
@@ -62,7 +64,7 @@ interface IdeationModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'mockups' | 'qa' | 'refinements' | 'versions' | 'history';
+type ModalTab = 'details' | 'mockups' | 'architecture' | 'qa' | 'refinements' | 'versions' | 'history';
 
 const STATUS_ICON: Record<IdeationStatus, React.ReactNode> = {
   draft: <Lightbulb size={14} />,
@@ -899,6 +901,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
   const tabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: ideation.screen_mockups?.length || 0 },
+    { id: 'architecture', label: 'Architecture', icon: <GitBranch size={14} />, count: ideation.architecture_designs?.length || 0 },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: ideation.qa_items?.length || 0, highlight: unansweredQA > 0 },
     { id: 'refinements', label: 'Refinements', icon: <Layers size={14} />, count: ideation.refinements?.length || 0 },
     { id: 'versions', label: 'Versions', icon: <Archive size={14} /> },
@@ -907,7 +910,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className={`bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full ${expanded ? 'max-w-[95vw] h-[95vh]' : 'max-w-3xl h-[90vh]'} flex flex-col`}>
+      <div className={`bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full ${expanded ? 'max-w-[95vw] h-[95vh]' : 'max-w-3xl h-[90vh]'} flex flex-col overflow-hidden`}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center gap-3 min-w-0">
@@ -961,30 +964,32 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
         )}
 
         {/* Tabs */}
-        <div className="flex items-center gap-1 px-6 pt-3 border-b border-gray-200 dark:border-gray-700">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                activeTab === tab.id
-                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-              }`}
-            >
-              {tab.icon}
-              {tab.label}
-              {tab.count !== undefined && tab.count > 0 && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                  tab.highlight
-                    ? 'bg-amber-200 text-amber-700 dark:bg-amber-800 dark:text-amber-300'
-                    : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'
-                }`}>
-                  {tab.count}
-                </span>
-              )}
-            </button>
-          ))}
+        <div className="min-w-0 px-6 pt-3 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex min-w-0 items-center gap-1 overflow-x-auto overflow-y-hidden">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                  activeTab === tab.id
+                    ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                {tab.icon}
+                {tab.label}
+                {tab.count !== undefined && tab.count > 0 && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                    tab.highlight
+                      ? 'bg-amber-200 text-amber-700 dark:bg-amber-800 dark:text-amber-300'
+                      : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'
+                  }`}>
+                    {tab.count}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Body */}
@@ -1086,6 +1091,15 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
                 await api.updateIdeation(ideationId, { screen_mockups: mockups });
                 await loadIdeation();
               }}
+            />
+          )}
+          {activeTab === 'architecture' && (
+            <ArchitectureTab
+              parentType="ideation"
+              parentId={ideationId}
+              expanded={expanded}
+              screenMockups={ideation.screen_mockups || []}
+              onChanged={(items) => setIdeation((current) => current ? { ...current, architecture_designs: items } : current)}
             />
           )}
           {activeTab === 'qa' && <QATab ideationId={ideationId} mentionables={mentionables} />}

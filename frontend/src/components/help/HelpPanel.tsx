@@ -529,6 +529,7 @@ Additional status: \`cancelled\`
 | **API Contracts** | Endpoint definitions — method, path, request body, success/error responses |
 | **Technical Reqs** | Technical constraints and implementation details, linked to task cards |
 | **Mockups** | HTML/Tailwind screen mockups with types (page, modal, drawer, popover, panel) and design annotations |
+| **Architecture** | Global description, entities, interfaces/contracts, diagrams, Excalidraw import |
 | **Knowledge Base** | Attach reference documents, technical notes, research, or file content |
 | **Q&A** | Text questions, choice boards (single/multi-select), free-text responses |
 | **Cards** | View all derived task cards, link/unlink cards |
@@ -598,6 +599,7 @@ Additional statuses: \`on_hold\`, \`cancelled\`
 | **Details** | Title, description, status, priority, assignee, labels |
 | **Tests** | Linked test scenarios from the parent spec, coverage display |
 | **Mockups** | UI mockups from the parent spec for reference |
+| **Architecture** | Architecture snapshots copied from the parent spec, with local single-user editing and re-sync |
 | **Knowledge** | Attached knowledge base content |
 | **Conclusion** | Completion summary (see below) |
 | **Validations** | Validation history with scores |

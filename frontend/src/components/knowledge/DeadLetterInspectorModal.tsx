@@ -212,9 +212,10 @@ interface DLQTableRowProps {
 }
 
 function DLQTableRow({ row, expanded, onToggle }: DLQTableRowProps) {
-  const lastError = row.errors[row.errors.length - 1];
+  const errors = Array.isArray(row.errors) ? row.errors : [];
+  const lastError = errors[errors.length - 1];
   const lastErrorText = lastError
-    ? `${lastError.error_type}: ${lastError.message}`
+    ? `${lastError.error_type || 'Error'}: ${lastError.message || ''}`
     : '—';
   const deadLetteredRel = row.dead_lettered_at
     ? formatRelative(row.dead_lettered_at)
@@ -281,16 +282,16 @@ function DLQTableRow({ row, expanded, onToggle }: DLQTableRowProps) {
                 </tr>
               </thead>
               <tbody className="font-mono">
-                {row.errors.map((err) => (
-                  <tr key={err.attempt}>
-                    <td className="px-2 py-0.5">{err.attempt}</td>
+                {errors.map((err, index) => (
+                  <tr key={err.attempt ?? index}>
+                    <td className="px-2 py-0.5">{err.attempt ?? index + 1}</td>
                     <td className="px-2 py-0.5 text-gray-500">
-                      {err.occurred_at}
+                      {err.occurred_at || '—'}
                     </td>
                     <td className="px-2 py-0.5 text-amber-600 dark:text-amber-400">
-                      {err.error_type}
+                      {err.error_type || 'Error'}
                     </td>
-                    <td className="px-2 py-0.5">{err.message}</td>
+                    <td className="px-2 py-0.5">{err.message || '—'}</td>
                   </tr>
                 ))}
               </tbody>

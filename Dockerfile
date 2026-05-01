@@ -78,7 +78,7 @@ RUN pip install --no-cache-dir "uv==${UV_VERSION}" \
 
 FROM base AS pypi-install
 ARG UV_VERSION
-ARG OKTO_PULSE_VERSION=0.1.11
+ARG OKTO_PULSE_VERSION=0.1.12
 RUN pip install --no-cache-dir "uv==${UV_VERSION}" \
  && uv pip install --system "okto-pulse==${OKTO_PULSE_VERSION}"
 
