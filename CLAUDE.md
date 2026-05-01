@@ -92,6 +92,8 @@ For tag `v0.1.11`:
 
 ### Verifying a release
 
+**Smoke check** (does it boot?):
+
 ```bash
 docker pull ghcr.io/oktolabsai/okto-pulse:X.Y.Z
 docker run -d --name pulse-verify -p 8100:8100 -p 8101:8101 \
@@ -99,6 +101,27 @@ docker run -d --name pulse-verify -p 8100:8100 -p 8101:8101 \
 sleep 30
 curl -fsS http://localhost:8100/api/v1/kg/settings  # should 200
 docker rm -f pulse-verify
+```
+
+**Signature check** (was this image really built by our release pipeline?):
+
+```bash
+cosign verify ghcr.io/oktolabsai/okto-pulse:X.Y.Z \
+  --certificate-identity-regexp 'https://github.com/OktoLabsAI/okto-pulse/.*' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+```
+
+The signature is keyless — issued by Sigstore Fulcio against the GitHub
+Actions OIDC token of the workflow run that built the image. A valid
+signature proves the image came out of THIS workflow on a tagged commit.
+
+**Inspect the SBOM and SLSA provenance** (what's inside / how was it built?):
+
+```bash
+cosign download attestation ghcr.io/oktolabsai/okto-pulse:X.Y.Z \
+  --predicate-type slsaprovenance
+cosign download attestation ghcr.io/oktolabsai/okto-pulse:X.Y.Z \
+  --predicate-type cyclonedx
 ```
 
 If `docker pull` returns 401, the package was created with default-private
