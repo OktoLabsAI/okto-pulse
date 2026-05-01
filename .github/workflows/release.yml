@@ -149,7 +149,7 @@ jobs:
 
       - name: Compute image tags + labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           # Standard semver tags driven by the git tag (vMAJOR.MINOR.PATCH).
