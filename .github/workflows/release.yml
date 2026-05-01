@@ -161,7 +161,7 @@ jobs:
             type=sha,format=short,prefix=sha-
 
       - name: Build image (load locally for smoke test, no push yet)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: okto-pulse/Dockerfile

@@ -68,7 +68,7 @@ jobs:
       # No pytest gate — see release.yml for rationale (smoke + MCP replay
       # on tag push is the behavioral gate).
       - name: Docker build (verify only, not pushed)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: okto-pulse/Dockerfile
