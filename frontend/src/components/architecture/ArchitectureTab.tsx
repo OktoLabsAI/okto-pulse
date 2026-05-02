@@ -68,6 +68,7 @@ interface ArchitectureCanvasElement {
   iconName?: string | null;
   linkedEntityId?: string | null;
   linkedInterfaceId?: string | null;
+  linkedInterfaceIds?: string[] | null;
   sourceElementId?: string | null;
   targetElementId?: string | null;
   points?: number[][];
@@ -331,6 +332,88 @@ function interfaceRef(item: ArchitectureInterface, index: number): string {
   return item.id || item.name || `interface_${index}`;
 }
 
+function uniqueRefs(values: Array<string | null | undefined>): string[] {
+  const refs: string[] = [];
+  values.forEach((value) => {
+    const ref = value?.trim();
+    if (ref && !refs.includes(ref)) refs.push(ref);
+  });
+  return refs;
+}
+
+function entityRefsFor(item: ArchitectureEntity | undefined, index: number): string[] {
+  return uniqueRefs([item?.id, item?.name, `entity_${index}`]);
+}
+
+function interfaceRefsFor(item: ArchitectureInterface | undefined, index: number): string[] {
+  return uniqueRefs([item?.id, item?.name, `interface_${index}`]);
+}
+
+function linkedInterfaceRefs(element: ArchitectureCanvasElement): string[] {
+  return uniqueRefs([
+    element.linkedInterfaceId || undefined,
+    ...(Array.isArray(element.linkedInterfaceIds) ? element.linkedInterfaceIds : []),
+  ]);
+}
+
+function hasLinkedInterfaceRef(element: ArchitectureCanvasElement, refs: string[]): boolean {
+  return linkedInterfaceRefs(element).some((ref) => refs.includes(ref));
+}
+
+function replaceLinkedInterfaceRefs(element: ArchitectureCanvasElement, previousRefs: string[], nextRef: string): ArchitectureCanvasElement {
+  const refs = linkedInterfaceRefs(element).map((ref) => (previousRefs.includes(ref) ? nextRef : ref));
+  const unique = uniqueRefs(refs);
+  return {
+    ...element,
+    linkedInterfaceId: unique[0] || null,
+    linkedInterfaceIds: unique,
+  };
+}
+
+function removeLinkedInterfaceRefs(element: ArchitectureCanvasElement, refsToRemove: string[]): ArchitectureCanvasElement {
+  const refs = linkedInterfaceRefs(element).filter((ref) => !refsToRemove.includes(ref));
+  return {
+    ...element,
+    linkedInterfaceId: refs[0] || null,
+    linkedInterfaceIds: refs,
+  };
+}
+
+function sameRefs(left: string[] | undefined, right: string[]): boolean {
+  const leftRefs = left || [];
+  return leftRefs.length === right.length && leftRefs.every((value, index) => value === right[index]);
+}
+
+function syncInterfaceParticipantsFromDiagram(interfaces: ArchitectureInterface[], diagram: ArchitectureDiagram): ArchitectureInterface[] {
+  const elements = canvasElements(diagram);
+  const byId = new Map(elements.map((element) => [element.id, element]));
+  const participantsByInterfaceRef = new Map<string, string[]>();
+
+  elements
+    .filter((element) => element.type === 'arrow')
+    .forEach((edge) => {
+      const source = edge.sourceElementId ? byId.get(edge.sourceElementId) : null;
+      const target = edge.targetElementId ? byId.get(edge.targetElementId) : null;
+      const participants = uniqueRefs([source?.linkedEntityId, target?.linkedEntityId]);
+      if (participants.length !== 2) return;
+      linkedInterfaceRefs(edge).forEach((ref) => {
+        if (!participantsByInterfaceRef.has(ref)) participantsByInterfaceRef.set(ref, participants);
+      });
+    });
+
+  let changed = false;
+  const next = interfaces.map((item, index) => {
+    const participants = interfaceRefsFor(item, index)
+      .map((ref) => participantsByInterfaceRef.get(ref))
+      .find(Boolean);
+    if (!participants || sameRefs(item.participants, participants)) return item;
+    changed = true;
+    return { ...item, participants };
+  });
+
+  return changed ? next : interfaces;
+}
+
 function canvasPayload(diagram: ArchitectureDiagram | null): Record<string, unknown> {
   if (!diagram || typeof diagram.adapter_payload !== 'object' || Array.isArray(diagram.adapter_payload) || diagram.adapter_payload === null) {
     return { type: 'excalidraw', version: 2, elements: [], appState: {}, files: {} };
@@ -432,8 +515,9 @@ function syncInterfaceElement(element: ArchitectureCanvasElement, item: Architec
   return {
     ...element,
     linkedInterfaceId: ref,
+    linkedInterfaceIds: uniqueRefs([...linkedInterfaceRefs(element), ref]),
     text: item.name,
-    displayType: item.protocol || item.contract_type || 'Interface',
+    displayType: item.endpoint || item.protocol || item.contract_type || 'Interface',
     architectureKind: 'interface',
   };
 }
@@ -486,6 +570,7 @@ function makeBlankInterface(): ArchitectureInterface {
   return {
     id: `interface_${Date.now()}`,
     name: 'New interface',
+    endpoint: '',
     description: '',
     participants: [],
     direction: 'source_to_target',
@@ -775,8 +860,11 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
       normalized = withCanvasElements(next, linkedElements);
     }
 
+    const nextInterfaces = syncInterfaceParticipantsFromDiagram(design.interfaces, normalized);
+
     patchDesign({
       entities: nextEntities,
+      interfaces: nextInterfaces,
       diagrams: design.diagrams.map((item) => (item.id === normalized.id ? normalized : item)),
     });
   };
@@ -845,7 +933,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   const updateEntity = (index: number, patch: Partial<ArchitectureEntity>) => {
     if (!design) return;
     const previous = design.entities[index];
-    const previousRefs = [previous?.id, previous?.name, `entity_${index}`].filter(Boolean);
+    const previousRefs = entityRefsFor(previous, index);
     const nextEntities = design.entities.map((item, i) => (i === index ? { ...item, ...patch } : item));
     const next = nextEntities[index];
     const nextRef = entityRef(next, index);
@@ -862,25 +950,16 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   const updateInterface = (index: number, patch: Partial<ArchitectureInterface>) => {
     if (!design) return;
     const previous = design.interfaces[index];
-    const previousRefs = [previous?.id, previous?.name, `interface_${index}`].filter(Boolean);
+    const previousRefs = interfaceRefsFor(previous, index);
     const nextInterfaces = design.interfaces.map((item, i) => (i === index ? { ...item, ...patch } : item));
     const next = nextInterfaces[index];
     const nextRef = interfaceRef(next, index);
     const nextDiagrams = design.diagrams.map((diagram) => {
       const elements = canvasElements(diagram);
-      if (!elements.some((element) => previousRefs.includes(element.linkedInterfaceId || ''))) return diagram;
-      const participantNodes = (next.participants || [])
-        .map((participant) => elements.find((element) => element.linkedEntityId === participant))
-        .filter(Boolean) as ArchitectureCanvasElement[];
+      if (!elements.some((element) => hasLinkedInterfaceRef(element, previousRefs))) return diagram;
       return withCanvasElements(diagram, elements.map((element) => {
-        if (!previousRefs.includes(element.linkedInterfaceId || '')) return element;
-        const synced = syncInterfaceElement(element, next, nextRef);
-        if (participantNodes.length < 2) return synced;
-        return {
-          ...synced,
-          sourceElementId: participantNodes[0].id,
-          targetElementId: participantNodes[1].id,
-        };
+        if (!hasLinkedInterfaceRef(element, previousRefs)) return element;
+        return syncInterfaceElement(replaceLinkedInterfaceRefs(element, previousRefs, nextRef), next, nextRef);
       }));
     });
     patchDesign({ interfaces: nextInterfaces, diagrams: nextDiagrams });
@@ -889,7 +968,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   const deleteEntity = (index: number) => {
     if (!design) return;
     const entity = design.entities[index];
-    const refs = [entity?.id, entity?.name, `entity_${index}`].filter(Boolean);
+    const refs = entityRefsFor(entity, index);
     const nextInterfaces = design.interfaces.map((item) => ({
       ...item,
       participants: (item.participants || []).filter((participant) => !refs.includes(participant)),
@@ -914,10 +993,10 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   const deleteInterface = (index: number) => {
     if (!design) return;
     const item = design.interfaces[index];
-    const refs = [item?.id, item?.name, `interface_${index}`].filter(Boolean);
+    const refs = interfaceRefsFor(item, index);
     const nextDiagrams = design.diagrams.map((diagram) => {
       const elements = canvasElements(diagram);
-      return withCanvasElements(diagram, elements.filter((element) => !refs.includes(element.linkedInterfaceId || '')));
+      return withCanvasElements(diagram, elements.map((element) => removeLinkedInterfaceRefs(element, refs)));
     });
     patchDesign({
       interfaces: design.interfaces.filter((_, i) => i !== index),
@@ -1471,6 +1550,10 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                     <span className="text-xs text-gray-500 dark:text-gray-400">Description</span>
                     <textarea value={interfaceDraft.description || ''} onChange={(event) => setInterfaceDraft({ ...interfaceDraft, description: event.target.value })} rows={2} className="mt-1 w-full px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 resize-none" />
                   </label>
+                  <label className="block">
+                    <span className="text-xs text-gray-500 dark:text-gray-400">Endpoint / operation</span>
+                    <input value={interfaceDraft.endpoint || ''} onChange={(event) => setInterfaceDraft({ ...interfaceDraft, endpoint: event.target.value })} placeholder="POST /orders, order.placed, SendMessage..." className="mt-1 w-full px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100" />
+                  </label>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="block">
                       <span className="text-xs text-gray-500 dark:text-gray-400">Direction</span>
@@ -1499,7 +1582,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
               )}
               {design.interfaces.map((item, index) => {
                 const directionLabel = INTERFACE_DIRECTIONS.find((direction) => direction.value === normalizeInterfaceDirection(item.direction))?.label;
-                const typeLabel = item.protocol || item.contract_type || directionLabel || 'Interface';
+                const typeLabel = item.endpoint || item.protocol || item.contract_type || directionLabel || 'Interface';
                 const editing = editingInterfaceIndex === index;
 
                 if (!editing) {
@@ -1550,6 +1633,10 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                     <label className="block">
                       <span className="text-xs text-gray-500 dark:text-gray-400">Description</span>
                       <textarea value={item.description || ''} onChange={(event) => updateInterface(index, { description: event.target.value })} readOnly={locked} rows={2} className="mt-1 w-full px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 resize-none" />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs text-gray-500 dark:text-gray-400">Endpoint / operation</span>
+                      <input value={item.endpoint || ''} onChange={(event) => updateInterface(index, { endpoint: event.target.value })} readOnly={locked} placeholder="POST /orders, order.placed, SendMessage..." className="mt-1 w-full px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100" />
                     </label>
                     <div className="grid grid-cols-2 gap-2">
                       <label className="block">

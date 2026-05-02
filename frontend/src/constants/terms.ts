@@ -11,7 +11,7 @@
  * copie as mudanças aqui e bumpe `TERMS_HASH` para forçar re-aceite.
  */
 
-export const TERMS_VERSION = '0.1.6';
+export const TERMS_VERSION = '0.1.13';
 export const TERMS_HASH = 'tos-2026-04-29-elv2-addendum-trademark-cla-cr2026';
 
 export const TERMS_BODY = `# Terms of Use & License — Okto Pulse

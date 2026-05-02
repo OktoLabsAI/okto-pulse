@@ -64,11 +64,28 @@ export function CardModal({ boardId }: CardModalProps) {
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
+  const [conclusionTargetStatus, setConclusionTargetStatus] = useState<CardStatus>('done');
   const [conclusionDraft, setConclusionDraft] = useState('');
   const [conclusionCompleteness, setConclusionCompleteness] = useState(100);
   const [conclusionCompletenessJustification, setConclusionCompletenessJustification] = useState('');
   const [conclusionDrift, setConclusionDrift] = useState(0);
   const [conclusionDriftJustification, setConclusionDriftJustification] = useState('');
+
+  const resetConclusionPrompt = () => {
+    setConclusionDraft('');
+    setConclusionCompleteness(100);
+    setConclusionCompletenessJustification('');
+    setConclusionDrift(0);
+    setConclusionDriftJustification('');
+  };
+
+  const requiresExecutionReport = (status: CardStatus) => {
+    if (!card || status === card.status) return false;
+    if (status === 'done') return true;
+    if (status !== 'validation') return false;
+    if (card.card_type === 'test') return false;
+    return ['not_started', 'started', 'in_progress', 'on_hold'].includes(card.status);
+  };
 
   const loadCard = (cardId: string) => {
     setIsLoading(true);
@@ -165,14 +182,11 @@ export function CardModal({ boardId }: CardModalProps) {
   const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }) => {
     if (!card) return;
 
-    // Intercept Done — require conclusion
-    if (status === 'done' && !conclusion) {
+    // Intercept Validation/Done — require executor report
+    if (requiresExecutionReport(status) && !conclusion) {
+      setConclusionTargetStatus(status);
       setShowConclusionPrompt(true);
-      setConclusionDraft('');
-      setConclusionCompleteness(100);
-      setConclusionCompletenessJustification('');
-      setConclusionDrift(0);
-      setConclusionDriftJustification('');
+      resetConclusionPrompt();
       return;
     }
 
@@ -294,6 +308,8 @@ export function CardModal({ boardId }: CardModalProps) {
       toast.error('Failed to upload attachment');
     }
   };
+
+  const conclusionTargetLabel = STATUS_LABELS[conclusionTargetStatus];
 
   if (!isOpen) return null;
 
@@ -1013,7 +1029,7 @@ export function CardModal({ boardId }: CardModalProps) {
                   ) : (
                     <div className="text-center py-8">
                       <p className="text-gray-500 dark:text-gray-400 text-sm">No conclusion yet</p>
-                      <p className="text-gray-400 dark:text-gray-500 text-xs mt-1">A conclusion is required when moving this card to Done</p>
+                      <p className="text-gray-400 dark:text-gray-500 text-xs mt-1">A conclusion is required when moving execution work to Validation or Done</p>
                     </div>
                   )}
                 </div>
@@ -1032,10 +1048,13 @@ export function CardModal({ boardId }: CardModalProps) {
           </>
         ) : null}
 
-        {/* Conclusion prompt — shown when changing status to Done */}
+        {/* Execution report prompt — shown when changing status to Validation/Done */}
         {showConclusionPrompt && (
           <div className="px-6 py-3 border-t border-gray-100 dark:border-gray-700/50 bg-green-50/50 dark:bg-green-900/10 max-h-[60vh] overflow-y-auto">
-            <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Conclusion Required</h4>
+            <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Execution Report Required</h4>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+              Provide the executor report before moving this card to {conclusionTargetLabel}.
+            </p>
             <textarea
               value={conclusionDraft}
               onChange={(e) => setConclusionDraft(e.target.value)}
@@ -1103,7 +1122,7 @@ export function CardModal({ boardId }: CardModalProps) {
               <button
                 onClick={() => {
                   setShowConclusionPrompt(false);
-                  handleStatusChange('done', conclusionDraft.trim(), {
+                  handleStatusChange(conclusionTargetStatus, conclusionDraft.trim(), {
                     completeness: conclusionCompleteness,
                     completeness_justification: conclusionCompletenessJustification.trim(),
                     drift: conclusionDrift,
@@ -1113,7 +1132,7 @@ export function CardModal({ boardId }: CardModalProps) {
                 disabled={!conclusionDraft.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
                 className={`btn text-xs ${conclusionDraft.trim() && conclusionCompletenessJustification.trim() && conclusionDriftJustification.trim() ? 'btn-primary' : 'btn-secondary opacity-50'}`}
               >
-                Complete & Move to Done
+                Complete & Move to {conclusionTargetLabel}
               </button>
             </div>
           </div>

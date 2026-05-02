@@ -200,7 +200,7 @@ okto-pulse serve
 
 ## Release Notes
 
-### 0.1.6 — current
+### 0.1.13 — current
 
 #### Fix C: single-process, dual-port serve
 
@@ -218,7 +218,7 @@ What you get:
 
 #### Spec Skills tab removed from the frontend
 
-The dedicated Skills tab is gone from the spec detail view. The community frontend no longer references the obsolete `/api/v1/specs/{id}/skills` endpoints. Use **knowledge entries** and **decisions** instead. See `okto-pulse-core` 0.1.6 release notes for the full removal manifest (5 MCP tools, 4 REST endpoints, 5 permission flags, the `spec_skills` table).
+The dedicated Skills tab is gone from the spec detail view. The community frontend no longer references the obsolete `/api/v1/specs/{id}/skills` endpoints. Use **knowledge entries** and **decisions** instead. See `okto-pulse-core` 0.1.13 release notes for the full removal manifest (5 MCP tools, 4 REST endpoints, 5 permission flags, the `spec_skills` table).
 
 #### 4-slide onboarding tour
 

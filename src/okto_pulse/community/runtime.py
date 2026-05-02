@@ -12,6 +12,13 @@ from typing import Any, TypeVar
 from uvicorn.config import LOGGING_CONFIG
 
 _T = TypeVar("_T")
+_SHUTDOWN_LOG_SUPPRESSION = False
+
+
+def set_shutdown_log_suppression(enabled: bool) -> None:
+    """Suppress expected uvicorn cancellation noise while the CLI is stopping."""
+    global _SHUTDOWN_LOG_SUPPRESSION
+    _SHUTDOWN_LOG_SUPPRESSION = enabled
 
 
 class SuppressAmbiguousStartupComplete(logging.Filter):
@@ -21,16 +28,44 @@ class SuppressAmbiguousStartupComplete(logging.Filter):
         return record.getMessage() != "Application startup complete."
 
 
+class SuppressExpectedShutdownNoise(logging.Filter):
+    """Hide expected long-lived stream cancellation tracebacks during shutdown."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not _SHUTDOWN_LOG_SUPPRESSION:
+            return True
+
+        message = record.getMessage().strip()
+        if (
+            message.startswith("Cancel ")
+            and "timeout graceful shutdown exceeded" in message
+        ):
+            return False
+        if message == "ASGI callable returned without completing response.":
+            return False
+        if message.startswith("Exception in ASGI application"):
+            exc_info = record.exc_info
+            if exc_info and issubclass(exc_info[0], asyncio.CancelledError):
+                return False
+        return True
+
+
 def build_uvicorn_log_config() -> dict[str, Any]:
     log_config = deepcopy(LOGGING_CONFIG)
-    filter_name = "suppress_ambiguous_startup_complete"
-    log_config.setdefault("filters", {})[filter_name] = {
+    startup_filter_name = "suppress_ambiguous_startup_complete"
+    shutdown_filter_name = "suppress_expected_shutdown_noise"
+    log_config.setdefault("filters", {})[startup_filter_name] = {
         "()": "okto_pulse.community.runtime.SuppressAmbiguousStartupComplete",
+    }
+    log_config["filters"][shutdown_filter_name] = {
+        "()": "okto_pulse.community.runtime.SuppressExpectedShutdownNoise",
     }
     default_handler = log_config.setdefault("handlers", {}).setdefault("default", {})
     handler_filters = default_handler.setdefault("filters", [])
-    if filter_name not in handler_filters:
-        handler_filters.append(filter_name)
+    if startup_filter_name not in handler_filters:
+        handler_filters.append(startup_filter_name)
+    if shutdown_filter_name not in handler_filters:
+        handler_filters.append(shutdown_filter_name)
     return log_config
 
 

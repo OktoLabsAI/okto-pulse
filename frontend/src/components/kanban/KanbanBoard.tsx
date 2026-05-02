@@ -22,7 +22,7 @@ import {
   useColumns,
   useCurrentBoard,
 } from '@/store/dashboard';
-import { CARD_STATUSES, type CardStatus, type CardSummary, type SpecSummary } from '@/types';
+import { CARD_STATUSES, STATUS_LABELS, type CardStatus, type CardSummary, type SpecSummary } from '@/types';
 import { useListSearch } from '@/hooks/useListSearch';
 import { SearchInput } from '@/components/shared/SearchInput';
 import { KanbanColumn } from './KanbanColumn';
@@ -58,7 +58,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
   const [activeCard, setActiveCard] = useState<CardSummary | null>(null);
   const [dragFromStatus, setDragFromStatus] = useState<CardStatus | null>(null);
   const [createCardStatus, setCreateCardStatus] = useState<CardStatus | null>(null);
-  // Conclusion modal for Done moves
+  // Execution report modal for Validation/Done moves
   const [conclusionPending, setConclusionPending] = useState<{ cardId: string; targetStatus: CardStatus; targetPosition: number } | null>(null);
   const [conclusionText, setConclusionText] = useState('');
   const [conclusionCompleteness, setConclusionCompleteness] = useState(100);
@@ -73,6 +73,25 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
   const [specSearchOpen, setSpecSearchOpen] = useState(false);
   const [specSearchQuery, setSpecSearchQuery] = useState('');
   const specDropdownRef = useRef<HTMLDivElement>(null);
+
+  const resetConclusionFields = () => {
+    setConclusionText('');
+    setConclusionCompleteness(100);
+    setConclusionCompletenessJustification('');
+    setConclusionDrift(0);
+    setConclusionDriftJustification('');
+  };
+
+  const requiresExecutionReport = (
+    card: CardSummary | undefined,
+    targetStatus: CardStatus,
+    sourceStatus: CardStatus | null,
+  ) => {
+    if (targetStatus === 'done') return true;
+    if (targetStatus !== 'validation') return false;
+    if (card?.card_type === 'test') return false;
+    return sourceStatus !== null && ['not_started', 'started', 'in_progress', 'on_hold'].includes(sourceStatus);
+  };
 
   // Close spec search on outside click
   useEffect(() => {
@@ -212,23 +231,12 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     if (targetStatus === undefined || targetPosition === undefined) return;
     if (targetStatus === fromStatus && cardId === overId) return;
 
-    // Validation gate: when card has validation_required and user tries to
-    // drag directly to Done, intercept and redirect to Validation column.
-    // The backend enforces the gate; this is a UX convenience.
-    if (targetStatus === 'done') {
-      const card = Object.values(columns).flat().find((c) => c.id === cardId);
-      if (card?.validations === undefined || card?.validations === null || card.validations.length === 0) {
-        // No validation entries — allow normal Done flow.
-        // Future: when `validation_required` field is available from the API,
-        // check it here and redirect to 'validation' with a toast:
-        // toast('Validation gate active. Move to Validation column first.');
-      }
+    const card = Object.values(columns).flat().find((c) => c.id === cardId);
+
+    // Require the executor's report before a reviewer sees the card in Validation.
+    if (requiresExecutionReport(card, targetStatus, fromStatus)) {
       setConclusionPending({ cardId, targetStatus, targetPosition });
-      setConclusionText('');
-      setConclusionCompleteness(100);
-      setConclusionCompletenessJustification('');
-      setConclusionDrift(0);
-      setConclusionDriftJustification('');
+      resetConclusionFields();
       return;
     }
 
@@ -272,9 +280,9 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
         drift: conclusionDrift,
         drift_justification: conclusionDriftJustification.trim(),
       });
-      toast.success('Card moved to Done');
+      toast.success(`Card moved to ${STATUS_LABELS[targetStatus]}`);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to move card to Done');
+      toast.error(err instanceof Error ? err.message : `Failed to move card to ${STATUS_LABELS[targetStatus]}`);
     }
     if (currentBoard) {
       const freshColumns = await api.getBoardColumns(currentBoard.id, showArchived);
@@ -285,6 +293,8 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
   const handleCardClick = (cardId: string) => {
     openCardModal(cardId);
   };
+
+  const conclusionTargetLabel = conclusionPending ? STATUS_LABELS[conclusionPending.targetStatus] : 'target column';
 
   return (
     <>
@@ -454,14 +464,14 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
         />
       )}
 
-      {/* Conclusion Modal — shown when moving to Done */}
+      {/* Execution report modal — shown when moving execution work to Validation/Done */}
       {conclusionPending && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-lg flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Conclusion Required</h2>
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Execution Report Required</h2>
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Provide a summary of what was accomplished before marking this card as done.
+                Provide the executor report before moving this card to {conclusionTargetLabel}.
               </p>
             </div>
             <div className="px-6 py-4 max-h-[60vh] overflow-y-auto">
@@ -474,7 +484,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
                 autoFocus
               />
               {!conclusionText.trim() && (
-                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Conclusion is required to move to Done</p>
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Conclusion is required to move to {conclusionTargetLabel}</p>
               )}
               {/* Completeness metric */}
               <div className="mt-4">
@@ -533,7 +543,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
             </div>
             <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
               <button
-                onClick={() => { setConclusionPending(null); setConclusionText(''); }}
+                onClick={() => { setConclusionPending(null); resetConclusionFields(); }}
                 className="btn btn-secondary"
               >
                 Cancel
@@ -543,7 +553,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
                 disabled={!conclusionText.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
                 className={`btn ${conclusionText.trim() && conclusionCompletenessJustification.trim() && conclusionDriftJustification.trim() ? 'btn-primary' : 'btn-secondary opacity-50 cursor-not-allowed'}`}
               >
-                Complete & Move to Done
+                Complete & Move to {conclusionTargetLabel}
               </button>
             </div>
           </div>

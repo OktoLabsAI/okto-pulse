@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import {
   Boxes,
   Code2,
@@ -57,6 +57,7 @@ interface ExcalidrawElement {
   iconName?: string | null;
   linkedEntityId?: string | null;
   linkedInterfaceId?: string | null;
+  linkedInterfaceIds?: string[] | null;
   linkedMockupId?: string | null;
   sourceElementId?: string | null;
   targetElementId?: string | null;
@@ -144,6 +145,39 @@ function itemRef(item: { id?: string | null; name?: string; title?: string }, in
   return item.id || item.name || item.title || `${prefix}_${index}`;
 }
 
+function refKey(value: string | null | undefined): string {
+  return (value || '').trim().toLowerCase();
+}
+
+function uniqueRefs(values: Array<string | null | undefined>): string[] {
+  const refs: string[] = [];
+  values.forEach((value) => {
+    const ref = value?.trim();
+    if (ref && !refs.includes(ref)) refs.push(ref);
+  });
+  return refs;
+}
+
+function itemRefs(item: { id?: string | null; name?: string; title?: string }, index: number, prefix: string): string[] {
+  return uniqueRefs([item.id || undefined, item.name || undefined, item.title || undefined, `${prefix}_${index}`]);
+}
+
+function linkedInterfaceRefs(element: ExcalidrawElement): string[] {
+  return uniqueRefs([
+    element.linkedInterfaceId || undefined,
+    ...(Array.isArray(element.linkedInterfaceIds) ? element.linkedInterfaceIds : []),
+  ]);
+}
+
+function withLinkedInterfaceRefs(element: ExcalidrawElement, refs: string[]): ExcalidrawElement {
+  const unique = uniqueRefs(refs);
+  return {
+    ...element,
+    linkedInterfaceId: unique[0] || null,
+    linkedInterfaceIds: unique,
+  };
+}
+
 function titleCase(value: string): string {
   return value
     .replace(/[_-]+/g, ' ')
@@ -229,6 +263,22 @@ function normalizeInterfaceDirection(value: string | null | undefined): Interfac
   return 'source_to_target';
 }
 
+function interfaceDirectionLabel(value: string | null | undefined): string {
+  const normalized = normalizeInterfaceDirection(value);
+  if (normalized === 'target_to_source') return 'Target -> Source';
+  if (normalized === 'bidirectional') return 'Bidirectional';
+  if (normalized === 'none') return 'No arrow';
+  return 'Source -> Target';
+}
+
+function combinedInterfaceDirection(values: InterfaceDirection[]): InterfaceDirection {
+  const directions = values.filter((value) => value !== 'none');
+  if (directions.length === 0) return 'none';
+  if (directions.includes('bidirectional')) return 'bidirectional';
+  if (directions.includes('source_to_target') && directions.includes('target_to_source')) return 'bidirectional';
+  return directions.includes('target_to_source') ? 'target_to_source' : 'source_to_target';
+}
+
 function pathMiddlePoint(points: Array<{ x: number; y: number }>): { x: number; y: number } {
   if (points.length === 0) return { x: 0, y: 0 };
   if (points.length === 1) return points[0];
@@ -294,6 +344,35 @@ function getElementsBounds(elements: ExcalidrawElement[]): { minX: number; minY:
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }
 
+function detailText(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '';
+  if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : '';
+  if (typeof value === 'object') return JSON.stringify(value, null, 2);
+  return String(value);
+}
+
+function DetailRow({ label, children }: { label: string; children?: ReactNode }) {
+  const empty = children === null || children === undefined || children === '';
+  return (
+    <div className="grid grid-cols-[132px_minmax(0,1fr)] gap-3 border-b border-gray-200 dark:border-gray-800 py-2 last:border-b-0">
+      <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">{label}</dt>
+      <dd className="min-w-0 text-sm text-gray-900 dark:text-gray-100">
+        {empty ? <span className="text-gray-400 dark:text-gray-500">Not set</span> : children}
+      </dd>
+    </div>
+  );
+}
+
+function DetailCode({ value }: { value: unknown }) {
+  const text = detailText(value);
+  if (!text) return <span className="text-gray-400 dark:text-gray-500">Not set</span>;
+  return (
+    <pre className="max-h-36 overflow-auto whitespace-pre-wrap rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-950 p-2 text-xs text-gray-800 dark:text-gray-100 [scrollbar-gutter:stable]">
+      {text}
+    </pre>
+  );
+}
+
 export function ArchitectureDiagramEditor({
   diagram,
   entities = [],
@@ -313,6 +392,7 @@ export function ArchitectureDiagramEditor({
   const [connectSourceAnchor, setConnectSourceAnchor] = useState<ConnectionAnchor | null>(null);
   const [isPanning, setIsPanning] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [detailsElementId, setDetailsElementId] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
@@ -323,6 +403,36 @@ export function ArchitectureDiagramEditor({
   const nodeElements = elements.filter((element) => element.type !== 'arrow');
   const edgeElements = elements.filter((element) => element.type === 'arrow');
 
+  const entityDetailsByRef = useMemo(() => {
+    const map = new Map<string, { ref: string; label: string; item: ArchitectureEntity; index: number }>();
+    entities.forEach((entity, index) => {
+      itemRefs(entity, index, 'entity').forEach((ref) => {
+        map.set(refKey(ref), {
+          ref,
+          label: entity.name || `Entity ${index + 1}`,
+          item: entity,
+          index,
+        });
+      });
+    });
+    return map;
+  }, [entities]);
+
+  const interfaceDetailsByRef = useMemo(() => {
+    const map = new Map<string, { ref: string; label: string; item: ArchitectureInterface; index: number }>();
+    interfaces.forEach((item, index) => {
+      itemRefs(item, index, 'interface').forEach((ref) => {
+        map.set(refKey(ref), {
+          ref,
+          label: item.name || `Interface ${index + 1}`,
+          item,
+          index,
+        });
+      });
+    });
+    return map;
+  }, [interfaces]);
+
   const entityOptions = useMemo(
     () => entities.map((entity, index) => ({ id: itemRef(entity, index, 'entity'), label: entity.name || `Entity ${index + 1}` })),
     [entities],
@@ -331,6 +441,7 @@ export function ArchitectureDiagramEditor({
     () => interfaces.map((item, index) => ({
       id: itemRef(item, index, 'interface'),
       label: item.name || `Interface ${index + 1}`,
+      endpoint: item.endpoint || '',
       direction: normalizeInterfaceDirection(item.direction),
       protocol: item.protocol || '',
     })),
@@ -361,7 +472,10 @@ export function ArchitectureDiagramEditor({
     if (selectedElementId && !elements.some((item) => item.id === selectedElementId)) {
       setSelectedElementId('');
     }
-  }, [elements, selectedElementId]);
+    if (detailsElementId && !elements.some((item) => item.id === detailsElementId)) {
+      setDetailsElementId('');
+    }
+  }, [detailsElementId, elements, selectedElementId]);
 
   const updateElements = (nextElements: ExcalidrawElement[]) => {
     if (!diagram) return;
@@ -412,6 +526,13 @@ export function ArchitectureDiagramEditor({
   const updateSelected = (patch: Partial<ExcalidrawElement>) => {
     if (!selectedElement || readOnly) return;
     updateElements(elements.map((item) => (item.id === selectedElement.id ? { ...item, ...patch } : item)));
+  };
+
+  const openElementDetails = (event: ReactMouseEvent<HTMLButtonElement>, element: ExcalidrawElement) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedElementId(element.id);
+    setDetailsElementId(element.id);
   };
 
   const applyRawPayload = () => {
@@ -627,12 +748,128 @@ export function ArchitectureDiagramEditor({
     });
   };
 
-  const handleLinkedInterfaceChange = (interfaceId: string) => {
-    const linked = interfaceOptions.find((item) => item.id === interfaceId);
+  const handleLinkedInterfaceToggle = (interfaceId: string, checked: boolean) => {
+    if (!selectedElement) return;
+    const refs = linkedInterfaceRefs(selectedElement);
+    const nextRefs = checked ? uniqueRefs([...refs, interfaceId]) : refs.filter((ref) => ref !== interfaceId);
+    const linkedLabels = interfaceOptions
+      .filter((item) => nextRefs.includes(item.id))
+      .map((item) => item.label);
     updateSelected({
-      linkedInterfaceId: interfaceId || null,
-      text: interfaceId && selectedElement && !selectedElement.text?.trim() ? linked?.label : selectedElement?.text,
+      ...withLinkedInterfaceRefs(selectedElement, nextRefs),
+      text: !selectedElement.text?.trim() ? linkedLabels.join(', ') : selectedElement.text,
     });
+  };
+
+  const nodeLabel = (element: ExcalidrawElement | null | undefined): string => {
+    if (!element) return 'Not set';
+    const entityDetail = element.linkedEntityId ? entityDetailsByRef.get(refKey(element.linkedEntityId)) : null;
+    return entityDetail?.label || elementName(element, 'Unnamed');
+  };
+
+  const renderDetailsModal = () => {
+    const detailElement = elements.find((item) => item.id === detailsElementId);
+    if (!detailElement) return null;
+    const isConnection = detailElement.type === 'arrow';
+    const source = isConnection && detailElement.sourceElementId ? elements.find((item) => item.id === detailElement.sourceElementId) : null;
+    const target = isConnection && detailElement.targetElementId ? elements.find((item) => item.id === detailElement.targetElementId) : null;
+    const linkedInterfaceDetails = linkedInterfaceRefs(detailElement)
+      .map((ref) => ({ ref, detail: interfaceDetailsByRef.get(refKey(ref)) }))
+      .filter((item) => item.ref);
+    const entityDetail = !isConnection && detailElement.linkedEntityId
+      ? entityDetailsByRef.get(refKey(detailElement.linkedEntityId))
+      : null;
+    const entity = entityDetail?.item;
+    const mockupLabel = detailElement.linkedMockupId
+      ? mockupOptions.find((item) => item.id === detailElement.linkedMockupId)?.label || detailElement.linkedMockupId
+      : '';
+    const title = isConnection ? elementName(detailElement, 'Connection') : elementName(detailElement, entityDetail?.label || 'Unnamed');
+
+    return (
+      <div
+        className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 p-4"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setDetailsElementId('');
+        }}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={isConnection ? 'Connection details' : 'Entity details'}
+          className="w-full max-w-3xl max-h-[86vh] overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl"
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-gray-200 dark:border-gray-700 px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-wide text-cyan-600 dark:text-cyan-300">
+                {isConnection ? 'Connection details' : 'Entity details'}
+              </p>
+              <h3 className="truncate text-lg font-semibold text-gray-950 dark:text-gray-50">{title}</h3>
+            </div>
+            <button type="button" onClick={() => setDetailsElementId('')} className="btn btn-secondary text-sm">
+              Close
+            </button>
+          </div>
+          <div className="max-h-[calc(86vh-76px)] overflow-y-auto p-4 [scrollbar-gutter:stable]">
+            {isConnection ? (
+              <div className="space-y-4">
+                <dl className="rounded-lg border border-gray-200 dark:border-gray-700 px-3">
+                  <DetailRow label="Element id">{detailElement.id}</DetailRow>
+                  <DetailRow label="Source">{nodeLabel(source)}</DetailRow>
+                  <DetailRow label="Target">{nodeLabel(target)}</DetailRow>
+                  <DetailRow label="Connection type">{normalizeConnectionType(detailElement.connectionType)}</DetailRow>
+                  <DetailRow label="Interfaces">{linkedInterfaceDetails.length > 0 ? `${linkedInterfaceDetails.length}` : ''}</DetailRow>
+                </dl>
+                <div className="space-y-3">
+                  {linkedInterfaceDetails.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-gray-300 dark:border-gray-700 p-3 text-sm text-gray-500 dark:text-gray-400">
+                      No interface contracts are linked to this connection.
+                    </p>
+                  ) : linkedInterfaceDetails.map(({ ref, detail }) => {
+                    const item = detail?.item;
+                    return (
+                      <section key={ref} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                        <div className="mb-2">
+                          <p className="text-sm font-semibold text-gray-950 dark:text-gray-50">{detail?.label || ref}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{ref}</p>
+                        </div>
+                        <dl>
+                          <DetailRow label="Endpoint">{item?.endpoint}</DetailRow>
+                          <DetailRow label="Description">{item?.description}</DetailRow>
+                          <DetailRow label="Direction">{interfaceDirectionLabel(item?.direction)}</DetailRow>
+                          <DetailRow label="Protocol">{item?.protocol}</DetailRow>
+                          <DetailRow label="Contract type">{item?.contract_type}</DetailRow>
+                          <DetailRow label="Participants">{detailText(item?.participants)}</DetailRow>
+                          <DetailRow label="Request schema"><DetailCode value={item?.request_schema} /></DetailRow>
+                          <DetailRow label="Response schema"><DetailCode value={item?.response_schema} /></DetailRow>
+                          <DetailRow label="Event schema"><DetailCode value={item?.event_schema} /></DetailRow>
+                          <DetailRow label="Error contract"><DetailCode value={item?.error_contract} /></DetailRow>
+                          <DetailRow label="Schema ref">{item?.schema_ref}</DetailRow>
+                          <DetailRow label="Notes">{item?.notes}</DetailRow>
+                        </dl>
+                      </section>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <dl className="rounded-lg border border-gray-200 dark:border-gray-700 px-3">
+                <DetailRow label="Element id">{detailElement.id}</DetailRow>
+                <DetailRow label="Canvas label">{elementName(detailElement, entityDetail?.label || 'Unnamed')}</DetailRow>
+                <DetailRow label="Canvas type">{elementTypeLabel(detailElement)}</DetailRow>
+                <DetailRow label="Linked entity">{entityDetail?.label || detailElement.linkedEntityId}</DetailRow>
+                <DetailRow label="Entity type">{entity?.entity_type}</DetailRow>
+                <DetailRow label="Responsibility">{entity?.responsibility}</DetailRow>
+                <DetailRow label="Boundary">{entity?.boundaries}</DetailRow>
+                <DetailRow label="Technologies">{detailText(entity?.technologies)}</DetailRow>
+                <DetailRow label="Relationships">{detailText(entity?.relationships)}</DetailRow>
+                <DetailRow label="Linked screen">{mockupLabel}</DetailRow>
+                <DetailRow label="Notes">{entity?.notes}</DetailRow>
+              </dl>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const renderEdge = (element: ExcalidrawElement) => {
@@ -658,9 +895,13 @@ export function ArchitectureDiagramEditor({
     const x2 = connected && sourcePoint && targetPoint ? targetPoint.x - left : width - 8;
     const y2 = connected && sourcePoint && targetPoint ? targetPoint.y - top : height / 2;
     const stroke = element.strokeColor || '#94a3b8';
-    const linkedInterface = interfaceOptions.find((item) => item.id === element.linkedInterfaceId);
-    const label = elementName(element, linkedInterface?.label || 'Connection');
-    const protocolLabel = linkedInterface?.protocol || '';
+    const linkedInterfaces = interfaceOptions.filter((item) => linkedInterfaceRefs(element).includes(item.id));
+    const linkedInterfaceLabel = linkedInterfaces.length === 1
+      ? linkedInterfaces[0].label
+      : linkedInterfaces.length > 1
+        ? `${linkedInterfaces.length} interfaces`
+        : 'Connection';
+    const label = elementName(element, linkedInterfaceLabel);
     const connectionType = normalizeConnectionType(element.connectionType);
     const midX = (x1 + x2) / 2;
     const pathPoints = connectionType === 'elbow'
@@ -668,7 +909,7 @@ export function ArchitectureDiagramEditor({
       : [{ x: x1, y: y1 }, { x: x2, y: y2 }];
     const pathD = pathPoints.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
     const labelPoint = pathMiddlePoint(pathPoints);
-    const direction = linkedInterface?.direction || 'source_to_target';
+    const direction = combinedInterfaceDirection(linkedInterfaces.map((item) => item.direction));
     const markerUrl = `url(#arrowhead-${element.id})`;
     const markerStart = direction === 'target_to_source' || direction === 'bidirectional' ? markerUrl : undefined;
     const markerEnd = direction === 'source_to_target' || direction === 'bidirectional' ? markerUrl : undefined;
@@ -681,6 +922,7 @@ export function ArchitectureDiagramEditor({
         data-testid={`architecture-element-${element.id}`}
         onPointerDown={(event) => beginDrag(event, element)}
         onClick={() => setSelectedElementId(element.id)}
+        onDoubleClick={(event) => openElementDetails(event, element)}
         className={`absolute text-gray-700 dark:text-gray-200 ${connected || readOnly ? 'cursor-pointer' : 'cursor-move'} ${selected ? 'ring-2 ring-cyan-500 rounded' : ''}`}
         style={{ left, top, width, height }}
         title={label}
@@ -707,13 +949,23 @@ export function ArchitectureDiagramEditor({
             fill="none"
           />
         </svg>
-        {(label && label !== 'Connection') || protocolLabel ? (
+        {(linkedInterfaces.length > 0 || (label && label !== 'Connection')) ? (
           <span
-            className="absolute max-w-[80%] -translate-x-1/2 -translate-y-1/2 rounded bg-gray-50 dark:bg-gray-950 px-1 py-0.5 text-center leading-tight"
+            className="absolute max-w-[80%] -translate-x-1/2 -translate-y-1/2 rounded bg-gray-50 dark:bg-gray-950 px-1 py-0.5 text-center leading-tight shadow-sm"
             style={{ left: labelPoint.x, top: labelPoint.y }}
           >
-            {label && label !== 'Connection' && <span className="block truncate text-[11px] font-medium">{label}</span>}
-            {protocolLabel && <span className="block truncate text-[10px] font-medium uppercase text-gray-500 dark:text-gray-400">{protocolLabel}</span>}
+            {linkedInterfaces.length > 0 ? linkedInterfaces.map((item) => (
+              <span key={item.id} className="block max-w-full truncate">
+                <span className="block truncate text-[11px] font-medium">{item.label}</span>
+                {(item.endpoint || item.protocol) && (
+                  <span className="block truncate text-[10px] font-medium uppercase text-gray-500 dark:text-gray-400">
+                    {[item.endpoint, item.protocol].filter(Boolean).join(' / ')}
+                  </span>
+                )}
+              </span>
+            )) : (
+              <span className="block truncate text-[11px] font-medium">{label}</span>
+            )}
           </span>
         ) : null}
       </button>
@@ -767,6 +1019,7 @@ export function ArchitectureDiagramEditor({
           data-testid={`architecture-element-${element.id}`}
           onPointerDown={(event) => beginDrag(event, element)}
           onClick={() => handleNodeClick(element)}
+          onDoubleClick={(event) => openElementDetails(event, element)}
           className={`absolute rounded-md border-2 shadow-sm flex items-center justify-center px-2 text-sm font-medium text-gray-900 dark:text-gray-100 bg-transparent ${readOnly ? 'cursor-default' : 'cursor-move'} ${selected ? 'ring-2 ring-cyan-500' : ''}`}
           style={{ left: box.x, top: box.y, width: box.width, height: box.height, borderColor: element.strokeColor || '#334155' }}
           title={name}
@@ -784,6 +1037,7 @@ export function ArchitectureDiagramEditor({
         data-testid={`architecture-element-${element.id}`}
         onPointerDown={(event) => beginDrag(event, element)}
         onClick={() => handleNodeClick(element)}
+        onDoubleClick={(event) => openElementDetails(event, element)}
         className={`absolute group rounded-md border-2 shadow-sm flex items-center justify-center gap-2 px-3 text-gray-900 dark:text-gray-100 ${readOnly ? 'cursor-default' : connectMode ? 'cursor-crosshair' : 'cursor-move'} ${usesDefaultFill ? 'bg-white dark:bg-gray-900' : ''} ${selected ? 'ring-2 ring-cyan-500' : ''} ${isConnectSource ? 'ring-2 ring-amber-400' : ''}`}
         style={{
           left: box.x,
@@ -936,13 +1190,35 @@ export function ArchitectureDiagramEditor({
                   </button>
                 )}
               </div>
-              <label className="block">
-                <span className={labelClass}>Linked Interface</span>
-                <select value={selectedElement.linkedInterfaceId || ''} onChange={(event) => handleLinkedInterfaceChange(event.target.value)} disabled={readOnly} className={inputClass}>
-                  <option value="">None</option>
-                  {interfaceOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-                </select>
-              </label>
+              <div className="block">
+                <span className={labelClass}>Linked Interfaces</span>
+                <div className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-950 p-1 [scrollbar-gutter:stable]">
+                  {interfaceOptions.length === 0 ? (
+                    <p className="px-2 py-1 text-xs text-gray-500 dark:text-gray-400">No interfaces registered</p>
+                  ) : interfaceOptions.map((item) => {
+                    const checked = linkedInterfaceRefs(selectedElement).includes(item.id);
+                    return (
+                      <label key={item.id} className="flex items-start gap-2 rounded px-2 py-1 text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => handleLinkedInterfaceToggle(item.id, event.target.checked)}
+                          disabled={readOnly}
+                          className="mt-0.5"
+                        />
+                        <span className="min-w-0">
+                          <span className="block truncate font-medium">{item.label}</span>
+                          {(item.endpoint || item.protocol) && (
+                            <span className="block truncate text-[11px] uppercase text-gray-500 dark:text-gray-400">
+                              {[item.endpoint, item.protocol].filter(Boolean).join(' / ')}
+                            </span>
+                          )}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
               <label className="block">
                 <span className={labelClass}>Connection type</span>
                 <select
@@ -959,6 +1235,7 @@ export function ArchitectureDiagramEditor({
           )}
         </div>
       )}
+      {renderDetailsModal()}
     </div>
   );
 }
