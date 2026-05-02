@@ -33,6 +33,13 @@ def _package_version(package_name: str) -> str:
         return "unknown"
 
 
+def _format_version() -> str:
+    return (
+        f"okto-pulse {_package_version('okto-pulse')} "
+        f"(okto-pulse-core {_package_version('okto-pulse-core')})"
+    )
+
+
 def _print_banner() -> None:
     """Print the Okto Pulse ASCII banner to stderr (kept off stdout to
     avoid corrupting JSON pipes). Suppressed when ``OKTO_PULSE_NO_BANNER``
@@ -692,11 +699,14 @@ def cmd_reset(args):
 
 
 def main():
-    _print_banner()
-
     parser = argparse.ArgumentParser(
         prog="okto-pulse",
         description="Okto Pulse Community — local-first kanban board with MCP support for AI agents",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=_format_version(),
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -807,12 +817,15 @@ def main():
 
     args = parser.parse_args()
     if not args.command:
+        _print_banner()
         parser.print_help()
         sys.exit(1)
     if args.command == "kg" and not getattr(args, "kg_command", None):
+        _print_banner()
         sub_kg.print_help()
         sys.exit(1)
 
+    _print_banner()
     args.func(args)
 
 
