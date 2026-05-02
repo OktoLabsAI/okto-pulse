@@ -74,7 +74,51 @@ const edgeDiagram: ArchitectureDiagram = {
         sourceElementId: 'box_1',
         targetElementId: 'box_2',
         linkedInterfaceId: 'interface-1',
+        linkedInterfaceIds: ['interface-1'],
         text: '',
+        displayType: 'Edge',
+        strokeColor: '#94a3b8',
+      },
+    ],
+    appState: {},
+    files: {},
+  },
+};
+
+const detailedDiagram: ArchitectureDiagram = {
+  ...edgeDiagram,
+  adapter_payload: {
+    type: 'excalidraw',
+    version: 2,
+    elements: [
+      {
+        id: 'box_1',
+        type: 'rectangle',
+        x: 40,
+        y: 40,
+        width: 160,
+        height: 80,
+        text: 'Checkout API',
+        displayType: 'API',
+        linkedEntityId: 'entity-api',
+      },
+      {
+        id: 'box_2',
+        type: 'rectangle',
+        x: 320,
+        y: 40,
+        width: 160,
+        height: 80,
+        text: 'Orders DB',
+        displayType: 'Database',
+        linkedEntityId: 'entity-db',
+      },
+      {
+        id: 'edge_1',
+        type: 'arrow',
+        sourceElementId: 'box_1',
+        targetElementId: 'box_2',
+        linkedInterfaceIds: ['interface-1'],
         displayType: 'Edge',
         strokeColor: '#94a3b8',
       },
@@ -121,18 +165,18 @@ describe('ArchitectureDiagramEditor', () => {
       />,
     );
 
-    expect(screen.queryByLabelText('Linked Interface')).not.toBeInTheDocument();
+    expect(screen.queryByText('Linked Interfaces')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('architecture-element-box_1'));
-    expect(screen.queryByLabelText('Linked Interface')).not.toBeInTheDocument();
+    expect(screen.queryByText('Linked Interfaces')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('architecture-element-edge_1'));
-    expect(screen.getByText('REST')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Linked Interface'), { target: { value: 'interface-1' } });
+    expect(screen.getAllByText('REST').length).toBeGreaterThan(0);
+    expect(screen.getByRole('checkbox', { name: /Create invoice/i })).toBeChecked();
     fireEvent.change(screen.getByLabelText('Connection type'), { target: { value: 'elbow' } });
 
     const updated = onChange.mock.calls[onChange.mock.calls.length - 1][0] as ArchitectureDiagram;
-    const payload = updated.adapter_payload as { elements: Array<{ id: string; linkedInterfaceId?: string | null; connectionType?: string }> };
+    const payload = updated.adapter_payload as { elements: Array<{ id: string; linkedInterfaceIds?: string[] | null; connectionType?: string }> };
     expect(payload.elements.find((item) => item.id === 'edge_1')).toMatchObject({ connectionType: 'elbow' });
   });
 
@@ -146,10 +190,10 @@ describe('ArchitectureDiagramEditor', () => {
     );
 
     fireEvent.click(screen.getByTestId('architecture-element-edge_1'));
-    expect(screen.getByLabelText('Linked Interface')).toBeInTheDocument();
+    expect(screen.getByText('Linked Interfaces')).toBeInTheDocument();
 
     fireEvent.pointerDown(screen.getByTestId('architecture-canvas'), { clientX: 3, clientY: 3, pointerId: 1 });
-    expect(screen.queryByLabelText('Linked Interface')).not.toBeInTheDocument();
+    expect(screen.queryByText('Linked Interfaces')).not.toBeInTheDocument();
   });
 
   it('uses interface direction to render connection arrow heads', () => {
@@ -207,5 +251,47 @@ describe('ArchitectureDiagramEditor', () => {
     const updated = onChange.mock.calls[onChange.mock.calls.length - 1][0] as ArchitectureDiagram;
     const payload = updated.adapter_payload as { elements: Array<{ id: string }> };
     expect(payload.elements.some((item) => item.id === 'box_2')).toBe(false);
+  });
+
+  it('opens detail modals for entities and connections with double click', () => {
+    render(
+      <ArchitectureDiagramEditor
+        diagram={detailedDiagram}
+        entities={[
+          {
+            id: 'entity-api',
+            name: 'Checkout API',
+            entity_type: 'api',
+            responsibility: 'Persists checkout commands.',
+          },
+          {
+            id: 'entity-db',
+            name: 'Orders DB',
+            entity_type: 'database',
+          },
+        ]}
+        interfaces={[
+          {
+            id: 'interface-1',
+            name: 'Create order',
+            endpoint: 'POST /orders',
+            direction: 'source_to_target',
+            protocol: 'REST',
+            contract_type: 'OpenAPI',
+          },
+        ]}
+        onChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.doubleClick(screen.getByTestId('architecture-element-box_1'));
+    expect(screen.getByRole('dialog', { name: 'Entity details' })).toBeInTheDocument();
+    expect(screen.getByText('Persists checkout commands.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Close'));
+    fireEvent.doubleClick(screen.getByTestId('architecture-element-edge_1'));
+    expect(screen.getByRole('dialog', { name: 'Connection details' })).toBeInTheDocument();
+    expect(screen.getAllByText('Create order').length).toBeGreaterThan(0);
+    expect(screen.getByText('POST /orders')).toBeInTheDocument();
   });
 });

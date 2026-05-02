@@ -1,5 +1,7 @@
 """Okto Pulse Community CLI — setup and run the local-first edition."""
 
+# ruff: noqa: E402
+
 import warnings
 warnings.filterwarnings(
     "ignore",
@@ -14,6 +16,7 @@ import os
 import shutil
 import socket
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 # Default ports
@@ -21,6 +24,20 @@ DEFAULT_API_PORT = 8100
 DEFAULT_MCP_PORT = 8101
 
 _BANNER_PATH = Path(__file__).parent / "banner.txt"
+
+
+def _package_version(package_name: str) -> str:
+    try:
+        return version(package_name)
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _format_version() -> str:
+    return (
+        f"okto-pulse {_package_version('okto-pulse')} "
+        f"(okto-pulse-core {_package_version('okto-pulse-core')})"
+    )
 
 
 def _print_banner() -> None:
@@ -32,6 +49,10 @@ def _print_banner() -> None:
     try:
         sys.stderr.write(_BANNER_PATH.read_text(encoding="utf-8"))
         sys.stderr.write("\n")
+        sys.stderr.write(
+            f"Version {_package_version('okto-pulse')} "
+            f"({_package_version('okto-pulse-core')})\n\n"
+        )
         sys.stderr.flush()
     except OSError:
         pass
@@ -66,7 +87,7 @@ def cmd_init(args):
     from okto_pulse.community.auth import LocalAuthProvider
     from okto_pulse.community.seed import seed_community_defaults
     from sqlalchemy import event, select
-    from okto_pulse.core.models.db import Agent, Board
+    from okto_pulse.core.models.db import Board
 
     configure_settings(settings)
     configure_auth(LocalAuthProvider())
@@ -130,6 +151,7 @@ def _generate_mcp_json(mcp_port: int, agent_names: list[str] | None):
     from okto_pulse.core.infra.database import create_database, init_db, get_session_factory, close_db
     from okto_pulse.core.models.db import Agent
     from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.auth import configure_auth
     from okto_pulse.core.infra.config import configure_settings
     from okto_pulse.community.auth import LocalAuthProvider
     from okto_pulse.core.infra.storage import FileSystemStorageProvider, configure_storage
@@ -724,11 +746,14 @@ def cmd_reset(args):
 
 
 def main():
-    _print_banner()
-
     parser = argparse.ArgumentParser(
         prog="okto-pulse",
         description="Okto Pulse Community — local-first kanban board with MCP support for AI agents",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=_format_version(),
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -846,12 +871,15 @@ def main():
 
     args = parser.parse_args()
     if not args.command:
+        _print_banner()
         parser.print_help()
         sys.exit(1)
     if args.command == "kg" and not getattr(args, "kg_command", None):
+        _print_banner()
         sub_kg.print_help()
         sys.exit(1)
 
+    _print_banner()
     args.func(args)
 
 

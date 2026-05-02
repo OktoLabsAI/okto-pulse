@@ -1,5 +1,7 @@
 """Community edition application entry point."""
 
+# ruff: noqa: E402
+
 import warnings
 warnings.filterwarnings(
     "ignore",
@@ -8,9 +10,10 @@ warnings.filterwarnings(
 )
 
 import asyncio
+import contextlib
 import logging
+import math
 import os
-import sys
 import time
 from datetime import timezone
 from pathlib import Path
@@ -18,11 +21,11 @@ from typing import AsyncGenerator
 
 import uvicorn
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import event, text
+from sqlalchemy import event
 
 from okto_pulse.core.app import create_app
-from okto_pulse.core.infra.config import configure_settings, get_settings
-from okto_pulse.core.infra.database import create_database, get_engine, get_session_factory, init_db, close_db
+from okto_pulse.core.infra.config import get_settings
+from okto_pulse.core.infra.database import get_engine, get_session_factory, init_db, close_db
 from okto_pulse.core.infra.storage import FileSystemStorageProvider
 from okto_pulse.core.kg.embedding import SentenceTransformerProvider, StubEmbeddingProvider
 from okto_pulse.core.kg.interfaces.registry import configure_kg_registry, get_kg_registry
@@ -33,12 +36,17 @@ from okto_pulse.core.kg.interfaces.registry import configure_kg_registry, get_kg
 # Settings cache trap respected by Spec 23350275 (Fix C, BR5).
 from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
-from okto_pulse.community.runtime import build_uvicorn_log_config, run_async_server
+from okto_pulse.community.runtime import (
+    build_uvicorn_log_config,
+    run_async_server,
+    set_shutdown_log_suppression,
+)
 from okto_pulse.community.seed import seed_community_defaults
 
 _EMBEDDING_LOGGER = logging.getLogger("okto_pulse.community.embedding")
 _STARTUP_LOGGER = logging.getLogger("uvicorn.error")
-_STARTUP_TIMEOUT_SECONDS = 30.0
+_DEFAULT_STARTUP_TIMEOUT_SECONDS = 120.0
+_DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 # Preload retry policy: 3 attempts, exponential backoff (2s, 4s, 8s), 30s total budget.
 # Only transient network errors retry. ImportError / OSError (disk full) / ValueError
@@ -46,6 +54,58 @@ _STARTUP_TIMEOUT_SECONDS = 30.0
 _EMBEDDING_PRELOAD_ATTEMPTS = 3
 _EMBEDDING_PRELOAD_BACKOFF_S = (2.0, 4.0, 8.0)
 _EMBEDDING_PRELOAD_BUDGET_S = 30.0
+
+
+def _startup_timeout_seconds() -> float:
+    """Return the readiness timeout used while uvicorn lifespans complete."""
+    raw = (
+        os.environ.get("OKTO_PULSE_STARTUP_TIMEOUT_SECONDS")
+        or os.environ.get("OKTO_PULSE_STARTUP_TIMEOUT")
+    )
+    if not raw:
+        return _DEFAULT_STARTUP_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw)
+    except ValueError:
+        _STARTUP_LOGGER.warning(
+            "Invalid OKTO_PULSE_STARTUP_TIMEOUT_SECONDS=%r; using %.0fs.",
+            raw,
+            _DEFAULT_STARTUP_TIMEOUT_SECONDS,
+        )
+        return _DEFAULT_STARTUP_TIMEOUT_SECONDS
+    if timeout < 1:
+        _STARTUP_LOGGER.warning(
+            "OKTO_PULSE_STARTUP_TIMEOUT_SECONDS must be >= 1; using %.0fs.",
+            _DEFAULT_STARTUP_TIMEOUT_SECONDS,
+        )
+        return _DEFAULT_STARTUP_TIMEOUT_SECONDS
+    return timeout
+
+
+def _shutdown_timeout_seconds() -> float:
+    """Return the graceful shutdown timeout for open HTTP/WebSocket streams."""
+    raw = (
+        os.environ.get("OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS")
+        or os.environ.get("OKTO_PULSE_SHUTDOWN_TIMEOUT")
+    )
+    if not raw:
+        return _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw)
+    except ValueError:
+        _STARTUP_LOGGER.warning(
+            "Invalid OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS=%r; using %.0fs.",
+            raw,
+            _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+        return _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+    if timeout < 1:
+        _STARTUP_LOGGER.warning(
+            "OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS must be >= 1; using %.0fs.",
+            _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+        return _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+    return timeout
 
 
 def _is_transient_network_error(exc: BaseException) -> bool:
@@ -261,7 +321,7 @@ def create_community_app():
             if result:
                 board, agent, api_key = result
                 print(f"\n{'='*60}")
-                print(f"  Okto Pulse Community — First Boot Setup")
+                print("  Okto Pulse Community — First Boot Setup")
                 print(f"{'='*60}")
                 print(f"  Board created: {board.name} ({board.id})")
                 print(f"  Agent created: {agent.name}")
@@ -407,8 +467,10 @@ async def _wait_for_server_started(
     server_name: str,
     server: uvicorn.Server,
     task: asyncio.Task[None],
-    timeout_seconds: float = _STARTUP_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = None,
 ) -> None:
+    if timeout_seconds is None:
+        timeout_seconds = _startup_timeout_seconds()
     deadline = time.monotonic() + timeout_seconds
     while not server.started:
         if task.done():
@@ -416,7 +478,11 @@ async def _wait_for_server_started(
             raise RuntimeError(f"{server_name} server stopped before startup completed.")
         if time.monotonic() >= deadline:
             server.should_exit = True
-            raise TimeoutError(f"{server_name} server startup timed out after {timeout_seconds:.0f}s.")
+            raise TimeoutError(
+                f"{server_name} server startup timed out after {timeout_seconds:.0f}s. "
+                "If this machine is doing a slow cold start, set "
+                "OKTO_PULSE_STARTUP_TIMEOUT_SECONDS to a larger value."
+            )
         await asyncio.sleep(0.05)
 
 
@@ -443,6 +509,42 @@ def _log_ready_servers(api_port: int, mcp_port: int) -> None:
     _STARTUP_LOGGER.info("Startup complete - The application is ready")
 
 
+async def _shutdown_server_pair(
+    api_server: uvicorn.Server,
+    mcp_server: uvicorn.Server,
+    api_task: asyncio.Task[None],
+    mcp_task: asyncio.Task[None],
+    *,
+    timeout_seconds: float | None = None,
+) -> None:
+    """Stop both uvicorn servers without letting open streams hang forever."""
+    timeout = _shutdown_timeout_seconds() if timeout_seconds is None else timeout_seconds
+    set_shutdown_log_suppression(True)
+    try:
+        api_server.should_exit = True
+        mcp_server.should_exit = True
+
+        _, pending = await asyncio.wait({api_task, mcp_task}, timeout=timeout + 1.0)
+        if not pending:
+            return
+
+        _STARTUP_LOGGER.warning(
+            "Shutdown timeout exceeded after %.0fs; forcing API/UI and MCP servers to stop.",
+            timeout,
+        )
+
+        api_server.force_exit = True
+        mcp_server.force_exit = True
+        api_server.should_exit = True
+        mcp_server.should_exit = True
+        for task in (api_task, mcp_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(api_task, mcp_task, return_exceptions=True)
+    finally:
+        set_shutdown_log_suppression(False)
+
+
 async def _serve_dual(api_port: int, mcp_port: int) -> None:
     """Run API+UI on `api_port` and MCP on `mcp_port` inside a single
     Python process via two uvicorn `Server` instances driven by
@@ -459,6 +561,8 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
 
     settings = CommunitySettings()
     uvicorn_log_config = build_uvicorn_log_config()
+    shutdown_timeout = _shutdown_timeout_seconds()
+    uvicorn_shutdown_timeout = int(math.ceil(shutdown_timeout))
 
     api_config = uvicorn.Config(
         "okto_pulse.community.main:app",
@@ -467,26 +571,28 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         ws="wsproto",
         log_level="info",
         log_config=uvicorn_log_config,
+        timeout_keep_alive=1,
+        timeout_graceful_shutdown=uvicorn_shutdown_timeout,
     )
-    # Disable uvicorn's per-server signal handlers — with two Servers in the
-    # same loop the default install_signal_handlers fires twice and only
-    # cleanly exits one of them on Ctrl+C. We drive shutdown ourselves below
-    # via should_exit so both listeners drain in parallel.
-    api_config.install_signal_handlers = False
     api_server = uvicorn.Server(api_config)
+    # Disable uvicorn's per-server signal capture — with two Servers in the
+    # same loop the last one wins the process signal handler, which can leave
+    # the other listener waiting forever. asyncio.Runner cancels _serve_dual on
+    # Ctrl+C; we coordinate both listeners in the except block below.
+    api_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
 
     mcp_config = uvicorn.Config(
         build_mcp_asgi_app(),
-        # MCP host binding: read from MCP_HOST env (default 127.0.0.1, set
-        # to 0.0.0.0 in docker-compose for cross-container reachability).
-        host=os.environ.get("MCP_HOST", "127.0.0.1"),
+        host="127.0.0.1",
         port=mcp_port,
         ws="wsproto",
         log_level="info",
         log_config=uvicorn_log_config,
+        timeout_keep_alive=1,
+        timeout_graceful_shutdown=uvicorn_shutdown_timeout,
     )
-    mcp_config.install_signal_handlers = False
     mcp_server = uvicorn.Server(mcp_config)
+    mcp_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
 
     api_task = asyncio.create_task(api_server.serve(), name="api_ui_server")
     mcp_task = asyncio.create_task(mcp_server.serve(), name="mcp_server")
@@ -495,21 +601,40 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         await _wait_for_server_started("API/UI", api_server, api_task)
         await _wait_for_server_started("MCP", mcp_server, mcp_task)
         _log_ready_servers(api_port, mcp_port)
-        await asyncio.gather(api_task, mcp_task)
+        done, _ = await asyncio.wait(
+            {api_task, mcp_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                raise exc
+        await _shutdown_server_pair(
+            api_server,
+            mcp_server,
+            api_task,
+            mcp_task,
+            timeout_seconds=shutdown_timeout,
+        )
     except asyncio.CancelledError:
         # Ctrl+C reached the loop before our handler could flip should_exit.
         # Ask both servers to drain and swallow the cancel — this is the
         # expected shutdown path, not an error.
-        api_server.should_exit = True
-        mcp_server.should_exit = True
-        await asyncio.gather(api_task, mcp_task, return_exceptions=True)
+        await _shutdown_server_pair(
+            api_server,
+            mcp_server,
+            api_task,
+            mcp_task,
+            timeout_seconds=shutdown_timeout,
+        )
     except BaseException:
-        api_server.should_exit = True
-        mcp_server.should_exit = True
-        for task in (api_task, mcp_task):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(api_task, mcp_task, return_exceptions=True)
+        await _shutdown_server_pair(
+            api_server,
+            mcp_server,
+            api_task,
+            mcp_task,
+            timeout_seconds=shutdown_timeout,
+        )
         raise
 
 

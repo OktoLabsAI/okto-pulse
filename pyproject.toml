@@ -1,6 +1,6 @@
 [project]
 name = "okto-pulse"
-version = "0.1.12"
+version = "0.1.13"
 description = "Okto Pulse — spec-driven project management with AI agents via MCP. Local-first, single command setup."
 requires-python = ">=3.11"
 license = {text = "Elastic-2.0"}
@@ -26,7 +26,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "okto-pulse-core>=0.1.12,<1.0.0",
+    "okto-pulse-core>=0.1.13,<1.0.0",
     "sentence-transformers>=2.5.0,<6.0.0",
 ]
 
@@ -64,15 +64,3 @@ include = [
     "TRADEMARKS.md",
 ]
 artifacts = ["src/okto_pulse/community/frontend_dist/assets/*.png"]
-
-[tool.uv]
-# Use uv-managed lockfile for reproducible installs in CI/Docker.
-# Generated with `uv lock`; refresh after editing dependencies.
-
-[tool.uv.sources]
-# Resolve okto-pulse-core from the sibling working copy during lock/sync.
-# This matches the Docker build's wheel-builder layout, which COPYs both
-# repos as siblings into /src. Required because PyPI lags behind the
-# git tags this repo depends on (e.g. okto-pulse depends on
-# okto-pulse-core>=0.1.6 but PyPI only has 0.1.5 published).
-okto-pulse-core = { path = "../okto-pulse-core" }

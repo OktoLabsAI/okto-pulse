@@ -132,6 +132,7 @@ describe('ArchitectureTab', () => {
 
     fireEvent.click(screen.getByTitle('Edit interface'));
     expect(screen.getByLabelText('Interface name')).toBeInTheDocument();
+    expect(screen.getByLabelText('Endpoint / operation')).toBeInTheDocument();
     expect(screen.queryByLabelText('Source entity')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Target entity')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Direction')).toBeInTheDocument();
