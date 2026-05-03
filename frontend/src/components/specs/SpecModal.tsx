@@ -43,6 +43,7 @@ import toast from 'react-hot-toast';
 import { exportSpec, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
+import { openLineageGraph } from '@/components/traceability';
 import type { Spec, SpecStatus, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings, Decision } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { EvidenceBadge } from './EvidenceBadge';
@@ -1468,6 +1469,13 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
             <span className="text-xs text-gray-400 shrink-0">v{spec.version}</span>
           </div>
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => openLineageGraph('spec', spec.id)}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+              title="Open lineage graph"
+            >
+              <GitBranch size={16} />
+            </button>
             <button
               onClick={() => { const md = exportSpec(spec); downloadMarkdown(md, `spec_${slugify(spec.title)}_v${spec.version}.md`); }}
               disabled={loading}

@@ -85,7 +85,7 @@ export function ModalStackRenderer({ boardId }: Props) {
           same type — otherwise the modal's internal useEffect that
           fetches by id might keep stale state. */}
       {top.type === 'card' && (
-        <CardModal key={`card-${top.id}`} boardId={boardId} />
+        <CardModal key={`card-${top.id}`} boardId={boardId} onClose={handleClose} />
       )}
       {top.type === 'spec' && (
         <SpecModal

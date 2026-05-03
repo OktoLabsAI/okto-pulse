@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Archive,
   ArchiveRestore,
+  GitBranch,
   Layers,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -25,6 +26,7 @@ import { SearchInput } from '@/components/shared/SearchInput';
 import { useViewMode } from '@/hooks/useViewMode';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { HierarchicalList } from '@/components/shared/HierarchicalList';
+import { openLineageGraph } from '@/components/traceability';
 import { CreateSpecModal } from './CreateSpecModal';
 import { SpecModal } from './SpecModal';
 
@@ -269,6 +271,16 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
                     {spec.archived && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400 font-medium">archived</span>
                     )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openLineageGraph('spec', spec.id);
+                      }}
+                      className="p-1 text-gray-400 hover:text-cyan-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="Open lineage graph"
+                    >
+                      <GitBranch size={14} />
+                    </button>
                     <button
                       onClick={async (e) => {
                         e.stopPropagation();

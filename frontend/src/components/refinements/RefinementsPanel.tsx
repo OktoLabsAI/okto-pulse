@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Archive,
   ArchiveRestore,
+  GitBranch,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -22,6 +23,7 @@ import { useListSearch } from '@/hooks/useListSearch';
 import { SearchInput } from '@/components/shared/SearchInput';
 import { useViewMode } from '@/hooks/useViewMode';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
+import { openLineageGraph } from '@/components/traceability';
 import { CreateRefinementModal } from './CreateRefinementModal';
 import { RefinementModal } from './RefinementModal';
 
@@ -275,6 +277,16 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
                         {refinement.archived && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400 font-medium">archived</span>
                         )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openLineageGraph('refinement', refinement.id);
+                          }}
+                          className="p-1 text-gray-400 hover:text-cyan-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Open lineage graph"
+                        >
+                          <GitBranch size={14} />
+                        </button>
                         <button
                           onClick={async (e) => {
                             e.stopPropagation();

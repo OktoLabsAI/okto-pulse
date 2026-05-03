@@ -14,6 +14,7 @@ import { GlobalKGActivityIndicator } from '@/components/knowledge/GlobalKGActivi
 import { KGHealthView } from '@/components/knowledge/KGHealthView';
 import { ModalStackProvider } from '@/contexts/ModalStackContext';
 import { ModalStackRenderer } from '@/components/modals/ModalStackRenderer';
+import { LineageGraphModal } from '@/components/traceability';
 import { EvidenceGateSkipBanner } from '@/components/banners/EvidenceGateSkipBanner';
 import { getBoardSettings } from '@/services/board-settings-api';
 import { useTermsAcceptance } from '@/hooks/useTermsAcceptance';
@@ -387,6 +388,7 @@ function App() {
       {/* Root-level drill-down modal renderer — ideação c13f7bd3.
           Mounted here so it's visible from every tab (including
           Knowledge, where the usual entity modals aren't hosted). */}
+      {currentBoard && <LineageGraphModal boardId={currentBoard.id} />}
       {currentBoard && <ModalStackRenderer boardId={currentBoard.id} />}
     </div>
     </ModalStackProvider>

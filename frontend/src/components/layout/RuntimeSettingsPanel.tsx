@@ -5,7 +5,7 @@
  *   * **Graph DB** (default tab): Kùzu memory tuning. Changing any field
  *     here flips ``restart_required`` because Kùzu Database() is
  *     constructor-time. Banner amber sinaliza isso.
- *   * **Event Queue** (new in v0.1.13): consolidation queue throughput
+ *   * **Event Queue** (new in v0.1.14): consolidation queue throughput
  *     knobs (max workers, throttle, claim timeout, max attempts, alert
  *     threshold) + Live Queue Health panel polling /api/v1/kg/queue/health
  *     every 2000ms. Banner azul reforça que hot-reload é a semântica.
