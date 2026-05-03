@@ -583,7 +583,11 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
 
     mcp_config = uvicorn.Config(
         build_mcp_asgi_app(),
-        host="127.0.0.1",
+        # Read host from environment (set by Docker / compose) or fall back to
+        # loopback so a stray process doesn't accidentally expose the MCP
+        # server. Override via MCP_HOST=0.0.0.0 in docker-compose.yml when
+        # port-mapping is required from outside the container.
+        host=os.environ.get("MCP_HOST", "127.0.0.1"),
         port=mcp_port,
         ws="wsproto",
         log_level="info",
