@@ -21,6 +21,7 @@ import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { CardKnowledgeTab } from './CardKnowledgeTab';
 import { ArchitectureTab } from '@/components/architecture';
+import { openLineageGraph } from '@/components/traceability';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -35,9 +36,10 @@ function resolveActorName(id: string | null | undefined, members: { id: string; 
 
 interface CardModalProps {
   boardId: string;
+  onClose?: () => void;
 }
 
-export function CardModal({ boardId }: CardModalProps) {
+export function CardModal({ boardId, onClose }: CardModalProps) {
   const api = useDashboardApi();
   const selectedCardId = useSelectedCard();
   const isOpen = useIsCardModalOpen();
@@ -177,6 +179,7 @@ export function CardModal({ boardId }: CardModalProps) {
 
   const handleClose = () => {
     closeCardModal();
+    onClose?.();
   };
 
   const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }) => {
@@ -400,7 +403,32 @@ export function CardModal({ boardId }: CardModalProps) {
           )}
           <div className="flex items-center gap-1">
             <button
-              onClick={() => { if (!card) return; const md = exportCard(card, fullSpec); downloadMarkdown(md, `${card.card_type === 'bug' ? 'bug' : 'task'}_${slugify(card.title)}.md`); }}
+              onClick={() => {
+                if (!card) return;
+                openLineageGraph(
+                  card.card_type === 'bug'
+                    ? 'bug'
+                    : card.card_type === 'test'
+                      ? 'test'
+                      : 'task',
+                  card.id,
+                );
+              }}
+              disabled={!card}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
+              title="Open lineage graph"
+            >
+              <GitBranch size={16} />
+            </button>
+            <button
+              onClick={() => {
+                if (!card) return;
+                const specForExport = fullSpec && specKBsFull.length
+                  ? { ...fullSpec, knowledge_bases: specKBsFull as any }
+                  : fullSpec;
+                const md = exportCard(card, specForExport as any);
+                downloadMarkdown(md, `${card.card_type === 'bug' ? 'bug' : 'task'}_${slugify(card.title)}.md`);
+              }}
               disabled={!card}
               className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
               title="Download Markdown"

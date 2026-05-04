@@ -5,7 +5,7 @@
 import { useEffect, useState } from 'react';
 import {
   X, ChevronRight, ChevronUp, ChevronDown, ArrowRight, FileText, Link2, History, MessageCircleQuestion,
-  FlaskConical, Scale, RefreshCw, Maximize2, Minimize2, Download,
+  FlaskConical, Scale, RefreshCw, Maximize2, Minimize2, Download, GitBranch,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -13,6 +13,7 @@ import { exportSprint, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import type { Sprint, SprintStatus } from '@/types';
 import { SPRINT_STATUS_LABELS, SPRINT_STATUS_COLORS } from '@/types';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
+import { openLineageGraph } from '@/components/traceability';
 
 type SprintTab = 'details' | 'scope' | 'cards' | 'evaluations' | 'qa' | 'history';
 
@@ -246,6 +247,13 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
             </button>
           )}
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => openLineageGraph('sprint', sprint.id)}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
+              title="Open lineage graph"
+            >
+              <GitBranch size={16} />
+            </button>
             <button
               onClick={() => { if (!sprint || !parentSpec) return; const md = exportSprint(sprint, parentSpec); downloadMarkdown(md, `sprint_${slugify(sprint.title)}.md`); }}
               className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"

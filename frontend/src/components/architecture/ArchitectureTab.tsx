@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  AlertTriangle,
   Boxes,
   ChevronDown,
   ChevronRight,
@@ -33,12 +34,14 @@ import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type {
   ArchitectureDesign,
+  ArchitectureDesignValidationResult,
   ArchitectureDesignSummary,
   ArchitectureDiagram,
   ArchitectureDiagramType,
   ArchitectureEntity,
   ArchitectureInterface,
   ArchitectureParentType,
+  CreateArchitectureDesignRequest,
   ScreenMockup,
 } from '@/types';
 import { ArchitectureDiagramEditor } from './ArchitectureDiagramEditor';
@@ -301,6 +304,73 @@ function CollapsibleSection({ id, title, open, onToggle, children, action }: Col
       </div>
       {open && <div className="border-t border-gray-200 dark:border-gray-700 p-2.5 space-y-2">{children}</div>}
     </section>
+  );
+}
+
+function ArchitectureValidationPanel({
+  result,
+  loading,
+  error,
+}: {
+  result: ArchitectureDesignValidationResult | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const issues = result?.issues || [];
+  const warnings = result?.warnings || [];
+  if (!error && issues.length === 0 && warnings.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
+      <div className="flex items-start gap-2">
+        <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-300" />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5 font-semibold">
+            <span>Design review</span>
+            {loading && <span className="font-normal text-amber-700 dark:text-amber-300">checking...</span>}
+            {issues.length > 0 && (
+              <span className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] text-red-700 dark:bg-red-950 dark:text-red-200">
+                {issues.length} issue{issues.length === 1 ? '' : 's'}
+              </span>
+            )}
+            {warnings.length > 0 && (
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-700 dark:bg-amber-900/60 dark:text-amber-100">
+                {warnings.length} warning{warnings.length === 1 ? '' : 's'}
+              </span>
+            )}
+          </div>
+          {error && <p className="mt-1 text-red-700 dark:text-red-300">{error}</p>}
+          {(issues.length > 0 || warnings.length > 0) && (
+            <div className="mt-2 max-h-44 space-y-2 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+              {issues.length > 0 && (
+                <div>
+                  <div className="mb-1 font-medium text-red-700 dark:text-red-300">Blocking issues</div>
+                  <ul className="space-y-1">
+                    {issues.map((item) => (
+                      <li key={item} className="rounded border border-red-200 bg-white/70 px-2 py-1 text-red-800 dark:border-red-900/70 dark:bg-gray-950/50 dark:text-red-200">
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {warnings.length > 0 && (
+                <div>
+                  <div className="mb-1 font-medium text-amber-800 dark:text-amber-200">Warnings</div>
+                  <ul className="space-y-1">
+                    {warnings.map((item) => (
+                      <li key={item} className="rounded border border-amber-200 bg-white/70 px-2 py-1 dark:border-amber-900/70 dark:bg-gray-950/50">
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -595,6 +665,9 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [validation, setValidation] = useState<ArchitectureDesignValidationResult | null>(null);
+  const [validating, setValidating] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
@@ -676,6 +749,46 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
       cancelled = true;
     };
   }, [selectedId]);
+
+  useEffect(() => {
+    if (!design) {
+      setValidation(null);
+      setValidationError(null);
+      setValidating(false);
+      return undefined;
+    }
+
+    const payload: CreateArchitectureDesignRequest = {
+      title: design.title,
+      global_description: design.global_description,
+      entities: design.entities,
+      interfaces: design.interfaces,
+      diagrams: design.diagrams,
+    };
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setValidating(true);
+      setValidationError(null);
+      apiRef.current.validateArchitectureDesign(payload)
+        .then((result) => {
+          if (!cancelled) setValidation(result);
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setValidation(null);
+            setValidationError(err instanceof Error ? err.message : 'Failed to validate architecture design');
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setValidating(false);
+        });
+    }, 450);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [design?.diagrams, design?.entities, design?.global_description, design?.interfaces, design?.title]);
 
   const refresh = async () => {
     const data = await loadList(selectedId);
@@ -1241,6 +1354,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                   </button>
                 )}
               </div>
+              <ArchitectureValidationPanel result={validation} loading={validating} error={validationError} />
             </CollapsibleSection>
 
             <CollapsibleSection id="components" title="Components" open={openPanels.components} onToggle={togglePanel}>

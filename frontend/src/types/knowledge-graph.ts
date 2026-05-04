@@ -11,7 +11,7 @@ export type KGNodeType =
 export type KGEdgeType =
   | 'supersedes' | 'contradicts' | 'derives_from' | 'relates_to'
   | 'mentions' | 'depends_on' | 'violates' | 'implements'
-  | 'tests' | 'validates';
+  | 'tests' | 'validates' | 'belongs_to';
 
 export interface KGNode {
   id: string;
@@ -67,11 +67,15 @@ export interface KGSettings {
 
 export interface KGStats {
   schema_version: string;
+  graph_schema_version?: string | null;
   node_counts_by_type: Record<string, number>;
   edge_counts_by_type: Record<string, number>;
   avg_confidence: number;
+  avg_relevance?: number;
   pending_queue_count: number;
   last_consolidation_at?: string;
+  edge_count_status?: 'ok' | 'partial_failure' | 'failed';
+  edge_count_errors?: Array<{ relationship?: string; error: string }>;
 }
 
 /** Node type visual config — shape, color, icon, short human-readable
@@ -111,7 +115,7 @@ export const NODE_TYPE_CONFIG: Record<KGNodeType, {
 };
 
 /**
- * Edge type visual config — one entry for each of the 10 KGEdgeType values.
+ * Edge type visual config — one entry for each KGEdgeType value.
  * `color` drives the chip swatch in GraphControlsPanel AND the stroke in
  * GraphCanvas so the two stay visually consistent (Spec 8 / S4.4).
  * `description` is consumed by the KG help modal (Connection Types section).
@@ -141,6 +145,8 @@ export const EDGE_TYPE_CONFIG: Record<KGEdgeType, {
     description: 'A TestScenario exercises a Requirement, Business Rule, or API Contract. Key edge for coverage reporting.' },
   validates:    { color: '#7C3AED', label: 'validates',
     description: 'A successful validation run vouches for the target node. Similar to `tests` but aimed at gate outcomes rather than scenarios.' },
+  belongs_to:   { color: '#64748B', label: 'belongs_to',
+    description: 'Hierarchy backbone linking KG nodes to their parent artifact or grouping entity.' },
 };
 
 export const ALL_EDGE_TYPES = Object.keys(EDGE_TYPE_CONFIG) as KGEdgeType[];

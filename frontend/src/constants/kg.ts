@@ -3,7 +3,7 @@
  *
  * Two distinct version strings live here — easy to confuse:
  *
- * - SCHEMA_VERSION: Kùzu graph schema version
+ * - SCHEMA_VERSION: graph storage schema version
  *   (okto_pulse_core/src/okto_pulse/core/kg/schema.py::SCHEMA_VERSION).
  *   Bumped when nodes/edges/columns change. Currently displayed in
  *   KGHelpModal as "Schema version: …".

@@ -25,8 +25,12 @@ export interface KGHealth {
   avg_relevance: number;
   top_disconnected_nodes: TopDisconnectedNode[];
   schema_version: string;
+  health_schema_version?: string;
+  graph_schema_version?: string | null;
   contradict_warn_count: number;
   last_decay_tick_at: string | null;
+  last_tick_status?: 'running' | 'completed' | 'failed' | string | null;
+  last_tick_error?: string | null;
   nodes_recomputed_in_last_tick: number;
   // True quando o advisory lock global ``kg_daily_tick`` está acquired —
   // serve para desabilitar o botão "Run tick now" mesmo após remount do

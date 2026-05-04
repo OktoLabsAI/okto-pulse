@@ -13,17 +13,10 @@ interface Props {
   onRefresh?: () => void;
 }
 
-interface ProgressInfo {
-  enabled: boolean;
-  status: string;
-  total: number;
-  progress: number;
-}
-
 export function EmptyState({ boardId, onRefresh }: Props) {
   const [loading, setLoading] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [progressInfo, setProgressInfo] = useState<ProgressInfo | null>(null);
+  const [progressInfo, setProgressInfo] = useState<kgApi.HistoricalProgress | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Check if there's already a consolidation in progress on mount
@@ -32,7 +25,9 @@ export function EmptyState({ boardId, onRefresh }: Props) {
     kgApi.getHistoricalProgress(boardId).then((p) => {
       if (p.enabled) {
         setProgressInfo(p);
-        if (p.status === 'in_progress') {
+        if (kgApi.isHistoricalProgressTerminal(p)) {
+          onRefresh?.();
+        } else if (kgApi.isHistoricalProgressActive(p)) {
           startPolling();
         }
       }
@@ -46,10 +41,14 @@ export function EmptyState({ boardId, onRefresh }: Props) {
       try {
         const p = await kgApi.getHistoricalProgress(boardId);
         setProgressInfo(p);
-        if (p.status !== 'in_progress') {
+        if (!kgApi.isHistoricalProgressActive(p)) {
           stopPolling();
-          if (p.progress >= p.total && p.total > 0) {
-            toast.success('Historical consolidation complete!');
+          if (kgApi.isHistoricalProgressTerminal(p)) {
+            if (p.status === 'completed_with_errors' || (p.failed ?? 0) > 0) {
+              toast.error('Historical consolidation completed with errors');
+            } else {
+              toast.success('Historical consolidation complete!');
+            }
             onRefresh?.();
           }
         }
@@ -83,7 +82,9 @@ export function EmptyState({ boardId, onRefresh }: Props) {
       const p = await kgApi.getHistoricalProgress(boardId);
       if (p.enabled) {
         setProgressInfo(p);
-        if (p.status === 'in_progress') {
+        if (kgApi.isHistoricalProgressTerminal(p)) {
+          onRefresh?.();
+        } else if (kgApi.isHistoricalProgressActive(p)) {
           startPolling();
         }
       }
@@ -98,7 +99,38 @@ export function EmptyState({ boardId, onRefresh }: Props) {
     ? Math.round((progressInfo.progress / progressInfo.total) * 100)
     : 0;
 
-  const isConsolidating = progressInfo?.status === 'in_progress';
+  const isProgressBlocked = kgApi.isHistoricalProgressActive(progressInfo);
+  const isPaused = progressInfo?.status === 'paused';
+  const isConsolidating = isProgressBlocked && !isPaused;
+  const isComplete = kgApi.isHistoricalProgressTerminal(progressInfo);
+  const hasErrors = progressInfo?.status === 'completed_with_errors' || (progressInfo?.failed ?? 0) > 0;
+  const statusLabel = isPaused
+    ? 'Consolidation paused'
+    : isConsolidating
+    ? 'Consolidation in progress...'
+    : isComplete
+      ? hasErrors
+        ? 'Consolidation completed with errors'
+        : 'Consolidation complete'
+        : 'Consolidation queued';
+  const progressCaption = isPaused
+    ? `${pct}% complete; processing is paused.`
+    : isConsolidating
+    ? 'The MCP agent will process queued artifacts. This may take a few minutes.'
+    : isComplete
+      ? hasErrors
+        ? `${pct}% complete; ${progressInfo?.failed ?? 0} artifact(s) need attention.`
+        : `${pct}% complete. Refreshing graph...`
+      : `${pct}% complete`;
+  const actionLabel = loading
+    ? 'Starting...'
+    : isPaused
+      ? 'Consolidation Paused'
+    : isConsolidating
+      ? 'Consolidation Running...'
+      : isComplete
+        ? 'Run Historical Consolidation Again'
+        : 'Enable Historical Consolidation';
 
   return (
     <div className="flex flex-col items-center justify-center h-full text-center p-8" role="status">
@@ -120,7 +152,7 @@ export function EmptyState({ boardId, onRefresh }: Props) {
               {isConsolidating && (
                 <span className="inline-block w-2 h-2 rounded-full bg-violet-500 animate-pulse" />
               )}
-              {isConsolidating ? 'Consolidation in progress...' : 'Consolidation queued'}
+              {statusLabel}
             </span>
             <span>{progressInfo.progress} / {progressInfo.total} artifacts</span>
           </div>
@@ -131,10 +163,7 @@ export function EmptyState({ boardId, onRefresh }: Props) {
             />
           </div>
           <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
-            {isConsolidating
-              ? 'The MCP agent will process queued artifacts. This may take a few minutes.'
-              : `${pct}% complete`
-            }
+            {progressCaption}
           </p>
         </div>
       )}
@@ -142,10 +171,10 @@ export function EmptyState({ boardId, onRefresh }: Props) {
       <div className="flex gap-3">
         <button
           onClick={handleEnableHistorical}
-          disabled={loading || !boardId || isConsolidating}
+          disabled={loading || !boardId || isProgressBlocked}
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {loading ? 'Starting...' : isConsolidating ? 'Consolidation Running...' : 'Enable Historical Consolidation'}
+          {actionLabel}
         </button>
         <button
           onClick={() => setShowHelp(true)}

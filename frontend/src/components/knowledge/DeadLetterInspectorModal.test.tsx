@@ -59,7 +59,7 @@ describe('DeadLetterInspectorModal', () => {
     expect(screen.getByText(/showing 1 of 1/i)).toBeInTheDocument();
   });
 
-  test('expand de row mostra error history (entradas attempt + error_type)', async () => {
+  test('expand de row mostra error history com error_type normalizado para UI', async () => {
     vi.spyOn(dlqApi, 'getDeadLetterRows').mockResolvedValue({
       rows: [ROW_FIXTURE],
       total: 1,
@@ -76,7 +76,7 @@ describe('DeadLetterInspectorModal', () => {
     fireEvent.click(screen.getByTestId('dlq-expand-dlq-1'));
 
     await waitFor(() => {
-      expect(screen.getAllByText(/KuzuLockTimeout/).length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText(/GraphDBLockTimeout/).length).toBeGreaterThanOrEqual(1);
     });
     expect(screen.getAllByText(/lock contention/).length).toBeGreaterThanOrEqual(1);
   });
