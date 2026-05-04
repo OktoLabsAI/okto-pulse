@@ -1,9 +1,9 @@
 /**
  * API client for the runtime settings endpoint shipped in 0.1.4.
  *
- * Backs the "Settings" menu (Kùzu memory tuning knobs). Reads and writes
+ * Backs the "Settings" menu (graph database memory tuning knobs). Reads and writes
  * persist through the backend's settings_service and only take effect on
- * the next process restart because kuzu.Database() is constructor-time.
+ * the next process restart because graph database startup settings are constructor-time.
  */
 
 export interface RuntimeSettings {
@@ -23,7 +23,7 @@ export interface RuntimeSettings {
   kg_decay_tick_interval_minutes: number;
   kg_decay_tick_staleness_days: number;
   kg_decay_tick_max_age_days: number;
-  // Toggled APENAS by Graph DB tab changes (Kùzu constructor-time).
+  // Toggled APENAS by Graph DB tab changes (graph database startup-time).
   restart_required: boolean;
 }
 
@@ -33,7 +33,7 @@ export type RuntimeSettingsPatch = Partial<
 
 /**
  * Keys that gate the amber "Restart required" banner. Mudar qualquer um
- * deles requer restart do processo Okto Pulse (Kùzu Database() é
+ * deles requer restart do processo Okto Pulse (graph database settings are
  * constructor-time). Demais keys (kg_queue_*) são hot-reload.
  */
 export const GRAPH_DB_KEYS = [

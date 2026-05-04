@@ -948,7 +948,19 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
               <GitBranch size={16} />
             </button>
             <button
-              onClick={() => { const md = exportRefinement(refinement); downloadMarkdown(md, `refinement_${slugify(refinement.title)}_v${refinement.version}.md`); }}
+              onClick={async () => {
+                try {
+                  const fullKnowledge = await Promise.all(
+                    (refinement.knowledge_bases || []).map((kb) =>
+                      api.getRefinementKnowledge(refinement.id, kb.id).catch(() => kb)
+                    )
+                  );
+                  const md = exportRefinement({ ...refinement, knowledge_bases: fullKnowledge as any });
+                  downloadMarkdown(md, `refinement_${slugify(refinement.title)}_v${refinement.version}.md`);
+                } catch {
+                  toast.error('Failed to prepare markdown export');
+                }
+              }}
               disabled={loading}
               className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
               title="Download Markdown"

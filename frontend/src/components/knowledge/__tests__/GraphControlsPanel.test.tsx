@@ -45,12 +45,12 @@ function renderPanel(props: Partial<React.ComponentProps<typeof GraphControlsPan
 }
 
 describe('GraphControlsPanel — edge type chips (S4.4, AC-5)', () => {
-  it('renders exactly 10 chips, one per KGEdgeType', () => {
+  it('renders one chip per KGEdgeType', () => {
     renderPanel();
     for (const et of ALL_EDGE_TYPES) {
       expect(screen.getByTestId(`kg-edge-chip-${et}`)).toBeInTheDocument();
     }
-    expect(ALL_EDGE_TYPES).toHaveLength(10);
+    expect(screen.getAllByTestId(/^kg-edge-chip-/)).toHaveLength(ALL_EDGE_TYPES.length);
   });
 
   it('clicking a chip when all edges are visible hides only that type', () => {
@@ -58,7 +58,7 @@ describe('GraphControlsPanel — edge type chips (S4.4, AC-5)', () => {
     fireEvent.click(screen.getByTestId('kg-edge-chip-contradicts'));
     expect(onFiltersChange).toHaveBeenCalledTimes(1);
     const next = onFiltersChange.mock.calls[0][0] as Filters;
-    expect(next.edgeTypes).toHaveLength(9);
+    expect(next.edgeTypes).toHaveLength(ALL_EDGE_TYPES.length - 1);
     expect(next.edgeTypes).not.toContain('contradicts');
   });
 

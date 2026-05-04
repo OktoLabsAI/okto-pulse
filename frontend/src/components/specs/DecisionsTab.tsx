@@ -154,7 +154,7 @@ export function DecisionsTab({
         type="text"
         value={formTitle}
         onChange={(e) => setFormTitle(e.target.value)}
-        placeholder="Decision title — e.g. 'Use Kùzu embedded over Neo4j'"
+        placeholder="Decision title — e.g. 'Use embedded graph storage over an external graph database'"
         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
         autoFocus
       />

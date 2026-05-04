@@ -40,6 +40,7 @@ type DiagramMode = 'visual' | 'raw';
 type ConnectionType = 'direct' | 'elbow';
 type InterfaceDirection = 'source_to_target' | 'target_to_source' | 'bidirectional' | 'none';
 type ConnectionAnchor = 'top' | 'right' | 'bottom' | 'left';
+type RawArchitecturePayload = Record<string, unknown> | unknown[] | string | null | undefined;
 
 interface ExcalidrawElement {
   id: string;
@@ -132,7 +133,31 @@ function asPayload(diagram: ArchitectureDiagram | null): Record<string, unknown>
   return diagram.adapter_payload as Record<string, unknown>;
 }
 
+function isVisualDiagram(diagram: ArchitectureDiagram | null): boolean {
+  return !diagram || diagram.format === 'excalidraw_json';
+}
+
+function rawPayloadText(payload: RawArchitecturePayload): string {
+  if (payload === undefined || payload === null) return '';
+  if (typeof payload === 'string') return payload;
+  return JSON.stringify(payload, null, 2);
+}
+
+function parseRawPayload(format: string, value: string): Record<string, unknown> | unknown[] | string | null {
+  if (format === 'excalidraw_json') {
+    return JSON.parse(value);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
 function getElements(diagram: ArchitectureDiagram | null): ExcalidrawElement[] {
+  if (!isVisualDiagram(diagram)) return [];
   const payload = asPayload(diagram);
   return Array.isArray(payload.elements) ? (payload.elements as ExcalidrawElement[]) : [];
 }
@@ -398,6 +423,8 @@ export function ArchitectureDiagramEditor({
   const resizeRef = useRef<ResizeState | null>(null);
   const panRef = useRef<PanState | null>(null);
   const payload = useMemo(() => asPayload(diagram), [diagram]);
+  const visualDiagram = isVisualDiagram(diagram);
+  const rawPreview = useMemo(() => rawPayloadText(diagram?.adapter_payload), [diagram]);
   const elements = useMemo(() => getElements(diagram), [diagram]);
   const selectedElement = elements.find((item) => item.id === selectedElementId) || null;
   const nodeElements = elements.filter((element) => element.type !== 'arrow');
@@ -461,8 +488,8 @@ export function ArchitectureDiagramEditor({
   }, [elements]);
 
   useEffect(() => {
-    setRawDraft(JSON.stringify(payload, null, 2));
-  }, [payload]);
+    setRawDraft(rawPreview);
+  }, [rawPreview]);
 
   useEffect(() => {
     if (elements.length === 0) {
@@ -538,8 +565,8 @@ export function ArchitectureDiagramEditor({
   const applyRawPayload = () => {
     if (!diagram || readOnly) return;
     try {
-      const parsed = JSON.parse(rawDraft);
-      onChange({ ...diagram, adapter_payload: parsed, format: 'excalidraw_json' });
+      const parsed = parseRawPayload(diagram.format, rawDraft);
+      onChange({ ...diagram, adapter_payload: parsed, format: diagram.format });
     } catch {
       window.alert('Invalid JSON payload');
     }
@@ -1076,6 +1103,9 @@ export function ArchitectureDiagramEditor({
   }
 
   const showElementMenu = selectedElement?.type === 'arrow';
+  const formatLabel = diagram.format === 'excalidraw_json'
+    ? 'Excalidraw JSON'
+    : titleCase(diagram.format);
 
   return (
     <div className={`w-full max-w-full min-w-0 min-h-[460px] h-full border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-white dark:bg-gray-900 flex flex-col ${isFullscreen ? 'fixed inset-4 z-[9999] shadow-2xl' : ''}`}>
@@ -1145,6 +1175,19 @@ export function ArchitectureDiagramEditor({
               </button>
             </div>
           )}
+        </div>
+      ) : !visualDiagram ? (
+        <div
+          data-testid="architecture-nonvisual-preview"
+          className="min-h-0 flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950 p-4 [scrollbar-gutter:stable]"
+        >
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+            <Code2 size={16} className="text-cyan-600 dark:text-cyan-300" />
+            <span>{formatLabel}</span>
+          </div>
+          <pre className="max-h-full overflow-auto whitespace-pre-wrap rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-3 text-xs font-mono text-gray-800 dark:text-gray-100">
+            {rawPreview || 'No payload'}
+          </pre>
         </div>
       ) : (
         <div className={showElementMenu ? 'grid grid-cols-[minmax(0,1fr)_260px] min-h-0 flex-1 min-w-0 overflow-hidden' : 'min-h-0 flex-1 min-w-0 overflow-hidden'}>

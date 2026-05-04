@@ -29,15 +29,24 @@ async function kgFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export async function listNodes(boardId: string, params?: {
   type?: string;
   min_confidence?: number;
+  min_relevance?: number;
   limit?: number;
   cursor?: string;
 }) {
   const qs = new URLSearchParams();
   if (params?.type) qs.set('type', params.type);
   if (params?.min_confidence) qs.set('min_confidence', String(params.min_confidence));
+  if (params?.min_relevance !== undefined) qs.set('min_relevance', String(params.min_relevance));
   if (params?.limit) qs.set('limit', String(params.limit));
   if (params?.cursor) qs.set('cursor', params.cursor);
-  return kgFetch<{ nodes: KGNode[]; next_cursor: string | null; total_hint: number }>(
+  return kgFetch<{
+    nodes: KGNode[];
+    next_cursor: string | null;
+    /** Total nodes matching filters across all pages, not the current page size. */
+    total_hint: number;
+    /** Number of nodes returned in this page. */
+    page_count?: number;
+  }>(
     `/boards/${boardId}/nodes?${qs}`
   );
 }
@@ -47,10 +56,28 @@ export async function getNodeDetail(boardId: string, nodeId: string) {
 }
 
 // Graph (for visualization)
+export interface GraphEdgeReadError {
+  relationship?: string;
+  from_type?: string;
+  to_type?: string;
+  error: string;
+}
+
+export interface GraphMetadata extends Record<string, unknown> {
+  depth?: number;
+  truncated?: boolean;
+  min_relevance?: number;
+  edge_read_status?: 'ok' | 'partial_failure' | 'failed';
+  edge_tables_scanned?: number;
+  edge_tables_failed?: number;
+  edge_errors?: GraphEdgeReadError[];
+  edges_returned?: number;
+}
+
 export interface SubgraphResponse {
   nodes: KGNode[];
   edges: KGEdge[];
-  metadata: Record<string, unknown>;
+  metadata: GraphMetadata;
   next_cursor: string | null;
 }
 
@@ -59,12 +86,14 @@ export async function getSubgraph(boardId: string, params?: {
   depth?: number;
   limit?: number;
   cursor?: string;
+  min_relevance?: number;
 }) {
   const qs = new URLSearchParams();
   if (params?.center) qs.set('center', params.center);
   if (params?.depth) qs.set('depth', String(params.depth));
   if (params?.limit) qs.set('limit', String(params.limit));
   if (params?.cursor) qs.set('cursor', params.cursor);
+  if (params?.min_relevance !== undefined) qs.set('min_relevance', String(params.min_relevance));
   return kgFetch<SubgraphResponse>(`/boards/${boardId}/graph?${qs}`);
 }
 
@@ -164,6 +193,34 @@ export async function updateKGSettings(boardId: string, settings: Partial<KGSett
 }
 
 // Historical consolidation
+export interface HistoricalProgress {
+  enabled: boolean;
+  status: string;
+  total: number;
+  progress: number;
+  pending?: number;
+  claimed?: number;
+  paused?: number;
+  failed?: number;
+}
+
+export function isHistoricalProgressActive(progress: HistoricalProgress | null | undefined) {
+  if (!progress) return false;
+  return (
+    progress.status === 'in_progress' ||
+    (progress.pending ?? 0) > 0 ||
+    (progress.claimed ?? 0) > 0 ||
+    (progress.paused ?? 0) > 0
+  );
+}
+
+export function isHistoricalProgressTerminal(progress: HistoricalProgress | null | undefined) {
+  if (!progress || !progress.enabled || progress.total <= 0) return false;
+  if (progress.status === 'cancelled' || isHistoricalProgressActive(progress)) return false;
+  if (progress.status === 'completed' || progress.status === 'completed_with_errors') return true;
+  return progress.status === 'inactive' && progress.progress >= progress.total;
+}
+
 export async function startHistorical(boardId: string) {
   return kgFetch<{ status: string; total_artifacts?: number; board_id?: string }>(`/boards/${boardId}/historical-consolidation/start`, {
     method: 'POST',
@@ -177,16 +234,7 @@ export async function cancelHistorical(boardId: string) {
 }
 
 export async function getHistoricalProgress(boardId: string) {
-  return kgFetch<{
-    enabled: boolean;
-    status: string;
-    total: number;
-    progress: number;
-    pending?: number;
-    claimed?: number;
-    paused?: number;
-    failed?: number;
-  }>(
+  return kgFetch<HistoricalProgress>(
     `/boards/${boardId}/historical-consolidation/progress`
   );
 }

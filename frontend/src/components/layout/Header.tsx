@@ -274,7 +274,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       Board
                     </button>
 
-                    {/* Settings (new in 0.1.4 — runtime Kùzu memory tuning) */}
+                    {/* Settings (new in 0.1.4 — runtime graph database tuning) */}
                     <button
                       onClick={() => { setShowMenu(false); setShowRuntimeSettings(true); }}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"

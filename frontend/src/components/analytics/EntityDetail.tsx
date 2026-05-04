@@ -507,18 +507,18 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
       {/* FR Coverage */}
       {data.fr_details && data.fr_details.length > 0 && (
         <Card>
-          <SectionTitle>FR Coverage ({data.fr_details.filter((f: any) => f.has_rule || f.has_contract).length}/{data.total_fr ?? data.fr_details.length})</SectionTitle>
+          <SectionTitle>FR Coverage ({data.fr_details.filter((f: any) => f.has_rule).length}/{data.total_fr ?? data.fr_details.length})</SectionTitle>
           <div className="space-y-1.5 max-h-64 overflow-y-auto">
             {data.fr_details.map((fr: any) => (
               <div key={fr.index} className="flex items-start gap-2 text-xs">
-                {fr.has_rule && fr.has_contract ? (
+                {fr.has_rule ? (
                   <CheckCircle className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
-                ) : fr.has_rule || fr.has_contract ? (
+                ) : fr.has_contract ? (
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
                 ) : (
                   <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0 mt-0.5" />
                 )}
-                <span className={`${fr.has_rule || fr.has_contract ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'} line-clamp-2 flex-1`}>
+                <span className={`${fr.has_rule ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'} line-clamp-2 flex-1`}>
                   {fr.text || `FR #${fr.index}`}
                 </span>
                 <div className="flex gap-1 shrink-0">
@@ -549,7 +549,7 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
                   return (
                     <div key={br?.id ?? idx} className="flex items-start gap-2 text-xs">
                       {covered ? (
-                        <CheckCircle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                        <CheckCircle className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
                       ) : (
                         <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0 mt-0.5" />
                       )}
@@ -557,7 +557,7 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
                         {title}
                       </span>
                       {covered ? (
-                        <span className="px-1 py-0.5 rounded text-[9px] bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 shrink-0">
+                        <span className="px-1 py-0.5 rounded text-[9px] bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 shrink-0">
                           {linkedTasks.length} task{linkedTasks.length !== 1 ? 's' : ''}
                         </span>
                       ) : (

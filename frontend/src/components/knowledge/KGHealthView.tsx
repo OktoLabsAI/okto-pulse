@@ -160,8 +160,12 @@ export function KGHealthView({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
               <SchemaTickCard
                 schemaVersion={data.schema_version}
+                healthSchemaVersion={data.health_schema_version ?? data.schema_version}
+                graphSchemaVersion={data.graph_schema_version ?? null}
                 schemaMismatch={Boolean(schemaMismatch)}
                 tickInfo={tickInfo}
+                lastTickStatus={data.last_tick_status ?? null}
+                lastTickError={data.last_tick_error ?? null}
                 nodesRecomputed={data.nodes_recomputed_in_last_tick}
                 boardId={boardId}
                 onTickStarted={handleRefresh}
@@ -296,8 +300,12 @@ function SchemaBanner({ expected, received }: SchemaBannerProps) {
 
 interface SchemaTickCardProps {
   schemaVersion: string;
+  healthSchemaVersion: string;
+  graphSchemaVersion: string | null;
   schemaMismatch: boolean;
   tickInfo: TickInfo;
+  lastTickStatus: string | null;
+  lastTickError: string | null;
   nodesRecomputed: number;
   /** Spec 54399628 — board scope para `triggerKGTick`. */
   boardId: string;
@@ -313,8 +321,12 @@ interface SchemaTickCardProps {
 
 function SchemaTickCard({
   schemaVersion,
+  healthSchemaVersion,
+  graphSchemaVersion,
   schemaMismatch,
   tickInfo,
+  lastTickStatus,
+  lastTickError,
   nodesRecomputed,
   boardId,
   onTickStarted,
@@ -385,6 +397,16 @@ function SchemaTickCard({
           {schemaVersion} {schemaMismatch ? '✕' : '✓'}
         </span>
       </Row>
+      <Row label="Health schema">
+        <span className="text-sm font-mono text-surface-700 dark:text-surface-300">
+          {healthSchemaVersion}
+        </span>
+      </Row>
+      <Row label="Graph schema">
+        <span className="text-sm font-mono text-surface-700 dark:text-surface-300">
+          {graphSchemaVersion ?? 'unavailable'}
+        </span>
+      </Row>
       <Row label="Last tick">
         <span
           className={`text-sm font-semibold px-2 py-0.5 rounded ${tickClasses}`}
@@ -393,6 +415,22 @@ function SchemaTickCard({
           {tickInfo.label}
         </span>
       </Row>
+      {lastTickStatus && (
+        <Row label="Tick status">
+          <span className={`text-sm font-semibold ${
+            lastTickStatus === 'failed'
+              ? 'text-rose-600 dark:text-rose-300'
+              : 'text-surface-700 dark:text-surface-300'
+          }`}>
+            {lastTickStatus}
+          </span>
+        </Row>
+      )}
+      {lastTickError && (
+        <p className="rounded bg-rose-50 dark:bg-rose-950/40 px-2 py-1 text-xs text-rose-700 dark:text-rose-300" title={lastTickError}>
+          {lastTickError}
+        </p>
+      )}
       <Row label="Nodes recomputed (last tick)">
         <span className="text-2xl font-bold text-surface-900 dark:text-white">
           {nodesRecomputed.toLocaleString()}

@@ -29,6 +29,8 @@ export interface HierarchicalListProps<T> {
   groupingEnabled?: boolean;
   /** Bucket title for items without a group key. Defaults to "Standalone". */
   ungroupedLabel?: string;
+  /** Render ungrouped items under a header or directly in the list. Defaults to "group". */
+  ungroupedMode?: 'group' | 'flat';
   /** Grid columns at md breakpoint and up (default 3). */
   gridCols?: 2 | 3 | 4;
   /** className override for the root */
@@ -60,6 +62,7 @@ export function HierarchicalList<T>({
   getGroupTitle,
   groupingEnabled = true,
   ungroupedLabel = 'Standalone',
+  ungroupedMode = 'group',
   gridCols = 3,
   className = '',
   testId = 'hierarchical-list',
@@ -125,9 +128,16 @@ export function HierarchicalList<T>({
     );
   }
 
+  const ungroupedItems = ungroupedMode === 'flat'
+    ? groups.find((g) => g.key === UNGROUPED)?.items ?? []
+    : [];
+  const groupedSections = ungroupedMode === 'flat'
+    ? groups.filter((g) => g.key !== UNGROUPED)
+    : groups;
+
   return (
     <div className={`space-y-4 ${className}`} data-testid={testId}>
-      {groups.map((g) => {
+      {groupedSections.map((g) => {
         const isCollapsed = collapsed.has(g.key);
         return (
           <section key={g.key} data-testid={`${testId}-group-${g.key}`}>
@@ -149,6 +159,7 @@ export function HierarchicalList<T>({
           </section>
         );
       })}
+      {ungroupedItems.length > 0 && renderItems(ungroupedItems)}
     </div>
   );
 }

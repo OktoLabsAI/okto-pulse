@@ -205,7 +205,7 @@ export function CreateSpecModal({ boardId, onClose, onCreated }: CreateSpecModal
 
           <ListEditor
             label="Decisions"
-            placeholder="Add a decision (e.g. 'Use Kùzu embedded over Neo4j')..."
+            placeholder="Add a decision (e.g. 'Use embedded graph storage over an external graph database')..."
             items={decisionEntries}
             onChange={setDecisionEntries}
           />

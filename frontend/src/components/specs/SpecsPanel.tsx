@@ -34,6 +34,15 @@ interface SpecsPanelProps {
   boardId: string;
 }
 
+type SpecGroupMode = 'none' | 'ideation' | 'refinement' | 'parents';
+
+const SPEC_GROUP_OPTIONS: Array<{ value: SpecGroupMode; label: string }> = [
+  { value: 'none', label: 'None' },
+  { value: 'ideation', label: 'Ideation' },
+  { value: 'refinement', label: 'Refinement' },
+  { value: 'parents', label: 'Parents' },
+];
+
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
   review: <Clock size={14} />,
@@ -68,7 +77,7 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
     urlParam: 'q_specs',
   });
   const { viewMode, setViewMode } = useViewMode('specs', 'list');
-  const [groupByParent, setGroupByParent] = useState(true);
+  const [groupMode, setGroupMode] = useState<SpecGroupMode>('parents');
   const [parentTitleById, setParentTitleById] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -121,6 +130,26 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
     { value: 'done', label: 'Done' },
   ];
 
+  const getSpecGroupKey = (spec: SpecSummary): string | null => {
+    if (groupMode === 'none') return null;
+    if (groupMode === 'ideation') {
+      return spec.ideation_id ? `ideation:${spec.ideation_id}` : null;
+    }
+    if (groupMode === 'refinement') {
+      return spec.refinement_id ? `refinement:${spec.refinement_id}` : null;
+    }
+    if (spec.refinement_id) return `refinement:${spec.refinement_id}`;
+    if (spec.ideation_id) return `ideation:${spec.ideation_id}`;
+    return null;
+  };
+
+  const getSpecGroupTitle = (key: string): string => {
+    const [kind, id] = key.split(':', 2);
+    const title = parentTitleById[id] || id || key;
+    if (kind === 'ideation') return `Ideation: ${title}`;
+    if (kind === 'refinement') return `Refinement: ${title}`;
+    return title;
+  };
 
   return (
     <div className="h-full flex flex-col">
@@ -141,19 +170,24 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
             testId="specs-search"
           />
           <ViewModeToggle value={viewMode} onChange={setViewMode} testId="specs-view-mode" />
-          <button
-            type="button"
-            onClick={() => setGroupByParent((v) => !v)}
-            data-testid="specs-group-toggle"
-            className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
-              groupByParent
-                ? 'bg-indigo-500 text-white'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300'
-            }`}
-            title="Group specs by parent refinement / ideation"
-          >
-            {groupByParent ? 'Grouped by parent' : 'Flat list'}
-          </button>
+          <label className="sr-only" htmlFor="specs-group-mode">Group specs</label>
+          <div className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 dark:border-gray-700 dark:bg-surface-800 dark:text-gray-300">
+            <Layers size={14} className="text-indigo-500" />
+            <select
+              id="specs-group-mode"
+              value={groupMode}
+              onChange={(event) => setGroupMode(event.target.value as SpecGroupMode)}
+              data-testid="specs-group-mode"
+              className="w-28 bg-transparent text-xs font-medium outline-none dark:bg-surface-800"
+              title="Group specs"
+            >
+              {SPEC_GROUP_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <button
             onClick={() => setCreateOpen(true)}
             className="btn btn-primary flex items-center gap-1 text-sm"
@@ -224,11 +258,11 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
           <HierarchicalList<SpecSummary>
             items={search.filtered}
             viewMode={viewMode}
-            groupingEnabled={groupByParent}
-            ungroupedLabel="Standalone"
+            groupingEnabled={groupMode !== 'none'}
+            ungroupedMode="flat"
             getItemKey={(s) => s.id}
-            getGroupKey={(s) => s.refinement_id ?? s.ideation_id ?? null}
-            getGroupTitle={(k) => parentTitleById[k] || k}
+            getGroupKey={getSpecGroupKey}
+            getGroupTitle={getSpecGroupTitle}
             testId="specs-list"
             groupIcon={Layers}
             renderItem={(spec) => (
