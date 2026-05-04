@@ -36,6 +36,7 @@ import toast from 'react-hot-toast';
 import { exportIdeation, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
+import { openLineageGraph } from '@/components/traceability';
 import type {
   Ideation,
   IdeationStatus,
@@ -922,6 +923,13 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
             <span className="text-xs text-gray-400 shrink-0">v{ideation.version}</span>
           </div>
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => openLineageGraph('ideation', ideation.id)}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+              title="Open lineage graph"
+            >
+              <GitBranch size={16} />
+            </button>
             <button
               onClick={() => { const md = exportIdeation(ideation); downloadMarkdown(md, `ideation_${slugify(ideation.title)}_v${ideation.version}.md`); }}
               disabled={loading}

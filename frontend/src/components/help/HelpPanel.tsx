@@ -1008,7 +1008,7 @@ Clicking a node reveals:
 The **KG Health** sub-view exposes runtime diagnostics:
 
 - **Provider / model** — embedder backend (sentence-transformers or stub fallback)
-- **Schema version** — current Kùzu schema (auto-migrated on hot path)
+- **Schema version** — current graph schema (auto-migrated on hot path)
 - **Queue depth** — pending consolidation entries
 - **\`tick_in_progress\`** — \`true\` when the global advisory lock \`kg_daily_tick\` is held
 - **Dedup snapshot** — entity counts and recent dedup actions
@@ -1036,11 +1036,11 @@ KG schema evolves across releases (e.g. v0.3.2 added \`human_curated\`, \`last_r
 - **MCP tool** — \`kg_migrate_schema\` (gemellar)
 - **REST** — \`POST /api/v1/kg/migrate-schema\`
 
-> **Important:** Never delete \`graph.kuzu\` manually — the migration preserves all nodes/edges. Deleting forces a full re-consolidation.
+> **Important:** Never delete local graph database files manually — the migration preserves all nodes/edges. Deleting forces a full re-consolidation.
 
 ### Cognitive extractors (opt-in)
 
-Beyond the structural extractors (Decision, Constraint, etc.), the KG can extract **Learning**, **Alternative**, and **Assumption** nodes via LLM. This is **opt-in** per board via \`cognitive_llm_config\` (provider + model + API key). When disabled, the system logs a structured event but does not call any LLM. Persistence in Kùzu for cognitive nodes is in v1 (DEFERRED — read the structured logs for now).
+Beyond the structural extractors (Decision, Constraint, etc.), the KG can extract **Learning**, **Alternative**, and **Assumption** nodes via LLM. This is **opt-in** per board via \`cognitive_llm_config\` (provider + model + API key). When disabled, the system logs a structured event but does not call any LLM. Persistence in the board graph database for cognitive nodes is in v1 (DEFERRED — read the structured logs for now).
 
 ### AI agent integration
 
@@ -1108,7 +1108,7 @@ Beyond the static board settings above, the **Runtime Settings Panel** (Menu →
 
 | Tab | Controls |
 |-----|----------|
-| **GraphDB** | Kùzu connection pool, timeout, query limits |
+| **GraphDB** | LadybugDB connection pool, timeout, query limits |
 | **Event Queue** | \`kg_queue_min_interval_ms\` (0–1000), batch size, retry policy |
 | **Decay Tick** | \`interval_minutes\` (5–10080), \`staleness_days\` (1–365), \`max_age_days\` (0–365) — plus the **"Save & run now"** action that persists + triggers a tick atomically |
 

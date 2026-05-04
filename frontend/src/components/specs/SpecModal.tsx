@@ -43,6 +43,7 @@ import toast from 'react-hot-toast';
 import { exportSpec, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
+import { openLineageGraph } from '@/components/traceability';
 import type { Spec, SpecStatus, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings, Decision } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { EvidenceBadge } from './EvidenceBadge';
@@ -1469,7 +1470,26 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           </div>
           <div className="flex items-center gap-1">
             <button
-              onClick={() => { const md = exportSpec(spec); downloadMarkdown(md, `spec_${slugify(spec.title)}_v${spec.version}.md`); }}
+              onClick={() => openLineageGraph('spec', spec.id)}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+              title="Open lineage graph"
+            >
+              <GitBranch size={16} />
+            </button>
+            <button
+              onClick={async () => {
+                try {
+                  const fullKnowledge = await Promise.all(
+                    (spec.knowledge_bases || []).map((kb) =>
+                      api.getSpecKnowledge(spec.id, kb.id).catch(() => kb)
+                    )
+                  );
+                  const md = exportSpec({ ...spec, knowledge_bases: fullKnowledge as any });
+                  downloadMarkdown(md, `spec_${slugify(spec.title)}_v${spec.version}.md`);
+                } catch {
+                  toast.error('Failed to prepare markdown export');
+                }
+              }}
               disabled={loading}
               className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
               title="Download Markdown"
@@ -1652,7 +1672,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                 items={(spec.decisions || [])
                   .filter((d) => d.status === 'active')
                   .map((d) => d.title)}
-                placeholder="Add a decision (e.g. 'Use Kùzu embedded over Neo4j')..."
+                placeholder="Add a decision (e.g. 'Use embedded graph storage over an external graph database')..."
                 onUpdate={async (items) => {
                   try {
                     const existing = spec.decisions || [];

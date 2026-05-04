@@ -9,6 +9,7 @@ const apiMock = vi.hoisted(() => ({
   getArchitectureDesign: vi.fn(),
   createArchitectureDesign: vi.fn(),
   updateArchitectureDesign: vi.fn(),
+  validateArchitectureDesign: vi.fn(),
   deleteArchitectureDesign: vi.fn(),
   copyArchitectureToCard: vi.fn(),
   importExcalidrawArchitectureDiagram: vi.fn(),
@@ -87,6 +88,13 @@ describe('ArchitectureTab', () => {
     vi.clearAllMocks();
     apiMock.listArchitectureDesigns.mockResolvedValue([summary]);
     apiMock.getArchitectureDesign.mockResolvedValue(design);
+    apiMock.validateArchitectureDesign.mockResolvedValue({
+      valid: true,
+      issues: [],
+      warnings: [],
+      suggested_fixes: [],
+      summary: {},
+    });
   });
 
   it('loads architecture once when parent passes an inline onChanged callback', async () => {
@@ -147,6 +155,27 @@ describe('ArchitectureTab', () => {
 
     expect(screen.getAllByText('New API').length).toBeGreaterThan(0);
     expect(screen.getAllByText('API').length).toBeGreaterThan(0);
+  });
+
+  it('shows backend architecture design warnings in the UI', async () => {
+    apiMock.validateArchitectureDesign.mockResolvedValue({
+      valid: true,
+      issues: [],
+      warnings: ['entities[0].responsibility is empty. Clarify what this component owns.'],
+      suggested_fixes: [],
+      summary: {},
+    });
+    apiMock.getArchitectureDesign.mockResolvedValue({
+      ...design,
+      entities: [{ id: 'entity-1', name: 'Checkout API', entity_type: 'service' }],
+    });
+
+    render(<ArchitectureTab parentType="ideation" parentId="ideation-1" />);
+
+    await waitFor(() => expect(apiMock.validateArchitectureDesign).toHaveBeenCalledTimes(1), { timeout: 1500 });
+    expect(screen.getByText('Design review')).toBeInTheDocument();
+    expect(screen.getByText('1 warning')).toBeInTheDocument();
+    expect(screen.getByText('entities[0].responsibility is empty. Clarify what this component owns.')).toBeInTheDocument();
   });
 
   it('keeps the selected diagram payload visible after saving a new version', async () => {

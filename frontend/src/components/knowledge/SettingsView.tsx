@@ -111,7 +111,7 @@ export function SettingsView({ boardId }: Props) {
               of real semantic proximity.
             </p>
             <a
-              href="https://github.com/okto-labs/okto-pulse#embedding-providers"
+              href="https://github.com/OktoLabsAI/okto-pulse#embedding-providers"
               target="_blank"
               rel="noreferrer"
               className="mt-2 inline-block font-medium text-amber-900 underline hover:text-amber-950 dark:text-amber-100 dark:hover:text-amber-50"

@@ -2,10 +2,10 @@
  * Runtime Settings panel — Graph DB | Event Queue (spec bdcda842).
  *
  * Two-tab layout:
- *   * **Graph DB** (default tab): Kùzu memory tuning. Changing any field
- *     here flips ``restart_required`` because Kùzu Database() is
+ *   * **Graph DB** (default tab): graph database memory tuning. Changing any field
+ *     here flips ``restart_required`` because the database is
  *     constructor-time. Banner amber sinaliza isso.
- *   * **Event Queue** (new in v0.1.13): consolidation queue throughput
+ *   * **Event Queue** (new in v0.1.14): consolidation queue throughput
  *     knobs (max workers, throttle, claim timeout, max attempts, alert
  *     threshold) + Live Queue Health panel polling /api/v1/kg/queue/health
  *     every 2000ms. Banner azul reforça que hot-reload é a semântica.
@@ -41,7 +41,7 @@ interface RuntimeSettingsPanelProps {
 // Spec 818748f2 (Board panel migration): the per-board NC-9 evidence gate
 // toggle moved out of this modal into the Header's "Board" panel alongside
 // the other skip_*_coverage_global toggles. Keep this surface focused on
-// runtime knobs (Kùzu, queue, decay tick).
+// runtime knobs (graph storage, queue, decay tick).
 type ActiveTab = 'graphdb' | 'eventqueue' | 'decaytick';
 
 const RANGES: Record<keyof Omit<RuntimeSettings, 'restart_required'>, { min: number; max: number }> = {
@@ -61,7 +61,7 @@ const RANGES: Record<keyof Omit<RuntimeSettings, 'restart_required'>, { min: num
   kg_decay_tick_max_age_days: { min: 0, max: 365 },
 };
 
-// Non-Kùzu baseline: embedding singleton (~120 MB) + query caches (~100 MB) +
+// Non-graph baseline: embedding singleton (~120 MB) + query caches (~100 MB) +
 // Python/FastAPI runtime (~300 MB) + session/transaction state (~100 MB).
 const BUDGET_BASELINE_MB = 620;
 const HEALTH_POLL_INTERVAL_MS = 2000;
@@ -103,7 +103,7 @@ export function RuntimeSettingsPanel({
   // shared across both tabs so Save persists partial PUTs in one shot.
   const [draft, setDraft] = useState<DraftState>(ZERO_DRAFT);
   // True once a successful PUT happens AND the changes touched a Graph DB
-  // key (Kùzu constructor-time). Event Queue mutations never set this.
+  // key (graph database startup-time). Event Queue mutations never set this.
   const [restartRequired, setRestartRequired] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab);
   // Spec ed17b1fe (Wave 2 NC 1ede3471) — DLQ Inspector modal state.
@@ -299,7 +299,7 @@ export function RuntimeSettingsPanel({
           >
             <strong>Restart required.</strong> New values persist but only
             take effect after restarting the Okto Pulse process
-            (Kùzu constructor-time).
+            (Graph DB startup-time).
           </div>
         )}
 
@@ -313,7 +313,7 @@ export function RuntimeSettingsPanel({
               every claim cycle. No restart required.
             </div>
             <div className="text-[11px] opacity-90">
-              <strong>Per-board lock:</strong> Kùzu serializes commits per
+              <strong>Per-board lock:</strong> The graph database serializes commits per
               board; worker parallelism only scales across distinct boards.
             </div>
           </div>
@@ -519,7 +519,7 @@ function GraphDBTab({ draft, onChange, budgetMb }: GraphDBTabProps) {
   return (
     <div className="px-6 py-5 space-y-4">
       <SettingField
-        label="Kùzu buffer pool per board (MB)"
+        label="Graph DB buffer pool per board (MB)"
         description="Recommended 32-128 MB. Safe default: 48."
         value={draft.kg_kuzu_buffer_pool_mb}
         range={RANGES.kg_kuzu_buffer_pool_mb}
@@ -527,7 +527,7 @@ function GraphDBTab({ draft, onChange, budgetMb }: GraphDBTabProps) {
         testId="input-buffer-pool-mb"
       />
       <SettingField
-        label="Kùzu max database size per board (GB)"
+        label="Graph DB max database size per board (GB)"
         description="Virtual address space. Does not commit memory until used."
         value={draft.kg_kuzu_max_db_size_gb}
         range={RANGES.kg_kuzu_max_db_size_gb}
@@ -551,7 +551,7 @@ function GraphDBTab({ draft, onChange, budgetMb }: GraphDBTabProps) {
         {draft.kg_connection_pool_size} × {draft.kg_kuzu_buffer_pool_mb} +{' '}
         {BUDGET_BASELINE_MB} = <strong>{budgetMb} MB</strong>
         <span className="text-gray-400">
-          {' '}committed (non-Kùzu baseline {BUDGET_BASELINE_MB} MB)
+          {' '}committed (non-graph baseline {BUDGET_BASELINE_MB} MB)
         </span>
       </div>
     </div>
@@ -697,7 +697,7 @@ function LiveQueueHealthPanel({ health }: LiveQueueHealthPanelProps) {
         </div>
         <div>
           <div className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-            Kùzu lock retries (5m)
+            Graph DB lock retries (5m)
           </div>
           <div
             className={`text-sm font-semibold ${

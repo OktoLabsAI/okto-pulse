@@ -189,11 +189,11 @@ Textual fields (title, content, summary) are embedded via a local
 sentence-transformer model (default: all-MiniLM-L6-v2, 384 dimensions).
 The embeddings power the similarity-based queries — "find cards like this
 one", "what supersedes decision X", semantic search in Global Discovery.
-The vector index is an HNSW inside Kùzu, so nothing leaves the machine.
+The vector index is an HNSW inside the local graph database, so nothing leaves the machine.
 
-### 5. Graph (Kùzu)
+### 5. Graph (LadybugDB)
 
-Finally the worker writes typed nodes and edges to a Kùzu graph database.
+Finally the worker writes typed nodes and edges to a LadybugDB graph database.
 Existing nodes are updated (not duplicated) when the content hash changes,
 and supersedence chains keep the full history queryable. Once this step
 commits, the new state is visible on the canvas the next time the page

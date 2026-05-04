@@ -3,7 +3,8 @@
  *
  * Each entity type has a dedicated generator that compiles structured data
  * into a well-formatted Markdown string. Tasks resolve references from
- * their parent spec (TRs, BRs, FRs, ACs, test scenarios, API contracts).
+ * their parent spec (TRs, BRs, FRs, ACs, test scenarios, API contracts,
+ * decisions, KBs, mockups, and architecture designs).
  */
 
 import type {
@@ -105,6 +106,32 @@ function renderMockups(mockups: ScreenMockup[] | null | undefined): string {
 }
 
 // ---------------------------------------------------------------------------
+// Architecture Designs
+// ---------------------------------------------------------------------------
+
+function renderArchitectureDesigns(designs: any[] | null | undefined): string {
+  if (!designs?.length) return '';
+  const items = designs.map((design, i) => {
+    let entry = `### ${i + 1}. ${design.title || 'Untitled architecture'}\n\n`;
+    if (design.global_description) entry += `${design.global_description}\n\n`;
+    if (design.parent_type) entry += `**Source:** ${design.parent_type}${design.source_title ? ` — ${design.source_title}` : ''}\n\n`;
+    if (design.version != null) entry += `**Version:** v${design.version}\n\n`;
+    if (design.entities?.length) {
+      entry += `**Entities:** ${design.entities.map((e: any) => e.name || e.title || e.id).filter(Boolean).join(', ')}\n\n`;
+    }
+    if (design.interfaces?.length) {
+      entry += `**Interfaces:** ${design.interfaces.map((itf: any) => itf.name || itf.label || itf.id).filter(Boolean).join(', ')}\n\n`;
+    }
+    if (design.diagrams_count != null) entry += `**Diagrams:** ${design.diagrams_count}\n\n`;
+    if (design.diagrams?.length) {
+      entry += `**Diagrams:** ${design.diagrams.map((d: any) => d.title || d.id).filter(Boolean).join(', ')}\n\n`;
+    }
+    return entry;
+  }).join('\n');
+  return `## Architecture Designs\n\n${items}\n`;
+}
+
+// ---------------------------------------------------------------------------
 // Q&A
 // ---------------------------------------------------------------------------
 
@@ -196,6 +223,51 @@ function renderApiContracts(contracts: ApiContract[] | null | undefined): string
 }
 
 // ---------------------------------------------------------------------------
+// Decisions
+// ---------------------------------------------------------------------------
+
+function renderDecisions(decisions: any[] | null | undefined): string {
+  if (!decisions?.length) return '';
+  const items = decisions.map((decision, i) => {
+    let entry = `### ${i + 1}. ${decision.title || decision.id || 'Decision'}\n\n`;
+    if (decision.status) entry += `**Status:** ${decision.status}\n\n`;
+    if (decision.rationale) entry += `${decision.rationale}\n\n`;
+    if (decision.decision) entry += `${decision.decision}\n\n`;
+    if (decision.alternatives?.length) entry += `**Alternatives:** ${decision.alternatives.join(', ')}\n\n`;
+    if (decision.linked_requirements?.length) entry += `**Linked requirements:** ${decision.linked_requirements.join(', ')}\n\n`;
+    return entry;
+  }).join('');
+  return `## Decisions\n\n${items}`;
+}
+
+// ---------------------------------------------------------------------------
+// Resolved References
+// ---------------------------------------------------------------------------
+
+function renderResolvedReferences(refs: any | null | undefined): string {
+  if (!refs) return '';
+  let md = `## Resolved References\n\n`;
+  const renderResolvedList = (title: string, items: any[], label: (item: any) => string) => {
+    if (!items?.length) return '';
+    const rows = items.map((item) => {
+      const source = item.reference_type ? ` (${item.reference_type}${item.source_title ? ` from ${item.source_title}` : ''})` : '';
+      return `- ${label(item)}${source}`;
+    }).join('\n');
+    return `### ${title}\n\n${rows}\n\n`;
+  };
+  md += renderResolvedList('Knowledge Bases', refs.knowledge_bases || [], (item) => item.title || item.id);
+  md += renderResolvedList('Mockups', refs.screen_mockups || [], (item) => item.title || item.id);
+  md += renderResolvedList('Architecture Designs', refs.architecture_designs || [], (item) => item.title || item.id);
+  md += renderResolvedList('Functional Requirements', refs.functional_requirements || [], (item) => item.text || item.value || item.id);
+  md += renderResolvedList('Technical Requirements', refs.technical_requirements || [], (item) => item.text || item.value || item.id);
+  md += renderResolvedList('Acceptance Criteria', refs.acceptance_criteria || [], (item) => item.text || item.value || item.id);
+  md += renderResolvedList('Business Rules', refs.business_rules || [], (item) => item.title || item.rule || item.id);
+  md += renderResolvedList('API Contracts', refs.api_contracts || [], (item) => `${item.method || ''} ${item.path || item.title || item.id}`.trim());
+  md += renderResolvedList('Decisions', refs.decisions || [], (item) => item.title || item.id);
+  return md === `## Resolved References\n\n` ? '' : md;
+}
+
+// ---------------------------------------------------------------------------
 // Knowledge Bases
 // ---------------------------------------------------------------------------
 
@@ -245,6 +317,7 @@ export function exportIdeation(ideation: Ideation): string {
   }
 
   md += renderMockups(ideation.screen_mockups);
+  md += renderArchitectureDesigns(ideation.architecture_designs);
   md += renderQA(ideation.qa_items || []);
 
   return md;
@@ -280,6 +353,7 @@ export function exportRefinement(refinement: Refinement): string {
 
   md += renderKnowledgeBases(refinement.knowledge_bases || []);
   md += renderMockups(refinement.screen_mockups);
+  md += renderArchitectureDesigns(refinement.architecture_designs);
   md += renderQA(refinement.qa_items || []);
 
   return md;
@@ -393,8 +467,10 @@ export function exportSpec(spec: Spec): string {
   md += renderTestScenarios(spec.test_scenarios, spec.acceptance_criteria);
   md += renderBusinessRules(spec.business_rules, spec.functional_requirements);
   md += renderApiContracts(spec.api_contracts);
+  md += renderDecisions(spec.decisions);
   md += renderKnowledgeBases(spec.knowledge_bases || []);
   md += renderMockups(spec.screen_mockups);
+  md += renderArchitectureDesigns(spec.architecture_designs);
   md += renderQA(spec.qa_items || []);
 
   return md;
@@ -464,15 +540,19 @@ export function exportCard(card: Card, spec?: Spec | null): string {
   // Note: Card type doesn't include dependency data directly; we show what we have
   // from comments/QA context
 
+  const explicitResolvedRefs = (card as any).resolved_references;
+  md += renderResolvedReferences(explicitResolvedRefs);
+
   // Resolved spec context
-  if (spec) {
+  if (spec && !explicitResolvedRefs) {
     md += `---\n\n## Spec Context: ${spec.title}\n\n`;
 
     // Linked test scenarios (resolve from IDs)
+    let linkedScenarios: TestScenario[] = [];
     if (card.test_scenario_ids?.length && spec.test_scenarios?.length) {
-      const linked = spec.test_scenarios.filter(ts => card.test_scenario_ids!.includes(ts.id));
-      if (linked.length) {
-        md += renderTestScenarios(linked, spec.acceptance_criteria);
+      linkedScenarios = spec.test_scenarios.filter(ts => card.test_scenario_ids!.includes(ts.id));
+      if (linkedScenarios.length) {
+        md += renderTestScenarios(linkedScenarios, spec.acceptance_criteria);
       }
     }
 
@@ -486,9 +566,18 @@ export function exportCard(card: Card, spec?: Spec | null): string {
       md += `## Acceptance Criteria\n\n${numberedList(spec.acceptance_criteria)}\n\n`;
     }
 
-    md += renderBusinessRules(spec.business_rules, spec.functional_requirements);
-    md += renderApiContracts(spec.api_contracts);
+    const linkedBusinessRules = (spec.business_rules || []).filter((item: any) => item.linked_task_ids?.includes(card.id));
+    const linkedContracts = (spec.api_contracts || []).filter((item: any) => item.linked_task_ids?.includes(card.id));
+    const linkedDecisions = (spec.decisions || []).filter((item: any) => item.linked_task_ids?.includes(card.id));
+    md += renderBusinessRules(
+      linkedBusinessRules.length ? linkedBusinessRules : spec.business_rules,
+      spec.functional_requirements
+    );
+    md += renderApiContracts(linkedContracts.length ? linkedContracts : spec.api_contracts);
+    md += renderDecisions(linkedDecisions.length ? linkedDecisions : spec.decisions);
     md += renderKnowledgeBases(spec.knowledge_bases || []);
+    md += renderMockups(spec.screen_mockups);
+    md += renderArchitectureDesigns(spec.architecture_designs);
   }
 
   // Card-own knowledge bases
@@ -501,6 +590,7 @@ export function exportCard(card: Card, spec?: Spec | null): string {
   }
 
   md += renderMockups(card.screen_mockups);
+  md += renderArchitectureDesigns(card.architecture_designs);
   md += renderQA(card.qa_items || []);
 
   // Comments

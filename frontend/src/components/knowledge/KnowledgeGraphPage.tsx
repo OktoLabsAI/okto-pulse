@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { HelpCircle, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { AlertTriangle, HelpCircle, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { GraphCanvas } from './GraphCanvas';
 import { KGHelpModal } from './KGHelpModal';
 import { NodeDetailPanel } from './NodeDetailPanel';
@@ -32,6 +32,7 @@ import { NodeDetailModal } from './NodeDetailModal';
 import { useKgLiveEvents } from '@/hooks/useKgLiveEvents';
 import type { KGNode, KGEdge } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
+import { getKGHealth, type KGHealth } from '@/services/kg-health-api';
 
 interface Props {
   boardId: string;
@@ -56,9 +57,78 @@ const SIDEBAR_DEFAULT = 256;
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
 
+export function GraphVisibilityMismatchState({
+  boardId,
+  health,
+  metadata,
+  onRefresh,
+}: {
+  boardId: string;
+  health: KGHealth;
+  metadata: kgApi.GraphMetadata | null;
+  onRefresh: () => void;
+}) {
+  const schemaLabel = health.graph_schema_version
+    ? `Graph schema ${health.graph_schema_version}`
+    : 'Graph schema unavailable';
+  const tickLabel = health.last_tick_status
+    ? `Last tick: ${health.last_tick_status}`
+    : 'No tick result recorded';
+  return (
+    <div className="flex h-full items-center justify-center bg-surface-50 dark:bg-surface-950 px-6">
+      <div className="max-w-xl rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-surface-900 p-5 shadow">
+        <div className="mb-3 flex items-center gap-2 text-amber-700 dark:text-amber-300">
+          <AlertTriangle className="h-5 w-5" aria-hidden />
+          <h2 className="text-base font-semibold">KG data exists, graph view is empty</h2>
+        </div>
+        <p className="text-sm text-surface-700 dark:text-surface-300">
+          Health reports {health.total_nodes.toLocaleString()} node(s) for this board, but
+          the visualization endpoint returned no nodes.
+        </p>
+        <div className="mt-4 grid grid-cols-1 gap-2 text-xs text-surface-600 dark:text-surface-400 sm:grid-cols-2">
+          <div className="rounded border border-surface-200 dark:border-surface-700 px-3 py-2">
+            <div className="font-semibold text-surface-800 dark:text-surface-200">Board</div>
+            <div className="truncate font-mono">{boardId}</div>
+          </div>
+          <div className="rounded border border-surface-200 dark:border-surface-700 px-3 py-2">
+            <div className="font-semibold text-surface-800 dark:text-surface-200">Schemas</div>
+            <div>{schemaLabel}</div>
+            <div>Health schema {health.health_schema_version ?? health.schema_version}</div>
+          </div>
+          <div className="rounded border border-surface-200 dark:border-surface-700 px-3 py-2">
+            <div className="font-semibold text-surface-800 dark:text-surface-200">Tick</div>
+            <div>{tickLabel}</div>
+            {health.last_tick_error && (
+              <div className="truncate text-rose-600 dark:text-rose-300" title={health.last_tick_error}>
+                {health.last_tick_error}
+              </div>
+            )}
+          </div>
+          <div className="rounded border border-surface-200 dark:border-surface-700 px-3 py-2">
+            <div className="font-semibold text-surface-800 dark:text-surface-200">Edges</div>
+            <div>Status {metadata?.edge_read_status ?? 'unknown'}</div>
+            <div>{metadata?.edge_tables_failed ?? 0} failed table(s)</div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          data-testid="kg-empty-mismatch-refresh"
+          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+        >
+          Refresh graph
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function KnowledgeGraphPage({ boardId }: Props) {
   const [nodes, setNodes] = useState<KGNode[]>([]);
   const [edges, setEdges] = useState<KGEdge[]>([]);
+  const [graphMetadata, setGraphMetadata] = useState<kgApi.GraphMetadata | null>(null);
+  const [healthSnapshot, setHealthSnapshot] = useState<KGHealth | null>(null);
+  const [historicalProgress, setHistoricalProgress] = useState<kgApi.HistoricalProgress | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<KGNode | null>(null);
   const [modalNode, setModalNode] = useState<KGNode | null>(null);
@@ -119,9 +189,16 @@ export function KnowledgeGraphPage({ boardId }: Props) {
       setLoading(true);
       setError(null);
       try {
-        const data = await kgApi.getSubgraph(boardId, { limit });
+        const [data, health, historical] = await Promise.all([
+          kgApi.getSubgraph(boardId, { limit, min_relevance: 0 }),
+          getKGHealth(boardId).catch(() => null),
+          kgApi.getHistoricalProgress(boardId).catch(() => null),
+        ]);
         setNodes(data.nodes || []);
         setEdges(data.edges || []);
+        setGraphMetadata(data.metadata ?? null);
+        setHealthSnapshot(health);
+        setHistoricalProgress(historical);
         setNextCursor(data.next_cursor ?? null);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load graph');
@@ -159,6 +236,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
       const data = await kgApi.getSubgraph(boardId, {
         limit: nodeLimit,
         cursor: nextCursor,
+        min_relevance: 0,
       });
       // Dedupe appended nodes/edges on id to defend against overlap if the
       // cursor was advanced by a concurrent consolidation.
@@ -172,13 +250,14 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         const appended = (data.edges ?? []).filter((e) => !seen.has(e.id));
         return [...prev, ...appended];
       });
+      setGraphMetadata(data.metadata ?? graphMetadata);
       setNextCursor(data.next_cursor ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load more');
     } finally {
       setLoadingMore(false);
     }
-  }, [boardId, nodeLimit, nextCursor, loadingMore]);
+  }, [boardId, nodeLimit, nextCursor, loadingMore, graphMetadata]);
 
   const handleClearFilters = useCallback(() => {
     setFilters(DEFAULT_FILTERS);
@@ -264,11 +343,26 @@ export function KnowledgeGraphPage({ boardId }: Props) {
   }
 
   if (nodes.length === 0 && subView === 'graph') {
-    return (
-      <div data-empty-state="yet" data-testid="kg-empty-yet" className="h-full">
-        <EmptyState boardId={boardId} onRefresh={() => loadGraph(nodeLimit)} />
-      </div>
-    );
+    const mismatchHealth = healthSnapshot;
+    if (mismatchHealth && mismatchHealth.total_nodes > 0) {
+      return (
+        <div data-testid="kg-empty-mismatch" className="h-full">
+          <GraphVisibilityMismatchState
+            boardId={boardId}
+            health={mismatchHealth}
+            metadata={graphMetadata}
+            onRefresh={() => loadGraph(nodeLimit)}
+          />
+        </div>
+      );
+    }
+    if (!kgApi.isHistoricalProgressTerminal(historicalProgress)) {
+      return (
+        <div data-empty-state="yet" data-testid="kg-empty-yet" className="h-full">
+          <EmptyState boardId={boardId} onRefresh={() => loadGraph(nodeLimit)} />
+        </div>
+      );
+    }
   }
 
   return (
@@ -396,6 +490,25 @@ export function KnowledgeGraphPage({ boardId }: Props) {
                 </button>
               )}
             </div>
+            {graphMetadata?.edge_read_status && graphMetadata.edge_read_status !== 'ok' && (
+              <div
+                className="absolute top-14 right-3 z-10 max-w-lg rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/80 px-3 py-2 text-xs text-amber-900 dark:text-amber-100 shadow"
+                data-testid="kg-edge-read-diagnostics"
+                role="status"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <div>
+                    <div className="font-semibold">Edge read diagnostics</div>
+                    <div>
+                      Status: {graphMetadata.edge_read_status}; failed tables:{' '}
+                      {graphMetadata.edge_tables_failed ?? 0} of{' '}
+                      {graphMetadata.edge_tables_scanned ?? 0}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             <GraphCanvas
               nodes={nodes}
               edges={edges}

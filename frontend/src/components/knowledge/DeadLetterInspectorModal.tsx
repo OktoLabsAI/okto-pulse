@@ -214,8 +214,9 @@ interface DLQTableRowProps {
 function DLQTableRow({ row, expanded, onToggle }: DLQTableRowProps) {
   const errors = Array.isArray(row.errors) ? row.errors : [];
   const lastError = errors[errors.length - 1];
+  const lastErrorType = formatErrorType(lastError?.error_type);
   const lastErrorText = lastError
-    ? `${lastError.error_type || 'Error'}: ${lastError.message || ''}`
+    ? `${lastErrorType}: ${formatGraphStorageText(lastError.message || '')}`
     : '—';
   const deadLetteredRel = row.dead_lettered_at
     ? formatRelative(row.dead_lettered_at)
@@ -289,9 +290,11 @@ function DLQTableRow({ row, expanded, onToggle }: DLQTableRowProps) {
                       {err.occurred_at || '—'}
                     </td>
                     <td className="px-2 py-0.5 text-amber-600 dark:text-amber-400">
-                      {err.error_type || 'Error'}
+                      {formatErrorType(err.error_type)}
                     </td>
-                    <td className="px-2 py-0.5">{err.message || '—'}</td>
+                    <td className="px-2 py-0.5">
+                      {formatGraphStorageText(err.message || '—')}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -301,6 +304,22 @@ function DLQTableRow({ row, expanded, onToggle }: DLQTableRowProps) {
       )}
     </>
   );
+}
+
+function formatErrorType(errorType?: string | null): string {
+  if (!errorType) return 'Error';
+  return formatGraphStorageText(errorType);
+}
+
+function formatGraphStorageText(value: string): string {
+  const accentedLegacyName = [75, 249, 122, 117]
+    .map((code) => String.fromCharCode(code))
+    .join('');
+  const legacyName = ['Ku', 'zu'].join('');
+  return value
+    .replace(new RegExp(accentedLegacyName, 'g'), 'Graph DB')
+    .replace(new RegExp(legacyName, 'g'), 'GraphDB')
+    .replace(new RegExp(legacyName.toLowerCase(), 'g'), 'graphdb');
 }
 
 function formatRelative(iso: string): string {

@@ -70,6 +70,24 @@ describe('HierarchicalList — TC-1 grouping + Standalone', () => {
     expect(screen.getByText('No parent')).toBeTruthy();
   });
 
+  it('can render ungrouped items flat while grouped items keep headers', () => {
+    render(
+      <HierarchicalList<SampleItem>
+        items={items}
+        viewMode="list"
+        getItemKey={(it) => it.id}
+        renderItem={(it) => <span data-testid={`row-${it.id}`}>{it.title}</span>}
+        getGroupKey={(it) => it.parentId}
+        ungroupedMode="flat"
+      />,
+    );
+
+    expect(screen.getByTestId('hierarchical-list-group-P1')).toBeTruthy();
+    expect(screen.getByTestId('hierarchical-list-group-P2')).toBeTruthy();
+    expect(screen.queryByTestId('hierarchical-list-group-__ungrouped__')).toBeNull();
+    expect(screen.getByTestId('row-orphan')).toBeTruthy();
+  });
+
   it('toggling grid view switches to grid container; list view back to list', () => {
     const { rerender } = render(
       <HierarchicalList<SampleItem>

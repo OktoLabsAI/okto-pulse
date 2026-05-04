@@ -128,10 +128,41 @@ const detailedDiagram: ArchitectureDiagram = {
   },
 };
 
+const mermaidDiagram: ArchitectureDiagram = {
+  ...diagram,
+  id: 'diag-mermaid',
+  title: 'Mermaid Context',
+  format: 'mermaid',
+  adapter_payload: 'graph TD\n  UI --> API\n  API --> DB',
+};
+
 describe('ArchitectureDiagramEditor', () => {
   it('renders diagram elements on the visual canvas', () => {
     render(<ArchitectureDiagramEditor diagram={diagram} onChange={vi.fn()} />);
     expect(screen.getByTestId('architecture-element-box_1')).toHaveTextContent('API');
+  });
+
+  it('shows non-Excalidraw diagram payloads instead of an empty canvas', () => {
+    render(<ArchitectureDiagramEditor diagram={mermaidDiagram} onChange={vi.fn()} />);
+
+    expect(screen.getByTestId('architecture-nonvisual-preview')).toHaveTextContent('Mermaid');
+    expect(screen.getByText(/UI --> API/)).toBeInTheDocument();
+    expect(screen.queryByTestId('architecture-canvas')).not.toBeInTheDocument();
+  });
+
+  it('keeps non-Excalidraw raw payload edits in the original format', () => {
+    const onChange = vi.fn();
+    render(<ArchitectureDiagramEditor diagram={mermaidDiagram} onChange={onChange} />);
+
+    fireEvent.click(screen.getByTitle('Raw payload'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'graph LR\n  API --> Queue' },
+    });
+    fireEvent.click(screen.getByText('Apply Raw'));
+
+    const updated = onChange.mock.calls[onChange.mock.calls.length - 1][0] as ArchitectureDiagram;
+    expect(updated.format).toBe('mermaid');
+    expect(updated.adapter_payload).toBe('graph LR\n  API --> Queue');
   });
 
   it('moves visual elements with pointer drag', () => {

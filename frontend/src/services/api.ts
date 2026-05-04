@@ -64,11 +64,13 @@ import type {
   ArchitectureParentType,
   ArchitectureDesign,
   ArchitectureDesignSummary,
+  ArchitectureDesignValidationResult,
   CreateArchitectureDesignRequest,
   UpdateArchitectureDesignRequest,
   ArchitectureDiagramPayloadResponse,
   ArchitectureDiagramFormat,
   ArchitectureDiagramType,
+  LineageGraphResponse,
 } from '@/types';
 
 function architectureParentPath(parentType: ArchitectureParentType, parentId: string): string {
@@ -121,6 +123,22 @@ export function useDashboardApi() {
         `/boards/${boardId}/columns${qs}`
       );
       return response.columns;
+    },
+
+    async getLineageGraph(
+      boardId: string,
+      entityType: string,
+      entityId: string,
+      includeArtifacts = false,
+    ): Promise<LineageGraphResponse> {
+      const p = new URLSearchParams({
+        entity_type: entityType,
+        entity_id: entityId,
+        include_artifacts: includeArtifacts ? 'true' : 'false',
+      });
+      return apiClient.fetchJson<LineageGraphResponse>(
+        `/boards/${boardId}/lineage-graph?${p.toString()}`
+      );
     },
 
     // ==================== SHARES ====================
@@ -333,6 +351,13 @@ export function useDashboardApi() {
     async updateArchitectureDesign(designId: string, data: UpdateArchitectureDesignRequest): Promise<ArchitectureDesign> {
       return apiClient.fetchJson<ArchitectureDesign>(`/architecture/${designId}`, {
         method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async validateArchitectureDesign(data: CreateArchitectureDesignRequest): Promise<ArchitectureDesignValidationResult> {
+      return apiClient.fetchJson<ArchitectureDesignValidationResult>('/architecture/validate', {
+        method: 'POST',
         body: JSON.stringify(data),
       });
     },

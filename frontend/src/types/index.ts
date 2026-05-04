@@ -60,6 +60,57 @@ export const PRIORITY_COLORS: Record<CardPriority, { badge: string; borderColor:
 // Card type
 export type CardType = 'normal' | 'bug' | 'test';
 
+export type LineageEntityType =
+  | 'ideation'
+  | 'refinement'
+  | 'spec'
+  | 'sprint'
+  | 'task'
+  | 'test'
+  | 'bug'
+  | 'card'
+  | 'artifact';
+
+export interface LineageGraphNode {
+  id: string;
+  entity_type: LineageEntityType;
+  entity_id: string;
+  title: string;
+  label: string;
+  status?: string | null;
+  stage: number;
+  card_type?: CardType | string;
+  artifact_type?: string;
+  source_entity_type?: string;
+  source_entity_id?: string;
+  summary?: Record<string, unknown>;
+}
+
+export interface LineageGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  relationship: string;
+}
+
+export interface LineageGraphResponse {
+  board_id: string;
+  selected: {
+    entity_type: string;
+    entity_id: string;
+  };
+  root_ideation: {
+    id: string;
+    title: string;
+    status?: string | null;
+  };
+  resolution_path: Array<{ type: string; id: string }>;
+  nodes: LineageGraphNode[];
+  edges: LineageGraphEdge[];
+  summary: Record<string, number>;
+  warnings: string[];
+}
+
 // Bug severity
 export type BugSeverity = 'critical' | 'major' | 'minor';
 
@@ -655,6 +706,14 @@ export type CreateArchitectureDesignRequest = Pick<
 export type UpdateArchitectureDesignRequest = Partial<CreateArchitectureDesignRequest> & {
   change_summary?: string;
 };
+
+export interface ArchitectureDesignValidationResult {
+  valid: boolean;
+  issues: string[];
+  warnings: string[];
+  suggested_fixes: string[];
+  summary: Record<string, unknown>;
+}
 
 export interface CardKnowledgeBase {
   id: string;
