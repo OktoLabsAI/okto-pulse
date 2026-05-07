@@ -61,6 +61,7 @@ export const PRIORITY_COLORS: Record<CardPriority, { badge: string; borderColor:
 export type CardType = 'normal' | 'bug' | 'test';
 
 export type LineageEntityType =
+  | 'story'
   | 'ideation'
   | 'refinement'
   | 'spec'
@@ -583,6 +584,69 @@ export interface ScreenMockup {
   html_content: string;
   annotations: MockupAnnotation[] | null;
   order: number;
+  origin_id?: string | null;
+  origin_story_id?: string | null;
+  origin_entity_type?: string | null;
+}
+
+export type StoryStatus = 'draft' | 'triage' | 'ready' | 'converted';
+
+export const STORY_STATUSES: StoryStatus[] = ['draft', 'triage', 'ready', 'converted'];
+
+export const STORY_STATUS_LABELS: Record<StoryStatus, string> = {
+  draft: 'Draft',
+  triage: 'Triage',
+  ready: 'Ready',
+  converted: 'Converted',
+};
+
+export interface Topic {
+  id: string;
+  board_id: string;
+  name: string;
+  description: string | null;
+  archived: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TopicSummary extends Topic {
+  story_count: number;
+}
+
+export interface StoryIdeationLink {
+  id: string;
+  board_id: string;
+  story_id: string;
+  ideation_id: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface StorySummary {
+  id: string;
+  board_id: string;
+  topic_id: string;
+  title: string;
+  description: string;
+  actor: string | null;
+  goal: string | null;
+  benefit: string | null;
+  labels: string[] | null;
+  status: StoryStatus;
+  assignee_id: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  archived: boolean;
+  pre_archive_status: string | null;
+  screen_mockups: ScreenMockup[] | null;
+  ideation_links: StoryIdeationLink[];
+}
+
+export interface Story extends StorySummary {
+  topic: Topic | null;
 }
 
 // Architecture Design
@@ -1329,6 +1393,65 @@ export interface UpdateSpecRequest {
 
 export interface MoveSpecRequest {
   status: SpecStatus;
+}
+
+// Story request types
+export interface CreateTopicRequest {
+  name: string;
+  description?: string;
+}
+
+export interface UpdateTopicRequest {
+  name?: string;
+  description?: string | null;
+  archived?: boolean;
+}
+
+export interface CreateStoryRequest {
+  title: string;
+  description: string;
+  topic_id: string;
+  actor?: string;
+  goal?: string;
+  benefit?: string;
+  labels?: string[];
+  status?: StoryStatus;
+  assignee_id?: string;
+  screen_mockups?: ScreenMockup[];
+}
+
+export interface UpdateStoryRequest {
+  title?: string;
+  description?: string;
+  topic_id?: string;
+  actor?: string | null;
+  goal?: string | null;
+  benefit?: string | null;
+  labels?: string[];
+  assignee_id?: string | null;
+  screen_mockups?: ScreenMockup[];
+}
+
+export interface MoveStoryRequest {
+  status: StoryStatus;
+}
+
+export interface StoryConversionRequest {
+  story_ids: string[];
+  ideation_id?: string;
+  title?: string;
+  description?: string;
+  problem_statement?: string;
+  proposed_approach?: string;
+  mockup_ids?: string[];
+  mark_converted?: boolean;
+}
+
+export interface StoryConversionResponse {
+  success: boolean;
+  ideation: Record<string, unknown>;
+  links: StoryIdeationLink[];
+  propagated_mockups: number;
 }
 
 // Ideation request types

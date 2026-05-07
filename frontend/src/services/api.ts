@@ -48,6 +48,17 @@ import type {
   IdeationQAItem,
   IdeationSnapshot,
   IdeationSnapshotSummary,
+  Topic,
+  TopicSummary,
+  CreateTopicRequest,
+  UpdateTopicRequest,
+  Story,
+  StorySummary,
+  CreateStoryRequest,
+  UpdateStoryRequest,
+  MoveStoryRequest,
+  StoryConversionRequest,
+  StoryConversionResponse,
   Refinement,
   RefinementSummary,
   RefinementStatus,
@@ -414,6 +425,95 @@ export function useDashboardApi() {
 
     async restoreTree(boardId: string, entityType: string, entityId: string): Promise<{ restored_count: Record<string, number> }> {
       return apiClient.fetchJson(`/boards/${boardId}/restore/${entityType}/${entityId}`, { method: 'POST' });
+    },
+
+    // ==================== STORIES ====================
+
+    async createTopic(boardId: string, data: CreateTopicRequest): Promise<Topic> {
+      return apiClient.fetchJson<Topic>(`/boards/${boardId}/topics`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async listTopics(boardId: string, includeArchived?: boolean): Promise<TopicSummary[]> {
+      const p = new URLSearchParams();
+      if (includeArchived) p.set('include_archived', 'true');
+      const qs = p.toString() ? `?${p.toString()}` : '';
+      return apiClient.fetchJson<TopicSummary[]>(`/boards/${boardId}/topics${qs}`);
+    },
+
+    async updateTopic(topicId: string, data: UpdateTopicRequest): Promise<Topic> {
+      return apiClient.fetchJson<Topic>(`/topics/${topicId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async createStory(boardId: string, data: CreateStoryRequest): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/boards/${boardId}/stories`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async listStories(boardId: string, filters?: {
+      status?: string;
+      topicId?: string;
+      search?: string;
+      linked?: boolean;
+      converted?: boolean;
+      includeArchived?: boolean;
+    }): Promise<StorySummary[]> {
+      const p = new URLSearchParams();
+      if (filters?.status) p.set('status', filters.status);
+      if (filters?.topicId) p.set('topic_id', filters.topicId);
+      if (filters?.search) p.set('search', filters.search);
+      if (filters?.linked !== undefined) p.set('linked', filters.linked ? 'true' : 'false');
+      if (filters?.converted !== undefined) p.set('converted', filters.converted ? 'true' : 'false');
+      if (filters?.includeArchived) p.set('include_archived', 'true');
+      const qs = p.toString() ? `?${p.toString()}` : '';
+      return apiClient.fetchJson<StorySummary[]>(`/boards/${boardId}/stories${qs}`);
+    },
+
+    async getStory(storyId: string): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}`);
+    },
+
+    async updateStory(storyId: string, data: UpdateStoryRequest): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async moveStory(storyId: string, data: MoveStoryRequest): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}/move`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async archiveStory(storyId: string): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}`, { method: 'DELETE' });
+    },
+
+    async restoreStory(storyId: string): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}/restore`, { method: 'POST' });
+    },
+
+    async linkStoryToIdeation(storyId: string, ideationId: string): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}/ideations`, {
+        method: 'POST',
+        body: JSON.stringify({ ideation_id: ideationId }),
+      });
+    },
+
+    async convertStories(boardId: string, data: StoryConversionRequest): Promise<StoryConversionResponse> {
+      return apiClient.fetchJson<StoryConversionResponse>(`/boards/${boardId}/stories/convert-to-ideation`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
     },
 
     // ==================== IDEATIONS ====================

@@ -34,6 +34,16 @@ function resolveActorName(id: string | null | undefined, members: { id: string; 
   return id.length > 16 ? id.slice(0, 12) + '…' : id;
 }
 
+function shortId(id: string): string {
+  return id.length > 16 ? id.slice(0, 12) + '…' : id;
+}
+
+function cardTypeLabel(card: Pick<Card, 'card_type'> | null | undefined): string {
+  if (card?.card_type === 'bug') return 'Bug';
+  if (card?.card_type === 'test') return 'Test';
+  return 'Task';
+}
+
 interface CardModalProps {
   boardId: string;
   onClose?: () => void;
@@ -72,6 +82,13 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const [conclusionCompletenessJustification, setConclusionCompletenessJustification] = useState('');
   const [conclusionDrift, setConclusionDrift] = useState(0);
   const [conclusionDriftJustification, setConclusionDriftJustification] = useState('');
+  const originTask = card?.origin_task_id
+    ? allBoardCards.find((candidate) => candidate.id === card.origin_task_id) || null
+    : null;
+  const linkedTestTasks = (card?.linked_test_task_ids || []).map((taskId) => ({
+    id: taskId,
+    card: allBoardCards.find((candidate) => candidate.id === taskId) || null,
+  }));
 
   const resetConclusionPrompt = () => {
     setConclusionDraft('');
@@ -529,6 +546,60 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                   {/* Bug-specific fields */}
                   {card.card_type === 'bug' && (
                     <>
+                      <div
+                        data-testid="bug-traceability-panel"
+                        className="rounded-lg border border-blue-200 dark:border-blue-700/40 bg-blue-50/70 dark:bg-blue-900/10 p-3"
+                      >
+                        <div className="flex items-center gap-2 mb-3">
+                          <GitBranch size={14} className="text-blue-600 dark:text-blue-300" />
+                          <h3 className="text-xs font-semibold text-blue-900 dark:text-blue-200 uppercase tracking-wide">Bug Traceability</h3>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="rounded-md border border-blue-100 dark:border-blue-800/60 bg-white/70 dark:bg-gray-900/30 p-3">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-300">Origin Task</p>
+                            <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100 break-words">
+                              {originTask?.title || (card.origin_task_id ? shortId(card.origin_task_id) : 'Missing origin task')}
+                            </p>
+                            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                              <span className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                                <FileText size={10} />
+                                {originTask ? cardTypeLabel(originTask) : 'Task'}
+                              </span>
+                              {originTask && (
+                                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                                  {STATUS_LABELS[originTask.status]}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="rounded-md border border-blue-100 dark:border-blue-800/60 bg-white/70 dark:bg-gray-900/30 p-3">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-300">Linked Regression Tests</p>
+                            {linkedTestTasks.length > 0 ? (
+                              <div className="mt-2 space-y-1.5">
+                                {linkedTestTasks.map(({ id, card: testTask }) => (
+                                  <div key={id} className="flex items-start gap-2 text-sm text-gray-900 dark:text-gray-100">
+                                    <FlaskConical size={13} className="mt-0.5 shrink-0 text-violet-500" />
+                                    <div className="min-w-0">
+                                      <p className="truncate font-medium">{testTask?.title || shortId(id)}</p>
+                                      {testTask && (
+                                        <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                                          {STATUS_LABELS[testTask.status]}
+                                        </p>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="mt-2 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
+                                <AlertCircle size={13} />
+                                No regression test linked
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
                       {/* Severity */}
                       <div>
                         <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Severity</h3>
