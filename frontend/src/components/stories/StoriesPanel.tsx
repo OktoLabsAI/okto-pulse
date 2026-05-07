@@ -7,13 +7,14 @@ import {
   GitBranch,
   Link2,
   Plus,
-  RefreshCw,
   Tags,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { SearchInput } from '@/components/shared/SearchInput';
+import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { openLineageGraph } from '@/components/traceability';
+import { useViewMode } from '@/hooks/useViewMode';
 import { sanitizePreview } from '@/lib/sanitizePreview';
 import type { StoryStatus, StorySummary, TopicSummary } from '@/types';
 import { STORY_STATUS_LABELS } from '@/types';
@@ -52,6 +53,7 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
   const [topicFormOpen, setTopicFormOpen] = useState(false);
   const [topicName, setTopicName] = useState('');
   const [topicDescription, setTopicDescription] = useState('');
+  const { viewMode, setViewMode } = useViewMode('stories', 'list');
 
   useEffect(() => {
     load();
@@ -139,15 +141,7 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
             placeholder="Search stories..."
             testId="stories-search"
           />
-          <button
-            type="button"
-            onClick={load}
-            disabled={loading}
-            className="btn btn-secondary inline-flex items-center gap-1 text-sm disabled:opacity-50"
-          >
-            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
+          <ViewModeToggle value={viewMode} onChange={setViewMode} testId="stories-view-mode" />
           <button
             type="button"
             onClick={openCreateStory}
@@ -305,22 +299,29 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
               </div>
             </div>
           ) : (
-            <div className="space-y-2" data-testid="stories-list">
+            <div
+              className={`animate-list ${
+                viewMode === 'grid'
+                  ? 'grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3'
+                  : 'space-y-2'
+              }`}
+              data-testid={`stories-${viewMode}`}
+            >
               {filteredStories.map((story) => (
                 <div
                   key={story.id}
                   onClick={() => setSelectedStoryId(story.id)}
-                  className={`group cursor-pointer rounded-xl border border-surface-200/80 bg-white p-4 transition-all duration-200 hover:border-accent-300 hover:shadow-card-hover dark:border-surface-700/40 dark:bg-surface-800/80 dark:hover:border-accent-600/40 dark:hover:shadow-card-dark-hover ${
+                  className={`group h-full cursor-pointer overflow-hidden rounded-xl border border-surface-200/80 bg-white p-4 transition-all duration-200 hover:border-accent-300 hover:shadow-card-hover dark:border-surface-700/40 dark:bg-surface-800/80 dark:hover:border-accent-600/40 dark:hover:shadow-card-dark-hover ${
                     story.archived ? 'opacity-55' : ''
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="mb-1 flex flex-wrap items-center gap-2">
-                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[story.status]}`}>
+                        <span className={`inline-flex max-w-full shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[story.status]}`}>
                           {STORY_STATUS_LABELS[story.status]}
                         </span>
-                        <span className="text-xs text-gray-400">
+                        <span className="min-w-0 max-w-full truncate text-xs text-gray-400">
                           {topics.find((topic) => topic.id === story.topic_id)?.name || selectedTopic?.name || 'Topic'}
                         </span>
                         {story.archived && (
@@ -334,10 +335,16 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
                         {sanitizePreview(story.description)}
                       </p>
                       {(story.actor || story.goal || story.benefit) && (
-                        <div className="mt-2 grid grid-cols-1 gap-1 text-xs text-gray-500 dark:text-gray-400 md:grid-cols-3">
-                          {story.actor && <span className="truncate">As: {story.actor}</span>}
-                          {story.goal && <span className="truncate">Want: {story.goal}</span>}
-                          {story.benefit && <span className="truncate">So: {story.benefit}</span>}
+                        <div
+                          className={`mt-2 text-xs text-gray-500 dark:text-gray-400 ${
+                            viewMode === 'grid'
+                              ? 'space-y-1'
+                              : 'grid grid-cols-1 gap-1 md:grid-cols-3'
+                          }`}
+                        >
+                          {story.actor && <span className="block min-w-0 truncate">As: {story.actor}</span>}
+                          {story.goal && <span className="block min-w-0 truncate">Want: {story.goal}</span>}
+                          {story.benefit && <span className="block min-w-0 truncate">So: {story.benefit}</span>}
                         </div>
                       )}
                     </div>

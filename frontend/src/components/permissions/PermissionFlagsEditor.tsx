@@ -11,6 +11,8 @@ import { ChevronRight, ChevronDown } from 'lucide-react';
 
 const ENTITY_LABELS: Record<string, string> = {
   board: 'Board',
+  story: 'Stories',
+  topic: 'Topics',
   spec: 'Specs',
   card: 'Cards',
   ideation: 'Ideations',
@@ -23,6 +25,8 @@ const ENTITY_LABELS: Record<string, string> = {
 
 const ENTITY_COLORS: Record<string, string> = {
   board: 'text-blue-600 dark:text-blue-400',
+  story: 'text-sky-600 dark:text-sky-300',
+  topic: 'text-teal-600 dark:text-teal-300',
   spec: 'text-violet-600 dark:text-violet-400',
   card: 'text-green-600 dark:text-green-400',
   ideation: 'text-amber-600 dark:text-amber-400',

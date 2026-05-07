@@ -74,6 +74,7 @@ const stories: StorySummary[] = [
 describe('StoriesPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     apiMock.listTopics.mockResolvedValue(topics);
     apiMock.listStories.mockResolvedValue(stories);
     apiMock.getStory.mockResolvedValue({
@@ -111,6 +112,18 @@ describe('StoriesPanel', () => {
     fireEvent.click(within(descriptionField).getByText('As a maintainer, I want raw needs grouped before ideation.'));
 
     expect(within(descriptionField).getByRole('textbox')).toHaveValue('As a maintainer, I want raw needs grouped before ideation.');
+  });
+
+  it('uses the standard list/grid view toggle without a local refresh button', async () => {
+    render(<StoriesPanel boardId="board-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('stories-list')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /refresh/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('stories-view-mode-grid'));
+
+    expect(screen.getByTestId('stories-grid')).toBeInTheDocument();
+    expect(screen.getByTestId('stories-view-mode-grid')).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('surfaces backend Topic uniqueness errors from the Topic form', async () => {
