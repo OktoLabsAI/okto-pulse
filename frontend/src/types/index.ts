@@ -112,6 +112,61 @@ export interface LineageGraphResponse {
   warnings: string[];
 }
 
+export type ResourceGateEntityType = 'ideation' | 'refinement' | 'spec' | 'card';
+export type ResourceGateResourceType = 'architecture' | 'mockup' | 'knowledge_base';
+export type ResourceGateState = 'provided' | 'not_applicable' | 'missing';
+
+export interface ResourceGateRef {
+  id: string;
+  title?: string | null;
+  source_entity_type?: string | null;
+  source_entity_id?: string | null;
+  [key: string]: unknown;
+}
+
+export interface ResourceGateNaMark {
+  id?: string;
+  active: boolean;
+  effective?: boolean;
+  justification?: string | null;
+  source_channel?: 'ui' | 'api' | 'mcp' | string;
+  created_by?: string | null;
+  created_at?: string | null;
+}
+
+export interface ResourceGateResource {
+  resource_type: ResourceGateResourceType;
+  state: ResourceGateState;
+  direct_count: number;
+  inherited_count: number;
+  direct_refs?: ResourceGateRef[];
+  inherited_refs?: ResourceGateRef[];
+  na_mark?: ResourceGateNaMark | null;
+  remediation?: string | null;
+  reason?: string | null;
+}
+
+export interface ResourceGateSummary {
+  board_id: string;
+  entity_type: ResourceGateEntityType;
+  entity_id: string;
+  resources: ResourceGateResource[];
+  blocking: boolean;
+  missing_resources: ResourceGateResource[];
+  warnings: Array<{ code?: string; message: string; resource_type?: string }>;
+}
+
+export interface MarkResourceNotApplicableRequest {
+  resource_type: ResourceGateResourceType;
+  source_channel?: 'ui' | 'api' | 'mcp';
+  justification?: string | null;
+}
+
+export interface ClearResourceNotApplicableRequest {
+  source_channel?: 'ui' | 'api' | 'mcp';
+  reason?: string | null;
+}
+
 // Bug severity
 export type BugSeverity = 'critical' | 'major' | 'minor';
 
@@ -1144,6 +1199,8 @@ export interface BoardSettings {
   min_spec_completeness?: number;
   min_spec_assertiveness?: number;
   max_spec_ambiguity?: number;
+  // Resource Gate Level 2 - effective spec resources must be copied/attached to tasks.
+  require_spec_resource_task_coverage?: boolean;
   // NC-9 evidence gate bypass (Wave 2 spec 873e98cc, frontend spec 5cb09dbc)
   skip_test_evidence_global?: boolean;
 }

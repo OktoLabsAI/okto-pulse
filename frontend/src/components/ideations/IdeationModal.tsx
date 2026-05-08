@@ -57,6 +57,7 @@ import { ContextSelector, buildIdeationItems, compileSelectedContext, type Selec
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { ArchitectureTab } from '@/components/architecture';
+import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 
 interface IdeationModalProps {
   ideationId: string;
@@ -1004,6 +1005,11 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {activeTab === 'details' && (
             <div className="space-y-5">
+              <ResourceGateSummary
+                boardId={ideation.board_id || _boardId}
+                entityType="ideation"
+                entityId={ideationId}
+              />
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Problem Statement</h4>
                 <EditableField

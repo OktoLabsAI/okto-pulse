@@ -83,6 +83,11 @@ import type {
   ArchitectureDiagramFormat,
   ArchitectureDiagramType,
   LineageGraphResponse,
+  ResourceGateEntityType,
+  ResourceGateResourceType,
+  ResourceGateSummary,
+  MarkResourceNotApplicableRequest,
+  ClearResourceNotApplicableRequest,
 } from '@/types';
 
 function architectureParentPath(parentType: ArchitectureParentType, parentId: string): string {
@@ -151,6 +156,44 @@ export function useDashboardApi() {
       return apiClient.fetchJson<LineageGraphResponse>(
         `/boards/${boardId}/lineage-graph?${p.toString()}`
       );
+    },
+
+    async getResourceGateSummary(
+      boardId: string,
+      entityType: ResourceGateEntityType,
+      entityId: string,
+    ): Promise<ResourceGateSummary> {
+      const p = new URLSearchParams({ board_id: boardId });
+      return apiClient.fetchJson<ResourceGateSummary>(
+        `/resource-gate/${entityType}/${entityId}?${p.toString()}`
+      );
+    },
+
+    async markResourceNotApplicable(
+      boardId: string,
+      entityType: ResourceGateEntityType,
+      entityId: string,
+      data: MarkResourceNotApplicableRequest,
+    ): Promise<{ success: boolean; mark_id?: string; summary: ResourceGateSummary; warning?: string | null }> {
+      const p = new URLSearchParams({ board_id: boardId });
+      return apiClient.fetchJson(`/resource-gate/${entityType}/${entityId}/not-applicable?${p.toString()}`, {
+        method: 'POST',
+        body: JSON.stringify({ ...data, source_channel: data.source_channel || 'ui' }),
+      });
+    },
+
+    async clearResourceNotApplicable(
+      boardId: string,
+      entityType: ResourceGateEntityType,
+      entityId: string,
+      resourceType: ResourceGateResourceType,
+      data: ClearResourceNotApplicableRequest = {},
+    ): Promise<{ success: boolean; cleared: number; summary: ResourceGateSummary }> {
+      const p = new URLSearchParams({ board_id: boardId });
+      return apiClient.fetchJson(`/resource-gate/${entityType}/${entityId}/not-applicable/${resourceType}?${p.toString()}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ ...data, source_channel: data.source_channel || 'ui' }),
+      });
     },
 
     // ==================== SHARES ====================

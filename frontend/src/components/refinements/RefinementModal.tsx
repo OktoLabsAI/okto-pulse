@@ -46,6 +46,7 @@ import { ContextSelector, buildRefinementItems, type SelectableItem } from '@/co
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { ArchitectureTab } from '@/components/architecture';
+import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 
 interface RefinementModalProps {
   refinementId: string;
@@ -1046,6 +1047,11 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {activeTab === 'details' && (
             <div className="space-y-5">
+              <ResourceGateSummary
+                boardId={refinement.board_id || _boardId}
+                entityType="refinement"
+                entityId={refinementId}
+              />
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Description</h4>
                 <EditableField

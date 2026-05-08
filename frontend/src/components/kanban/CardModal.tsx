@@ -22,6 +22,7 @@ import { EditableField } from '@/components/shared/EditableField';
 import { CardKnowledgeTab } from './CardKnowledgeTab';
 import { ArchitectureTab } from '@/components/architecture';
 import { openLineageGraph } from '@/components/traceability';
+import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -528,6 +529,11 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               {/* Details Tab */}
               {activeTab === 'details' && (
                 <div className="space-y-4">
+                  <ResourceGateSummary
+                    boardId={boardId}
+                    entityType="card"
+                    entityId={card.id}
+                  />
                   <div>
                     <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Description</h3>
                     <EditableField
