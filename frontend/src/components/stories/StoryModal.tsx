@@ -5,10 +5,15 @@ import {
   ArrowRight,
   BookOpen,
   CheckCircle2,
+  ChevronDown,
   Clock,
+  Download,
   GitBranch,
   Link2,
+  Maximize2,
+  Minimize2,
   Save,
+  Search,
   X,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -17,7 +22,10 @@ import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { openLineageGraph } from '@/components/traceability';
+import { downloadMarkdown, exportStory, slugify } from '@/lib/exportMarkdown';
 import type {
+  IdeationStatus,
+  IdeationSummary,
   ScreenMockup,
   Story,
   StoryStatus,
@@ -25,6 +33,7 @@ import type {
   UpdateStoryRequest,
 } from '@/types';
 import {
+  IDEATION_STATUS_LABELS,
   STORY_STATUSES,
   STORY_STATUS_LABELS,
 } from '@/types';
@@ -53,6 +62,8 @@ const TAB_LABELS: Record<StoryModalTab, string> = {
   links: 'Links',
   activity: 'Activity',
 };
+
+const EDITABLE_IDEATION_STATUSES: IdeationStatus[] = ['draft', 'review', 'approved', 'evaluating'];
 
 function normalizeOptional(value: string): string | undefined {
   const trimmed = value.trim();
@@ -89,7 +100,12 @@ export function StoryModal({
   const [activeTab, setActiveTab] = useState<StoryModalTab>('details');
   const [loading, setLoading] = useState(Boolean(storyId));
   const [saving, setSaving] = useState(false);
-  const [ideationId, setIdeationId] = useState('');
+  const [expanded, setExpanded] = useState(false);
+  const [editableIdeations, setEditableIdeations] = useState<IdeationSummary[]>([]);
+  const [loadingIdeations, setLoadingIdeations] = useState(false);
+  const [ideationSearch, setIdeationSearch] = useState('');
+  const [selectedIdeationId, setSelectedIdeationId] = useState('');
+  const [ideationSelectorOpen, setIdeationSelectorOpen] = useState(false);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -142,6 +158,60 @@ export function StoryModal({
   const topicName = useMemo(() => {
     return topics.find((topic) => topic.id === topicId)?.name || story?.topic?.name || 'No topic';
   }, [story?.topic?.name, topicId, topics]);
+
+  const linkedIdeationIds = useMemo(() => {
+    return new Set((story?.ideation_links || []).map((link) => link.ideation_id));
+  }, [story?.ideation_links]);
+
+  const linkedIdeationKey = useMemo(() => {
+    return Array.from(linkedIdeationIds).sort().join('|');
+  }, [linkedIdeationIds]);
+
+  useEffect(() => {
+    if (activeTab !== 'links' || !story) return;
+
+    let active = true;
+    setLoadingIdeations(true);
+    Promise.all(
+      EDITABLE_IDEATION_STATUSES.map((statusValue) => api.listIdeations(boardId, statusValue, false))
+    )
+      .then((groups) => {
+        if (!active) return;
+        const byId = new Map<string, IdeationSummary>();
+        for (const ideation of groups.flat()) {
+          if (ideation.archived || linkedIdeationIds.has(ideation.id)) continue;
+          byId.set(ideation.id, ideation);
+        }
+        setEditableIdeations(Array.from(byId.values()));
+      })
+      .catch(() => toast.error('Failed to load ideations'))
+      .finally(() => {
+        if (active) setLoadingIdeations(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeTab, boardId, linkedIdeationKey, story?.id]);
+
+  const filteredIdeations = useMemo(() => {
+    const query = ideationSearch.trim().toLowerCase();
+    if (!query) return editableIdeations;
+    return editableIdeations.filter((ideation) => {
+      const haystack = [
+        ideation.title,
+        ideation.id,
+        ideation.status,
+        ideation.problem_statement || '',
+        ideation.description || '',
+      ].join(' ').toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [editableIdeations, ideationSearch]);
+
+  const selectedIdeation = useMemo(() => {
+    return editableIdeations.find((ideation) => ideation.id === selectedIdeationId) || null;
+  }, [editableIdeations, selectedIdeationId]);
 
   const handleSave = async () => {
     if (!canSave) return;
@@ -256,12 +326,14 @@ export function StoryModal({
   };
 
   const handleLinkIdeation = async () => {
-    if (!story || !ideationId.trim()) return;
+    if (!story || !selectedIdeationId) return;
     setSaving(true);
     try {
-      const updated = await api.linkStoryToIdeation(story.id, ideationId.trim());
+      const updated = await api.linkStoryToIdeation(story.id, selectedIdeationId);
       setStory(updated);
-      setIdeationId('');
+      setSelectedIdeationId('');
+      setIdeationSearch('');
+      setIdeationSelectorOpen(false);
       toast.success('Ideation linked');
       onChanged();
     } catch (err) {
@@ -270,6 +342,17 @@ export function StoryModal({
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleOpenLineage = () => {
+    if (!story) return;
+    openLineageGraph('story', story.id);
+  };
+
+  const handleDownloadMarkdown = () => {
+    if (!story) return;
+    const filename = `story-${slugify(story.title || story.id)}.md`;
+    downloadMarkdown(exportStory(story), filename);
   };
 
   const handleConvert = async () => {
@@ -512,16 +595,75 @@ export function StoryModal({
         </div>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
-          <input
-            value={ideationId}
-            onChange={(event) => setIdeationId(event.target.value)}
-            placeholder="Ideation ID"
-            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
-          />
+          <div className="relative">
+            <Search
+              size={15}
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+            />
+            <input
+              value={ideationSearch}
+              onChange={(event) => {
+                setIdeationSearch(event.target.value);
+                setSelectedIdeationId('');
+                setIdeationSelectorOpen(true);
+              }}
+              onFocus={() => setIdeationSelectorOpen(true)}
+              placeholder="Search editable ideations..."
+              className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-10 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+            />
+            <button
+              type="button"
+              onClick={() => setIdeationSelectorOpen((open) => !open)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+              title="Show editable ideations"
+            >
+              <ChevronDown size={15} />
+            </button>
+            {ideationSelectorOpen && (
+              <div className="absolute z-20 mt-2 max-h-72 w-full overflow-auto rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-gray-700 dark:bg-surface-800">
+                {loadingIdeations ? (
+                  <div className="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">Loading ideations...</div>
+                ) : filteredIdeations.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">No editable ideations found</div>
+                ) : (
+                  filteredIdeations.map((ideation) => (
+                    <button
+                      key={ideation.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedIdeationId(ideation.id);
+                        setIdeationSearch(ideation.title);
+                        setIdeationSelectorOpen(false);
+                      }}
+                      className="flex w-full items-start justify-between gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700/60"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium text-gray-900 dark:text-white">
+                          {ideation.title}
+                        </span>
+                        <span className="mt-0.5 block truncate font-mono text-[11px] text-gray-500 dark:text-gray-400">
+                          {ideation.id}
+                        </span>
+                      </span>
+                      <span className="shrink-0 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                        {IDEATION_STATUS_LABELS[ideation.status]}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+            {selectedIdeation && (
+              <div className="mt-2 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-gray-800/70 dark:text-gray-300">
+                <span className="font-medium text-gray-900 dark:text-white">{selectedIdeation.title}</span>
+                <span className="ml-2 text-gray-400">{selectedIdeation.id.slice(0, 8)}</span>
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={handleLinkIdeation}
-            disabled={!ideationId.trim() || saving}
+            disabled={!selectedIdeationId || saving}
             className="btn btn-secondary inline-flex items-center justify-center gap-1 text-sm disabled:opacity-50"
           >
             <Link2 size={15} />
@@ -571,7 +713,13 @@ export function StoryModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="flex h-[min(780px,92vh)] w-[min(980px,96vw)] flex-col overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-surface-800">
+      <div
+        className={`flex flex-col overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-surface-800 ${
+          expanded
+            ? 'h-[min(900px,96vh)] w-[min(1400px,98vw)]'
+            : 'h-[min(780px,92vh)] w-[min(980px,96vw)]'
+        }`}
+      >
         <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-700">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -585,14 +733,44 @@ export function StoryModal({
             </div>
             <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{topicName}</div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-            title="Close"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            {story && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleOpenLineage}
+                  className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-cyan-600 dark:hover:bg-gray-700 dark:hover:text-cyan-300"
+                  title="Open lineage graph"
+                >
+                  <GitBranch size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadMarkdown}
+                  className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-blue-600 dark:hover:bg-gray-700 dark:hover:text-blue-300"
+                  title="Download Markdown"
+                >
+                  <Download size={18} />
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => setExpanded((value) => !value)}
+              className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+              title={expanded ? 'Collapse' : 'Expand'}
+            >
+              {expanded ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+              title="Close"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         <div className="flex gap-1 border-b border-gray-200 px-5 dark:border-gray-700">

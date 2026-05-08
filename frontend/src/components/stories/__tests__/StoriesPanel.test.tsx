@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { StoriesPanel } from '../StoriesPanel';
-import type { StorySummary, TopicSummary } from '@/types';
+import type { IdeationSummary, StorySummary, TopicSummary } from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   listTopics: vi.fn(),
@@ -13,6 +13,10 @@ const apiMock = vi.hoisted(() => ({
   moveStory: vi.fn(),
   archiveStory: vi.fn(),
   restoreStory: vi.fn(),
+  updateTopic: vi.fn(),
+  deleteTopic: vi.fn(),
+  mergeTopics: vi.fn(),
+  listIdeations: vi.fn(),
   linkStoryToIdeation: vi.fn(),
   convertStories: vi.fn(),
 }));
@@ -22,12 +26,41 @@ const toastMock = vi.hoisted(() => ({
   success: vi.fn(),
 }));
 
+const permissionsMock = vi.hoisted(() => ({
+  has: vi.fn((_flag: string) => true),
+}));
+
+const lineageMock = vi.hoisted(() => ({
+  openLineageGraph: vi.fn(),
+}));
+
+const markdownMock = vi.hoisted(() => ({
+  downloadMarkdown: vi.fn(),
+  exportStory: vi.fn(() => '# Story export'),
+  slugify: vi.fn(() => 'stories-intake-before-ideation'),
+}));
+
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
 
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'Full Control',
+    isLoading: false,
+    error: null,
+    has: permissionsMock.has,
+  }),
+}));
+
 vi.mock('@/components/traceability', () => ({
-  openLineageGraph: vi.fn(),
+  openLineageGraph: lineageMock.openLineageGraph,
+}));
+
+vi.mock('@/lib/exportMarkdown', () => ({
+  downloadMarkdown: markdownMock.downloadMarkdown,
+  exportStory: markdownMock.exportStory,
+  slugify: markdownMock.slugify,
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -42,6 +75,9 @@ const topics: TopicSummary[] = [
     description: null,
     archived: false,
     story_count: 1,
+    active_count: 1,
+    archived_count: 0,
+    total_associated_count: 1,
     created_by: 'user-1',
     created_at: '2026-05-05T00:00:00Z',
     updated_at: '2026-05-05T00:00:00Z',
@@ -81,6 +117,22 @@ describe('StoriesPanel', () => {
       ...stories[0],
       topic: topics[0],
     });
+    apiMock.listIdeations.mockResolvedValue([]);
+    apiMock.linkStoryToIdeation.mockImplementation(async () => ({
+      ...stories[0],
+      topic: topics[0],
+      ideation_links: [
+        {
+          id: 'link-1',
+          board_id: 'board-1',
+          story_id: 'story-1',
+          ideation_id: 'ideation-draft',
+          created_by: 'user-1',
+          created_at: '2026-05-05T00:10:00Z',
+        },
+      ],
+    }));
+    permissionsMock.has.mockReturnValue(true);
   });
 
   it('renders Stories before Ideation work with Topic grouping and modal mockups tab', async () => {
@@ -114,6 +166,108 @@ describe('StoriesPanel', () => {
     expect(within(descriptionField).getByRole('textbox')).toHaveValue('As a maintainer, I want raw needs grouped before ideation.');
   });
 
+  it('adds standard Story modal header actions for lineage, markdown download, and expand', async () => {
+    render(<StoriesPanel boardId="board-1" />);
+
+    await waitFor(() => expect(screen.getByText('Stories intake before ideation')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Stories intake before ideation'));
+
+    await screen.findByTestId('story-details-read-view');
+    fireEvent.click(screen.getByTitle('Open lineage graph'));
+    expect(lineageMock.openLineageGraph).toHaveBeenCalledWith('story', 'story-1');
+
+    fireEvent.click(screen.getByTitle('Download Markdown'));
+    expect(markdownMock.exportStory).toHaveBeenCalledWith(expect.objectContaining({ id: 'story-1' }));
+    expect(markdownMock.downloadMarkdown).toHaveBeenCalledWith(
+      '# Story export',
+      'story-stories-intake-before-ideation.md',
+    );
+
+    fireEvent.click(screen.getByTitle('Expand'));
+    expect(screen.getByTitle('Collapse')).toBeInTheDocument();
+  });
+
+  it('links Stories to editable Ideations through a searchable selector', async () => {
+    const ideationsByStatus: Record<string, IdeationSummary[]> = {
+      draft: [
+        {
+          id: 'ideation-draft',
+          board_id: 'board-1',
+          title: 'Draft ideation target',
+          description: null,
+          problem_statement: 'Editable target',
+          complexity: null,
+          status: 'draft',
+          version: 1,
+          assignee_id: null,
+          created_by: 'user-1',
+          created_at: '2026-05-05T00:00:00Z',
+          updated_at: '2026-05-05T00:00:00Z',
+          labels: null,
+          archived: false,
+        },
+      ],
+      review: [
+        {
+          id: 'ideation-linked',
+          board_id: 'board-1',
+          title: 'Already linked ideation',
+          description: null,
+          problem_statement: null,
+          complexity: null,
+          status: 'review',
+          version: 1,
+          assignee_id: null,
+          created_by: 'user-1',
+          created_at: '2026-05-05T00:00:00Z',
+          updated_at: '2026-05-05T00:00:00Z',
+          labels: null,
+          archived: false,
+        },
+      ],
+      approved: [],
+      evaluating: [],
+    };
+    apiMock.listIdeations.mockImplementation(async (_boardId: string, status?: string) => {
+      return ideationsByStatus[status || 'draft'] || [];
+    });
+    apiMock.getStory.mockResolvedValueOnce({
+      ...stories[0],
+      topic: topics[0],
+      ideation_links: [
+        {
+          id: 'link-existing',
+          board_id: 'board-1',
+          story_id: 'story-1',
+          ideation_id: 'ideation-linked',
+          created_by: 'user-1',
+          created_at: '2026-05-05T00:05:00Z',
+        },
+      ],
+    });
+
+    render(<StoriesPanel boardId="board-1" />);
+
+    await waitFor(() => expect(screen.getByText('Stories intake before ideation')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Stories intake before ideation'));
+    fireEvent.click(await screen.findByRole('button', { name: /Links/i }));
+
+    expect(screen.queryByPlaceholderText('Ideation ID')).not.toBeInTheDocument();
+    const search = screen.getByPlaceholderText('Search editable ideations...');
+    fireEvent.focus(search);
+
+    await waitFor(() => expect(screen.getByText('Draft ideation target')).toBeInTheDocument());
+    expect(screen.queryByText('Already linked ideation')).not.toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: 'draft' } });
+    fireEvent.click(screen.getByText('Draft ideation target'));
+    fireEvent.click(screen.getByRole('button', { name: /^Link$/i }));
+
+    await waitFor(() => {
+      expect(apiMock.linkStoryToIdeation).toHaveBeenCalledWith('story-1', 'ideation-draft');
+    });
+  });
+
   it('uses the standard list/grid view toggle without a local refresh button', async () => {
     render(<StoriesPanel boardId="board-1" />);
 
@@ -139,5 +293,85 @@ describe('StoriesPanel', () => {
     await waitFor(() => {
       expect(toastMock.error).toHaveBeenCalledWith('Topic name already exists in this board');
     });
+  });
+
+  it('edits Topic metadata and blocks deletion while Stories are associated', async () => {
+    apiMock.updateTopic.mockResolvedValueOnce({
+      ...topics[0],
+      name: 'Agent activation',
+      description: 'Updated topic description',
+    });
+
+    render(<StoriesPanel boardId="board-1" />);
+    await waitFor(() => expect(screen.getByText('Stories intake before ideation')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Topic actions: Agent onboarding'));
+    fireEvent.click(screen.getByText('Edit details'));
+
+    await screen.findByText('Edit Topic');
+    expect(screen.getByRole('button', { name: /Delete topic/i })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Agent activation' } });
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Updated topic description' } });
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(apiMock.updateTopic).toHaveBeenCalledWith('topic-1', {
+        name: 'Agent activation',
+        description: 'Updated topic description',
+      });
+    });
+  });
+
+  it('merges a Topic into another active Topic with explicit confirmation', async () => {
+    const twoTopics: TopicSummary[] = [
+      topics[0],
+      {
+        ...topics[0],
+        id: 'topic-2',
+        name: 'Resource Gate',
+        story_count: 0,
+        active_count: 0,
+        total_associated_count: 0,
+      },
+    ];
+    apiMock.listTopics.mockResolvedValue(twoTopics);
+    apiMock.mergeTopics.mockResolvedValueOnce({
+      source: { ...topics[0], archived: true },
+      target: twoTopics[1],
+      moved_count: 1,
+      active_moved_count: 1,
+      archived_moved_count: 0,
+    });
+
+    render(<StoriesPanel boardId="board-1" />);
+    await waitFor(() => expect(screen.getByText('Stories intake before ideation')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Topic actions: Agent onboarding'));
+    fireEvent.click(screen.getByText(/Merge into/i));
+
+    await screen.findByText('Merge Topics');
+    expect(screen.getByLabelText('Target Topic')).toHaveValue('topic-2');
+    expect(screen.getByRole('button', { name: /Merge topics/i })).toBeDisabled();
+
+    fireEvent.click(
+      screen.getByText('I understand the source Topic will be archived and its Stories will point to the target Topic.'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Merge topics/i }));
+
+    await waitFor(() => {
+      expect(apiMock.mergeTopics).toHaveBeenCalledWith('topic-1', 'topic-2');
+    });
+    expect(toastMock.success).toHaveBeenCalledWith('Merged 1 Stories');
+  });
+
+  it('hides Topic actions when granular Topic policies are unavailable', async () => {
+    permissionsMock.has.mockImplementation((flag: string) => !flag.startsWith('topic.entity.'));
+
+    render(<StoriesPanel boardId="board-1" />);
+    await waitFor(() => expect(screen.getByText('Stories intake before ideation')).toBeInTheDocument());
+
+    expect(screen.queryByTitle('Topic actions: Agent onboarding')).not.toBeInTheDocument();
+    expect(screen.getByTitle('Missing permission: topic.entity.create')).toBeDisabled();
   });
 });

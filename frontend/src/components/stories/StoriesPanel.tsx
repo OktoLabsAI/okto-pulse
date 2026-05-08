@@ -4,16 +4,22 @@ import {
   ArchiveRestore,
   BookOpen,
   ChevronRight,
+  GitMerge,
   GitBranch,
   Link2,
+  MoreHorizontal,
+  Pencil,
   Plus,
   Tags,
+  Trash2,
+  X,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { SearchInput } from '@/components/shared/SearchInput';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { openLineageGraph } from '@/components/traceability';
+import { usePermissions } from '@/hooks/usePermissions';
 import { useViewMode } from '@/hooks/useViewMode';
 import { sanitizePreview } from '@/lib/sanitizePreview';
 import type { StoryStatus, StorySummary, TopicSummary } from '@/types';
@@ -39,8 +45,34 @@ const STATUS_COLORS: Record<StoryStatus, string> = {
   converted: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
 };
 
+function topicActiveCount(topic: TopicSummary): number {
+  return topic.active_count ?? topic.story_count ?? 0;
+}
+
+function topicArchivedCount(topic: TopicSummary): number {
+  return topic.archived_count ?? 0;
+}
+
+function topicTotalCount(topic: TopicSummary): number {
+  return topic.total_associated_count ?? topicActiveCount(topic) + topicArchivedCount(topic);
+}
+
+function topicErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return 'Topic operation failed';
+  try {
+    const detail = JSON.parse(error.message);
+    if (detail?.code === 'topic_not_empty') {
+      return `Topic has ${detail.active_count ?? 0} active and ${detail.archived_count ?? 0} archived Stories. Merge or move them before deleting.`;
+    }
+    return detail?.detail || detail?.error || error.message;
+  } catch {
+    return error.message;
+  }
+}
+
 export function StoriesPanel({ boardId }: StoriesPanelProps) {
   const api = useDashboardApi();
+  const permissions = usePermissions(boardId);
   const [topics, setTopics] = useState<TopicSummary[]>([]);
   const [stories, setStories] = useState<StorySummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,7 +85,26 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
   const [topicFormOpen, setTopicFormOpen] = useState(false);
   const [topicName, setTopicName] = useState('');
   const [topicDescription, setTopicDescription] = useState('');
+  const [topicMenuOpen, setTopicMenuOpen] = useState<string | null>(null);
+  const [editingTopic, setEditingTopic] = useState<TopicSummary | null>(null);
+  const [editTopicName, setEditTopicName] = useState('');
+  const [editTopicDescription, setEditTopicDescription] = useState('');
+  const [mergeSourceTopic, setMergeSourceTopic] = useState<TopicSummary | null>(null);
+  const [mergeTargetId, setMergeTargetId] = useState('');
+  const [mergeConfirmed, setMergeConfirmed] = useState(false);
+  const [topicActionError, setTopicActionError] = useState('');
+  const [topicActionBusy, setTopicActionBusy] = useState(false);
   const { viewMode, setViewMode } = useViewMode('stories', 'list');
+  const canCreateTopic = permissions.has('topic.entity.create');
+  const canEditTopic = permissions.has('topic.entity.edit_fields');
+  const canArchiveTopic = permissions.has('topic.entity.archive');
+  const canRestoreTopic = permissions.has('topic.entity.restore');
+  const canDeleteTopic = permissions.has('topic.entity.delete');
+  const canMergeTopic = permissions.has('topic.entity.merge');
+
+  const canChangeTopicLifecycle = (topic: TopicSummary) => (topic.archived ? canRestoreTopic : canArchiveTopic);
+  const hasTopicActions = (topic: TopicSummary) =>
+    canEditTopic || canMergeTopic || canDeleteTopic || canChangeTopicLifecycle(topic);
 
   useEffect(() => {
     load();
@@ -99,6 +150,10 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
 
   const createTopic = async () => {
     if (!topicName.trim()) return;
+    if (!canCreateTopic) {
+      toast.error('Missing permission: topic.entity.create');
+      return;
+    }
     try {
       const topic = await api.createTopic(boardId, {
         name: topicName.trim(),
@@ -113,6 +168,122 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create topic';
       toast.error(message);
+    }
+  };
+
+  const openTopicEditor = (topic: TopicSummary) => {
+    setTopicMenuOpen(null);
+    setTopicActionError('');
+    setEditingTopic(topic);
+    setEditTopicName(topic.name);
+    setEditTopicDescription(topic.description || '');
+  };
+
+  const saveTopic = async () => {
+    if (!editingTopic || !editTopicName.trim()) return;
+    if (!canEditTopic) {
+      setTopicActionError('Missing permission: topic.entity.edit_fields');
+      return;
+    }
+    setTopicActionBusy(true);
+    setTopicActionError('');
+    try {
+      await api.updateTopic(editingTopic.id, {
+        name: editTopicName.trim(),
+        description: editTopicDescription.trim() || null,
+      });
+      toast.success('Topic updated');
+      await load();
+      setEditingTopic(null);
+    } catch (err) {
+      const message = topicErrorMessage(err);
+      setTopicActionError(message);
+      toast.error(message);
+    } finally {
+      setTopicActionBusy(false);
+    }
+  };
+
+  const toggleTopicArchive = async () => {
+    if (!editingTopic) return;
+    const requiredPermission = editingTopic.archived ? 'topic.entity.restore' : 'topic.entity.archive';
+    if (!canChangeTopicLifecycle(editingTopic)) {
+      setTopicActionError(`Missing permission: ${requiredPermission}`);
+      return;
+    }
+    setTopicActionBusy(true);
+    setTopicActionError('');
+    try {
+      const archived = !editingTopic.archived;
+      await api.updateTopic(editingTopic.id, { archived });
+      toast.success(archived ? 'Topic archived' : 'Topic restored');
+      await load();
+      setEditingTopic(null);
+    } catch (err) {
+      const message = topicErrorMessage(err);
+      setTopicActionError(message);
+      toast.error(message);
+    } finally {
+      setTopicActionBusy(false);
+    }
+  };
+
+  const deleteTopic = async () => {
+    if (!editingTopic) return;
+    if (!canDeleteTopic) {
+      setTopicActionError('Missing permission: topic.entity.delete');
+      return;
+    }
+    setTopicActionBusy(true);
+    setTopicActionError('');
+    try {
+      await api.deleteTopic(editingTopic.id);
+      if (topicFilter === editingTopic.id) setTopicFilter('');
+      toast.success('Topic deleted');
+      await load();
+      setEditingTopic(null);
+    } catch (err) {
+      const message = topicErrorMessage(err);
+      setTopicActionError(message);
+      toast.error(message);
+    } finally {
+      setTopicActionBusy(false);
+    }
+  };
+
+  const openMergeModal = (topic: TopicSummary) => {
+    if (!canMergeTopic) {
+      toast.error('Missing permission: topic.entity.merge');
+      return;
+    }
+    const firstTarget = topics.find((candidate) => candidate.id !== topic.id && !candidate.archived);
+    setTopicMenuOpen(null);
+    setTopicActionError('');
+    setMergeSourceTopic(topic);
+    setMergeTargetId(firstTarget?.id || '');
+    setMergeConfirmed(false);
+  };
+
+  const mergeTopic = async () => {
+    if (!mergeSourceTopic || !mergeTargetId || !mergeConfirmed) return;
+    if (!canMergeTopic) {
+      setTopicActionError('Missing permission: topic.entity.merge');
+      return;
+    }
+    setTopicActionBusy(true);
+    setTopicActionError('');
+    try {
+      const result = await api.mergeTopics(mergeSourceTopic.id, mergeTargetId);
+      if (topicFilter === mergeSourceTopic.id) setTopicFilter(result.target.id);
+      toast.success(`Merged ${result.moved_count} Stories`);
+      await load();
+      setMergeSourceTopic(null);
+    } catch (err) {
+      const message = topicErrorMessage(err);
+      setTopicActionError(message);
+      toast.error(message);
+    } finally {
+      setTopicActionBusy(false);
     }
   };
 
@@ -190,9 +361,10 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
             </div>
             <button
               type="button"
-              onClick={() => setTopicFormOpen((value) => !value)}
-              className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-blue-500 dark:hover:bg-gray-700"
-              title="New Topic"
+              onClick={() => canCreateTopic && setTopicFormOpen((value) => !value)}
+              disabled={!canCreateTopic}
+              className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-blue-500 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-700"
+              title={canCreateTopic ? 'New Topic' : 'Missing permission: topic.entity.create'}
             >
               <Plus size={15} />
             </button>
@@ -223,7 +395,7 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
                 <button
                   type="button"
                   onClick={createTopic}
-                  disabled={!topicName.trim()}
+                  disabled={!topicName.trim() || !canCreateTopic}
                   className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white disabled:opacity-50"
                 >
                   Save
@@ -246,19 +418,78 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
               <span className="text-xs text-gray-400">{stories.length}</span>
             </button>
             {topics.map((topic) => (
-              <button
+              <div
                 key={topic.id}
-                type="button"
-                onClick={() => setTopicFilter(topic.id)}
-                className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
+                className={`relative flex items-center rounded-lg transition-colors ${
                   topicFilter === topic.id
                     ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
                     : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700/60'
                 }`}
               >
-                <span className="truncate">{topic.name}</span>
-                <span className="text-xs text-gray-400">{topic.story_count}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setTopicFilter(topic.id)}
+                  className="flex min-w-0 flex-1 items-center justify-between gap-2 px-2.5 py-2 text-left text-sm"
+                >
+                  <span className="min-w-0 truncate">
+                    {topic.name}
+                    {topic.archived && (
+                      <span className="ml-1 rounded bg-gray-200 px-1 py-0.5 text-[10px] text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                        archived
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-xs text-gray-400">{topic.story_count}</span>
+                </button>
+                {hasTopicActions(topic) && (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setTopicMenuOpen(topicMenuOpen === topic.id ? null : topic.id);
+                    }}
+                    className="mr-1 rounded-md p-1 text-gray-400 hover:bg-white/70 hover:text-blue-500 dark:hover:bg-gray-800"
+                    title={`Topic actions: ${topic.name}`}
+                  >
+                    <MoreHorizontal size={15} />
+                  </button>
+                )}
+                {topicMenuOpen === topic.id && (
+                  <div className="absolute right-1 top-9 z-20 w-52 rounded-lg border border-surface-200 bg-white p-1 shadow-xl dark:border-surface-700 dark:bg-surface-900">
+                    {canEditTopic && (
+                      <button
+                        type="button"
+                        onClick={() => openTopicEditor(topic)}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-surface-800"
+                      >
+                        <Pencil size={14} />
+                        Edit details
+                      </button>
+                    )}
+                    {canMergeTopic && (
+                      <button
+                        type="button"
+                        onClick={() => openMergeModal(topic)}
+                        disabled={topics.filter((candidate) => candidate.id !== topic.id && !candidate.archived).length === 0}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-surface-800"
+                      >
+                        <GitMerge size={14} />
+                        Merge into...
+                      </button>
+                    )}
+                    {(canChangeTopicLifecycle(topic) || canDeleteTopic) && (
+                      <button
+                        type="button"
+                        onClick={() => openTopicEditor(topic)}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-surface-800"
+                      >
+                        {topic.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+                        {topic.archived ? 'Restore / delete' : 'Archive / delete'}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         </aside>
@@ -274,7 +505,8 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
                 <button
                   type="button"
                   onClick={() => setTopicFormOpen(true)}
-                  className="btn btn-primary inline-flex items-center gap-1 text-sm"
+                  disabled={!canCreateTopic}
+                  className="btn btn-primary inline-flex items-center gap-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Plus size={15} />
                   New Topic
@@ -405,6 +637,231 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
           onClose={() => setSelectedStoryId(null)}
           onChanged={load}
         />
+      )}
+
+      {editingTopic && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-surface-700 bg-white shadow-2xl dark:bg-surface-900">
+            <div className="flex items-center justify-between border-b border-surface-200 px-5 py-4 dark:border-surface-700">
+              <div className="min-w-0">
+                <h3 className="truncate text-lg font-semibold text-gray-900 dark:text-white">Edit Topic</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Lifecycle changes affect only the Topic grouping.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingTopic(null)}
+                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-surface-800"
+                title="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 space-y-4 overflow-auto p-5">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">Name</span>
+                  <input
+                    value={editTopicName}
+                    onChange={(event) => setEditTopicName(event.target.value)}
+                    disabled={!canEditTopic}
+                    className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-surface-700 dark:bg-surface-950 dark:text-white"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">Status</span>
+                  <div className="rounded-lg border border-surface-300 px-3 py-2 text-sm dark:border-surface-700">
+                    {editingTopic.archived ? 'Archived' : 'Active'}
+                  </div>
+                </label>
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">Description</span>
+                <textarea
+                  value={editTopicDescription}
+                  onChange={(event) => setEditTopicDescription(event.target.value)}
+                  disabled={!canEditTopic}
+                  rows={4}
+                  className="w-full resize-none rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-surface-700 dark:bg-surface-950 dark:text-white"
+                />
+              </label>
+
+              <div className="rounded-lg border border-surface-200 bg-surface-50 p-4 dark:border-surface-700 dark:bg-surface-950">
+                <h4 className="mb-3 text-sm font-semibold text-gray-900 dark:text-white">Impact summary</h4>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-lg bg-white p-3 dark:bg-surface-900">
+                    <div className="text-xs text-gray-500">Active Stories</div>
+                    <div className="text-xl font-semibold text-gray-900 dark:text-white">{topicActiveCount(editingTopic)}</div>
+                  </div>
+                  <div className="rounded-lg bg-white p-3 dark:bg-surface-900">
+                    <div className="text-xs text-gray-500">Archived Stories</div>
+                    <div className="text-xl font-semibold text-gray-900 dark:text-white">{topicArchivedCount(editingTopic)}</div>
+                  </div>
+                  <div className="rounded-lg bg-white p-3 dark:bg-surface-900">
+                    <div className="text-xs text-gray-500">Delete gate</div>
+                    <div className="text-sm font-semibold text-gray-900 dark:text-white">
+                      {topicTotalCount(editingTopic) === 0 ? 'Allowed' : 'Blocked'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {topicActionError && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+                  {topicActionError}
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-surface-200 px-5 py-4 dark:border-surface-700">
+              <button
+                type="button"
+                onClick={deleteTopic}
+                disabled={topicActionBusy || !canDeleteTopic || topicTotalCount(editingTopic) > 0}
+                className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-300 dark:hover:bg-red-950/30"
+                title={
+                  !canDeleteTopic
+                    ? 'Missing permission: topic.entity.delete'
+                    : topicTotalCount(editingTopic) > 0
+                      ? 'Delete requires zero active and archived Stories'
+                      : 'Delete Topic'
+                }
+              >
+                <Trash2 size={15} />
+                Delete topic
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleTopicArchive}
+                  disabled={topicActionBusy || !canChangeTopicLifecycle(editingTopic)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-surface-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-surface-700 dark:text-gray-200 dark:hover:bg-surface-800"
+                  title={
+                    canChangeTopicLifecycle(editingTopic)
+                      ? undefined
+                      : `Missing permission: ${editingTopic.archived ? 'topic.entity.restore' : 'topic.entity.archive'}`
+                  }
+                >
+                  {editingTopic.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}
+                  {editingTopic.archived ? 'Restore' : 'Archive'}
+                </button>
+                <button
+                  type="button"
+                  onClick={saveTopic}
+                  disabled={topicActionBusy || !canEditTopic || !editTopicName.trim()}
+                  className="btn btn-primary text-sm"
+                  title={canEditTopic ? undefined : 'Missing permission: topic.entity.edit_fields'}
+                >
+                  Save changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mergeSourceTopic && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-surface-700 bg-white shadow-2xl dark:bg-surface-900">
+            <div className="flex items-center justify-between border-b border-surface-200 px-5 py-4 dark:border-surface-700">
+              <div className="min-w-0">
+                <h3 className="truncate text-lg font-semibold text-gray-900 dark:text-white">Merge Topics</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Stories move to the target; Story-Ideation lineage remains intact.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMergeSourceTopic(null)}
+                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-surface-800"
+                title="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 space-y-4 overflow-auto p-5">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <span className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">Source Topic</span>
+                  <div className="rounded-lg border border-surface-300 px-3 py-2 text-sm font-medium dark:border-surface-700">
+                    {mergeSourceTopic.name}
+                  </div>
+                </div>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">Target Topic</span>
+                  <select
+                    value={mergeTargetId}
+                    onChange={(event) => setMergeTargetId(event.target.value)}
+                    className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-surface-700 dark:bg-surface-950 dark:text-white"
+                  >
+                    <option value="">Select target</option>
+                    {topics
+                      .filter((topic) => topic.id !== mergeSourceTopic.id && !topic.archived)
+                      .map((topic) => (
+                        <option key={topic.id} value={topic.id}>
+                          {topic.name} ({topicTotalCount(topic)} Stories)
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="rounded-lg border border-surface-200 bg-surface-50 p-4 dark:border-surface-700 dark:bg-surface-950">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Preview</h4>
+                  <span className="rounded-full bg-cyan-100 px-2 py-0.5 text-xs font-medium text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300">
+                    {topicTotalCount(mergeSourceTopic)} Stories will move
+                  </span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-lg bg-white p-3 dark:bg-surface-900">
+                    <div className="text-xs text-gray-500">Active</div>
+                    <div className="text-xl font-semibold text-gray-900 dark:text-white">{topicActiveCount(mergeSourceTopic)}</div>
+                  </div>
+                  <div className="rounded-lg bg-white p-3 dark:bg-surface-900">
+                    <div className="text-xs text-gray-500">Archived</div>
+                    <div className="text-xl font-semibold text-gray-900 dark:text-white">{topicArchivedCount(mergeSourceTopic)}</div>
+                  </div>
+                  <div className="rounded-lg bg-white p-3 dark:bg-surface-900">
+                    <div className="text-xs text-gray-500">Source after merge</div>
+                    <div className="text-sm font-semibold text-gray-900 dark:text-white">Archived</div>
+                  </div>
+                </div>
+              </div>
+
+              <label className="flex items-start gap-3 rounded-lg border border-surface-200 bg-white p-3 text-sm text-gray-700 dark:border-surface-700 dark:bg-surface-950 dark:text-gray-200">
+                <input
+                  type="checkbox"
+                  checked={mergeConfirmed}
+                  onChange={(event) => setMergeConfirmed(event.target.checked)}
+                  className="mt-1"
+                />
+                <span>I understand the source Topic will be archived and its Stories will point to the target Topic.</span>
+              </label>
+
+              {topicActionError && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+                  {topicActionError}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-surface-200 px-5 py-4 dark:border-surface-700">
+              <button
+                type="button"
+                onClick={() => setMergeSourceTopic(null)}
+                className="rounded-lg border border-surface-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-surface-700 dark:text-gray-200 dark:hover:bg-surface-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={mergeTopic}
+                disabled={topicActionBusy || !canMergeTopic || !mergeTargetId || !mergeConfirmed}
+                className="btn btn-primary inline-flex items-center gap-2 text-sm"
+                title={canMergeTopic ? undefined : 'Missing permission: topic.entity.merge'}
+              >
+                <GitMerge size={15} />
+                Merge topics
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

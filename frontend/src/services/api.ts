@@ -48,8 +48,9 @@ import type {
   IdeationQAItem,
   IdeationSnapshot,
   IdeationSnapshotSummary,
-  Topic,
   TopicSummary,
+  TopicDeleteResponse,
+  TopicMergeResponse,
   CreateTopicRequest,
   UpdateTopicRequest,
   Story,
@@ -429,8 +430,8 @@ export function useDashboardApi() {
 
     // ==================== STORIES ====================
 
-    async createTopic(boardId: string, data: CreateTopicRequest): Promise<Topic> {
-      return apiClient.fetchJson<Topic>(`/boards/${boardId}/topics`, {
+    async createTopic(boardId: string, data: CreateTopicRequest): Promise<TopicSummary> {
+      return apiClient.fetchJson<TopicSummary>(`/boards/${boardId}/topics`, {
         method: 'POST',
         body: JSON.stringify(data),
       });
@@ -443,10 +444,23 @@ export function useDashboardApi() {
       return apiClient.fetchJson<TopicSummary[]>(`/boards/${boardId}/topics${qs}`);
     },
 
-    async updateTopic(topicId: string, data: UpdateTopicRequest): Promise<Topic> {
-      return apiClient.fetchJson<Topic>(`/topics/${topicId}`, {
+    async updateTopic(topicId: string, data: UpdateTopicRequest): Promise<TopicSummary> {
+      return apiClient.fetchJson<TopicSummary>(`/topics/${topicId}`, {
         method: 'PATCH',
         body: JSON.stringify(data),
+      });
+    },
+
+    async deleteTopic(topicId: string): Promise<TopicDeleteResponse> {
+      return apiClient.fetchJson<TopicDeleteResponse>(`/topics/${topicId}`, {
+        method: 'DELETE',
+      });
+    },
+
+    async mergeTopics(sourceTopicId: string, targetTopicId: string): Promise<TopicMergeResponse> {
+      return apiClient.fetchJson<TopicMergeResponse>(`/topics/${sourceTopicId}/merge`, {
+        method: 'POST',
+        body: JSON.stringify({ target_topic_id: targetTopicId }),
       });
     },
 

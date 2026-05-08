@@ -613,6 +613,29 @@ export interface Topic {
 
 export interface TopicSummary extends Topic {
   story_count: number;
+  active_count?: number;
+  archived_count?: number;
+  total_associated_count?: number;
+}
+
+export interface TopicDeleteResponse {
+  success: boolean;
+  deleted_topic_id: string;
+}
+
+export interface TopicMergeRequest {
+  target_topic_id: string;
+}
+
+export interface TopicMergeResponse {
+  success: boolean;
+  source: TopicSummary;
+  target: TopicSummary;
+  moved_count: number;
+  active_count: number;
+  archived_count: number;
+  target_total_before: number;
+  target_total_after: number;
 }
 
 export interface StoryIdeationLink {

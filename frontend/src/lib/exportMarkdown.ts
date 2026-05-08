@@ -16,6 +16,7 @@ import type {
   BusinessRule,
   ApiContract,
   ScreenMockup,
+  Story,
   TechnicalRequirement,
   SpecKnowledgeSummary,
   ConclusionEntry,
@@ -285,6 +286,35 @@ function renderKnowledgeBases(kbs: (SpecKnowledgeSummary | { title: string; cont
 // ---------------------------------------------------------------------------
 // Entity Generators
 // ---------------------------------------------------------------------------
+
+/** Generate Markdown for a Story. */
+export function exportStory(story: Story): string {
+  let md = `# ${story.title}\n\n`;
+
+  md += metaTable([
+    ['Status', story.status],
+    ['Topic', story.topic?.name || story.topic_id || ''],
+    ['Actor', story.actor || ''],
+    ['Goal', story.goal || ''],
+    ['Benefit', story.benefit || ''],
+    ['Created', fmtDate(story.created_at)],
+    ['Updated', fmtDate(story.updated_at)],
+    ['Labels', story.labels?.join(', ') || ''],
+  ]);
+
+  md += section('Description', story.description);
+
+  if (story.ideation_links?.length) {
+    const rows = story.ideation_links
+      .map((link) => `- ${link.ideation_id}${link.created_at ? ` (linked ${fmtDate(link.created_at)})` : ''}`)
+      .join('\n');
+    md += `## Linked Ideations\n\n${rows}\n\n`;
+  }
+
+  md += renderMockups(story.screen_mockups);
+
+  return md;
+}
 
 /** Generate Markdown for an Ideation. */
 export function exportIdeation(ideation: Ideation): string {
