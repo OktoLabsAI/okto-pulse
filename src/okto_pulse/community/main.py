@@ -46,7 +46,7 @@ from okto_pulse.community.seed import seed_community_defaults
 _EMBEDDING_LOGGER = logging.getLogger("okto_pulse.community.embedding")
 _STARTUP_LOGGER = logging.getLogger("uvicorn.error")
 _DEFAULT_STARTUP_TIMEOUT_SECONDS = 120.0
-_DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+_DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15.0
 
 # Preload retry policy: 3 attempts, exponential backoff (2s, 4s, 8s), 30s total budget.
 # Only transient network errors retry. ImportError / OSError (disk full) / ValueError
