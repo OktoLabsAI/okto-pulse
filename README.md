@@ -331,11 +331,17 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ### 0.2.0
 
-- Adds Stories as optional pre-ideation context grouped by topic.
-- Extends lineage visibility for stories, ideations, refinements, specs, tasks, tests and bugs.
-- Hardens graph database settings with safer defaults and clearer contextual errors.
-- Keeps API/UI and MCP in a single process while preserving independent ports.
-- Includes frontend, modal, analytics, lineage and task/test/bug traceability improvements.
+Branch changelog for `feature/0.2.0`:
+
+- Adds Stories and Topics as optional pre-ideation intake, with topic filtering, lifecycle actions, Story modals, topic selection persistence across refreshes and Story-to-Ideation linking.
+- Adds Resource Gate UI coverage for Architecture, Mockups and Knowledge Base readiness, including N/A/provided states, clear actions, validation feedback and modal refresh parity.
+- Expands Ideation modals with Knowledge Base and Stories tabs, while preserving linked Refinements and lineage navigation.
+- Improves lineage handling for Story, Ideation, Refinement, Spec, Sprint, Task, Test and Bug flows, including rootless Spec-started flows that do not have an Ideation ancestor.
+- Fixes inline guideline creation paths that could surface 422 responses from `/boards/{board_id}/guidelines`.
+- Hardens bug/test traceability in the UI and bundled API contracts, including Bug origin and regression coverage relationships produced by the deterministic KG worker.
+- Updates the Knowledge Graph view so node filters can request a server-side `type` filtered graph page, edge filters include `originates_from` and `covered_by`, and node counters distinguish visible, loaded and total KG nodes.
+- Adds graph/runtime settings surfaces and diagnostics for KG health, graph database sizing, queue/dead-letter state and historical consolidation.
+- Rebuilds and embeds the current frontend assets in the Python package so `okto-pulse serve` ships the updated 0.2.0 UI.
 
 For a complete history, see the GitHub releases for this repository and `okto-pulse-core`.
 

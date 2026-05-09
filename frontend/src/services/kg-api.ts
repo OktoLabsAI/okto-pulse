@@ -87,6 +87,7 @@ export async function getSubgraph(boardId: string, params?: {
   limit?: number;
   cursor?: string;
   min_relevance?: number;
+  type?: string;
 }) {
   const qs = new URLSearchParams();
   if (params?.center) qs.set('center', params.center);
@@ -94,6 +95,7 @@ export async function getSubgraph(boardId: string, params?: {
   if (params?.limit) qs.set('limit', String(params.limit));
   if (params?.cursor) qs.set('cursor', params.cursor);
   if (params?.min_relevance !== undefined) qs.set('min_relevance', String(params.min_relevance));
+  if (params?.type) qs.set('type', params.type);
   return kgFetch<SubgraphResponse>(`/boards/${boardId}/graph?${qs}`);
 }
 
