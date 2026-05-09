@@ -13,11 +13,12 @@ import {
   useIsCardModalOpen,
   useColumns,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, BugSeverity, Spec } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec } from '@/types';
 import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { MockupsTab } from '@/components/specs/MockupsTab';
+import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
 import { EditableField } from '@/components/shared/EditableField';
 import { CardKnowledgeTab } from './CardKnowledgeTab';
 import { ArchitectureTab } from '@/components/architecture';
@@ -45,6 +46,53 @@ function cardTypeLabel(card: Pick<Card, 'card_type'> | null | undefined): string
   return 'Task';
 }
 
+type CardModalTab =
+  | 'details'
+  | 'tests'
+  | 'evidence'
+  | 'mockups'
+  | 'architecture'
+  | 'knowledge'
+  | 'conclusion'
+  | 'validations'
+  | 'qa'
+  | 'comments'
+  | 'activity';
+
+const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
+  'test_file_path',
+  'test_function',
+  'last_run_at',
+  'test_run_id',
+  'output_snippet',
+];
+
+function getScenarioEvidence(scenario: TestScenario): TestScenarioEvidence | null {
+  return scenario.evidence ?? scenario.latest_evidence ?? null;
+}
+
+function hasScenarioEvidence(scenario: TestScenario): boolean {
+  const evidence = getScenarioEvidence(scenario);
+  return Boolean(evidence && TEST_EVIDENCE_FIELDS.some((field) => Boolean(evidence[field])));
+}
+
+function formatEvidenceTimestamp(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+}
+
+function testScenarioStatusColor(status: string): string {
+  switch (status) {
+    case 'passed': return 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300';
+    case 'failed': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300';
+    case 'automated': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300';
+    case 'ready': return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300';
+    default: return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400';
+  }
+}
+
 interface CardModalProps {
   boardId: string;
   onClose?: () => void;
@@ -62,7 +110,7 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
 
   const [card, setCard] = useState<Card | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'tests' | 'mockups' | 'architecture' | 'knowledge' | 'conclusion' | 'validations' | 'qa' | 'comments' | 'activity'>('details');
+  const [activeTab, setActiveTab] = useState<CardModalTab>('details');
   const [expanded, setExpanded] = useState(false);
   const [boardMembers, setBoardMembers] = useState<{ id: string; name: string }[]>([]);
   const [seenStatus, setSeenStatus] = useState<Record<string, { agent_name: string; seen_at: string }[]>>({});
@@ -90,6 +138,9 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
     id: taskId,
     card: allBoardCards.find((candidate) => candidate.id === taskId) || null,
   }));
+  const linkedScenarioIds = new Set(card?.test_scenario_ids || []);
+  const linkedEvidenceScenarios = specScenarios.filter((scenario) => linkedScenarioIds.has(scenario.id));
+  const evidenceProvidedCount = linkedEvidenceScenarios.filter(hasScenarioEvidence).length;
 
   const resetConclusionPrompt = () => {
     setConclusionDraft('');
@@ -177,6 +228,15 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
       setCard(null);
     }
   }, [selectedCardId, isOpen]);
+
+  useEffect(() => {
+    if (activeTab === 'tests' && card?.card_type !== 'bug') {
+      setActiveTab('details');
+    }
+    if (activeTab === 'evidence' && card?.card_type !== 'test') {
+      setActiveTab('details');
+    }
+  }, [activeTab, card?.card_type]);
 
   // Auto-refresh every 10s while modal is open
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -474,7 +534,9 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
             <div className="flex border-b border-gray-200 dark:border-gray-700 px-6">
               {(card.card_type === 'bug'
                 ? ['details', 'tests', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
-                : ['details', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
+                : card.card_type === 'test'
+                  ? ['details', 'evidence', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
+                  : ['details', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
               ).map((tab) => (
                 <button
                   key={tab}
@@ -495,6 +557,17 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                         </span>
                       ) : (
                         <span className="absolute -top-0.5 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-white text-[9px] font-bold">!</span>
+                      )}
+                    </>
+                  )}
+                  {tab === 'evidence' && (
+                    <>
+                      <CheckCircle size={13} className="inline mr-1" />
+                      Evidence
+                      {linkedEvidenceScenarios.length > 0 && (
+                        <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-emerald-500 text-white text-[9px] px-1">
+                          {evidenceProvidedCount}/{linkedEvidenceScenarios.length}
+                        </span>
                       )}
                     </>
                   )}
@@ -1036,6 +1109,11 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                 </div>
               )}
 
+              {/* Evidence Tab (test cards only) */}
+              {activeTab === 'evidence' && card.card_type === 'test' && (
+                <TestEvidenceTab scenarios={linkedEvidenceScenarios} />
+              )}
+
               {/* Mockups Tab */}
               {activeTab === 'mockups' && (
                 <div className="modal-body">
@@ -1265,6 +1343,116 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   );
 }
 
+function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
+  const evidenceCount = scenarios.filter(hasScenarioEvidence).length;
+  const missingCount = scenarios.length - evidenceCount;
+
+  if (scenarios.length === 0) {
+    return (
+      <div
+        data-testid="test-evidence-tab"
+        className="border border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-8 text-center text-gray-500 dark:text-gray-400"
+      >
+        <CheckCircle size={28} strokeWidth={1.5} className="mx-auto mb-2 text-gray-400" />
+        <p className="text-sm font-medium">No linked test scenarios</p>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="test-evidence-tab" className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/70 dark:bg-emerald-900/10 p-3">
+        <div>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Evidence Coverage</h3>
+          <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">
+            {evidenceCount}/{scenarios.length} linked scenario{scenarios.length === 1 ? '' : 's'} with evidence
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {missingCount > 0 && (
+            <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-1 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+              <AlertCircle size={12} />
+              {missingCount} missing
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+            <CheckCircle size={12} />
+            {evidenceCount} recorded
+          </span>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {scenarios.map((scenario) => {
+          const evidence = getScenarioEvidence(scenario);
+          const hasEvidence = hasScenarioEvidence(scenario);
+          const evidenceRows = [
+            { label: 'Test file', value: evidence?.test_file_path, mono: true },
+            { label: 'Function', value: evidence?.test_function, mono: true },
+            { label: 'Last run', value: formatEvidenceTimestamp(evidence?.last_run_at), mono: false },
+            { label: 'Run ID', value: evidence?.test_run_id, mono: true },
+          ].filter((row): row is { label: string; value: string; mono: boolean } => Boolean(row.value));
+
+          return (
+            <section
+              key={scenario.id}
+              className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/30 p-4"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${testScenarioStatusColor(scenario.status)}`}>
+                      {scenario.status}
+                    </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                      {scenario.scenario_type}
+                    </span>
+                    <EvidenceBadge scenario={scenario} />
+                  </div>
+                  <h3 className="mt-2 text-sm font-semibold text-gray-900 dark:text-gray-100 break-words">{scenario.title}</h3>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 break-words">
+                    Given {scenario.given}{' -> '}When {scenario.when}{' -> '}Then {scenario.then}
+                  </p>
+                </div>
+              </div>
+
+              {hasEvidence ? (
+                <div className="mt-4 space-y-3">
+                  {evidenceRows.length > 0 && (
+                    <dl className="grid gap-2 sm:grid-cols-2">
+                      {evidenceRows.map((row) => (
+                        <div key={row.label} className="rounded-md border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-2">
+                          <dt className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{row.label}</dt>
+                          <dd className={`mt-1 text-xs text-gray-800 dark:text-gray-200 break-words ${row.mono ? 'font-mono' : ''}`}>
+                            {row.value}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                  {evidence?.output_snippet && (
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Output</p>
+                      <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md border border-gray-200 dark:border-gray-700 bg-gray-950 p-3 text-xs text-gray-100">
+                        {evidence.output_snippet}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-4 flex items-center gap-2 rounded-md border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-900/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                  <AlertCircle size={14} className="shrink-0" />
+                  No evidence recorded
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Test Scenarios section in Details tab
 function TestScenariosSection({
   card, specId, scenarios, api, onUpdate,
@@ -1309,16 +1497,6 @@ function TestScenariosSection({
     }
   };
 
-  const statusColor = (s: string) => {
-    switch (s) {
-      case 'passed': return 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300';
-      case 'failed': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300';
-      case 'automated': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300';
-      case 'ready': return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300';
-      default: return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400';
-    }
-  };
-
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -1344,7 +1522,7 @@ function TestScenariosSection({
             className="flex items-center justify-between px-2 py-1.5 rounded bg-violet-50 dark:bg-violet-900/10 text-xs group"
           >
             <div className="flex items-center gap-2 flex-1 min-w-0">
-              <span className={`text-[10px] px-1 py-0.5 rounded shrink-0 ${statusColor(s.status)}`}>
+              <span className={`text-[10px] px-1 py-0.5 rounded shrink-0 ${testScenarioStatusColor(s.status)}`}>
                 {s.status}
               </span>
               <span className="text-gray-700 dark:text-gray-300 truncate">{s.title}</span>
@@ -1376,7 +1554,7 @@ function TestScenariosSection({
               onClick={() => handleLink(s.id)}
               className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs text-left hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
             >
-              <span className={`text-[10px] px-1 py-0.5 rounded shrink-0 ${statusColor(s.status)}`}>
+              <span className={`text-[10px] px-1 py-0.5 rounded shrink-0 ${testScenarioStatusColor(s.status)}`}>
                 {s.status}
               </span>
               <span className="text-gray-600 dark:text-gray-400 truncate">{s.title}</span>

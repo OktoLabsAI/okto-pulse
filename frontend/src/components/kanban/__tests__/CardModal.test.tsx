@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CardModal } from '../CardModal';
 import type { Card, CardSummary, CardStatus } from '@/types';
@@ -129,6 +129,8 @@ const bugCard: Card = {
 describe('CardModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    storeMock.selectedCardId = 'bug-1';
+    storeMock.isCardModalOpen = true;
     storeMock.columns = emptyColumns();
     storeMock.columns.in_progress = [
       {
@@ -202,5 +204,77 @@ describe('CardModal', () => {
     expect(within(panel).getByText('Linked Regression Tests')).toBeInTheDocument();
     expect(within(panel).getByText('Regression: story lineage is visible')).toBeInTheDocument();
     expect(within(panel).getByText('Started')).toBeInTheDocument();
+  });
+
+  it('shows a dedicated evidence tab for test cards', async () => {
+    storeMock.selectedCardId = 'test-1';
+    const testCard: Card = {
+      ...bugCard,
+      id: 'test-1',
+      title: 'Regression: story lineage is visible',
+      card_type: 'test',
+      origin_task_id: null,
+      severity: undefined,
+      expected_behavior: null,
+      observed_behavior: null,
+      linked_test_task_ids: null,
+      test_scenario_ids: ['ts-1', 'ts-2'],
+    };
+    apiMock.getCard.mockResolvedValue(testCard);
+    apiMock.getSpec.mockResolvedValue({
+      id: 'spec-1',
+      title: 'Stories spec',
+      test_scenarios: [
+        {
+          id: 'ts-1',
+          title: 'Scenario with execution evidence',
+          linked_criteria: [],
+          scenario_type: 'e2e',
+          given: 'a linked story',
+          when: 'the lineage graph opens',
+          then: 'the scenario is visible',
+          notes: null,
+          status: 'passed',
+          linked_task_ids: ['test-1'],
+          created_at: '2026-05-06T09:30:00Z',
+          evidence: null,
+          latest_evidence: {
+            test_file_path: 'tests/test_flow.py',
+            test_function: 'test_flow_happy_path',
+            last_run_at: '2026-05-07T12:00:00Z',
+            output_snippet: '1 passed',
+          },
+        },
+        {
+          id: 'ts-2',
+          title: 'Scenario missing execution evidence',
+          linked_criteria: [],
+          scenario_type: 'manual',
+          given: 'a linked story',
+          when: 'the test is reviewed',
+          then: 'missing evidence is visible',
+          notes: null,
+          status: 'failed',
+          linked_task_ids: ['test-1'],
+          created_at: '2026-05-06T09:40:00Z',
+          evidence: null,
+        },
+      ],
+      business_rules: [],
+      api_contracts: [],
+      technical_requirements: [],
+      knowledge_bases: [],
+    });
+
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Evidence/i }));
+
+    const tab = await screen.findByTestId('test-evidence-tab');
+    expect(within(tab).getByText('Scenario with execution evidence')).toBeInTheDocument();
+    expect(within(tab).getByText('tests/test_flow.py')).toBeInTheDocument();
+    expect(within(tab).getByText('test_flow_happy_path')).toBeInTheDocument();
+    expect(within(tab).getByText('1 passed')).toBeInTheDocument();
+    expect(within(tab).getByText('Scenario missing execution evidence')).toBeInTheDocument();
+    expect(within(tab).getByText('No evidence recorded')).toBeInTheDocument();
   });
 });

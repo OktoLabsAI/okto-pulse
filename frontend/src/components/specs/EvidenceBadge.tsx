@@ -10,10 +10,10 @@
  */
 
 import { Check, HelpCircle } from 'lucide-react';
-import type { TestScenario } from '@/types';
+import type { TestScenario, TestScenarioEvidence } from '@/types';
 
 interface EvidenceBadgeProps {
-  scenario: Pick<TestScenario, 'status' | 'evidence'>;
+  scenario: Pick<TestScenario, 'status' | 'evidence' | 'latest_evidence'>;
 }
 
 const GATED_STATUSES = new Set(['automated', 'passed', 'failed']);
@@ -34,21 +34,28 @@ function buildTooltip(evidence: TestScenario['evidence']): string {
   return parts.length > 0 ? parts.join(' | ') : 'evidence present';
 }
 
+function getScenarioEvidence(
+  scenario: Pick<TestScenario, 'evidence' | 'latest_evidence'>,
+): TestScenarioEvidence | null {
+  return scenario.evidence ?? scenario.latest_evidence ?? null;
+}
+
 export function EvidenceBadge({ scenario }: EvidenceBadgeProps) {
   if (!GATED_STATUSES.has(scenario.status)) {
     return null;
   }
 
+  const evidence = getScenarioEvidence(scenario);
   const hasEvidence = Boolean(
-    scenario.evidence &&
-      (scenario.evidence.test_file_path ||
-        scenario.evidence.test_function ||
-        scenario.evidence.last_run_at ||
-        scenario.evidence.test_run_id ||
-        scenario.evidence.output_snippet),
+    evidence &&
+      (evidence.test_file_path ||
+        evidence.test_function ||
+        evidence.last_run_at ||
+        evidence.test_run_id ||
+        evidence.output_snippet),
   );
 
-  const tooltip = buildTooltip(scenario.evidence ?? null);
+  const tooltip = buildTooltip(evidence);
 
   if (hasEvidence) {
     return (

@@ -654,6 +654,7 @@ export interface TestScenario {
   linked_task_ids: string[] | null;
   created_at?: string;
   evidence?: TestScenarioEvidence | null;
+  latest_evidence?: TestScenarioEvidence | null;
 }
 
 // Screen Mockups
