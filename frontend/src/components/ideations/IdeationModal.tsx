@@ -12,6 +12,7 @@ import {
   Ban,
   FileText,
   Lightbulb,
+  BookOpen,
   Sparkles,
   Plus,
   Trash2,
@@ -42,14 +43,17 @@ import type {
   IdeationStatus,
   IdeationQAItem,
   IdeationHistoryEntry,
+  IdeationKnowledgeSummary,
   IdeationSnapshot,
   IdeationSnapshotSummary,
   RefinementSummary,
+  StorySummary,
 } from '@/types';
 import {
   IDEATION_STATUSES,
   IDEATION_STATUS_LABELS,
   COMPLEXITY_LABELS,
+  STORY_STATUS_LABELS,
 } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
@@ -66,7 +70,7 @@ interface IdeationModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'mockups' | 'architecture' | 'qa' | 'refinements' | 'versions' | 'history';
+type ModalTab = 'details' | 'stories' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'refinements' | 'versions' | 'history';
 
 const STATUS_ICON: Record<IdeationStatus, React.ReactNode> = {
   draft: <Lightbulb size={14} />,
@@ -92,6 +96,13 @@ const REFINEMENT_STATUS_COLORS: Record<string, string> = {
   approved: 'bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-300',
   done: 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-300',
   cancelled: 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-300',
+};
+
+const STORY_STATUS_COLORS: Record<string, string> = {
+  draft: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+  triage: 'bg-amber-100 text-amber-600 dark:bg-amber-900/40 dark:text-amber-300',
+  ready: 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300',
+  converted: 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-300',
 };
 
 const COMPLEXITY_COLORS: Record<string, string> = {
@@ -250,6 +261,165 @@ function VersionsTab({ ideationId }: { ideationId: string }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function KnowledgeTab({ ideationId }: { ideationId: string }) {
+  const api = useDashboardApi();
+  const [items, setItems] = useState<IdeationKnowledgeSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [viewingId, setViewingId] = useState<string | null>(null);
+  const [viewContent, setViewContent] = useState('');
+  const [newTitle, setNewTitle] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [newContent, setNewContent] = useState('');
+
+  useEffect(() => { load(); }, [ideationId]);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      setItems(await api.listIdeationKnowledge(ideationId));
+    } catch {
+      toast.error('Failed to load knowledge base');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAdd = async () => {
+    if (!newTitle.trim() || !newContent.trim()) return;
+    try {
+      await api.createIdeationKnowledge(ideationId, {
+        title: newTitle.trim(),
+        description: newDesc.trim() || undefined,
+        content: newContent.trim(),
+      });
+      toast.success('Knowledge added');
+      setAdding(false);
+      setNewTitle('');
+      setNewDesc('');
+      setNewContent('');
+      await load();
+    } catch {
+      toast.error('Failed to add knowledge');
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this knowledge base item?')) return;
+    try {
+      await api.deleteIdeationKnowledge(ideationId, id);
+      if (viewingId === id) {
+        setViewingId(null);
+        setViewContent('');
+      }
+      await load();
+    } catch {
+      toast.error('Failed to delete knowledge');
+    }
+  };
+
+  const handleView = async (id: string) => {
+    if (viewingId === id) {
+      setViewingId(null);
+      setViewContent('');
+      return;
+    }
+    try {
+      const kb = await api.getIdeationKnowledge(ideationId, id);
+      setViewingId(id);
+      setViewContent(kb.content);
+    } catch {
+      toast.error('Failed to load knowledge');
+    }
+  };
+
+  if (loading) {
+    return <div className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Loading knowledge base...</div>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {items.length === 0 && !adding && (
+        <div className="text-center py-6">
+          <BookOpen size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
+          <p className="text-sm text-gray-500 dark:text-gray-400">No knowledge base items</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Attach reference documents, discovery notes, or context docs</p>
+        </div>
+      )}
+      {items.map((item) => (
+        <div key={item.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+          <div
+            className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-700/50 cursor-pointer"
+            onClick={() => handleView(item.id)}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <BookOpen size={14} className="text-amber-500 shrink-0" />
+              <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{item.title}</span>
+              <span className="text-[10px] px-1 py-0.5 rounded bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400">{item.mime_type}</span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
+                className="p-1 text-gray-400 hover:text-red-500"
+              >
+                <Trash2 size={14} />
+              </button>
+              {viewingId === item.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </div>
+          </div>
+          {viewingId === item.id && viewContent && (
+            <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700">
+              <pre className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">{viewContent}</pre>
+            </div>
+          )}
+        </div>
+      ))}
+      {adding ? (
+        <div className="border border-amber-200 dark:border-amber-700 rounded-lg p-3 space-y-2 bg-amber-50/50 dark:bg-amber-900/10">
+          <input
+            type="text"
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="Title"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
+          />
+          <input
+            type="text"
+            value={newDesc}
+            onChange={(e) => setNewDesc(e.target.value)}
+            placeholder="Description (optional)"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
+          />
+          <textarea
+            value={newContent}
+            onChange={(e) => setNewContent(e.target.value)}
+            placeholder="Content..."
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
+            rows={6}
+          />
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setAdding(false)} className="btn btn-secondary text-xs">Cancel</button>
+            <button
+              onClick={handleAdd}
+              disabled={!newTitle.trim() || !newContent.trim()}
+              className="btn btn-primary text-xs"
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => setAdding(true)}
+          className="flex items-center gap-1 text-sm text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300"
+        >
+          <Plus size={14} /> Add Knowledge
+        </button>
+      )}
     </div>
   );
 }
@@ -902,9 +1072,11 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
   const unansweredQA = ideation.qa_items?.filter((q) => !q.answer).length || 0;
   const tabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
+    { id: 'stories', label: 'Stories', icon: <BookOpen size={14} />, count: ideation.stories?.length || 0 },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: ideation.screen_mockups?.length || 0 },
     { id: 'architecture', label: 'Architecture', icon: <GitBranch size={14} />, count: ideation.architecture_designs?.length || 0 },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: ideation.qa_items?.length || 0, highlight: unansweredQA > 0 },
+    { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={14} />, count: ideation.knowledge_bases?.length || 0 },
     { id: 'refinements', label: 'Refinements', icon: <Layers size={14} />, count: ideation.refinements?.length || 0 },
     { id: 'versions', label: 'Versions', icon: <Archive size={14} /> },
     { id: 'history', label: 'Activity', icon: <History size={14} /> },
@@ -1117,8 +1289,50 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
             />
           )}
           {activeTab === 'qa' && <QATab ideationId={ideationId} mentionables={mentionables} />}
+          {activeTab === 'knowledge' && <KnowledgeTab ideationId={ideationId} />}
           {activeTab === 'versions' && <VersionsTab ideationId={ideationId} />}
           {activeTab === 'history' && <HistoryTab ideationId={ideationId} />}
+
+          {activeTab === 'stories' && (
+            <div className="space-y-3">
+              {(!ideation.stories || ideation.stories.length === 0) && (
+                <div className="text-center py-6">
+                  <BookOpen size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
+                  <p className="text-sm text-gray-500 dark:text-gray-400">No related stories</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Stories converted or linked to this ideation will appear here</p>
+                </div>
+              )}
+
+              {ideation.stories && ideation.stories.map((story: StorySummary) => (
+                <div key={story.id} className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2 min-w-0">
+                      <BookOpen size={14} className="text-blue-500 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">{story.title}</p>
+                        <p className="mt-1 max-h-10 overflow-hidden text-xs text-gray-500 dark:text-gray-400">{story.description}</p>
+                      </div>
+                    </div>
+                    <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 ${STORY_STATUS_COLORS[story.status] || ''}`}>
+                      {STORY_STATUS_LABELS[story.status]}
+                    </span>
+                  </div>
+
+                  {(story.actor || story.goal || (story.labels && story.labels.length > 0)) && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-gray-400">
+                      {story.actor && <span>Actor: {story.actor}</span>}
+                      {story.goal && <span>Goal: {story.goal}</span>}
+                      {story.labels?.slice(0, 4).map((label) => (
+                        <span key={label} className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
           {activeTab === 'refinements' && (
             <div className="space-y-3">

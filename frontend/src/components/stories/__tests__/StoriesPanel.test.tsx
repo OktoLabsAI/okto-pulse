@@ -207,33 +207,40 @@ describe('StoriesPanel', () => {
           archived: false,
         },
       ],
-      review: [
-        {
-          id: 'ideation-linked',
-          board_id: 'board-1',
-          title: 'Already linked ideation',
-          description: null,
-          problem_statement: null,
-          complexity: null,
-          status: 'review',
-          version: 1,
-          assignee_id: null,
-          created_by: 'user-1',
-          created_at: '2026-05-05T00:00:00Z',
-          updated_at: '2026-05-05T00:00:00Z',
-          labels: null,
-          archived: false,
-        },
-      ],
+      review: [],
       approved: [],
       evaluating: [],
     };
     apiMock.listIdeations.mockImplementation(async (_boardId: string, status?: string) => {
       return ideationsByStatus[status || 'draft'] || [];
     });
+
+    render(<StoriesPanel boardId="board-1" />);
+
+    await waitFor(() => expect(screen.getByText('Stories intake before ideation')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Stories intake before ideation'));
+    fireEvent.click(await screen.findByRole('button', { name: /Links/i }));
+
+    expect(screen.queryByPlaceholderText('Ideation ID')).not.toBeInTheDocument();
+    const search = screen.getByPlaceholderText('Search editable ideations...');
+    fireEvent.focus(search);
+
+    await waitFor(() => expect(screen.getByText('Draft ideation target')).toBeInTheDocument());
+
+    fireEvent.change(search, { target: { value: 'draft' } });
+    fireEvent.click(screen.getByText('Draft ideation target'));
+    fireEvent.click(screen.getByRole('button', { name: /^Link$/i }));
+
+    await waitFor(() => {
+      expect(apiMock.linkStoryToIdeation).toHaveBeenCalledWith('story-1', 'ideation-draft');
+    });
+  });
+
+  it('does not offer another Ideation link for an already linked Story', async () => {
     apiMock.getStory.mockResolvedValueOnce({
       ...stories[0],
       topic: topics[0],
+      status: 'converted',
       ideation_links: [
         {
           id: 'link-existing',
@@ -252,20 +259,10 @@ describe('StoriesPanel', () => {
     fireEvent.click(screen.getByText('Stories intake before ideation'));
     fireEvent.click(await screen.findByRole('button', { name: /Links/i }));
 
-    expect(screen.queryByPlaceholderText('Ideation ID')).not.toBeInTheDocument();
-    const search = screen.getByPlaceholderText('Search editable ideations...');
-    fireEvent.focus(search);
-
-    await waitFor(() => expect(screen.getByText('Draft ideation target')).toBeInTheDocument());
-    expect(screen.queryByText('Already linked ideation')).not.toBeInTheDocument();
-
-    fireEvent.change(search, { target: { value: 'draft' } });
-    fireEvent.click(screen.getByText('Draft ideation target'));
-    fireEvent.click(screen.getByRole('button', { name: /^Link$/i }));
-
-    await waitFor(() => {
-      expect(apiMock.linkStoryToIdeation).toHaveBeenCalledWith('story-1', 'ideation-draft');
-    });
+    expect(await screen.findByText('Linked Ideation')).toBeInTheDocument();
+    expect(screen.getByText('This Story already has its Ideation link. A Story can link to only one Ideation.')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Search editable ideations...')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Link$/i })).not.toBeInTheDocument();
   });
 
   it('uses the standard list/grid view toggle without a local refresh button', async () => {
@@ -278,6 +275,23 @@ describe('StoriesPanel', () => {
 
     expect(screen.getByTestId('stories-grid')).toBeInTheDocument();
     expect(screen.getByTestId('stories-view-mode-grid')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('keeps the selected Topic when the global refresh key changes', async () => {
+    const { rerender } = render(<StoriesPanel boardId="board-1" refreshKey={0} />);
+
+    await waitFor(() => expect(screen.getByText('Stories intake before ideation')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: /Agent onboarding/i })[0]);
+
+    await waitFor(() => {
+      expect(apiMock.listStories).toHaveBeenLastCalledWith('board-1', expect.objectContaining({ topicId: 'topic-1' }));
+    });
+
+    rerender(<StoriesPanel boardId="board-1" refreshKey={1} />);
+
+    await waitFor(() => {
+      expect(apiMock.listStories).toHaveBeenLastCalledWith('board-1', expect.objectContaining({ topicId: 'topic-1' }));
+    });
   });
 
   it('surfaces backend Topic uniqueness errors from the Topic form', async () => {

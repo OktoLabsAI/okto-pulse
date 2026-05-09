@@ -483,6 +483,38 @@ export interface IdeationSnapshotSummary {
   created_at: string;
 }
 
+// Ideation Knowledge Base
+export interface IdeationKnowledge {
+  id: string;
+  ideation_id: string;
+  title: string;
+  description: string | null;
+  content: string;
+  mime_type: string;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IdeationKnowledgeSummary {
+  id: string;
+  ideation_id: string;
+  title: string;
+  description: string | null;
+  mime_type: string;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  created_at: string;
+}
+
 // Refinement Snapshot
 export interface RefinementSnapshot {
   id: string;
@@ -1009,7 +1041,9 @@ export interface Ideation {
   archived?: boolean;
   pre_archive_status?: string | null;
   refinements: RefinementSummary[];
+  stories: StorySummary[];
   specs: SpecSummary[];
+  knowledge_bases: IdeationKnowledgeSummary[];
   qa_items: IdeationQAItem[];
 }
 
@@ -1580,7 +1614,14 @@ export interface UpdateRefinementRequest {
 }
 
 
-// Spec Knowledge request types
+// Knowledge request types
+export interface CreateIdeationKnowledgeRequest {
+  title: string;
+  description?: string;
+  content: string;
+  mime_type?: string;
+}
+
 export interface CreateSpecKnowledgeRequest {
   title: string;
   description?: string;

@@ -12,6 +12,7 @@ import {
   Link2,
   Maximize2,
   Minimize2,
+  RefreshCw,
   Save,
   Search,
   X,
@@ -152,8 +153,22 @@ export function StoryModal({
     return () => { active = false; };
   }, [storyId, initialTopicId, topics]);
 
+  const handleRefresh = async () => {
+    if (!storyId) return;
+    setLoading(true);
+    try {
+      const data = await api.getStory(storyId);
+      syncStoryState(data);
+    } catch {
+      toast.error('Failed to refresh story');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const canSave = title.trim().length > 0 && description.trim().length > 0 && topicId.length > 0;
-  const canConvert = story?.status === 'ready' || story?.status === 'converted';
+  const hasIdeationLink = (story?.ideation_links?.length || 0) > 0;
+  const canConvert = story?.status === 'ready' && !hasIdeationLink;
 
   const topicName = useMemo(() => {
     return topics.find((topic) => topic.id === topicId)?.name || story?.topic?.name || 'No topic';
@@ -169,6 +184,13 @@ export function StoryModal({
 
   useEffect(() => {
     if (activeTab !== 'links' || !story) return;
+    if (hasIdeationLink) {
+      setEditableIdeations([]);
+      setSelectedIdeationId('');
+      setIdeationSearch('');
+      setIdeationSelectorOpen(false);
+      return;
+    }
 
     let active = true;
     setLoadingIdeations(true);
@@ -192,7 +214,7 @@ export function StoryModal({
     return () => {
       active = false;
     };
-  }, [activeTab, boardId, linkedIdeationKey, story?.id]);
+  }, [activeTab, boardId, hasIdeationLink, linkedIdeationKey, story?.id]);
 
   const filteredIdeations = useMemo(() => {
     const query = ideationSearch.trim().toLowerCase();
@@ -568,7 +590,9 @@ export function StoryModal({
       <div className="space-y-4">
         <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Linked Ideations</h4>
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
+              {story.ideation_links.length === 1 ? 'Linked Ideation' : 'Linked Ideations'}
+            </h4>
             {story.ideation_links.length > 0 && (
               <button
                 type="button"
@@ -594,88 +618,94 @@ export function StoryModal({
           )}
         </div>
 
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
-          <div className="relative">
-            <Search
-              size={15}
-              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
-            />
-            <input
-              value={ideationSearch}
-              onChange={(event) => {
-                setIdeationSearch(event.target.value);
-                setSelectedIdeationId('');
-                setIdeationSelectorOpen(true);
-              }}
-              onFocus={() => setIdeationSelectorOpen(true)}
-              placeholder="Search editable ideations..."
-              className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-10 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
-            />
+        {hasIdeationLink ? (
+          <div className="rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-3 text-sm text-cyan-800 dark:border-cyan-900/50 dark:bg-cyan-950/30 dark:text-cyan-200">
+            This Story already has its Ideation link. A Story can link to only one Ideation.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
+            <div className="relative">
+              <Search
+                size={15}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+              />
+              <input
+                value={ideationSearch}
+                onChange={(event) => {
+                  setIdeationSearch(event.target.value);
+                  setSelectedIdeationId('');
+                  setIdeationSelectorOpen(true);
+                }}
+                onFocus={() => setIdeationSelectorOpen(true)}
+                placeholder="Search editable ideations..."
+                className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-10 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+              />
+              <button
+                type="button"
+                onClick={() => setIdeationSelectorOpen((open) => !open)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                title="Show editable ideations"
+              >
+                <ChevronDown size={15} />
+              </button>
+              {ideationSelectorOpen && (
+                <div className="absolute z-20 mt-2 max-h-72 w-full overflow-auto rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-gray-700 dark:bg-surface-800">
+                  {loadingIdeations ? (
+                    <div className="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">Loading ideations...</div>
+                  ) : filteredIdeations.length === 0 ? (
+                    <div className="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">No editable ideations found</div>
+                  ) : (
+                    filteredIdeations.map((ideation) => (
+                      <button
+                        key={ideation.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedIdeationId(ideation.id);
+                          setIdeationSearch(ideation.title);
+                          setIdeationSelectorOpen(false);
+                        }}
+                        className="flex w-full items-start justify-between gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700/60"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate font-medium text-gray-900 dark:text-white">
+                            {ideation.title}
+                          </span>
+                          <span className="mt-0.5 block truncate font-mono text-[11px] text-gray-500 dark:text-gray-400">
+                            {ideation.id}
+                          </span>
+                        </span>
+                        <span className="shrink-0 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                          {IDEATION_STATUS_LABELS[ideation.status]}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+              {selectedIdeation && (
+                <div className="mt-2 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-gray-800/70 dark:text-gray-300">
+                  <span className="font-medium text-gray-900 dark:text-white">{selectedIdeation.title}</span>
+                  <span className="ml-2 text-gray-400">{selectedIdeation.id.slice(0, 8)}</span>
+                </div>
+              )}
+            </div>
             <button
               type="button"
-              onClick={() => setIdeationSelectorOpen((open) => !open)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-              title="Show editable ideations"
+              onClick={handleLinkIdeation}
+              disabled={!selectedIdeationId || saving}
+              className="btn btn-secondary inline-flex items-center justify-center gap-1 text-sm disabled:opacity-50"
             >
-              <ChevronDown size={15} />
+              <Link2 size={15} />
+              Link
             </button>
-            {ideationSelectorOpen && (
-              <div className="absolute z-20 mt-2 max-h-72 w-full overflow-auto rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-gray-700 dark:bg-surface-800">
-                {loadingIdeations ? (
-                  <div className="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">Loading ideations...</div>
-                ) : filteredIdeations.length === 0 ? (
-                  <div className="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">No editable ideations found</div>
-                ) : (
-                  filteredIdeations.map((ideation) => (
-                    <button
-                      key={ideation.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedIdeationId(ideation.id);
-                        setIdeationSearch(ideation.title);
-                        setIdeationSelectorOpen(false);
-                      }}
-                      className="flex w-full items-start justify-between gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700/60"
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate font-medium text-gray-900 dark:text-white">
-                          {ideation.title}
-                        </span>
-                        <span className="mt-0.5 block truncate font-mono text-[11px] text-gray-500 dark:text-gray-400">
-                          {ideation.id}
-                        </span>
-                      </span>
-                      <span className="shrink-0 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
-                        {IDEATION_STATUS_LABELS[ideation.status]}
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-            {selectedIdeation && (
-              <div className="mt-2 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-gray-800/70 dark:text-gray-300">
-                <span className="font-medium text-gray-900 dark:text-white">{selectedIdeation.title}</span>
-                <span className="ml-2 text-gray-400">{selectedIdeation.id.slice(0, 8)}</span>
-              </div>
-            )}
           </div>
-          <button
-            type="button"
-            onClick={handleLinkIdeation}
-            disabled={!selectedIdeationId || saving}
-            className="btn btn-secondary inline-flex items-center justify-center gap-1 text-sm disabled:opacity-50"
-          >
-            <Link2 size={15} />
-            Link
-          </button>
-        </div>
+        )}
 
         <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-3 dark:border-blue-900/50 dark:bg-blue-950/30">
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-blue-900 dark:text-blue-100">Create Ideation</div>
-              <div className="text-xs text-blue-700 dark:text-blue-300">Requires Ready status.</div>
+              <div className="text-xs text-blue-700 dark:text-blue-300">Requires Ready status and no existing Ideation link.</div>
             </div>
             <button
               type="button"
@@ -751,6 +781,15 @@ export function StoryModal({
                   title="Download Markdown"
                 >
                   <Download size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRefresh}
+                  disabled={loading}
+                  className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                  title="Refresh"
+                >
+                  <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
                 </button>
               </>
             )}

@@ -28,6 +28,7 @@ import { StoryModal } from './StoryModal';
 
 interface StoriesPanelProps {
   boardId: string;
+  refreshKey?: number;
 }
 
 const STATUS_FILTERS: Array<{ value: '' | StoryStatus; label: string }> = [
@@ -70,7 +71,7 @@ function topicErrorMessage(error: unknown): string {
   }
 }
 
-export function StoriesPanel({ boardId }: StoriesPanelProps) {
+export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
   const api = useDashboardApi();
   const permissions = usePermissions(boardId);
   const [topics, setTopics] = useState<TopicSummary[]>([]);
@@ -108,7 +109,7 @@ export function StoriesPanel({ boardId }: StoriesPanelProps) {
 
   useEffect(() => {
     load();
-  }, [boardId, statusFilter, topicFilter, showArchived]);
+  }, [boardId, statusFilter, topicFilter, showArchived, refreshKey]);
 
   const load = async () => {
     setLoading(true);

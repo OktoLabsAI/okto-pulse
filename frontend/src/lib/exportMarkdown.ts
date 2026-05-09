@@ -308,7 +308,7 @@ export function exportStory(story: Story): string {
     const rows = story.ideation_links
       .map((link) => `- ${link.ideation_id}${link.created_at ? ` (linked ${fmtDate(link.created_at)})` : ''}`)
       .join('\n');
-    md += `## Linked Ideations\n\n${rows}\n\n`;
+    md += `## Linked Ideation\n\n${rows}\n\n`;
   }
 
   md += renderMockups(story.screen_mockups);

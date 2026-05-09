@@ -316,7 +316,7 @@ function App() {
 
               {/* Content */}
               <div className="flex-1 min-h-0 min-w-0">
-                {activeTab === 'stories' && <StoriesPanel key={refreshKey} boardId={currentBoard.id} />}
+                {activeTab === 'stories' && <StoriesPanel boardId={currentBoard.id} refreshKey={refreshKey} />}
                 {activeTab === 'ideations' && <IdeationsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'refinements' && <RefinementsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'specs' && <SpecsPanel key={refreshKey} boardId={currentBoard.id} />}

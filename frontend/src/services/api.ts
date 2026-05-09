@@ -48,6 +48,9 @@ import type {
   IdeationQAItem,
   IdeationSnapshot,
   IdeationSnapshotSummary,
+  IdeationKnowledge,
+  IdeationKnowledgeSummary,
+  CreateIdeationKnowledgeRequest,
   TopicSummary,
   TopicDeleteResponse,
   TopicMergeResponse,
@@ -635,6 +638,25 @@ export function useDashboardApi() {
 
     async getIdeationSnapshot(ideationId: string, version: number): Promise<IdeationSnapshot> {
       return apiClient.fetchJson<IdeationSnapshot>(`/ideations/${ideationId}/snapshots/${version}`);
+    },
+
+    async listIdeationKnowledge(ideationId: string): Promise<IdeationKnowledgeSummary[]> {
+      return apiClient.fetchJson<IdeationKnowledgeSummary[]>(`/ideations/${ideationId}/knowledge`);
+    },
+
+    async getIdeationKnowledge(ideationId: string, knowledgeId: string): Promise<IdeationKnowledge> {
+      return apiClient.fetchJson<IdeationKnowledge>(`/ideations/${ideationId}/knowledge/${knowledgeId}`);
+    },
+
+    async createIdeationKnowledge(ideationId: string, data: CreateIdeationKnowledgeRequest): Promise<IdeationKnowledge> {
+      return apiClient.fetchJson<IdeationKnowledge>(`/ideations/${ideationId}/knowledge`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async deleteIdeationKnowledge(ideationId: string, knowledgeId: string): Promise<void> {
+      await apiClient.fetch(`/ideations/${ideationId}/knowledge/${knowledgeId}`, { method: 'DELETE' });
     },
 
     async listIdeationQA(ideationId: string): Promise<IdeationQAItem[]> {
