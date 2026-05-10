@@ -9,11 +9,15 @@ from types import SimpleNamespace
 import pytest
 
 REPO_SRC = Path(__file__).parent.parent / "src"
-CORE_SRC = Path(__file__).parent.parent.parent / "okto_labs_pulse_core" / "src"
+WORKSPACE_ROOT = Path(__file__).parent.parent.parent
+CORE_SRC_CANDIDATES = (
+    WORKSPACE_ROOT / "okto-pulse-core" / "src",
+    WORKSPACE_ROOT / "okto_labs_pulse_core" / "src",
+)
 
-for p in (str(REPO_SRC), str(CORE_SRC)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+for p in (REPO_SRC, *CORE_SRC_CANDIDATES):
+    if p.exists() and str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
 for mod in list(sys.modules):
     if mod.startswith("okto_pulse.community"):
