@@ -15,7 +15,7 @@
  *     close/X control — "X fecha todas as modais, independente do nível
  *     de drill down".
  *
- * Entities supported today: card, spec, ideation, refinement, sprint,
+ * Entities supported today: card, story, spec, ideation, refinement, sprint,
  * kg_node. New entity types just need an entry in ModalStackRenderer.
  */
 
@@ -24,6 +24,7 @@ import type { ReactNode } from 'react';
 
 export type ModalStackEntry =
   | { type: 'card'; id: string }
+  | { type: 'story'; id: string }
   | { type: 'spec'; id: string }
   | { type: 'ideation'; id: string }
   | { type: 'refinement'; id: string }

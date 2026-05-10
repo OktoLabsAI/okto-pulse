@@ -10,6 +10,7 @@ import {
   Cell,
 } from 'recharts';
 import {
+  BookOpen,
   Lightbulb,
   FileText,
   CheckSquare,
@@ -26,6 +27,12 @@ import { useDashboardApi } from '@/services/api';
 // ---------------------------------------------------------------------------
 
 interface FunnelData {
+  stories?: number;
+  stories_converted?: number;
+  story_conversion_pct?: number;
+  story_ideation_links?: number;
+  story_status_breakdown?: Record<string, number>;
+  stories_by_topic?: Array<{ topic_id: string; topic: string; stories: number }>;
   ideations: number;
   ideations_done: number;
   refinements: number;
@@ -470,6 +477,8 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       : 0;
 
     return {
+      stories: funnel.stories || 0,
+      storiesConvertedPct: Math.round(funnel.story_conversion_pct || 0),
       ideations: funnel.ideations,
       ideationsDonePct,
       specs: funnel.specs,
@@ -523,7 +532,19 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       {/* ------------------------------------------------------------------ */}
       {/* KPI Cards                                                          */}
       {/* ------------------------------------------------------------------ */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-4">
+        {/* Stories */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+          <div className="flex items-center gap-1.5 mb-1">
+            <BookOpen className="w-4 h-4 text-blue-500" />
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Stories</span>
+          </div>
+          <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">{kpis.stories}</span>
+          <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+            {kpis.storiesConvertedPct}% conv
+          </span>
+        </div>
+
         {/* Ideations */}
         <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
           <div className="flex items-center gap-1.5 mb-1">

@@ -48,6 +48,21 @@ import type {
   IdeationQAItem,
   IdeationSnapshot,
   IdeationSnapshotSummary,
+  IdeationKnowledge,
+  IdeationKnowledgeSummary,
+  CreateIdeationKnowledgeRequest,
+  TopicSummary,
+  TopicDeleteResponse,
+  TopicMergeResponse,
+  CreateTopicRequest,
+  UpdateTopicRequest,
+  Story,
+  StorySummary,
+  CreateStoryRequest,
+  UpdateStoryRequest,
+  MoveStoryRequest,
+  StoryConversionRequest,
+  StoryConversionResponse,
   Refinement,
   RefinementSummary,
   RefinementStatus,
@@ -71,6 +86,11 @@ import type {
   ArchitectureDiagramFormat,
   ArchitectureDiagramType,
   LineageGraphResponse,
+  ResourceGateEntityType,
+  ResourceGateResourceType,
+  ResourceGateSummary,
+  MarkResourceNotApplicableRequest,
+  ClearResourceNotApplicableRequest,
 } from '@/types';
 
 function architectureParentPath(parentType: ArchitectureParentType, parentId: string): string {
@@ -139,6 +159,44 @@ export function useDashboardApi() {
       return apiClient.fetchJson<LineageGraphResponse>(
         `/boards/${boardId}/lineage-graph?${p.toString()}`
       );
+    },
+
+    async getResourceGateSummary(
+      boardId: string,
+      entityType: ResourceGateEntityType,
+      entityId: string,
+    ): Promise<ResourceGateSummary> {
+      const p = new URLSearchParams({ board_id: boardId });
+      return apiClient.fetchJson<ResourceGateSummary>(
+        `/resource-gate/${entityType}/${entityId}?${p.toString()}`
+      );
+    },
+
+    async markResourceNotApplicable(
+      boardId: string,
+      entityType: ResourceGateEntityType,
+      entityId: string,
+      data: MarkResourceNotApplicableRequest,
+    ): Promise<{ success: boolean; mark_id?: string; summary: ResourceGateSummary; warning?: string | null }> {
+      const p = new URLSearchParams({ board_id: boardId });
+      return apiClient.fetchJson(`/resource-gate/${entityType}/${entityId}/not-applicable?${p.toString()}`, {
+        method: 'POST',
+        body: JSON.stringify({ ...data, source_channel: data.source_channel || 'ui' }),
+      });
+    },
+
+    async clearResourceNotApplicable(
+      boardId: string,
+      entityType: ResourceGateEntityType,
+      entityId: string,
+      resourceType: ResourceGateResourceType,
+      data: ClearResourceNotApplicableRequest = {},
+    ): Promise<{ success: boolean; cleared: number; summary: ResourceGateSummary }> {
+      const p = new URLSearchParams({ board_id: boardId });
+      return apiClient.fetchJson(`/resource-gate/${entityType}/${entityId}/not-applicable/${resourceType}?${p.toString()}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ ...data, source_channel: data.source_channel || 'ui' }),
+      });
     },
 
     // ==================== SHARES ====================
@@ -416,6 +474,108 @@ export function useDashboardApi() {
       return apiClient.fetchJson(`/boards/${boardId}/restore/${entityType}/${entityId}`, { method: 'POST' });
     },
 
+    // ==================== STORIES ====================
+
+    async createTopic(boardId: string, data: CreateTopicRequest): Promise<TopicSummary> {
+      return apiClient.fetchJson<TopicSummary>(`/boards/${boardId}/topics`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async listTopics(boardId: string, includeArchived?: boolean): Promise<TopicSummary[]> {
+      const p = new URLSearchParams();
+      if (includeArchived) p.set('include_archived', 'true');
+      const qs = p.toString() ? `?${p.toString()}` : '';
+      return apiClient.fetchJson<TopicSummary[]>(`/boards/${boardId}/topics${qs}`);
+    },
+
+    async updateTopic(topicId: string, data: UpdateTopicRequest): Promise<TopicSummary> {
+      return apiClient.fetchJson<TopicSummary>(`/topics/${topicId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async deleteTopic(topicId: string): Promise<TopicDeleteResponse> {
+      return apiClient.fetchJson<TopicDeleteResponse>(`/topics/${topicId}`, {
+        method: 'DELETE',
+      });
+    },
+
+    async mergeTopics(sourceTopicId: string, targetTopicId: string): Promise<TopicMergeResponse> {
+      return apiClient.fetchJson<TopicMergeResponse>(`/topics/${sourceTopicId}/merge`, {
+        method: 'POST',
+        body: JSON.stringify({ target_topic_id: targetTopicId }),
+      });
+    },
+
+    async createStory(boardId: string, data: CreateStoryRequest): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/boards/${boardId}/stories`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async listStories(boardId: string, filters?: {
+      status?: string;
+      topicId?: string;
+      search?: string;
+      linked?: boolean;
+      converted?: boolean;
+      includeArchived?: boolean;
+    }): Promise<StorySummary[]> {
+      const p = new URLSearchParams();
+      if (filters?.status) p.set('status', filters.status);
+      if (filters?.topicId) p.set('topic_id', filters.topicId);
+      if (filters?.search) p.set('search', filters.search);
+      if (filters?.linked !== undefined) p.set('linked', filters.linked ? 'true' : 'false');
+      if (filters?.converted !== undefined) p.set('converted', filters.converted ? 'true' : 'false');
+      if (filters?.includeArchived) p.set('include_archived', 'true');
+      const qs = p.toString() ? `?${p.toString()}` : '';
+      return apiClient.fetchJson<StorySummary[]>(`/boards/${boardId}/stories${qs}`);
+    },
+
+    async getStory(storyId: string): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}`);
+    },
+
+    async updateStory(storyId: string, data: UpdateStoryRequest): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async moveStory(storyId: string, data: MoveStoryRequest): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}/move`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async archiveStory(storyId: string): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}`, { method: 'DELETE' });
+    },
+
+    async restoreStory(storyId: string): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}/restore`, { method: 'POST' });
+    },
+
+    async linkStoryToIdeation(storyId: string, ideationId: string): Promise<Story> {
+      return apiClient.fetchJson<Story>(`/stories/${storyId}/ideations`, {
+        method: 'POST',
+        body: JSON.stringify({ ideation_id: ideationId }),
+      });
+    },
+
+    async convertStories(boardId: string, data: StoryConversionRequest): Promise<StoryConversionResponse> {
+      return apiClient.fetchJson<StoryConversionResponse>(`/boards/${boardId}/stories/convert-to-ideation`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
     // ==================== IDEATIONS ====================
 
     async createIdeation(boardId: string, data: CreateIdeationRequest): Promise<Ideation> {
@@ -478,6 +638,25 @@ export function useDashboardApi() {
 
     async getIdeationSnapshot(ideationId: string, version: number): Promise<IdeationSnapshot> {
       return apiClient.fetchJson<IdeationSnapshot>(`/ideations/${ideationId}/snapshots/${version}`);
+    },
+
+    async listIdeationKnowledge(ideationId: string): Promise<IdeationKnowledgeSummary[]> {
+      return apiClient.fetchJson<IdeationKnowledgeSummary[]>(`/ideations/${ideationId}/knowledge`);
+    },
+
+    async getIdeationKnowledge(ideationId: string, knowledgeId: string): Promise<IdeationKnowledge> {
+      return apiClient.fetchJson<IdeationKnowledge>(`/ideations/${ideationId}/knowledge/${knowledgeId}`);
+    },
+
+    async createIdeationKnowledge(ideationId: string, data: CreateIdeationKnowledgeRequest): Promise<IdeationKnowledge> {
+      return apiClient.fetchJson<IdeationKnowledge>(`/ideations/${ideationId}/knowledge`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async deleteIdeationKnowledge(ideationId: string, knowledgeId: string): Promise<void> {
+      await apiClient.fetch(`/ideations/${ideationId}/knowledge/${knowledgeId}`, { method: 'DELETE' });
     },
 
     async listIdeationQA(ideationId: string): Promise<IdeationQAItem[]> {

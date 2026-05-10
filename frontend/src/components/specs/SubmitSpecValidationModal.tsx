@@ -16,6 +16,7 @@ import { X, Check, AlertCircle, Shield } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { BoardSettings, SpecValidationSubmitPayload } from '@/types';
+import { ValidationErrorDisplay } from './ValidationErrorDisplay';
 
 interface SubmitSpecValidationModalProps {
   specId: string;
@@ -45,6 +46,7 @@ export function SubmitSpecValidationModal({
   const [generalJustification, setGeneralJustification] = useState('');
   const [recommendation, setRecommendation] = useState<'approve' | 'reject' | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
 
   const minCompleteness = settings.min_spec_completeness ?? 80;
   const minAssertiveness = settings.min_spec_assertiveness ?? 80;
@@ -74,6 +76,7 @@ export function SubmitSpecValidationModal({
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
+    setSubmissionError(null);
     const payload: SpecValidationSubmitPayload = {
       completeness,
       completeness_justification: completenessJustification.trim(),
@@ -94,7 +97,9 @@ export function SubmitSpecValidationModal({
       onSubmitted(result);
       onClose();
     } catch (e: any) {
-      toast.error(e?.message || 'Submission failed');
+      const message = e?.message || 'Submission failed';
+      setSubmissionError(message);
+      toast.error('Validation blocked');
     } finally {
       setSubmitting(false);
     }
@@ -224,6 +229,10 @@ export function SubmitSpecValidationModal({
               </div>
             )}
           </div>
+
+          {submissionError && (
+            <ValidationErrorDisplay error={submissionError} />
+          )}
         </div>
 
         <div className="px-6 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2 bg-gray-50 dark:bg-gray-800">

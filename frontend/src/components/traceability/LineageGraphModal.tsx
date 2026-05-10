@@ -15,6 +15,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   AlertCircle,
+  BookOpen,
   Bug,
   CheckSquare,
   CircleDot,
@@ -43,7 +44,8 @@ interface Props {
   boardId: string;
 }
 
-const STAGE_X = 290;
+const BASE_STAGE_X = 580;
+const STAGE_X = (BASE_STAGE_X * 2) / 3;
 const NODE_Y = 136;
 
 type LineageFlowNodeData = Record<string, unknown> & {
@@ -54,16 +56,18 @@ type LineageFlowNodeData = Record<string, unknown> & {
 
 type LineageFlowNode = Node<LineageFlowNodeData, 'lineage'>;
 
-const stageLabels: Record<number, string> = {
-  0: 'Ideation',
-  1: 'Refinement',
-  2: 'Spec',
-  3: 'Sprint',
-  4: 'Tasks / Tests',
-  5: 'Bugs',
-};
+const stageLabels = [
+  { stage: -1, label: 'Stories' },
+  { stage: 0, label: 'Ideation' },
+  { stage: 1, label: 'Refinement' },
+  { stage: 2, label: 'Spec' },
+  { stage: 3, label: 'Sprint' },
+  { stage: 4, label: 'Tasks / Tests' },
+  { stage: 5, label: 'Bugs' },
+] as const;
 
 const relationshipLabels: Record<string, string> = {
+  feeds_ideation: 'feeds',
   has_refinement: 'refines',
   direct_spec: 'spec',
   derived_spec: 'spec',
@@ -71,10 +75,13 @@ const relationshipLabels: Record<string, string> = {
   contains_card: 'card',
   has_card: 'card',
   originates_bug: 'bug',
+  regression_test: 'test',
 };
 
 function nodeIcon(type: string) {
   switch (type) {
+    case 'story':
+      return <BookOpen size={14} />;
     case 'ideation':
       return <Lightbulb size={14} />;
     case 'refinement':
@@ -101,6 +108,12 @@ const typeStyles: Record<string, {
   badge: string;
   miniMap: string;
 }> = {
+  story: {
+    header: 'bg-blue-500/15 text-blue-300 border-blue-400/30',
+    border: 'border-blue-400/45',
+    badge: 'bg-blue-500/10 text-blue-200',
+    miniMap: '#60a5fa',
+  },
   ideation: {
     header: 'bg-amber-500/15 text-amber-300 border-amber-400/30',
     border: 'border-amber-400/45',
@@ -303,6 +316,11 @@ function miniMapNodeColor(node: Node) {
   return getTypeStyle(lineageNode?.entity_type || 'task').miniMap;
 }
 
+function canOpenDetails(node: LineageGraphNode | null) {
+  if (!node) return false;
+  return ['story', 'task', 'test', 'bug', 'card', 'ideation', 'refinement', 'spec', 'sprint'].includes(node.entity_type);
+}
+
 export function LineageGraphModal({ boardId }: Props) {
   const api = useDashboardApi();
   const { push } = useModalStack();
@@ -358,10 +376,15 @@ export function LineageGraphModal({ boardId }: Props) {
   }, [request?.entityId, request?.entityType, boardId]);
 
   const openNodeDetails = useCallback((source: LineageGraphNode | null) => {
+    if (!canOpenDetails(source)) return;
     if (!source) return;
     if (['task', 'test', 'bug', 'card'].includes(source.entity_type)) {
       openCardModal(source.entity_id);
       push({ type: 'card', id: source.entity_id });
+      return;
+    }
+    if (source.entity_type === 'story') {
+      push({ type: 'story', id: source.entity_id });
       return;
     }
     if (!['ideation', 'refinement', 'spec', 'sprint'].includes(source.entity_type)) return;
@@ -483,8 +506,12 @@ export function LineageGraphModal({ boardId }: Props) {
                   }
                 `}
               </style>
-              <div className="absolute left-4 top-4 z-10 flex max-w-[420px] gap-2 overflow-x-auto rounded-lg border border-gray-200 bg-white/95 px-2 py-1.5 shadow-sm dark:border-gray-800 dark:bg-gray-900/95">
-                {Object.entries(stageLabels).map(([stage, label]) => (
+              <div
+                data-testid="lineage-stage-bar"
+                className="absolute left-4 top-4 z-10 flex flex-wrap gap-2 overflow-visible rounded-lg border border-gray-200 bg-white/95 px-2 py-1.5 shadow-sm dark:border-gray-800 dark:bg-gray-900/95"
+                style={{ maxWidth: 'min(760px, calc(100% - 2rem))' }}
+              >
+                {stageLabels.map(({ stage, label }) => (
                   <span
                     key={stage}
                     className="whitespace-nowrap rounded bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300"
@@ -505,14 +532,16 @@ export function LineageGraphModal({ boardId }: Props) {
                     {selectedNode.entity_type}
                     {selectedNode.status ? ` / ${selectedNode.status}` : ''}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => openNodeDetails(selectedNode)}
-                    className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-cyan-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-cyan-500"
-                  >
-                    <ExternalLink size={13} />
-                    Show details
-                  </button>
+                  {canOpenDetails(selectedNode) && (
+                    <button
+                      type="button"
+                      onClick={() => openNodeDetails(selectedNode)}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-cyan-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-cyan-500"
+                    >
+                      <ExternalLink size={13} />
+                      Show details
+                    </button>
+                  )}
                 </div>
               )}
               <ReactFlow

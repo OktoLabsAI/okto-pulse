@@ -5,7 +5,7 @@
  *   * **Graph DB** (default tab): graph database memory tuning. Changing any field
  *     here flips ``restart_required`` because the database is
  *     constructor-time. Banner amber sinaliza isso.
- *   * **Event Queue** (new in v0.1.14): consolidation queue throughput
+ *   * **Event Queue** (new in v0.2.0): consolidation queue throughput
  *     knobs (max workers, throttle, claim timeout, max attempts, alert
  *     threshold) + Live Queue Health panel polling /api/v1/kg/queue/health
  *     every 2000ms. Banner azul reforça que hot-reload é a semântica.
@@ -44,10 +44,12 @@ interface RuntimeSettingsPanelProps {
 // runtime knobs (graph storage, queue, decay tick).
 type ActiveTab = 'graphdb' | 'eventqueue' | 'decaytick';
 
+const GRAPH_DB_MAX_SIZE_GB_OPTIONS = [2, 4, 8, 16, 32, 64] as const;
+
 const RANGES: Record<keyof Omit<RuntimeSettings, 'restart_required'>, { min: number; max: number }> = {
   // Graph DB tab
-  kg_kuzu_buffer_pool_mb: { min: 16, max: 512 },
-  kg_kuzu_max_db_size_gb: { min: 1, max: 64 },
+  kg_kuzu_buffer_pool_mb: { min: 128, max: 512 },
+  kg_kuzu_max_db_size_gb: { min: 2, max: 64 },
   kg_connection_pool_size: { min: 1, max: 32 },
   // Event Queue tab
   kg_queue_max_concurrent_workers: { min: 1, max: 16 },
@@ -175,6 +177,12 @@ export function RuntimeSettingsPanel({
     return (Object.keys(RANGES) as Array<keyof typeof RANGES>).some((key) => {
       const v = draft[key];
       const { min, max } = RANGES[key];
+      if (
+        key === 'kg_kuzu_max_db_size_gb'
+        && !GRAPH_DB_MAX_SIZE_GB_OPTIONS.includes(v as typeof GRAPH_DB_MAX_SIZE_GB_OPTIONS[number])
+      ) {
+        return true;
+      }
       return !Number.isFinite(v) || v < min || v > max;
     });
   }, [draft]);
@@ -520,17 +528,16 @@ function GraphDBTab({ draft, onChange, budgetMb }: GraphDBTabProps) {
     <div className="px-6 py-5 space-y-4">
       <SettingField
         label="Graph DB buffer pool per board (MB)"
-        description="Recommended 32-128 MB. Safe default: 48."
+        description="Recommended 512 MB for Ladybug HNSW commits. Safe default: 512."
         value={draft.kg_kuzu_buffer_pool_mb}
         range={RANGES.kg_kuzu_buffer_pool_mb}
         onChange={(v) => onChange('kg_kuzu_buffer_pool_mb', v)}
         testId="input-buffer-pool-mb"
       />
-      <SettingField
+      <GraphMaxDbSizeField
         label="Graph DB max database size per board (GB)"
-        description="Virtual address space. Does not commit memory until used."
+        description="Ladybug requires a power-of-2 size in bytes. Default: 2 GB."
         value={draft.kg_kuzu_max_db_size_gb}
-        range={RANGES.kg_kuzu_max_db_size_gb}
         onChange={(v) => onChange('kg_kuzu_max_db_size_gb', v)}
         testId="input-max-db-size-gb"
       />
@@ -808,6 +815,61 @@ function useQueueHealth(active: boolean): QueueHealth | null {
   }, [active]);
 
   return health;
+}
+
+interface GraphMaxDbSizeFieldProps {
+  label: string;
+  description: string;
+  value: number;
+  onChange: (raw: string) => void;
+  testId: string;
+}
+
+function GraphMaxDbSizeField({
+  label,
+  description,
+  value,
+  onChange,
+  testId,
+}: GraphMaxDbSizeFieldProps) {
+  const currentIndex = Math.max(
+    0,
+    GRAPH_DB_MAX_SIZE_GB_OPTIONS.findIndex((option) => option === value),
+  );
+  const displayed =
+    GRAPH_DB_MAX_SIZE_GB_OPTIONS[currentIndex] ?? GRAPH_DB_MAX_SIZE_GB_OPTIONS[0];
+
+  return (
+    <div>
+      <label className="text-xs font-medium text-gray-700 dark:text-gray-200 block mb-0.5">
+        {label}
+      </label>
+      <p className="text-[10px] text-gray-400 mb-1.5">{description}</p>
+      <div className="flex items-center gap-3">
+        <input
+          type="range"
+          min={0}
+          max={GRAPH_DB_MAX_SIZE_GB_OPTIONS.length - 1}
+          step={1}
+          value={currentIndex}
+          onChange={(e) => {
+            const idx = Number(e.target.value);
+            onChange(String(GRAPH_DB_MAX_SIZE_GB_OPTIONS[idx]));
+          }}
+          data-testid={testId}
+          className="flex-1 accent-blue-600"
+        />
+        <span className="w-14 text-xs font-semibold tabular-nums text-gray-700 dark:text-gray-100">
+          {displayed} GB
+        </span>
+      </div>
+      <div className="mt-1 flex justify-between text-[9px] text-gray-400">
+        {GRAPH_DB_MAX_SIZE_GB_OPTIONS.map((option) => (
+          <span key={option}>{option}</span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 interface SettingFieldProps {

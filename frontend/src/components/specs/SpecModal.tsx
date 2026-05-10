@@ -55,6 +55,7 @@ import { TechnicalRequirementsTab } from './TechnicalRequirementsTab';
 import { DecisionsTab } from './DecisionsTab';
 import { KGValidationTab } from './KGValidationTab';
 import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
+import { ValidationErrorDisplay } from './ValidationErrorDisplay';
 import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
 import { SPEC_STATUSES, SPEC_STATUS_LABELS } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
@@ -64,6 +65,7 @@ import { RefinementModal } from '@/components/refinements/RefinementModal';
 import { EditableField } from '@/components/shared/EditableField';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 import { ArchitectureTab } from '@/components/architecture';
+import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 
 interface SpecModalProps {
   specId: string;
@@ -1229,60 +1231,6 @@ function KnowledgeTab({ specId }: { specId: string }) {
    Validation Error Display — parses gate errors into readable items
    ============================================================ */
 
-function ValidationErrorDisplay({ error }: { error: string }) {
-  // Try to extract structured info from the error message
-  // Backend returns: "Cannot validate spec: N test scenario(s)... REQUIRED ACTION: ..."
-  // Or Pydantic: [{"type":"enum","loc":["body","status"],"msg":"..."}]
-
-  // Split on "REQUIRED ACTION:" to separate issue from fix
-  const reqIdx = error.indexOf('REQUIRED ACTION:');
-  const issue = reqIdx > 0 ? error.slice(0, reqIdx).trim() : error;
-  const action = reqIdx > 0 ? error.slice(reqIdx + 16).trim() : null;
-
-  // Try to detect gate type from keywords
-  let gateType = 'unknown';
-  if (error.includes('test scenario')) { gateType = 'Test Coverage'; }
-  else if (error.includes('business rule')) { gateType = 'Rules Coverage'; }
-  else if (error.includes('technical requirement') || error.includes('TR')) { gateType = 'TRs Coverage'; }
-  else if (error.includes('api contract') || error.includes('contract')) { gateType = 'Contract Coverage'; }
-  else if (error.includes('evaluation') || error.includes('approval')) { gateType = 'Qualitative Validation'; }
-  else if (error.includes('state machine') || error.includes('transition')) { gateType = 'State Transition'; }
-
-  return (
-    <div className="space-y-3">
-      <p className="text-sm text-gray-500 dark:text-gray-400">
-        The following gate must be satisfied before the spec can be validated:
-      </p>
-
-      {/* Gate type badge */}
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 font-semibold uppercase tracking-wide">
-          {gateType}
-        </span>
-      </div>
-
-      {/* Issue description */}
-      <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-        <p className="text-sm text-red-800 dark:text-red-200 leading-relaxed">
-          {issue}
-        </p>
-      </div>
-
-      {/* Required action */}
-      {action && (
-        <div className="bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
-          <p className="text-[10px] font-semibold text-amber-700 dark:text-amber-300 uppercase tracking-wide mb-1">
-            Required Action
-          </p>
-          <p className="text-sm text-amber-800 dark:text-amber-200 leading-relaxed">
-            {action}
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* ============================================================
    Main SpecModal
    ============================================================ */
@@ -1590,6 +1538,11 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {activeTab === 'details' && (
             <div className="space-y-5">
+              <ResourceGateSummary
+                boardId={spec.board_id || _boardId}
+                entityType="spec"
+                entityId={specId}
+              />
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Description</h4>
                 <EditableField

@@ -61,6 +61,7 @@ export const PRIORITY_COLORS: Record<CardPriority, { badge: string; borderColor:
 export type CardType = 'normal' | 'bug' | 'test';
 
 export type LineageEntityType =
+  | 'story'
   | 'ideation'
   | 'refinement'
   | 'spec'
@@ -109,6 +110,61 @@ export interface LineageGraphResponse {
   edges: LineageGraphEdge[];
   summary: Record<string, number>;
   warnings: string[];
+}
+
+export type ResourceGateEntityType = 'ideation' | 'refinement' | 'spec' | 'card';
+export type ResourceGateResourceType = 'architecture' | 'mockup' | 'knowledge_base';
+export type ResourceGateState = 'provided' | 'not_applicable' | 'missing';
+
+export interface ResourceGateRef {
+  id: string;
+  title?: string | null;
+  source_entity_type?: string | null;
+  source_entity_id?: string | null;
+  [key: string]: unknown;
+}
+
+export interface ResourceGateNaMark {
+  id?: string;
+  active: boolean;
+  effective?: boolean;
+  justification?: string | null;
+  source_channel?: 'ui' | 'api' | 'mcp' | string;
+  created_by?: string | null;
+  created_at?: string | null;
+}
+
+export interface ResourceGateResource {
+  resource_type: ResourceGateResourceType;
+  state: ResourceGateState;
+  direct_count: number;
+  inherited_count: number;
+  direct_refs?: ResourceGateRef[];
+  inherited_refs?: ResourceGateRef[];
+  na_mark?: ResourceGateNaMark | null;
+  remediation?: string | null;
+  reason?: string | null;
+}
+
+export interface ResourceGateSummary {
+  board_id: string;
+  entity_type: ResourceGateEntityType;
+  entity_id: string;
+  resources: ResourceGateResource[];
+  blocking: boolean;
+  missing_resources: ResourceGateResource[];
+  warnings: Array<{ code?: string; message: string; resource_type?: string }>;
+}
+
+export interface MarkResourceNotApplicableRequest {
+  resource_type: ResourceGateResourceType;
+  source_channel?: 'ui' | 'api' | 'mcp';
+  justification?: string | null;
+}
+
+export interface ClearResourceNotApplicableRequest {
+  source_channel?: 'ui' | 'api' | 'mcp';
+  reason?: string | null;
 }
 
 // Bug severity
@@ -427,6 +483,38 @@ export interface IdeationSnapshotSummary {
   created_at: string;
 }
 
+// Ideation Knowledge Base
+export interface IdeationKnowledge {
+  id: string;
+  ideation_id: string;
+  title: string;
+  description: string | null;
+  content: string;
+  mime_type: string;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IdeationKnowledgeSummary {
+  id: string;
+  ideation_id: string;
+  title: string;
+  description: string | null;
+  mime_type: string;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  created_at: string;
+}
+
 // Refinement Snapshot
 export interface RefinementSnapshot {
   id: string;
@@ -566,6 +654,7 @@ export interface TestScenario {
   linked_task_ids: string[] | null;
   created_at?: string;
   evidence?: TestScenarioEvidence | null;
+  latest_evidence?: TestScenarioEvidence | null;
 }
 
 // Screen Mockups
@@ -583,6 +672,92 @@ export interface ScreenMockup {
   html_content: string;
   annotations: MockupAnnotation[] | null;
   order: number;
+  origin_id?: string | null;
+  origin_story_id?: string | null;
+  origin_entity_type?: string | null;
+}
+
+export type StoryStatus = 'draft' | 'triage' | 'ready' | 'converted';
+
+export const STORY_STATUSES: StoryStatus[] = ['draft', 'triage', 'ready', 'converted'];
+
+export const STORY_STATUS_LABELS: Record<StoryStatus, string> = {
+  draft: 'Draft',
+  triage: 'Triage',
+  ready: 'Ready',
+  converted: 'Converted',
+};
+
+export interface Topic {
+  id: string;
+  board_id: string;
+  name: string;
+  description: string | null;
+  archived: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TopicSummary extends Topic {
+  story_count: number;
+  active_count?: number;
+  archived_count?: number;
+  total_associated_count?: number;
+}
+
+export interface TopicDeleteResponse {
+  success: boolean;
+  deleted_topic_id: string;
+}
+
+export interface TopicMergeRequest {
+  target_topic_id: string;
+}
+
+export interface TopicMergeResponse {
+  success: boolean;
+  source: TopicSummary;
+  target: TopicSummary;
+  moved_count: number;
+  active_count: number;
+  archived_count: number;
+  target_total_before: number;
+  target_total_after: number;
+}
+
+export interface StoryIdeationLink {
+  id: string;
+  board_id: string;
+  story_id: string;
+  ideation_id: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface StorySummary {
+  id: string;
+  board_id: string;
+  topic_id: string;
+  title: string;
+  description: string;
+  actor: string | null;
+  goal: string | null;
+  benefit: string | null;
+  labels: string[] | null;
+  status: StoryStatus;
+  assignee_id: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  archived: boolean;
+  pre_archive_status: string | null;
+  screen_mockups: ScreenMockup[] | null;
+  ideation_links: StoryIdeationLink[];
+}
+
+export interface Story extends StorySummary {
+  topic: Topic | null;
 }
 
 // Architecture Design
@@ -867,7 +1042,9 @@ export interface Ideation {
   archived?: boolean;
   pre_archive_status?: string | null;
   refinements: RefinementSummary[];
+  stories: StorySummary[];
   specs: SpecSummary[];
+  knowledge_bases: IdeationKnowledgeSummary[];
   qa_items: IdeationQAItem[];
 }
 
@@ -1052,11 +1229,13 @@ export interface BoardSettings {
   min_confidence: number;
   min_completeness: number;
   max_drift: number;
-  // Spec Validation Gate settings (opt-in, default false)
+  // Spec Validation Gate settings (default enabled unless explicitly disabled)
   require_spec_validation?: boolean;
   min_spec_completeness?: number;
   min_spec_assertiveness?: number;
   max_spec_ambiguity?: number;
+  // Resource Gate Level 2 - effective spec resources must be copied/attached to tasks.
+  require_spec_resource_task_coverage?: boolean;
   // NC-9 evidence gate bypass (Wave 2 spec 873e98cc, frontend spec 5cb09dbc)
   skip_test_evidence_global?: boolean;
 }
@@ -1331,6 +1510,65 @@ export interface MoveSpecRequest {
   status: SpecStatus;
 }
 
+// Story request types
+export interface CreateTopicRequest {
+  name: string;
+  description?: string;
+}
+
+export interface UpdateTopicRequest {
+  name?: string;
+  description?: string | null;
+  archived?: boolean;
+}
+
+export interface CreateStoryRequest {
+  title: string;
+  description: string;
+  topic_id: string;
+  actor?: string;
+  goal?: string;
+  benefit?: string;
+  labels?: string[];
+  status?: StoryStatus;
+  assignee_id?: string;
+  screen_mockups?: ScreenMockup[];
+}
+
+export interface UpdateStoryRequest {
+  title?: string;
+  description?: string;
+  topic_id?: string;
+  actor?: string | null;
+  goal?: string | null;
+  benefit?: string | null;
+  labels?: string[];
+  assignee_id?: string | null;
+  screen_mockups?: ScreenMockup[];
+}
+
+export interface MoveStoryRequest {
+  status: StoryStatus;
+}
+
+export interface StoryConversionRequest {
+  story_ids: string[];
+  ideation_id?: string;
+  title?: string;
+  description?: string;
+  problem_statement?: string;
+  proposed_approach?: string;
+  mockup_ids?: string[];
+  mark_converted?: boolean;
+}
+
+export interface StoryConversionResponse {
+  success: boolean;
+  ideation: Record<string, unknown>;
+  links: StoryIdeationLink[];
+  propagated_mockups: number;
+}
+
 // Ideation request types
 export interface CreateIdeationRequest {
   title: string;
@@ -1377,7 +1615,14 @@ export interface UpdateRefinementRequest {
 }
 
 
-// Spec Knowledge request types
+// Knowledge request types
+export interface CreateIdeationKnowledgeRequest {
+  title: string;
+  description?: string;
+  content: string;
+  mime_type?: string;
+}
+
 export interface CreateSpecKnowledgeRequest {
   title: string;
   description?: string;

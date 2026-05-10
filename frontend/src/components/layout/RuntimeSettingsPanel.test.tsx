@@ -13,8 +13,8 @@ import * as healthApi from '@/services/queue-health-api';
 import * as kgTickApi from '@/services/kg-tick-api';
 
 const FRESH_SETTINGS: runtimeApi.RuntimeSettings = {
-  kg_kuzu_buffer_pool_mb: 48,
-  kg_kuzu_max_db_size_gb: 8,
+  kg_kuzu_buffer_pool_mb: 512,
+  kg_kuzu_max_db_size_gb: 2,
   kg_connection_pool_size: 4,
   kg_queue_max_concurrent_workers: 4,
   kg_queue_min_interval_ms: 100,
@@ -114,7 +114,7 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
     await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
 
     // Edit Graph DB field
-    fireEvent.change(screen.getByTestId('input-buffer-pool-mb'), { target: { value: '96' } });
+    fireEvent.change(screen.getByTestId('input-buffer-pool-mb'), { target: { value: '256' } });
     // Switch to Event Queue, edit there
     fireEvent.click(screen.getByTestId('tab-eventqueue'));
     await waitFor(() => screen.getByTestId('input-max-workers'));
@@ -124,8 +124,24 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
 
     await waitFor(() => expect(putSpy).toHaveBeenCalled());
     const lastCallPayload = putSpy.mock.calls[0][0];
-    expect(lastCallPayload.kg_kuzu_buffer_pool_mb).toBe(96);
+    expect(lastCallPayload.kg_kuzu_buffer_pool_mb).toBe(256);
     expect(lastCallPayload.kg_queue_max_concurrent_workers).toBe(8);
+  });
+
+  test('Graph DB max database size usa slider com valores válidos do Ladybug', async () => {
+    const putSpy = vi.mocked(runtimeApi.putRuntimeSettings);
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+    await waitFor(() => screen.getByTestId('input-max-db-size-gb'));
+
+    const maxDbSlider = screen.getByTestId('input-max-db-size-gb') as HTMLInputElement;
+    expect(maxDbSlider.type).toBe('range');
+
+    fireEvent.change(maxDbSlider, { target: { value: '3' } }); // 16 GB
+    fireEvent.click(screen.getByTestId('save-runtime-settings'));
+
+    await waitFor(() => expect(putSpy).toHaveBeenCalled());
+    const lastCallPayload = putSpy.mock.calls[0][0];
+    expect(lastCallPayload.kg_kuzu_max_db_size_gb).toBe(16);
   });
 });
 
