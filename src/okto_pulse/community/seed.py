@@ -189,12 +189,13 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
 
 
 async def _commit_demo_graph(board_id: str, spec_id: str) -> None:
-    """Drive a single primitives consolidation that adds >=3 nodes + 1 edge.
+    """Drive a single primitives consolidation that adds >=4 nodes + 1 edge.
 
     Kept inline so the seed module has no test-only fixtures of its own.
     The candidate shapes mirror what a real spec consolidation produces
-    (Entity + Decision + Criterion + a validates-edge) so the demo graph
-    shows the common node/edge types the UI renders.
+    (Entity + Decision + Criterion + Alternative + a schema-supported
+    relates_to edge) so the demo graph shows common node/edge types the UI
+    renders.
     """
     import gc
 
@@ -277,13 +278,24 @@ async def _commit_demo_graph(board_id: str, spec_id: str) -> None:
             source_artifact_ref=f"spec:{spec_id}",
             source_confidence=0.8,
         ),
+        NodeCandidate(
+            candidate_id=f"demo_alternative_{short}",
+            node_type=KGNodeType.ALTERNATIVE,
+            title="Demo Alternative",
+            content=(
+                "Represents an alternate implementation path considered by "
+                "the demo decision."
+            ),
+            source_artifact_ref=f"spec:{spec_id}",
+            source_confidence=0.8,
+        ),
     ]
     edges = [
         EdgeCandidate(
             candidate_id=f"demo_edge_{short}",
-            edge_type=KGEdgeType.VALIDATES,
-            from_candidate_id=nodes[2].candidate_id,
-            to_candidate_id=nodes[0].candidate_id,
+            edge_type=KGEdgeType.RELATES_TO,
+            from_candidate_id=nodes[1].candidate_id,
+            to_candidate_id=nodes[3].candidate_id,
             confidence=0.85,
         ),
     ]
