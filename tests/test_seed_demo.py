@@ -15,8 +15,9 @@ CORE_SRC_CANDIDATES = (
     WORKSPACE_ROOT / "okto_labs_pulse_core" / "src",
 )
 
-for p in (REPO_SRC, *CORE_SRC_CANDIDATES):
-    if p.exists() and str(p) not in sys.path:
+source_paths = [p for p in (REPO_SRC, *CORE_SRC_CANDIDATES) if p.exists()]
+for p in reversed(source_paths):
+    if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
 for mod in list(sys.modules):
