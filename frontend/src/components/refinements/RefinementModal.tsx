@@ -46,6 +46,7 @@ import { ContextSelector, buildRefinementItems, type SelectableItem } from '@/co
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { ArchitectureTab } from '@/components/architecture';
+import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 
 interface RefinementModalProps {
   refinementId: string;
@@ -1016,12 +1017,12 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
         )}
 
         {/* Tabs */}
-        <div className="flex items-center gap-1 px-6 pt-3 border-b border-gray-200 dark:border-gray-700">
+        <div className="flex items-center gap-1 px-6 pt-3 border-b border-gray-200 dark:border-gray-700 overflow-x-auto shrink-0 scrollbar-hide">
           {tabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap shrink-0 ${
                 activeTab === tab.id
                   ? 'border-blue-500 text-blue-600 dark:text-blue-400'
                   : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
@@ -1046,6 +1047,11 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {activeTab === 'details' && (
             <div className="space-y-5">
+              <ResourceGateSummary
+                boardId={refinement.board_id || _boardId}
+                entityType="refinement"
+                entityId={refinementId}
+              />
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Description</h4>
                 <EditableField

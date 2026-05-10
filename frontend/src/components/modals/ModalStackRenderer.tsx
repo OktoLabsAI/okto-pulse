@@ -18,15 +18,19 @@
  * to participate in the stack.
  */
 
+import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { useModalStack } from '@/contexts/ModalStackContext';
 import { CardModal } from '@/components/kanban/CardModal';
+import { StoryModal } from '@/components/stories';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { RefinementModal } from '@/components/refinements/RefinementModal';
 import { SprintModal } from '@/components/sprints/SprintModal';
 import { NodeDetailModal } from '@/components/knowledge/NodeDetailModal';
+import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
+import type { TopicSummary } from '@/types';
 
 interface Props {
   /** Current board id. Required by most entity modals to scope lookups. */
@@ -34,10 +38,28 @@ interface Props {
 }
 
 export function ModalStackRenderer({ boardId }: Props) {
+  const api = useDashboardApi();
   const { stack, pop, clear } = useModalStack();
   const openCardInStore = useDashboardStore((s) => s.openCardModal);
   const closeCardInStore = useDashboardStore((s) => s.closeCardModal);
+  const [storyTopics, setStoryTopics] = useState<TopicSummary[]>([]);
   const top = stack[stack.length - 1];
+
+  useEffect(() => {
+    if (top?.type !== 'story') return;
+    let active = true;
+    api.listTopics(boardId, true)
+      .then((topics) => {
+        if (active) setStoryTopics(topics);
+      })
+      .catch(() => {
+        if (active) setStoryTopics([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [boardId, top?.id, top?.type]);
+
   if (!top) return null;
 
   // Clear the stack AND sync the dashboard store for card-type modals so
@@ -86,6 +108,18 @@ export function ModalStackRenderer({ boardId }: Props) {
           fetches by id might keep stale state. */}
       {top.type === 'card' && (
         <CardModal key={`card-${top.id}`} boardId={boardId} onClose={handleClose} />
+      )}
+      {top.type === 'story' && (
+        <StoryModal
+          key={`story-${top.id}`}
+          boardId={boardId}
+          storyId={top.id}
+          topics={storyTopics}
+          onClose={handleClose}
+          onChanged={() => {
+            /* drill-down is read-only from here */
+          }}
+        />
       )}
       {top.type === 'spec' && (
         <SpecModal

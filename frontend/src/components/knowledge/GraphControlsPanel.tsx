@@ -41,6 +41,12 @@ interface Props {
   boardId?: string;
   /** Distribution data for the relevance mini-histogram below the slider. */
   relevanceScores?: number[];
+  /** Number of nodes visible after the local UI filters are applied. */
+  visibleNodeCount?: number;
+  /** Board-level node totals by type from /stats, including types not on the current page. */
+  nodeTypeCounts?: Partial<Record<KGNodeType, number>>;
+  /** Board-level total node count from KG health when available. */
+  totalNodeCount?: number;
 }
 
 const SUB_VIEWS: { key: SubView; label: string }[] = [
@@ -74,9 +80,21 @@ export function GraphControlsPanel({
   onNodeLimitChange,
   boardId,
   relevanceScores = [],
+  visibleNodeCount,
+  nodeTypeCounts,
+  totalNodeCount,
 }: Props) {
   const perms = usePermissions(boardId);
   const updateFilters = (patch: Partial<Filters>) => onFiltersChange({ ...filters, ...patch });
+  const effectiveVisibleNodeCount = visibleNodeCount ?? nodeCount;
+  const totalSuffix =
+    typeof totalNodeCount === 'number' && totalNodeCount > nodeCount
+      ? ` / total ${totalNodeCount}`
+      : '';
+  const nodeCountLabel =
+    effectiveVisibleNodeCount === nodeCount
+      ? `showing ${nodeCount}${totalSuffix}`
+      : `visible ${effectiveVisibleNodeCount} / loaded ${nodeCount}${totalSuffix}`;
 
   const visibleSubViews = SUB_VIEWS.filter((sv) => {
     const requiredFlag = SUB_VIEW_GATES[sv.key];
@@ -126,7 +144,7 @@ export function GraphControlsPanel({
       <div>
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-xs font-medium text-gray-500 uppercase">
-            Node Types (showing {nodeCount})
+            Node Types ({nodeCountLabel})
           </h3>
           <div className="flex gap-1.5 text-[10px]">
             <button
@@ -154,6 +172,7 @@ export function GraphControlsPanel({
           {ALL_NODE_TYPES.map((nt) => {
             const config = NODE_TYPE_CONFIG[nt];
             const checked = filters.types.length === 0 || filters.types.includes(nt);
+            const typeCount = nodeTypeCounts ? nodeTypeCounts[nt] ?? 0 : undefined;
             return (
               <label key={nt} className="flex items-center gap-2 text-xs cursor-pointer">
                 <input
@@ -176,6 +195,14 @@ export function GraphControlsPanel({
                 <span className="text-gray-700 dark:text-gray-300">
                   {config.icon} {nt}
                 </span>
+                {typeCount !== undefined && (
+                  <span
+                    className="ml-auto rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+                    title={`Total ${nt} nodes in KG`}
+                  >
+                    {typeCount}
+                  </span>
+                )}
               </label>
             );
           })}

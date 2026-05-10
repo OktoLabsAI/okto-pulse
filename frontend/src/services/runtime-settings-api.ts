@@ -12,7 +12,7 @@ export interface RuntimeSettings {
   kg_kuzu_max_db_size_gb: number;
   kg_connection_pool_size: number;
   // Event Queue tab — hot-reload (no restart needed).
-  // Spec bdcda842 v0.1.14+: 5 new settings exposed by the worker pool.
+  // Spec bdcda842 v0.2.0+: 5 new settings exposed by the worker pool.
   kg_queue_max_concurrent_workers: number;
   kg_queue_min_interval_ms: number;
   kg_queue_claim_timeout_s: number;
@@ -58,6 +58,23 @@ export const DECAY_TICK_KEYS = [
 
 const BASE = '/api/v1';
 
+function extractErrorMessage(err: any, fallback: string): string {
+  const detail = err?.detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => item?.msg || item?.message)
+      .filter(Boolean);
+    if (messages.length > 0) return messages.join('; ');
+  }
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (detail && typeof detail === 'object') {
+    const msg = detail.msg || detail.message || detail.error;
+    if (typeof msg === 'string' && msg.trim()) return msg;
+  }
+  if (typeof err?.message === 'string' && err.message.trim()) return err.message;
+  return fallback;
+}
+
 export async function getRuntimeSettings(): Promise<RuntimeSettings> {
   const resp = await fetch(`${BASE}/settings/runtime`, {
     headers: { 'Content-Type': 'application/json' },
@@ -66,7 +83,7 @@ export async function getRuntimeSettings(): Promise<RuntimeSettings> {
     const err = await resp
       .json()
       .catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
+    throw new Error(extractErrorMessage(err, `HTTP ${resp.status}`));
   }
   return resp.json();
 }
@@ -83,7 +100,7 @@ export async function putRuntimeSettings(
     const err = await resp
       .json()
       .catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
+    throw new Error(extractErrorMessage(err, `HTTP ${resp.status}`));
   }
   return resp.json();
 }

@@ -30,6 +30,9 @@ import { driftIconFor } from './driftIcon';
 // ---------------------------------------------------------------------------
 
 interface FunnelData {
+  stories?: number;
+  stories_converted?: number;
+  story_conversion_pct?: number;
   ideations: number;
   refinements: number;
   specs: number;
@@ -696,9 +699,16 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
           </h3>
           <div className="space-y-3">
             <FunnelBar
+              label="Stories"
+              count={data.funnel.stories ?? 0}
+              totalIdeations={Math.max(data.funnel.stories ?? 0, data.funnel.ideations)}
+              showConversion={false}
+              colors="bg-blue-400"
+            />
+            <FunnelBar
               label="Ideations"
               count={data.funnel.ideations}
-              totalIdeations={data.funnel.ideations}
+              totalIdeations={Math.max(data.funnel.stories ?? 0, data.funnel.ideations)}
               showConversion={false}
               colors="bg-amber-400"
             />

@@ -1082,7 +1082,7 @@ These flags bypass specific coverage checks for the entire board:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| \`require_task_validation\` | false | Enable the validation column on the Kanban board |
+| \`require_task_validation\` | true | Enable the validation column on the Kanban board |
 | \`min_confidence\` | 70 | Minimum confidence score to pass (0–100) |
 | \`min_completeness\` | 80 | Minimum completeness score to pass (0–100) |
 | \`max_drift\` | 50 | Maximum drift score allowed (0–100) |
@@ -1091,9 +1091,9 @@ These flags bypass specific coverage checks for the entire board:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| \`require_spec_validation\` | false | Enable the spec validation gate (approved → validated) |
-| \`min_spec_completeness\` | 70 | Minimum completeness score |
-| \`min_spec_assertiveness\` | 70 | Minimum assertiveness score |
+| \`require_spec_validation\` | true | Enable the spec validation gate (approved → validated) |
+| \`min_spec_completeness\` | 80 | Minimum completeness score |
+| \`min_spec_assertiveness\` | 80 | Minimum assertiveness score |
 | \`max_spec_ambiguity\` | 30 | Maximum ambiguity score |
 
 ### Other settings

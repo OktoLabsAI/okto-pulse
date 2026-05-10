@@ -13,7 +13,7 @@
  * single-click preview is rendered by GraphCanvas itself (AC-8).
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, HelpCircle, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { GraphCanvas } from './GraphCanvas';
 import { KGHelpModal } from './KGHelpModal';
@@ -30,7 +30,7 @@ import { GlobalSearchView } from './GlobalSearchView';
 import { KGRefreshButton } from './KGRefreshButton';
 import { NodeDetailModal } from './NodeDetailModal';
 import { useKgLiveEvents } from '@/hooks/useKgLiveEvents';
-import type { KGNode, KGEdge } from '@/types/knowledge-graph';
+import type { KGNode, KGEdge, KGStats } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
 import { getKGHealth, type KGHealth } from '@/services/kg-health-api';
 
@@ -41,6 +41,7 @@ interface Props {
 type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'settings' | 'global';
 
 const DEFAULT_NODE_LIMIT = 100;
+const HIDE_ALL_NODE_TYPE = '__hide_all__';
 const DEFAULT_FILTERS: Filters = {
   types: [],
   edgeTypes: [],
@@ -128,6 +129,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
   const [edges, setEdges] = useState<KGEdge[]>([]);
   const [graphMetadata, setGraphMetadata] = useState<kgApi.GraphMetadata | null>(null);
   const [healthSnapshot, setHealthSnapshot] = useState<KGHealth | null>(null);
+  const [statsSnapshot, setStatsSnapshot] = useState<KGStats | null>(null);
   const [historicalProgress, setHistoricalProgress] = useState<kgApi.HistoricalProgress | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<KGNode | null>(null);
@@ -152,6 +154,10 @@ export function KnowledgeGraphPage({ boardId }: Props) {
   });
   const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
+  const serverNodeType = useMemo(() => {
+    const realTypes = filters.types.filter((type) => String(type) !== HIDE_ALL_NODE_TYPE);
+    return filters.types.length > 0 && realTypes.length === 1 ? realTypes[0] : undefined;
+  }, [filters.types]);
 
   // Shift+/ opens the help modal while the KG page is mounted. We bind on
   // window but only while the page is active; preventDefault stops the
@@ -189,15 +195,17 @@ export function KnowledgeGraphPage({ boardId }: Props) {
       setLoading(true);
       setError(null);
       try {
-        const [data, health, historical] = await Promise.all([
-          kgApi.getSubgraph(boardId, { limit, min_relevance: 0 }),
+        const [data, health, historical, stats] = await Promise.all([
+          kgApi.getSubgraph(boardId, { limit, min_relevance: 0, type: serverNodeType }),
           getKGHealth(boardId).catch(() => null),
           kgApi.getHistoricalProgress(boardId).catch(() => null),
+          kgApi.getStats(boardId).catch(() => null),
         ]);
         setNodes(data.nodes || []);
         setEdges(data.edges || []);
         setGraphMetadata(data.metadata ?? null);
         setHealthSnapshot(health);
+        setStatsSnapshot(stats);
         setHistoricalProgress(historical);
         setNextCursor(data.next_cursor ?? null);
       } catch (err) {
@@ -206,7 +214,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         setLoading(false);
       }
     },
-    [boardId],
+    [boardId, serverNodeType],
   );
 
   useEffect(() => {
@@ -237,6 +245,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         limit: nodeLimit,
         cursor: nextCursor,
         min_relevance: 0,
+        type: serverNodeType,
       });
       // Dedupe appended nodes/edges on id to defend against overlap if the
       // cursor was advanced by a concurrent consolidation.
@@ -257,11 +266,25 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     } finally {
       setLoadingMore(false);
     }
-  }, [boardId, nodeLimit, nextCursor, loadingMore, graphMetadata]);
+  }, [boardId, nodeLimit, nextCursor, loadingMore, graphMetadata, serverNodeType]);
 
   const handleClearFilters = useCallback(() => {
     setFilters(DEFAULT_FILTERS);
   }, []);
+
+  const visibleNodeCount = useMemo(() => {
+    const search = filters.searchQuery.trim().toLowerCase();
+    return nodes.filter((node) => {
+      if (filters.types.length > 0 && !filters.types.includes(node.node_type)) return false;
+      if ((node.relevance_score ?? 0) < filters.minRelevance) return false;
+      if (!search) return true;
+      return (
+        node.title.toLowerCase().includes(search) ||
+        (node.content ?? '').toLowerCase().includes(search) ||
+        (node.justification ?? '').toLowerCase().includes(search)
+      );
+    }).length;
+  }, [filters.minRelevance, filters.searchQuery, filters.types, nodes]);
 
   const handleAdjustRelevance = useCallback((value: number) => {
     setFilters((prev) => ({ ...prev, minRelevance: value }));
@@ -402,6 +425,9 @@ export function KnowledgeGraphPage({ boardId }: Props) {
             onNodeLimitChange={handleNodeLimitChange}
             boardId={boardId}
             relevanceScores={nodes.map((n) => n.relevance_score ?? 0)}
+            visibleNodeCount={visibleNodeCount}
+            nodeTypeCounts={statsSnapshot?.node_counts_by_type}
+            totalNodeCount={healthSnapshot?.total_nodes ?? undefined}
           />
         </div>
       </div>

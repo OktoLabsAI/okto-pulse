@@ -53,6 +53,12 @@ describe('GraphControlsPanel — edge type chips (S4.4, AC-5)', () => {
     expect(screen.getAllByTestId(/^kg-edge-chip-/)).toHaveLength(ALL_EDGE_TYPES.length);
   });
 
+  it('includes deterministic lineage and coverage edge types emitted by the backend schema', () => {
+    renderPanel();
+    expect(screen.getByTestId('kg-edge-chip-originates_from')).toBeInTheDocument();
+    expect(screen.getByTestId('kg-edge-chip-covered_by')).toBeInTheDocument();
+  });
+
   it('clicking a chip when all edges are visible hides only that type', () => {
     const { onFiltersChange } = renderPanel();
     fireEvent.click(screen.getByTestId('kg-edge-chip-contradicts'));
@@ -100,6 +106,20 @@ describe('GraphControlsPanel — relevance slider (S4.5, AC-6)', () => {
     expect(onFiltersChange).toHaveBeenCalledTimes(1);
     const next = onFiltersChange.mock.calls[0][0] as Filters;
     expect(next.minRelevance).toBeCloseTo(0.75, 5);
+  });
+});
+
+describe('GraphControlsPanel — node visibility counters', () => {
+  it('distinguishes visible, loaded, and total node counts', () => {
+    renderPanel({
+      visibleNodeCount: 1,
+      totalNodeCount: 51,
+      nodeTypeCounts: { Decision: 1, Bug: 2 },
+    });
+
+    expect(screen.getByText('Node Types (visible 1 / loaded 42 / total 51)')).toBeInTheDocument();
+    expect(screen.getByTitle('Total Decision nodes in KG')).toHaveTextContent('1');
+    expect(screen.getByTitle('Total Criterion nodes in KG')).toHaveTextContent('0');
   });
 });
 

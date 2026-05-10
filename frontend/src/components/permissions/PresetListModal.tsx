@@ -17,6 +17,8 @@ interface PresetListModalProps {
 
 const ENTITY_BG: Record<string, string> = {
   board: 'bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-300',
+  story: 'bg-sky-50 text-sky-600 dark:bg-sky-900/20 dark:text-sky-300',
+  topic: 'bg-teal-50 text-teal-600 dark:bg-teal-900/20 dark:text-teal-300',
   spec: 'bg-violet-50 text-violet-600 dark:bg-violet-900/20 dark:text-violet-300',
   card: 'bg-green-50 text-green-600 dark:bg-green-900/20 dark:text-green-300',
   ideation: 'bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300',

@@ -86,13 +86,13 @@ def test_shutdown_timeout_env(monkeypatch):
 
     monkeypatch.delenv("OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("OKTO_PULSE_SHUTDOWN_TIMEOUT", raising=False)
-    assert main_mod._shutdown_timeout_seconds() == 5.0
+    assert main_mod._shutdown_timeout_seconds() == 15.0
 
     monkeypatch.setenv("OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS", "2.5")
     assert main_mod._shutdown_timeout_seconds() == 2.5
 
     monkeypatch.setenv("OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS", "0")
-    assert main_mod._shutdown_timeout_seconds() == 5.0
+    assert main_mod._shutdown_timeout_seconds() == 15.0
 
 
 @pytest.mark.asyncio

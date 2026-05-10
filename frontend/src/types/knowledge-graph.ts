@@ -11,7 +11,8 @@ export type KGNodeType =
 export type KGEdgeType =
   | 'supersedes' | 'contradicts' | 'derives_from' | 'relates_to'
   | 'mentions' | 'depends_on' | 'violates' | 'implements'
-  | 'tests' | 'validates' | 'belongs_to';
+  | 'tests' | 'validates' | 'belongs_to' | 'originates_from'
+  | 'covered_by';
 
 export interface KGNode {
   id: string;
@@ -145,6 +146,10 @@ export const EDGE_TYPE_CONFIG: Record<KGEdgeType, {
     description: 'A TestScenario exercises a Requirement, Business Rule, or API Contract. Key edge for coverage reporting.' },
   validates:    { color: '#7C3AED', label: 'validates',
     description: 'A successful validation run vouches for the target node. Similar to `tests` but aimed at gate outcomes rather than scenarios.' },
+  originates_from: { color: '#F97316', label: 'originates_from',
+    description: 'A Bug points to the entity or card where the defect originated. Used for lineage and root-cause tracing from bug reports.' },
+  covered_by:   { color: '#22C55E', label: 'covered_by',
+    description: 'A Bug is covered by a regression test card or TestScenario, making the defect visible in coverage and revalidation flows.' },
   belongs_to:   { color: '#64748B', label: 'belongs_to',
     description: 'Hierarchy backbone linking KG nodes to their parent artifact or grouping entity.' },
 };

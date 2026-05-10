@@ -5,6 +5,7 @@ import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
 import { Header, Sidebar, CreateBoardModal, AgentsModal } from '@/components/layout';
 import { KanbanBoard } from '@/components/kanban';
+import { StoriesPanel } from '@/components/stories';
 import { IdeationsPanel } from '@/components/ideations';
 import { RefinementsPanel } from '@/components/refinements';
 import { SpecsPanel } from '@/components/specs';
@@ -55,7 +56,7 @@ function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [skipEvidenceActive, setSkipEvidenceActive] = useState(false);
-  const [activeTab, setActiveTab] = useState<'ideations' | 'refinements' | 'specs' | 'sprints' | 'tasks'>('ideations');
+  const [activeTab, setActiveTab] = useState<'stories' | 'ideations' | 'refinements' | 'specs' | 'sprints' | 'tasks'>('stories');
   const [showAnalytics, setShowAnalytics] = useState(
     () => typeof window !== 'undefined' && window.location.pathname.startsWith('/analytics'),
   );
@@ -292,6 +293,7 @@ function App() {
               {/* Tab switcher */}
               <div className="flex items-center gap-1 mb-4 bg-surface-200/60 dark:bg-surface-800/60 backdrop-blur-sm rounded-xl p-0.5 w-fit border border-surface-200/40 dark:border-surface-700/30">
                 {([
+                  { id: 'stories' as const, label: 'Stories' },
                   { id: 'ideations' as const, label: 'Ideations' },
                   { id: 'refinements' as const, label: 'Refinements' },
                   { id: 'specs' as const, label: 'Specs' },
@@ -314,6 +316,7 @@ function App() {
 
               {/* Content */}
               <div className="flex-1 min-h-0 min-w-0">
+                {activeTab === 'stories' && <StoriesPanel boardId={currentBoard.id} refreshKey={refreshKey} />}
                 {activeTab === 'ideations' && <IdeationsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'refinements' && <RefinementsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'specs' && <SpecsPanel key={refreshKey} boardId={currentBoard.id} />}

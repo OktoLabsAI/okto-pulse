@@ -34,6 +34,40 @@ interface HeaderProps {
   onOpenKGHealth?: () => void;
 }
 
+interface SettingsToggleProps {
+  checked: boolean;
+  onChange: () => void;
+  ariaLabel: string;
+  activeColor?: 'amber' | 'violet';
+  testId?: string;
+}
+
+function SettingsToggle({
+  checked,
+  onChange,
+  ariaLabel,
+  activeColor = 'violet',
+  testId,
+}: SettingsToggleProps) {
+  const activeClass = activeColor === 'amber' ? 'bg-amber-500' : 'bg-violet-500';
+
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      data-testid={testId}
+      onClick={onChange}
+      className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-gray-900 ${checked ? activeClass : 'bg-gray-300 dark:bg-gray-600'}`}
+    >
+      <span
+        className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${checked ? 'translate-x-5' : 'translate-x-0'}`}
+      />
+    </button>
+  );
+}
+
 export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoard, onDeleteBoard, isRefreshing, sidebarOpen, onToggleSidebar, onBoardUpdated, onOpenAnalytics, onOpenKGHealth }: HeaderProps) {
   const { isSignedIn, isLoaded } = authAdapter.useAuth();
   const AdapterUserButton = authAdapter.UserButton;
@@ -75,8 +109,42 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   }, []);
 
   const settings: BoardSettings = currentBoard?.settings
-    ? { max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3, skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false, skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false, skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false, skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false, skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false, skip_test_evidence_global: currentBoard.settings.skip_test_evidence_global ?? false, require_task_validation: currentBoard.settings.require_task_validation ?? false, min_confidence: currentBoard.settings.min_confidence ?? 70, min_completeness: currentBoard.settings.min_completeness ?? 80, max_drift: currentBoard.settings.max_drift ?? 50, require_spec_validation: currentBoard.settings.require_spec_validation ?? false, min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80, min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80, max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30 }
-    : { max_scenarios_per_card: 3, skip_test_coverage_global: false, skip_rules_coverage_global: false, skip_trs_coverage_global: false, skip_contract_coverage_global: false, skip_decisions_coverage_global: false, skip_test_evidence_global: false, require_task_validation: false, min_confidence: 70, min_completeness: 80, max_drift: 50, require_spec_validation: false, min_spec_completeness: 80, min_spec_assertiveness: 80, max_spec_ambiguity: 30 };
+    ? {
+        max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3,
+        skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false,
+        skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false,
+        skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false,
+        skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false,
+        skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false,
+        skip_test_evidence_global: currentBoard.settings.skip_test_evidence_global ?? false,
+        require_task_validation: currentBoard.settings.require_task_validation ?? true,
+        min_confidence: currentBoard.settings.min_confidence ?? 70,
+        min_completeness: currentBoard.settings.min_completeness ?? 80,
+        max_drift: currentBoard.settings.max_drift ?? 50,
+        require_spec_validation: currentBoard.settings.require_spec_validation ?? true,
+        min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80,
+        min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80,
+        max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30,
+        require_spec_resource_task_coverage: currentBoard.settings.require_spec_resource_task_coverage ?? true,
+      }
+    : {
+        max_scenarios_per_card: 3,
+        skip_test_coverage_global: false,
+        skip_rules_coverage_global: false,
+        skip_trs_coverage_global: false,
+        skip_contract_coverage_global: false,
+        skip_decisions_coverage_global: false,
+        skip_test_evidence_global: false,
+        require_task_validation: true,
+        min_confidence: 70,
+        min_completeness: 80,
+        max_drift: 50,
+        require_spec_validation: true,
+        min_spec_completeness: 80,
+        min_spec_assertiveness: 80,
+        max_spec_ambiguity: 30,
+        require_spec_resource_task_coverage: true,
+      };
 
   // Local draft state for numeric gate inputs — committed on blur to avoid
   // refresh-on-keystroke wiping partial values while the user is typing.
@@ -357,12 +425,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                           Bypass test coverage checks for all specs
                         </p>
                       </div>
-                      <button
-                        onClick={() => updateSettings({ skip_test_coverage_global: !settings.skip_test_coverage_global })}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_test_coverage_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-                      >
-                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_test_coverage_global ? 'translate-x-5' : ''}`} />
-                      </button>
+                      <SettingsToggle
+                        checked={settings.skip_test_coverage_global}
+                        onChange={() => updateSettings({ skip_test_coverage_global: !settings.skip_test_coverage_global })}
+                        ariaLabel="Skip test coverage"
+                        activeColor="amber"
+                      />
                     </div>
 
                     <div className="flex items-center justify-between">
@@ -374,12 +442,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                           Bypass FR→BR coverage checks for all specs
                         </p>
                       </div>
-                      <button
-                        onClick={() => updateSettings({ skip_rules_coverage_global: !settings.skip_rules_coverage_global })}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_rules_coverage_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-                      >
-                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_rules_coverage_global ? 'translate-x-5' : ''}`} />
-                      </button>
+                      <SettingsToggle
+                        checked={settings.skip_rules_coverage_global}
+                        onChange={() => updateSettings({ skip_rules_coverage_global: !settings.skip_rules_coverage_global })}
+                        ariaLabel="Skip rules coverage"
+                        activeColor="amber"
+                      />
                     </div>
 
                     <div className="flex items-center justify-between">
@@ -391,12 +459,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                           Bypass TR→Task coverage checks for all specs
                         </p>
                       </div>
-                      <button
-                        onClick={() => updateSettings({ skip_trs_coverage_global: !settings.skip_trs_coverage_global })}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_trs_coverage_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-                      >
-                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_trs_coverage_global ? 'translate-x-5' : ''}`} />
-                      </button>
+                      <SettingsToggle
+                        checked={settings.skip_trs_coverage_global}
+                        onChange={() => updateSettings({ skip_trs_coverage_global: !settings.skip_trs_coverage_global })}
+                        ariaLabel="Skip TRs coverage"
+                        activeColor="amber"
+                      />
                     </div>
 
                     <div className="flex items-center justify-between">
@@ -408,12 +476,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                           Bypass API contract→Task coverage checks
                         </p>
                       </div>
-                      <button
-                        onClick={() => updateSettings({ skip_contract_coverage_global: !settings.skip_contract_coverage_global })}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_contract_coverage_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-                      >
-                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_contract_coverage_global ? 'translate-x-5' : ''}`} />
-                      </button>
+                      <SettingsToggle
+                        checked={settings.skip_contract_coverage_global}
+                        onChange={() => updateSettings({ skip_contract_coverage_global: !settings.skip_contract_coverage_global })}
+                        ariaLabel="Skip contract coverage"
+                        activeColor="amber"
+                      />
                     </div>
 
                     <div className="flex items-center justify-between">
@@ -425,12 +493,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                           Bypass active-Decision → Task linkage for all specs
                         </p>
                       </div>
-                      <button
-                        onClick={() => updateSettings({ skip_decisions_coverage_global: !settings.skip_decisions_coverage_global })}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_decisions_coverage_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-                      >
-                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_decisions_coverage_global ? 'translate-x-5' : ''}`} />
-                      </button>
+                      <SettingsToggle
+                        checked={settings.skip_decisions_coverage_global}
+                        onChange={() => updateSettings({ skip_decisions_coverage_global: !settings.skip_decisions_coverage_global })}
+                        ariaLabel="Skip decisions coverage"
+                        activeColor="amber"
+                      />
                     </div>
 
                     {/* NC-9 evidence gate skip — opt-in, default OFF, scoped to this board */}
@@ -443,11 +511,9 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                           Bypass evidence required to mark scenarios passed/automated/failed
                         </p>
                       </div>
-                      <button
-                        data-testid="toggle-skip-evidence"
-                        role="switch"
-                        aria-checked={settings.skip_test_evidence_global ?? false}
-                        onClick={() => {
+                      <SettingsToggle
+                        checked={settings.skip_test_evidence_global ?? false}
+                        onChange={() => {
                           const next = !(settings.skip_test_evidence_global ?? false);
                           // updateSettings now dispatches okto:board-settings-changed
                           // itself, AFTER the PATCH commits. Calling dispatchEvent
@@ -456,10 +522,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                           // the inverted banner bug).
                           updateSettings({ skip_test_evidence_global: next });
                         }}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${settings.skip_test_evidence_global ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-                      >
-                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.skip_test_evidence_global ? 'translate-x-5' : ''}`} />
-                      </button>
+                        ariaLabel="Skip evidence requirement"
+                        activeColor="amber"
+                        testId="toggle-skip-evidence"
+                      />
                     </div>
 
                     {/* Task Validation Gate */}
@@ -478,12 +544,11 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                             Tasks must pass validation before moving to Done
                           </p>
                         </div>
-                        <button
-                          onClick={() => updateSettings({ require_task_validation: !settings.require_task_validation })}
-                          className={`relative w-10 h-5 rounded-full transition-colors ${settings.require_task_validation ? 'bg-violet-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-                        >
-                          <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.require_task_validation ? 'translate-x-5' : ''}`} />
-                        </button>
+                        <SettingsToggle
+                          checked={settings.require_task_validation}
+                          onChange={() => updateSettings({ require_task_validation: !settings.require_task_validation })}
+                          ariaLabel="Require task validation"
+                        />
                       </div>
 
                       {settings.require_task_validation && (
@@ -556,18 +621,38 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       <div className="flex items-center justify-between mb-3">
                         <div>
                           <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
+                            Require resource-to-task coverage
+                          </label>
+                          <p className="text-[10px] text-gray-400">
+                            Spec Architecture, Mockup and KB must be linked to tasks
+                          </p>
+                        </div>
+                        <SettingsToggle
+                          checked={settings.require_spec_resource_task_coverage !== false}
+                          onChange={() =>
+                            updateSettings({
+                              require_spec_resource_task_coverage: !(settings.require_spec_resource_task_coverage !== false),
+                            })
+                          }
+                          ariaLabel="Require resource-to-task coverage"
+                          testId="toggle-resource-task-coverage"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
                             Require spec validation
                           </label>
                           <p className="text-[10px] text-gray-400">
                             Specs must pass Completeness/Assertiveness/Ambiguity gate before Validated
                           </p>
                         </div>
-                        <button
-                          onClick={() => updateSettings({ require_spec_validation: !settings.require_spec_validation })}
-                          className={`relative w-10 h-5 rounded-full transition-colors ${settings.require_spec_validation ? 'bg-violet-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-                        >
-                          <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.require_spec_validation ? 'translate-x-5' : ''}`} />
-                        </button>
+                        <SettingsToggle
+                          checked={settings.require_spec_validation ?? true}
+                          onChange={() => updateSettings({ require_spec_validation: !(settings.require_spec_validation ?? true) })}
+                          ariaLabel="Require spec validation"
+                        />
                       </div>
 
                       {settings.require_spec_validation && (
@@ -712,7 +797,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                 Okto Pulse
               </h2>
               <p className="text-sm text-surface-500 dark:text-surface-400 mt-1">
-                Community Edition — v0.1.14
+                Community Edition — v0.2.0
               </p>
               <p className="text-[11px] text-surface-400 dark:text-surface-500 mt-0.5">
                 Elastic License 2.0 + SaaS/Branding Addendum + Trademark Policy
