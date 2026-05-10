@@ -1229,7 +1229,7 @@ export interface BoardSettings {
   min_confidence: number;
   min_completeness: number;
   max_drift: number;
-  // Spec Validation Gate settings (opt-in, default false)
+  // Spec Validation Gate settings (default enabled unless explicitly disabled)
   require_spec_validation?: boolean;
   min_spec_completeness?: number;
   min_spec_assertiveness?: number;

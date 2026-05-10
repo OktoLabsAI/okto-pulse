@@ -83,11 +83,11 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false,
         skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false,
         skip_test_evidence_global: currentBoard.settings.skip_test_evidence_global ?? false,
-        require_task_validation: currentBoard.settings.require_task_validation ?? false,
+        require_task_validation: currentBoard.settings.require_task_validation ?? true,
         min_confidence: currentBoard.settings.min_confidence ?? 70,
         min_completeness: currentBoard.settings.min_completeness ?? 80,
         max_drift: currentBoard.settings.max_drift ?? 50,
-        require_spec_validation: currentBoard.settings.require_spec_validation ?? false,
+        require_spec_validation: currentBoard.settings.require_spec_validation ?? true,
         min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80,
         min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80,
         max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30,
@@ -101,11 +101,11 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_contract_coverage_global: false,
         skip_decisions_coverage_global: false,
         skip_test_evidence_global: false,
-        require_task_validation: false,
+        require_task_validation: true,
         min_confidence: 70,
         min_completeness: 80,
         max_drift: 50,
-        require_spec_validation: false,
+        require_spec_validation: true,
         min_spec_completeness: 80,
         min_spec_assertiveness: 80,
         max_spec_ambiguity: 30,
@@ -590,23 +590,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       <div className="flex items-center justify-between mb-3">
                         <div>
                           <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
-                            Require spec validation
-                          </label>
-                          <p className="text-[10px] text-gray-400">
-                            Specs must pass Completeness/Assertiveness/Ambiguity gate before Validated
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => updateSettings({ require_spec_validation: !settings.require_spec_validation })}
-                          className={`relative w-10 h-5 rounded-full transition-colors ${settings.require_spec_validation ? 'bg-violet-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-                        >
-                          <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.require_spec_validation ? 'translate-x-5' : ''}`} />
-                        </button>
-                      </div>
-
-                      <div className="flex items-center justify-between mb-3">
-                        <div>
-                          <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
                             Require resource-to-task coverage
                           </label>
                           <p className="text-[10px] text-gray-400">
@@ -625,6 +608,23 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                           className={`relative w-10 h-5 rounded-full transition-colors ${settings.require_spec_resource_task_coverage !== false ? 'bg-violet-500' : 'bg-gray-300 dark:bg-gray-600'}`}
                         >
                           <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.require_spec_resource_task_coverage !== false ? 'translate-x-5' : ''}`} />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
+                            Require spec validation
+                          </label>
+                          <p className="text-[10px] text-gray-400">
+                            Specs must pass Completeness/Assertiveness/Ambiguity gate before Validated
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => updateSettings({ require_spec_validation: !settings.require_spec_validation })}
+                          className={`relative w-10 h-5 rounded-full transition-colors ${settings.require_spec_validation ? 'bg-violet-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                        >
+                          <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.require_spec_validation ? 'translate-x-5' : ''}`} />
                         </button>
                       </div>
 
