@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <strong>Ship with AI. Stay in control.</strong>
+</p>
+
+<p align="center">
   <a href="https://pypi.org/project/okto-pulse/"><img src="https://img.shields.io/pypi/v/okto-pulse" alt="PyPI version"></a>
   <a href="https://pypi.org/project/okto-pulse/"><img src="https://img.shields.io/pypi/pyversions/okto-pulse" alt="Python versions"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Elastic%202.0-blue" alt="License"></a>
@@ -20,6 +24,7 @@
 ## Table of Contents
 
 - [What is Okto Pulse?](#what-is-okto-pulse)
+- [Platform Surface](#platform-surface)
 - [Get Started](#get-started)
 - [Connect an AI Coding Agent](#connect-an-ai-coding-agent)
 - [Core Workflow](#core-workflow)
@@ -44,6 +49,19 @@ Stories -> Ideation -> Refinement -> Spec -> Sprint -> Tasks / Tests / Bugs
 ```
 
 Every stage has structured artifacts, lineage, status transitions and validation rules. Agents can create and update those artifacts through MCP tools, while humans can inspect and steer the same work in the web UI.
+
+## Platform Surface
+
+Current 0.2.0 surface:
+
+| Surface | Count |
+| --- | ---: |
+| Governance gates | 15 |
+| Core MCP tools | 216 |
+| Community-only MCP tools | 0 |
+| MCP tools exposed by `okto-pulse serve` | 216 |
+
+The community package mounts the full `okto-pulse-core` MCP server. That means installed community runtimes expose the complete core tool catalog while keeping the CLI, frontend and packaging layer separate from the core engine.
 
 ## Get Started
 
@@ -142,6 +160,16 @@ The lineage graph keeps these relationships inspectable, including story-to-idea
 ## Governance Gates
 
 Okto Pulse protects the workflow with checks that run on status transitions.
+
+The platform currently has **15 named governance gates**:
+
+| Gate family | Gates |
+| --- | --- |
+| Resource readiness | Resource readiness; resource-to-task coverage |
+| Spec coverage | Scenario/test coverage; functional requirement/business rule coverage; technical requirement/task coverage; API contract/task coverage; active decision/task coverage |
+| Validation and evaluation | Spec validation; spec qualitative evaluation; task validation |
+| Execution quality | Task start/spec readiness; task conclusion; test evidence; bug test-first/traceability |
+| Sprint health | Sprint closure/evaluation |
 
 - Specs require coverage across acceptance criteria, functional requirements, business rules, API contracts, decisions and test scenarios.
 - Tasks cannot start until the parent spec has the required scenario coverage.
