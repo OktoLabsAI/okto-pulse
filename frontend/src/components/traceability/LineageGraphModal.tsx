@@ -44,7 +44,8 @@ interface Props {
   boardId: string;
 }
 
-const STAGE_X = 580;
+const BASE_STAGE_X = 580;
+const STAGE_X = (BASE_STAGE_X * 2) / 3;
 const NODE_Y = 136;
 
 type LineageFlowNodeData = Record<string, unknown> & {

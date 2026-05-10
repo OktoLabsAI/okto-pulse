@@ -251,7 +251,7 @@ describe('LineageGraphModal', () => {
     ]);
   });
 
-  it('doubles horizontal spacing between lineage stages', async () => {
+  it('uses two-thirds horizontal spacing between lineage stages', async () => {
     apiMock.getLineageGraph.mockResolvedValue(storyGraph);
 
     render(<LineageGraphModal boardId="board-1" />);
@@ -263,7 +263,7 @@ describe('LineageGraphModal', () => {
     const storyNode = await screen.findByTestId('flow-node-node-story-1');
     const ideationNode = await screen.findByTestId('flow-node-node-ideation-1');
 
-    expect(Number(ideationNode.dataset.x) - Number(storyNode.dataset.x)).toBe(580);
+    expect(Number(ideationNode.dataset.x) - Number(storyNode.dataset.x)).toBeCloseTo((580 * 2) / 3);
   });
 
   it('renders bug regression test links in the lineage graph', async () => {
