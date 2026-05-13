@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
 import { Header, Sidebar, CreateBoardModal, AgentsModal } from '@/components/layout';
+import { MetricsSettingsPanel } from '@/components/layout/MetricsSettingsPanel';
 import { KanbanBoard } from '@/components/kanban';
 import { StoriesPanel } from '@/components/stories';
 import { IdeationsPanel } from '@/components/ideations';
@@ -24,6 +25,9 @@ import { OnboardingModal } from '@/components/onboarding/OnboardingModal';
 import { isCompleted as isOnboardingCompleted } from '@/components/onboarding/onboardingStorage';
 import logoLight from '@/assets/logo-light.png';
 import logoDark from '@/assets/logo-dark.png';
+import { CURRENT_METRICS_SCHEMA_VERSION, getMetricsSummary } from '@/services/metrics-api';
+
+const METRICS_PROMPT_DISMISSED_KEY = `okto-pulse:metrics-opt-in-prompt-dismissed:${CURRENT_METRICS_SCHEMA_VERSION}`;
 
 function App() {
   const api = useDashboardApi();
@@ -43,6 +47,7 @@ function App() {
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [portalBarVisible, setPortalBarVisible] = useState(true);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [metricsPromptOpen, setMetricsPromptOpen] = useState(false);
 
   // Mount the OnboardingModal on the *first* render after Terms is accepted
   // (or skipped via CLI/env), but only if the user has not completed it yet.
@@ -53,6 +58,34 @@ function App() {
     if (isOnboardingCompleted()) return;
     setOnboardingOpen(true);
   }, [terms.loading, terms.needsAcceptance]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) return;
+    if (terms.loading || terms.needsAcceptance || onboardingOpen) return;
+    if (window.localStorage.getItem(METRICS_PROMPT_DISMISSED_KEY)) return;
+
+    let active = true;
+    getMetricsSummary()
+      .then((summary) => {
+        const hasStaleConsent =
+          summary.source === 'stale_persisted_consent' ||
+          summary.beacon_status.schema_status === 'stale_consent';
+        const hasDecision = Boolean(summary.consent.changed_at) && !hasStaleConsent;
+        if (active && ((summary.source === 'default' && !hasDecision) || hasStaleConsent)) {
+          setMetricsPromptOpen(true);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, [isLoaded, isSignedIn, terms.loading, terms.needsAcceptance, onboardingOpen]);
+
+  const closeMetricsPrompt = () => {
+    window.localStorage.setItem(METRICS_PROMPT_DISMISSED_KEY, new Date().toISOString());
+    setMetricsPromptOpen(false);
+  };
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [skipEvidenceActive, setSkipEvidenceActive] = useState(false);
@@ -254,6 +287,9 @@ function App() {
     )}
     {onboardingOpen && (
       <OnboardingModal onClose={() => setOnboardingOpen(false)} />
+    )}
+    {metricsPromptOpen && !terms.needsAcceptance && !onboardingOpen && (
+      <MetricsSettingsPanel initialPrompt onClose={closeMetricsPrompt} />
     )}
     <div className={`min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950 ${terms.needsAcceptance ? 'pointer-events-none select-none' : ''}`}>
       {portalAdapter.PortalBar && (

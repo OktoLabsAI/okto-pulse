@@ -9,6 +9,7 @@ class CommunitySettings(CoreSettings):
 
     host: str = "127.0.0.1"  # Community is local-only — bind to loopback
     data_dir: str = ""  # Default set in validator
+    metrics_beacon_url: str = "https://metrics.oktolabs.ai"
 
     # Community ships sentence-transformers as a mandatory dep (pyproject.toml),
     # so override the core default of "stub" — semantic KG search needs real
@@ -26,6 +27,8 @@ class CommunitySettings(CoreSettings):
             self.database_url = f"sqlite+aiosqlite:///{db_path}"
         if self.upload_dir == "./uploads":
             self.upload_dir = str(data_path / "uploads")
+        if not self.metrics_dir:
+            self.metrics_dir = str(data_path / "metrics")
         # Community edition is local-only — allow all origins to avoid CORS
         # issues regardless of which port the user configures via CLI
         self.cors_origins = "*"

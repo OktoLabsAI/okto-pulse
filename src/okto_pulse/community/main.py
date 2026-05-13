@@ -45,8 +45,11 @@ from okto_pulse.community.seed import seed_community_defaults
 
 _EMBEDDING_LOGGER = logging.getLogger("okto_pulse.community.embedding")
 _STARTUP_LOGGER = logging.getLogger("uvicorn.error")
+_METRICS_LOGGER = logging.getLogger("okto_pulse.community.metrics")
 _DEFAULT_STARTUP_TIMEOUT_SECONDS = 120.0
 _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15.0
+_DEFAULT_METRICS_BEACON_INTERVAL_SECONDS = 3600.0
+_DEFAULT_METRICS_BEACON_STARTUP_DELAY_SECONDS = 60.0
 
 # Preload retry policy: 3 attempts, exponential backoff (2s, 4s, 8s), 30s total budget.
 # Only transient network errors retry. ImportError / OSError (disk full) / ValueError
@@ -106,6 +109,63 @@ def _shutdown_timeout_seconds() -> float:
         )
         return _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
     return timeout
+
+
+def _metrics_beacon_timing() -> tuple[float, float]:
+    def _read_seconds(name: str, default: float, minimum: float) -> float:
+        raw = os.environ.get(name)
+        if not raw:
+            return default
+        try:
+            value = float(raw)
+        except ValueError:
+            _METRICS_LOGGER.warning("Invalid %s=%r; using %.0fs.", name, raw, default)
+            return default
+        return max(minimum, value)
+
+    interval = _read_seconds(
+        "OKTO_PULSE_METRICS_BEACON_INTERVAL_SECONDS",
+        _DEFAULT_METRICS_BEACON_INTERVAL_SECONDS,
+        60.0,
+    )
+    startup_delay = _read_seconds(
+        "OKTO_PULSE_METRICS_BEACON_STARTUP_DELAY_SECONDS",
+        min(_DEFAULT_METRICS_BEACON_STARTUP_DELAY_SECONDS, interval),
+        5.0,
+    )
+    return interval, min(startup_delay, interval)
+
+
+async def _metrics_beacon_loop(settings: CommunitySettings) -> None:
+    interval, delay = _metrics_beacon_timing()
+    from okto_pulse.core.telemetry.sender import TelemetryBeaconSender
+
+    while True:
+        await asyncio.sleep(delay)
+        delay = interval
+        try:
+            result = await asyncio.to_thread(TelemetryBeaconSender(settings).send_once)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _METRICS_LOGGER.warning(
+                "metrics.beacon.send_failed err=%s",
+                exc,
+                extra={"event": "metrics.beacon.send_failed", "error": str(exc)},
+            )
+            continue
+        if result.get("sent"):
+            _METRICS_LOGGER.info(
+                "metrics.beacon.sent batch_seq=%s",
+                result.get("batch_seq"),
+                extra={"event": "metrics.beacon.sent", "batch_seq": result.get("batch_seq")},
+            )
+        elif result.get("reason") not in {"not_enabled", "empty"}:
+            _METRICS_LOGGER.info(
+                "metrics.beacon.skipped reason=%s",
+                result.get("reason"),
+                extra={"event": "metrics.beacon.skipped", "reason": result.get("reason")},
+            )
 
 
 def _is_transient_network_error(exc: BaseException) -> bool:
@@ -192,7 +252,18 @@ def _ensure_data_dir(settings: CommunitySettings) -> None:
     data_path = Path(settings.data_dir)
     # Use data_dir as base for KG (kg_base_dir was removed from CommunitySettings)
     kg_base = data_path / "kg"
-    for subdir in [data_path, data_path / "data", data_path / "uploads", kg_base / "boards"]:
+    metrics_path = Path(settings.metrics_dir)
+    for subdir in [
+        data_path,
+        data_path / "data",
+        data_path / "uploads",
+        kg_base / "boards",
+        metrics_path,
+        metrics_path / "events",
+        metrics_path / "sent",
+        metrics_path / "failures",
+        metrics_path / "exports",
+    ]:
         subdir.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(str(data_path), 0o700)
@@ -350,6 +421,7 @@ def create_community_app():
         consolidation_worker = None
         outbox_worker = None
         scheduler = None
+        metrics_beacon_task = None
 
         kg_settings = get_settings()
         if getattr(kg_settings, "kg_cleanup_enabled", True):
@@ -406,8 +478,14 @@ def create_community_app():
         from okto_pulse.core.mcp.server import register_session_factory
         register_session_factory(get_session_factory())
 
+        metrics_beacon_task = asyncio.create_task(_metrics_beacon_loop(settings))
+
         yield
 
+        if metrics_beacon_task is not None:
+            metrics_beacon_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await metrics_beacon_task
         if scheduler is not None:
             try:
                 scheduler.shutdown(wait=False)

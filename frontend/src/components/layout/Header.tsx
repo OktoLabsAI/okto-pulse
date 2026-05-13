@@ -10,6 +10,7 @@ import { HelpPanel } from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
 import { KnowledgeGraphPage } from '@/components/knowledge';
 import { RuntimeSettingsPanel } from '@/components/layout/RuntimeSettingsPanel';
+import { MetricsSettingsPanel } from '@/components/layout/MetricsSettingsPanel';
 import { useCurrentBoard } from '@/store/dashboard';
 import pulseWordmark from '@/assets/pulse-wordmark.svg';
 import pulseWordmarkLight from '@/assets/pulse-wordmark-light.svg';
@@ -76,6 +77,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const api = useDashboardApi();
   const [showSettings, setShowSettings] = useState(false);
   const [showRuntimeSettings, setShowRuntimeSettings] = useState(false);
+  const [showMetricsSettings, setShowMetricsSettings] = useState(false);
   const [showGuidelines, setShowGuidelines] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -350,6 +352,15 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     >
                       <SlidersHorizontal size={14} />
                       Settings
+                    </button>
+
+                    <button
+                      onClick={() => { setShowMenu(false); setShowMetricsSettings(true); }}
+                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                      data-testid="menu-metrics"
+                    >
+                      <Activity size={14} />
+                      Metrics
                     </button>
 
                     {/* Toggle View Mode */}
@@ -750,6 +761,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       {showRuntimeSettings && (
         <RuntimeSettingsPanel
           onClose={() => setShowRuntimeSettings(false)}
+        />
+      )}
+
+      {showMetricsSettings && (
+        <MetricsSettingsPanel
+          onClose={() => setShowMetricsSettings(false)}
         />
       )}
 
