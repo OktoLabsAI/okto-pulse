@@ -28,6 +28,7 @@ export interface MetricsSummary {
     changed_at: string | null;
     policy_version: string | null;
     schema_version: string | null;
+    acknowledged_items: string[];
   };
   resolved_precedence: string[];
 }
@@ -51,7 +52,13 @@ export async function getMetricsSummary(windowDays = 30): Promise<MetricsSummary
 export async function updateMetricsMode(
   mode: MetricsMode,
   acknowledgedItems: string[] = [],
-): Promise<{ mode: MetricsMode; changed_at: string; schema_version: string | null; next_opt_in_prompt_after: string | null }> {
+): Promise<{
+  mode: MetricsMode;
+  changed_at: string;
+  schema_version: string | null;
+  acknowledged_items: string[];
+  next_opt_in_prompt_after: string | null;
+}> {
   const resp = await fetch(`${BASE}/metrics/settings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

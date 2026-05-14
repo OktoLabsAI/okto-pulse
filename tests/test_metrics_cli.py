@@ -18,7 +18,23 @@ def test_community_settings_places_metrics_under_data_dir(tmp_path: Path, monkey
     settings = CommunitySettings()
 
     assert Path(settings.metrics_dir) == tmp_path / "pulse-data" / "metrics"
+    assert Path(settings.kg_base_dir) == tmp_path / "pulse-data"
     assert settings.metrics_beacon_url == "https://metrics.oktolabs.ai"
+
+
+def test_community_settings_uses_okto_pulse_home_for_all_local_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DATA_DIR", raising=False)
+    monkeypatch.delenv("KG_BASE_DIR", raising=False)
+    monkeypatch.setenv("OKTO_PULSE_HOME", str(tmp_path / "pulse-home"))
+
+    settings = CommunitySettings()
+
+    assert Path(settings.data_dir) == tmp_path / "pulse-home"
+    assert Path(settings.kg_base_dir) == tmp_path / "pulse-home"
+    assert Path(settings.metrics_dir) == tmp_path / "pulse-home" / "metrics"
 
 
 def test_metrics_cli_status_defaults_to_local_only(tmp_path: Path, monkeypatch, capsys) -> None:

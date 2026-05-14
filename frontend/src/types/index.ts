@@ -1218,6 +1218,8 @@ export interface AgentBoardGrant {
 }
 
 // Board
+export type SpecResourceAutoDeriveType = 'knowledge_base' | 'architecture' | 'mockup';
+
 export interface BoardSettings {
   max_scenarios_per_card: number;
   skip_test_coverage_global: boolean;
@@ -1236,6 +1238,9 @@ export interface BoardSettings {
   max_spec_ambiguity?: number;
   // Resource Gate Level 2 - effective spec resources must be copied/attached to tasks.
   require_spec_resource_task_coverage?: boolean;
+  // Spec resource automation - copies selected Spec resources to newly-created/linked cards.
+  auto_derive_spec_resources_enabled?: boolean;
+  auto_derive_spec_resource_types?: SpecResourceAutoDeriveType[];
   // NC-9 evidence gate bypass (Wave 2 spec 873e98cc, frontend spec 5cb09dbc)
   skip_test_evidence_global?: boolean;
 }
@@ -1339,6 +1344,7 @@ export interface CreateBoardRequest {
 export interface UpdateBoardRequest {
   name?: string;
   description?: string;
+  settings?: BoardSettings;
 }
 
 export interface CreateCardRequest {

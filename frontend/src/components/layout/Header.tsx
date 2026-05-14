@@ -2,9 +2,10 @@
  * Header component
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { type ReactNode, useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { authAdapter, portalAdapter } from '@/adapters';
-import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity } from 'lucide-react';
+import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity, Image, Trash2 } from 'lucide-react';
 import { GuidelinesPanel } from '@/components/guidelines';
 import { HelpPanel } from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
@@ -19,7 +20,7 @@ import oktolabsIcon from '@/assets/oktolabs-icon.svg';
 import { useTheme } from '@/hooks/useTheme';
 import { useDashboardApi } from '@/services/api';
 import toast from 'react-hot-toast';
-import type { BoardSettings } from '@/types';
+import type { BoardSettings, SpecResourceAutoDeriveType } from '@/types';
 
 interface HeaderProps {
   onCreateBoard?: () => void;
@@ -68,6 +69,74 @@ function SettingsToggle({
     </button>
   );
 }
+
+function SettingsSection({
+  title,
+  description,
+  icon,
+  children,
+  className = '',
+}: {
+  title: string;
+  description?: string;
+  icon?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900/40 ${className}`}>
+      <div className="mb-3">
+        <h4 className="flex items-center gap-1.5 text-xs font-semibold text-gray-800 dark:text-gray-100">
+          {icon}
+          {title}
+        </h4>
+        {description && (
+          <p className="mt-0.5 text-[11px] leading-4 text-gray-500 dark:text-gray-400">
+            {description}
+          </p>
+        )}
+      </div>
+      <div className="space-y-3">{children}</div>
+    </section>
+  );
+}
+
+function SettingRow({
+  label,
+  description,
+  children,
+}: {
+  label: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div className="min-w-0">
+        <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+          {label}
+        </label>
+        <p className="mt-0.5 text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+          {description}
+        </p>
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+const SPEC_RESOURCE_OPTIONS: Array<{
+  type: SpecResourceAutoDeriveType;
+  label: string;
+  title: string;
+  Icon: typeof BookOpen;
+}> = [
+  { type: 'knowledge_base', label: 'KB', title: 'Knowledge Base', Icon: BookOpen },
+  { type: 'architecture', label: 'Arch', title: 'Architecture', Icon: Network },
+  { type: 'mockup', label: 'Mockup', title: 'Mockup', Icon: Image },
+];
+
+const DEFAULT_SPEC_RESOURCE_TYPES = SPEC_RESOURCE_OPTIONS.map((option) => option.type);
 
 export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoard, onDeleteBoard, isRefreshing, sidebarOpen, onToggleSidebar, onBoardUpdated, onOpenAnalytics, onOpenKGHealth }: HeaderProps) {
   const { isSignedIn, isLoaded } = authAdapter.useAuth();
@@ -128,6 +197,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80,
         max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30,
         require_spec_resource_task_coverage: currentBoard.settings.require_spec_resource_task_coverage ?? true,
+        auto_derive_spec_resources_enabled: currentBoard.settings.auto_derive_spec_resources_enabled ?? false,
+        auto_derive_spec_resource_types: currentBoard.settings.auto_derive_spec_resource_types ?? [],
       }
     : {
         max_scenarios_per_card: 3,
@@ -146,6 +217,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         min_spec_assertiveness: 80,
         max_spec_ambiguity: 30,
         require_spec_resource_task_coverage: true,
+        auto_derive_spec_resources_enabled: false,
+        auto_derive_spec_resource_types: [],
       };
 
   // Local draft state for numeric gate inputs — committed on blur to avoid
@@ -169,7 +242,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     if (!currentBoard) return;
     const newSettings = { ...settings, ...patch };
     try {
-      await api.updateBoard(currentBoard.id, { settings: newSettings } as any);
+      await api.updateBoard(currentBoard.id, { settings: newSettings });
       onBoardUpdated?.();
       toast.success('Board settings updated');
       // Bug fix (banner inversion): notify the global EvidenceGateSkipBanner
@@ -182,6 +255,30 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     } catch {
       toast.error('Failed to update settings');
     }
+  };
+
+  const autoDeriveEnabled = settings.auto_derive_spec_resources_enabled ?? false;
+  const autoDeriveResourceTypes = settings.auto_derive_spec_resource_types ?? [];
+
+  const toggleSpecResourceAutomation = () => {
+    const next = !autoDeriveEnabled;
+    updateSettings({
+      auto_derive_spec_resources_enabled: next,
+      auto_derive_spec_resource_types:
+        next && autoDeriveResourceTypes.length === 0
+          ? DEFAULT_SPEC_RESOURCE_TYPES
+          : autoDeriveResourceTypes,
+    });
+  };
+
+  const toggleSpecResourceType = (resourceType: SpecResourceAutoDeriveType) => {
+    if (!autoDeriveEnabled) return;
+    const selected = autoDeriveResourceTypes.includes(resourceType);
+    if (selected && autoDeriveResourceTypes.length === 1) return;
+    const nextTypes = selected
+      ? autoDeriveResourceTypes.filter((item) => item !== resourceType)
+      : [...autoDeriveResourceTypes, resourceType];
+    updateSettings({ auto_derive_spec_resource_types: nextTypes });
   };
 
   type NumericSettingKey = 'min_confidence' | 'min_completeness' | 'max_drift' | 'min_spec_completeness' | 'min_spec_assertiveness' | 'max_spec_ambiguity';
@@ -398,344 +495,345 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
               </div>
 
               {/* Board panel (opens from menu — renamed from "Settings" in 0.1.4) */}
-              {showSettings && (
-                <div className="fixed inset-0 z-50 flex items-start justify-end pt-16 pr-4" onClick={() => setShowSettings(false)}>
-                  <div className="w-80 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-4 space-y-4" onClick={(e) => e.stopPropagation()}>
-                    <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Board</h3>
-
-                    <div>
-                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">
-                        Max test scenarios per card
-                      </label>
-                      <p className="text-[10px] text-gray-400 mb-1.5">
-                        Limits how many scenarios a single card can be linked to.
-                      </p>
-                      <div className="flex items-center gap-2">
-                        {[1, 2, 3, 5, 10].map((n) => (
-                          <button
-                            key={n}
-                            onClick={() => updateSettings({ max_scenarios_per_card: n })}
-                            className={`w-8 h-8 rounded text-xs font-medium transition-colors ${
-                              settings.max_scenarios_per_card === n
-                                ? 'bg-blue-500 text-white'
-                                : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
-                            }`}
-                          >
-                            {n}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between">
+              {showSettings && createPortal((
+                <div className="modal-overlay p-4" onClick={() => setShowSettings(false)}>
+                  <div
+                    ref={settingsRef}
+                    className="modal-content max-w-4xl !h-auto max-h-[90vh]"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="board-settings-title"
+                    data-testid="board-settings-modal"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="modal-header">
                       <div>
-                        <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
-                          Skip test coverage (global)
-                        </label>
-                        <p className="text-[10px] text-gray-400">
-                          Bypass test coverage checks for all specs
+                        <h2 id="board-settings-title" className="text-base font-semibold text-gray-900 dark:text-white">
+                          Board
+                        </h2>
+                        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                          Validation gates, coverage checks and Spec resource automation
                         </p>
                       </div>
-                      <SettingsToggle
-                        checked={settings.skip_test_coverage_global}
-                        onChange={() => updateSettings({ skip_test_coverage_global: !settings.skip_test_coverage_global })}
-                        ariaLabel="Skip test coverage"
-                        activeColor="amber"
-                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowSettings(false)}
+                        className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-300"
+                        aria-label="Close board settings"
+                      >
+                        <X size={18} />
+                      </button>
                     </div>
 
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
-                          Skip rules coverage (global)
-                        </label>
-                        <p className="text-[10px] text-gray-400">
-                          Bypass FR→BR coverage checks for all specs
-                        </p>
-                      </div>
-                      <SettingsToggle
-                        checked={settings.skip_rules_coverage_global}
-                        onChange={() => updateSettings({ skip_rules_coverage_global: !settings.skip_rules_coverage_global })}
-                        ariaLabel="Skip rules coverage"
-                        activeColor="amber"
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
-                          Skip TRs coverage (global)
-                        </label>
-                        <p className="text-[10px] text-gray-400">
-                          Bypass TR→Task coverage checks for all specs
-                        </p>
-                      </div>
-                      <SettingsToggle
-                        checked={settings.skip_trs_coverage_global}
-                        onChange={() => updateSettings({ skip_trs_coverage_global: !settings.skip_trs_coverage_global })}
-                        ariaLabel="Skip TRs coverage"
-                        activeColor="amber"
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
-                          Skip contract coverage (global)
-                        </label>
-                        <p className="text-[10px] text-gray-400">
-                          Bypass API contract→Task coverage checks
-                        </p>
-                      </div>
-                      <SettingsToggle
-                        checked={settings.skip_contract_coverage_global}
-                        onChange={() => updateSettings({ skip_contract_coverage_global: !settings.skip_contract_coverage_global })}
-                        ariaLabel="Skip contract coverage"
-                        activeColor="amber"
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
-                          Skip decisions coverage (global)
-                        </label>
-                        <p className="text-[10px] text-gray-400">
-                          Bypass active-Decision → Task linkage for all specs
-                        </p>
-                      </div>
-                      <SettingsToggle
-                        checked={settings.skip_decisions_coverage_global}
-                        onChange={() => updateSettings({ skip_decisions_coverage_global: !settings.skip_decisions_coverage_global })}
-                        ariaLabel="Skip decisions coverage"
-                        activeColor="amber"
-                      />
-                    </div>
-
-                    {/* NC-9 evidence gate skip — opt-in, default OFF, scoped to this board */}
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
-                          Skip evidence requirement (global)
-                        </label>
-                        <p className="text-[10px] text-gray-400">
-                          Bypass evidence required to mark scenarios passed/automated/failed
-                        </p>
-                      </div>
-                      <SettingsToggle
-                        checked={settings.skip_test_evidence_global ?? false}
-                        onChange={() => {
-                          const next = !(settings.skip_test_evidence_global ?? false);
-                          // updateSettings now dispatches okto:board-settings-changed
-                          // itself, AFTER the PATCH commits. Calling dispatchEvent
-                          // here would race against the in-flight PATCH and make the
-                          // banner's refetch read the previous value (root cause of
-                          // the inverted banner bug).
-                          updateSettings({ skip_test_evidence_global: next });
-                        }}
-                        ariaLabel="Skip evidence requirement"
-                        activeColor="amber"
-                        testId="toggle-skip-evidence"
-                      />
-                    </div>
-
-                    {/* Task Validation Gate */}
-                    <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
-                      <h4 className="text-xs font-semibold text-gray-800 dark:text-gray-200 mb-3 flex items-center gap-1.5">
-                        <Shield size={12} />
-                        Task Validation Gate
-                      </h4>
-
-                      <div className="flex items-center justify-between mb-3">
-                        <div>
-                          <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
-                            Require task validation
-                          </label>
-                          <p className="text-[10px] text-gray-400">
-                            Tasks must pass validation before moving to Done
-                          </p>
-                        </div>
-                        <SettingsToggle
-                          checked={settings.require_task_validation}
-                          onChange={() => updateSettings({ require_task_validation: !settings.require_task_validation })}
-                          ariaLabel="Require task validation"
-                        />
-                      </div>
-
-                      {settings.require_task_validation && (
-                        <div className="space-y-2.5 pl-1">
+                    <div className="modal-body bg-gray-50/70 dark:bg-gray-950/30">
+                      <div className="grid gap-4 lg:grid-cols-2">
+                        <SettingsSection
+                          title="General"
+                          description="Board-level limits used across validation flows."
+                          icon={<SlidersHorizontal size={12} />}
+                        >
                           <div>
-                            <label className="text-[10px] font-medium text-gray-500 dark:text-gray-400 block mb-1">
-                              Min Confidence
+                            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+                              Max test scenarios per card
                             </label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                min={0}
-                                max={100}
-                                value={minConfidenceDraft}
-                                onChange={(e) => setMinConfidenceDraft(e.target.value)}
-                                onBlur={(e) => commitNumericSetting('min_confidence', e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                                className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                              />
-                              <span className="text-[10px] text-gray-400">/ 100</span>
+                            <p className="mb-2 text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+                              Limits how many scenarios a single card can be linked to.
+                            </p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {[1, 2, 3, 5, 10].map((n) => (
+                                <button
+                                  key={n}
+                                  type="button"
+                                  onClick={() => updateSettings({ max_scenarios_per_card: n })}
+                                  className={`h-8 w-8 rounded text-xs font-medium transition-colors ${
+                                    settings.max_scenarios_per_card === n
+                                      ? 'bg-blue-500 text-white'
+                                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                                  }`}
+                                >
+                                  {n}
+                                </button>
+                              ))}
                             </div>
                           </div>
-                          <div>
-                            <label className="text-[10px] font-medium text-gray-500 dark:text-gray-400 block mb-1">
-                              Min Completeness
-                            </label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                min={0}
-                                max={100}
-                                value={minCompletenessDraft}
-                                onChange={(e) => setMinCompletenessDraft(e.target.value)}
-                                onBlur={(e) => commitNumericSetting('min_completeness', e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                                className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                              />
-                              <span className="text-[10px] text-gray-400">/ 100</span>
+                        </SettingsSection>
+
+                        <SettingsSection
+                          title="Coverage Overrides"
+                          description="Global bypasses for board coverage rules."
+                          icon={<Shield size={12} />}
+                        >
+                          <SettingRow label="Skip test coverage" description="Bypass test coverage checks for all specs.">
+                            <SettingsToggle
+                              checked={settings.skip_test_coverage_global}
+                              onChange={() => updateSettings({ skip_test_coverage_global: !settings.skip_test_coverage_global })}
+                              ariaLabel="Skip test coverage"
+                              activeColor="amber"
+                            />
+                          </SettingRow>
+                          <SettingRow label="Skip rules coverage" description="Bypass FR to BR coverage checks for all specs.">
+                            <SettingsToggle
+                              checked={settings.skip_rules_coverage_global}
+                              onChange={() => updateSettings({ skip_rules_coverage_global: !settings.skip_rules_coverage_global })}
+                              ariaLabel="Skip rules coverage"
+                              activeColor="amber"
+                            />
+                          </SettingRow>
+                          <SettingRow label="Skip TRs coverage" description="Bypass TR to Task coverage checks for all specs.">
+                            <SettingsToggle
+                              checked={settings.skip_trs_coverage_global}
+                              onChange={() => updateSettings({ skip_trs_coverage_global: !settings.skip_trs_coverage_global })}
+                              ariaLabel="Skip TRs coverage"
+                              activeColor="amber"
+                            />
+                          </SettingRow>
+                          <SettingRow label="Skip contract coverage" description="Bypass API contract to Task coverage checks.">
+                            <SettingsToggle
+                              checked={settings.skip_contract_coverage_global}
+                              onChange={() => updateSettings({ skip_contract_coverage_global: !settings.skip_contract_coverage_global })}
+                              ariaLabel="Skip contract coverage"
+                              activeColor="amber"
+                            />
+                          </SettingRow>
+                          <SettingRow label="Skip decisions coverage" description="Bypass active Decision to Task linkage for all specs.">
+                            <SettingsToggle
+                              checked={settings.skip_decisions_coverage_global}
+                              onChange={() => updateSettings({ skip_decisions_coverage_global: !settings.skip_decisions_coverage_global })}
+                              ariaLabel="Skip decisions coverage"
+                              activeColor="amber"
+                            />
+                          </SettingRow>
+                          <SettingRow label="Skip evidence requirement" description="Bypass evidence required to mark scenarios passed, automated or failed.">
+                            <SettingsToggle
+                              checked={settings.skip_test_evidence_global ?? false}
+                              onChange={() => {
+                                const next = !(settings.skip_test_evidence_global ?? false);
+                                // updateSettings dispatches okto:board-settings-changed after PATCH commits.
+                                updateSettings({ skip_test_evidence_global: next });
+                              }}
+                              ariaLabel="Skip evidence requirement"
+                              activeColor="amber"
+                              testId="toggle-skip-evidence"
+                            />
+                          </SettingRow>
+                        </SettingsSection>
+
+                        <SettingsSection
+                          title="Task Validation Gate"
+                          description="Controls the gate before execution work can be completed."
+                          icon={<Shield size={12} />}
+                        >
+                          <SettingRow label="Require task validation" description="Tasks must pass validation before moving to Done.">
+                            <SettingsToggle
+                              checked={settings.require_task_validation}
+                              onChange={() => updateSettings({ require_task_validation: !settings.require_task_validation })}
+                              ariaLabel="Require task validation"
+                            />
+                          </SettingRow>
+
+                          {settings.require_task_validation && (
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                              <div>
+                                <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                                  Min Confidence
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    value={minConfidenceDraft}
+                                    onChange={(e) => setMinConfidenceDraft(e.target.value)}
+                                    onBlur={(e) => commitNumericSetting('min_confidence', e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                    className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                                  />
+                                  <span className="text-[10px] text-gray-400">/ 100</span>
+                                </div>
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                                  Min Completeness
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    value={minCompletenessDraft}
+                                    onChange={(e) => setMinCompletenessDraft(e.target.value)}
+                                    onBlur={(e) => commitNumericSetting('min_completeness', e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                    className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                                  />
+                                  <span className="text-[10px] text-gray-400">/ 100</span>
+                                </div>
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                                  Max Drift
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    value={maxDriftDraft}
+                                    onChange={(e) => setMaxDriftDraft(e.target.value)}
+                                    onBlur={(e) => commitNumericSetting('max_drift', e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                    className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                                  />
+                                  <span className="text-[10px] text-gray-400">/ 100</span>
+                                </div>
+                              </div>
                             </div>
+                          )}
+                        </SettingsSection>
+
+                        <SettingsSection
+                          title="Spec Validation Gate"
+                          description="Spec validation, resource coverage and automatic resource derivation."
+                          icon={<Shield size={12} />}
+                        >
+                          <SettingRow label="Auto-derive Spec resources" description="Copy selected resources to new or linked cards.">
+                            <SettingsToggle
+                              checked={autoDeriveEnabled}
+                              onChange={toggleSpecResourceAutomation}
+                              ariaLabel="Auto-derive Spec resources"
+                              testId="toggle-spec-resource-automation"
+                            />
+                          </SettingRow>
+
+                          <div className="grid grid-cols-3 gap-2" aria-label="Spec resource types">
+                            {SPEC_RESOURCE_OPTIONS.map(({ type, label, title, Icon }) => {
+                              const checked = autoDeriveResourceTypes.includes(type);
+                              const isLastSelected = autoDeriveEnabled && checked && autoDeriveResourceTypes.length === 1;
+                              return (
+                                <button
+                                  key={type}
+                                  type="button"
+                                  title={title}
+                                  aria-pressed={checked}
+                                  aria-disabled={!autoDeriveEnabled || isLastSelected}
+                                  data-testid={`spec-resource-type-${type}`}
+                                  onClick={() => toggleSpecResourceType(type)}
+                                  className={`flex h-9 min-w-0 items-center justify-center gap-1 rounded border px-2 text-[11px] font-medium transition-colors ${
+                                    checked
+                                      ? 'border-violet-400 bg-violet-50 text-violet-700 dark:border-violet-500/70 dark:bg-violet-500/15 dark:text-violet-200'
+                                      : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                                  } ${!autoDeriveEnabled ? 'cursor-not-allowed opacity-50' : ''} ${isLastSelected ? 'cursor-not-allowed' : ''}`}
+                                >
+                                  <Icon size={12} className="shrink-0" />
+                                  <span className="truncate">{label}</span>
+                                </button>
+                              );
+                            })}
                           </div>
-                          <div>
-                            <label className="text-[10px] font-medium text-gray-500 dark:text-gray-400 block mb-1">
-                              Max Drift
-                            </label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                min={0}
-                                max={100}
-                                value={maxDriftDraft}
-                                onChange={(e) => setMaxDriftDraft(e.target.value)}
-                                onBlur={(e) => commitNumericSetting('max_drift', e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                                className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                              />
-                              <span className="text-[10px] text-gray-400">/ 100</span>
+
+                          <SettingRow label="Require resource-to-task coverage" description="Spec Architecture, Mockup and KB must be linked to tasks.">
+                            <SettingsToggle
+                              checked={settings.require_spec_resource_task_coverage !== false}
+                              onChange={() =>
+                                updateSettings({
+                                  require_spec_resource_task_coverage: !(settings.require_spec_resource_task_coverage !== false),
+                                })
+                              }
+                              ariaLabel="Require resource-to-task coverage"
+                              testId="toggle-resource-task-coverage"
+                            />
+                          </SettingRow>
+
+                          <SettingRow label="Require spec validation" description="Specs must pass Completeness, Assertiveness and Ambiguity gates before Validated.">
+                            <SettingsToggle
+                              checked={settings.require_spec_validation ?? true}
+                              onChange={() => updateSettings({ require_spec_validation: !(settings.require_spec_validation ?? true) })}
+                              ariaLabel="Require spec validation"
+                            />
+                          </SettingRow>
+
+                          {settings.require_spec_validation && (
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                              <div>
+                                <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                                  Min Completeness
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    value={minSpecCompletenessDraft}
+                                    onChange={(e) => setMinSpecCompletenessDraft(e.target.value)}
+                                    onBlur={(e) => commitNumericSetting('min_spec_completeness', e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                    className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                                  />
+                                  <span className="text-[10px] text-gray-400">/ 100</span>
+                                </div>
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                                  Min Assertiveness
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    value={minSpecAssertivenessDraft}
+                                    onChange={(e) => setMinSpecAssertivenessDraft(e.target.value)}
+                                    onBlur={(e) => commitNumericSetting('min_spec_assertiveness', e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                    className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                                  />
+                                  <span className="text-[10px] text-gray-400">/ 100</span>
+                                </div>
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                                  Max Ambiguity
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    value={maxSpecAmbiguityDraft}
+                                    onChange={(e) => setMaxSpecAmbiguityDraft(e.target.value)}
+                                    onBlur={(e) => commitNumericSetting('max_spec_ambiguity', e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                    className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                                  />
+                                  <span className="text-[10px] text-gray-400">/ 100</span>
+                                </div>
+                              </div>
                             </div>
-                          </div>
-                        </div>
-                      )}
+                          )}
+                        </SettingsSection>
+                      </div>
                     </div>
 
-                    {/* Spec Validation Gate */}
-                    <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
-                      <h4 className="text-xs font-semibold text-gray-800 dark:text-gray-200 mb-3 flex items-center gap-1.5">
-                        <Shield size={12} />
-                        Spec Validation Gate
-                      </h4>
-
-                      <div className="flex items-center justify-between mb-3">
-                        <div>
-                          <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
-                            Require resource-to-task coverage
-                          </label>
-                          <p className="text-[10px] text-gray-400">
-                            Spec Architecture, Mockup and KB must be linked to tasks
-                          </p>
-                        </div>
-                        <SettingsToggle
-                          checked={settings.require_spec_resource_task_coverage !== false}
-                          onChange={() =>
-                            updateSettings({
-                              require_spec_resource_task_coverage: !(settings.require_spec_resource_task_coverage !== false),
-                            })
-                          }
-                          ariaLabel="Require resource-to-task coverage"
-                          testId="toggle-resource-task-coverage"
-                        />
-                      </div>
-
-                      <div className="flex items-center justify-between mb-3">
-                        <div>
-                          <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block">
-                            Require spec validation
-                          </label>
-                          <p className="text-[10px] text-gray-400">
-                            Specs must pass Completeness/Assertiveness/Ambiguity gate before Validated
-                          </p>
-                        </div>
-                        <SettingsToggle
-                          checked={settings.require_spec_validation ?? true}
-                          onChange={() => updateSettings({ require_spec_validation: !(settings.require_spec_validation ?? true) })}
-                          ariaLabel="Require spec validation"
-                        />
-                      </div>
-
-                      {settings.require_spec_validation && (
-                        <div className="space-y-2.5 pl-1">
-                          <div>
-                            <label className="text-[10px] font-medium text-gray-500 dark:text-gray-400 block mb-1">
-                              Min Completeness
-                            </label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                min={0}
-                                max={100}
-                                value={minSpecCompletenessDraft}
-                                onChange={(e) => setMinSpecCompletenessDraft(e.target.value)}
-                                onBlur={(e) => commitNumericSetting('min_spec_completeness', e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                                className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                              />
-                              <span className="text-[10px] text-gray-400">/ 100</span>
-                            </div>
-                          </div>
-                          <div>
-                            <label className="text-[10px] font-medium text-gray-500 dark:text-gray-400 block mb-1">
-                              Min Assertiveness
-                            </label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                min={0}
-                                max={100}
-                                value={minSpecAssertivenessDraft}
-                                onChange={(e) => setMinSpecAssertivenessDraft(e.target.value)}
-                                onBlur={(e) => commitNumericSetting('min_spec_assertiveness', e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                                className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                              />
-                              <span className="text-[10px] text-gray-400">/ 100</span>
-                            </div>
-                          </div>
-                          <div>
-                            <label className="text-[10px] font-medium text-gray-500 dark:text-gray-400 block mb-1">
-                              Max Ambiguity <span className="text-gray-400">(lower is better)</span>
-                            </label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                min={0}
-                                max={100}
-                                value={maxSpecAmbiguityDraft}
-                                onChange={(e) => setMaxSpecAmbiguityDraft(e.target.value)}
-                                onBlur={(e) => commitNumericSetting('max_spec_ambiguity', e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                                className="w-16 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                              />
-                              <span className="text-[10px] text-gray-400">/ 100</span>
-                            </div>
-                          </div>
-                        </div>
-                      )}
+                    <div className="modal-footer !justify-between">
+                      <button
+                        type="button"
+                        onClick={onDeleteBoard}
+                        className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/30"
+                      >
+                        <Trash2 size={13} />
+                        Delete board
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowSettings(false)}
+                        className="btn btn-secondary text-xs"
+                      >
+                        Close
+                      </button>
                     </div>
-
-                    <hr className="border-gray-200 dark:border-gray-700" />
-                    <button
-                      onClick={onDeleteBoard}
-                      className="w-full text-left text-xs text-red-500 hover:text-red-600 flex items-center gap-1"
-                    >
-                      Delete board
-                    </button>
                   </div>
                 </div>
-              )}
+              ), document.body)}
             </>
           )}
 

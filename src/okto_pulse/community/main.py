@@ -249,15 +249,15 @@ FRONTEND_DIR = Path(__file__).parent / "frontend_dist"
 
 def _ensure_data_dir(settings: CommunitySettings) -> None:
     """Create data directory structure if it doesn't exist."""
-    data_path = Path(settings.data_dir)
-    # Use data_dir as base for KG (kg_base_dir was removed from CommunitySettings)
-    kg_base = data_path / "kg"
-    metrics_path = Path(settings.metrics_dir)
+    data_path = Path(settings.data_dir).expanduser().resolve()
+    kg_base = Path(settings.kg_base_dir).expanduser().resolve()
+    metrics_path = Path(settings.metrics_dir).expanduser().resolve()
     for subdir in [
         data_path,
         data_path / "data",
         data_path / "uploads",
         kg_base / "boards",
+        kg_base / "global",
         metrics_path,
         metrics_path / "events",
         metrics_path / "sent",
@@ -725,6 +725,11 @@ def run():
     two ports). Reads ``OKTO_PULSE_PORT`` / ``OKTO_PULSE_MCP_PORT`` env
     vars (set by the CLI) and falls back to the settings defaults.
     """
+    from okto_pulse.community.serve_lock import (
+        ServeAlreadyRunningError,
+        acquire_serve_lock,
+    )
+
     settings = CommunitySettings()
     api_port = int(
         os.environ.get("PORT", os.environ.get("OKTO_PULSE_PORT", str(settings.port)))
@@ -733,11 +738,17 @@ def run():
         os.environ.get("MCP_PORT", os.environ.get("OKTO_PULSE_MCP_PORT", str(settings.mcp_port)))
     )
     try:
-        run_async_server(_serve_dual(api_port, mcp_port))
-    except KeyboardInterrupt:
-        # Ctrl+C / SIGINT — shutdown is graceful from here; suppress the
-        # default Python traceback for a clean CLI exit.
-        print("\nOkto Pulse stopped.")
+        serve_lock = acquire_serve_lock(settings)
+    except ServeAlreadyRunningError as exc:
+        print(str(exc))
+        return
+    with serve_lock:
+        try:
+            run_async_server(_serve_dual(api_port, mcp_port))
+        except KeyboardInterrupt:
+            # Ctrl+C / SIGINT — shutdown is graceful from here; suppress the
+            # default Python traceback for a clean CLI exit.
+            print("\nOkto Pulse stopped.")
 
 
 if __name__ == "__main__":

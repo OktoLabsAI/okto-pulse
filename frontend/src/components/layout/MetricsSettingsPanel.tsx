@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Download, FolderOpen, RotateCcw, Trash2, X } from 'lucide-react';
+import { Download, FolderOpen, RotateCcw, Save, Trash2, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import {
@@ -58,20 +58,34 @@ function modeLabel(mode: MetricsMode): string {
   return 'Off';
 }
 
+function normalizeItems(items: string[]): string[] {
+  return [...new Set(items)].sort();
+}
+
+function sameItems(left: string[], right: string[]): boolean {
+  return normalizeItems(left).join('|') === normalizeItems(right).join('|');
+}
+
 export function MetricsSettingsPanel({ onClose, initialPrompt = false }: MetricsSettingsPanelProps) {
   const [data, setData] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [draftMode, setDraftMode] = useState<MetricsMode>('local_only');
   const [ack, setAck] = useState<string[]>([]);
   const [showChecklistWarning, setShowChecklistWarning] = useState(false);
 
   const ackComplete = ACK_IDS.every((id) => ack.includes(id));
   const eventTypes = useMemo(() => Object.entries(data?.summary.by_event_type ?? {}), [data]);
+  const persistedAck = data?.consent.acknowledged_items ?? [];
+  const hasUnsavedChanges = Boolean(data && (draftMode !== data.mode || !sameItems(ack, persistedAck)));
 
   const refresh = async () => {
     setLoading(true);
     try {
-      setData(await getMetricsSummary());
+      const summary = await getMetricsSummary();
+      setData(summary);
+      setDraftMode(summary.mode);
+      setAck(summary.consent.acknowledged_items ?? []);
     } catch (err: any) {
       toast.error(err?.message ?? 'Failed to load metrics');
     } finally {
@@ -83,17 +97,18 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
     refresh();
   }, []);
 
-  const setMode = async (mode: MetricsMode) => {
-    if (mode === 'anonymous_beacon' && !ackComplete) {
+  const saveSettings = async () => {
+    if (!data) return;
+    if (draftMode === 'anonymous_beacon' && !ackComplete) {
       setShowChecklistWarning(true);
       toast.error('Check every opt-in item before enabling Beacon');
       return;
     }
     setSaving(true);
     try {
-      await updateMetricsMode(mode, ack);
+      await updateMetricsMode(draftMode, ack);
       await refresh();
-      toast.success(`Metrics mode: ${modeLabel(mode)}`);
+      toast.success('Metrics settings saved');
       if (initialPrompt) onClose();
     } catch (err: any) {
       toast.error(err?.message ?? 'Failed to update metrics');
@@ -141,7 +156,9 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
               {initialPrompt ? 'Metrics opt-in' : 'Metrics'}
             </h2>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              {data ? `Current mode: ${modeLabel(data.mode)}` : 'Loading'}
+              {data
+                ? `Current mode: ${modeLabel(data.mode)}${hasUnsavedChanges ? ` · selected: ${modeLabel(draftMode)}` : ''}`
+                : 'Loading'}
             </p>
           </div>
           <button
@@ -170,10 +187,13 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
                   key={mode}
                   type="button"
                   disabled={saving}
-                  onClick={() => setMode(mode)}
+                  onClick={() => {
+                    setDraftMode(mode);
+                    setShowChecklistWarning(mode === 'anonymous_beacon' && !ackComplete);
+                  }}
                   data-testid={`metrics-mode-${mode}`}
                   className={`rounded px-2 py-1.5 text-xs font-medium ${
-                    data.mode === mode
+                    draftMode === mode
                       ? 'bg-white text-blue-700 shadow-sm dark:bg-gray-950 dark:text-blue-300'
                       : 'text-gray-600 hover:bg-white/70 dark:text-gray-300 dark:hover:bg-gray-700'
                   }`}
@@ -317,6 +337,16 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
               <button type="button" onClick={onPurge} className="btn btn-secondary flex items-center gap-1 text-xs text-red-600">
                 <Trash2 size={14} />
                 Purge
+              </button>
+              <button
+                type="button"
+                onClick={saveSettings}
+                disabled={saving || !hasUnsavedChanges}
+                data-testid="metrics-save"
+                className="btn btn-primary flex items-center gap-1 text-xs"
+              >
+                <Save size={14} />
+                {saving ? 'Saving...' : 'Save'}
               </button>
               {initialPrompt && (
                 <button type="button" onClick={onClose} className="btn btn-secondary text-xs">

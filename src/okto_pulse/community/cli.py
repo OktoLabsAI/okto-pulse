@@ -244,33 +244,45 @@ def cmd_serve(args):
     os.environ["OKTO_PULSE_PORT"] = str(api_port)
     os.environ["OKTO_PULSE_MCP_PORT"] = str(mcp_port)
 
-    from okto_pulse.community.main import FRONTEND_DIR
-    has_frontend = FRONTEND_DIR.exists() and (FRONTEND_DIR / "index.html").exists()
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.serve_lock import (
+        ServeAlreadyRunningError,
+        acquire_serve_lock,
+    )
 
-    # Terms-of-Use pre-acceptance via CLI flag or env var.
-    if getattr(args, "accept_terms", False):
-        os.environ["OKTO_PULSE_TERMS_ACCEPTED"] = "1"
-        from okto_pulse.community.acceptance import write_acceptance
-        rec = write_acceptance("cli")
-        print(f"Terms-of-Use pre-accepted via --accept-terms (version {rec['version']}).")
-    elif (os.environ.get("OKTO_PULSE_TERMS_ACCEPTED") or "").strip() == "1":
-        from okto_pulse.community.acceptance import write_acceptance, read_acceptance
-        if read_acceptance() is None:
-            rec = write_acceptance("env")
-            print(f"Terms-of-Use pre-accepted via env (version {rec['version']}).")
+    settings = CommunitySettings()
+    frontend_dir = Path(__file__).resolve().parent / "frontend_dist"
+    has_frontend = frontend_dir.exists() and (frontend_dir / "index.html").exists()
 
-    print("Starting Okto Pulse Community...")
-    if has_frontend:
-        print(f"  App:  http://127.0.0.1:{api_port}  (API + Frontend)")
-    else:
-        print(f"  API:  http://127.0.0.1:{api_port}  (no frontend embedded)")
-    print(f"  MCP:  http://127.0.0.1:{mcp_port}/mcp")
-    print("  Press Ctrl+C to stop.\n")
+    try:
+        with acquire_serve_lock(settings):
+            # Terms-of-Use pre-acceptance via CLI flag or env var.
+            if getattr(args, "accept_terms", False):
+                os.environ["OKTO_PULSE_TERMS_ACCEPTED"] = "1"
+                from okto_pulse.community.acceptance import write_acceptance
+                rec = write_acceptance("cli")
+                print(f"Terms-of-Use pre-accepted via --accept-terms (version {rec['version']}).")
+            elif (os.environ.get("OKTO_PULSE_TERMS_ACCEPTED") or "").strip() == "1":
+                from okto_pulse.community.acceptance import write_acceptance, read_acceptance
+                if read_acceptance() is None:
+                    rec = write_acceptance("env")
+                    print(f"Terms-of-Use pre-accepted via env (version {rec['version']}).")
 
-    # Single-process, dual-port: run() spawns two uvicorn Server instances
-    # via asyncio.gather. uvicorn handles SIGINT/SIGTERM natively for both.
-    from okto_pulse.community.main import run
-    run()
+            print("Starting Okto Pulse Community...")
+            if has_frontend:
+                print(f"  App:  http://127.0.0.1:{api_port}  (API + Frontend)")
+            else:
+                print(f"  API:  http://127.0.0.1:{api_port}  (no frontend embedded)")
+            print(f"  MCP:  http://127.0.0.1:{mcp_port}/mcp")
+            print("  Press Ctrl+C to stop.\n")
+
+            # Single-process, dual-port: run() spawns two uvicorn Server instances
+            # via asyncio.gather. uvicorn handles SIGINT/SIGTERM natively for both.
+            from okto_pulse.community.main import run
+            run()
+    except ServeAlreadyRunningError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(2)
 
 
 def cmd_status(args):
