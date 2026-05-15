@@ -38,13 +38,14 @@ import {
   Download,
   Network,
   ShieldCheck,
+  Gauge,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportSpec, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import { openLineageGraph } from '@/components/traceability';
-import type { Spec, SpecStatus, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings, Decision } from '@/types';
+import type { IntegrationRequirement, ObservabilityRequirement, Spec, SpecStatus, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings, Decision } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { EvidenceBadge } from './EvidenceBadge';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -53,6 +54,8 @@ import { RulesTab } from './RulesTab';
 import { ContractsTab } from './ContractsTab';
 import { TechnicalRequirementsTab } from './TechnicalRequirementsTab';
 import { DecisionsTab } from './DecisionsTab';
+import { IntegrationRequirementsTab } from './IntegrationRequirementsTab';
+import { ObservabilityRequirementsTab } from './ObservabilityRequirementsTab';
 import { KGValidationTab } from './KGValidationTab';
 import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
@@ -74,7 +77,7 @@ interface SpecModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'trs' | 'decisions' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg';
+type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'irs' | 'ors' | 'trs' | 'decisions' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg';
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -193,6 +196,87 @@ function EditableRequirementsList({
       )}
     </div>
   );
+}
+
+function newRequirementId(prefix: 'ir' | 'or'): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function requirementDisplayText(item: { title?: string; description?: string }): string {
+  return (item.title || item.description || '').trim();
+}
+
+function reconcileIntegrationRequirements(
+  current: IntegrationRequirement[] | null,
+  items: string[],
+): IntegrationRequirement[] {
+  const existing = current || [];
+  const active = existing.filter((item) => item.status === 'active');
+  const inactive = existing.filter((item) => item.status !== 'active');
+  const byText = new Map(active.map((item) => [requirementDisplayText(item), item]));
+
+  return [
+    ...inactive,
+    ...items.map((text) => {
+      const trimmed = text.trim();
+      const prior = byText.get(trimmed);
+      if (prior) return prior;
+      const next: IntegrationRequirement = {
+        id: newRequirementId('ir'),
+        title: trimmed,
+        integration_type: 'other',
+        description: trimmed,
+        provider: null,
+        consumer: null,
+        contract_ref: null,
+        endpoint: null,
+        method: null,
+        data_contract: null,
+        linked_requirements: null,
+        linked_api_contracts: null,
+        linked_task_ids: null,
+        status: 'active',
+        notes: null,
+      };
+      return next;
+    }),
+  ];
+}
+
+function reconcileObservabilityRequirements(
+  current: ObservabilityRequirement[] | null,
+  items: string[],
+): ObservabilityRequirement[] {
+  const existing = current || [];
+  const active = existing.filter((item) => item.status === 'active');
+  const inactive = existing.filter((item) => item.status !== 'active');
+  const byText = new Map(active.map((item) => [requirementDisplayText(item), item]));
+
+  return [
+    ...inactive,
+    ...items.map((text) => {
+      const trimmed = text.trim();
+      const prior = byText.get(trimmed);
+      if (prior) return prior;
+      const next: ObservabilityRequirement = {
+        id: newRequirementId('or'),
+        title: trimmed,
+        signal_type: 'other',
+        description: trimmed,
+        target: null,
+        metric_name: null,
+        threshold: null,
+        severity: null,
+        owner: null,
+        linked_requirements: null,
+        linked_integration_requirements: null,
+        linked_task_ids: null,
+        status: 'active',
+        notes: null,
+      };
+      return next;
+    }),
+  ];
 }
 
 /* ============================================================
@@ -1390,6 +1474,8 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
+    { id: 'irs', label: 'IRs', icon: <Network size={14} />, count: spec.integration_requirements?.length || 0 },
+    { id: 'ors', label: 'ORs', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0 },
     { id: 'trs', label: 'TRs', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
     { id: 'decisions', label: 'Decisions', icon: <GitBranch size={14} />, count: spec.decisions?.length || 0 },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: spec.screen_mockups?.length || 0 },
@@ -1582,6 +1668,40 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                 }}
               />
               <EditableRequirementsList
+                title="Integration Requirements"
+                icon={<Network size={14} />}
+                items={(spec.integration_requirements || [])
+                  .filter((item) => item.status === 'active')
+                  .map(requirementDisplayText)
+                  .filter(Boolean)}
+                placeholder="Add an integration requirement..."
+                onUpdate={async (items) => {
+                  try {
+                    const updated = await api.updateSpec(specId, {
+                      integration_requirements: reconcileIntegrationRequirements(spec.integration_requirements, items),
+                    });
+                    setSpec(updated);
+                  } catch { toast.error('Failed to update integration requirements'); }
+                }}
+              />
+              <EditableRequirementsList
+                title="Observability Requirements"
+                icon={<Gauge size={14} />}
+                items={(spec.observability_requirements || [])
+                  .filter((item) => item.status === 'active')
+                  .map(requirementDisplayText)
+                  .filter(Boolean)}
+                placeholder="Add an observability requirement..."
+                onUpdate={async (items) => {
+                  try {
+                    const updated = await api.updateSpec(specId, {
+                      observability_requirements: reconcileObservabilityRequirements(spec.observability_requirements, items),
+                    });
+                    setSpec(updated);
+                  } catch { toast.error('Failed to update observability requirements'); }
+                }}
+              />
+              <EditableRequirementsList
                 title="Technical Requirements"
                 icon={<Settings size={14} />}
                 items={(spec.technical_requirements || []).map((tr) =>
@@ -1763,6 +1883,58 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
               }}
               onUnlinkTask={async (contractId, cardId) => {
                 const updated = await api.unlinkTaskFromSpecItem(specId, 'api_contracts', contractId, cardId);
+                setSpec(updated);
+              }}
+            />
+          )}
+          {activeTab === 'irs' && spec && (
+            <IntegrationRequirementsTab
+              spec={spec}
+              onUpdate={async (requirements) => {
+                try {
+                  const updated = await api.updateSpec(specId, { integration_requirements: requirements });
+                  setSpec(updated);
+                } catch { toast.error('Failed to update integration requirements'); }
+              }}
+              onSpecUpdate={async (patch) => {
+                try {
+                  const updated = await api.updateSpec(specId, patch as any);
+                  setSpec(updated);
+                } catch { toast.error('Failed to update spec'); }
+              }}
+              specCards={spec.cards || []}
+              onLinkTask={async (requirementId, cardId) => {
+                const updated = await api.linkTaskToSpecItem(specId, 'integration_requirements', requirementId, cardId);
+                setSpec(updated);
+              }}
+              onUnlinkTask={async (requirementId, cardId) => {
+                const updated = await api.unlinkTaskFromSpecItem(specId, 'integration_requirements', requirementId, cardId);
+                setSpec(updated);
+              }}
+            />
+          )}
+          {activeTab === 'ors' && spec && (
+            <ObservabilityRequirementsTab
+              spec={spec}
+              onUpdate={async (requirements) => {
+                try {
+                  const updated = await api.updateSpec(specId, { observability_requirements: requirements });
+                  setSpec(updated);
+                } catch { toast.error('Failed to update observability requirements'); }
+              }}
+              onSpecUpdate={async (patch) => {
+                try {
+                  const updated = await api.updateSpec(specId, patch as any);
+                  setSpec(updated);
+                } catch { toast.error('Failed to update spec'); }
+              }}
+              specCards={spec.cards || []}
+              onLinkTask={async (requirementId, cardId) => {
+                const updated = await api.linkTaskToSpecItem(specId, 'observability_requirements', requirementId, cardId);
+                setSpec(updated);
+              }}
+              onUnlinkTask={async (requirementId, cardId) => {
+                const updated = await api.unlinkTaskFromSpecItem(specId, 'observability_requirements', requirementId, cardId);
                 setSpec(updated);
               }}
             />

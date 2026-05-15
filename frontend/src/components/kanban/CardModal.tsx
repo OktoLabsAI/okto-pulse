@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch } from 'lucide-react';
+import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportCard, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
@@ -121,6 +121,8 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const [specScenarios, setSpecScenarios] = useState<TestScenario[]>([]);
   const [specRules, setSpecRules] = useState<any[]>([]);
   const [specContracts, setSpecContracts] = useState<any[]>([]);
+  const [specIRs, setSpecIRs] = useState<any[]>([]);
+  const [specORs, setSpecORs] = useState<any[]>([]);
   const [specTRs, setSpecTRs] = useState<any[]>([]);
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
@@ -171,17 +173,24 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               setSpecScenarios(spec.test_scenarios || []);
               setSpecRules(spec.business_rules || []);
               setSpecContracts(spec.api_contracts || []);
+              setSpecIRs(spec.integration_requirements || []);
+              setSpecORs(spec.observability_requirements || []);
               setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
               // Load full KB content for knowledge tab
               Promise.all(
                 (spec.knowledge_bases || []).map((kb: any) => api.getSpecKnowledge(spec.id, kb.id).catch(() => null))
               ).then((kbs) => setSpecKBsFull(kbs.filter(Boolean) as any[])).catch(() => {});
             })
-            .catch(() => { setParentSpec(null); setFullSpec(null); setSpecScenarios([]); });
+            .catch(() => { setParentSpec(null); setFullSpec(null); setSpecScenarios([]); setSpecRules([]); setSpecContracts([]); setSpecIRs([]); setSpecORs([]); setSpecTRs([]); });
         } else {
           setParentSpec(null);
           setFullSpec(null);
           setSpecScenarios([]);
+          setSpecRules([]);
+          setSpecContracts([]);
+          setSpecIRs([]);
+          setSpecORs([]);
+          setSpecTRs([]);
         }
       })
       .catch(() => toast.error('Failed to load card'))
@@ -208,6 +217,8 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               setSpecScenarios(spec.test_scenarios || []);
               setSpecRules(spec.business_rules || []);
               setSpecContracts(spec.api_contracts || []);
+              setSpecIRs(spec.integration_requirements || []);
+              setSpecORs(spec.observability_requirements || []);
               setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
             })
             .catch(() => {});
@@ -926,6 +937,42 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                     />
                   )}
 
+                  {/* Linked Integration Requirements */}
+                  {card.spec_id && specIRs.length > 0 && (
+                    <LinkedSpecItemsSection
+                      card={card}
+                      specId={card.spec_id}
+                      items={specIRs}
+                      field="integration_requirements"
+                      label="Integration Requirements"
+                      icon={<Network size={14} className="inline mr-1" />}
+                      api={api}
+                      onSpecRefresh={() => {
+                        api.getSpec(card.spec_id!).then((spec) => {
+                          setSpecIRs(spec.integration_requirements || []);
+                        }).catch(() => {});
+                      }}
+                    />
+                  )}
+
+                  {/* Linked Observability Requirements */}
+                  {card.spec_id && specORs.length > 0 && (
+                    <LinkedSpecItemsSection
+                      card={card}
+                      specId={card.spec_id}
+                      items={specORs}
+                      field="observability_requirements"
+                      label="Observability Requirements"
+                      icon={<Gauge size={14} className="inline mr-1" />}
+                      api={api}
+                      onSpecRefresh={() => {
+                        api.getSpec(card.spec_id!).then((spec) => {
+                          setSpecORs(spec.observability_requirements || []);
+                        }).catch(() => {});
+                      }}
+                    />
+                  )}
+
                   {/* Linked Technical Requirements */}
                   {card.spec_id && specTRs.length > 0 && (
                     <LinkedSpecItemsSection
@@ -1577,7 +1624,7 @@ function LinkedSpecItemsSection({
   card: Card;
   specId: string;
   items: { id: string; title?: string; text?: string; method?: string; path?: string; linked_task_ids?: string[] | null }[];
-  field: 'business_rules' | 'api_contracts' | 'technical_requirements';
+  field: 'business_rules' | 'api_contracts' | 'technical_requirements' | 'integration_requirements' | 'observability_requirements';
   label: string;
   icon: React.ReactNode;
   api: ReturnType<typeof useDashboardApi>;

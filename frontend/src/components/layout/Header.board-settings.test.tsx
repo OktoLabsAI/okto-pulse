@@ -47,6 +47,8 @@ const baseSettings: BoardSettings = {
   skip_rules_coverage_global: false,
   skip_trs_coverage_global: false,
   skip_contract_coverage_global: false,
+  skip_ir_coverage_global: false,
+  skip_or_coverage_global: false,
   skip_decisions_coverage_global: false,
   require_task_validation: true,
   min_confidence: 70,

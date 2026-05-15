@@ -622,6 +622,63 @@ export interface ApiContract {
   notes: string | null;
 }
 
+// Integration Requirement
+export type IntegrationRequirementStatus = 'active' | 'superseded' | 'revoked';
+export type IntegrationRequirementType =
+  | 'api'
+  | 'queue'
+  | 'stored_procedure'
+  | 'data_contract'
+  | 'event'
+  | 'file'
+  | 'other';
+
+export interface IntegrationRequirement {
+  id: string;
+  title: string;
+  integration_type: IntegrationRequirementType;
+  description: string;
+  provider: string | null;
+  consumer: string | null;
+  contract_ref: string | null;
+  endpoint: string | null;
+  method: string | null;
+  data_contract: Record<string, unknown> | null;
+  linked_requirements: string[] | null;
+  linked_api_contracts: string[] | null;
+  linked_task_ids: string[] | null;
+  status: IntegrationRequirementStatus;
+  notes: string | null;
+}
+
+// Observability Requirement
+export type ObservabilityRequirementStatus = 'active' | 'superseded' | 'revoked';
+export type ObservabilitySignalType =
+  | 'metric'
+  | 'log'
+  | 'trace'
+  | 'dashboard'
+  | 'alert'
+  | 'slo'
+  | 'other';
+
+export interface ObservabilityRequirement {
+  id: string;
+  title: string;
+  signal_type: ObservabilitySignalType;
+  description: string;
+  target: string | null;
+  metric_name: string | null;
+  threshold: string | null;
+  severity: string | null;
+  owner: string | null;
+  linked_requirements: string[] | null;
+  linked_integration_requirements: string[] | null;
+  linked_task_ids: string[] | null;
+  status: ObservabilityRequirementStatus;
+  notes: string | null;
+}
+
 // Technical Requirement (structured)
 export interface TechnicalRequirement {
   id: string;
@@ -978,6 +1035,8 @@ export interface Spec {
   test_scenarios: TestScenario[] | null;
   business_rules: BusinessRule[] | null;
   api_contracts: ApiContract[] | null;
+  integration_requirements: IntegrationRequirement[] | null;
+  observability_requirements: ObservabilityRequirement[] | null;
   decisions: Decision[] | null;
   screen_mockups: ScreenMockup[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
@@ -985,6 +1044,8 @@ export interface Spec {
   skip_rules_coverage?: boolean;
   skip_decisions_coverage?: boolean;
   skip_contract_coverage?: boolean;
+  skip_ir_coverage?: boolean;
+  skip_or_coverage?: boolean;
   skip_qualitative_validation?: boolean;
   validation_threshold?: number;
   archived?: boolean;
@@ -1226,6 +1287,8 @@ export interface BoardSettings {
   skip_rules_coverage_global: boolean;
   skip_trs_coverage_global: boolean;
   skip_contract_coverage_global: boolean;
+  skip_ir_coverage_global: boolean;
+  skip_or_coverage_global: boolean;
   skip_decisions_coverage_global: boolean;
   require_task_validation: boolean;
   min_confidence: number;
@@ -1484,6 +1547,8 @@ export interface CreateSpecRequest {
   technical_requirements?: string[];
   acceptance_criteria?: string[];
   decisions?: Decision[];
+  integration_requirements?: IntegrationRequirement[];
+  observability_requirements?: ObservabilityRequirement[];
   status?: SpecStatus;
   assignee_id?: string;
   labels?: string[];
@@ -1501,10 +1566,14 @@ export interface UpdateSpecRequest {
   test_scenarios?: TestScenario[];
   business_rules?: BusinessRule[];
   api_contracts?: ApiContract[];
+  integration_requirements?: IntegrationRequirement[];
+  observability_requirements?: ObservabilityRequirement[];
   decisions?: Decision[];
   screen_mockups?: ScreenMockup[];
   skip_test_coverage?: boolean;
   skip_contract_coverage?: boolean;
+  skip_ir_coverage?: boolean;
+  skip_or_coverage?: boolean;
   skip_decisions_coverage?: boolean;
   skip_qualitative_validation?: boolean;
   validation_threshold?: number;

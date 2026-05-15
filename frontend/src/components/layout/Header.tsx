@@ -186,6 +186,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false,
         skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false,
         skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false,
+        skip_ir_coverage_global: currentBoard.settings.skip_ir_coverage_global ?? false,
+        skip_or_coverage_global: currentBoard.settings.skip_or_coverage_global ?? false,
         skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false,
         skip_test_evidence_global: currentBoard.settings.skip_test_evidence_global ?? false,
         require_task_validation: currentBoard.settings.require_task_validation ?? true,
@@ -206,6 +208,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_rules_coverage_global: false,
         skip_trs_coverage_global: false,
         skip_contract_coverage_global: false,
+        skip_ir_coverage_global: false,
+        skip_or_coverage_global: false,
         skip_decisions_coverage_global: false,
         skip_test_evidence_global: false,
         require_task_validation: true,
@@ -592,6 +596,22 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                               checked={settings.skip_contract_coverage_global}
                               onChange={() => updateSettings({ skip_contract_coverage_global: !settings.skip_contract_coverage_global })}
                               ariaLabel="Skip contract coverage"
+                              activeColor="amber"
+                            />
+                          </SettingRow>
+                          <SettingRow label="Skip IR coverage" description="Bypass Integration Requirement to Task coverage checks.">
+                            <SettingsToggle
+                              checked={settings.skip_ir_coverage_global}
+                              onChange={() => updateSettings({ skip_ir_coverage_global: !settings.skip_ir_coverage_global })}
+                              ariaLabel="Skip IR coverage"
+                              activeColor="amber"
+                            />
+                          </SettingRow>
+                          <SettingRow label="Skip OR coverage" description="Bypass Observability Requirement to Task coverage checks.">
+                            <SettingsToggle
+                              checked={settings.skip_or_coverage_global}
+                              onChange={() => updateSettings({ skip_or_coverage_global: !settings.skip_or_coverage_global })}
+                              ariaLabel="Skip OR coverage"
                               activeColor="amber"
                             />
                           </SettingRow>
