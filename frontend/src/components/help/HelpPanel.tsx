@@ -3,7 +3,7 @@
  * Content adapts based on edition (community vs ecosystem).
  */
 
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 
 // MCP configuration - uses runtime config or environment variable or defaults to port 8101
 const getMcpBaseUrl = () => {
@@ -28,8 +28,9 @@ const WEB_URL = typeof window !== 'undefined' && (window as any).OKTO_PULSE_CONF
   : (typeof import.meta.env.VITE_API_URL !== 'undefined' && import.meta.env.VITE_API_URL !== '/api/v1'
       ? import.meta.env.VITE_API_URL.replace('/api/v1', '')
       : `http://127.0.0.1:8100`);
-import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Users, Bot, GitBranch, Settings, CheckCircle, Network } from 'lucide-react';
+import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Users, Bot, GitBranch, Settings, CheckCircle, Network, Play, RotateCcw, SkipForward, Undo2 } from 'lucide-react';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { useOptionalGuidedHelp, type GuidedHelpSurface, type GuidedHelpTourProgressStatus } from '@/components/guided-help';
 import pulseIcon from '@/assets/pulse-icon.svg';
 
 interface HelpPanelProps {
@@ -41,12 +42,173 @@ const isEcosystem = typeof __AUTH_MODE__ !== 'undefined' && __AUTH_MODE__ === 'c
 interface Section {
   id: string;
   title: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   content: string;
+}
+
+const surfaceLabels: Record<GuidedHelpSurface, string> = {
+  board: 'Board',
+  specs: 'Specs',
+  tasks: 'Tasks',
+  kg: 'Knowledge Graph',
+  metrics: 'Metrics',
+  agents: 'Agents',
+  help: 'Help',
+};
+
+const statusLabels: Record<GuidedHelpTourProgressStatus, string> = {
+  not_started: 'Not started',
+  in_progress: 'In progress',
+  completed: 'Completed',
+  skipped: 'Skipped',
+};
+
+const statusClasses: Record<GuidedHelpTourProgressStatus, string> = {
+  not_started: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300',
+  in_progress: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+  skipped: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+};
+
+function GuidedToursContent() {
+  const guidedHelp = useOptionalGuidedHelp();
+
+  if (!guidedHelp) {
+    return (
+      <section className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+        <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+          Guided Tours
+        </h4>
+        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+          Tours are unavailable outside the guided help provider.
+        </p>
+      </section>
+    );
+  }
+
+  const completedCount = guidedHelp.summaries.filter((summary) => summary.status === 'completed').length;
+  const skippedCount = guidedHelp.summaries.filter((summary) => summary.status === 'skipped').length;
+
+  return (
+    <section className="space-y-4" data-tour-id="help.guided_tours" data-testid="guided-tours-panel">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            Guided Tours
+          </h4>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {completedCount} completed · {skippedCount} skipped · {guidedHelp.summaries.length} total
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {guidedHelp.skippedAll ? (
+            <button
+              type="button"
+              onClick={guidedHelp.undoSkipAll}
+              data-testid="guided-tours-undo-skip-all"
+              className="btn btn-secondary inline-flex items-center gap-1.5 text-xs"
+            >
+              <Undo2 size={14} />
+              Undo Skip all
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={guidedHelp.skipAll}
+              data-testid="guided-tours-skip-all"
+              className="btn btn-secondary inline-flex items-center gap-1.5 text-xs"
+            >
+              <SkipForward size={14} />
+              Skip all tours
+            </button>
+          )}
+        </div>
+      </div>
+
+      {guidedHelp.skippedAll && (
+        <div
+          className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
+          role="status"
+        >
+          Skip all is active. Undo it to start or replay tours again.
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {guidedHelp.summaries.map((summary) => {
+          const primaryLabel =
+            summary.status === 'not_started' || summary.versionChanged ? 'Start' : 'Replay';
+          const primaryAction =
+            summary.status === 'not_started' || summary.versionChanged
+              ? guidedHelp.startTour
+              : guidedHelp.replayTour;
+
+          return (
+            <article
+              key={summary.tourId}
+              data-testid={`guided-tour-row-${summary.tourId}`}
+              className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/40"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h5 className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      {summary.title}
+                    </h5>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${statusClasses[summary.status]}`}>
+                      {statusLabels[summary.status]}
+                    </span>
+                    {summary.versionChanged && (
+                      <span className="rounded-full bg-cyan-100 px-2 py-0.5 text-[10px] font-medium text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300">
+                        Updated
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {surfaceLabels[summary.surface]} · {summary.completedSteps} completed ·{' '}
+                    {summary.skippedSteps} skipped · {summary.viewedSteps} viewed ·{' '}
+                    {summary.totalSteps} steps
+                  </p>
+                </div>
+
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => primaryAction(summary.tourId)}
+                    disabled={guidedHelp.skippedAll}
+                    data-testid={`guided-tour-action-${summary.tourId}`}
+                    className="btn btn-primary inline-flex items-center gap-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Play size={13} />
+                    {primaryLabel}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => guidedHelp.resetTour(summary.tourId)}
+                    data-testid={`guided-tour-reset-${summary.tourId}`}
+                    className="btn btn-secondary inline-flex items-center gap-1.5 text-xs"
+                  >
+                    <RotateCcw size={13} />
+                    Reset
+                  </button>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function getSections(): Section[] {
   const sections: Section[] = [
+    {
+      id: 'guided-tours',
+      title: 'Guided Tours',
+      icon: <CheckCircle size={16} />,
+      content: '',
+    },
     {
       id: 'quickstart',
       title: 'Quickstart',
@@ -1276,7 +1438,11 @@ export function HelpPanel({ onClose }: HelpPanelProps) {
             </button>
           </div>
           <div className="flex-1 overflow-y-auto px-6 py-4">
-            <MarkdownContent content={current.content} />
+            {current.id === 'guided-tours' ? (
+              <GuidedToursContent />
+            ) : (
+              <MarkdownContent content={current.content} />
+            )}
           </div>
         </div>
       </div>

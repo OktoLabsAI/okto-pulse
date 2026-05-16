@@ -36,6 +36,7 @@ export function KanbanColumn({ status, cards, onCardClick, onAddCard, nameMap }:
   return (
     <div
       ref={setNodeRef}
+      data-tour-id={status === 'validation' ? 'tasks.validation.column' : undefined}
       className={`kanban-column border-t-4 ${columnColors[status]} transition-all duration-200 ${
         isOver ? 'ring-2 ring-blue-400 ring-inset bg-blue-50/50 dark:bg-blue-900/20' : ''
       }`}

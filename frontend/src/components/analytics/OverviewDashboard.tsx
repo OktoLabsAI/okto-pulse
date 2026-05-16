@@ -461,7 +461,10 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
       {/* ------------------------------------------------------------------ */}
       {/* KPI Cards                                                          */}
       {/* ------------------------------------------------------------------ */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-5 gap-4">
+      <div
+        className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-5 gap-4"
+        data-tour-id="metrics.overview.summary"
+      >
         {/* Total Ideations */}
         <KpiCard
           icon={<Lightbulb className="w-4 h-4 text-amber-500" />}

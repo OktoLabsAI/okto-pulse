@@ -34,6 +34,8 @@ interface HeaderProps {
   onBoardUpdated?: () => void;
   onOpenAnalytics?: () => void;
   onOpenKGHealth?: () => void;
+  helpOpen?: boolean;
+  onHelpOpenChange?: (open: boolean) => void;
 }
 
 interface SettingsToggleProps {
@@ -138,7 +140,7 @@ const SPEC_RESOURCE_OPTIONS: Array<{
 
 const DEFAULT_SPEC_RESOURCE_TYPES = SPEC_RESOURCE_OPTIONS.map((option) => option.type);
 
-export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoard, onDeleteBoard, isRefreshing, sidebarOpen, onToggleSidebar, onBoardUpdated, onOpenAnalytics, onOpenKGHealth }: HeaderProps) {
+export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoard, onDeleteBoard, isRefreshing, sidebarOpen, onToggleSidebar, onBoardUpdated, onOpenAnalytics, onOpenKGHealth, helpOpen, onHelpOpenChange }: HeaderProps) {
   const { isSignedIn, isLoaded } = authAdapter.useAuth();
   const AdapterUserButton = authAdapter.UserButton;
   const currentBoard = useCurrentBoard();
@@ -149,12 +151,19 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const [showMetricsSettings, setShowMetricsSettings] = useState(false);
   const [showGuidelines, setShowGuidelines] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
+  const [localShowHelp, setLocalShowHelp] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
   const [showKnowledgeGraph, setShowKnowledgeGraph] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const showHelp = helpOpen ?? localShowHelp;
+  const setShowHelp = (open: boolean) => {
+    if (helpOpen === undefined) {
+      setLocalShowHelp(open);
+    }
+    onHelpOpenChange?.(open);
+  };
 
   // Close on outside click
   useEffect(() => {
@@ -338,6 +347,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                 disabled={isRefreshing}
                 className="btn btn-secondary flex items-center gap-1 text-sm"
                 title="Refresh board"
+                data-tour-id="board.refresh"
               >
                 <RefreshCw size={16} className={isRefreshing ? 'animate-spin' : ''} />
               </button>
@@ -408,6 +418,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     <button
                       onClick={() => { setShowMenu(false); onOpenAgents?.(); }}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                      data-tour-id="agents.modal.entry"
                     >
                       <Users size={14} />
                       Agents
@@ -479,6 +490,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     <button
                       onClick={() => { setShowMenu(false); setShowHelp(true); }}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                      data-tour-id="help.guided_tours"
                     >
                       <HelpCircle size={14} />
                       Help

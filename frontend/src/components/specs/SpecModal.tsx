@@ -1612,7 +1612,10 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
         )}
 
         {/* Tabs */}
-        <div className="flex items-center gap-1 px-6 pt-3 border-b border-gray-200 dark:border-gray-700 overflow-x-auto shrink-0 scrollbar-hide">
+        <div
+          className="flex items-center gap-1 px-6 pt-3 border-b border-gray-200 dark:border-gray-700 overflow-x-auto shrink-0 scrollbar-hide"
+          data-tour-id="specs.resources.tabs"
+        >
           {tabs.map((tab) => (
             <button
               key={tab.id}

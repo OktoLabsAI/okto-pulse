@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { authAdapter, portalAdapter } from '@/adapters';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -14,10 +14,11 @@ import { SprintsPanel } from '@/components/sprints';
 import { AnalyticsPage } from '@/components/analytics';
 import { GlobalKGActivityIndicator } from '@/components/knowledge/GlobalKGActivityIndicator';
 import { KGHealthView } from '@/components/knowledge/KGHealthView';
-import { ModalStackProvider } from '@/contexts/ModalStackContext';
+import { ModalStackProvider, useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { ModalStackRenderer } from '@/components/modals/ModalStackRenderer';
 import { LineageGraphModal } from '@/components/traceability';
 import { EvidenceGateSkipBanner } from '@/components/banners/EvidenceGateSkipBanner';
+import { GuidedHelpProvider, guidedHelpRegistry, type GuidedHelpSurface } from '@/components/guided-help';
 import { getBoardSettings } from '@/services/board-settings-api';
 import { useTermsAcceptance } from '@/hooks/useTermsAcceptance';
 import { TermsAcceptanceModal } from '@/components/onboarding/TermsAcceptanceModal';
@@ -28,6 +29,47 @@ import logoDark from '@/assets/logo-dark.png';
 import { CURRENT_METRICS_SCHEMA_VERSION, getMetricsSummary } from '@/services/metrics-api';
 
 const METRICS_PROMPT_DISMISSED_KEY = `okto-pulse:metrics-opt-in-prompt-dismissed:${CURRENT_METRICS_SCHEMA_VERSION}`;
+
+interface GuidedHelpRootProps {
+  children: ReactNode;
+  surface: GuidedHelpSurface;
+  termsOpen: boolean;
+  onboardingOpen: boolean;
+  metricsPromptOpen: boolean;
+  modalOpen: boolean;
+  analyticsOpen: boolean;
+  kgHealthOpen: boolean;
+}
+
+function GuidedHelpRoot({
+  children,
+  surface,
+  termsOpen,
+  onboardingOpen,
+  metricsPromptOpen,
+  modalOpen,
+  analyticsOpen,
+  kgHealthOpen,
+}: GuidedHelpRootProps) {
+  const modalStack = useOptionalModalStack();
+
+  return (
+    <GuidedHelpProvider
+      registry={guidedHelpRegistry}
+      surface={surface}
+      suppressWhen={{
+        termsOpen,
+        onboardingOpen,
+        metricsPromptOpen,
+        modalStackActive: modalOpen || (modalStack?.stack.length ?? 0) > 0,
+        analyticsOpen,
+        kgHealthOpen,
+      }}
+    >
+      {children}
+    </GuidedHelpProvider>
+  );
+}
 
 function App() {
   const api = useDashboardApi();
@@ -45,6 +87,7 @@ function App() {
   const [createBoardOpen, setCreateBoardOpen] = useState(false);
   const [agentsModalOpen, setAgentsModalOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [helpPanelOpen, setHelpPanelOpen] = useState(false);
   const [portalBarVisible, setPortalBarVisible] = useState(true);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [metricsPromptOpen, setMetricsPromptOpen] = useState(false);
@@ -96,6 +139,19 @@ function App() {
   const [showKGHealth, setShowKGHealth] = useState(
     () => typeof window !== 'undefined' && window.location.pathname.startsWith('/kg-health'),
   );
+  const guidedHelpSurface: GuidedHelpSurface = showAnalytics
+    ? 'metrics'
+    : showKGHealth
+      ? 'kg'
+      : helpPanelOpen
+        ? 'help'
+        : agentsModalOpen
+          ? 'agents'
+          : activeTab === 'specs'
+            ? 'specs'
+            : activeTab === 'tasks'
+              ? 'tasks'
+              : 'board';
 
   // Mantém showAnalytics e showKGHealth sincronizados com back/forward do browser.
   useEffect(() => {
@@ -282,6 +338,15 @@ function App() {
 
   return (
     <ModalStackProvider>
+    <GuidedHelpRoot
+      surface={guidedHelpSurface}
+      termsOpen={terms.needsAcceptance}
+      onboardingOpen={onboardingOpen}
+      metricsPromptOpen={metricsPromptOpen}
+      modalOpen={createBoardOpen || agentsModalOpen || shareModalOpen}
+      analyticsOpen={showAnalytics}
+      kgHealthOpen={showKGHealth}
+    >
     {terms.needsAcceptance && (
       <TermsAcceptanceModal onAccept={terms.accept} />
     )}
@@ -311,6 +376,8 @@ function App() {
         onBoardUpdated={refreshBoard}
         onOpenAnalytics={openAnalytics}
         onOpenKGHealth={openKGHealth}
+        helpOpen={helpPanelOpen}
+        onHelpOpenChange={setHelpPanelOpen}
         isRefreshing={isRefreshing}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -327,7 +394,10 @@ function App() {
           {currentBoard ? (
             <>
               {/* Tab switcher */}
-              <div className="flex items-center gap-1 mb-4 bg-surface-200/60 dark:bg-surface-800/60 backdrop-blur-sm rounded-xl p-0.5 w-fit border border-surface-200/40 dark:border-surface-700/30">
+              <div
+                className="flex items-center gap-1 mb-4 bg-surface-200/60 dark:bg-surface-800/60 backdrop-blur-sm rounded-xl p-0.5 w-fit border border-surface-200/40 dark:border-surface-700/30"
+                data-tour-id="board.tabs"
+              >
                 {([
                   { id: 'stories' as const, label: 'Stories' },
                   { id: 'ideations' as const, label: 'Ideations' },
@@ -430,6 +500,7 @@ function App() {
       {currentBoard && <LineageGraphModal boardId={currentBoard.id} />}
       {currentBoard && <ModalStackRenderer boardId={currentBoard.id} />}
     </div>
+    </GuidedHelpRoot>
     </ModalStackProvider>
   );
 }
