@@ -9,6 +9,11 @@ interface IntegrationRequirementsTabProps {
   specCards?: CardSummaryForSpec[];
   onLinkTask?: (requirementId: string, cardId: string) => Promise<void>;
   onUnlinkTask?: (requirementId: string, cardId: string) => Promise<void>;
+  canCreate?: boolean;
+  canEdit?: boolean;
+  canDelete?: boolean;
+  canLinkTask?: boolean;
+  canEditCoverageFlags?: boolean;
 }
 
 const TYPES: IntegrationRequirementType[] = ['api', 'queue', 'stored_procedure', 'data_contract', 'event', 'file', 'other'];
@@ -77,6 +82,11 @@ export function IntegrationRequirementsTab({
   specCards = [],
   onLinkTask,
   onUnlinkTask,
+  canCreate = true,
+  canEdit = true,
+  canDelete = true,
+  canLinkTask = true,
+  canEditCoverageFlags = true,
 }: IntegrationRequirementsTabProps) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -261,7 +271,7 @@ export function IntegrationRequirementsTab({
         </div>
       )}
 
-      {onSpecUpdate && (
+      {onSpecUpdate && canEditCoverageFlags && (
         <div className="flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/20">
           <div>
             <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip IR coverage requirement</span>
@@ -294,8 +304,12 @@ export function IntegrationRequirementsTab({
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 font-medium">{TYPE_LABELS[item.integration_type]}</span>
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{item.title}</span>
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${taskCount > 0 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500'}`}>{taskCount} tasks</span>
-              <button onClick={(event) => { event.stopPropagation(); handleEdit(item); }} className="p-0.5 text-gray-400 hover:text-blue-500"><Pencil size={12} /></button>
-              <button onClick={(event) => { event.stopPropagation(); handleRemove(item.id); }} className="p-0.5 text-gray-400 hover:text-red-500"><Trash2 size={12} /></button>
+              {canEdit && (
+                <button onClick={(event) => { event.stopPropagation(); handleEdit(item); }} className="p-0.5 text-gray-400 hover:text-blue-500"><Pencil size={12} /></button>
+              )}
+              {canDelete && (
+                <button onClick={(event) => { event.stopPropagation(); handleRemove(item.id); }} className="p-0.5 text-gray-400 hover:text-red-500"><Trash2 size={12} /></button>
+              )}
               {expanded ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
             </div>
             {expanded && (
@@ -318,13 +332,19 @@ export function IntegrationRequirementsTab({
                   <div className="flex flex-wrap gap-1">
                     <span className="text-[10px] text-gray-400 mr-1">Linked Tasks:</span>
                     {item.linked_task_ids.map((taskId) => (
-                      <button key={taskId} onClick={() => onUnlinkTask?.(item.id, taskId)} className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300 inline-flex items-center gap-1">
-                        {taskId.slice(0, 8)} <Unlink size={9} />
-                      </button>
+                      canLinkTask && onUnlinkTask ? (
+                        <button key={taskId} onClick={() => onUnlinkTask(item.id, taskId)} className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300 inline-flex items-center gap-1">
+                          {taskId.slice(0, 8)} <Unlink size={9} />
+                        </button>
+                      ) : (
+                        <span key={taskId} className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300">
+                          {taskId.slice(0, 8)}
+                        </span>
+                      )
                     ))}
                   </div>
                 )}
-                {onLinkTask && <LinkTaskPicker requirementId={item.id} linkedIds={item.linked_task_ids || []} cards={specCards} onLink={onLinkTask} />}
+                {canLinkTask && onLinkTask && <LinkTaskPicker requirementId={item.id} linkedIds={item.linked_task_ids || []} cards={specCards} onLink={onLinkTask} />}
               </div>
             )}
           </div>
@@ -333,12 +353,12 @@ export function IntegrationRequirementsTab({
 
       {adding ? (
         renderForm(handleAdd, 'Add IR', () => { setAdding(false); resetForm(); })
-      ) : (
+      ) : canCreate ? (
         <button onClick={() => setAdding(true)} className="w-full py-2 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-500 hover:border-sky-400 hover:text-sky-500 transition-colors flex items-center justify-center gap-1">
           <Plus size={14} />
           Add Integration Requirement
         </button>
-      )}
+      ) : null}
     </div>
   );
 }

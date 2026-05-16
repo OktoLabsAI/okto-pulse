@@ -115,6 +115,8 @@ function EditableRequirementsList({
   onUpdate,
   placeholder,
   renderItemExtra,
+  canAdd = true,
+  canRemove = true,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -122,6 +124,8 @@ function EditableRequirementsList({
   onUpdate: (items: string[]) => void;
   placeholder: string;
   renderItemExtra?: (item: string, index: number) => React.ReactNode;
+  canAdd?: boolean;
+  canRemove?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const [editing, setEditing] = useState(false);
@@ -147,7 +151,7 @@ function EditableRequirementsList({
           {icon} {title}
           {hasItems && <span className="text-xs font-normal text-gray-400">({items.length})</span>}
         </h4>
-        {!editing && (
+        {!editing && canAdd && (
           <button
             onClick={() => setEditing(true)}
             className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
@@ -164,12 +168,14 @@ function EditableRequirementsList({
               <span className="text-xs text-gray-400 mt-0.5 w-4 shrink-0">{i + 1}.</span>
               <span className="flex-1">{item}</span>
               {renderItemExtra?.(item, i)}
-              <button
-                onClick={() => remove(i)}
-                className="opacity-0 group-hover:opacity-100 p-0.5 text-red-400 hover:text-red-600 transition-opacity"
-              >
-                <Trash2 size={12} />
-              </button>
+              {canRemove && (
+                <button
+                  onClick={() => remove(i)}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 text-red-400 hover:text-red-600 transition-opacity"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
             </li>
           ))}
         </ol>
@@ -1323,6 +1329,17 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   const api = useDashboardApi();
   const currentBoard = useCurrentBoard();
   const perms = usePermissions(_boardId || currentBoard?.id);
+  const canReadIR = perms.has('spec.integration_requirements.read');
+  const canCreateIR = perms.has('spec.integration_requirements.create');
+  const canEditIR = perms.has('spec.integration_requirements.edit');
+  const canDeleteIR = perms.has('spec.integration_requirements.delete');
+  const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && perms.has('card.link_to.ir');
+  const canReadOR = perms.has('spec.observability_requirements.read');
+  const canCreateOR = perms.has('spec.observability_requirements.create');
+  const canEditOR = perms.has('spec.observability_requirements.edit');
+  const canDeleteOR = perms.has('spec.observability_requirements.delete');
+  const canLinkORTasks = perms.has('spec.observability_requirements.link_task') && perms.has('card.link_to.or');
+  const canEditCoverageFlags = perms.has('spec.entity.edit_coverage_flags');
   const [spec, setSpec] = useState<Spec | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<SpecStatus | null>(null);
@@ -1469,13 +1486,13 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   const nextStatuses = getNextStatuses(spec.status);
 
   const unansweredQA = spec.qa_items?.filter((q) => !q.answer).length || 0;
-  const tabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean }[] = [
+  const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
-    { id: 'irs', label: 'IRs', icon: <Network size={14} />, count: spec.integration_requirements?.length || 0 },
-    { id: 'ors', label: 'ORs', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0 },
+    { id: 'irs', label: 'IRs', icon: <Network size={14} />, count: spec.integration_requirements?.length || 0, permission: 'spec.integration_requirements.read' },
+    { id: 'ors', label: 'ORs', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0, permission: 'spec.observability_requirements.read' },
     { id: 'trs', label: 'TRs', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
     { id: 'decisions', label: 'Decisions', icon: <GitBranch size={14} />, count: spec.decisions?.length || 0 },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: spec.screen_mockups?.length || 0 },
@@ -1488,6 +1505,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     { id: 'kg', label: 'KG Graph', icon: <Network size={14} /> },
     { id: 'history', label: 'Activity', icon: <History size={14} /> },
   ];
+  const tabs = allTabs.filter((tab) => !tab.permission || perms.has(tab.permission));
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -1667,40 +1685,48 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                   } catch { toast.error('Failed to update'); }
                 }}
               />
-              <EditableRequirementsList
-                title="Integration Requirements"
-                icon={<Network size={14} />}
-                items={(spec.integration_requirements || [])
-                  .filter((item) => item.status === 'active')
-                  .map(requirementDisplayText)
-                  .filter(Boolean)}
-                placeholder="Add an integration requirement..."
-                onUpdate={async (items) => {
-                  try {
-                    const updated = await api.updateSpec(specId, {
-                      integration_requirements: reconcileIntegrationRequirements(spec.integration_requirements, items),
-                    });
-                    setSpec(updated);
-                  } catch { toast.error('Failed to update integration requirements'); }
-                }}
-              />
-              <EditableRequirementsList
-                title="Observability Requirements"
-                icon={<Gauge size={14} />}
-                items={(spec.observability_requirements || [])
-                  .filter((item) => item.status === 'active')
-                  .map(requirementDisplayText)
-                  .filter(Boolean)}
-                placeholder="Add an observability requirement..."
-                onUpdate={async (items) => {
-                  try {
-                    const updated = await api.updateSpec(specId, {
-                      observability_requirements: reconcileObservabilityRequirements(spec.observability_requirements, items),
-                    });
-                    setSpec(updated);
-                  } catch { toast.error('Failed to update observability requirements'); }
-                }}
-              />
+              {canReadIR && (
+                <EditableRequirementsList
+                  title="Integration Requirements"
+                  icon={<Network size={14} />}
+                  items={(spec.integration_requirements || [])
+                    .filter((item) => item.status === 'active')
+                    .map(requirementDisplayText)
+                    .filter(Boolean)}
+                  placeholder="Add an integration requirement..."
+                  canAdd={canCreateIR}
+                  canRemove={canDeleteIR}
+                  onUpdate={async (items) => {
+                    try {
+                      const updated = await api.updateSpec(specId, {
+                        integration_requirements: reconcileIntegrationRequirements(spec.integration_requirements, items),
+                      });
+                      setSpec(updated);
+                    } catch { toast.error('Failed to update integration requirements'); }
+                  }}
+                />
+              )}
+              {canReadOR && (
+                <EditableRequirementsList
+                  title="Observability Requirements"
+                  icon={<Gauge size={14} />}
+                  items={(spec.observability_requirements || [])
+                    .filter((item) => item.status === 'active')
+                    .map(requirementDisplayText)
+                    .filter(Boolean)}
+                  placeholder="Add an observability requirement..."
+                  canAdd={canCreateOR}
+                  canRemove={canDeleteOR}
+                  onUpdate={async (items) => {
+                    try {
+                      const updated = await api.updateSpec(specId, {
+                        observability_requirements: reconcileObservabilityRequirements(spec.observability_requirements, items),
+                      });
+                      setSpec(updated);
+                    } catch { toast.error('Failed to update observability requirements'); }
+                  }}
+                />
+              )}
               <EditableRequirementsList
                 title="Technical Requirements"
                 icon={<Settings size={14} />}
@@ -1887,9 +1913,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
               }}
             />
           )}
-          {activeTab === 'irs' && spec && (
+          {activeTab === 'irs' && spec && canReadIR && (
             <IntegrationRequirementsTab
               spec={spec}
+              canCreate={canCreateIR}
+              canEdit={canEditIR}
+              canDelete={canDeleteIR}
+              canLinkTask={canLinkIRTasks}
+              canEditCoverageFlags={canEditCoverageFlags}
               onUpdate={async (requirements) => {
                 try {
                   const updated = await api.updateSpec(specId, { integration_requirements: requirements });
@@ -1903,19 +1934,24 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                 } catch { toast.error('Failed to update spec'); }
               }}
               specCards={spec.cards || []}
-              onLinkTask={async (requirementId, cardId) => {
+              onLinkTask={canLinkIRTasks ? async (requirementId, cardId) => {
                 const updated = await api.linkTaskToSpecItem(specId, 'integration_requirements', requirementId, cardId);
                 setSpec(updated);
-              }}
-              onUnlinkTask={async (requirementId, cardId) => {
+              } : undefined}
+              onUnlinkTask={canLinkIRTasks ? async (requirementId, cardId) => {
                 const updated = await api.unlinkTaskFromSpecItem(specId, 'integration_requirements', requirementId, cardId);
                 setSpec(updated);
-              }}
+              } : undefined}
             />
           )}
-          {activeTab === 'ors' && spec && (
+          {activeTab === 'ors' && spec && canReadOR && (
             <ObservabilityRequirementsTab
               spec={spec}
+              canCreate={canCreateOR}
+              canEdit={canEditOR}
+              canDelete={canDeleteOR}
+              canLinkTask={canLinkORTasks}
+              canEditCoverageFlags={canEditCoverageFlags}
               onUpdate={async (requirements) => {
                 try {
                   const updated = await api.updateSpec(specId, { observability_requirements: requirements });
@@ -1929,14 +1965,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                 } catch { toast.error('Failed to update spec'); }
               }}
               specCards={spec.cards || []}
-              onLinkTask={async (requirementId, cardId) => {
+              onLinkTask={canLinkORTasks ? async (requirementId, cardId) => {
                 const updated = await api.linkTaskToSpecItem(specId, 'observability_requirements', requirementId, cardId);
                 setSpec(updated);
-              }}
-              onUnlinkTask={async (requirementId, cardId) => {
+              } : undefined}
+              onUnlinkTask={canLinkORTasks ? async (requirementId, cardId) => {
                 const updated = await api.unlinkTaskFromSpecItem(specId, 'observability_requirements', requirementId, cardId);
                 setSpec(updated);
-              }}
+              } : undefined}
             />
           )}
           {activeTab === 'trs' && spec && (
