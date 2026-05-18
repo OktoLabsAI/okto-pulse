@@ -357,7 +357,16 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-### 0.2.1 - current
+### 0.2.2 - current
+
+Patch release rolling up four targeted fixes on top of `0.2.1`. Same surface, no migration needed.
+
+- **Sprint Scope tab now renders Integration Requirements and Observability Requirements alongside FR/TR/AC/BR/contracts/scenarios.** The `SprintModal.tsx` source already had the two `ScopeSection` blocks for IR and OR, but the published `0.2.1` bundle had been built before that change reached the source tree — so the two sections were silently missing from the UI even though the backend was returning them. `feature/0.2.2` ships a rebuilt `frontend_dist/` and verifies the parity in the Sprint Scope tab via a live Playwright check on `[E2E-IR-OR-PARITY] Sprint 1`.
+- **`okto-pulse serve` no longer gets stuck behind a stale lock after a crash or reboot.** `ServeInstanceLock` now stamps a periodic `heartbeat_at` (every 30s by default, TTL 120s) and accepts the lock as orphaned when the heartbeat is stale — even if the recorded PID is still alive, since the operating system may have recycled that PID after a hard restart. Legacy lock files written by a pre-heartbeat version fall back to the existing PID-only liveness check, so upgrading is safe. The operator-facing error message now tells you to wait for the TTL to elapse instead of having to delete the file manually.
+- **Inherited `okto-pulse-core` SDLC E2E gate polish from `feature/0.2.2`** — `submit_spec_validation` now runs the AC → test-scenario coverage gate as a pre-requisite (so uncovered ACs no longer trap a spec inside a successful validation lock); the "FR has no business rule" error message uses an `[i]` index marker instead of the duplicated `FR1: FR2:` label; `okto_pulse_link_task target_type='decision'` returns the `saturation` envelope like the other six target types; and `okto_pulse_evaluate_ideation` documents the `status='evaluating'` pre-requisite up front.
+- **Guided help follow-ups + sprint modal touch-ups** — refinements to the guided help engine (skip-all clearing, restart flow, anchoring inside modals and overlays), small SprintModal additions, knowledge empty-state polish, header/agents-modal tweaks. The packaged `frontend_dist/` was rebuilt to ship all of the above together.
+
+### 0.2.1
 
 Branch changelog for `feature/0.2.1`:
 
