@@ -36,6 +36,8 @@ interface HeaderProps {
   onOpenKGHealth?: () => void;
   helpOpen?: boolean;
   onHelpOpenChange?: (open: boolean) => void;
+  knowledgeGraphOpen?: boolean;
+  onKnowledgeGraphOpenChange?: (open: boolean) => void;
 }
 
 interface SettingsToggleProps {
@@ -140,7 +142,7 @@ const SPEC_RESOURCE_OPTIONS: Array<{
 
 const DEFAULT_SPEC_RESOURCE_TYPES = SPEC_RESOURCE_OPTIONS.map((option) => option.type);
 
-export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoard, onDeleteBoard, isRefreshing, sidebarOpen, onToggleSidebar, onBoardUpdated, onOpenAnalytics, onOpenKGHealth, helpOpen, onHelpOpenChange }: HeaderProps) {
+export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoard, onDeleteBoard, isRefreshing, sidebarOpen, onToggleSidebar, onBoardUpdated, onOpenAnalytics, onOpenKGHealth, helpOpen, onHelpOpenChange, knowledgeGraphOpen, onKnowledgeGraphOpenChange }: HeaderProps) {
   const { isSignedIn, isLoaded } = authAdapter.useAuth();
   const AdapterUserButton = authAdapter.UserButton;
   const currentBoard = useCurrentBoard();
@@ -154,7 +156,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const [localShowHelp, setLocalShowHelp] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
-  const [showKnowledgeGraph, setShowKnowledgeGraph] = useState(false);
+  const [localShowKnowledgeGraph, setLocalShowKnowledgeGraph] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const showHelp = helpOpen ?? localShowHelp;
@@ -163,6 +165,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       setLocalShowHelp(open);
     }
     onHelpOpenChange?.(open);
+  };
+  const showKnowledgeGraph = knowledgeGraphOpen ?? localShowKnowledgeGraph;
+  const setShowKnowledgeGraph = (open: boolean) => {
+    if (knowledgeGraphOpen === undefined) {
+      setLocalShowKnowledgeGraph(open);
+    }
+    onKnowledgeGraphOpenChange?.(open);
   };
 
   // Close on outside click

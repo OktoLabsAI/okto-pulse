@@ -87,6 +87,7 @@ export interface GuidedHelpStorage {
   skipAll: () => GuidedHelpProgressState;
   undoSkipAll: () => GuidedHelpProgressState;
   resetTour: (tourId: string) => GuidedHelpProgressState;
+  resetAllTours: () => GuidedHelpProgressState;
   replayTour: (tour: GuidedHelpTour) => GuidedHelpProgressState;
   getSummaries: (tours: GuidedHelpTour[]) => GuidedHelpTourSummary[];
 }
@@ -156,6 +157,7 @@ export interface GuidedHelpContextValue {
   skipAll: () => void;
   undoSkipAll: () => void;
   resetTour: (tourId: string) => void;
+  resetAllTours: () => void;
   replayTour: (tourId: string) => void;
   refresh: () => void;
 }

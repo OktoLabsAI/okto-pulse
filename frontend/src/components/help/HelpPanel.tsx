@@ -101,6 +101,15 @@ function GuidedToursContent() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={guidedHelp.resetAllTours}
+            data-testid="guided-tours-reset-all"
+            className="btn btn-secondary inline-flex items-center gap-1.5 text-xs"
+          >
+            <RotateCcw size={14} />
+            Restart all
+          </button>
           {guidedHelp.skippedAll ? (
             <button
               type="button"
@@ -1380,7 +1389,7 @@ Both appear in the sidebar for quick switching.
 
 export function HelpPanel({ onClose }: HelpPanelProps) {
   const sections = getSections();
-  const [activeSection, setActiveSection] = useState('quickstart');
+  const [activeSection, setActiveSection] = useState(() => sections[0]?.id ?? 'quickstart');
 
   const current = sections.find(s => s.id === activeSection) || sections[0];
 

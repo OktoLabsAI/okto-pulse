@@ -39,21 +39,17 @@ function renderHelpPanel() {
   );
 }
 
-function openGuidedTours() {
-  fireEvent.click(screen.getByRole('button', { name: /guided tours/i }));
-}
-
 beforeEach(() => {
   localStorage.clear();
 });
 
 describe('HelpPanel guided tours', () => {
-  it('lists tours with statuses and global Skip all recovery controls', async () => {
+  it('opens directly on tours with statuses, restart, and global Skip all recovery controls', async () => {
     renderHelpPanel();
-    openGuidedTours();
 
     expect(screen.getByTestId('guided-tours-panel')).toBeInTheDocument();
     expect(screen.getByTestId('guided-tour-row-board.overview')).toHaveTextContent('Board overview');
+    expect(screen.getByTestId('guided-tours-reset-all')).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('guided-tours-skip-all'));
 
@@ -69,7 +65,6 @@ describe('HelpPanel guided tours', () => {
     localStorage.setItem(GUIDED_HELP_STORAGE_KEY, JSON.stringify(completedBoardTourState()));
 
     renderHelpPanel();
-    openGuidedTours();
 
     const row = screen.getByTestId('guided-tour-row-board.overview');
     expect(row).toHaveTextContent('Completed');
@@ -83,5 +78,22 @@ describe('HelpPanel guided tours', () => {
     fireEvent.click(screen.getByTestId('guided-tour-reset-board.overview'));
 
     await waitFor(() => expect(row).toBeInTheDocument());
+  });
+
+  it('restarts all tours and clears Skip all from the visible controls', async () => {
+    const state = completedBoardTourState();
+    localStorage.setItem(
+      GUIDED_HELP_STORAGE_KEY,
+      JSON.stringify({ ...state, skippedAll: true, skippedAllAt: '2026-05-16T19:16:00Z' }),
+    );
+
+    renderHelpPanel();
+
+    expect(screen.getByTestId('guided-tours-undo-skip-all')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('guided-tours-reset-all'));
+
+    await waitFor(() => expect(screen.getByTestId('guided-tours-skip-all')).toBeInTheDocument());
+    expect(screen.getByTestId('guided-tour-row-board.overview')).toHaveTextContent('Not started');
   });
 });

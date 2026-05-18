@@ -52,6 +52,10 @@ function GuidedHelpRoot({
   kgHealthOpen,
 }: GuidedHelpRootProps) {
   const modalStack = useOptionalModalStack();
+  const suppressForModal = modalOpen && surface !== 'agents' && surface !== 'kg';
+  const suppressForModalStack = (modalStack?.stack.length ?? 0) > 0 && surface !== 'specs';
+  const suppressForAnalytics = analyticsOpen && surface !== 'metrics';
+  const suppressForKgHealth = kgHealthOpen && surface !== 'kg';
 
   return (
     <GuidedHelpProvider
@@ -61,9 +65,9 @@ function GuidedHelpRoot({
         termsOpen,
         onboardingOpen,
         metricsPromptOpen,
-        modalStackActive: modalOpen || (modalStack?.stack.length ?? 0) > 0,
-        analyticsOpen,
-        kgHealthOpen,
+        modalStackActive: suppressForModal || suppressForModalStack,
+        analyticsOpen: suppressForAnalytics,
+        kgHealthOpen: suppressForKgHealth,
       }}
     >
       {children}
@@ -88,6 +92,7 @@ function App() {
   const [agentsModalOpen, setAgentsModalOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [helpPanelOpen, setHelpPanelOpen] = useState(false);
+  const [knowledgeGraphOpen, setKnowledgeGraphOpen] = useState(false);
   const [portalBarVisible, setPortalBarVisible] = useState(true);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [metricsPromptOpen, setMetricsPromptOpen] = useState(false);
@@ -143,15 +148,17 @@ function App() {
     ? 'metrics'
     : showKGHealth
       ? 'kg'
-      : helpPanelOpen
-        ? 'help'
-        : agentsModalOpen
-          ? 'agents'
-          : activeTab === 'specs'
-            ? 'specs'
-            : activeTab === 'tasks'
-              ? 'tasks'
-              : 'board';
+      : knowledgeGraphOpen
+        ? 'kg'
+        : helpPanelOpen
+          ? 'help'
+          : agentsModalOpen
+            ? 'agents'
+            : activeTab === 'specs'
+              ? 'specs'
+              : activeTab === 'tasks'
+                ? 'tasks'
+                : 'board';
 
   // Mantém showAnalytics e showKGHealth sincronizados com back/forward do browser.
   useEffect(() => {
@@ -343,7 +350,7 @@ function App() {
       termsOpen={terms.needsAcceptance}
       onboardingOpen={onboardingOpen}
       metricsPromptOpen={metricsPromptOpen}
-      modalOpen={createBoardOpen || agentsModalOpen || shareModalOpen}
+      modalOpen={createBoardOpen || agentsModalOpen || shareModalOpen || knowledgeGraphOpen}
       analyticsOpen={showAnalytics}
       kgHealthOpen={showKGHealth}
     >
@@ -378,6 +385,8 @@ function App() {
         onOpenKGHealth={openKGHealth}
         helpOpen={helpPanelOpen}
         onHelpOpenChange={setHelpPanelOpen}
+        knowledgeGraphOpen={knowledgeGraphOpen}
+        onKnowledgeGraphOpenChange={setKnowledgeGraphOpen}
         isRefreshing={isRefreshing}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}

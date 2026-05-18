@@ -53,10 +53,11 @@ export function sanitizeGuidedHelpEvent(
   event: GuidedHelpTelemetryEvent,
 ): SanitizedGuidedHelpTelemetryPayload {
   const payload: Partial<Record<AllowedKey, unknown>> = {};
+  const eventRecord = event as unknown as Record<string, unknown>;
   for (const key of Object.keys(event)) {
     if (ALLOWED_KEY_SET.has(key)) {
       const typedKey = key as AllowedKey;
-      payload[typedKey] = (event as Record<string, unknown>)[key];
+      payload[typedKey] = eventRecord[key];
     }
   }
   return {

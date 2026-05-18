@@ -144,4 +144,19 @@ describe('guided help storage', () => {
       'board.step.one',
     );
   });
+
+  it('resets all tours and clears Skip all in one local-first update', () => {
+    const storage = createGuidedHelpStorage();
+    storage.completeStep(boardTour, boardTour.steps[0]);
+    storage.completeStep(metricsTour, metricsTour.steps[0]);
+    storage.skipAll();
+
+    const next = storage.resetAllTours();
+
+    expect(next.skippedAll).toBe(false);
+    expect(next.tours).toEqual({});
+    expect(resolveFirstEligibleStep(storage.read(), [boardTour], { surface: 'board' })?.step.id).toBe(
+      'board.step.one',
+    );
+  });
 });

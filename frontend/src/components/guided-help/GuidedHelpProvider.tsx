@@ -131,13 +131,46 @@ export function GuidedHelpProvider({
     }
 
     const updateAnchorRect = () => {
-      setAnchorRect(readAnchorRect(activeResolved.step.anchor));
+      const nextRect = readAnchorRect(activeResolved.step.anchor);
+      setAnchorRect(nextRect);
+      return nextRect;
     };
 
-    updateAnchorRect();
+    let attempts = 0;
+    const maxAttempts = 24;
+    let retryTimer: number | undefined;
+    const retryUntilAnchored = () => {
+      attempts += 1;
+      const rect = updateAnchorRect();
+      if (rect || attempts >= maxAttempts) {
+        if (retryTimer !== undefined) window.clearInterval(retryTimer);
+        retryTimer = undefined;
+      }
+    };
+
+    const observer =
+      typeof MutationObserver !== 'undefined'
+        ? new MutationObserver(() => {
+            attempts = 0;
+            retryUntilAnchored();
+          })
+        : null;
+
+    const firstRect = updateAnchorRect();
+    if (!firstRect && retryTimer === undefined) {
+      retryTimer = window.setInterval(retryUntilAnchored, 250);
+    }
+    observer?.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'data-tour-id'],
+    });
     window.addEventListener('resize', updateAnchorRect);
     window.addEventListener('scroll', updateAnchorRect, true);
     return () => {
+      if (retryTimer !== undefined) window.clearInterval(retryTimer);
+      observer?.disconnect();
       window.removeEventListener('resize', updateAnchorRect);
       window.removeEventListener('scroll', updateAnchorRect, true);
     };
@@ -256,6 +289,18 @@ export function GuidedHelpProvider({
     [registry, storageApi, telemetryAdapter],
   );
 
+  const resetAllTours = useCallback(() => {
+    setManualStepTarget(null);
+    setRequestedTourId(null);
+    setProgress(storageApi.resetAllTours());
+    void telemetryAdapter?.emit({
+      action: 'reset',
+      tour_surface: surface,
+      step_kind: 'replay',
+      status: 'success',
+    });
+  }, [storageApi, surface, telemetryAdapter]);
+
   const replayTour = useCallback(
     (tourId: string) => {
       const tour = getTourById(registry, tourId);
@@ -303,6 +348,7 @@ export function GuidedHelpProvider({
       skipAll,
       undoSkipAll,
       resetTour,
+      resetAllTours,
       replayTour,
       refresh,
     }),
@@ -314,6 +360,7 @@ export function GuidedHelpProvider({
       refresh,
       replayTour,
       resetTour,
+      resetAllTours,
       skipAll,
       skipStep,
       startTour,

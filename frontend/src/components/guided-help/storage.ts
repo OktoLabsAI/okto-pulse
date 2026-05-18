@@ -268,6 +268,13 @@ export function createGuidedHelpStorage(storage: StorageLike | null = defaultSto
         delete next.skippedAllAt;
       });
     },
+    resetAllTours() {
+      return update((next) => {
+        next.tours = {};
+        next.skippedAll = false;
+        delete next.skippedAllAt;
+      });
+    },
     replayTour(tour: GuidedHelpTour) {
       return update((next) => {
         delete next.tours[tour.id];
