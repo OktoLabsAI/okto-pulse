@@ -466,6 +466,8 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
             const specTrs = parentSpec?.technical_requirements || [];
             const specAcs: string[] = parentSpec?.acceptance_criteria || [];
             const specContracts = parentSpec?.api_contracts || [];
+            const specIrs = parentSpec?.integration_requirements || [];
+            const specOrs = parentSpec?.observability_requirements || [];
 
             const sprintCardIds = new Set((sprint.cards || []).map((c: any) => c.id));
 
@@ -505,6 +507,16 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
             // Compute contracts linked to sprint cards
             const scopedContracts = specContracts.filter((c: any) =>
               c.linked_task_ids?.some((id: string) => sprintCardIds.has(id))
+            );
+
+            // Compute IRs linked to sprint cards
+            const scopedIrs = specIrs.filter((ir: any) =>
+              ir.linked_task_ids?.some((id: string) => sprintCardIds.has(id))
+            );
+
+            // Compute ORs linked to sprint cards
+            const scopedOrs = specOrs.filter((req: any) =>
+              req.linked_task_ids?.some((id: string) => sprintCardIds.has(id))
             );
 
             // Compute ACs covered via test scenarios' linked_criteria
@@ -601,6 +613,38 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
                           ))}
                         </div>
                       ) : <EmptyScope text="No API contracts linked to sprint cards" />}
+                    </ScopeSection>
+
+                    <ScopeSection title="Integration Requirements" count={scopedIrs.length}>
+                      {scopedIrs.length > 0 ? (
+                        <div className="space-y-1.5">
+                          {scopedIrs.map((ir: any) => (
+                            <div key={ir.id} className="p-2 bg-cyan-50 dark:bg-cyan-900/10 border border-cyan-200 dark:border-cyan-800 rounded-lg">
+                              <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                                <span className="font-mono text-[10px] uppercase text-cyan-600 dark:text-cyan-400 mr-1">{ir.integration_type}</span>
+                                {ir.title}
+                              </p>
+                              {ir.description && <p className="text-xs text-gray-500 mt-0.5">{ir.description}</p>}
+                            </div>
+                          ))}
+                        </div>
+                      ) : <EmptyScope text="No integration requirements linked to sprint cards" />}
+                    </ScopeSection>
+
+                    <ScopeSection title="Observability Requirements" count={scopedOrs.length}>
+                      {scopedOrs.length > 0 ? (
+                        <div className="space-y-1.5">
+                          {scopedOrs.map((req: any) => (
+                            <div key={req.id} className="p-2 bg-teal-50 dark:bg-teal-900/10 border border-teal-200 dark:border-teal-800 rounded-lg">
+                              <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                                <span className="font-mono text-[10px] uppercase text-teal-600 dark:text-teal-400 mr-1">{req.signal_type}</span>
+                                {req.title}
+                              </p>
+                              {req.description && <p className="text-xs text-gray-500 mt-0.5">{req.description}</p>}
+                            </div>
+                          ))}
+                        </div>
+                      ) : <EmptyScope text="No observability requirements linked to sprint cards" />}
                     </ScopeSection>
                   </>
                 )}

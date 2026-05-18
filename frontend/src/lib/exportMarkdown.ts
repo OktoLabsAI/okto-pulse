@@ -15,6 +15,8 @@ import type {
   TestScenario,
   BusinessRule,
   ApiContract,
+  IntegrationRequirement,
+  ObservabilityRequirement,
   ScreenMockup,
   Story,
   TechnicalRequirement,
@@ -223,6 +225,49 @@ function renderApiContracts(contracts: ApiContract[] | null | undefined): string
   return `## API Contracts\n\n${items}`;
 }
 
+function renderIntegrationRequirements(requirements: IntegrationRequirement[] | null | undefined): string {
+  if (!requirements?.length) return '';
+  const items = requirements.map((item, i) => {
+    let entry = `### ${i + 1}. ${item.title || item.id || 'Integration Requirement'}\n\n`;
+    entry += `**Type:** ${item.integration_type}\n\n`;
+    if (item.description) entry += `${item.description}\n\n`;
+    if (item.provider || item.consumer) {
+      entry += `- **Provider:** ${item.provider || 'N/A'}\n`;
+      entry += `- **Consumer:** ${item.consumer || 'N/A'}\n`;
+    }
+    if (item.endpoint) entry += `- **Endpoint/topic/procedure:** \`${item.endpoint}\`\n`;
+    if (item.method) entry += `- **Method/action:** ${item.method}\n`;
+    if (item.contract_ref) entry += `- **Contract ref:** ${item.contract_ref}\n`;
+    if (item.data_contract) {
+      entry += `\n**Data contract:**\n\`\`\`json\n${JSON.stringify(item.data_contract, null, 2)}\n\`\`\`\n\n`;
+    }
+    if (item.linked_requirements?.length) entry += `**Linked requirements:** ${item.linked_requirements.join(', ')}\n\n`;
+    if (item.linked_api_contracts?.length) entry += `**Linked API contracts:** ${item.linked_api_contracts.join(', ')}\n\n`;
+    if (item.notes) entry += `**Notes:** ${item.notes}\n\n`;
+    return entry;
+  }).join('');
+  return `## Integration Requirements\n\n${items}`;
+}
+
+function renderObservabilityRequirements(requirements: ObservabilityRequirement[] | null | undefined): string {
+  if (!requirements?.length) return '';
+  const items = requirements.map((item, i) => {
+    let entry = `### ${i + 1}. ${item.title || item.id || 'Observability Requirement'}\n\n`;
+    entry += `**Signal:** ${item.signal_type}\n\n`;
+    if (item.description) entry += `${item.description}\n\n`;
+    if (item.target) entry += `- **Target:** ${item.target}\n`;
+    if (item.metric_name) entry += `- **Metric/query/dashboard:** ${item.metric_name}\n`;
+    if (item.threshold) entry += `- **Threshold:** ${item.threshold}\n`;
+    if (item.severity) entry += `- **Severity:** ${item.severity}\n`;
+    if (item.owner) entry += `- **Owner:** ${item.owner}\n`;
+    if (item.linked_requirements?.length) entry += `\n**Linked requirements:** ${item.linked_requirements.join(', ')}\n\n`;
+    if (item.linked_integration_requirements?.length) entry += `**Linked integration requirements:** ${item.linked_integration_requirements.join(', ')}\n\n`;
+    if (item.notes) entry += `**Notes:** ${item.notes}\n\n`;
+    return entry;
+  }).join('');
+  return `## Observability Requirements\n\n${items}`;
+}
+
 // ---------------------------------------------------------------------------
 // Decisions
 // ---------------------------------------------------------------------------
@@ -264,6 +309,8 @@ function renderResolvedReferences(refs: any | null | undefined): string {
   md += renderResolvedList('Acceptance Criteria', refs.acceptance_criteria || [], (item) => item.text || item.value || item.id);
   md += renderResolvedList('Business Rules', refs.business_rules || [], (item) => item.title || item.rule || item.id);
   md += renderResolvedList('API Contracts', refs.api_contracts || [], (item) => `${item.method || ''} ${item.path || item.title || item.id}`.trim());
+  md += renderResolvedList('Integration Requirements', refs.integration_requirements || [], (item) => item.title || item.id);
+  md += renderResolvedList('Observability Requirements', refs.observability_requirements || [], (item) => item.title || item.id);
   md += renderResolvedList('Decisions', refs.decisions || [], (item) => item.title || item.id);
   return md === `## Resolved References\n\n` ? '' : md;
 }
@@ -497,6 +544,8 @@ export function exportSpec(spec: Spec): string {
   md += renderTestScenarios(spec.test_scenarios, spec.acceptance_criteria);
   md += renderBusinessRules(spec.business_rules, spec.functional_requirements);
   md += renderApiContracts(spec.api_contracts);
+  md += renderIntegrationRequirements(spec.integration_requirements);
+  md += renderObservabilityRequirements(spec.observability_requirements);
   md += renderDecisions(spec.decisions);
   md += renderKnowledgeBases(spec.knowledge_bases || []);
   md += renderMockups(spec.screen_mockups);
@@ -598,12 +647,16 @@ export function exportCard(card: Card, spec?: Spec | null): string {
 
     const linkedBusinessRules = (spec.business_rules || []).filter((item: any) => item.linked_task_ids?.includes(card.id));
     const linkedContracts = (spec.api_contracts || []).filter((item: any) => item.linked_task_ids?.includes(card.id));
+    const linkedIRs = (spec.integration_requirements || []).filter((item: any) => item.linked_task_ids?.includes(card.id));
+    const linkedORs = (spec.observability_requirements || []).filter((item: any) => item.linked_task_ids?.includes(card.id));
     const linkedDecisions = (spec.decisions || []).filter((item: any) => item.linked_task_ids?.includes(card.id));
     md += renderBusinessRules(
       linkedBusinessRules.length ? linkedBusinessRules : spec.business_rules,
       spec.functional_requirements
     );
     md += renderApiContracts(linkedContracts.length ? linkedContracts : spec.api_contracts);
+    md += renderIntegrationRequirements(linkedIRs.length ? linkedIRs : spec.integration_requirements);
+    md += renderObservabilityRequirements(linkedORs.length ? linkedORs : spec.observability_requirements);
     md += renderDecisions(linkedDecisions.length ? linkedDecisions : spec.decisions);
     md += renderKnowledgeBases(spec.knowledge_bases || []);
     md += renderMockups(spec.screen_mockups);

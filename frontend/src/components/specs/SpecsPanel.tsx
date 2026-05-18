@@ -43,6 +43,41 @@ const SPEC_GROUP_OPTIONS: Array<{ value: SpecGroupMode; label: string }> = [
   { value: 'parents', label: 'Parents' },
 ];
 
+const DEFAULT_SPEC_GROUP_MODE: SpecGroupMode = 'parents';
+const SPEC_GROUP_MODE_STORAGE_PREFIX = 'okto-pulse:specs:group-mode:';
+const SPEC_GROUP_MODE_VALUES = new Set<SpecGroupMode>(
+  SPEC_GROUP_OPTIONS.map((option) => option.value)
+);
+
+function specGroupModeStorageKey(boardId: string): string {
+  return `${SPEC_GROUP_MODE_STORAGE_PREFIX}${boardId}`;
+}
+
+function loadSpecGroupMode(boardId: string): SpecGroupMode {
+  if (typeof localStorage === 'undefined') return DEFAULT_SPEC_GROUP_MODE;
+
+  const key = specGroupModeStorageKey(boardId);
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw && SPEC_GROUP_MODE_VALUES.has(raw as SpecGroupMode)) {
+      return raw as SpecGroupMode;
+    }
+    if (raw) localStorage.removeItem(key);
+  } catch {
+    // Keep the default if storage is unavailable.
+  }
+  return DEFAULT_SPEC_GROUP_MODE;
+}
+
+function saveSpecGroupMode(boardId: string, value: SpecGroupMode): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(specGroupModeStorageKey(boardId), value);
+  } catch {
+    // Non-critical UI preference.
+  }
+}
+
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
   review: <Clock size={14} />,
@@ -77,12 +112,21 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
     urlParam: 'q_specs',
   });
   const { viewMode, setViewMode } = useViewMode('specs', 'list');
-  const [groupMode, setGroupMode] = useState<SpecGroupMode>('parents');
+  const [groupMode, setGroupModeState] = useState<SpecGroupMode>(() => loadSpecGroupMode(boardId));
   const [parentTitleById, setParentTitleById] = useState<Record<string, string>>({});
 
   useEffect(() => {
     loadSpecs();
   }, [boardId, filterStatus, showArchived]);
+
+  useEffect(() => {
+    setGroupModeState(loadSpecGroupMode(boardId));
+  }, [boardId]);
+
+  const setGroupMode = (value: SpecGroupMode) => {
+    setGroupModeState(value);
+    saveSpecGroupMode(boardId, value);
+  };
 
   useEffect(() => {
     let cancelled = false;

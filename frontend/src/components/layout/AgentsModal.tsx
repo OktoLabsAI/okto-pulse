@@ -205,7 +205,11 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content max-w-2xl" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content max-w-2xl"
+        data-tour-id="agents.modal.entry"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-header">
           <h2 className="font-semibold text-lg flex items-center gap-2">
             <Key size={20} />

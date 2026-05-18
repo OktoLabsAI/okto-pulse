@@ -622,6 +622,63 @@ export interface ApiContract {
   notes: string | null;
 }
 
+// Integration Requirement
+export type IntegrationRequirementStatus = 'active' | 'superseded' | 'revoked';
+export type IntegrationRequirementType =
+  | 'api'
+  | 'queue'
+  | 'stored_procedure'
+  | 'data_contract'
+  | 'event'
+  | 'file'
+  | 'other';
+
+export interface IntegrationRequirement {
+  id: string;
+  title: string;
+  integration_type: IntegrationRequirementType;
+  description: string;
+  provider: string | null;
+  consumer: string | null;
+  contract_ref: string | null;
+  endpoint: string | null;
+  method: string | null;
+  data_contract: Record<string, unknown> | null;
+  linked_requirements: string[] | null;
+  linked_api_contracts: string[] | null;
+  linked_task_ids: string[] | null;
+  status: IntegrationRequirementStatus;
+  notes: string | null;
+}
+
+// Observability Requirement
+export type ObservabilityRequirementStatus = 'active' | 'superseded' | 'revoked';
+export type ObservabilitySignalType =
+  | 'metric'
+  | 'log'
+  | 'trace'
+  | 'dashboard'
+  | 'alert'
+  | 'slo'
+  | 'other';
+
+export interface ObservabilityRequirement {
+  id: string;
+  title: string;
+  signal_type: ObservabilitySignalType;
+  description: string;
+  target: string | null;
+  metric_name: string | null;
+  threshold: string | null;
+  severity: string | null;
+  owner: string | null;
+  linked_requirements: string[] | null;
+  linked_integration_requirements: string[] | null;
+  linked_task_ids: string[] | null;
+  status: ObservabilityRequirementStatus;
+  notes: string | null;
+}
+
 // Technical Requirement (structured)
 export interface TechnicalRequirement {
   id: string;
@@ -978,6 +1035,8 @@ export interface Spec {
   test_scenarios: TestScenario[] | null;
   business_rules: BusinessRule[] | null;
   api_contracts: ApiContract[] | null;
+  integration_requirements: IntegrationRequirement[] | null;
+  observability_requirements: ObservabilityRequirement[] | null;
   decisions: Decision[] | null;
   screen_mockups: ScreenMockup[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
@@ -985,6 +1044,8 @@ export interface Spec {
   skip_rules_coverage?: boolean;
   skip_decisions_coverage?: boolean;
   skip_contract_coverage?: boolean;
+  skip_ir_coverage?: boolean;
+  skip_or_coverage?: boolean;
   skip_qualitative_validation?: boolean;
   validation_threshold?: number;
   archived?: boolean;
@@ -1218,12 +1279,16 @@ export interface AgentBoardGrant {
 }
 
 // Board
+export type SpecResourceAutoDeriveType = 'knowledge_base' | 'architecture' | 'mockup';
+
 export interface BoardSettings {
   max_scenarios_per_card: number;
   skip_test_coverage_global: boolean;
   skip_rules_coverage_global: boolean;
   skip_trs_coverage_global: boolean;
   skip_contract_coverage_global: boolean;
+  skip_ir_coverage_global: boolean;
+  skip_or_coverage_global: boolean;
   skip_decisions_coverage_global: boolean;
   require_task_validation: boolean;
   min_confidence: number;
@@ -1236,6 +1301,9 @@ export interface BoardSettings {
   max_spec_ambiguity?: number;
   // Resource Gate Level 2 - effective spec resources must be copied/attached to tasks.
   require_spec_resource_task_coverage?: boolean;
+  // Spec resource automation - copies selected Spec resources to newly-created/linked cards.
+  auto_derive_spec_resources_enabled?: boolean;
+  auto_derive_spec_resource_types?: SpecResourceAutoDeriveType[];
   // NC-9 evidence gate bypass (Wave 2 spec 873e98cc, frontend spec 5cb09dbc)
   skip_test_evidence_global?: boolean;
 }
@@ -1339,6 +1407,7 @@ export interface CreateBoardRequest {
 export interface UpdateBoardRequest {
   name?: string;
   description?: string;
+  settings?: BoardSettings;
 }
 
 export interface CreateCardRequest {
@@ -1478,6 +1547,8 @@ export interface CreateSpecRequest {
   technical_requirements?: string[];
   acceptance_criteria?: string[];
   decisions?: Decision[];
+  integration_requirements?: IntegrationRequirement[];
+  observability_requirements?: ObservabilityRequirement[];
   status?: SpecStatus;
   assignee_id?: string;
   labels?: string[];
@@ -1495,10 +1566,14 @@ export interface UpdateSpecRequest {
   test_scenarios?: TestScenario[];
   business_rules?: BusinessRule[];
   api_contracts?: ApiContract[];
+  integration_requirements?: IntegrationRequirement[];
+  observability_requirements?: ObservabilityRequirement[];
   decisions?: Decision[];
   screen_mockups?: ScreenMockup[];
   skip_test_coverage?: boolean;
   skip_contract_coverage?: boolean;
+  skip_ir_coverage?: boolean;
+  skip_or_coverage?: boolean;
   skip_decisions_coverage?: boolean;
   skip_qualitative_validation?: boolean;
   validation_threshold?: number;

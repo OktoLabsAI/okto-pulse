@@ -35,6 +35,11 @@ import type {
   ArchitectureInterface,
   ScreenMockup,
 } from '@/types';
+import {
+  resolveArchitectureVisualStyle,
+  type ArchitectureVisualIcon,
+  type ArchitectureVisualTheme,
+} from './architectureVisualRegistry';
 
 type DiagramMode = 'visual' | 'raw';
 type ConnectionType = 'direct' | 'elbow';
@@ -216,6 +221,24 @@ function isDefaultLightFill(value: string | undefined): boolean {
   return ['#ecfeff', '#e0f2fe', '#ffffff', '#fff', 'white', 'transparent'].includes(value.toLowerCase());
 }
 
+function currentArchitectureVisualTheme(): ArchitectureVisualTheme {
+  if (typeof document === 'undefined') return 'light';
+  return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+}
+
+function useArchitectureVisualTheme(): ArchitectureVisualTheme {
+  const [theme, setTheme] = useState<ArchitectureVisualTheme>(() => currentArchitectureVisualTheme());
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const observer = new MutationObserver(() => setTheme(currentArchitectureVisualTheme()));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+
+  return theme;
+}
+
 function elementTypeLabel(element: ExcalidrawElement): string {
   if (element.displayType?.trim()) return element.displayType;
   if (element.architectureKind?.trim()) return titleCase(element.architectureKind);
@@ -331,23 +354,27 @@ function pathMiddlePoint(points: Array<{ x: number; y: number }>): { x: number; 
   return points[points.length - 1];
 }
 
+function iconForVisualIcon(icon: ArchitectureVisualIcon): LucideIcon {
+  if (icon === 'server') return Server;
+  if (icon === 'database') return Database;
+  if (icon === 'message') return MessageSquare;
+  if (icon === 'user') return UserRound;
+  if (icon === 'network') return Network;
+  if (icon === 'boxes') return Boxes;
+  if (icon === 'cloud') return Cloud;
+  if (icon === 'cpu') return Cpu;
+  if (icon === 'globe') return Globe2;
+  if (icon === 'hard_drive') return HardDrive;
+  if (icon === 'lock') return Lock;
+  if (icon === 'monitor') return Monitor;
+  if (icon === 'package') return Package;
+  if (icon === 'smartphone') return Smartphone;
+  if (icon === 'terminal') return Terminal;
+  if (icon === 'workflow') return Workflow;
+  return Boxes;
+}
+
 function iconForElement(element: ExcalidrawElement): LucideIcon {
-  if (element.iconName === 'server') return Server;
-  if (element.iconName === 'database') return Database;
-  if (element.iconName === 'message') return MessageSquare;
-  if (element.iconName === 'user') return UserRound;
-  if (element.iconName === 'network') return Network;
-  if (element.iconName === 'boxes') return Boxes;
-  if (element.iconName === 'cloud') return Cloud;
-  if (element.iconName === 'cpu') return Cpu;
-  if (element.iconName === 'globe') return Globe2;
-  if (element.iconName === 'hard_drive') return HardDrive;
-  if (element.iconName === 'lock') return Lock;
-  if (element.iconName === 'monitor') return Monitor;
-  if (element.iconName === 'package') return Package;
-  if (element.iconName === 'smartphone') return Smartphone;
-  if (element.iconName === 'terminal') return Terminal;
-  if (element.iconName === 'workflow') return Workflow;
   const value = `${element.architectureKind || ''} ${element.displayType || ''}`.toLowerCase();
   if (value.includes('database') || value.includes('repository') || value.includes('store')) return Database;
   if (value.includes('api') || value.includes('server') || value.includes('runtime') || value.includes('node')) return Server;
@@ -422,6 +449,7 @@ export function ArchitectureDiagramEditor({
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
   const panRef = useRef<PanState | null>(null);
+  const visualTheme = useArchitectureVisualTheme();
   const payload = useMemo(() => asPayload(diagram), [diagram]);
   const visualDiagram = isVisualDiagram(diagram);
   const rawPreview = useMemo(() => rawPayloadText(diagram?.adapter_payload), [diagram]);
@@ -900,6 +928,15 @@ export function ArchitectureDiagramEditor({
   };
 
   const renderEdge = (element: ExcalidrawElement) => {
+    const visual = resolveArchitectureVisualStyle({
+      elementType: element.type,
+      architectureKind: element.architectureKind,
+      displayType: element.displayType,
+      iconName: element.iconName,
+      strokeColor: element.strokeColor,
+      backgroundColor: element.backgroundColor,
+      theme: visualTheme,
+    });
     const selected = element.id === selectedElement?.id;
     const source = element.sourceElementId ? elements.find((item) => item.id === element.sourceElementId) : null;
     const target = element.targetElementId ? elements.find((item) => item.id === element.targetElementId) : null;
@@ -921,7 +958,7 @@ export function ArchitectureDiagramEditor({
     const y1 = connected && sourcePoint && targetPoint ? sourcePoint.y - top : height / 2;
     const x2 = connected && sourcePoint && targetPoint ? targetPoint.x - left : width - 8;
     const y2 = connected && sourcePoint && targetPoint ? targetPoint.y - top : height / 2;
-    const stroke = element.strokeColor || '#94a3b8';
+    const stroke = visual.stroke;
     const linkedInterfaces = interfaceOptions.filter((item) => linkedInterfaceRefs(element).includes(item.id));
     const linkedInterfaceLabel = linkedInterfaces.length === 1
       ? linkedInterfaces[0].label
@@ -979,13 +1016,13 @@ export function ArchitectureDiagramEditor({
         {(linkedInterfaces.length > 0 || (label && label !== 'Connection')) ? (
           <span
             className="absolute max-w-[80%] -translate-x-1/2 -translate-y-1/2 rounded bg-gray-50 dark:bg-gray-950 px-1 py-0.5 text-center leading-tight shadow-sm"
-            style={{ left: labelPoint.x, top: labelPoint.y }}
+            style={{ left: labelPoint.x, top: labelPoint.y, color: visual.text }}
           >
             {linkedInterfaces.length > 0 ? linkedInterfaces.map((item) => (
               <span key={item.id} className="block max-w-full truncate">
                 <span className="block truncate text-[11px] font-medium">{item.label}</span>
                 {(item.endpoint || item.protocol) && (
-                  <span className="block truncate text-[10px] font-medium uppercase text-gray-500 dark:text-gray-400">
+                  <span className="block truncate text-[10px] font-medium uppercase" style={{ color: visual.mutedText }}>
                     {[item.endpoint, item.protocol].filter(Boolean).join(' / ')}
                   </span>
                 )}
@@ -1000,15 +1037,24 @@ export function ArchitectureDiagramEditor({
   };
 
   const renderNode = (element: ExcalidrawElement) => {
+    const visual = resolveArchitectureVisualStyle({
+      elementType: element.type,
+      architectureKind: element.architectureKind,
+      displayType: element.displayType,
+      iconName: element.iconName,
+      strokeColor: element.strokeColor,
+      backgroundColor: element.backgroundColor,
+      theme: visualTheme,
+    });
     const box = elementBox(element);
     const selected = element.id === selectedElement?.id;
-    const usesDefaultFill = isDefaultLightFill(element.backgroundColor);
+    const usesDefaultFill = visual.fill === 'transparent' || isDefaultLightFill(visual.fill);
     const fallbackLabel = entityOptions.find((item) => item.id === element.linkedEntityId)?.label
       || mockupOptions.find((item) => item.id === element.linkedMockupId)?.label
       || 'Unnamed';
     const name = elementName(element, fallbackLabel);
     const type = elementTypeLabel(element);
-    const NodeIcon = iconForElement(element);
+    const NodeIcon = element.type === 'text' ? iconForElement(element) : iconForVisualIcon(visual.icon);
     const isConnectSource = connectSourceId === element.id;
     const renderAnchor = (anchor: ConnectionAnchor) => {
       if (element.type === 'text') return null;
@@ -1047,8 +1093,8 @@ export function ArchitectureDiagramEditor({
           onPointerDown={(event) => beginDrag(event, element)}
           onClick={() => handleNodeClick(element)}
           onDoubleClick={(event) => openElementDetails(event, element)}
-          className={`absolute rounded-md border-2 shadow-sm flex items-center justify-center px-2 text-sm font-medium text-gray-900 dark:text-gray-100 bg-transparent ${readOnly ? 'cursor-default' : 'cursor-move'} ${selected ? 'ring-2 ring-cyan-500' : ''}`}
-          style={{ left: box.x, top: box.y, width: box.width, height: box.height, borderColor: element.strokeColor || '#334155' }}
+          className={`absolute rounded-md border-2 shadow-sm flex items-center justify-center px-2 text-sm font-medium bg-transparent ${readOnly ? 'cursor-default' : 'cursor-move'} ${selected ? 'ring-2 ring-cyan-500' : ''}`}
+          style={{ left: box.x, top: box.y, width: box.width, height: box.height, borderColor: visual.stroke, color: visual.text }}
           title={name}
         >
           <span className="truncate">{name}</span>
@@ -1065,21 +1111,22 @@ export function ArchitectureDiagramEditor({
         onPointerDown={(event) => beginDrag(event, element)}
         onClick={() => handleNodeClick(element)}
         onDoubleClick={(event) => openElementDetails(event, element)}
-        className={`absolute group rounded-md border-2 shadow-sm flex items-center justify-center gap-2 px-3 text-gray-900 dark:text-gray-100 ${readOnly ? 'cursor-default' : connectMode ? 'cursor-crosshair' : 'cursor-move'} ${usesDefaultFill ? 'bg-white dark:bg-gray-900' : ''} ${selected ? 'ring-2 ring-cyan-500' : ''} ${isConnectSource ? 'ring-2 ring-amber-400' : ''}`}
+        className={`absolute group rounded-md border-2 shadow-sm flex items-center justify-center gap-2 px-3 ${readOnly ? 'cursor-default' : connectMode ? 'cursor-crosshair' : 'cursor-move'} ${usesDefaultFill ? 'bg-white dark:bg-gray-900' : ''} ${selected ? 'ring-2 ring-cyan-500' : ''} ${isConnectSource ? 'ring-2 ring-amber-400' : ''}`}
         style={{
           left: box.x,
           top: box.y,
           width: box.width,
           height: box.height,
-          borderColor: element.strokeColor || '#0891b2',
-          backgroundColor: usesDefaultFill ? undefined : element.backgroundColor,
+          borderColor: visual.stroke,
+          backgroundColor: usesDefaultFill ? undefined : visual.fill,
+          color: visual.text,
         }}
         title={`${name} (${type})`}
       >
-        <NodeIcon size={17} className="shrink-0 text-gray-500 dark:text-gray-300" />
+        <NodeIcon size={17} className="shrink-0" style={{ color: visual.stroke }} />
         <span className="min-w-0 flex flex-col items-start leading-tight">
           <span className="max-w-full truncate text-sm font-semibold">{name}</span>
-          <span className="max-w-full truncate text-[10px] font-medium uppercase text-gray-500 dark:text-gray-400">{type}</span>
+          <span className="max-w-full truncate text-[10px] font-medium uppercase" style={{ color: visual.mutedText }}>{type}</span>
         </span>
         {selected && !readOnly && (
           <span

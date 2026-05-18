@@ -240,7 +240,7 @@ export function GlobalSearchView({ boardId }: Props) {
       </div>
 
       {/* 1. Semantic search bar at the top */}
-      <section className="mb-4">
+      <section className="mb-4" data-tour-id="kg.discovery.search">
         <form onSubmit={handleSearch} className="flex gap-2">
           <input
             type="text"

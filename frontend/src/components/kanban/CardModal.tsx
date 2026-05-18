@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch } from 'lucide-react';
+import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportCard, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
@@ -24,6 +24,7 @@ import { CardKnowledgeTab } from './CardKnowledgeTab';
 import { ArchitectureTab } from '@/components/architecture';
 import { openLineageGraph } from '@/components/traceability';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
+import { usePermissions } from '@/hooks/usePermissions';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -100,6 +101,7 @@ interface CardModalProps {
 
 export function CardModal({ boardId, onClose }: CardModalProps) {
   const api = useDashboardApi();
+  const perms = usePermissions(boardId);
   const selectedCardId = useSelectedCard();
   const isOpen = useIsCardModalOpen();
   const { closeCardModal, removeCardFromColumn, updateCardInColumn } = useDashboardStore();
@@ -121,6 +123,8 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const [specScenarios, setSpecScenarios] = useState<TestScenario[]>([]);
   const [specRules, setSpecRules] = useState<any[]>([]);
   const [specContracts, setSpecContracts] = useState<any[]>([]);
+  const [specIRs, setSpecIRs] = useState<any[]>([]);
+  const [specORs, setSpecORs] = useState<any[]>([]);
   const [specTRs, setSpecTRs] = useState<any[]>([]);
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
@@ -141,6 +145,10 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const linkedScenarioIds = new Set(card?.test_scenario_ids || []);
   const linkedEvidenceScenarios = specScenarios.filter((scenario) => linkedScenarioIds.has(scenario.id));
   const evidenceProvidedCount = linkedEvidenceScenarios.filter(hasScenarioEvidence).length;
+  const canReadIR = perms.has('spec.integration_requirements.read');
+  const canReadOR = perms.has('spec.observability_requirements.read');
+  const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && perms.has('card.link_to.ir');
+  const canLinkORTasks = perms.has('spec.observability_requirements.link_task') && perms.has('card.link_to.or');
 
   const resetConclusionPrompt = () => {
     setConclusionDraft('');
@@ -171,17 +179,24 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               setSpecScenarios(spec.test_scenarios || []);
               setSpecRules(spec.business_rules || []);
               setSpecContracts(spec.api_contracts || []);
+              setSpecIRs(spec.integration_requirements || []);
+              setSpecORs(spec.observability_requirements || []);
               setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
               // Load full KB content for knowledge tab
               Promise.all(
                 (spec.knowledge_bases || []).map((kb: any) => api.getSpecKnowledge(spec.id, kb.id).catch(() => null))
               ).then((kbs) => setSpecKBsFull(kbs.filter(Boolean) as any[])).catch(() => {});
             })
-            .catch(() => { setParentSpec(null); setFullSpec(null); setSpecScenarios([]); });
+            .catch(() => { setParentSpec(null); setFullSpec(null); setSpecScenarios([]); setSpecRules([]); setSpecContracts([]); setSpecIRs([]); setSpecORs([]); setSpecTRs([]); });
         } else {
           setParentSpec(null);
           setFullSpec(null);
           setSpecScenarios([]);
+          setSpecRules([]);
+          setSpecContracts([]);
+          setSpecIRs([]);
+          setSpecORs([]);
+          setSpecTRs([]);
         }
       })
       .catch(() => toast.error('Failed to load card'))
@@ -208,6 +223,8 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               setSpecScenarios(spec.test_scenarios || []);
               setSpecRules(spec.business_rules || []);
               setSpecContracts(spec.api_contracts || []);
+              setSpecIRs(spec.integration_requirements || []);
+              setSpecORs(spec.observability_requirements || []);
               setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
             })
             .catch(() => {});
@@ -926,6 +943,44 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                     />
                   )}
 
+                  {/* Linked Integration Requirements */}
+                  {card.spec_id && canReadIR && specIRs.length > 0 && (
+                    <LinkedSpecItemsSection
+                      card={card}
+                      specId={card.spec_id}
+                      items={specIRs}
+                      field="integration_requirements"
+                      label="Integration Requirements"
+                      icon={<Network size={14} className="inline mr-1" />}
+                      api={api}
+                      canLink={canLinkIRTasks}
+                      onSpecRefresh={() => {
+                        api.getSpec(card.spec_id!).then((spec) => {
+                          setSpecIRs(spec.integration_requirements || []);
+                        }).catch(() => {});
+                      }}
+                    />
+                  )}
+
+                  {/* Linked Observability Requirements */}
+                  {card.spec_id && canReadOR && specORs.length > 0 && (
+                    <LinkedSpecItemsSection
+                      card={card}
+                      specId={card.spec_id}
+                      items={specORs}
+                      field="observability_requirements"
+                      label="Observability Requirements"
+                      icon={<Gauge size={14} className="inline mr-1" />}
+                      api={api}
+                      canLink={canLinkORTasks}
+                      onSpecRefresh={() => {
+                        api.getSpec(card.spec_id!).then((spec) => {
+                          setSpecORs(spec.observability_requirements || []);
+                        }).catch(() => {});
+                      }}
+                    />
+                  )}
+
                   {/* Linked Technical Requirements */}
                   {card.spec_id && specTRs.length > 0 && (
                     <LinkedSpecItemsSection
@@ -1572,16 +1627,17 @@ function TestScenariosSection({
  * Mirrors TestScenariosSection but works with any spec item type that has {id, linked_task_ids}.
  */
 function LinkedSpecItemsSection({
-  card, specId, items, field, label, icon, api, onSpecRefresh,
+  card, specId, items, field, label, icon, api, onSpecRefresh, canLink = true,
 }: {
   card: Card;
   specId: string;
   items: { id: string; title?: string; text?: string; method?: string; path?: string; linked_task_ids?: string[] | null }[];
-  field: 'business_rules' | 'api_contracts' | 'technical_requirements';
+  field: 'business_rules' | 'api_contracts' | 'technical_requirements' | 'integration_requirements' | 'observability_requirements';
   label: string;
   icon: React.ReactNode;
   api: ReturnType<typeof useDashboardApi>;
   onSpecRefresh: () => void;
+  canLink?: boolean;
 }) {
   const linkedItems = items.filter(i => (i.linked_task_ids || []).includes(card.id));
   const unlinkedItems = items.filter(i => !(i.linked_task_ids || []).includes(card.id));
@@ -1618,7 +1674,7 @@ function LinkedSpecItemsSection({
         <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">
           {icon} {label} ({linkedItems.length}/{items.length})
         </h3>
-        {unlinkedItems.length > 0 && (
+        {canLink && unlinkedItems.length > 0 && (
           <button
             onClick={() => setShowPicker(!showPicker)}
             className="text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400"
@@ -1631,16 +1687,18 @@ function LinkedSpecItemsSection({
         {linkedItems.map((item) => (
           <div key={item.id} className="flex items-center justify-between px-2 py-1.5 rounded bg-indigo-50 dark:bg-indigo-900/10 text-xs group">
             <span className="text-gray-700 dark:text-gray-300 truncate flex-1">{itemLabel(item)}</span>
-            <button onClick={() => handleUnlink(item.id)} className="p-0.5 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" title="Unlink">
-              <Unlink size={12} />
-            </button>
+            {canLink && (
+              <button onClick={() => handleUnlink(item.id)} className="p-0.5 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" title="Unlink">
+                <Unlink size={12} />
+              </button>
+            )}
           </div>
         ))}
         {linkedItems.length === 0 && (
           <p className="text-xs text-gray-400 dark:text-gray-500 italic">No {label.toLowerCase()} linked to this card</p>
         )}
       </div>
-      {showPicker && unlinkedItems.length > 0 && (
+      {canLink && showPicker && unlinkedItems.length > 0 && (
         <div className="mt-2 border border-gray-200 dark:border-gray-700 rounded-lg p-2 space-y-1 max-h-40 overflow-y-auto">
           <p className="text-[10px] text-gray-400 mb-1">Click to link:</p>
           {unlinkedItems.map((item) => (

@@ -244,33 +244,45 @@ def cmd_serve(args):
     os.environ["OKTO_PULSE_PORT"] = str(api_port)
     os.environ["OKTO_PULSE_MCP_PORT"] = str(mcp_port)
 
-    from okto_pulse.community.main import FRONTEND_DIR
-    has_frontend = FRONTEND_DIR.exists() and (FRONTEND_DIR / "index.html").exists()
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.serve_lock import (
+        ServeAlreadyRunningError,
+        acquire_serve_lock,
+    )
 
-    # Terms-of-Use pre-acceptance via CLI flag or env var.
-    if getattr(args, "accept_terms", False):
-        os.environ["OKTO_PULSE_TERMS_ACCEPTED"] = "1"
-        from okto_pulse.community.acceptance import write_acceptance
-        rec = write_acceptance("cli")
-        print(f"Terms-of-Use pre-accepted via --accept-terms (version {rec['version']}).")
-    elif (os.environ.get("OKTO_PULSE_TERMS_ACCEPTED") or "").strip() == "1":
-        from okto_pulse.community.acceptance import write_acceptance, read_acceptance
-        if read_acceptance() is None:
-            rec = write_acceptance("env")
-            print(f"Terms-of-Use pre-accepted via env (version {rec['version']}).")
+    settings = CommunitySettings()
+    frontend_dir = Path(__file__).resolve().parent / "frontend_dist"
+    has_frontend = frontend_dir.exists() and (frontend_dir / "index.html").exists()
 
-    print("Starting Okto Pulse Community...")
-    if has_frontend:
-        print(f"  App:  http://127.0.0.1:{api_port}  (API + Frontend)")
-    else:
-        print(f"  API:  http://127.0.0.1:{api_port}  (no frontend embedded)")
-    print(f"  MCP:  http://127.0.0.1:{mcp_port}/mcp")
-    print("  Press Ctrl+C to stop.\n")
+    try:
+        with acquire_serve_lock(settings):
+            # Terms-of-Use pre-acceptance via CLI flag or env var.
+            if getattr(args, "accept_terms", False):
+                os.environ["OKTO_PULSE_TERMS_ACCEPTED"] = "1"
+                from okto_pulse.community.acceptance import write_acceptance
+                rec = write_acceptance("cli")
+                print(f"Terms-of-Use pre-accepted via --accept-terms (version {rec['version']}).")
+            elif (os.environ.get("OKTO_PULSE_TERMS_ACCEPTED") or "").strip() == "1":
+                from okto_pulse.community.acceptance import write_acceptance, read_acceptance
+                if read_acceptance() is None:
+                    rec = write_acceptance("env")
+                    print(f"Terms-of-Use pre-accepted via env (version {rec['version']}).")
 
-    # Single-process, dual-port: run() spawns two uvicorn Server instances
-    # via asyncio.gather. uvicorn handles SIGINT/SIGTERM natively for both.
-    from okto_pulse.community.main import run
-    run()
+            print("Starting Okto Pulse Community...")
+            if has_frontend:
+                print(f"  App:  http://127.0.0.1:{api_port}  (API + Frontend)")
+            else:
+                print(f"  API:  http://127.0.0.1:{api_port}  (no frontend embedded)")
+            print(f"  MCP:  http://127.0.0.1:{mcp_port}/mcp")
+            print("  Press Ctrl+C to stop.\n")
+
+            # Single-process, dual-port: run() spawns two uvicorn Server instances
+            # via asyncio.gather. uvicorn handles SIGINT/SIGTERM natively for both.
+            from okto_pulse.community.main import run
+            run()
+    except ServeAlreadyRunningError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(2)
 
 
 def cmd_status(args):
@@ -314,6 +326,65 @@ def cmd_status(args):
     mcp_up = _is_port_in_use(mcp_port)
     print(f"\n  API server ({api_port}):  {'running' if api_up else 'stopped'}")
     print(f"  MCP server ({mcp_port}):  {'running' if mcp_up else 'stopped'}")
+
+
+def cmd_metrics(args):
+    """Control local-first telemetry settings and local data."""
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.telemetry.service import TelemetryService
+
+    settings = CommunitySettings()
+    service = TelemetryService(settings)
+    command = args.metrics_command
+
+    if command == "status":
+        print(json.dumps(service.summary(window_days=args.window_days), indent=2, sort_keys=True))
+        return
+
+    if command == "enable-beacon":
+        if not args.yes:
+            print(
+                "CONFIRMATION_REQUIRED: pass --yes after reviewing schema and privacy policy.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        result = service.update_settings(
+            mode="anonymous_beacon",
+            source="cli",
+            policy_version=args.policy_version,
+            schema_version=args.schema_version,
+        )
+        result["acknowledged_items"] = [
+            "hourly_aggregates",
+            "local_control",
+            "no_pii",
+            "product_aggregates",
+            "privacy_policy",
+            "schema",
+        ]
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+
+    if command in {"local-only", "disable"}:
+        mode = "local_only" if command == "local-only" else "disabled"
+        result = service.update_settings(mode=mode, source="cli")
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+
+    if command == "export":
+        result = service.export_local(args.output)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+
+    if command == "purge-local":
+        if not args.yes:
+            print("CONFIRMATION_REQUIRED: pass --yes to purge local metrics files.", file=sys.stderr)
+            raise SystemExit(2)
+        result = service.purge_local()
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+
+    raise SystemExit(f"Unknown metrics command: {command}")
 
 
 def cmd_api_key(args):
@@ -798,6 +869,39 @@ def main():
     )
     sub_status.set_defaults(func=cmd_status)
 
+    # metrics
+    sub_metrics = subparsers.add_parser(
+        "metrics",
+        help="Control local metrics mode, export, and purge",
+    )
+    metrics_sub = sub_metrics.add_subparsers(dest="metrics_command", help="Metrics commands")
+
+    metrics_status = metrics_sub.add_parser("status", help="Show local metrics status")
+    metrics_status.add_argument("--window-days", type=int, default=30)
+    metrics_status.set_defaults(func=cmd_metrics)
+
+    metrics_enable = metrics_sub.add_parser("enable-beacon", help="Opt in to anonymous hourly beacon")
+    metrics_enable.add_argument("--policy-version", required=True)
+    from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
+
+    metrics_enable.add_argument("--schema-version", default=CURRENT_SCHEMA_VERSION)
+    metrics_enable.add_argument("--yes", action="store_true", help="Confirm opt-in prerequisites")
+    metrics_enable.set_defaults(func=cmd_metrics)
+
+    metrics_local = metrics_sub.add_parser("local-only", help="Keep metrics local only")
+    metrics_local.set_defaults(func=cmd_metrics)
+
+    metrics_disable = metrics_sub.add_parser("disable", help="Disable local metrics capture")
+    metrics_disable.set_defaults(func=cmd_metrics)
+
+    metrics_export = metrics_sub.add_parser("export", help="Export local metrics JSONL")
+    metrics_export.add_argument("--output")
+    metrics_export.set_defaults(func=cmd_metrics)
+
+    metrics_purge = metrics_sub.add_parser("purge-local", help="Purge local metrics files")
+    metrics_purge.add_argument("--yes", action="store_true", help="Confirm local purge")
+    metrics_purge.set_defaults(func=cmd_metrics)
+
     # api-key — print bootstrap dash_<hex> from the seeded DB.
     sub_apikey = subparsers.add_parser(
         "api-key",
@@ -877,6 +981,10 @@ def main():
     if args.command == "kg" and not getattr(args, "kg_command", None):
         _print_banner()
         sub_kg.print_help()
+        sys.exit(1)
+    if args.command == "metrics" and not getattr(args, "metrics_command", None):
+        _print_banner()
+        sub_metrics.print_help()
         sys.exit(1)
 
     _print_banner()

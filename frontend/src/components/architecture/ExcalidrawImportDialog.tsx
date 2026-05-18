@@ -1,6 +1,13 @@
 import { useRef, useState } from 'react';
-import { FileUp, X } from 'lucide-react';
+import { FileUp, X, AlertTriangle, Info } from 'lucide-react';
 import type { ArchitectureDiagramType } from '@/types';
+
+export interface ExcalidrawImportPreflight {
+  valid: boolean;
+  warnings: string[];
+  issues: string[];
+  suggested_fixes: string[];
+}
 
 interface ExcalidrawImportDialogProps {
   open: boolean;
@@ -12,19 +19,42 @@ interface ExcalidrawImportDialogProps {
     payload: Record<string, unknown>;
     replaceDiagramId?: string | null;
   }) => Promise<void>;
+  /**
+   * Spec cc497a0d — optional pre-validation hook. When provided, the dialog calls
+   * this with the parsed Excalidraw payload before invoking onImport and surfaces
+   * warnings (semantic_metadata_normalized) and suggested_fixes inline. When the
+   * preflight reports valid=false, the Import button blocks until issues are addressed.
+   */
+  onValidate?: (payload: Record<string, unknown>) => Promise<ExcalidrawImportPreflight>;
   replaceOptions?: { id: string; title: string }[];
 }
 
-export function ExcalidrawImportDialog({ open, onClose, onImport, replaceOptions = [] }: ExcalidrawImportDialogProps) {
+export function ExcalidrawImportDialog({
+  open,
+  onClose,
+  onImport,
+  onValidate,
+  replaceOptions = [],
+}: ExcalidrawImportDialogProps) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [title, setTitle] = useState('Imported architecture');
   const [description, setDescription] = useState('');
   const [replaceDiagramId, setReplaceDiagramId] = useState<string>('');
   const [payloadText, setPayloadText] = useState('{\n  "type": "excalidraw",\n  "version": 2,\n  "elements": [],\n  "appState": {},\n  "files": {}\n}');
   const [error, setError] = useState('');
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [issues, setIssues] = useState<string[]>([]);
+  const [suggestedFixes, setSuggestedFixes] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
   if (!open) return null;
+
+  const resetFeedback = () => {
+    setError('');
+    setWarnings([]);
+    setIssues([]);
+    setSuggestedFixes([]);
+  };
 
   const handleFile = async (file: File | undefined) => {
     if (!file) return;
@@ -36,7 +66,7 @@ export function ExcalidrawImportDialog({ open, onClose, onImport, replaceOptions
   };
 
   const handleImport = async () => {
-    setError('');
+    resetFeedback();
     let parsed: unknown;
     try {
       parsed = JSON.parse(payloadText);
@@ -48,19 +78,105 @@ export function ExcalidrawImportDialog({ open, onClose, onImport, replaceOptions
       setError('Payload must be a JSON object');
       return;
     }
+    const objectPayload = parsed as Record<string, unknown>;
     setSaving(true);
     try {
+      if (onValidate) {
+        try {
+          const preflight = await onValidate(objectPayload);
+          setWarnings(preflight.warnings || []);
+          setIssues(preflight.issues || []);
+          setSuggestedFixes(preflight.suggested_fixes || []);
+          if (!preflight.valid) {
+            setError(
+              preflight.issues.length > 0
+                ? `Payload rejected: ${preflight.issues.length} issue(s) — review the suggested fixes below.`
+                : 'Payload rejected by validation.',
+            );
+            return;
+          }
+        } catch (validationErr) {
+          setError(
+            validationErr instanceof Error
+              ? `Validation failed: ${validationErr.message}`
+              : 'Validation failed.',
+          );
+          return;
+        }
+      }
       await onImport({
         title: title.trim() || 'Imported architecture',
         description: description.trim() || undefined,
         diagramType: 'container',
-        payload: parsed as Record<string, unknown>,
+        payload: objectPayload,
         replaceDiagramId: replaceDiagramId || null,
       });
       onClose();
+    } catch (importErr) {
+      const message = importErr instanceof Error ? importErr.message : 'Import failed.';
+      setError(message);
     } finally {
       setSaving(false);
     }
+  };
+
+  const renderFeedback = () => {
+    if (!error && warnings.length === 0 && suggestedFixes.length === 0) return null;
+    return (
+      <div className="space-y-2" data-testid="excalidraw-import-feedback">
+        {error && (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">{error}</p>
+        )}
+        {warnings.length > 0 && (
+          <div
+            className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 p-2 text-amber-900 dark:text-amber-200 text-xs"
+            data-testid="excalidraw-import-warnings"
+          >
+            <div className="flex items-center gap-1 font-semibold">
+              <Info size={14} />
+              Normalized fields ({warnings.length})
+            </div>
+            <ul className="mt-1 list-disc list-inside space-y-0.5">
+              {warnings.map((warning, idx) => (
+                <li key={idx}>{warning}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {issues.length > 0 && (
+          <div
+            className="rounded border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-950/30 p-2 text-red-800 dark:text-red-300 text-xs"
+            data-testid="excalidraw-import-issues"
+          >
+            <div className="flex items-center gap-1 font-semibold">
+              <AlertTriangle size={14} />
+              Issues ({issues.length})
+            </div>
+            <ul className="mt-1 list-disc list-inside space-y-0.5">
+              {issues.map((issue, idx) => (
+                <li key={idx}>{issue}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {suggestedFixes.length > 0 && (
+          <div
+            className="rounded border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/30 p-2 text-sky-900 dark:text-sky-200 text-xs"
+            data-testid="excalidraw-import-fixes"
+          >
+            <div className="flex items-center gap-1 font-semibold">
+              <Info size={14} />
+              Suggested fixes
+            </div>
+            <ul className="mt-1 list-disc list-inside space-y-0.5">
+              {suggestedFixes.map((fix, idx) => (
+                <li key={idx}>{fix}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -129,17 +245,25 @@ export function ExcalidrawImportDialog({ open, onClose, onImport, replaceOptions
           <main className="p-4 space-y-3">
             <textarea
               value={payloadText}
-              onChange={(event) => setPayloadText(event.target.value)}
-              className="w-full h-[430px] px-3 py-2 text-xs font-mono border border-gray-300 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 resize-none"
+              onChange={(event) => {
+                setPayloadText(event.target.value);
+                if (warnings.length || issues.length || error) resetFeedback();
+              }}
+              className="w-full h-[380px] px-3 py-2 text-xs font-mono border border-gray-300 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 resize-none"
             />
-            {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+            {renderFeedback()}
           </main>
         </div>
 
         <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-end gap-2">
           <button type="button" onClick={onClose} className="btn btn-secondary text-sm">Cancel</button>
-          <button type="button" onClick={handleImport} disabled={saving} className="btn btn-primary text-sm disabled:opacity-50">
-            {saving ? 'Importing...' : 'Import'}
+          <button
+            type="button"
+            onClick={handleImport}
+            disabled={saving || issues.length > 0}
+            className="btn btn-primary text-sm disabled:opacity-50"
+          >
+            {saving ? 'Importing...' : issues.length > 0 ? 'Fix issues first' : 'Import'}
           </button>
         </div>
       </div>
