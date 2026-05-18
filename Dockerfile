@@ -20,7 +20,7 @@
 #
 # Python 3.12 required: core uses nested f-string syntax (PEP 701) added in 3.12.
 
-FROM python:3.12-slim AS base
+FROM python:3.14-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
