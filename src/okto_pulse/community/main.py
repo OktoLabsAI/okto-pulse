@@ -46,6 +46,7 @@ from okto_pulse.community.seed import seed_community_defaults
 _EMBEDDING_LOGGER = logging.getLogger("okto_pulse.community.embedding")
 _STARTUP_LOGGER = logging.getLogger("uvicorn.error")
 _METRICS_LOGGER = logging.getLogger("okto_pulse.community.metrics")
+_LOCK_LOGGER = logging.getLogger("okto_pulse.community.serve_lock")
 _DEFAULT_STARTUP_TIMEOUT_SECONDS = 120.0
 _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15.0
 _DEFAULT_METRICS_BEACON_INTERVAL_SECONDS = 3600.0
@@ -678,6 +679,9 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
 
     api_task = asyncio.create_task(api_server.serve(), name="api_ui_server")
     mcp_task = asyncio.create_task(mcp_server.serve(), name="mcp_server")
+    heartbeat_task = asyncio.create_task(
+        _lock_heartbeat_loop(), name="serve_lock_heartbeat"
+    )
 
     try:
         await _wait_for_server_started("API/UI", api_server, api_task)
@@ -717,6 +721,55 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
             mcp_task,
             timeout_seconds=shutdown_timeout,
         )
+        raise
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            # Heartbeat failures are already logged inside the loop; we
+            # never let them block shutdown.
+            pass
+
+
+async def _lock_heartbeat_loop() -> None:
+    """Refresh the serve lock file's `heartbeat_at` while the server runs.
+
+    The interval is read from `serve_lock.HEARTBEAT_INTERVAL_SECONDS`. If
+    the lock owner can't be found (no active lock for this process) the
+    loop is a no-op — it stays alive in case `acquire_serve_lock` runs
+    later, but does nothing. Consecutive write failures are logged as
+    warnings; the heartbeat keeps trying. A peer that sees the heartbeat
+    go stale (older than `HEARTBEAT_TTL_SECONDS`) will take the lock over
+    on its next startup attempt.
+    """
+    from okto_pulse.community import serve_lock as _serve_lock
+
+    interval = max(1, int(_serve_lock.HEARTBEAT_INTERVAL_SECONDS))
+    consecutive_failures = 0
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            owner = _serve_lock.get_active_lock()
+            if owner is None:
+                continue
+            try:
+                owner.refresh_heartbeat()
+                if consecutive_failures:
+                    _LOCK_LOGGER.info(
+                        "serve lock heartbeat recovered after %d failures",
+                        consecutive_failures,
+                    )
+                consecutive_failures = 0
+            except OSError as exc:
+                consecutive_failures += 1
+                if consecutive_failures in (1, 3, 10):
+                    _LOCK_LOGGER.warning(
+                        "serve lock heartbeat refresh failed (%d in a row): %s",
+                        consecutive_failures,
+                        exc,
+                    )
+    except asyncio.CancelledError:
         raise
 
 
