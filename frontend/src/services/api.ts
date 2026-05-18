@@ -346,7 +346,12 @@ export function useDashboardApi() {
       await apiClient.fetchJson(`/specs/${specId}/scenarios/${scenarioId}/unlink-task/${cardId}`, { method: 'POST' });
     },
 
-    async linkTaskToSpecItem(specId: string, field: 'business_rules' | 'api_contracts' | 'technical_requirements' | 'decisions', itemId: string, cardId: string): Promise<Spec> {
+    async linkTaskToSpecItem(
+      specId: string,
+      field: 'business_rules' | 'api_contracts' | 'technical_requirements' | 'decisions' | 'integration_requirements' | 'observability_requirements',
+      itemId: string,
+      cardId: string,
+    ): Promise<Spec> {
       const spec = await this.getSpec(specId);
       const rawItems = (spec as any)[field] || [];
       // Normalize: convert legacy strings to objects (for TRs)
@@ -366,7 +371,12 @@ export function useDashboardApi() {
       return this.updateSpec(specId, { [field]: updated } as any);
     },
 
-    async unlinkTaskFromSpecItem(specId: string, field: 'business_rules' | 'api_contracts' | 'technical_requirements' | 'decisions', itemId: string, cardId: string): Promise<Spec> {
+    async unlinkTaskFromSpecItem(
+      specId: string,
+      field: 'business_rules' | 'api_contracts' | 'technical_requirements' | 'decisions' | 'integration_requirements' | 'observability_requirements',
+      itemId: string,
+      cardId: string,
+    ): Promise<Spec> {
       const spec = await this.getSpec(specId);
       const rawItems = (spec as any)[field] || [];
       const items = rawItems.map((item: any, i: number) =>

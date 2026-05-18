@@ -101,6 +101,8 @@ const ideations: IdeationSummary[] = [
   },
 ];
 
+const groupModeKey = (boardId: string) => `okto-pulse:specs:group-mode:${boardId}`;
+
 describe('SpecsPanel grouping modes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -169,5 +171,43 @@ describe('SpecsPanel grouping modes', () => {
     expect(screen.getByText('Spec with refinement')).toBeInTheDocument();
     expect(screen.getByText('Spec with ideation only')).toBeInTheDocument();
     expect(screen.getByText('Spec without parent')).toBeInTheDocument();
+  });
+
+  it('persists the grouping mode for the board and restores it after remount', async () => {
+    const first = render(<SpecsPanel boardId="board-1" />);
+
+    await waitFor(() => expect(screen.getByText('Spec with refinement')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('specs-group-mode'), { target: { value: 'ideation' } });
+
+    expect(localStorage.getItem(groupModeKey('board-1'))).toBe('ideation');
+
+    first.unmount();
+    render(<SpecsPanel boardId="board-1" />);
+
+    expect(screen.getByTestId('specs-group-mode')).toHaveValue('ideation');
+    await waitFor(() => expect(screen.getByTestId('specs-list-group-ideation:idea-1')).toBeInTheDocument());
+  });
+
+  it('scopes the saved grouping mode by board', async () => {
+    const first = render(<SpecsPanel boardId="board-1" />);
+
+    await waitFor(() => expect(screen.getByText('Spec with refinement')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('specs-group-mode'), { target: { value: 'refinement' } });
+    expect(localStorage.getItem(groupModeKey('board-1'))).toBe('refinement');
+
+    first.unmount();
+    render(<SpecsPanel boardId="board-2" />);
+
+    expect(screen.getByTestId('specs-group-mode')).toHaveValue('parents');
+    expect(localStorage.getItem(groupModeKey('board-2'))).toBeNull();
+  });
+
+  it('falls back to parents and clears an invalid saved grouping mode', async () => {
+    localStorage.setItem(groupModeKey('board-1'), 'invalid-mode');
+
+    render(<SpecsPanel boardId="board-1" />);
+
+    expect(screen.getByTestId('specs-group-mode')).toHaveValue('parents');
+    expect(localStorage.getItem(groupModeKey('board-1'))).toBeNull();
   });
 });

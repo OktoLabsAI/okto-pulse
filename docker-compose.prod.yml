@@ -23,6 +23,7 @@ services:
       MCP_HOST: "0.0.0.0"
       DATA_DIR: "/data"
       KG_BASE_DIR: "/data"
+      METRICS_BEACON_URL: "https://metrics.oktolabs.ai"
       HF_HOME: "/opt/hf-cache"
       # Set MCP_TRACE_ENABLED=1 in your shell to record every MCP tool call to
       # /data/mcp_traces/session_*.jsonl for replay testing. Off by default.

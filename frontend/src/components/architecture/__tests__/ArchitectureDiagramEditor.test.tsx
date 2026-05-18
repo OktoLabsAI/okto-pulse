@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ArchitectureDiagramEditor } from '../ArchitectureDiagramEditor';
 import type { ArchitectureDiagram } from '@/types';
@@ -137,9 +137,49 @@ const mermaidDiagram: ArchitectureDiagram = {
 };
 
 describe('ArchitectureDiagramEditor', () => {
+  afterEach(() => {
+    document.documentElement.classList.remove('dark');
+  });
+
   it('renders diagram elements on the visual canvas', () => {
     render(<ArchitectureDiagramEditor diagram={diagram} onChange={vi.fn()} />);
     expect(screen.getByTestId('architecture-element-box_1')).toHaveTextContent('API');
+  });
+
+  it('uses semantic dark-mode tokens for AWS elements with light legacy fills', () => {
+    document.documentElement.classList.add('dark');
+    const awsDiagram: ArchitectureDiagram = {
+      ...diagram,
+      adapter_payload: {
+        type: 'excalidraw',
+        version: 2,
+        elements: [
+          {
+            id: 'lambda_1',
+            type: 'rectangle',
+            x: 40,
+            y: 40,
+            width: 180,
+            height: 88,
+            text: 'Metrics writer',
+            displayType: 'AWS Lambda',
+            iconName: 'cloud',
+            strokeColor: '#f59e0b',
+            backgroundColor: '#fffbeb',
+          },
+        ],
+        appState: {},
+        files: {},
+      },
+    };
+
+    render(<ArchitectureDiagramEditor diagram={awsDiagram} onChange={vi.fn()} />);
+
+    expect(screen.getByTestId('architecture-element-lambda_1')).toHaveStyle({
+      borderColor: '#fbbf24',
+      backgroundColor: '#451a03',
+      color: '#fffbeb',
+    });
   });
 
   it('shows non-Excalidraw diagram payloads instead of an empty canvas', () => {

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { authAdapter, portalAdapter } from '@/adapters';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
 import { Header, Sidebar, CreateBoardModal, AgentsModal } from '@/components/layout';
+import { MetricsSettingsPanel } from '@/components/layout/MetricsSettingsPanel';
 import { KanbanBoard } from '@/components/kanban';
 import { StoriesPanel } from '@/components/stories';
 import { IdeationsPanel } from '@/components/ideations';
@@ -13,10 +14,11 @@ import { SprintsPanel } from '@/components/sprints';
 import { AnalyticsPage } from '@/components/analytics';
 import { GlobalKGActivityIndicator } from '@/components/knowledge/GlobalKGActivityIndicator';
 import { KGHealthView } from '@/components/knowledge/KGHealthView';
-import { ModalStackProvider } from '@/contexts/ModalStackContext';
+import { ModalStackProvider, useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { ModalStackRenderer } from '@/components/modals/ModalStackRenderer';
 import { LineageGraphModal } from '@/components/traceability';
 import { EvidenceGateSkipBanner } from '@/components/banners/EvidenceGateSkipBanner';
+import { GuidedHelpProvider, guidedHelpRegistry, type GuidedHelpSurface } from '@/components/guided-help';
 import { getBoardSettings } from '@/services/board-settings-api';
 import { useTermsAcceptance } from '@/hooks/useTermsAcceptance';
 import { TermsAcceptanceModal } from '@/components/onboarding/TermsAcceptanceModal';
@@ -24,6 +26,54 @@ import { OnboardingModal } from '@/components/onboarding/OnboardingModal';
 import { isCompleted as isOnboardingCompleted } from '@/components/onboarding/onboardingStorage';
 import logoLight from '@/assets/logo-light.png';
 import logoDark from '@/assets/logo-dark.png';
+import { CURRENT_METRICS_SCHEMA_VERSION, getMetricsSummary } from '@/services/metrics-api';
+
+const METRICS_PROMPT_DISMISSED_KEY = `okto-pulse:metrics-opt-in-prompt-dismissed:${CURRENT_METRICS_SCHEMA_VERSION}`;
+
+interface GuidedHelpRootProps {
+  children: ReactNode;
+  surface: GuidedHelpSurface;
+  termsOpen: boolean;
+  onboardingOpen: boolean;
+  metricsPromptOpen: boolean;
+  modalOpen: boolean;
+  analyticsOpen: boolean;
+  kgHealthOpen: boolean;
+}
+
+function GuidedHelpRoot({
+  children,
+  surface,
+  termsOpen,
+  onboardingOpen,
+  metricsPromptOpen,
+  modalOpen,
+  analyticsOpen,
+  kgHealthOpen,
+}: GuidedHelpRootProps) {
+  const modalStack = useOptionalModalStack();
+  const suppressForModal = modalOpen && surface !== 'agents' && surface !== 'kg';
+  const suppressForModalStack = (modalStack?.stack.length ?? 0) > 0 && surface !== 'specs';
+  const suppressForAnalytics = analyticsOpen && surface !== 'metrics';
+  const suppressForKgHealth = kgHealthOpen && surface !== 'kg';
+
+  return (
+    <GuidedHelpProvider
+      registry={guidedHelpRegistry}
+      surface={surface}
+      suppressWhen={{
+        termsOpen,
+        onboardingOpen,
+        metricsPromptOpen,
+        modalStackActive: suppressForModal || suppressForModalStack,
+        analyticsOpen: suppressForAnalytics,
+        kgHealthOpen: suppressForKgHealth,
+      }}
+    >
+      {children}
+    </GuidedHelpProvider>
+  );
+}
 
 function App() {
   const api = useDashboardApi();
@@ -41,8 +91,11 @@ function App() {
   const [createBoardOpen, setCreateBoardOpen] = useState(false);
   const [agentsModalOpen, setAgentsModalOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [helpPanelOpen, setHelpPanelOpen] = useState(false);
+  const [knowledgeGraphOpen, setKnowledgeGraphOpen] = useState(false);
   const [portalBarVisible, setPortalBarVisible] = useState(true);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [metricsPromptOpen, setMetricsPromptOpen] = useState(false);
 
   // Mount the OnboardingModal on the *first* render after Terms is accepted
   // (or skipped via CLI/env), but only if the user has not completed it yet.
@@ -53,6 +106,34 @@ function App() {
     if (isOnboardingCompleted()) return;
     setOnboardingOpen(true);
   }, [terms.loading, terms.needsAcceptance]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) return;
+    if (terms.loading || terms.needsAcceptance || onboardingOpen) return;
+    if (window.localStorage.getItem(METRICS_PROMPT_DISMISSED_KEY)) return;
+
+    let active = true;
+    getMetricsSummary()
+      .then((summary) => {
+        const hasStaleConsent =
+          summary.source === 'stale_persisted_consent' ||
+          summary.beacon_status.schema_status === 'stale_consent';
+        const hasDecision = Boolean(summary.consent.changed_at) && !hasStaleConsent;
+        if (active && ((summary.source === 'default' && !hasDecision) || hasStaleConsent)) {
+          setMetricsPromptOpen(true);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, [isLoaded, isSignedIn, terms.loading, terms.needsAcceptance, onboardingOpen]);
+
+  const closeMetricsPrompt = () => {
+    window.localStorage.setItem(METRICS_PROMPT_DISMISSED_KEY, new Date().toISOString());
+    setMetricsPromptOpen(false);
+  };
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [skipEvidenceActive, setSkipEvidenceActive] = useState(false);
@@ -63,6 +144,21 @@ function App() {
   const [showKGHealth, setShowKGHealth] = useState(
     () => typeof window !== 'undefined' && window.location.pathname.startsWith('/kg-health'),
   );
+  const guidedHelpSurface: GuidedHelpSurface = showAnalytics
+    ? 'metrics'
+    : showKGHealth
+      ? 'kg'
+      : knowledgeGraphOpen
+        ? 'kg'
+        : helpPanelOpen
+          ? 'help'
+          : agentsModalOpen
+            ? 'agents'
+            : activeTab === 'specs'
+              ? 'specs'
+              : activeTab === 'tasks'
+                ? 'tasks'
+                : 'board';
 
   // Mantém showAnalytics e showKGHealth sincronizados com back/forward do browser.
   useEffect(() => {
@@ -249,11 +345,23 @@ function App() {
 
   return (
     <ModalStackProvider>
+    <GuidedHelpRoot
+      surface={guidedHelpSurface}
+      termsOpen={terms.needsAcceptance}
+      onboardingOpen={onboardingOpen}
+      metricsPromptOpen={metricsPromptOpen}
+      modalOpen={createBoardOpen || agentsModalOpen || shareModalOpen || knowledgeGraphOpen}
+      analyticsOpen={showAnalytics}
+      kgHealthOpen={showKGHealth}
+    >
     {terms.needsAcceptance && (
       <TermsAcceptanceModal onAccept={terms.accept} />
     )}
     {onboardingOpen && (
       <OnboardingModal onClose={() => setOnboardingOpen(false)} />
+    )}
+    {metricsPromptOpen && !terms.needsAcceptance && !onboardingOpen && (
+      <MetricsSettingsPanel initialPrompt onClose={closeMetricsPrompt} />
     )}
     <div className={`min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950 ${terms.needsAcceptance ? 'pointer-events-none select-none' : ''}`}>
       {portalAdapter.PortalBar && (
@@ -275,6 +383,10 @@ function App() {
         onBoardUpdated={refreshBoard}
         onOpenAnalytics={openAnalytics}
         onOpenKGHealth={openKGHealth}
+        helpOpen={helpPanelOpen}
+        onHelpOpenChange={setHelpPanelOpen}
+        knowledgeGraphOpen={knowledgeGraphOpen}
+        onKnowledgeGraphOpenChange={setKnowledgeGraphOpen}
         isRefreshing={isRefreshing}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -291,7 +403,10 @@ function App() {
           {currentBoard ? (
             <>
               {/* Tab switcher */}
-              <div className="flex items-center gap-1 mb-4 bg-surface-200/60 dark:bg-surface-800/60 backdrop-blur-sm rounded-xl p-0.5 w-fit border border-surface-200/40 dark:border-surface-700/30">
+              <div
+                className="flex items-center gap-1 mb-4 bg-surface-200/60 dark:bg-surface-800/60 backdrop-blur-sm rounded-xl p-0.5 w-fit border border-surface-200/40 dark:border-surface-700/30"
+                data-tour-id="board.tabs"
+              >
                 {([
                   { id: 'stories' as const, label: 'Stories' },
                   { id: 'ideations' as const, label: 'Ideations' },
@@ -394,6 +509,7 @@ function App() {
       {currentBoard && <LineageGraphModal boardId={currentBoard.id} />}
       {currentBoard && <ModalStackRenderer boardId={currentBoard.id} />}
     </div>
+    </GuidedHelpRoot>
     </ModalStackProvider>
   );
 }

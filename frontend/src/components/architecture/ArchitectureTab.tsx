@@ -46,6 +46,12 @@ import type {
 } from '@/types';
 import { ArchitectureDiagramEditor } from './ArchitectureDiagramEditor';
 import { ExcalidrawImportDialog } from './ExcalidrawImportDialog';
+import {
+  ARCHITECTURE_COMPONENT_SEGMENTS,
+  colorForArchitectureType,
+  iconForArchitectureType,
+  type ArchitectureVisualIcon,
+} from './architectureVisualRegistry';
 
 interface ArchitectureTabProps {
   parentType: ArchitectureParentType;
@@ -77,24 +83,6 @@ interface ArchitectureCanvasElement {
   points?: number[][];
   connectionType?: 'direct' | 'elbow' | null;
 }
-
-type ArchitectureVisualIcon =
-  | 'boxes'
-  | 'server'
-  | 'database'
-  | 'message'
-  | 'user'
-  | 'network'
-  | 'cloud'
-  | 'cpu'
-  | 'globe'
-  | 'hard_drive'
-  | 'lock'
-  | 'monitor'
-  | 'package'
-  | 'smartphone'
-  | 'terminal'
-  | 'workflow';
 
 type InterfaceDirection = 'source_to_target' | 'target_to_source' | 'bidirectional' | 'none';
 
@@ -147,139 +135,7 @@ const ENTITY_ICON_OPTIONS: Array<{ value: ArchitectureVisualIcon; label: string;
   { value: 'workflow', label: 'Workflow', icon: Workflow },
 ];
 
-const COMPONENT_SEGMENTS: ArchitectureComponentSegment[] = [
-  {
-    id: 'application',
-    label: 'Application',
-    items: [
-      { id: 'web-app', label: 'Web App', entityType: 'Web App', icon: 'globe', color: '#0891b2' },
-      { id: 'mobile-app', label: 'Mobile App', entityType: 'Mobile App', icon: 'smartphone', color: '#0891b2' },
-      { id: 'desktop-ui', label: 'Desktop UI', entityType: 'Desktop UI', icon: 'monitor', color: '#0ea5e9' },
-      { id: 'api', label: 'API', entityType: 'API', icon: 'server', color: '#0284c7' },
-      { id: 'bff', label: 'BFF', entityType: 'BFF', icon: 'server', color: '#2563eb' },
-      { id: 'worker', label: 'Worker', entityType: 'Worker', icon: 'cpu', color: '#7c3aed' },
-      { id: 'job', label: 'Job', entityType: 'Job', icon: 'terminal', color: '#64748b' },
-      { id: 'scheduler', label: 'Scheduler', entityType: 'Scheduler', icon: 'workflow', color: '#ca8a04' },
-      { id: 'external-service', label: 'External', entityType: 'External Service', icon: 'network', color: '#7c3aed' },
-    ],
-  },
-  {
-    id: 'databases',
-    label: 'Databases',
-    items: [
-      { id: 'postgresql', label: 'PostgreSQL', entityType: 'PostgreSQL', icon: 'database', color: '#16a34a' },
-      { id: 'mysql', label: 'MySQL', entityType: 'MySQL', icon: 'database', color: '#16a34a' },
-      { id: 'sqlite', label: 'SQLite', entityType: 'SQLite', icon: 'database', color: '#22c55e' },
-      { id: 'mongodb', label: 'MongoDB', entityType: 'MongoDB', icon: 'database', color: '#15803d' },
-      { id: 'redis', label: 'Redis', entityType: 'Redis', icon: 'database', color: '#dc2626' },
-      { id: 'opensearch', label: 'Search', entityType: 'Search Index', icon: 'database', color: '#0f766e' },
-      { id: 'cache', label: 'Cache', entityType: 'Cache', icon: 'hard_drive', color: '#65a30d' },
-      { id: 'warehouse', label: 'Warehouse', entityType: 'Data Warehouse', icon: 'database', color: '#4f46e5' },
-      { id: 'object-storage', label: 'Object Store', entityType: 'Object Storage', icon: 'hard_drive', color: '#ca8a04' },
-    ],
-  },
-  {
-    id: 'architecture',
-    label: 'Architecture',
-    items: [
-      { id: 'service', label: 'Service', entityType: 'Service', icon: 'boxes', color: '#0891b2' },
-      { id: 'component', label: 'Component', entityType: 'Component', icon: 'boxes', color: '#0ea5e9' },
-      { id: 'module', label: 'Module', entityType: 'Module', icon: 'package', color: '#0284c7' },
-      { id: 'adapter', label: 'Adapter', entityType: 'Adapter', icon: 'network', color: '#7c3aed' },
-      { id: 'repository', label: 'Repository', entityType: 'Repository', icon: 'database', color: '#16a34a' },
-      { id: 'gateway', label: 'Gateway', entityType: 'Gateway', icon: 'network', color: '#2563eb' },
-      { id: 'boundary', label: 'Boundary', entityType: 'Boundary', icon: 'boxes', color: '#64748b' },
-      { id: 'trust-zone', label: 'Trust Zone', entityType: 'Trust Zone', icon: 'lock', color: '#ca8a04' },
-      { id: 'contract', label: 'Contract', entityType: 'Contract', icon: 'message', color: '#f59e0b' },
-    ],
-  },
-  {
-    id: 'events',
-    label: 'Events',
-    items: [
-      { id: 'event-producer', label: 'Producer', entityType: 'Event Producer', icon: 'message', color: '#ca8a04' },
-      { id: 'event-consumer', label: 'Consumer', entityType: 'Event Consumer', icon: 'message', color: '#ca8a04' },
-      { id: 'event-store', label: 'Event Store', entityType: 'Event Store', icon: 'database', color: '#16a34a' },
-      { id: 'event-processor', label: 'Processor', entityType: 'Event Processor', icon: 'workflow', color: '#7c3aed' },
-      { id: 'webhook', label: 'Webhook', entityType: 'Webhook', icon: 'globe', color: '#0284c7' },
-      { id: 'stream', label: 'Stream', entityType: 'Stream Processor', icon: 'workflow', color: '#0f766e' },
-    ],
-  },
-  {
-    id: 'pubsub',
-    label: 'PubSub',
-    items: [
-      { id: 'topic', label: 'Topic', entityType: 'Topic', icon: 'message', color: '#ca8a04' },
-      { id: 'queue', label: 'Queue', entityType: 'Queue', icon: 'message', color: '#ca8a04' },
-      { id: 'exchange', label: 'Exchange', entityType: 'Exchange', icon: 'network', color: '#f59e0b' },
-      { id: 'subscription', label: 'Subscription', entityType: 'Subscription', icon: 'message', color: '#d97706' },
-      { id: 'dlq', label: 'DLQ', entityType: 'Dead Letter Queue', icon: 'message', color: '#ef4444' },
-      { id: 'event-bus', label: 'Event Bus', entityType: 'Event Bus', icon: 'workflow', color: '#8b5cf6' },
-    ],
-  },
-  {
-    id: 'aws',
-    label: 'AWS',
-    items: [
-      { id: 'aws-lambda', label: 'Lambda', entityType: 'AWS Lambda', icon: 'cloud', color: '#f59e0b' },
-      { id: 'aws-ecs', label: 'ECS', entityType: 'AWS ECS', icon: 'cloud', color: '#f59e0b' },
-      { id: 'aws-eks', label: 'EKS', entityType: 'AWS EKS', icon: 'cloud', color: '#f59e0b' },
-      { id: 'aws-api-gateway', label: 'API GW', entityType: 'AWS API Gateway', icon: 'server', color: '#f59e0b' },
-      { id: 'aws-s3', label: 'S3', entityType: 'AWS S3', icon: 'hard_drive', color: '#16a34a' },
-      { id: 'aws-rds', label: 'RDS', entityType: 'AWS RDS', icon: 'database', color: '#2563eb' },
-      { id: 'aws-dynamodb', label: 'DynamoDB', entityType: 'AWS DynamoDB', icon: 'database', color: '#2563eb' },
-      { id: 'aws-sqs', label: 'SQS', entityType: 'AWS SQS', icon: 'message', color: '#ca8a04' },
-      { id: 'aws-sns', label: 'SNS', entityType: 'AWS SNS', icon: 'message', color: '#ca8a04' },
-      { id: 'aws-eventbridge', label: 'EventBridge', entityType: 'AWS EventBridge', icon: 'workflow', color: '#8b5cf6' },
-      { id: 'aws-cloudfront', label: 'CloudFront', entityType: 'AWS CloudFront', icon: 'globe', color: '#0284c7' },
-      { id: 'aws-cognito', label: 'Cognito', entityType: 'AWS Cognito', icon: 'lock', color: '#7c3aed' },
-    ],
-  },
-  {
-    id: 'azure',
-    label: 'Azure',
-    items: [
-      { id: 'azure-functions', label: 'Functions', entityType: 'Azure Functions', icon: 'cloud', color: '#0284c7' },
-      { id: 'azure-app-service', label: 'App Service', entityType: 'Azure App Service', icon: 'cloud', color: '#0284c7' },
-      { id: 'azure-aks', label: 'AKS', entityType: 'Azure AKS', icon: 'cloud', color: '#0284c7' },
-      { id: 'azure-apim', label: 'API Mgmt', entityType: 'Azure API Management', icon: 'server', color: '#2563eb' },
-      { id: 'azure-blob', label: 'Blob', entityType: 'Azure Blob Storage', icon: 'hard_drive', color: '#16a34a' },
-      { id: 'azure-sql', label: 'SQL DB', entityType: 'Azure SQL Database', icon: 'database', color: '#2563eb' },
-      { id: 'azure-cosmos', label: 'Cosmos DB', entityType: 'Azure Cosmos DB', icon: 'database', color: '#7c3aed' },
-      { id: 'azure-service-bus', label: 'Service Bus', entityType: 'Azure Service Bus', icon: 'message', color: '#ca8a04' },
-      { id: 'azure-event-grid', label: 'Event Grid', entityType: 'Azure Event Grid', icon: 'workflow', color: '#8b5cf6' },
-      { id: 'azure-entra', label: 'Entra ID', entityType: 'Azure Entra ID', icon: 'lock', color: '#7c3aed' },
-    ],
-  },
-  {
-    id: 'gcp',
-    label: 'GCP',
-    items: [
-      { id: 'gcp-cloud-run', label: 'Cloud Run', entityType: 'GCP Cloud Run', icon: 'cloud', color: '#2563eb' },
-      { id: 'gcp-functions', label: 'Functions', entityType: 'GCP Cloud Functions', icon: 'cloud', color: '#2563eb' },
-      { id: 'gcp-gke', label: 'GKE', entityType: 'GCP GKE', icon: 'cloud', color: '#2563eb' },
-      { id: 'gcp-api-gateway', label: 'API GW', entityType: 'GCP API Gateway', icon: 'server', color: '#0284c7' },
-      { id: 'gcp-storage', label: 'Storage', entityType: 'GCP Cloud Storage', icon: 'hard_drive', color: '#16a34a' },
-      { id: 'gcp-sql', label: 'Cloud SQL', entityType: 'GCP Cloud SQL', icon: 'database', color: '#2563eb' },
-      { id: 'gcp-firestore', label: 'Firestore', entityType: 'GCP Firestore', icon: 'database', color: '#ca8a04' },
-      { id: 'gcp-pubsub-topic', label: 'Topic', entityType: 'GCP Pub/Sub Topic', icon: 'message', color: '#ca8a04' },
-      { id: 'gcp-pubsub-sub', label: 'Subscription', entityType: 'GCP Pub/Sub Subscription', icon: 'message', color: '#d97706' },
-      { id: 'gcp-bigquery', label: 'BigQuery', entityType: 'GCP BigQuery', icon: 'database', color: '#4f46e5' },
-    ],
-  },
-  {
-    id: 'operations',
-    label: 'Operations',
-    items: [
-      { id: 'auth', label: 'Auth', entityType: 'Authentication', icon: 'lock', color: '#7c3aed' },
-      { id: 'secret-vault', label: 'Secrets', entityType: 'Secret Vault', icon: 'lock', color: '#475569' },
-      { id: 'observability', label: 'Observability', entityType: 'Observability', icon: 'monitor', color: '#0f766e' },
-      { id: 'logging', label: 'Logging', entityType: 'Logging', icon: 'terminal', color: '#64748b' },
-      { id: 'metrics', label: 'Metrics', entityType: 'Metrics', icon: 'monitor', color: '#16a34a' },
-      { id: 'pipeline', label: 'Pipeline', entityType: 'Pipeline', icon: 'workflow', color: '#0284c7' },
-    ],
-  },
-];
+const COMPONENT_SEGMENTS: ArchitectureComponentSegment[] = ARCHITECTURE_COMPONENT_SEGMENTS;
 
 const INTERFACE_DIRECTIONS: Array<{ value: InterfaceDirection; label: string }> = [
   { value: 'source_to_target', label: 'Source -> Target' },
@@ -535,28 +391,11 @@ function nextCanvasId(prefix: string): string {
 }
 
 function colorForEntityType(type: string | null | undefined): string {
-  const value = (type || '').toLowerCase();
-  if (value.includes('db') || value.includes('database') || value.includes('repository') || value.includes('store')) return '#16a34a';
-  if (value.includes('queue') || value.includes('event') || value.includes('message') || value.includes('interface')) return '#ca8a04';
-  if (value.includes('external') || value.includes('adapter')) return '#7c3aed';
-  if (value.includes('api') || value.includes('server')) return '#0284c7';
-  return '#0891b2';
+  return colorForArchitectureType(type);
 }
 
 function iconForEntityType(type: string | null | undefined): ArchitectureVisualIcon {
-  const value = (type || '').toLowerCase();
-  if (value.includes('db') || value.includes('database') || value.includes('repository') || value.includes('store')) return 'database';
-  if (value.includes('queue') || value.includes('event') || value.includes('message') || value.includes('interface')) return 'message';
-  if (value.includes('actor') || value.includes('user')) return 'user';
-  if (value.includes('cloud') || value.includes('saas')) return 'cloud';
-  if (value.includes('security') || value.includes('auth') || value.includes('identity')) return 'lock';
-  if (value.includes('web') || value.includes('browser')) return 'globe';
-  if (value.includes('mobile')) return 'smartphone';
-  if (value.includes('job') || value.includes('cli') || value.includes('worker')) return 'terminal';
-  if (value.includes('workflow') || value.includes('pipeline')) return 'workflow';
-  if (value.includes('network') || value.includes('adapter') || value.includes('external')) return 'network';
-  if (value.includes('api') || value.includes('server') || value.includes('runtime')) return 'server';
-  return 'boxes';
+  return iconForArchitectureType(type);
 }
 
 function iconComponentForName(name: string | null | undefined): LucideIcon {

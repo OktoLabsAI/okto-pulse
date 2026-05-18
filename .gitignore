@@ -56,6 +56,7 @@ test-results/
 tsconfig.tsbuildinfo
 *.tsbuildinfo
 *.png
+!frontend/tests/visual/**/*.png
 .playwright-mcp/
 
 # Local editable-install virtualenv used for development server

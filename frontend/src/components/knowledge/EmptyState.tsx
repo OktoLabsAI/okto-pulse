@@ -133,7 +133,11 @@ export function EmptyState({ boardId, onRefresh }: Props) {
         : 'Enable Historical Consolidation';
 
   return (
-    <div className="flex flex-col items-center justify-center h-full text-center p-8" role="status">
+    <div
+      className="flex flex-col items-center justify-center h-full text-center p-8"
+      data-tour-id="kg.discovery.search"
+      role="status"
+    >
       <div className="text-6xl mb-4">🕸️</div>
       <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">
         Knowledge Graph is empty
