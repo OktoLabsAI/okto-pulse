@@ -12,6 +12,8 @@ import {
   CheckCircle, ChevronDown, ChevronUp, GitBranch, Pencil, Plus, Trash2, XCircle,
 } from 'lucide-react';
 import type { Decision, DecisionStatus, Spec } from '@/types';
+import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
+import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 
 interface DecisionsTabProps {
   spec: Spec;
@@ -51,6 +53,17 @@ export function DecisionsTab({
 
   const decisions = spec.decisions || [];
   const frs = spec.functional_requirements || [];
+  // Canonical source_ref shape per board_source_store.py + cognitive_badge_resolver.py
+  // is `decision:<spec_id>:<decision_id>` — keep the UI in lockstep so badges
+  // resolve against real rebuild/marker entries (KG-03A.6 val_ff050455).
+  const decisionSourceRefs = useMemo(
+    () => decisions.map((d) => `decision:${spec.id}:${d.id}`),
+    [decisions, spec.id],
+  );
+  const { badges: decisionBadges } = useCognitivePendingBadges(
+    spec.board_id ?? null,
+    decisionSourceRefs,
+  );
 
   const resetForm = () => {
     setFormTitle('');
@@ -338,6 +351,11 @@ export function DecisionsTab({
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_COLORS[d.status]}`}>
                 {d.status}
               </span>
+              <CognitivePendingBadge
+                badge={decisionBadges[`decision:${spec.id}:${d.id}`]}
+                compact
+              />
+
               {(d.linked_requirements?.length ?? 0) > 0 && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
                   {d.linked_requirements!.length} FR

@@ -23,6 +23,7 @@ import type {
   SpecKnowledgeSummary,
   ConclusionEntry,
   ValidationEntry,
+  ArchitectureWarningRecord,
 } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -112,6 +113,43 @@ function renderMockups(mockups: ScreenMockup[] | null | undefined): string {
 // Architecture Designs
 // ---------------------------------------------------------------------------
 
+function architectureWarningLocation(warning: ArchitectureWarningRecord): string {
+  if (warning.diagram_id && warning.element_id) return `${warning.diagram_id} / ${warning.element_id}`;
+  if (warning.diagram_id && warning.entity_id) return `${warning.diagram_id} / ${warning.entity_id}`;
+  if (warning.diagram_id && warning.node_ref) return `${warning.diagram_id} / ${warning.node_ref}`;
+  return warning.entity_id || warning.node_ref || warning.path;
+}
+
+function structuredArchitectureWarnings(design: any): ArchitectureWarningRecord[] {
+  if (Array.isArray(design?.structured_warnings)) return design.structured_warnings;
+  if (Array.isArray(design?.validation?.structured_warnings)) return design.validation.structured_warnings;
+  if (Array.isArray(design?.validation_result?.structured_warnings)) return design.validation_result.structured_warnings;
+  return [];
+}
+
+function renderArchitectureConnectivityWarnings(design: any): string {
+  const warnings = structuredArchitectureWarnings(design);
+  if (!warnings.length) return '';
+
+  const ordered = [...warnings].sort((a, b) => (
+    (a.severity || '').localeCompare(b.severity || '') ||
+    (a.code || '').localeCompare(b.code || '') ||
+    (a.diagram_id || '').localeCompare(b.diagram_id || '') ||
+    (a.path || '').localeCompare(b.path || '')
+  ));
+
+  const entries = ordered.map((warning) => {
+    const location = architectureWarningLocation(warning);
+    return [
+      `- **Code:** \`${warning.code}\``,
+      `  **Location:** \`${location}\``,
+      `  **Suggested fix:** ${warning.suggested_fix}`,
+    ].join('\n');
+  }).join('\n');
+
+  return `#### Connectivity and Coverage Warnings\n\n${entries}\n\n`;
+}
+
 function renderArchitectureDesigns(designs: any[] | null | undefined): string {
   if (!designs?.length) return '';
   const items = designs.map((design, i) => {
@@ -129,6 +167,7 @@ function renderArchitectureDesigns(designs: any[] | null | undefined): string {
     if (design.diagrams?.length) {
       entry += `**Diagrams:** ${design.diagrams.map((d: any) => d.title || d.id).filter(Boolean).join(', ')}\n\n`;
     }
+    entry += renderArchitectureConnectivityWarnings(design);
     return entry;
   }).join('\n');
   return `## Architecture Designs\n\n${items}\n`;

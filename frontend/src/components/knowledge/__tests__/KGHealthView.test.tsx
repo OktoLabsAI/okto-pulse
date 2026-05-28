@@ -14,7 +14,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { KGHealthView } from '../KGHealthView';
 import * as kgHealthApi from '@/services/kg-health-api';
 import * as dashboardStore from '@/store/dashboard';
-import type { KGHealth } from '@/services/kg-health-api';
+import type { KGHealth, KGCognitivePendingCounts } from '@/services/kg-health-api';
 
 vi.mock('@/services/kg-health-api');
 vi.mock('@/store/dashboard');
@@ -49,9 +49,51 @@ function mockApi(impl: (boardId: string, signal?: AbortSignal) => Promise<KGHeal
   vi.mocked(kgHealthApi.getKGHealth).mockImplementation(impl);
 }
 
+function cognitiveCounts(
+  overrides: Partial<KGCognitivePendingCounts> = {},
+): KGCognitivePendingCounts {
+  return {
+    pending: 0,
+    in_progress: 0,
+    consolidated: 0,
+    skipped: 0,
+    failed: 0,
+    total: 0,
+    ...overrides,
+  };
+}
+
+function mockCognitivePending(counts: KGCognitivePendingCounts) {
+  vi.mocked(kgHealthApi.getKGCognitivePendingItems).mockResolvedValue({
+    board_id: 'b1',
+    selected_kg_generation_id: 'gen1',
+    readonly: true,
+    legacy_mode: false,
+    counts,
+    items: [],
+  });
+}
+
 beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  mockCognitivePending(cognitiveCounts());
+  vi.mocked(kgHealthApi.runRebuildPreflight).mockResolvedValue({
+    board_id: 'b1',
+    outcome: 'ready',
+    action_required: 'none',
+    reason: null,
+    base_state: 'fresh',
+    metric_status: 'available',
+    current_kg_generation_id: 'gen1',
+    eligible_source_count: 1,
+    skipped_cancelled_count: 0,
+    has_non_deterministic_inputs: false,
+    preflight_hash: 'hash1',
+    generated_at: new Date().toISOString(),
+    manifest_ref: 'manifest1',
+    source_set_hash: 'sourcehash1',
+  });
 });
 
 afterEach(() => {
@@ -332,5 +374,130 @@ describe('TS12 — empty state sem currentBoard suprime polling', () => {
 
     await new Promise((r) => setTimeout(r, 50));
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('KG recovery panel — health and cognitive rebuild state', () => {
+  it('labels at_risk health as At risk, not Recovery needed', async () => {
+    mockBoard('b1');
+    mockApi(() =>
+      Promise.resolve({
+        ...baseHealth,
+        overall_state: 'at_risk',
+        graph_state: 'at_risk',
+        discovery_state: 'at_risk',
+        classification_reason: 'metric.unavailable',
+        current_kg_generation_id: 'gen1',
+      }),
+    );
+    mockCognitivePending(cognitiveCounts({
+      consolidated: 59,
+      total: 59,
+    }));
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText('At risk')).toBeInTheDocument());
+    expect(screen.queryByText('Recovery needed')).toBeNull();
+  });
+
+  it('adds explanatory tooltips to each KG Recovery metric', async () => {
+    mockBoard('b1');
+    mockApi(() =>
+      Promise.resolve({
+        ...baseHealth,
+        overall_state: 'at_risk',
+        graph_state: 'at_risk',
+        discovery_state: 'at_risk',
+        classification_reason: 'metric.unavailable',
+        current_kg_generation_id: 'gen1',
+      }),
+    );
+    mockCognitivePending(cognitiveCounts({
+      consolidated: 59,
+      total: 59,
+    }));
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    const graphMetric = await screen.findByTestId('kg-recovery-metric-board-graph');
+    expect(graphMetric.getAttribute('title')).toContain('graph.lbug');
+    expect(graphMetric.getAttribute('title')).toContain('metric.unavailable');
+
+    const discoveryMetric = screen.getByTestId('kg-recovery-metric-global-discovery');
+    expect(discoveryMetric.getAttribute('title')).toContain('discovery.lbug');
+
+    const cognitiveMetric = screen.getByTestId('kg-recovery-metric-cognitive');
+    expect(cognitiveMetric.getAttribute('title')).toContain('consolidated');
+  });
+
+  it('surfaces an empty board graph explicitly when health total_nodes is zero', async () => {
+    mockBoard('b1');
+    mockApi(() =>
+      Promise.resolve({
+        ...baseHealth,
+        total_nodes: 0,
+        overall_state: 'at_risk',
+        graph_state: 'at_risk',
+        discovery_state: 'at_risk',
+        classification_reason: 'graph:metric.unavailable',
+        current_kg_generation_id: 'gen1',
+      }),
+    );
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    const graphMetric = await screen.findByTestId('kg-recovery-metric-board-graph');
+    expect(graphMetric).toHaveTextContent('empty');
+    expect(graphMetric).toHaveTextContent('0 nodes indexed');
+    expect(graphMetric.getAttribute('title')).toContain('total_nodes=0');
+  });
+
+  it('shows consolidated cognitive state from the generation counts', async () => {
+    mockBoard('b1');
+    mockApi(() =>
+      Promise.resolve({
+        ...baseHealth,
+        overall_state: 'at_risk',
+        current_kg_generation_id: 'gen1',
+      }),
+    );
+    mockCognitivePending(cognitiveCounts({
+      consolidated: 59,
+      total: 59,
+    }));
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    await waitFor(() =>
+      expect(screen.getByText('consolidated after rebuild')).toBeInTheDocument(),
+    );
+    const cognitiveRow = screen.getByText('Cognitive state').parentElement;
+    expect(cognitiveRow).not.toBeNull();
+    expect(cognitiveRow!).toHaveTextContent('consolidated');
+  });
+
+  it('shows pending cognitive state when the generation has active items', async () => {
+    mockBoard('b1');
+    mockApi(() =>
+      Promise.resolve({
+        ...baseHealth,
+        overall_state: 'at_risk',
+        current_kg_generation_id: 'gen1',
+      }),
+    );
+    mockCognitivePending(cognitiveCounts({
+      pending: 2,
+      in_progress: 1,
+      consolidated: 56,
+      total: 59,
+    }));
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText('3 pending')).toBeInTheDocument());
+    const cognitiveRow = screen.getByText('Cognitive state').parentElement;
+    expect(cognitiveRow).not.toBeNull();
+    expect(cognitiveRow!).toHaveTextContent('pending');
   });
 });

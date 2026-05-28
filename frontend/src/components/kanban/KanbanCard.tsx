@@ -9,11 +9,17 @@ import { enUS } from 'date-fns/locale';
 import { Bug, FlaskConical, Calendar, GripVertical, FileText, AlertCircle, Check, ShieldCheck, ShieldX } from 'lucide-react';
 import type { CardSummary } from '@/types';
 import { PRIORITY_COLORS, PRIORITY_LABELS, BUG_SEVERITY_LABELS, BUG_SEVERITY_COLORS } from '@/types';
+import type { KGCognitivePendingBadgeView } from '@/services/kg-health-api';
+import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 
 interface KanbanCardProps {
   card: CardSummary;
   onClick: (cardId: string) => void;
   nameMap: Record<string, string>;
+  /** KG-03.6 — read-only cognitive consolidation badge. Resolved at
+   * the KanbanBoard level in one batch HTTP request; the card just
+   * renders whatever the parent passes. */
+  cognitiveBadge?: KGCognitivePendingBadgeView;
 }
 
 function displayName(id: string, nameMap: Record<string, string>): string {
@@ -22,7 +28,7 @@ function displayName(id: string, nameMap: Record<string, string>): string {
   return id.slice(0, 8);
 }
 
-export function KanbanCard({ card, onClick, nameMap }: KanbanCardProps) {
+export function KanbanCard({ card, onClick, nameMap, cognitiveBadge }: KanbanCardProps) {
   const {
     attributes,
     listeners,
@@ -115,6 +121,7 @@ export function KanbanCard({ card, onClick, nameMap }: KanbanCardProps) {
             <h4 className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">
               {card.title}
             </h4>
+            <CognitivePendingBadge badge={cognitiveBadge} compact />
             {card.spec_id && (
               <span
                 className="shrink-0 inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"

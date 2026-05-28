@@ -9,6 +9,7 @@ import {
   Cpu,
   Database,
   FileUp,
+  Focus,
   GitBranch,
   Globe2,
   HardDrive,
@@ -41,6 +42,7 @@ import type {
   ArchitectureEntity,
   ArchitectureInterface,
   ArchitectureParentType,
+  ArchitectureWarningRecord,
   CreateArchitectureDesignRequest,
   ScreenMockup,
 } from '@/types';
@@ -163,18 +165,38 @@ function CollapsibleSection({ id, title, open, onToggle, children, action }: Col
   );
 }
 
-function ArchitectureValidationPanel({
+interface ArchitectureWarningFocusTarget {
+  diagramId: string;
+  elementId: string;
+}
+
+function architectureWarningLocation(warning: ArchitectureWarningRecord): string {
+  if (warning.diagram_id && warning.element_id) return `${warning.diagram_id} / ${warning.element_id}`;
+  if (warning.diagram_id && warning.entity_id) return `${warning.diagram_id} / ${warning.entity_id}`;
+  if (warning.diagram_id && warning.node_ref) return `${warning.diagram_id} / ${warning.node_ref}`;
+  return warning.entity_id || warning.node_ref || warning.path;
+}
+
+function warningHasFocusTarget(warning: ArchitectureWarningRecord): warning is ArchitectureWarningRecord & { diagram_id: string; element_id: string } {
+  return Boolean(warning.diagram_id && warning.element_id);
+}
+
+export function ArchitectureValidationPanel({
   result,
   loading,
   error,
+  onFocusElement,
 }: {
   result: ArchitectureDesignValidationResult | null;
   loading: boolean;
   error: string | null;
+  onFocusElement?: (target: ArchitectureWarningFocusTarget) => void;
 }) {
   const issues = result?.issues || [];
   const warnings = result?.warnings || [];
-  if (!error && issues.length === 0 && warnings.length === 0) return null;
+  const structuredWarnings = result?.structured_warnings || [];
+  const warningCount = warnings.length + structuredWarnings.length;
+  if (!error && issues.length === 0 && warningCount === 0) return null;
 
   return (
     <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
@@ -189,14 +211,14 @@ function ArchitectureValidationPanel({
                 {issues.length} issue{issues.length === 1 ? '' : 's'}
               </span>
             )}
-            {warnings.length > 0 && (
+            {warningCount > 0 && (
               <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-700 dark:bg-amber-900/60 dark:text-amber-100">
-                {warnings.length} warning{warnings.length === 1 ? '' : 's'}
+                {warningCount} warning{warningCount === 1 ? '' : 's'}
               </span>
             )}
           </div>
           {error && <p className="mt-1 text-red-700 dark:text-red-300">{error}</p>}
-          {(issues.length > 0 || warnings.length > 0) && (
+          {(issues.length > 0 || warningCount > 0) && (
             <div className="mt-2 max-h-44 space-y-2 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
               {issues.length > 0 && (
                 <div>
@@ -210,9 +232,51 @@ function ArchitectureValidationPanel({
                   </ul>
                 </div>
               )}
+              {structuredWarnings.length > 0 && (
+                <div>
+                  <div className="mb-1 font-medium text-amber-800 dark:text-amber-200">Connectivity and coverage</div>
+                  <ul className="space-y-1">
+                    {structuredWarnings.map((item, index) => {
+                      const focusable = warningHasFocusTarget(item);
+                      return (
+                        <li
+                          key={`${item.code}-${item.path}-${index}`}
+                          className="rounded border border-amber-200 bg-white/70 px-2 py-1 dark:border-amber-900/70 dark:bg-gray-950/50"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 space-y-0.5">
+                              <div className="flex flex-wrap items-center gap-1">
+                                <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] text-amber-800 dark:bg-amber-900/60 dark:text-amber-100">
+                                  {item.code}
+                                </span>
+                                <span className="truncate text-[11px] text-amber-700 dark:text-amber-200">
+                                  {architectureWarningLocation(item)}
+                                </span>
+                              </div>
+                              <p>{item.message}</p>
+                              <p className="text-amber-700 dark:text-amber-200">{item.suggested_fix}</p>
+                            </div>
+                            {focusable && (
+                              <button
+                                type="button"
+                                onClick={() => onFocusElement?.({ diagramId: item.diagram_id, elementId: item.element_id })}
+                                className="shrink-0 rounded p-1 text-amber-700 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/60"
+                                title="Focus diagram element"
+                                aria-label={`Focus ${item.element_id}`}
+                              >
+                                <Focus size={13} />
+                              </button>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
               {warnings.length > 0 && (
                 <div>
-                  <div className="mb-1 font-medium text-amber-800 dark:text-amber-200">Warnings</div>
+                  <div className="mb-1 font-medium text-amber-800 dark:text-amber-200">Authoring warnings</div>
                   <ul className="space-y-1">
                     {warnings.map((item) => (
                       <li key={item} className="rounded border border-amber-200 bg-white/70 px-2 py-1 dark:border-amber-900/70 dark:bg-gray-950/50">
@@ -507,6 +571,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   const [validation, setValidation] = useState<ArchitectureDesignValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [focusRequest, setFocusRequest] = useState<{ diagramId: string; elementId: string; signal: number } | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
@@ -543,7 +608,13 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
     setInterfaceDraft(null);
     setEditingEntityIndex(null);
     setEditingInterfaceIndex(null);
+    setFocusRequest(null);
   }, [selectedId]);
+
+  const focusArchitectureElement = useCallback((target: ArchitectureWarningFocusTarget) => {
+    setSelectedDiagramId(target.diagramId);
+    setFocusRequest({ ...target, signal: Date.now() });
+  }, []);
 
   const loadList = useCallback(async (preferredSelectedId?: string) => {
     setLoading(true);
@@ -1193,7 +1264,12 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                   </button>
                 )}
               </div>
-              <ArchitectureValidationPanel result={validation} loading={validating} error={validationError} />
+              <ArchitectureValidationPanel
+                result={validation}
+                loading={validating}
+                error={validationError}
+                onFocusElement={focusArchitectureElement}
+              />
             </CollapsibleSection>
 
             <CollapsibleSection id="components" title="Components" open={openPanels.components} onToggle={togglePanel}>
@@ -1273,6 +1349,8 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                 readOnly={locked}
                 onChange={updateDiagram}
                 onDeleteLinkedEntity={deleteEntityByRef}
+                focusElementId={focusRequest && focusRequest.diagramId === selectedDiagram?.id ? focusRequest.elementId : null}
+                focusSignal={focusRequest?.signal || 0}
               />
             </div>
           </main>

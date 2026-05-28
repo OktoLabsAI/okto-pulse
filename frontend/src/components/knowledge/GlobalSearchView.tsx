@@ -14,13 +14,20 @@
  * we just surface placeholder links to keep the v1 surface honest.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, ExternalLink, Sparkles } from 'lucide-react';
 import * as kgApi from '@/services/kg-api';
 import * as discoveryApi from '@/services/discovery-api';
 import type { IntentExecutionResult } from '@/services/discovery-api';
 import { NODE_TYPE_CONFIG, type KGNodeType } from '@/types/knowledge-graph';
-import type { DiscoveryIntent } from '@/types/discovery';
+import type {
+  DiscoveryIntent,
+  DiscoveryParamSchema,
+  DiscoveryParamsSchema,
+  DiscoverySelectorOption,
+  DiscoverySpecChildSelectorValue,
+  SpecChildType,
+} from '@/types/discovery';
 import { NodeDetailModal } from './NodeDetailModal';
 import { useModalStack } from '@/contexts/ModalStackContext';
 import { useDashboardStore } from '@/store/dashboard';
@@ -45,6 +52,110 @@ const CATEGORY_LABELS: Record<string, string> = {
   dependencies_blockers: 'Dependencies & Blockers',
   similarity_reuse: 'Similarity & Reuse',
 };
+
+const SPEC_CHILD_TYPE_OPTIONS: SpecChildType[] = [
+  'functional_requirement',
+  'business_rule',
+  'technical_requirement',
+  'decision',
+  'acceptance_criterion',
+  'api_contract',
+  'integration_requirement',
+  'observability_requirement',
+];
+
+const SPEC_CHILD_TYPE_LABELS: Record<SpecChildType, string> = {
+  functional_requirement: 'Functional Requirements',
+  business_rule: 'Business Rules',
+  technical_requirement: 'Technical Requirements',
+  decision: 'Decisions',
+  acceptance_criterion: 'Acceptance Criteria',
+  api_contract: 'API Contracts',
+  integration_requirement: 'Integration Requirements',
+  observability_requirement: 'Observability Requirements',
+};
+
+type IntentParamValue =
+  | string
+  | DiscoverySpecChildSelectorValue
+  | { spec_id?: string; card_id?: string; entity_id: string; id: string };
+
+type SelectorLoadState = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
+
+interface SelectorUiState {
+  specOptions: DiscoverySelectorOption[];
+  specStatus: SelectorLoadState;
+  specError: string | null;
+  specQuery: string;
+  selectedSpecId: string;
+  selectedSpecLabel: string;
+  childType: string;
+  childOptions: DiscoverySelectorOption[];
+  childStatus: SelectorLoadState;
+  childError: string | null;
+  childQuery: string;
+  selectedChildRef: string;
+}
+
+function normalizeParamMeta(meta: DiscoveryParamSchema | undefined): DiscoveryParamSchema {
+  return {
+    ...(meta || {}),
+    type: meta?.type || 'text',
+  };
+}
+
+function getParamsSchema(intent: DiscoveryIntent): DiscoveryParamsSchema {
+  const schema = intent.params_schema || {};
+  return Object.fromEntries(
+    Object.entries(schema).map(([key, meta]) => [key, normalizeParamMeta(meta)]),
+  );
+}
+
+function specChildTypeLabel(value: string): string {
+  return SPEC_CHILD_TYPE_LABELS[value as SpecChildType] ?? humanizeCategory(value);
+}
+
+function childTypesForParam(meta: DiscoveryParamSchema): string[] {
+  const configured = (meta.child_types || []).filter(Boolean).map(String);
+  return configured.length > 0 ? configured : SPEC_CHILD_TYPE_OPTIONS;
+}
+
+function isSelectorParam(meta: DiscoveryParamSchema): boolean {
+  return meta.type === 'entity_selector' || meta.type === 'spec_child_selector';
+}
+
+function entitySelectorKind(meta: DiscoveryParamSchema): 'spec' | 'card' {
+  return meta.entity_type === 'card' ? 'card' : 'spec';
+}
+
+function entitySelectorLabel(meta: DiscoveryParamSchema): string {
+  return entitySelectorKind(meta) === 'card' ? 'card' : 'spec';
+}
+
+function isFilledParam(value: IntentParamValue | undefined): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if ('child_ref' in value) return value.child_ref.trim().length > 0;
+  const entityId = value.spec_id || value.card_id || value.entity_id || value.id;
+  return typeof entityId === 'string' && entityId.trim().length > 0;
+}
+
+function emptySelectorState(): SelectorUiState {
+  return {
+    specOptions: [],
+    specStatus: 'idle',
+    specError: null,
+    specQuery: '',
+    selectedSpecId: '',
+    selectedSpecLabel: '',
+    childType: '',
+    childOptions: [],
+    childStatus: 'idle',
+    childError: null,
+    childQuery: '',
+    selectedChildRef: '',
+  };
+}
 
 function humanizeCategory(category: string): string {
   return (
@@ -72,7 +183,8 @@ export function GlobalSearchView({ boardId }: Props) {
   // Real-tool execution state (ideação a4f526df).
   const [intentResult, setIntentResult] = useState<IntentExecutionResult | null>(null);
   const [pendingIntent, setPendingIntent] = useState<DiscoveryIntent | null>(null);
-  const [paramValues, setParamValues] = useState<Record<string, string>>({});
+  const [paramValues, setParamValues] = useState<Record<string, IntentParamValue>>({});
+  const [selectorStates, setSelectorStates] = useState<Record<string, SelectorUiState>>({});
   const [intentError, setIntentError] = useState<string | null>(null);
 
   // Drill-down (ideação 33cb4fa3 + c13f7bd3). Every row with
@@ -127,6 +239,234 @@ export function GlobalSearchView({ boardId }: Props) {
     };
   }, []);
 
+  const loadSpecOptions = useCallback(
+    async (
+      paramKey: string,
+      q: string,
+      selectorKind: 'spec' | 'card' = 'spec',
+    ): Promise<void> => {
+      setSelectorStates((prev) => ({
+        ...prev,
+        [paramKey]: {
+          ...(prev[paramKey] || emptySelectorState()),
+          specStatus: 'loading',
+          specError: null,
+          specQuery: q,
+        },
+      }));
+      try {
+        const data = await discoveryApi.listSelectorOptions(boardId, {
+          selectorKind,
+          q: q || null,
+          limit: 50,
+        });
+        setSelectorStates((prev) => ({
+          ...prev,
+          [paramKey]: {
+            ...(prev[paramKey] || emptySelectorState()),
+            specOptions: data.options,
+            specStatus: data.options.length > 0 ? 'ready' : 'empty',
+            specError: null,
+            specQuery: q,
+          },
+        }));
+      } catch (e) {
+        const msg =
+          e instanceof Error
+            ? e.message
+            : `Failed to load ${selectorKind === 'card' ? 'cards' : 'specs'}`;
+        setSelectorStates((prev) => ({
+          ...prev,
+          [paramKey]: {
+            ...(prev[paramKey] || emptySelectorState()),
+            specOptions: [],
+            specStatus: 'error',
+            specError: msg,
+            specQuery: q,
+          },
+        }));
+      }
+    },
+    [boardId],
+  );
+
+  const loadChildOptions = useCallback(
+    async (
+      paramKey: string,
+      specId: string,
+      childType: string,
+      q: string,
+    ): Promise<void> => {
+      if (!specId || !childType) return;
+      setSelectorStates((prev) => ({
+        ...prev,
+        [paramKey]: {
+          ...(prev[paramKey] || emptySelectorState()),
+          childStatus: 'loading',
+          childError: null,
+          childQuery: q,
+        },
+      }));
+      try {
+        const data = await discoveryApi.listSelectorOptions(boardId, {
+          selectorKind: 'spec_child',
+          specId,
+          childType,
+          q: q || null,
+          status: 'active',
+          limit: 50,
+        });
+        setSelectorStates((prev) => ({
+          ...prev,
+          [paramKey]: {
+            ...(prev[paramKey] || emptySelectorState()),
+            childOptions: data.options,
+            childStatus: data.options.length > 0 ? 'ready' : 'empty',
+            childError: null,
+            childQuery: q,
+          },
+        }));
+      } catch (e) {
+        const msg =
+          e instanceof Error ? e.message : 'Failed to load selector options';
+        setSelectorStates((prev) => ({
+          ...prev,
+          [paramKey]: {
+            ...(prev[paramKey] || emptySelectorState()),
+            childOptions: [],
+            childStatus: 'error',
+            childError: msg,
+            childQuery: q,
+          },
+        }));
+      }
+    },
+    [boardId],
+  );
+
+  useEffect(() => {
+    if (!pendingIntent) {
+      setSelectorStates({});
+      return;
+    }
+    const schema = getParamsSchema(pendingIntent);
+    const selectors = Object.entries(schema).filter(([, meta]) =>
+      isSelectorParam(meta),
+    );
+    setSelectorStates(
+      Object.fromEntries(selectors.map(([key]) => [key, emptySelectorState()])),
+    );
+    for (const [key] of selectors) {
+      void loadSpecOptions(key, '', entitySelectorKind(schema[key]));
+    }
+  }, [pendingIntent, loadSpecOptions]);
+
+  function resetParamValue(paramKey: string): void {
+    setParamValues((prev) => {
+      const next = { ...prev };
+      delete next[paramKey];
+      return next;
+    });
+  }
+
+  function handleSpecSelection(
+    paramKey: string,
+    meta: DiscoveryParamSchema,
+    specId: string,
+  ): void {
+    const state = selectorStates[paramKey] || emptySelectorState();
+    const option = state.specOptions.find(
+      (candidate) => (candidate.spec_id || candidate.id) === specId,
+    );
+    setSelectorStates((prev) => ({
+      ...prev,
+      [paramKey]: {
+        ...(prev[paramKey] || emptySelectorState()),
+        selectedSpecId: specId,
+        selectedSpecLabel: option?.label || '',
+        childType: '',
+        childOptions: [],
+        childStatus: 'idle',
+        childError: null,
+        childQuery: '',
+        selectedChildRef: '',
+      },
+    }));
+
+    if (meta.type === 'entity_selector' && specId) {
+      const entityType = entitySelectorKind(meta);
+      setParamValues((prev) => ({
+        ...prev,
+        [paramKey]:
+          entityType === 'card'
+            ? {
+                card_id: specId,
+                entity_id: specId,
+                id: option?.id || specId,
+              }
+            : {
+                spec_id: specId,
+                entity_id: specId,
+                id: option?.id || specId,
+              },
+      }));
+      return;
+    }
+    resetParamValue(paramKey);
+  }
+
+  function handleChildTypeSelection(paramKey: string, childType: string): void {
+    const state = selectorStates[paramKey] || emptySelectorState();
+    setSelectorStates((prev) => ({
+      ...prev,
+      [paramKey]: {
+        ...(prev[paramKey] || emptySelectorState()),
+        childType,
+        childOptions: [],
+        childStatus: childType ? 'loading' : 'idle',
+        childError: null,
+        childQuery: '',
+        selectedChildRef: '',
+      },
+    }));
+    resetParamValue(paramKey);
+    if (state.selectedSpecId && childType) {
+      void loadChildOptions(paramKey, state.selectedSpecId, childType, '');
+    }
+  }
+
+  function handleChildSelection(paramKey: string, childRef: string): void {
+    const state = selectorStates[paramKey] || emptySelectorState();
+    const option = state.childOptions.find((candidate) => candidate.child_ref === childRef);
+    if (!option?.spec_id || !option.child_type || !option.child_id || !option.child_ref) {
+      resetParamValue(paramKey);
+      setSelectorStates((prev) => ({
+        ...prev,
+        [paramKey]: {
+          ...(prev[paramKey] || emptySelectorState()),
+          selectedChildRef: '',
+        },
+      }));
+      return;
+    }
+    setSelectorStates((prev) => ({
+      ...prev,
+      [paramKey]: {
+        ...(prev[paramKey] || emptySelectorState()),
+        selectedChildRef: childRef,
+      },
+    }));
+    setParamValues((prev) => ({
+      ...prev,
+      [paramKey]: {
+        spec_id: option.spec_id!,
+        child_type: option.child_type!,
+        child_id: option.child_id!,
+        child_ref: option.child_ref!,
+      },
+    }));
+  }
+
   async function runSearch(text: string): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -162,7 +502,7 @@ export function GlobalSearchView({ boardId }: Props) {
 
   async function runIntent(
     intent: DiscoveryIntent,
-    params: Record<string, string>,
+    params: Record<string, IntentParamValue>,
   ): Promise<void> {
     setActiveIntent(intent);
     setIntentError(null);
@@ -171,7 +511,13 @@ export function GlobalSearchView({ boardId }: Props) {
     setResults([]); // Clear any prior semantic-search results.
     setIntentResult(null);
     try {
-      const data = await discoveryApi.executeIntent(intent.id, boardId, params);
+      const cleanedParams: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(params)) {
+        if (isFilledParam(value)) {
+          cleanedParams[key] = value;
+        }
+      }
+      const data = await discoveryApi.executeIntent(intent.id, boardId, cleanedParams);
       setIntentResult(data);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to run intent';
@@ -180,6 +526,7 @@ export function GlobalSearchView({ boardId }: Props) {
       setLoading(false);
       setPendingIntent(null);
       setParamValues({});
+      setSelectorStates({});
       window.requestAnimationFrame(() => {
         resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
@@ -187,9 +534,9 @@ export function GlobalSearchView({ boardId }: Props) {
   }
 
   async function handleIntentClick(intent: DiscoveryIntent): Promise<void> {
-    const schema = intent.params_schema || {};
+    const schema = getParamsSchema(intent);
     const requiredKeys = Object.entries(schema)
-      .filter(([, meta]) => (meta as { required?: boolean }).required)
+      .filter(([, meta]) => meta.required)
       .map(([k]) => k);
     if (requiredKeys.length === 0) {
       await runIntent(intent, {});
@@ -202,6 +549,7 @@ export function GlobalSearchView({ boardId }: Props) {
     );
     setActiveIntent(null);
     setIntentResult(null);
+    setSelectorStates({});
   }
 
   function clearSearch(): void {
@@ -214,6 +562,7 @@ export function GlobalSearchView({ boardId }: Props) {
     setIntentError(null);
     setPendingIntent(null);
     setParamValues({});
+    setSelectorStates({});
   }
 
   // Group intents by category for display
@@ -226,6 +575,12 @@ export function GlobalSearchView({ boardId }: Props) {
     {},
   );
   const orderedCategories = Object.keys(intentsByCategory).sort();
+  const pendingParamsSchema = pendingIntent ? getParamsSchema(pendingIntent) : {};
+  const pendingIntentReady = pendingIntent
+    ? Object.entries(pendingParamsSchema).every(
+        ([key, meta]) => !meta.required || isFilledParam(paramValues[key]),
+      )
+    : false;
 
   return (
     <div className="p-6 flex flex-col h-full overflow-y-auto">
@@ -405,22 +760,202 @@ export function GlobalSearchView({ boardId }: Props) {
             }}
             className="space-y-2"
           >
-            {Object.entries(pendingIntent.params_schema || {}).map(
+            {Object.entries(pendingParamsSchema).map(
               ([key, meta]) => {
-                const m = meta as {
-                  required?: boolean;
-                  label?: string;
-                  type?: string;
-                };
+                const state = selectorStates[key] || emptySelectorState();
+                const label = meta.label || key;
+                const textValue =
+                  typeof paramValues[key] === 'string' ? paramValues[key] : '';
+                const childTypes = childTypesForParam(meta);
+                const entityLabel = entitySelectorLabel(meta);
+                if (meta.type === 'entity_selector' || meta.type === 'spec_child_selector') {
+                  return (
+                    <div
+                      key={key}
+                      className="rounded-md border border-blue-200 dark:border-blue-800 bg-white/70 dark:bg-gray-950/30 p-3"
+                      data-testid={`discovery-selector-${key}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs font-medium text-gray-800 dark:text-gray-100">
+                          {label}
+                          {meta.required && <span className="text-red-500">*</span>}
+                        </label>
+                        <span className="text-[10px] uppercase tracking-wide text-blue-600 dark:text-blue-300">
+                          metadata only
+                        </span>
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          value={state.specQuery}
+                          onChange={(e) =>
+                            void loadSpecOptions(
+                              key,
+                              e.target.value,
+                              entitySelectorKind(meta),
+                            )
+                          }
+                          data-testid={`discovery-selector-${key}-spec-search`}
+                          className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                          placeholder={`Search ${entityLabel}s`}
+                        />
+                        <select
+                          value={state.selectedSpecId}
+                          onChange={(e) => handleSpecSelection(key, meta, e.target.value)}
+                          disabled={state.specStatus === 'loading' || state.specOptions.length === 0}
+                          data-testid={`discovery-selector-${key}-spec`}
+                          className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 disabled:opacity-60"
+                        >
+                          <option value="">Select {entityLabel}</option>
+                          {state.specOptions.map((option) => {
+                            const value = option.spec_id || option.id;
+                            return (
+                              <option key={value} value={value}>
+                                {option.label}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      {state.specStatus === 'loading' && (
+                        <div
+                          className="mt-1 text-[11px] text-blue-700 dark:text-blue-300"
+                          data-testid={`discovery-selector-${key}-spec-loading`}
+                        >
+                          Loading {entityLabel}s…
+                        </div>
+                      )}
+                      {state.specStatus === 'empty' && (
+                        <div
+                          className="mt-1 text-[11px] text-gray-500 dark:text-gray-400"
+                          data-testid={`discovery-selector-${key}-spec-empty`}
+                        >
+                          No matching {entityLabel}s.
+                        </div>
+                      )}
+                      {state.specStatus === 'error' && (
+                        <div
+                          className="mt-1 flex items-center justify-between gap-2 text-[11px] text-red-700 dark:text-red-300"
+                          data-testid={`discovery-selector-${key}-spec-error`}
+                        >
+                          <span>{state.specError || `Failed to load ${entityLabel}s`}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void loadSpecOptions(
+                                key,
+                                state.specQuery,
+                                entitySelectorKind(meta),
+                              )
+                            }
+                            className="rounded border border-red-300 dark:border-red-700 px-2 py-0.5"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      )}
+
+                      {meta.type === 'spec_child_selector' && (
+                        <div className="mt-3 grid grid-cols-1 md:grid-cols-[220px_1fr_1fr] gap-2">
+                          <select
+                            value={state.childType}
+                            onChange={(e) => handleChildTypeSelection(key, e.target.value)}
+                            disabled={!state.selectedSpecId}
+                            data-testid={`discovery-selector-${key}-child-type`}
+                            className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 disabled:opacity-60"
+                          >
+                            <option value="">Entity type</option>
+                            {childTypes.map((childType) => (
+                              <option key={childType} value={childType}>
+                                {specChildTypeLabel(childType)}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            type="text"
+                            value={state.childQuery}
+                            onChange={(e) =>
+                              void loadChildOptions(
+                                key,
+                                state.selectedSpecId,
+                                state.childType,
+                                e.target.value,
+                              )
+                            }
+                            disabled={!state.selectedSpecId || !state.childType}
+                            data-testid={`discovery-selector-${key}-child-search`}
+                            className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 disabled:opacity-60"
+                            placeholder="Search selected type"
+                          />
+                          <select
+                            value={state.selectedChildRef}
+                            onChange={(e) => handleChildSelection(key, e.target.value)}
+                            disabled={state.childStatus === 'loading' || state.childOptions.length === 0}
+                            data-testid={`discovery-selector-${key}-child`}
+                            className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 disabled:opacity-60"
+                          >
+                            <option value="">Select item</option>
+                            {state.childOptions.map((option) => (
+                              <option key={option.child_ref || option.id} value={option.child_ref || ''}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      {meta.type === 'spec_child_selector' && state.childStatus === 'loading' && (
+                        <div
+                          className="mt-1 text-[11px] text-blue-700 dark:text-blue-300"
+                          data-testid={`discovery-selector-${key}-child-loading`}
+                        >
+                          Loading spec children…
+                        </div>
+                      )}
+                      {meta.type === 'spec_child_selector' && state.childStatus === 'empty' && (
+                        <div
+                          className="mt-1 text-[11px] text-gray-500 dark:text-gray-400"
+                          data-testid={`discovery-selector-${key}-child-empty`}
+                        >
+                          No matching spec children.
+                        </div>
+                      )}
+                      {meta.type === 'spec_child_selector' && state.childStatus === 'error' && (
+                        <div
+                          className="mt-1 flex items-center justify-between gap-2 text-[11px] text-red-700 dark:text-red-300"
+                          data-testid={`discovery-selector-${key}-child-error`}
+                        >
+                          <span>{state.childError || 'Failed to load spec children'}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void loadChildOptions(
+                                key,
+                                state.selectedSpecId,
+                                state.childType,
+                                state.childQuery,
+                              )
+                            }
+                            className="rounded border border-red-300 dark:border-red-700 px-2 py-0.5"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
                 return (
                   <div key={key} className="flex items-center gap-2">
                     <label className="text-xs text-gray-700 dark:text-gray-200 w-28 shrink-0">
-                      {m.label || key}
-                      {m.required && <span className="text-red-500">*</span>}
+                      {label}
+                      {meta.required && <span className="text-red-500">*</span>}
                     </label>
                     <input
                       type="text"
-                      value={paramValues[key] ?? ''}
+                      value={textValue}
                       onChange={(e) =>
                         setParamValues((prev) => ({
                           ...prev,
@@ -429,7 +964,7 @@ export function GlobalSearchView({ boardId }: Props) {
                       }
                       data-testid={`discovery-param-${key}`}
                       className="flex-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-                      placeholder={m.label || key}
+                      placeholder={label}
                     />
                   </div>
                 );
@@ -439,7 +974,7 @@ export function GlobalSearchView({ boardId }: Props) {
               <button
                 type="submit"
                 data-testid="discovery-params-run"
-                disabled={loading}
+                disabled={loading || !pendingIntentReady}
                 className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {loading ? 'Running…' : 'Run'}
@@ -449,6 +984,7 @@ export function GlobalSearchView({ boardId }: Props) {
                 onClick={() => {
                   setPendingIntent(null);
                   setParamValues({});
+                  setSelectorStates({});
                 }}
                 className="px-3 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
               >

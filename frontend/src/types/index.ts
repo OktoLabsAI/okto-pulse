@@ -943,8 +943,24 @@ export interface ArchitectureDesignValidationResult {
   valid: boolean;
   issues: string[];
   warnings: string[];
+  structured_warnings?: ArchitectureWarningRecord[];
+  suppressed_warnings?: ArchitectureWarningRecord[];
   suggested_fixes: string[];
   summary: Record<string, unknown>;
+}
+
+export interface ArchitectureWarningRecord {
+  code: string;
+  severity: 'warning';
+  message: string;
+  path: string;
+  suggested_fix: string;
+  diagram_id?: string | null;
+  diagram_type?: string | null;
+  element_id?: string | null;
+  entity_id?: string | null;
+  node_ref?: string | null;
+  justification?: string | null;
 }
 
 export interface CardKnowledgeBase {

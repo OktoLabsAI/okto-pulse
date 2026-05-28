@@ -26,6 +26,8 @@ import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { openLineageGraph } from '@/components/traceability';
 import { CreateRefinementModal } from './CreateRefinementModal';
 import { RefinementModal } from './RefinementModal';
+import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
+import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 
 interface RefinementsPanelProps {
   boardId: string;
@@ -139,6 +141,17 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
     displayGroups.get(key)!.refinements.push(item);
   }
 
+  // KG-03.6 — refinement is a first-line badge target (br_b7535ce1 +
+  // ir_21ec0034). Batch by visible refinement source_refs; one HTTP
+  // request per panel mount/refresh (api_28a22fec batch semantics).
+  const visibleRefinementSourceRefs = search.filtered.map(
+    (item) => `refinement:${item.refinement.id}`,
+  );
+  const { badges: cognitiveBadges } = useCognitivePendingBadges(
+    boardId,
+    visibleRefinementSourceRefs,
+  );
+
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
@@ -244,12 +257,15 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
                           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[refinement.status]}`}>
                             {STATUS_ICON[refinement.status]}
                             {REFINEMENT_STATUS_LABELS[refinement.status]}
                           </span>
                           <span className="text-xs text-gray-400">v{refinement.version}</span>
+                          <CognitivePendingBadge
+                            badge={cognitiveBadges[`refinement:${refinement.id}`]}
+                          />
                         </div>
                         <h3 className="font-medium text-gray-900 dark:text-white text-sm truncate">
                           {refinement.title}
