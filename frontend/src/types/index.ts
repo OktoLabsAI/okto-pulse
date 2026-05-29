@@ -588,6 +588,7 @@ export interface BusinessRule {
   then: string;
   linked_requirements: string[] | null;
   linked_task_ids: string[] | null;
+  status?: 'active' | 'superseded' | 'revoked';
   notes: string | null;
 }
 
@@ -619,6 +620,7 @@ export interface ApiContract {
   linked_requirements: string[] | null;
   linked_rules: string[] | null;
   linked_task_ids: string[] | null;
+  status?: 'active' | 'superseded' | 'revoked';
   notes: string | null;
 }
 
@@ -684,6 +686,70 @@ export interface TechnicalRequirement {
   id: string;
   text: string;
   linked_task_ids: string[] | null;
+  status?: 'active' | 'superseded' | 'revoked';
+  notes?: string | null;
+}
+
+// Structured spec entity editing
+export type SpecStructuredEntityType =
+  | 'functional_requirement'
+  | 'acceptance_criterion'
+  | 'technical_requirement'
+  | 'business_rule'
+  | 'api_contract'
+  | 'integration_requirement'
+  | 'observability_requirement'
+  | 'decision';
+
+export type SpecStructuredEntityOperation =
+  | 'create'
+  | 'update'
+  | 'revoke'
+  | 'supersede'
+  | 'restore'
+  | 'reorder'
+  | 'link_task'
+  | 'unlink_task';
+
+export interface SpecStructuredEntityImpactRef {
+  target_type: string;
+  target_id: string;
+  target_ref: string;
+  severity: string;
+  reason: string;
+  blocking: boolean;
+}
+
+export interface SpecStructuredEntityImpactReport {
+  impacted_refs: SpecStructuredEntityImpactRef[];
+  counts_by_type: Record<string, number>;
+  ack_token?: string | null;
+  expires_at?: string | null;
+}
+
+export interface SpecStructuredEntityMutationRequest {
+  operation?: SpecStructuredEntityOperation;
+  payload?: Record<string, unknown>;
+  expected_spec_version?: number | null;
+  task_id?: string | null;
+  ack_token?: string | null;
+}
+
+export interface SpecStructuredEntityMutationResult {
+  success: boolean;
+  entity_type: SpecStructuredEntityType;
+  operation: SpecStructuredEntityOperation;
+  spec_id: string;
+  entity_id: string | null;
+  child_ref: string | null;
+  spec_version: number | null;
+  changed_fields: string[];
+  error_code: string | null;
+  error_message: string | null;
+  required_permission: string | null;
+  impact_report: SpecStructuredEntityImpactReport | null;
+  ack_token: string | null;
+  expires_at: string | null;
 }
 
 // Test Scenario

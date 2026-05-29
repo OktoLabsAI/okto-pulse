@@ -1104,7 +1104,22 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
               <GitBranch size={16} />
             </button>
             <button
-              onClick={() => { const md = exportIdeation(ideation); downloadMarkdown(md, `ideation_${slugify(ideation.title)}_v${ideation.version}.md`); }}
+              onClick={async () => {
+                try {
+                  // Hydrate architecture design summaries into full designs (entities,
+                  // interfaces, diagram payloads) so the Markdown export renders the
+                  // Mermaid diagram — same pattern as Spec/Card export.
+                  const fullArchitecture = await Promise.all(
+                    (ideation.architecture_designs || []).map((d) =>
+                      api.getArchitectureDesign(d.id, true).catch(() => d)
+                    )
+                  );
+                  const md = exportIdeation({ ...ideation, architecture_designs: fullArchitecture as any });
+                  downloadMarkdown(md, `ideation_${slugify(ideation.title)}_v${ideation.version}.md`);
+                } catch {
+                  toast.error('Failed to prepare markdown export');
+                }
+              }}
               disabled={loading}
               className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
               title="Download Markdown"

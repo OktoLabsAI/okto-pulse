@@ -288,6 +288,7 @@ def _mount_frontend(
     api_port: int = 8100,
     mcp_port: int = 8101,
     public_host: str = "127.0.0.1",
+    explicit_public_host: bool = False,
     public_api_port: int | None = None,
     public_mcp_port: int | None = None,
 ) -> None:
@@ -346,10 +347,15 @@ def _mount_frontend(
     _pub_host = public_host
     _pub_api_port = public_api_port if public_api_port is not None else api_port
     _pub_mcp_port = public_mcp_port if public_mcp_port is not None else mcp_port
+    _api_url = (
+        f"http://{_pub_host}:{_pub_api_port}/api/v1"
+        if explicit_public_host or public_api_port is not None
+        else "/api/v1"
+    )
     config_script = f"""
 // Runtime configuration injected by server
 window.OKTO_PULSE_CONFIG = {{
-    API_URL: 'http://{_pub_host}:{_pub_api_port}/api/v1',
+    API_URL: '{_api_url}',
     MCP_URL: 'http://{_pub_host}:{_pub_mcp_port}'
 }};
 """
@@ -373,7 +379,8 @@ def create_community_app():
     # Public-facing host/ports for the browser SPA config.js.
     # Override when the container is accessed through a different host/port
     # than the internal bind address (NAT, reverse proxy, LAN deployment).
-    public_host = os.environ.get("PUBLIC_HOST", "127.0.0.1")
+    public_host_env = os.environ.get("PUBLIC_HOST")
+    public_host = public_host_env or "127.0.0.1"
     public_api_port_env = os.environ.get("PUBLIC_API_PORT")
     public_mcp_port_env = os.environ.get("PUBLIC_MCP_PORT")
     public_api_port = int(public_api_port_env) if public_api_port_env else None
@@ -530,6 +537,7 @@ def create_community_app():
         app, FRONTEND_DIR,
         api_port=api_port, mcp_port=mcp_port,
         public_host=public_host,
+        explicit_public_host=public_host_env is not None,
         public_api_port=public_api_port,
         public_mcp_port=public_mcp_port,
     )

@@ -14,6 +14,7 @@ import {
   Scale,
   Globe,
   Bug,
+  HelpCircle,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 
@@ -81,6 +82,20 @@ interface SpecAnalytics {
   decisions?: any[];
   decisions_coverage?: number;
   decisions_uncovered_ids?: string[];
+  integration_requirements?: any[];
+  observability_requirements?: any[];
+  coverage_summary?: {
+    ir_task_linkage_pct?: number;
+    irs_total?: number;
+    irs_linked?: number;
+    irs_uncovered_ids?: string[];
+    skip_ir_coverage?: boolean;
+    or_task_linkage_pct?: number;
+    ors_total?: number;
+    ors_linked?: number;
+    ors_uncovered_ids?: string[];
+    skip_or_coverage?: boolean;
+  };
 }
 
 interface IdeationAnalytics {
@@ -203,9 +218,9 @@ function formatHours(h: number | null): string {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function Card({ className = '', children }: { className?: string; children: React.ReactNode }) {
+function Card({ className = '', id, children }: { className?: string; id?: string; children: React.ReactNode }) {
   return (
-    <div className={`bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5 ${className}`}>
+    <div id={id} className={`scroll-mt-20 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5 ${className}`}>
       {children}
     </div>
   );
@@ -219,12 +234,88 @@ function KpiMini({ label, value, icon }: { label: string; value: string | number
   return (
     <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-700/50 rounded-lg px-3 py-2">
       <div className="text-gray-400">{icon}</div>
-      <div>
+      <div className="min-w-0 flex-1">
         <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
         <div className="text-sm font-semibold text-gray-900 dark:text-white">{value}</div>
       </div>
     </div>
   );
+}
+
+function MetricHelp({ label, description, targetId }: { label: string; description: string; targetId: string }) {
+  const openDetail = () => {
+    document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  return (
+    <span className="relative group inline-flex">
+      <button
+        type="button"
+        aria-label={`${label} help`}
+        title={`${description} Open details.`}
+        onClick={openDetail}
+        className="inline-flex h-4 w-4 items-center justify-center rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        <HelpCircle className="h-3.5 w-3.5" />
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute right-0 top-5 z-20 w-56 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] font-normal leading-snug text-gray-600 opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+      >
+        {description}
+        <span className="mt-1 block font-medium text-blue-600 dark:text-blue-400">Open detail</span>
+      </span>
+    </span>
+  );
+}
+
+function KpiMiniWithHelp({
+  label,
+  value,
+  icon,
+  help,
+}: {
+  label: string;
+  value: string | number;
+  icon: React.ReactNode;
+  help: { description: string; targetId: string };
+}) {
+  return (
+    <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-700/50 rounded-lg px-3 py-2">
+      <div className="text-gray-400">{icon}</div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+          <span>{label}</span>
+          <MetricHelp label={label} description={help.description} targetId={help.targetId} />
+        </div>
+        <div className="text-sm font-semibold text-gray-900 dark:text-white">{value}</div>
+      </div>
+    </div>
+  );
+}
+
+function pctFrom(linked: number, total: number): number {
+  return total > 0 ? Math.round((linked / total) * 100) : 0;
+}
+
+function coverageItemId(item: any, index: number, prefix: string): string {
+  if (item && typeof item === 'object') {
+    return String(item.id ?? item.requirement_id ?? item.key ?? `${prefix}-${index}`);
+  }
+  return `${prefix}-${index}`;
+}
+
+function coverageItemTitle(item: any, index: number, prefix: string): string {
+  if (typeof item === 'string') return item;
+  if (item && typeof item === 'object') {
+    return String(item.title ?? item.text ?? item.description ?? item.requirement ?? item.id ?? `${prefix.toUpperCase()} #${index}`);
+  }
+  return `${prefix.toUpperCase()} #${index}`;
+}
+
+function itemHasLinkedTask(item: any): boolean | null {
+  if (!item || typeof item !== 'object' || !Array.isArray(item.linked_task_ids)) return null;
+  return item.linked_task_ids.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +333,19 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
     implCards.length > 0
       ? Math.round(implCards.reduce((s, c) => s + (c.drift ?? 0), 0) / implCards.length)
       : null;
+  const coverageSummary = data.coverage_summary ?? {};
+  const integrationRequirements = data.integration_requirements ?? [];
+  const observabilityRequirements = data.observability_requirements ?? [];
+  const irUncoveredIds = coverageSummary.irs_uncovered_ids ?? [];
+  const orUncoveredIds = coverageSummary.ors_uncovered_ids ?? [];
+  const irTotal = coverageSummary.irs_total ?? integrationRequirements.length;
+  const orTotal = coverageSummary.ors_total ?? observabilityRequirements.length;
+  const irLinked = coverageSummary.irs_linked ?? Math.max(0, irTotal - irUncoveredIds.length);
+  const orLinked = coverageSummary.ors_linked ?? Math.max(0, orTotal - orUncoveredIds.length);
+  const irCoverage = coverageSummary.ir_task_linkage_pct ?? pctFrom(irLinked, irTotal);
+  const orCoverage = coverageSummary.or_task_linkage_pct ?? pctFrom(orLinked, orTotal);
+  const hasIrDetails = irTotal > 0 || integrationRequirements.length > 0 || coverageSummary.skip_ir_coverage !== undefined;
+  const hasOrDetails = orTotal > 0 || observabilityRequirements.length > 0 || coverageSummary.skip_or_coverage !== undefined;
 
   // Scenario status counts
   const scenarioCounts: Record<string, number> = {};
@@ -287,7 +391,7 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
             </div>
           )}
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-10 gap-3">
           <KpiMini label="Tasks" value={data.cards.length} icon={<FileText className="w-4 h-4" />} />
           <KpiMini
             label="Completeness"
@@ -316,10 +420,14 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
           />
           {/* Spec 233eaad3: TRs e Decisions KPIs com badge vermelho condicional */}
           <div className="relative">
-            <KpiMini
+            <KpiMiniWithHelp
               label="TRs"
               value={`${(data.technical_requirements || []).length} (${data.trs_coverage ?? 0}%)`}
               icon={<Target className="w-4 h-4 text-purple-500" />}
+              help={{
+                description: 'Technical Requirements coverage counts active linked tasks and excludes cancelled work.',
+                targetId: 'analytics-tr-detail',
+              }}
             />
             {(data.trs_uncovered_indices?.length ?? 0) > 0 && (
               <span
@@ -330,11 +438,57 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
               </span>
             )}
           </div>
+          {hasIrDetails && (
+            <div className="relative">
+              <KpiMiniWithHelp
+                label="IRs"
+                value={coverageSummary.skip_ir_coverage ? `${irTotal} (skip)` : `${irTotal} (${irCoverage}%)`}
+                icon={<GitBranch className="w-4 h-4 text-sky-500" />}
+                help={{
+                  description: 'Integration Requirement coverage shows which integration contracts are linked to active tasks.',
+                  targetId: 'analytics-ir-detail',
+                }}
+              />
+              {!coverageSummary.skip_ir_coverage && irUncoveredIds.length > 0 && (
+                <span
+                  className="absolute top-1 right-1 px-1 py-0.5 rounded text-[8px] font-bold bg-red-500 text-white"
+                  title={`${irUncoveredIds.length} uncovered`}
+                >
+                  !
+                </span>
+              )}
+            </div>
+          )}
+          {hasOrDetails && (
+            <div className="relative">
+              <KpiMiniWithHelp
+                label="ORs"
+                value={coverageSummary.skip_or_coverage ? `${orTotal} (skip)` : `${orTotal} (${orCoverage}%)`}
+                icon={<AlertTriangle className="w-4 h-4 text-teal-500" />}
+                help={{
+                  description: 'Observability Requirement coverage shows which telemetry and operations requirements are linked to active tasks.',
+                  targetId: 'analytics-or-detail',
+                }}
+              />
+              {!coverageSummary.skip_or_coverage && orUncoveredIds.length > 0 && (
+                <span
+                  className="absolute top-1 right-1 px-1 py-0.5 rounded text-[8px] font-bold bg-red-500 text-white"
+                  title={`${orUncoveredIds.length} uncovered`}
+                >
+                  !
+                </span>
+              )}
+            </div>
+          )}
           <div className="relative">
-            <KpiMini
+            <KpiMiniWithHelp
               label="Decisions"
               value={`${(data.decisions || []).length} (${data.decisions_coverage ?? 0}%)`}
               icon={<Scale className="w-4 h-4 text-indigo-500" />}
+              help={{
+                description: 'Decision coverage shows active decisions linked to implementation or test tasks.',
+                targetId: 'analytics-decisions-detail',
+              }}
             />
             {(data.decisions_uncovered_ids?.length ?? 0) > 0 && (
               <span
@@ -358,7 +512,7 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
       {/* AC Coverage + Scenario Status */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* AC Coverage */}
-        <Card>
+        <Card id="analytics-ac-detail">
           <SectionTitle>AC Coverage ({data.covered_ac}/{data.total_ac})</SectionTitle>
           {data.total_ac === 0 ? (
             <p className="text-xs text-gray-400">No acceptance criteria defined.</p>
@@ -424,13 +578,96 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
         </Card>
       </div>
 
+      {/* IR + OR Coverage panels */}
+      {(hasIrDetails || hasOrDetails) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {hasIrDetails && (
+            <Card id="analytics-ir-detail">
+              <SectionTitle>
+                IR Coverage ({coverageSummary.skip_ir_coverage ? 'skipped' : `${irLinked}/${irTotal}`})
+              </SectionTitle>
+              {coverageSummary.skip_ir_coverage ? (
+                <p className="text-xs text-gray-400">Integration Requirement coverage is skipped for this spec.</p>
+              ) : integrationRequirements.length === 0 ? (
+                <p className="text-xs text-gray-400">No integration requirements defined.</p>
+              ) : (
+                <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                  {integrationRequirements.map((ir: any, idx: number) => {
+                    const id = coverageItemId(ir, idx, 'ir');
+                    const linked = itemHasLinkedTask(ir);
+                    const covered = linked ?? !irUncoveredIds.includes(id);
+                    const title = coverageItemTitle(ir, idx, 'ir');
+                    return (
+                      <div key={id} className="flex items-start gap-2 text-xs">
+                        {covered ? (
+                          <CheckCircle className="w-3.5 h-3.5 text-sky-500 shrink-0 mt-0.5" />
+                        ) : (
+                          <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0 mt-0.5" />
+                        )}
+                        <span className={`${covered ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'} line-clamp-2 flex-1`}>
+                          {title}
+                        </span>
+                        {!covered && (
+                          <span className="px-1 py-0.5 rounded text-[9px] bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300">
+                            orphan
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Card>
+          )}
+
+          {hasOrDetails && (
+            <Card id="analytics-or-detail">
+              <SectionTitle>
+                OR Coverage ({coverageSummary.skip_or_coverage ? 'skipped' : `${orLinked}/${orTotal}`})
+              </SectionTitle>
+              {coverageSummary.skip_or_coverage ? (
+                <p className="text-xs text-gray-400">Observability Requirement coverage is skipped for this spec.</p>
+              ) : observabilityRequirements.length === 0 ? (
+                <p className="text-xs text-gray-400">No observability requirements defined.</p>
+              ) : (
+                <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                  {observabilityRequirements.map((orReq: any, idx: number) => {
+                    const id = coverageItemId(orReq, idx, 'or');
+                    const linked = itemHasLinkedTask(orReq);
+                    const covered = linked ?? !orUncoveredIds.includes(id);
+                    const title = coverageItemTitle(orReq, idx, 'or');
+                    return (
+                      <div key={id} className="flex items-start gap-2 text-xs">
+                        {covered ? (
+                          <CheckCircle className="w-3.5 h-3.5 text-teal-500 shrink-0 mt-0.5" />
+                        ) : (
+                          <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0 mt-0.5" />
+                        )}
+                        <span className={`${covered ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'} line-clamp-2 flex-1`}>
+                          {title}
+                        </span>
+                        {!covered && (
+                          <span className="px-1 py-0.5 rounded text-[9px] bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300">
+                            orphan
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
+
       {/* TR + Decisions Coverage panels (spec 233eaad3) */}
       {((data.technical_requirements || []).length > 0 ||
         (data.decisions || []).length > 0) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* TR Coverage */}
           {(data.technical_requirements || []).length > 0 && (
-            <Card>
+            <Card id="analytics-tr-detail">
               <SectionTitle>
                 TR Coverage ({((data.technical_requirements || []).length - (data.trs_uncovered_indices?.length ?? 0))}/{(data.technical_requirements || []).length})
               </SectionTitle>
@@ -462,7 +699,7 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
 
           {/* Decisions Coverage */}
           {(data.decisions || []).length > 0 && (
-            <Card>
+            <Card id="analytics-decisions-detail">
               <SectionTitle>
                 Decisions Coverage ({((data.decisions || []).length - (data.decisions_uncovered_ids?.length ?? 0))}/{(data.decisions || []).length})
               </SectionTitle>

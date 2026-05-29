@@ -956,7 +956,14 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
                       api.getRefinementKnowledge(refinement.id, kb.id).catch(() => kb)
                     )
                   );
-                  const md = exportRefinement({ ...refinement, knowledge_bases: fullKnowledge as any });
+                  // Hydrate architecture design summaries into full designs so the
+                  // Markdown export renders the Mermaid diagram — same pattern as Spec/Card.
+                  const fullArchitecture = await Promise.all(
+                    (refinement.architecture_designs || []).map((d) =>
+                      api.getArchitectureDesign(d.id, true).catch(() => d)
+                    )
+                  );
+                  const md = exportRefinement({ ...refinement, knowledge_bases: fullKnowledge as any, architecture_designs: fullArchitecture as any });
                   downloadMarkdown(md, `refinement_${slugify(refinement.title)}_v${refinement.version}.md`);
                 } catch {
                   toast.error('Failed to prepare markdown export');

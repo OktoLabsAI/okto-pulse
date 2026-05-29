@@ -464,7 +464,9 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
             const specTs = parentSpec?.test_scenarios || [];
             const specBrs = parentSpec?.business_rules || [];
             const specTrs = parentSpec?.technical_requirements || [];
-            const specAcs: string[] = parentSpec?.acceptance_criteria || [];
+            const specAcs: string[] = ((parentSpec?.acceptance_criteria || []) as unknown[])
+              .map((ac) => typeof ac === 'string' ? ac : String((ac as Record<string, unknown>).text || (ac as Record<string, unknown>).title || ''))
+              .filter(Boolean);
             const specContracts = parentSpec?.api_contracts || [];
             const specIrs = parentSpec?.integration_requirements || [];
             const specOrs = parentSpec?.observability_requirements || [];

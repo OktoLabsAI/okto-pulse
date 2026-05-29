@@ -5,7 +5,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { exportCard, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
+import { exportCard, downloadMarkdown, markdownFilenameForCard } from '@/lib/exportMarkdown';
 import { useDashboardApi } from '@/services/api';
 import {
   useDashboardStore,
@@ -516,13 +516,33 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               <GitBranch size={16} />
             </button>
             <button
-              onClick={() => {
+              onClick={async () => {
                 if (!card) return;
-                const specForExport = fullSpec && specKBsFull.length
-                  ? { ...fullSpec, knowledge_bases: specKBsFull as any }
-                  : fullSpec;
-                const md = exportCard(card, specForExport as any);
-                downloadMarkdown(md, `${card.card_type === 'bug' ? 'bug' : 'task'}_${slugify(card.title)}.md`);
+                try {
+                  const hydrateArchitecture = (designs: any[] | null | undefined) =>
+                    Promise.all(
+                      (designs || []).map((d) =>
+                        api.getArchitectureDesign(d.id, true).catch(() => d)
+                      )
+                    );
+                  // Architecture designs arrive as summaries (no entities/diagrams);
+                  // hydrate full designs for both card-owned and inherited spec context
+                  // so the Markdown export can render the Mermaid diagram.
+                  const cardArchitecture = await hydrateArchitecture(card.architecture_designs);
+                  const baseSpec = fullSpec && specKBsFull.length
+                    ? { ...fullSpec, knowledge_bases: specKBsFull as any }
+                    : fullSpec;
+                  const specForExport = baseSpec
+                    ? { ...baseSpec, architecture_designs: (await hydrateArchitecture(baseSpec.architecture_designs)) as any }
+                    : baseSpec;
+                  const md = exportCard(
+                    { ...card, architecture_designs: cardArchitecture as any },
+                    specForExport as any,
+                  );
+                  downloadMarkdown(md, markdownFilenameForCard(card));
+                } catch {
+                  toast.error('Failed to prepare markdown export');
+                }
               }}
               disabled={!card}
               className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"

@@ -13,6 +13,10 @@ interface ContractsTabProps {
   specCards?: CardSummaryForSpec[];
   onLinkTask?: (contractId: string, cardId: string) => Promise<void>;
   onUnlinkTask?: (contractId: string, cardId: string) => Promise<void>;
+  canCreate?: boolean;
+  canEdit?: boolean;
+  canDelete?: boolean;
+  canLinkTask?: boolean;
 }
 
 const METHOD_COLORS: Record<string, string> = {
@@ -79,7 +83,18 @@ function LinkTaskPicker({ contractId, linkedIds, cards, onLink }: {
   );
 }
 
-export function ContractsTab({ spec, onUpdate, onSpecUpdate, specCards, onLinkTask, onUnlinkTask }: ContractsTabProps) {
+export function ContractsTab({
+  spec,
+  onUpdate,
+  onSpecUpdate,
+  specCards,
+  onLinkTask,
+  onUnlinkTask,
+  canCreate = true,
+  canEdit = true,
+  canDelete = true,
+  canLinkTask = true,
+}: ContractsTabProps) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -95,8 +110,10 @@ export function ContractsTab({ spec, onUpdate, onSpecUpdate, specCards, onLinkTa
   const [formLinkedBRs, setFormLinkedBRs] = useState<string[]>([]);
   const [formNotes, setFormNotes] = useState('');
 
-  const contracts = spec.api_contracts || [];
-  const frs = spec.functional_requirements || [];
+  const contracts = (spec.api_contracts || []).filter((contract) => (contract.status || 'active') === 'active');
+  const frs = (spec.functional_requirements || []).map((fr: any) =>
+    typeof fr === 'string' ? fr : String(fr?.text || fr?.title || '')
+  );
   const brs = spec.business_rules || [];
 
   // Coverage: contracts with at least one linked task
@@ -422,13 +439,17 @@ export function ContractsTab({ spec, onUpdate, onSpecUpdate, specCards, onLinkTa
               )}
               <button
                 onClick={(e) => { e.stopPropagation(); handleEdit(contract); }}
-                className="p-0.5 text-gray-400 hover:text-blue-500"
+                disabled={!canEdit}
+                className={`p-0.5 ${canEdit ? 'text-gray-400 hover:text-blue-500' : 'text-gray-300 cursor-not-allowed'}`}
+                title={canEdit ? 'Edit' : 'Requires spec.structured_entity.api_contract.update'}
               >
                 <Pencil size={12} />
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); handleRemove(contract.id); }}
-                className="p-0.5 text-gray-400 hover:text-red-500"
+                disabled={!canDelete}
+                className={`p-0.5 ${canDelete ? 'text-gray-400 hover:text-red-500' : 'text-gray-300 cursor-not-allowed'}`}
+                title={canDelete ? 'Remove' : 'Requires spec.structured_entity.api_contract.revoke'}
               >
                 <Trash2 size={12} />
               </button>
@@ -526,7 +547,7 @@ export function ContractsTab({ spec, onUpdate, onSpecUpdate, specCards, onLinkTa
                                   {card.status.replace('_', ' ')}
                                 </span>
                               )}
-                              {onUnlinkTask && (
+                              {canLinkTask && onUnlinkTask && (
                                 <button
                                   onClick={async () => { await onUnlinkTask(contract.id, taskId); }}
                                   className="p-0.5 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -543,7 +564,7 @@ export function ContractsTab({ spec, onUpdate, onSpecUpdate, specCards, onLinkTa
                   ) : (
                     <p className="text-[10px] text-gray-400 italic">No tasks linked</p>
                   )}
-                  {onLinkTask && specCards && specCards.length > 0 && (
+                  {canLinkTask && onLinkTask && specCards && specCards.length > 0 && (
                     <LinkTaskPicker
                       contractId={contract.id}
                       linkedIds={contract.linked_task_ids || []}
@@ -563,7 +584,12 @@ export function ContractsTab({ spec, onUpdate, onSpecUpdate, specCards, onLinkTa
         renderForm(handleAdd, 'Add Contract', () => { setAdding(false); resetForm(); })
       ) : (
         !editingId && (
-          <button onClick={() => setAdding(true)} className="flex items-center gap-1 text-sm text-cyan-600 dark:text-cyan-400 hover:text-cyan-800 dark:hover:text-cyan-300">
+          <button
+            onClick={() => setAdding(true)}
+            disabled={!canCreate}
+            title={canCreate ? 'Add API Contract' : 'Requires spec.structured_entity.api_contract.create'}
+            className={`flex items-center gap-1 text-sm ${canCreate ? 'text-cyan-600 dark:text-cyan-400 hover:text-cyan-800 dark:hover:text-cyan-300' : 'text-gray-300 cursor-not-allowed'}`}
+          >
             <Plus size={14} /> Add API Contract
           </button>
         )
