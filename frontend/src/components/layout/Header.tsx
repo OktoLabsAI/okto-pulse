@@ -207,6 +207,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_ir_coverage_global: currentBoard.settings.skip_ir_coverage_global ?? false,
         skip_or_coverage_global: currentBoard.settings.skip_or_coverage_global ?? false,
         skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false,
+        skip_cognitive_consolidation: currentBoard.settings.skip_cognitive_consolidation ?? false,
         skip_test_evidence_global: currentBoard.settings.skip_test_evidence_global ?? false,
         require_task_validation: currentBoard.settings.require_task_validation ?? true,
         min_confidence: currentBoard.settings.min_confidence ?? 70,
@@ -229,6 +230,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_ir_coverage_global: false,
         skip_or_coverage_global: false,
         skip_decisions_coverage_global: false,
+        skip_cognitive_consolidation: false,
         skip_test_evidence_global: false,
         require_task_validation: true,
         min_confidence: 70,
@@ -642,6 +644,15 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                               onChange={() => updateSettings({ skip_decisions_coverage_global: !settings.skip_decisions_coverage_global })}
                               ariaLabel="Skip decisions coverage"
                               activeColor="amber"
+                            />
+                          </SettingRow>
+                          <SettingRow label="Skip cognitive closeout" description="Allow done transitions even when cognitive consolidation is pending. Badges and KG Health pending lists remain visible.">
+                            <SettingsToggle
+                              checked={settings.skip_cognitive_consolidation ?? false}
+                              onChange={() => updateSettings({ skip_cognitive_consolidation: !(settings.skip_cognitive_consolidation ?? false) })}
+                              ariaLabel="Skip cognitive closeout"
+                              activeColor="amber"
+                              testId="toggle-skip-cognitive-closeout"
                             />
                           </SettingRow>
                           <SettingRow label="Skip evidence requirement" description="Bypass evidence required to mark scenarios passed, automated or failed.">

@@ -128,6 +128,18 @@ function architectureParentPath(parentType: ArchitectureParentType, parentId: st
   return `/${segment[parentType]}/${parentId}/architecture`;
 }
 
+export interface ActivityLogEntry {
+  id: string;
+  action: string;
+  actor_type: string;
+  actor_id: string;
+  actor_name: string;
+  created_at: string;
+  summary: string;
+  trigger?: string | null;
+  details?: Record<string, unknown> | null;
+}
+
 export function useDashboardApi() {
   const apiClient = useApiClient();
 
@@ -279,8 +291,8 @@ export function useDashboardApi() {
       await apiClient.fetch(`/cards/${cardId}`, { method: 'DELETE' });
     },
 
-    async getCardActivity(cardId: string): Promise<{ id: string; action: string; actor_type: string; actor_id: string; actor_name: string; details: Record<string, unknown> | null; created_at: string }[]> {
-      return apiClient.fetchJson(`/cards/${cardId}/activity`);
+    async getCardActivity(cardId: string): Promise<ActivityLogEntry[]> {
+      return apiClient.fetchJson<ActivityLogEntry[]>(`/cards/${cardId}/activity`);
     },
 
     async getCardDependencies(cardId: string): Promise<{ id: string; title: string; status: string }[]> {

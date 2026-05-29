@@ -6,7 +6,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportCard, downloadMarkdown, markdownFilenameForCard } from '@/lib/exportMarkdown';
-import { useDashboardApi } from '@/services/api';
+import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
 import {
   useDashboardStore,
   useSelectedCard,
@@ -17,6 +17,7 @@ import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenari
 import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { ActivityLogList } from '@/components/shared/ActivityLogList';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
 import { EditableField } from '@/components/shared/EditableField';
@@ -2263,7 +2264,7 @@ function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: 
 
 // Activity Tab Component
 function ActivityTab({ cardId, api }: { cardId: string; api: ReturnType<typeof useDashboardApi> }) {
-  const [logs, setLogs] = useState<{ id: string; action: string; actor_type: string; actor_name: string; details: Record<string, unknown> | null; created_at: string }[]>([]);
+  const [logs, setLogs] = useState<ActivityLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -2274,80 +2275,9 @@ function ActivityTab({ cardId, api }: { cardId: string; api: ReturnType<typeof u
       .finally(() => setLoading(false));
   }, [cardId]);
 
-  const actionLabels: Record<string, string> = {
-    card_created: 'Created the card',
-    card_updated: 'Updated the card',
-    card_moved: 'Moved the card',
-    card_deleted: 'Deleted the card',
-    comment_added: 'Added a comment',
-    comment_updated: 'Edited a comment',
-    comment_deleted: 'Removed a comment',
-    question_added: 'Added a question',
-    question_answered: 'Answered a question',
-    question_deleted: 'Removed a question',
-    attachment_uploaded: 'Uploaded an attachment',
-    attachment_deleted: 'Removed an attachment',
-    items_seen: 'Marked items as seen',
-  };
-
   if (loading) return <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>;
 
-  return (
-    <div className="space-y-2">
-      {logs.length === 0 ? (
-        <p className="text-gray-400 dark:text-gray-500 text-sm text-center py-4">No activity recorded</p>
-      ) : (
-        logs.map((log) => (
-          <div key={log.id} className="flex gap-3 py-2 border-b border-gray-100 dark:border-gray-700 last:border-0">
-            <Clock size={14} className="mt-0.5 text-gray-400 dark:text-gray-500 shrink-0" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm text-gray-700 dark:text-gray-300">
-                <span className="font-medium">{log.actor_name}</span>
-                {' '}
-                <span className="text-gray-500 dark:text-gray-400">
-                  {actionLabels[log.action] || log.action}
-                </span>
-                {log.details && log.action === 'card_moved' && (
-                  <span className="text-xs text-gray-400 dark:text-gray-500 ml-1">
-                    ({(log.details as any).from_status || (log.details as any).status} → {(log.details as any).to_status || (log.details as any).status})
-                  </span>
-                )}
-                {log.details && (log.action === 'comment_added' || log.action === 'comment_updated') && (log.details as any).content && (
-                  <span className="block text-xs text-gray-400 dark:text-gray-500 mt-0.5 truncate max-w-md">
-                    "{(log.details as any).content}"
-                  </span>
-                )}
-                {log.details && log.action === 'question_added' && (log.details as any).question && (
-                  <span className="block text-xs text-gray-400 dark:text-gray-500 mt-0.5 truncate max-w-md">
-                    "{(log.details as any).question}"
-                  </span>
-                )}
-                {log.details && log.action === 'question_answered' && (log.details as any).answer && (
-                  <span className="block text-xs text-gray-400 dark:text-gray-500 mt-0.5 truncate max-w-md">
-                    "{(log.details as any).answer}"
-                  </span>
-                )}
-              </p>
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
-                {new Date(log.created_at).toLocaleDateString('en-US', {
-                  day: '2-digit',
-                  month: 'short',
-                  year: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-                {log.actor_type === 'agent' && (
-                  <span className="ml-1 px-1 py-0.5 rounded bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-300 text-[10px]">
-                    agent
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
-        ))
-      )}
-    </div>
-  );
+  return <ActivityLogList entries={logs} />;
 }
 
 // Markdown renderer with prose styling

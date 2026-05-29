@@ -11,6 +11,7 @@ const apiMock = vi.hoisted(() => ({
   getCardSeenStatus: vi.fn(),
   getCardDependencies: vi.fn(),
   getCardDependents: vi.fn(),
+  getCardActivity: vi.fn(),
   getArchitectureDesign: vi.fn(),
   updateCard: vi.fn(),
   moveCard: vi.fn(),
@@ -203,6 +204,7 @@ describe('CardModal', () => {
     apiMock.getCardSeenStatus.mockResolvedValue({ items: {} });
     apiMock.getCardDependencies.mockResolvedValue([]);
     apiMock.getCardDependents.mockResolvedValue([]);
+    apiMock.getCardActivity.mockResolvedValue([]);
     apiMock.getArchitectureDesign.mockImplementation((id: string) =>
       Promise.resolve({ id, entities: [], interfaces: [], diagrams: [] }),
     );
@@ -357,5 +359,42 @@ describe('CardModal', () => {
     expect(specArg.architecture_designs[0]).toMatchObject({ id: 'arch-spec', entities: [{ id: 'arch-spec-e', name: 'E' }] });
     expect(apiMock.updateCard).not.toHaveBeenCalled();
     expect(apiMock.moveCard).not.toHaveBeenCalled();
+  });
+
+  it('uses the shared activity renderer in the activity tab', async () => {
+    apiMock.getCardActivity.mockResolvedValue([
+      {
+        id: 'act-1',
+        action: 'structured_entity_updated',
+        actor_type: 'agent',
+        actor_id: 'agent-1',
+        actor_name: 'Validator Agent',
+        created_at: '2026-05-29T10:15:00Z',
+        summary: 'structured_entity updated type=functional_requirement field=description',
+        trigger: 'structured_entity_updated',
+        details: {
+          after: { text: 'new value' },
+          token: '[redacted]',
+        },
+      },
+    ]);
+
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
+
+    expect(await screen.findByTestId('activity-log-list')).toBeInTheDocument();
+    expect(
+      screen.getByText('structured_entity updated type=functional_requirement field=description'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Validator Agent')).toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toContain('[object Object]');
+    expect(document.body.textContent ?? '').not.toContain('[object: object]');
+  });
+
+  it('preserves the no-activity empty state through the shared renderer', async () => {
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
+
+    expect(await screen.findByText('No activity recorded')).toBeInTheDocument();
   });
 });

@@ -50,6 +50,7 @@ const baseSettings: BoardSettings = {
   skip_ir_coverage_global: false,
   skip_or_coverage_global: false,
   skip_decisions_coverage_global: false,
+  skip_cognitive_consolidation: false,
   require_task_validation: true,
   min_confidence: 70,
   min_completeness: 80,
@@ -147,6 +148,24 @@ describe('Header Board settings resource automation', () => {
         settings: expect.objectContaining({
           auto_derive_spec_resources_enabled: true,
           auto_derive_spec_resource_types: ['knowledge_base', 'architecture'],
+        }),
+      }),
+    );
+  });
+
+  it('persists the board-level cognitive closeout skip without changing other settings', async () => {
+    renderOpenHeader();
+
+    fireEvent.click(screen.getByTestId('toggle-skip-cognitive-closeout'));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          skip_cognitive_consolidation: true,
+          skip_test_evidence_global: false,
+          skip_decisions_coverage_global: false,
         }),
       }),
     );

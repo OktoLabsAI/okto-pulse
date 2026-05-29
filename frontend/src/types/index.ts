@@ -1372,6 +1372,7 @@ export interface BoardSettings {
   skip_ir_coverage_global: boolean;
   skip_or_coverage_global: boolean;
   skip_decisions_coverage_global: boolean;
+  skip_cognitive_consolidation?: boolean;
   require_task_validation: boolean;
   min_confidence: number;
   min_completeness: number;
