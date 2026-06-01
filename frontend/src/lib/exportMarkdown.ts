@@ -397,6 +397,21 @@ function bulletList(items: unknown[]): string {
   return items.map(item => `- ${formatListValue(item)}`).join('\n');
 }
 
+/**
+ * Drop entries explicitly marked `status: 'revoked'` so the export matches the
+ * SpecModal display (which shows active entries only). Legacy string items and
+ * entries with no/active status are kept.
+ */
+function excludeRevoked<T>(items: T[] | null | undefined): T[] {
+  return (items || []).filter(
+    (item) => !(
+      item != null
+      && typeof item === 'object'
+      && (item as Record<string, unknown>).status === 'revoked'
+    ),
+  );
+}
+
 /** Render metadata table at the top of the document. */
 function metaTable(rows: [string, string][]): string {
   const filtered = rows.filter(([, v]) => !!v);
@@ -1364,9 +1379,9 @@ function renderResolvedReferences(refs: any | null | undefined): string {
   md += renderResolvedList('Knowledge Bases', refs.knowledge_bases || [], (item) => item.title || item.id);
   md += renderResolvedList('Mockups', refs.screen_mockups || [], (item) => item.title || item.id);
   md += renderResolvedList('Architecture Designs', refs.architecture_designs || [], (item) => item.title || item.id);
-  md += renderResolvedList('Functional Requirements', refs.functional_requirements || [], (item) => item.text || item.value || item.id);
-  md += renderResolvedList('Technical Requirements', refs.technical_requirements || [], (item) => item.text || item.value || item.id);
-  md += renderResolvedList('Acceptance Criteria', refs.acceptance_criteria || [], (item) => item.text || item.value || item.id);
+  md += renderResolvedList('Functional Requirements', refs.functional_requirements || [], (item) => criterionText(item));
+  md += renderResolvedList('Technical Requirements', refs.technical_requirements || [], (item) => criterionText(item));
+  md += renderResolvedList('Acceptance Criteria', refs.acceptance_criteria || [], (item) => criterionText(item));
   md += renderResolvedList('Business Rules', refs.business_rules || [], (item) => item.title || item.rule || item.id);
   md += renderResolvedList('API Contracts', refs.api_contracts || [], (item) => `${item.method || ''} ${item.path || item.title || item.id}`.trim());
   md += renderResolvedList('Integration Requirements', refs.integration_requirements || [], (item) => item.title || item.id);
@@ -1651,11 +1666,11 @@ export function exportSpec(spec: Spec): string {
   let body = '';
 
   if (spec.functional_requirements?.length) {
-    body += `## Functional Requirements\n\n${numberedList(spec.functional_requirements)}\n\n`;
+    body += `## Functional Requirements\n\n${numberedList(excludeRevoked(spec.functional_requirements))}\n\n`;
   }
   body += renderTechnicalRequirements(spec.technical_requirements);
   if (spec.acceptance_criteria?.length) {
-    body += `## Acceptance Criteria\n\n${numberedList(spec.acceptance_criteria)}\n\n`;
+    body += `## Acceptance Criteria\n\n${numberedList(excludeRevoked(spec.acceptance_criteria))}\n\n`;
   }
 
   body += renderResolvedReferences((spec as any).resolved_references);
@@ -1789,11 +1804,11 @@ export function exportCard(card: Card, spec?: Spec | null): string {
     }
 
     if (spec.functional_requirements?.length) {
-      body += `## Functional Requirements\n\n${numberedList(spec.functional_requirements)}\n\n`;
+      body += `## Functional Requirements\n\n${numberedList(excludeRevoked(spec.functional_requirements))}\n\n`;
     }
     body += renderTechnicalRequirements(spec.technical_requirements);
     if (spec.acceptance_criteria?.length) {
-      body += `## Acceptance Criteria\n\n${numberedList(spec.acceptance_criteria)}\n\n`;
+      body += `## Acceptance Criteria\n\n${numberedList(excludeRevoked(spec.acceptance_criteria))}\n\n`;
     }
 
     const linkedBusinessRules = (spec.business_rules || []).filter((item: any) => item.linked_task_ids?.includes(card.id));

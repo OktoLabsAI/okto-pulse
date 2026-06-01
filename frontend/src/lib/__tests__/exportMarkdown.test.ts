@@ -1449,3 +1449,48 @@ describe('exportMarkdown existing entity export regressions', () => {
     expect(sprintMarkdown).toContain('## Scoped Business Rules');
   });
 });
+
+describe('exportMarkdown structured-entity + revoked handling', () => {
+  it('excludes revoked FR/AC from the spec export and renders structured .text', () => {
+    const md = exportSpec({
+      title: 'Revoked handling spec',
+      status: 'review',
+      version: 1,
+      labels: [],
+      functional_requirements: [
+        { id: 'fr_a', text: 'Active FR stays', status: 'active' },
+        { id: 'fr_b', text: 'Revoked FR is hidden', status: 'revoked' },
+      ],
+      acceptance_criteria: [
+        { id: 'ac_a', text: 'Active AC stays', status: 'active' },
+        { id: 'ac_b', text: 'Revoked AC is hidden', status: 'revoked' },
+      ],
+    } as any);
+    // structured dicts render their .text (never [object Object])
+    expect(md).toContain('Active FR stays');
+    expect(md).toContain('Active AC stays');
+    expect(md).not.toContain('[object Object]');
+    // revoked entries are filtered out — consistent with the SpecModal display
+    expect(md).not.toContain('Revoked FR is hidden');
+    expect(md).not.toContain('Revoked AC is hidden');
+  });
+
+  it('renders resolved-reference FR/AC text without "undefined" for legacy strings', () => {
+    const md = exportSpec({
+      title: 'Resolved refs spec',
+      status: 'review',
+      version: 1,
+      labels: [],
+      functional_requirements: ['FR active'],
+      acceptance_criteria: ['AC active'],
+      resolved_references: {
+        functional_requirements: ['Legacy string FR'],
+        acceptance_criteria: [{ id: 'ac_x', text: 'Resolved AC text' }],
+      },
+    } as any);
+    expect(md).toContain('## Resolved References');
+    expect(md).toContain('Legacy string FR'); // string-safe (was "undefined")
+    expect(md).toContain('Resolved AC text');
+    expect(md).not.toContain('- undefined');
+  });
+});
