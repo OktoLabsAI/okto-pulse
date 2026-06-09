@@ -2,7 +2,7 @@
  * KnowledgeGraphPage — container component orchestrating the KG visualization.
  *
  * Spec 8 / Sprint 4 + Sprint 5 wiring:
- *   - Holds `nodeLimit` (50/100/200/500) + `nextCursor` for paginated fetch.
+ *   - Holds `nodeLimit` (50/100/200/500/1000) + `nextCursor` for paginated fetch.
  *   - Changing `nodeLimit` resets the list and refetches from scratch.
  *   - Clicking the Load More button fetches the next page and APPENDS results.
  *   - The button is only visible while `nextCursor !== null`.

@@ -187,7 +187,22 @@ describe('analytics IR/OR coverage UI', () => {
       status: 'review',
       total_ac: 1,
       covered_ac: 1,
-      ac_details: [{ index: 0, text: 'AC text', covered: true }],
+      ac_details: [
+        {
+          index: 0,
+          text: { id: 'ac-structured', text: 'Structured AC text', status: 'active' },
+          covered: true,
+        },
+      ],
+      total_fr: 1,
+      fr_details: [
+        {
+          index: 0,
+          text: { id: 'fr-structured', text: 'Structured FR text', status: 'active' },
+          has_rule: true,
+          has_contract: false,
+        },
+      ],
       scenario_statuses: [{ id: 'ts-1', title: 'Scenario', status: 'ready' }],
       cards: [],
       avg_cycle_hours: null,
@@ -196,7 +211,14 @@ describe('analytics IR/OR coverage UI', () => {
       api_contracts: [],
       rules_coverage: 0,
       contracts_coverage: 0,
-      technical_requirements: [],
+      technical_requirements: [
+        {
+          id: 'tr-structured',
+          text: { id: 'tr-inner', text: 'Structured TR text', status: 'active' },
+          linked_task_ids: ['task-1'],
+        },
+      ],
+      trs_coverage: 100,
       decisions: [],
       integration_requirements: [
         { id: 'ir-covered', title: 'Covered integration', linked_task_ids: ['task-1'] },
@@ -221,6 +243,9 @@ describe('analytics IR/OR coverage UI', () => {
 
     await waitFor(() => expect(screen.getByText('IR Coverage (1/2)')).toBeInTheDocument());
     expect(screen.getByText('OR Coverage (1/1)')).toBeInTheDocument();
+    expect(screen.getByText('Structured AC text')).toBeInTheDocument();
+    expect(screen.getByText('Structured FR text')).toBeInTheDocument();
+    expect(screen.getByText('Structured TR text')).toBeInTheDocument();
     expect(screen.getByText('Covered integration')).toBeInTheDocument();
     expect(screen.getByText('Open integration')).toBeInTheDocument();
     expect(screen.getByText('Covered telemetry')).toBeInTheDocument();

@@ -15,6 +15,47 @@ export interface TopDisconnectedNode {
   degree: number;
 }
 
+export interface KGHealthIssue {
+  code: string;
+  component: string;
+  severity: string;
+  reason: string;
+  description: string;
+  operator_action: string;
+}
+
+export interface DecaySchedulerDiagnostics {
+  status: 'ok' | 'never_run' | 'stale' | 'failed' | 'running' | 'unknown' | string;
+  severity: 'info' | 'warning' | 'critical' | string;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_error: string | null;
+  next_scheduled_at: string | null;
+  stale_tolerance_seconds: number | null;
+  recommended_action: string;
+  operational_debt: boolean;
+  graph_recovery_required: boolean;
+  reason: string | null;
+  running_started_at?: string | null;
+  source?: string;
+}
+
+export interface StorageFootprintProxy {
+  source: 'file_size_proxy' | string;
+  status: string;
+  percentage: number | null;
+  high_water_mark_pct: number | null;
+  graph_lbug_bytes: number | null;
+  sidecar_bytes: number | null;
+  total_bytes: number | null;
+  configured_max_db_size_bytes: number | null;
+  configured_max_db_size_gb: number | null;
+  is_direct_memory_telemetry: boolean;
+  description: string;
+  tooltip: string;
+  unavailable_reason: string | null;
+}
+
 export interface KGHealth {
   queue_depth: number;
   oldest_pending_age_s: number;
@@ -40,8 +81,12 @@ export interface KGHealth {
   graph_state?: string;
   discovery_state?: string;
   overall_state?: string;
+  metric_status?: 'available' | 'unavailable' | string;
   current_kg_generation_id?: string | null;
   classification_reason?: string | null;
+  health_issues?: KGHealthIssue[];
+  decay_scheduler_diagnostics?: DecaySchedulerDiagnostics;
+  storage_footprint_proxy?: StorageFootprintProxy;
 }
 
 // ---- KG-02 rebuild lifecycle (spec e7360ffe, mockup sm_a30278ad) -------

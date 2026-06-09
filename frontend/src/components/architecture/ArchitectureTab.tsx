@@ -186,11 +186,15 @@ export function ArchitectureValidationPanel({
   loading,
   error,
   onFocusElement,
+  warningAcknowledged = false,
+  onWarningAcknowledgedChange,
 }: {
   result: ArchitectureDesignValidationResult | null;
   loading: boolean;
   error: string | null;
   onFocusElement?: (target: ArchitectureWarningFocusTarget) => void;
+  warningAcknowledged?: boolean;
+  onWarningAcknowledgedChange?: (checked: boolean) => void;
 }) {
   const issues = result?.issues || [];
   const warnings = result?.warnings || [];
@@ -285,6 +289,19 @@ export function ArchitectureValidationPanel({
                     ))}
                   </ul>
                 </div>
+              )}
+              {structuredWarnings.length > 0 && onWarningAcknowledgedChange && (
+                <label className="flex items-start gap-2 rounded border border-amber-300 bg-white/80 px-2 py-2 text-amber-900 dark:border-amber-800 dark:bg-gray-950/60 dark:text-amber-100">
+                  <input
+                    type="checkbox"
+                    checked={warningAcknowledged}
+                    onChange={(event) => onWarningAcknowledgedChange(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                  />
+                  <span>
+                    I reviewed these architecture warnings. Save may continue, but active warnings still block moving the owner to Done until they are resolved.
+                  </span>
+                </label>
               )}
             </div>
           )}
@@ -571,6 +588,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   const [validation, setValidation] = useState<ArchitectureDesignValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [warningAcknowledged, setWarningAcknowledged] = useState(false);
   const [focusRequest, setFocusRequest] = useState<{ diagramId: string; elementId: string; signal: number } | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [newTitle, setNewTitle] = useState('');
@@ -594,10 +612,27 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
     [design, selectedDiagramId],
   );
   const selectedComponentSegment = COMPONENT_SEGMENTS.find((segment) => segment.id === selectedComponentSegmentId) || COMPONENT_SEGMENTS[0];
+  const structuredWarningKeys = useMemo(
+    () => (validation?.structured_warnings || [])
+      .map((warning) => warning.finding_key)
+      .filter((key): key is string => Boolean(key)),
+    [validation?.structured_warnings],
+  );
+  const structuredWarningSignature = useMemo(
+    () => (validation?.structured_warnings || [])
+      .map((warning) => warning.finding_key || `${warning.code}:${warning.path}`)
+      .sort()
+      .join('|'),
+    [validation?.structured_warnings],
+  );
 
   useEffect(() => {
     apiRef.current = api;
   }, [api]);
+
+  useEffect(() => {
+    setWarningAcknowledged(false);
+  }, [structuredWarningSignature]);
 
   useEffect(() => {
     onChangedRef.current = onChanged;
@@ -669,6 +704,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
     }
 
     const payload: CreateArchitectureDesignRequest = {
+      design_id: design.id,
       title: design.title,
       global_description: design.global_description,
       entities: design.entities,
@@ -749,6 +785,11 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
 
   const saveDesign = async () => {
     if (!design) return;
+    const structuredWarnings = validation?.structured_warnings || [];
+    if (structuredWarnings.length > 0 && !warningAcknowledged) {
+      toast.error('Review and acknowledge architecture warnings before saving.');
+      return;
+    }
     const previousDiagram = selectedDiagram;
     setSaving(true);
     try {
@@ -759,10 +800,18 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
         interfaces: design.interfaces,
         diagrams: design.diagrams,
         change_summary: 'Updated from dashboard architecture tab',
+        architecture_warning_acknowledgement: structuredWarnings.length > 0
+          ? {
+              accepted: true,
+              warning_keys: structuredWarningKeys,
+              statement: 'Reviewed in Architecture tab before save.',
+            }
+          : null,
       });
       const full = await apiRef.current.getArchitectureDesign(updated.id, true);
       setSelectedId(full.id);
       setDesign(full);
+      setWarningAcknowledged(false);
       setSelectedDiagramId(resolveSelectedDiagramId(full.diagrams, selectedDiagramId, previousDiagram));
       toast.success('Architecture design saved');
       await loadList(full.id);
@@ -1269,6 +1318,8 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                 loading={validating}
                 error={validationError}
                 onFocusElement={focusArchitectureElement}
+                warningAcknowledged={warningAcknowledged}
+                onWarningAcknowledgedChange={setWarningAcknowledged}
               />
             </CollapsibleSection>
 

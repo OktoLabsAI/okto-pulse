@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import toast from 'react-hot-toast';
 import { RefinementModal } from '../RefinementModal';
 import type { Refinement } from '@/types';
 
@@ -101,6 +102,42 @@ const baseRefinement: Refinement = {
   qa_items: [],
   knowledge_bases: [],
 };
+
+// ---------------------------------------------------------------------------
+// AC1 — handleMove surfaces backend detail via getErrorMessage
+// ---------------------------------------------------------------------------
+describe('RefinementModal handleMove error surfacing (AC1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.getRefinement.mockResolvedValue(baseRefinement);
+    apiMock.listRefinementSnapshots.mockResolvedValue([]);
+    apiMock.listRefinementHistory.mockResolvedValue([]);
+    apiMock.listRefinementQA.mockResolvedValue([]);
+    apiMock.getArchitectureDesign.mockResolvedValue(null);
+  });
+
+  it('shows backend detail string (not fallback) when moveRefinement rejects', async () => {
+    const backendDetail = 'Refinement must have at least one in_scope item before moving to review.';
+    apiMock.moveRefinement.mockRejectedValue(new Error(backendDetail));
+
+    render(
+      <RefinementModal refinementId="refinement-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />,
+    );
+
+    // Wait for modal to load
+    await screen.findByText('My Refinement');
+
+    // Click one of the "Move to:" buttons (baseRefinement is in 'review',
+    // so next statuses are Approved / Draft / Cancelled)
+    fireEvent.click(screen.getByText('Approved'));
+
+    await waitFor(() => {
+      expect((toast as any).error).toHaveBeenCalledWith(backendDetail);
+    });
+    // Must NOT have been called with the old hardcoded fallback
+    expect((toast as any).error).not.toHaveBeenCalledWith('Failed to move refinement');
+  });
+});
 
 describe('RefinementModal Markdown export', () => {
   beforeEach(() => {

@@ -14,6 +14,7 @@ import { useViewMode } from '@/hooks/useViewMode';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { HierarchicalList } from '@/components/shared/HierarchicalList';
 import { SprintModal } from './SprintModal';
+import { QABadge } from '@/components/shared/QABadge';
 
 interface SprintsPanelProps {
   boardId: string;
@@ -274,6 +275,7 @@ export function SprintsPanel({ boardId }: SprintsPanelProps) {
                 </div>
               </div>
               <div className="flex items-center gap-3 text-xs text-gray-400">
+                <QABadge count={sprint.open_qa_count} />
                 {sprint.test_scenario_ids?.length > 0 && (
                   <span>{sprint.test_scenario_ids.length} tests</span>
                 )}

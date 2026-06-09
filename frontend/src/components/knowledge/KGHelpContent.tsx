@@ -22,11 +22,11 @@ import {
   Compass,
 } from 'lucide-react';
 import {
+  ALL_NODE_TYPES,
   ALL_EDGE_TYPES,
   EDGE_TYPE_CONFIG,
   NODE_TYPE_CONFIG,
   type KGEdgeType,
-  type KGNodeType,
 } from '@/types/knowledge-graph';
 
 export type KGHelpSectionBody =
@@ -39,8 +39,6 @@ export interface KGHelpSection {
   icon: ReactNode;
   body: KGHelpSectionBody;
 }
-
-const ALL_NODE_TYPES = Object.keys(NODE_TYPE_CONFIG) as KGNodeType[];
 
 function NodeTypesCatalog(): ReactNode {
   return (

@@ -16,6 +16,7 @@ import type {
   CreateCardRequest,
   UpdateCardRequest,
   MoveCardRequest,
+  BugRegressionScenarioPreview,
   Agent,
   AgentSummary,
   AgentBoardGrant,
@@ -313,6 +314,26 @@ export function useDashboardApi() {
 
     async getCardSeenStatus(cardId: string): Promise<{ items: Record<string, { agent_id: string; agent_name: string; seen_at: string }[]> }> {
       return apiClient.fetchJson(`/cards/${cardId}/seen`);
+    },
+
+    async getBugRegressionScenarioCandidates(
+      cardId: string,
+      boardId: string,
+      params?: {
+        affected_task_ids?: string[];
+        candidate_scenario_ids?: string[];
+      },
+    ): Promise<BugRegressionScenarioPreview> {
+      const query = new URLSearchParams({ board_id: boardId });
+      for (const taskId of params?.affected_task_ids || []) {
+        query.append('affected_task_ids', taskId);
+      }
+      for (const scenarioId of params?.candidate_scenario_ids || []) {
+        query.append('candidate_scenario_ids', scenarioId);
+      }
+      return apiClient.fetchJson<BugRegressionScenarioPreview>(
+        `/cards/${cardId}/regression-scenario-candidates?${query.toString()}`,
+      );
     },
 
     async linkTestTaskToBug(cardId: string, testTaskId: string): Promise<{ success: boolean; bug_card_id: string; test_task_id: string; is_unblocked: boolean }> {

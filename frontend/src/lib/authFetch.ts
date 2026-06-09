@@ -59,8 +59,11 @@ export class AuthenticatedFetch {
       // Extract detail: direct field, or nested in backend_error (BFF proxy pattern)
       const detail = errorData.backend_error?.detail ?? errorData.detail;
       const message = typeof detail === 'string' ? detail
-        : typeof detail === 'object' && detail !== null ? JSON.stringify(detail, null, 2)
-        : errorData.error || errorData.message || `HTTP ${response.status}: ${response.statusText}`;
+        : typeof detail === 'object' && detail !== null
+          ? ((detail as Record<string, unknown>).message as string | undefined)
+            ?? ((detail as Record<string, unknown>).error as string | undefined)
+            ?? JSON.stringify(detail)
+          : errorData.error || errorData.message || `HTTP ${response.status}: ${response.statusText}`;
       throw new Error(message);
     }
 

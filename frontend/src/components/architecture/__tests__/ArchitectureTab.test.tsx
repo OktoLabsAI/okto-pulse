@@ -321,4 +321,92 @@ describe('ArchitectureTab', () => {
     expect(screen.getByText('Saved API')).toBeInTheDocument();
     expect(screen.getAllByDisplayValue('v2').length).toBeGreaterThan(0);
   });
+
+  it('requires explicit acknowledgement before saving structured architecture warnings', async () => {
+    apiMock.validateArchitectureDesign.mockResolvedValue({
+      valid: true,
+      issues: [],
+      warnings: [],
+      structured_warnings: [
+        {
+          code: 'entity_without_diagram',
+          severity: 'warning',
+          message: 'Architecture entity is not represented in any diagram.',
+          path: 'entities[1]',
+          suggested_fix: 'Add a diagram node for this entity.',
+          entity_id: 'entity-billing',
+          finding_key: 'finding-key-1',
+        },
+      ],
+      suppressed_warnings: [],
+      suggested_fixes: [],
+      summary: {},
+    });
+
+    render(<ArchitectureTab parentType="ideation" parentId="ideation-1" />);
+
+    await waitFor(() => expect(apiMock.validateArchitectureDesign).toHaveBeenCalledTimes(1), { timeout: 1500 });
+    expect(screen.getByText('entity_without_diagram')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'I reviewed these architecture warnings. Save may continue, but active warnings still block moving the owner to Done until they are resolved.',
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Save'));
+
+    expect(apiMock.updateArchitectureDesign).not.toHaveBeenCalled();
+  });
+
+  it('sends acknowledgement keys when saving reviewed structured warnings', async () => {
+    const patchResponse: ArchitectureDesign = {
+      ...design,
+      version: 2,
+      diagrams: [{ ...design.diagrams[0], adapter_payload: null }],
+    };
+    const fullReload: ArchitectureDesign = { ...design, version: 2 };
+    apiMock.validateArchitectureDesign.mockResolvedValue({
+      valid: true,
+      issues: [],
+      warnings: [],
+      structured_warnings: [
+        {
+          code: 'entity_without_diagram',
+          severity: 'warning',
+          message: 'Architecture entity is not represented in any diagram.',
+          path: 'entities[1]',
+          suggested_fix: 'Add a diagram node for this entity.',
+          entity_id: 'entity-billing',
+          finding_key: 'finding-key-1',
+        },
+      ],
+      suppressed_warnings: [],
+      suggested_fixes: [],
+      summary: {},
+    });
+    apiMock.getArchitectureDesign
+      .mockResolvedValueOnce(design)
+      .mockResolvedValueOnce(fullReload);
+    apiMock.updateArchitectureDesign.mockResolvedValue(patchResponse);
+
+    render(<ArchitectureTab parentType="ideation" parentId="ideation-1" />);
+
+    const acknowledgement = await screen.findByRole('checkbox', {
+      name: /Save may continue, but active warnings still block moving the owner to Done until they are resolved/i,
+    });
+    fireEvent.click(acknowledgement);
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => expect(apiMock.updateArchitectureDesign).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateArchitectureDesign).toHaveBeenCalledWith(
+      'arch-1',
+      expect.objectContaining({
+        architecture_warning_acknowledgement: {
+          accepted: true,
+          warning_keys: ['finding-key-1'],
+          statement: 'Reviewed in Architecture tab before save.',
+        },
+      }),
+    );
+  });
 });

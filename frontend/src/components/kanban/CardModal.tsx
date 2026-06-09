@@ -13,7 +13,7 @@ import {
   useIsCardModalOpen,
   useColumns,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage } from '@/types';
 import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
@@ -95,6 +95,146 @@ function testScenarioStatusColor(status: string): string {
   }
 }
 
+function remediationPathLabel(path: string): string {
+  switch (path) {
+    case 'path_a_reuse_existing_scenario':
+      return 'Path A · Reuse eligible scenario';
+    case 'path_b_semantic_gap':
+      return 'Path B · Semantic gap';
+    case 'path_c_hotfix_lane':
+      return 'Path C · Hotfix lane';
+    case 'standard_sprint':
+      return 'Sprint lane';
+    default:
+      return 'Workflow guidance';
+  }
+}
+
+function BugWorkflowRemediationPanel({
+  preview,
+  linkedTestCount,
+}: {
+  preview: BugRegressionScenarioPreview | null;
+  linkedTestCount: number;
+}) {
+  const remediation: BugWorkflowRemediationMessage | null = preview?.remediation ?? null;
+  if (!remediation) {
+    return (
+      <div className="flex items-start gap-3 p-4 rounded-lg bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-700/40">
+        <AlertCircle className="shrink-0 mt-0.5 text-amber-500" size={20} />
+        <div>
+          <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Regression gate guidance unavailable</p>
+          <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+            Refresh the card to reload canonical remediation details before moving this bug forward.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const isReady = linkedTestCount > 0 && !remediation.semantic_gap_required;
+  const tone = isReady
+    ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-700/40 text-green-800 dark:text-green-300'
+    : remediation.semantic_gap_required
+      ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-700/40 text-red-800 dark:text-red-300'
+      : 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-700/40 text-amber-800 dark:text-amber-300';
+  const Icon = isReady ? Check : remediation.semantic_gap_required ? XCircle : AlertCircle;
+  const iconClass = isReady ? 'text-green-500' : remediation.semantic_gap_required ? 'text-red-500' : 'text-amber-500';
+  const primaryAction = remediation.actions.find((action) => action.primary) ?? remediation.actions[0] ?? null;
+  const secondaryActions = primaryAction
+    ? remediation.actions.filter((action) => action.action_id !== primaryAction.action_id)
+    : [];
+
+  return (
+    <div data-testid="bug-workflow-remediation-panel" className={`p-4 rounded-lg border ${tone}`}>
+      <div className="flex items-start gap-3">
+        <Icon className={`shrink-0 mt-0.5 ${iconClass}`} size={20} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold">
+              {isReady ? 'Ready for In Progress' : remediation.message}
+            </p>
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/70 dark:bg-black/20 font-semibold">
+              {remediationPathLabel(remediation.remediation_path)}
+            </span>
+          </div>
+          <p className="text-xs mt-1 opacity-90">{remediation.detail}</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 text-[10px]">
+            <div className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
+              <span className="block opacity-70">Next action</span>
+              <strong>{remediation.next_action}</strong>
+            </div>
+            <div className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
+              <span className="block opacity-70">Eligible</span>
+              <strong>{remediation.eligible_scenarios_count}</strong>
+            </div>
+            <div className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
+              <span className="block opacity-70">Semantic gap</span>
+              <strong>{remediation.semantic_gap_required ? 'yes' : 'no'}</strong>
+            </div>
+            <div className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
+              <span className="block opacity-70">Hotfix lane</span>
+              <strong>{remediation.hotfix_lane_status}</strong>
+            </div>
+          </div>
+          {primaryAction && (
+            <div className="mt-3 space-y-2">
+              <div className="rounded border border-current/30 bg-white/80 dark:bg-black/25 px-3 py-2">
+                <p className="text-[10px] uppercase tracking-wide opacity-70">Primary action</p>
+                <p className="text-xs font-semibold">{primaryAction.label}</p>
+                <p className="text-[10px] opacity-80">{primaryAction.description}</p>
+              </div>
+              {secondaryActions.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-[10px] uppercase tracking-wide opacity-70">Supporting actions</p>
+                  {secondaryActions.map((action) => (
+                    <div key={action.action_id} className="rounded bg-white/70 dark:bg-black/20 px-2 py-1.5">
+                      <p className="text-xs font-semibold">{action.label}</p>
+                      <p className="text-[10px] opacity-80">{action.description}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {preview && (preview.eligible_scenarios.length > 0 || preview.rejected_scenarios.length > 0) && (
+            <div className="grid sm:grid-cols-2 gap-2 mt-3 text-xs">
+              <div>
+                <p className="font-semibold mb-1">Eligible scenarios</p>
+                {preview.eligible_scenarios.length > 0 ? (
+                  <ul className="space-y-1">
+                    {preview.eligible_scenarios.map((scenario) => (
+                      <li key={scenario.scenario_id} className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
+                        {scenario.title || scenario.scenario_id}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[10px] opacity-75">None</p>
+                )}
+              </div>
+              <div>
+                <p className="font-semibold mb-1">Rejected candidates</p>
+                {preview.rejected_scenarios.length > 0 ? (
+                  <ul className="space-y-1">
+                    {preview.rejected_scenarios.map((scenario) => (
+                      <li key={scenario.scenario_id} className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
+                        {scenario.scenario_id} · {scenario.reason}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[10px] opacity-75">None</p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface CardModalProps {
   boardId: string;
   onClose?: () => void;
@@ -127,6 +267,7 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const [specIRs, setSpecIRs] = useState<any[]>([]);
   const [specORs, setSpecORs] = useState<any[]>([]);
   const [specTRs, setSpecTRs] = useState<any[]>([]);
+  const [bugRegressionPreview, setBugRegressionPreview] = useState<BugRegressionScenarioPreview | null>(null);
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
@@ -169,9 +310,15 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
 
   const loadCard = (cardId: string) => {
     setIsLoading(true);
+    setBugRegressionPreview(null);
     api.getCard(cardId)
       .then((data) => {
         setCard(data);
+        if (data.card_type === 'bug') {
+          api.getBugRegressionScenarioCandidates(data.id, data.board_id)
+            .then(setBugRegressionPreview)
+            .catch(() => setBugRegressionPreview(null));
+        }
         if (data.spec_id) {
           api.getSpec(data.spec_id)
             .then((spec) => {
@@ -217,6 +364,13 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
     api.getCard(cardId)
       .then((data) => {
         setCard(data);
+        if (data.card_type === 'bug') {
+          api.getBugRegressionScenarioCandidates(data.id, data.board_id)
+            .then(setBugRegressionPreview)
+            .catch(() => setBugRegressionPreview(null));
+        } else {
+          setBugRegressionPreview(null);
+        }
         if (data.spec_id) {
           api.getSpec(data.spec_id)
             .then((spec) => {
@@ -1069,29 +1223,10 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               {/* Tests Tab (bug cards only) */}
               {activeTab === 'tests' && card.card_type === 'bug' && (
                 <div className="space-y-4">
-                  {/* Block/unblock indicator */}
-                  {(card.linked_test_task_ids?.length ?? 0) > 0 ? (
-                    <div className="flex items-start gap-3 p-3 rounded-lg bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-700/40">
-                      <Check className="shrink-0 mt-0.5 text-green-500" size={18} />
-                      <div>
-                        <p className="text-sm font-semibold text-green-800 dark:text-green-300">Ready for In Progress</p>
-                        <p className="text-xs text-green-700 dark:text-green-400 mt-0.5">
-                          {card.linked_test_task_ids!.length} new test task(s) linked. This bug card can now be moved to "In Progress".
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-start gap-3 p-4 rounded-lg bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-700/40">
-                      <AlertCircle className="shrink-0 mt-0.5 text-amber-500" size={20} />
-                      <div>
-                        <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Blocked from In Progress</p>
-                        <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
-                          This bug card requires at least <strong>1 new test task</strong> linked before it can be moved to "In Progress".
-                          Create a new test scenario in the spec and associate the resulting test task below.
-                        </p>
-                      </div>
-                    </div>
-                  )}
+                  <BugWorkflowRemediationPanel
+                    preview={bugRegressionPreview}
+                    linkedTestCount={card.linked_test_task_ids?.length ?? 0}
+                  />
 
                   {/* Linked Test Tasks */}
                   <div>

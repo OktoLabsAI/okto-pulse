@@ -13,6 +13,7 @@ const apiMock = vi.hoisted(() => ({
   getCardDependents: vi.fn(),
   getCardActivity: vi.fn(),
   getArchitectureDesign: vi.fn(),
+  getBugRegressionScenarioCandidates: vi.fn(),
   updateCard: vi.fn(),
   moveCard: vi.fn(),
   deleteCard: vi.fn(),
@@ -205,6 +206,43 @@ describe('CardModal', () => {
     apiMock.getCardDependencies.mockResolvedValue([]);
     apiMock.getCardDependents.mockResolvedValue([]);
     apiMock.getCardActivity.mockResolvedValue([]);
+    apiMock.getBugRegressionScenarioCandidates.mockResolvedValue({
+      bug_id: 'bug-1',
+      spec_id: 'spec-1',
+      origin_task_id: 'task-1',
+      affected_task_ids: [],
+      eligible_scenarios: [
+        {
+          scenario_id: 'ts-1',
+          title: 'Regression: story lineage is visible',
+          reason: 'origin_task_direct',
+          source_task_id: 'task-1',
+        },
+      ],
+      rejected_scenarios: [],
+      next_action: 'create_regression_test_card',
+      semantic_gap_required: false,
+      spec_mutation_required: false,
+      remediation: {
+        reason_code: 'origin_task_direct',
+        remediation_path: 'path_a_reuse_existing_scenario',
+        next_action: 'create_regression_test_card',
+        semantic_gap_required: false,
+        eligible_scenarios_count: 1,
+        hotfix_lane_status: 'not_applicable',
+        message: 'Create a fresh regression test card that references one of the eligible existing scenarios.',
+        detail: 'This is Path A: reuse an existing scenario linked to the bug origin task.',
+        actions: [
+          {
+            action_id: 'create_regression_test_card',
+            label: 'Create regression test card',
+            description: 'Create a new test card in the bug spec using an eligible scenario id.',
+            primary: true,
+          },
+        ],
+        facts: {},
+      },
+    });
     apiMock.getArchitectureDesign.mockImplementation((id: string) =>
       Promise.resolve({ id, entities: [], interfaces: [], diagrams: [] }),
     );
@@ -359,6 +397,21 @@ describe('CardModal', () => {
     expect(specArg.architecture_designs[0]).toMatchObject({ id: 'arch-spec', entities: [{ id: 'arch-spec-e', name: 'E' }] });
     expect(apiMock.updateCard).not.toHaveBeenCalled();
     expect(apiMock.moveCard).not.toHaveBeenCalled();
+  });
+
+  it('renders canonical bug workflow remediation in the tests tab', async () => {
+    apiMock.getCard.mockResolvedValue({ ...bugCard, linked_test_task_ids: [] });
+
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Tests/i }));
+
+    const panel = await screen.findByTestId('bug-workflow-remediation-panel');
+    expect(within(panel).getByText('Path A · Reuse eligible scenario')).toBeInTheDocument();
+    expect(within(panel).getByText('create_regression_test_card')).toBeInTheDocument();
+    expect(within(panel).getByText('Create regression test card')).toBeInTheDocument();
+    expect(within(panel).getByText('Regression: story lineage is visible')).toBeInTheDocument();
+    expect(within(panel).queryByText(/Create a new test scenario/i)).not.toBeInTheDocument();
+    expect(apiMock.getBugRegressionScenarioCandidates).toHaveBeenCalledWith('bug-1', 'board-1');
   });
 
   it('uses the shared activity renderer in the activity tab', async () => {

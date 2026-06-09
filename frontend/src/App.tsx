@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useState } from 'react';
+import { Quote, Lightbulb, Microscope, FileCheck2, CalendarRange, Rocket } from 'lucide-react';
 import { authAdapter, portalAdapter } from '@/adapters';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -75,6 +76,87 @@ function GuidedHelpRoot({
   );
 }
 
+type StageTabId = 'stories' | 'ideations' | 'refinements' | 'specs' | 'sprints' | 'tasks';
+
+interface StageTab {
+  id: StageTabId;
+  label: string;
+  Icon: typeof Quote;
+  /** icon colour when this tab is active */
+  iconActive: string;
+  /** muted icon colour when inactive — the stage keeps its signature hue at a glance */
+  iconInactive: string;
+  /** label colour applied only on the active tab */
+  labelActive: string;
+  /** subtle colored ring layered onto the active pill (over its white/surface base) */
+  pillActiveRing: string;
+}
+
+/**
+ * SDLC stage identity for the top tab switcher. Each stage carries a semantic
+ * lucide icon + a signature colour that traces the funnel as a temperature arc:
+ * slate (raw capture) -> amber (idea spark) -> cyan (investigation) ->
+ * violet (the spec contract, brand heart) -> blue (the scheduled run) ->
+ * emerald (shipped/done, reusing the kanban-done semantic).
+ * Class strings are literal for Tailwind JIT (no interpolation).
+ */
+const STAGE_TABS: StageTab[] = [
+  {
+    id: 'stories',
+    label: 'Stories',
+    Icon: Quote,
+    iconActive: 'text-slate-600 dark:text-slate-300',
+    iconInactive: 'text-slate-400/80 dark:text-slate-500/70',
+    labelActive: 'text-slate-700 dark:text-slate-200',
+    pillActiveRing: 'ring-1 ring-slate-200 dark:ring-slate-600/40',
+  },
+  {
+    id: 'ideations',
+    label: 'Ideations',
+    Icon: Lightbulb,
+    iconActive: 'text-amber-500 dark:text-amber-400',
+    iconInactive: 'text-amber-500/70 dark:text-amber-400/60',
+    labelActive: 'text-amber-700 dark:text-amber-300',
+    pillActiveRing: 'ring-1 ring-amber-200 dark:ring-amber-500/30',
+  },
+  {
+    id: 'refinements',
+    label: 'Refinements',
+    Icon: Microscope,
+    iconActive: 'text-cyan-600 dark:text-cyan-400',
+    iconInactive: 'text-cyan-500/70 dark:text-cyan-400/60',
+    labelActive: 'text-cyan-700 dark:text-cyan-300',
+    pillActiveRing: 'ring-1 ring-cyan-200 dark:ring-cyan-500/30',
+  },
+  {
+    id: 'specs',
+    label: 'Specs',
+    Icon: FileCheck2,
+    iconActive: 'text-violet-600 dark:text-violet-400',
+    iconInactive: 'text-violet-500/70 dark:text-violet-400/60',
+    labelActive: 'text-violet-700 dark:text-violet-300',
+    pillActiveRing: 'ring-1 ring-violet-200 dark:ring-violet-500/30',
+  },
+  {
+    id: 'sprints',
+    label: 'Sprints',
+    Icon: CalendarRange,
+    iconActive: 'text-blue-600 dark:text-blue-400',
+    iconInactive: 'text-blue-500/70 dark:text-blue-400/60',
+    labelActive: 'text-blue-700 dark:text-blue-300',
+    pillActiveRing: 'ring-1 ring-blue-200 dark:ring-blue-500/30',
+  },
+  {
+    id: 'tasks',
+    label: 'Tasks',
+    Icon: Rocket,
+    iconActive: 'text-emerald-600 dark:text-emerald-400',
+    iconInactive: 'text-emerald-500/70 dark:text-emerald-400/60',
+    labelActive: 'text-emerald-700 dark:text-emerald-300',
+    pillActiveRing: 'ring-1 ring-emerald-200 dark:ring-emerald-500/30',
+  },
+];
+
 function App() {
   const api = useDashboardApi();
   const { isLoaded, isSignedIn } = authAdapter.useAuth();
@@ -137,7 +219,7 @@ function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [skipEvidenceActive, setSkipEvidenceActive] = useState(false);
-  const [activeTab, setActiveTab] = useState<'stories' | 'ideations' | 'refinements' | 'specs' | 'sprints' | 'tasks'>('stories');
+  const [activeTab, setActiveTab] = useState<StageTabId>('stories');
   const [showAnalytics, setShowAnalytics] = useState(
     () => typeof window !== 'undefined' && window.location.pathname.startsWith('/analytics'),
   );
@@ -407,26 +489,28 @@ function App() {
                 className="flex items-center gap-1 mb-4 bg-surface-200/60 dark:bg-surface-800/60 backdrop-blur-sm rounded-xl p-0.5 w-fit border border-surface-200/40 dark:border-surface-700/30"
                 data-tour-id="board.tabs"
               >
-                {([
-                  { id: 'stories' as const, label: 'Stories' },
-                  { id: 'ideations' as const, label: 'Ideations' },
-                  { id: 'refinements' as const, label: 'Refinements' },
-                  { id: 'specs' as const, label: 'Specs' },
-                  { id: 'sprints' as const, label: 'Sprints' },
-                  { id: 'tasks' as const, label: 'Tasks' },
-                ]).map((tab) => (
-                  <button
-                    key={tab.id}
-                    onClick={() => setActiveTab(tab.id)}
-                    className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
-                      activeTab === tab.id
-                        ? 'bg-white dark:bg-surface-700 text-surface-900 dark:text-white shadow-sm'
-                        : 'text-surface-500 dark:text-surface-400 hover:text-surface-900 dark:hover:text-white'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
+                {STAGE_TABS.map((tab) => {
+                  const isActive = activeTab === tab.id;
+                  const Icon = tab.Icon;
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id)}
+                      title={tab.label}
+                      className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                        isActive
+                          ? `bg-white dark:bg-surface-700 shadow-sm ${tab.pillActiveRing} ${tab.labelActive}`
+                          : 'text-surface-500 dark:text-surface-400 hover:text-surface-900 dark:hover:text-white'
+                      }`}
+                    >
+                      <Icon
+                        size={15}
+                        className={`shrink-0 transition-colors ${isActive ? tab.iconActive : tab.iconInactive}`}
+                      />
+                      {tab.label}
+                    </button>
+                  );
+                })}
               </div>
 
               {/* Content */}

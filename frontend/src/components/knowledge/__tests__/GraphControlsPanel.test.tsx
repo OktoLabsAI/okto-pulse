@@ -13,7 +13,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { GraphControlsPanel } from '../GraphControlsPanel';
 import type { Filters } from '../GraphControlsPanel';
-import { ALL_EDGE_TYPES } from '@/types/knowledge-graph';
+import { ALL_EDGE_TYPES, ALL_NODE_TYPES } from '@/types/knowledge-graph';
 
 function baseFilters(overrides: Partial<Filters> = {}): Filters {
   return {
@@ -88,6 +88,29 @@ describe('GraphControlsPanel — edge type chips (S4.4, AC-5)', () => {
   });
 });
 
+describe('GraphControlsPanel — node type filters', () => {
+  it('renders one checkbox per KG node type, including cognitive Learning nodes', () => {
+    renderPanel();
+
+    for (const nt of ALL_NODE_TYPES) {
+      expect(screen.getByText(new RegExp(`\\b${nt}\\b`))).toBeInTheDocument();
+    }
+    expect(screen.getByText(/\bLearning\b/)).toBeInTheDocument();
+  });
+
+  it('shows zero-count schema node types instead of omitting them from the filter list', () => {
+    renderPanel({
+      nodeTypeCounts: {
+        Decision: 3,
+        Learning: 0,
+      },
+    });
+
+    expect(screen.getByTitle('Total Learning nodes in KG')).toHaveTextContent('0');
+    expect(screen.getByText(/\bLearning\b/)).toBeInTheDocument();
+  });
+});
+
 describe('GraphControlsPanel — relevance slider (S4.5, AC-6)', () => {
   it('slider exposes min=0, max=1, step=0.05 and reflects filter value', () => {
     renderPanel({ filters: baseFilters({ minRelevance: 0.25 }) });
@@ -124,17 +147,17 @@ describe('GraphControlsPanel — node visibility counters', () => {
 });
 
 describe('GraphControlsPanel — node limit dropdown (S4.6, AC-9)', () => {
-  it('exposes exactly 50/100/200/500 as options and current value is selected', () => {
+  it('exposes exactly 50/100/200/500/1000 as options and current value is selected', () => {
     renderPanel({ nodeLimit: 200 });
     const select = screen.getByTestId('kg-node-limit') as HTMLSelectElement;
     const values = [...select.options].map((o) => Number(o.value));
-    expect(values).toEqual([50, 100, 200, 500]);
+    expect(values).toEqual([50, 100, 200, 500, 1000]);
     expect(select.value).toBe('200');
   });
 
   it('selecting a new option fires onNodeLimitChange with the chosen number', () => {
     const { onNodeLimitChange } = renderPanel();
-    fireEvent.change(screen.getByTestId('kg-node-limit'), { target: { value: '500' } });
-    expect(onNodeLimitChange).toHaveBeenCalledWith(500);
+    fireEvent.change(screen.getByTestId('kg-node-limit'), { target: { value: '1000' } });
+    expect(onNodeLimitChange).toHaveBeenCalledWith(1000);
   });
 });

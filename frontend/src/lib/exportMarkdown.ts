@@ -90,6 +90,24 @@ export interface ResolvedReferenceForExport {
   warning?: ExportWarning;
 }
 
+interface MarkdownReference {
+  id?: string;
+  label: string;
+}
+
+interface SpecReferenceIndex {
+  requirements: Map<string, MarkdownReference>;
+  technicalRequirements: Map<string, MarkdownReference>;
+  acceptanceCriteria: Map<string, MarkdownReference>;
+  testScenarios: Map<string, MarkdownReference>;
+  businessRules: Map<string, MarkdownReference>;
+  apiContracts: Map<string, MarkdownReference>;
+  integrationRequirements: Map<string, MarkdownReference>;
+  observabilityRequirements: Map<string, MarkdownReference>;
+  decisions: Map<string, MarkdownReference>;
+  tasks: Map<string, MarkdownReference>;
+}
+
 const EXPORT_WARNING_SEVERITY_RANK: Record<ExportWarningSeverity, number> = {
   critical: 0,
   high: 1,
@@ -386,7 +404,7 @@ function section(heading: string, body: unknown, level = 2): string {
 function numberedList(items: (string | TechnicalRequirement)[]): string {
   return items
     .map((item, i) => {
-      const text = typeof item === 'string' ? item : item.text || readableValue(item);
+      const text = typeof item === 'string' ? item : criterionText(item);
       return `${i + 1}. ${text}`;
     })
     .join('\n');
@@ -423,7 +441,9 @@ function criterionText(item: unknown): string {
   if (typeof item === 'string') return item;
   if (item && typeof item === 'object') {
     const record = item as Record<string, unknown>;
-    return cleanString(record.text || record.value || record.title || record.description || record.id) || readableValue(item);
+    const candidate = record.text ?? record.value ?? record.title ?? record.description ?? record.id;
+    if (candidate && typeof candidate === 'object') return criterionText(candidate);
+    return cleanString(candidate) || readableValue(item);
   }
   return readableValue(item);
 }
@@ -491,6 +511,179 @@ export function resolveLinkedCriteriaForExport(
       warning,
     };
   });
+}
+
+function addMarkdownReference(
+  map: Map<string, MarkdownReference>,
+  rawKeys: Array<unknown>,
+  label: string,
+  id?: string,
+): void {
+  const normalizedLabel = cleanString(label);
+  if (!normalizedLabel) return;
+  const ref: MarkdownReference = {
+    label: normalizedLabel,
+    ...(cleanString(id) ? { id: cleanString(id) } : {}),
+  };
+  for (const rawKey of rawKeys) {
+    const key = cleanString(rawKey);
+    if (key && !map.has(key)) map.set(key, ref);
+  }
+}
+
+function itemRecord(item: unknown): Record<string, unknown> | null {
+  return item && typeof item === 'object' ? item as Record<string, unknown> : null;
+}
+
+function itemId(item: unknown): string | undefined {
+  return cleanString(itemRecord(item)?.id);
+}
+
+function firstText(values: unknown[], fallback: string): string {
+  for (const value of values) {
+    const text = cleanString(value);
+    if (text) return text;
+  }
+  return fallback;
+}
+
+function referenceLabel(ref: MarkdownReference): string {
+  return ref.id ? `${ref.label} (${ref.id})` : ref.label;
+}
+
+function resolveReferenceList(refs: Array<string | number> | null | undefined, map: Map<string, MarkdownReference>): string[] {
+  return (refs || []).map((raw) => {
+    const key = cleanString(raw);
+    const resolved = key ? map.get(key) : undefined;
+    return resolved ? referenceLabel(resolved) : readableValue(raw);
+  });
+}
+
+function renderLinkedReferences(
+  label: string,
+  refs: Array<string | number> | null | undefined,
+  map: Map<string, MarkdownReference> | undefined,
+): string {
+  if (!refs?.length) return '';
+  const rows = map ? resolveReferenceList(refs, map) : refs.map((ref) => readableValue(ref));
+  return `**${label}:**\n${rows.map((row) => `- ${row}`).join('\n')}\n\n`;
+}
+
+function addIndexedReference(
+  map: Map<string, MarkdownReference>,
+  item: unknown,
+  index: number,
+  label: string,
+  id?: string,
+): void {
+  const keys: unknown[] = [id, index, String(index), label];
+  const text = criterionText(item);
+  if (text !== label) keys.push(text);
+  addMarkdownReference(map, keys, label, id);
+}
+
+function buildSpecReferenceIndex(spec: Spec): SpecReferenceIndex {
+  const refs: SpecReferenceIndex = {
+    requirements: new Map(),
+    technicalRequirements: new Map(),
+    acceptanceCriteria: new Map(),
+    testScenarios: new Map(),
+    businessRules: new Map(),
+    apiContracts: new Map(),
+    integrationRequirements: new Map(),
+    observabilityRequirements: new Map(),
+    decisions: new Map(),
+    tasks: new Map(),
+  };
+
+  (spec.functional_requirements || []).forEach((item: unknown, index: number) => {
+    const id = itemId(item);
+    const text = criterionText(item);
+    addIndexedReference(refs.requirements, item, index, text, id);
+    addMarkdownReference(refs.requirements, [`FR${index + 1}`, `FR ${index + 1}`, `FR${index + 1}: ${text}`], text, id);
+  });
+
+  (spec.acceptance_criteria || []).forEach((item: unknown, index: number) => {
+    const id = itemId(item);
+    const text = criterionText(item);
+    addIndexedReference(refs.acceptanceCriteria, item, index, text, id);
+    addMarkdownReference(refs.acceptanceCriteria, [`AC${index + 1}`, `AC ${index + 1}`, criterionLabel(index + 1, text)], text, id);
+  });
+
+  (spec.technical_requirements || []).forEach((item: unknown, index: number) => {
+    const record = itemRecord(item);
+    const id = itemId(item);
+    const label = typeof item === 'string'
+      ? item
+      : firstText([record?.title, record?.text, record?.description, id], `TR #${index + 1}`);
+    addIndexedReference(refs.technicalRequirements, item, index, label, id);
+  });
+
+  (spec.test_scenarios || []).forEach((item: any, index: number) => {
+    addMarkdownReference(
+      refs.testScenarios,
+      [item?.id, item?.title, index, String(index), index + 1, String(index + 1)],
+      firstText([item?.title, item?.id], `Test Scenario #${index + 1}`),
+      cleanString(item?.id),
+    );
+  });
+
+  (spec.business_rules || []).forEach((item: any, index: number) => {
+    addMarkdownReference(
+      refs.businessRules,
+      [item?.id, item?.title, item?.rule, index, String(index), index + 1, String(index + 1)],
+      firstText([item?.title, item?.rule, item?.id], `Business Rule #${index + 1}`),
+      cleanString(item?.id),
+    );
+  });
+
+  (spec.api_contracts || []).forEach((item: any, index: number) => {
+    const endpoint = [item?.method, item?.path].filter(Boolean).join(' ');
+    addMarkdownReference(
+      refs.apiContracts,
+      [item?.id, item?.title, item?.path, endpoint, index, String(index), index + 1, String(index + 1)],
+      firstText([item?.title, endpoint, item?.description, item?.id], `API Contract #${index + 1}`),
+      cleanString(item?.id),
+    );
+  });
+
+  (spec.integration_requirements || []).forEach((item: any, index: number) => {
+    addMarkdownReference(
+      refs.integrationRequirements,
+      [item?.id, item?.title, item?.endpoint, index, String(index), index + 1, String(index + 1)],
+      firstText([item?.title, item?.description, item?.endpoint, item?.id], `Integration Requirement #${index + 1}`),
+      cleanString(item?.id),
+    );
+  });
+
+  (spec.observability_requirements || []).forEach((item: any, index: number) => {
+    addMarkdownReference(
+      refs.observabilityRequirements,
+      [item?.id, item?.title, item?.metric_name, index, String(index), index + 1, String(index + 1)],
+      firstText([item?.title, item?.description, item?.metric_name, item?.id], `Observability Requirement #${index + 1}`),
+      cleanString(item?.id),
+    );
+  });
+
+  (spec.decisions || []).forEach((item: any, index: number) => {
+    addMarkdownReference(
+      refs.decisions,
+      [item?.id, item?.title, index, String(index), index + 1, String(index + 1)],
+      firstText([item?.title, item?.decision, item?.rationale, item?.id], `Decision #${index + 1}`),
+      cleanString(item?.id),
+    );
+  });
+
+  ((spec as any).cards || []).forEach((item: any, index: number) => {
+    addMarkdownReference(
+      refs.tasks,
+      [item?.id, item?.title, index, String(index), index + 1, String(index + 1)],
+      firstText([item?.title, item?.id], `Task #${index + 1}`),
+      cleanString(item?.id),
+    );
+  });
+
+  return refs;
 }
 
 // ---------------------------------------------------------------------------
@@ -1175,6 +1368,7 @@ function renderTestScenarios(
   scenarios: TestScenario[] | null | undefined,
   criteria?: string[] | null,
   warningCollector?: ExportWarningCollector,
+  refs?: SpecReferenceIndex,
 ): string {
   if (!scenarios?.length) return '';
   const items = scenarios.map((ts, i) => {
@@ -1197,6 +1391,7 @@ function renderTestScenarios(
       const names = ts.linked_criteria.map((criterion) => `  - ${readableValue(criterion)}`);
       entry += `**Linked criteria:**\n${names.join('\n')}\n\n`;
     }
+    entry += renderLinkedReferences('Linked tasks', ts.linked_task_ids as any, refs?.tasks);
     if (ts.notes) entry += `**Notes:** ${ts.notes}\n\n`;
     return entry;
   }).join('');
@@ -1207,18 +1402,19 @@ function renderTestScenarios(
 // Technical Requirements
 // ---------------------------------------------------------------------------
 
-function renderTechnicalRequirements(requirements: (string | TechnicalRequirement)[] | null | undefined): string {
+function renderTechnicalRequirements(requirements: (string | TechnicalRequirement)[] | null | undefined, refs?: SpecReferenceIndex): string {
   if (!requirements?.length) return '';
   const items = requirements.map((item, i) => {
     if (typeof item === 'string') return `${i + 1}. ${item}`;
-    let entry = `${i + 1}. ${item.text || readableValue(item)}`;
+    let entry = `${i + 1}. ${criterionText(item)}`;
     const details = renderKeyValues([
       ['ID', item.id],
       ['Status', item.status],
-      ['Linked task IDs', item.linked_task_ids?.join(', ')],
       ['Notes', item.notes],
     ]);
     if (details) entry += `\n${details.trimEnd()}`;
+    const linkedTasks = renderLinkedReferences('Linked tasks', item.linked_task_ids as any, refs?.tasks);
+    if (linkedTasks) entry += `\n${linkedTasks.trimEnd()}`;
     return entry;
   }).join('\n');
   return `## Technical Requirements\n\n${items}\n\n`;
@@ -1228,7 +1424,7 @@ function renderTechnicalRequirements(requirements: (string | TechnicalRequiremen
 // Business Rules
 // ---------------------------------------------------------------------------
 
-function renderBusinessRules(rules: BusinessRule[] | null | undefined, frs?: string[] | null): string {
+function renderBusinessRules(rules: BusinessRule[] | null | undefined, refs?: SpecReferenceIndex): string {
   if (!rules?.length) return '';
   const items = rules.map((br, i) => {
     let entry = `### ${i + 1}. ${br.title}\n\n`;
@@ -1240,14 +1436,9 @@ function renderBusinessRules(rules: BusinessRule[] | null | undefined, frs?: str
     entry += renderKeyValues([
       ['When', br.when],
       ['Then', br.then],
-      ['Linked task IDs', br.linked_task_ids?.join(', ')],
     ]);
-    if (br.linked_requirements?.length && frs?.length) {
-      const names = br.linked_requirements
-        .map(r => frs.indexOf(r) >= 0 ? `FR${frs.indexOf(r) + 1}: ${r}` : r)
-        .map(r => `  - ${r}`);
-      entry += `**Linked requirements:**\n${names.join('\n')}\n\n`;
-    }
+    entry += renderLinkedReferences('Linked requirements', br.linked_requirements as any, refs?.requirements);
+    entry += renderLinkedReferences('Linked tasks', br.linked_task_ids as any, refs?.tasks);
     if (br.notes) entry += `**Notes:** ${br.notes}\n\n`;
     return entry;
   }).join('');
@@ -1258,7 +1449,7 @@ function renderBusinessRules(rules: BusinessRule[] | null | undefined, frs?: str
 // API Contracts
 // ---------------------------------------------------------------------------
 
-function renderApiContracts(contracts: ApiContract[] | null | undefined): string {
+function renderApiContracts(contracts: ApiContract[] | null | undefined, refs?: SpecReferenceIndex): string {
   if (!contracts?.length) return '';
   const items = contracts.map((ac, i) => {
     let entry = `### ${i + 1}. ${ac.method} ${ac.path}\n\n`;
@@ -1271,10 +1462,10 @@ function renderApiContracts(contracts: ApiContract[] | null | undefined): string
     entry += renderJsonBlock('Request', ac.request_body);
     entry += renderJsonBlock('Response (success)', ac.response_success);
     entry += renderJsonBlock('Response (errors)', ac.response_errors);
+    entry += renderLinkedReferences('Linked requirements', ac.linked_requirements as any, refs?.requirements);
+    entry += renderLinkedReferences('Linked business rules', ac.linked_rules as any, refs?.businessRules);
+    entry += renderLinkedReferences('Linked tasks', ac.linked_task_ids as any, refs?.tasks);
     entry += renderKeyValues([
-      ['Linked requirements', ac.linked_requirements?.join(', ')],
-      ['Linked business rules', ac.linked_rules?.join(', ')],
-      ['Linked task IDs', ac.linked_task_ids?.join(', ')],
       ['Notes', ac.notes],
     ]);
     return entry;
@@ -1282,7 +1473,7 @@ function renderApiContracts(contracts: ApiContract[] | null | undefined): string
   return `## API Contracts\n\n${items}`;
 }
 
-function renderIntegrationRequirements(requirements: IntegrationRequirement[] | null | undefined): string {
+function renderIntegrationRequirements(requirements: IntegrationRequirement[] | null | undefined, refs?: SpecReferenceIndex): string {
   if (!requirements?.length) return '';
   const items = requirements.map((item, i) => {
     let entry = `### ${i + 1}. ${item.title || item.id || 'Integration Requirement'}\n\n`;
@@ -1300,16 +1491,16 @@ function renderIntegrationRequirements(requirements: IntegrationRequirement[] | 
       ['Contract ref', item.contract_ref],
     ]);
     entry += renderJsonBlock('Data contract', item.data_contract);
-    if (item.linked_requirements?.length) entry += `**Linked requirements:** ${item.linked_requirements.join(', ')}\n\n`;
-    if (item.linked_api_contracts?.length) entry += `**Linked API contracts:** ${item.linked_api_contracts.join(', ')}\n\n`;
-    if (item.linked_task_ids?.length) entry += `**Linked task IDs:** ${item.linked_task_ids.join(', ')}\n\n`;
+    entry += renderLinkedReferences('Linked requirements', item.linked_requirements as any, refs?.requirements);
+    entry += renderLinkedReferences('Linked API contracts', item.linked_api_contracts as any, refs?.apiContracts);
+    entry += renderLinkedReferences('Linked tasks', item.linked_task_ids as any, refs?.tasks);
     if (item.notes) entry += `**Notes:** ${item.notes}\n\n`;
     return entry;
   }).join('');
   return `## Integration Requirements\n\n${items}`;
 }
 
-function renderObservabilityRequirements(requirements: ObservabilityRequirement[] | null | undefined): string {
+function renderObservabilityRequirements(requirements: ObservabilityRequirement[] | null | undefined, refs?: SpecReferenceIndex): string {
   if (!requirements?.length) return '';
   const items = requirements.map((item, i) => {
     let entry = `### ${i + 1}. ${item.title || item.id || 'Observability Requirement'}\n\n`;
@@ -1326,9 +1517,9 @@ function renderObservabilityRequirements(requirements: ObservabilityRequirement[
       ['Severity', item.severity],
       ['Owner', item.owner],
     ]);
-    if (item.linked_requirements?.length) entry += `\n**Linked requirements:** ${item.linked_requirements.join(', ')}\n\n`;
-    if (item.linked_integration_requirements?.length) entry += `**Linked integration requirements:** ${item.linked_integration_requirements.join(', ')}\n\n`;
-    if (item.linked_task_ids?.length) entry += `**Linked task IDs:** ${item.linked_task_ids.join(', ')}\n\n`;
+    entry += renderLinkedReferences('Linked requirements', item.linked_requirements as any, refs?.requirements);
+    entry += renderLinkedReferences('Linked integration requirements', item.linked_integration_requirements as any, refs?.integrationRequirements);
+    entry += renderLinkedReferences('Linked tasks', item.linked_task_ids as any, refs?.tasks);
     if (item.notes) entry += `**Notes:** ${item.notes}\n\n`;
     return entry;
   }).join('');
@@ -1339,7 +1530,7 @@ function renderObservabilityRequirements(requirements: ObservabilityRequirement[
 // Decisions
 // ---------------------------------------------------------------------------
 
-function renderDecisions(decisions: any[] | null | undefined): string {
+function renderDecisions(decisions: any[] | null | undefined, refs?: SpecReferenceIndex): string {
   if (!decisions?.length) return '';
   const items = decisions.map((decision, i) => {
     let entry = `### ${i + 1}. ${decision.title || decision.id || 'Decision'}\n\n`;
@@ -1353,8 +1544,8 @@ function renderDecisions(decisions: any[] | null | undefined): string {
     if (decision.alternatives?.length) entry += `**Alternatives:** ${decision.alternatives.join(', ')}\n\n`;
     if (decision.alternatives_considered?.length) entry += `**Alternatives considered:** ${decision.alternatives_considered.join(', ')}\n\n`;
     if (decision.supersedes_decision_id) entry += `**Supersedes:** ${decision.supersedes_decision_id}\n\n`;
-    if (decision.linked_requirements?.length) entry += `**Linked requirements:** ${decision.linked_requirements.join(', ')}\n\n`;
-    if (decision.linked_task_ids?.length) entry += `**Linked task IDs:** ${decision.linked_task_ids.join(', ')}\n\n`;
+    entry += renderLinkedReferences('Linked requirements', decision.linked_requirements, refs?.requirements);
+    entry += renderLinkedReferences('Linked tasks', decision.linked_task_ids, refs?.tasks);
     if (decision.notes) entry += `**Notes:** ${decision.notes}\n\n`;
     return entry;
   }).join('');
@@ -1649,6 +1840,7 @@ export function exportSprint(sprint: any, parentSpec: any): string {
 /** Generate Markdown for a Spec. */
 export function exportSpec(spec: Spec): string {
   const warningCollector = createExportWarningCollector();
+  const refs = buildSpecReferenceIndex(spec);
   let md = `# ${spec.title}\n\n`;
 
   md += metaTable([
@@ -1668,18 +1860,18 @@ export function exportSpec(spec: Spec): string {
   if (spec.functional_requirements?.length) {
     body += `## Functional Requirements\n\n${numberedList(excludeRevoked(spec.functional_requirements))}\n\n`;
   }
-  body += renderTechnicalRequirements(spec.technical_requirements);
+  body += renderTechnicalRequirements(spec.technical_requirements, refs);
   if (spec.acceptance_criteria?.length) {
     body += `## Acceptance Criteria\n\n${numberedList(excludeRevoked(spec.acceptance_criteria))}\n\n`;
   }
 
   body += renderResolvedReferences((spec as any).resolved_references);
-  body += renderTestScenarios(spec.test_scenarios, spec.acceptance_criteria, warningCollector);
-  body += renderBusinessRules(spec.business_rules, spec.functional_requirements);
-  body += renderApiContracts(spec.api_contracts);
-  body += renderIntegrationRequirements(spec.integration_requirements);
-  body += renderObservabilityRequirements(spec.observability_requirements);
-  body += renderDecisions(spec.decisions);
+  body += renderTestScenarios(spec.test_scenarios, spec.acceptance_criteria, warningCollector, refs);
+  body += renderBusinessRules(spec.business_rules, refs);
+  body += renderApiContracts(spec.api_contracts, refs);
+  body += renderIntegrationRequirements(spec.integration_requirements, refs);
+  body += renderObservabilityRequirements(spec.observability_requirements, refs);
+  body += renderDecisions(spec.decisions, refs);
   body += renderKnowledgeBases(spec.knowledge_bases || []);
   body += renderMockups(spec.screen_mockups, warningCollector);
   body += renderArchitectureDesigns(spec.architecture_designs, warningCollector);
@@ -1694,6 +1886,7 @@ export function exportSpec(spec: Spec): string {
 /** Generate Markdown for a Card/Task, resolving spec references. */
 export function exportCard(card: Card, spec?: Spec | null): string {
   const warningCollector = createExportWarningCollector();
+  const refs = spec ? buildSpecReferenceIndex(spec) : undefined;
   const isBug = card.card_type === 'bug';
   const typeLabel = cardTypeLabel(card);
   let md = `# ${isBug ? '[BUG] ' : ''}${card.title}\n\n`;
@@ -1721,13 +1914,16 @@ export function exportCard(card: Card, spec?: Spec | null): string {
   if (isBug) {
     let bugSection = `## Bug Details\n\n`;
     bugSection += `**Severity:** ${card.severity || 'unknown'}\n\n`;
-    if (card.origin_task_id) bugSection += `**Origin task:** ${card.origin_task_id}\n\n`;
+    if (card.origin_task_id) {
+      const origin = refs?.tasks.get(card.origin_task_id);
+      bugSection += `**Origin task:** ${origin ? referenceLabel(origin) : card.origin_task_id}\n\n`;
+    }
     if (card.expected_behavior) bugSection += `### Expected Behavior\n\n${card.expected_behavior}\n\n`;
     if (card.observed_behavior) bugSection += `### Observed Behavior\n\n${card.observed_behavior}\n\n`;
     if (card.steps_to_reproduce) bugSection += `### Steps to Reproduce\n\n${card.steps_to_reproduce}\n\n`;
     if (card.action_plan) bugSection += `### Action Plan\n\n${card.action_plan}\n\n`;
     if (card.linked_test_task_ids?.length) {
-      bugSection += `**Linked test tasks:** ${card.linked_test_task_ids.join(', ')}\n\n`;
+      bugSection += renderLinkedReferences('Linked test tasks', card.linked_test_task_ids as any, refs?.tasks);
     }
     body += bugSection;
   }
@@ -1777,7 +1973,7 @@ export function exportCard(card: Card, spec?: Spec | null): string {
     if (card.test_scenario_ids?.length && spec.test_scenarios?.length) {
       linkedScenarios = spec.test_scenarios.filter(ts => card.test_scenario_ids!.includes(ts.id));
       if (linkedScenarios.length) {
-        body += renderTestScenarios(linkedScenarios, spec.acceptance_criteria, warningCollector);
+        body += renderTestScenarios(linkedScenarios, spec.acceptance_criteria, warningCollector, refs);
       }
       const foundIds = new Set(linkedScenarios.map((ts) => ts.id));
       for (const scenarioId of card.test_scenario_ids) {
@@ -1806,7 +2002,7 @@ export function exportCard(card: Card, spec?: Spec | null): string {
     if (spec.functional_requirements?.length) {
       body += `## Functional Requirements\n\n${numberedList(excludeRevoked(spec.functional_requirements))}\n\n`;
     }
-    body += renderTechnicalRequirements(spec.technical_requirements);
+    body += renderTechnicalRequirements(spec.technical_requirements, refs);
     if (spec.acceptance_criteria?.length) {
       body += `## Acceptance Criteria\n\n${numberedList(excludeRevoked(spec.acceptance_criteria))}\n\n`;
     }
@@ -1818,12 +2014,12 @@ export function exportCard(card: Card, spec?: Spec | null): string {
     const linkedDecisions = (spec.decisions || []).filter((item: any) => item.linked_task_ids?.includes(card.id));
     body += renderBusinessRules(
       linkedBusinessRules.length ? linkedBusinessRules : spec.business_rules,
-      spec.functional_requirements
+      refs
     );
-    body += renderApiContracts(linkedContracts.length ? linkedContracts : spec.api_contracts);
-    body += renderIntegrationRequirements(linkedIRs.length ? linkedIRs : spec.integration_requirements);
-    body += renderObservabilityRequirements(linkedORs.length ? linkedORs : spec.observability_requirements);
-    body += renderDecisions(linkedDecisions.length ? linkedDecisions : spec.decisions);
+    body += renderApiContracts(linkedContracts.length ? linkedContracts : spec.api_contracts, refs);
+    body += renderIntegrationRequirements(linkedIRs.length ? linkedIRs : spec.integration_requirements, refs);
+    body += renderObservabilityRequirements(linkedORs.length ? linkedORs : spec.observability_requirements, refs);
+    body += renderDecisions(linkedDecisions.length ? linkedDecisions : spec.decisions, refs);
     body += renderKnowledgeBases(spec.knowledge_bases || []);
     body += renderMockups(spec.screen_mockups, warningCollector);
     body += renderArchitectureDesigns(spec.architecture_designs, warningCollector);

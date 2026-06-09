@@ -899,7 +899,7 @@ describe('exportMarkdown complete spec export', () => {
       labels: ['export'],
       description: 'Full description.',
       context: 'Full context.',
-      functional_requirements: ['FR1 body'],
+      functional_requirements: [{ id: 'fr-1', text: 'FR1 body', status: 'active' }],
       technical_requirements: [
         {
           id: 'tr-1',
@@ -931,7 +931,7 @@ describe('exportMarkdown complete spec export', () => {
           rule: 'Rule text',
           when: 'When condition',
           then: 'Then behavior',
-          linked_requirements: ['FR1 body'],
+          linked_requirements: ['fr-1'],
           linked_task_ids: ['task-1'],
           status: 'active',
           notes: 'Rule notes',
@@ -946,7 +946,7 @@ describe('exportMarkdown complete spec export', () => {
           request_body: { type: 'object', properties: { id: { type: 'string' } } },
           response_success: { type: 'object', required: ['ok'] },
           response_errors: [{ status: 400, detail: 'bad request' }],
-          linked_requirements: ['0'],
+          linked_requirements: ['fr-1'],
           linked_rules: ['br-1'],
           linked_task_ids: ['task-1'],
           status: 'active',
@@ -965,7 +965,7 @@ describe('exportMarkdown complete spec export', () => {
           endpoint: '/export',
           method: 'GET',
           data_contract: { source: 'payload' },
-          linked_requirements: ['0'],
+          linked_requirements: ['fr-1'],
           linked_api_contracts: ['api-1'],
           linked_task_ids: ['task-1'],
           status: 'active',
@@ -983,7 +983,7 @@ describe('exportMarkdown complete spec export', () => {
           threshold: '0 failures',
           severity: 'high',
           owner: 'frontend',
-          linked_requirements: ['0'],
+          linked_requirements: ['fr-1'],
           linked_integration_requirements: ['ir-1'],
           linked_task_ids: ['task-1'],
           status: 'active',
@@ -998,7 +998,7 @@ describe('exportMarkdown complete spec export', () => {
           context: 'Decision context',
           alternatives_considered: ['Alternative A'],
           supersedes_decision_id: null,
-          linked_requirements: ['0'],
+          linked_requirements: ['fr-1'],
           linked_task_ids: ['task-1'],
           status: 'active',
           notes: 'Decision notes',
@@ -1008,6 +1008,7 @@ describe('exportMarkdown complete spec export', () => {
       screen_mockups: [],
       architecture_designs: [],
       qa_items: [{ question: 'Question?', answer: 'Answer.', asked_by: 'agent', answered_by: 'user' }],
+      cards: [{ id: 'task-1', title: 'Implementation task', status: 'done' }],
     } as any);
 
     for (const heading of [
@@ -1026,6 +1027,11 @@ describe('exportMarkdown complete spec export', () => {
       expect(md).toContain(heading);
     }
     expect(md).toContain('TR1 body');
+    expect(md).toContain('- FR1 body (fr-1)');
+    expect(md).toContain('- Business rule (br-1)');
+    expect(md).toContain('- GET /export (api-1)');
+    expect(md).toContain('- Integration requirement (ir-1)');
+    expect(md).toContain('- Implementation task (task-1)');
     expect(md).toContain('```json');
     expect(md).not.toContain('[object Object]');
   });
@@ -1059,6 +1065,10 @@ describe('exportMarkdown complete task family export', () => {
     integration_requirements: [],
     observability_requirements: [],
     decisions: [],
+    cards: [
+      { id: 'task-1', title: 'Origin implementation task', status: 'done' },
+      { id: 'test-card', title: 'Regression test task', status: 'done' },
+    ],
     knowledge_bases: [],
     screen_mockups: [],
     architecture_designs: [],
@@ -1318,11 +1328,12 @@ describe('exportMarkdown complete task family export', () => {
     expect(md).toContain('| **Type** | Bug |');
     expect(md).toContain('## Bug Details');
     expect(md).toContain('**Severity:** major');
-    expect(md).toContain('**Origin task:** task-1');
+    expect(md).toContain('**Origin task:** Origin implementation task (task-1)');
     expect(md).toContain('### Expected Behavior');
     expect(md).toContain('### Observed Behavior');
     expect(md).toContain('### Steps to Reproduce');
-    expect(md).toContain('**Linked test tasks:** test-card');
+    expect(md).toContain('**Linked test tasks:**');
+    expect(md).toContain('- Regression test task (test-card)');
     expect(md).not.toContain('[object Object]');
   });
 });

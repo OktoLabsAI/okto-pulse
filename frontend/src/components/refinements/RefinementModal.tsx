@@ -34,6 +34,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportRefinement, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
+import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import { openLineageGraph } from '@/components/traceability';
@@ -106,8 +107,11 @@ function formatValue(val: unknown): string {
   if (val === null || val === undefined) return '(empty)';
   if (Array.isArray(val)) {
     if (val.length === 0) return '(empty list)';
-    return val.map((v, i) => `${i + 1}. ${v}`).join('\n');
+    return val
+      .map((v, i) => `${i + 1}. ${v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+      .join('\n');
   }
+  if (typeof val === 'object') return JSON.stringify(val, null, 2);
   return String(val);
 }
 
@@ -856,7 +860,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
       setRefinement(updated);
       onChanged();
       toast.success(`Refinement moved to ${REFINEMENT_STATUS_LABELS[status]}`);
-    } catch { toast.error('Failed to move refinement'); } finally { setMovingTo(null); }
+    } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
   };
 
   const [showSpecSelector, setShowSpecSelector] = useState(false);
@@ -870,7 +874,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
       toast.success('Spec draft created');
       await loadRefinement();
       onChanged();
-    } catch { toast.error('Failed to create spec'); } finally { setDerivingSpec(false); }
+    } catch (err) { toast.error(getErrorMessage(err)); } finally { setDerivingSpec(false); }
   };
 
   const handleSpecSelectorConfirm = async (_selectedItems: SelectableItem[], _title: string) => {

@@ -11,6 +11,7 @@ import type { CardSummary } from '@/types';
 import { PRIORITY_COLORS, PRIORITY_LABELS, BUG_SEVERITY_LABELS, BUG_SEVERITY_COLORS } from '@/types';
 import type { KGCognitivePendingBadgeView } from '@/services/kg-health-api';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
+import { QABadge } from '@/components/shared/QABadge';
 
 interface KanbanCardProps {
   card: CardSummary;
@@ -122,6 +123,7 @@ export function KanbanCard({ card, onClick, nameMap, cognitiveBadge }: KanbanCar
               {card.title}
             </h4>
             <CognitivePendingBadge badge={cognitiveBadge} compact />
+            <QABadge count={card.open_qa_count} compact />
             {card.spec_id && (
               <span
                 className="shrink-0 inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"

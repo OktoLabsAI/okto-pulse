@@ -28,6 +28,7 @@ import { CreateRefinementModal } from './CreateRefinementModal';
 import { RefinementModal } from './RefinementModal';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
+import { QABadge } from '@/components/shared/QABadge';
 
 interface RefinementsPanelProps {
   boardId: string;
@@ -275,6 +276,12 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
                             {refinement.description}
                           </p>
                         )}
+                        {/* Open Q&A badge on its own row, above the labels */}
+                        {refinement.open_qa_count ? (
+                          <div className="mt-2">
+                            <QABadge count={refinement.open_qa_count} />
+                          </div>
+                        ) : null}
                         {/* Labels */}
                         {refinement.labels && refinement.labels.length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-2">

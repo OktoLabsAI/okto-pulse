@@ -69,6 +69,10 @@ function sprint(overrides: Partial<Sprint> = {}): Sprint {
     objective: 'Existing objective',
     expected_outcome: 'Existing expected outcome',
     status: 'active',
+    lane_type: 'normal',
+    origin_sprint_id: null,
+    origin_bug_id: null,
+    normal_sprint_created: true,
     spec_version: 3,
     start_date: null,
     end_date: null,
@@ -115,7 +119,7 @@ async function renderSprint(overrides: Partial<Sprint> = {}) {
 }
 
 describe('deriveSprintDisplayCounts', () => {
-  it('counts tests separately while bugs and legacy cards remain Cards', () => {
+  it('counts tasks, tests and bugs as separate sprint categories', () => {
     const cards = [
       card({ id: 'normal-1', title: 'Normal', status: 'done', card_type: 'normal' }),
       card({ id: 'bug-1', title: 'Bug', status: 'validation', card_type: 'bug' }),
@@ -126,11 +130,31 @@ describe('deriveSprintDisplayCounts', () => {
     const counts = deriveSprintDisplayCounts(cards);
 
     expect(counts.cards).toBe(3);
+    expect(counts.tasks).toBe(2);
     expect(counts.tests).toBe(1);
+    expect(counts.bugs).toBe(1);
     expect(counts.workItemsTotal).toBe(4);
     expect(counts.workItemsDone).toBe(3);
     expect(counts.visibleCards.map((item) => item.id)).toEqual(['normal-1', 'bug-1', 'legacy-1']);
+    expect(counts.taskCards.map((item) => item.id)).toEqual(['normal-1', 'legacy-1']);
     expect(counts.testCards.map((item) => item.id)).toEqual(['test-1']);
+    expect(counts.bugCards.map((item) => item.id)).toEqual(['bug-1']);
+  });
+
+  it('normalizes backend enum-shaped card_type values before counting', () => {
+    const cards = [
+      card({ id: 'normal-1', title: 'Normal', status: 'done', card_type: 'CardType.NORMAL' as any }),
+      card({ id: 'bug-1', title: 'Bug', status: 'done', card_type: 'CardType.BUG' as any }),
+      card({ id: 'test-1', title: 'Test', status: 'done', card_type: { value: 'test' } as any }),
+    ];
+
+    const counts = deriveSprintDisplayCounts(cards);
+
+    expect(counts.tasks).toBe(1);
+    expect(counts.tests).toBe(1);
+    expect(counts.bugs).toBe(1);
+    expect(counts.cards).toBe(2);
+    expect(counts.visibleCards.map((item) => item.id)).toEqual(['normal-1', 'bug-1']);
   });
 });
 
@@ -146,8 +170,9 @@ describe('SprintModal display counts', () => {
   it('renders an empty sprint as zero counts without crashing', async () => {
     await renderSprint({ cards: [] });
 
-    expect(screen.getByTestId('sprint-summary-cards')).toHaveTextContent('0');
+    expect(screen.getByTestId('sprint-summary-tasks')).toHaveTextContent('0');
     expect(screen.getByTestId('sprint-summary-tests')).toHaveTextContent('0');
+    expect(screen.getByTestId('sprint-summary-bugs')).toHaveTextContent('0');
     expect(screen.getByTestId('sprint-summary-done')).toHaveTextContent('0');
     expect(screen.getByText('0 of 0 work items done')).toBeInTheDocument();
   });
@@ -160,8 +185,9 @@ describe('SprintModal display counts', () => {
       ],
     });
 
-    expect(screen.getByTestId('sprint-summary-cards')).toHaveTextContent('0');
+    expect(screen.getByTestId('sprint-summary-tasks')).toHaveTextContent('0');
     expect(screen.getByTestId('sprint-summary-tests')).toHaveTextContent('2');
+    expect(screen.getByTestId('sprint-summary-bugs')).toHaveTextContent('0');
     expect(screen.getByText('1 of 2 work items done')).toBeInTheDocument();
     expect(screen.queryByText(/cards done/i)).not.toBeInTheDocument();
 
@@ -172,7 +198,7 @@ describe('SprintModal display counts', () => {
     expect(screen.queryByText('Regression two')).not.toBeInTheDocument();
   });
 
-  it('counts and renders bug cards as Cards', async () => {
+  it('counts bug cards separately from Tasks while still rendering them in Cards', async () => {
     await renderSprint({
       cards: [
         card({ id: 'bug-1', title: 'Fix broken counter', status: 'done', card_type: 'bug' }),
@@ -180,8 +206,9 @@ describe('SprintModal display counts', () => {
       ],
     });
 
-    expect(screen.getByTestId('sprint-summary-cards')).toHaveTextContent('2');
+    expect(screen.getByTestId('sprint-summary-tasks')).toHaveTextContent('0');
     expect(screen.getByTestId('sprint-summary-tests')).toHaveTextContent('0');
+    expect(screen.getByTestId('sprint-summary-bugs')).toHaveTextContent('2');
 
     fireEvent.click(screen.getByRole('button', { name: /^Cards/i }));
 
@@ -203,8 +230,9 @@ describe('SprintModal display counts', () => {
       ],
     });
 
-    expect(screen.getByTestId('sprint-summary-cards')).toHaveTextContent('3');
+    expect(screen.getByTestId('sprint-summary-tasks')).toHaveTextContent('2');
     expect(screen.getByTestId('sprint-summary-tests')).toHaveTextContent('1');
+    expect(screen.getByTestId('sprint-summary-bugs')).toHaveTextContent('1');
     expect(screen.getByText('3 of 4 work items done')).toBeInTheDocument();
     expect(screen.queryByText(/cards done/i)).not.toBeInTheDocument();
 

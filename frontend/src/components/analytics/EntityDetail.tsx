@@ -305,10 +305,30 @@ function coverageItemId(item: any, index: number, prefix: string): string {
   return `${prefix}-${index}`;
 }
 
+function displayText(value: any, fallback: string): string {
+  if (value == null || value === '') return fallback;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    const rendered = value
+      .map((item, index) => displayText(item, `#${index}`))
+      .filter(Boolean)
+      .join(', ');
+    return rendered || fallback;
+  }
+  if (typeof value === 'object') {
+    return displayText(
+      value.title ?? value.text ?? value.description ?? value.requirement ?? value.rule ?? value.id,
+      fallback,
+    );
+  }
+  return fallback;
+}
+
 function coverageItemTitle(item: any, index: number, prefix: string): string {
   if (typeof item === 'string') return item;
   if (item && typeof item === 'object') {
-    return String(item.title ?? item.text ?? item.description ?? item.requirement ?? item.id ?? `${prefix.toUpperCase()} #${index}`);
+    return displayText(item.title ?? item.text ?? item.description ?? item.requirement ?? item.id, `${prefix.toUpperCase()} #${index}`);
   }
   return `${prefix.toUpperCase()} #${index}`;
 }
@@ -528,7 +548,7 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
                     <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0 mt-0.5" />
                   )}
                   <span className={`${ac.covered ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'} line-clamp-2`}>
-                    {ac.text || `AC #${ac.index}`}
+                    {displayText(ac.text, `AC #${ac.index}`)}
                   </span>
                 </div>
               ))}
@@ -674,7 +694,7 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
               <div className="space-y-1.5 max-h-64 overflow-y-auto">
                 {(data.technical_requirements || []).map((tr: any, idx: number) => {
                   const covered = !(data.trs_uncovered_indices ?? []).includes(idx);
-                  const text = typeof tr === 'string' ? tr : (tr?.text || tr?.title || `TR #${idx}`);
+                  const text = typeof tr === 'string' ? tr : displayText(tr?.text ?? tr?.title, `TR #${idx}`);
                   return (
                     <div key={idx} className="flex items-start gap-2 text-xs">
                       {covered ? (
@@ -756,7 +776,7 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
                   <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0 mt-0.5" />
                 )}
                 <span className={`${fr.has_rule ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'} line-clamp-2 flex-1`}>
-                  {fr.text || `FR #${fr.index}`}
+                  {displayText(fr.text, `FR #${fr.index}`)}
                 </span>
                 <div className="flex gap-1 shrink-0">
                   {fr.has_rule && <span className="px-1 py-0.5 rounded text-[9px] bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">Rule</span>}

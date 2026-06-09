@@ -31,6 +31,7 @@ import { CreateSpecModal } from './CreateSpecModal';
 import { SpecModal } from './SpecModal';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
+import { QABadge } from '@/components/shared/QABadge';
 
 interface SpecsPanelProps {
   boardId: string;
@@ -346,6 +347,12 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
                         {sanitizePreview(spec.description)}
                       </p>
                     )}
+                    {/* Open Q&A badge on its own row, above the labels */}
+                    {spec.open_qa_count ? (
+                      <div className="mt-2">
+                        <QABadge count={spec.open_qa_count} />
+                      </div>
+                    ) : null}
                     {spec.labels && spec.labels.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-2">
                         {spec.labels.map((label, i) => (
