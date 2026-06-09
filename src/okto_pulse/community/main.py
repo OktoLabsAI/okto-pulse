@@ -282,6 +282,68 @@ def _configure_sqlite_pragmas(engine) -> None:
         cursor.close()
 
 
+# Paths que nunca recebem o fallback SPA (API, docs, MCP e assets estáticos).
+_SPA_PASSTHROUGH_PREFIXES = (
+    "/api/", "/health", "/docs", "/openapi.json", "/redoc", "/mcp",
+    "/config.js", "/assets",
+)
+
+
+class SPAFallbackMiddleware:
+    """Fallback de SPA (404 → index.html) como ASGI puro.
+
+    Root-cause fix (2026-06-09): a versão anterior era BaseHTTPMiddleware,
+    que envolve TODA resposta — inclusive os SSE de
+    ``/api/v1/kg/.../events`` — num task group do anyio. Na desconexão do
+    cliente, o cancel scope hard-cancelava o generator no meio de awaits de
+    DB, vazando conexões do pool (exaustão → "travamento"). Como ASGI puro,
+    só intercepta o ``http.response.start``: 404 em path de SPA vira
+    index.html; todo o resto passa direto, sem cancel scope adicional.
+    """
+
+    def __init__(self, app, index_body: bytes) -> None:
+        self.app = app
+        self.index_body = index_body
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if any(path.startswith(p) for p in _SPA_PASSTHROUGH_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+
+        replaced = False
+        index_body = self.index_body
+
+        async def send_wrapper(message) -> None:
+            nonlocal replaced
+            if message["type"] == "http.response.start" and message["status"] == 404:
+                replaced = True
+                await send({
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-type", b"text/html; charset=utf-8"),
+                        (b"content-length", str(len(index_body)).encode("ascii")),
+                    ],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": index_body,
+                    "more_body": False,
+                })
+                return
+            if replaced:
+                # Descarta o body do 404 original — a resposta SPA já foi
+                # enviada por inteiro acima.
+                return
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 def _mount_frontend(
     app,
     frontend_dir: Path,
@@ -324,21 +386,6 @@ def _mount_frontend(
     else:
         injected_index_html = index_html_content
 
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.responses import Response
-
-    _API_PREFIXES = ("/api/", "/health", "/docs", "/openapi.json", "/redoc", "/mcp", "/config.js")
-
-    class SPAMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            response = await call_next(request)
-            # If the response is 404 and the path is not an API/asset path,
-            # serve index.html for SPA client-side routing
-            if response.status_code == 404:
-                path = request.url.path
-                if not any(path.startswith(p) for p in _API_PREFIXES) and not path.startswith("/assets"):
-                    return Response(content=injected_index_html, media_type="text/html")
-            return response
 
     # Inject runtime configuration BEFORE SPA middleware.
     # PUBLIC_* env vars override the URLs the browser SPA uses — set them when
@@ -366,7 +413,7 @@ window.OKTO_PULSE_CONFIG = {{
         from fastapi.responses import Response
         return Response(content=config_script, media_type="application/javascript")
 
-    app.add_middleware(SPAMiddleware)
+    app.add_middleware(SPAFallbackMiddleware, index_body=injected_index_html.encode("utf-8"))
 
 
 def create_community_app():
