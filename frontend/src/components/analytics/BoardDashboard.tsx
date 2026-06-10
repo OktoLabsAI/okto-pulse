@@ -19,8 +19,10 @@ import {
   FlaskConical,
   Bug,
   Clock,
+  HelpCircle,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 // ---------------------------------------------------------------------------
 // Types matching backend responses
@@ -187,6 +189,16 @@ interface CoverageSpec {
   decisions_total?: number;
   tr_task_linkage_pct?: number;
   trs_total?: number;
+  ir_task_linkage_pct?: number;
+  irs_total?: number;
+  irs_linked?: number;
+  irs_uncovered_ids?: string[];
+  skip_ir_coverage?: boolean;
+  or_task_linkage_pct?: number;
+  ors_total?: number;
+  ors_linked?: number;
+  ors_uncovered_ids?: string[];
+  skip_or_coverage?: boolean;
   // Bug 6f152627: AC/FR coverage explícitos para o painel nível 2.
   ac_coverage_pct?: number;
   fr_coverage_pct?: number;
@@ -297,45 +309,32 @@ function scatterDotColor(completeness: number, drift: number): string {
 // Skeleton
 // ---------------------------------------------------------------------------
 
-function SkeletonBlock({ className = '' }: { className?: string }) {
-  return (
-    <div className={`animate-pulse bg-gray-200 dark:bg-gray-700 rounded ${className}`} />
-  );
-}
 
-function LoadingSkeleton() {
+
+function DashboardMetricHelp({ label, description, targetId }: { label: string; description: string; targetId: string }) {
+  const openDetail = () => {
+    document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        {[1, 2, 3, 4, 5, 6].map((i) => (
-          <div key={i} className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
-            <SkeletonBlock className="h-3 w-20" />
-            <SkeletonBlock className="h-8 w-16" />
-            <SkeletonBlock className="h-3 w-24" />
-          </div>
-        ))}
-      </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-          <SkeletonBlock className="h-4 w-40 mb-4" />
-          <SkeletonBlock className="h-56" />
-        </div>
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-          <SkeletonBlock className="h-4 w-40 mb-4" />
-          <SkeletonBlock className="h-56" />
-        </div>
-      </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-          <SkeletonBlock className="h-4 w-32 mb-4" />
-          <SkeletonBlock className="h-40" />
-        </div>
-        <div className="col-span-1 lg:col-span-2 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-          <SkeletonBlock className="h-4 w-40 mb-4" />
-          <SkeletonBlock className="h-40" />
-        </div>
-      </div>
-    </div>
+    <span className="relative group inline-flex">
+      <button
+        type="button"
+        aria-label={`${label} help`}
+        title={`${description} Open details.`}
+        onClick={openDetail}
+        className="inline-flex h-4 w-4 items-center justify-center rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        <HelpCircle className="h-3.5 w-3.5" />
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute right-0 top-5 z-20 w-56 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] font-normal leading-snug text-gray-600 opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+      >
+        {description}
+        <span className="mt-1 block font-medium text-blue-600 dark:text-blue-400">Open detail</span>
+      </span>
+    </span>
   );
 }
 
@@ -512,7 +511,7 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   // Render
   // ---------------------------------------------------------------------------
 
-  if (loading) return <LoadingSkeleton />;
+  if (loading) return <PulseLoader size="lg" label="Loading board analytics..." className="py-20" />;
 
   if (error) {
     return (
@@ -526,6 +525,12 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   if (!kpis) return null;
 
   const tabLabels: Record<EntityTab, string> = { spec: 'Specs', ideation: 'Ideations', card: 'Tasks' };
+  const hasIrCoverageMetrics = coverage.some((s) =>
+    s.irs_total !== undefined || s.ir_task_linkage_pct !== undefined || s.skip_ir_coverage === true
+  );
+  const hasOrCoverageMetrics = coverage.some((s) =>
+    s.ors_total !== undefined || s.or_task_linkage_pct !== undefined || s.skip_or_coverage === true
+  );
 
   return (
     <div className="space-y-6">
@@ -538,6 +543,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           <div className="flex items-center gap-1.5 mb-1">
             <BookOpen className="w-4 h-4 text-blue-500" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Stories</span>
+            <DashboardMetricHelp
+              label="Stories"
+              description="Stories are intake items for requirements. The conversion badge shows how many became ideations in this board."
+              targetId="analytics-entity-drilldown"
+            />
           </div>
           <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">{kpis.stories}</span>
           <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
@@ -550,6 +560,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           <div className="flex items-center gap-1.5 mb-1">
             <Lightbulb className="w-4 h-4 text-amber-500" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Ideations</span>
+            <DashboardMetricHelp
+              label="Ideations"
+              description="Ideations represent explored problem spaces. The done badge shows ideations completed in the board lifecycle."
+              targetId="analytics-entity-drilldown"
+            />
           </div>
           <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">{kpis.ideations}</span>
           <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
@@ -562,6 +577,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           <div className="flex items-center gap-1.5 mb-1">
             <FileText className="w-4 h-4 text-blue-500" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Specs</span>
+            <DashboardMetricHelp
+              label="Specs"
+              description="Specs are validated execution contracts. The done badge shows specs fully delivered."
+              targetId="analytics-entity-drilldown"
+            />
           </div>
           <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">{kpis.specs}</span>
           <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
@@ -574,6 +594,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           <div className="flex items-center gap-1.5 mb-1">
             <CheckSquare className="w-4 h-4 text-violet-500" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Tasks</span>
+            <DashboardMetricHelp
+              label="Tasks"
+              description="Tasks count implementation, test, and bug cards. The done badge shows completed cards."
+              targetId="analytics-entity-drilldown"
+            />
           </div>
           <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">{kpis.tasks}</span>
           <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
@@ -586,6 +611,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           <div className="flex items-center gap-1.5 mb-1">
             <Target className="w-4 h-4 text-gray-400" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Completeness</span>
+            <DashboardMetricHelp
+              label="Completeness"
+              description="Average validator-reported completeness for validated task work in this date range."
+              targetId="analytics-quality-scatter"
+            />
           </div>
           <span className={`text-2xl font-bold ${completenessColor(kpis.avgCompleteness)}`}>
             {kpis.avgCompleteness !== null ? `${kpis.avgCompleteness}%` : '--'}
@@ -597,6 +627,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           <div className="flex items-center gap-1.5 mb-1">
             <AlertTriangle className="w-4 h-4 text-gray-400" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Drift</span>
+            <DashboardMetricHelp
+              label="Drift"
+              description="Average validator-reported drift from the intended task scope. Lower drift is better."
+              targetId="analytics-quality-scatter"
+            />
           </div>
           <span className={`text-2xl font-bold ${driftColor(kpis.avgDrift)}`}>
             {kpis.avgDrift !== null ? `${kpis.avgDrift}%` : '--'}
@@ -608,6 +643,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           <div className="flex items-center gap-1.5 mb-1">
             <FlaskConical className="w-4 h-4 text-emerald-500" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Coverage</span>
+            <DashboardMetricHelp
+              label="Coverage"
+              description="Shows objective spec coverage. Open the chart to inspect AC, FR, TR, IR, OR, and decision coverage per spec."
+              targetId="analytics-coverage-by-spec"
+            />
           </div>
           <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">
             {kpis.coberturaPct}%
@@ -620,6 +660,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           <div className="flex items-center gap-1.5 mb-1">
             <Bug className="w-4 h-4 text-red-500" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Bugs</span>
+            <DashboardMetricHelp
+              label="Bugs"
+              description="Bug cards tracked on this board. The open badge shows bugs not yet completed."
+              targetId="analytics-entity-drilldown"
+            />
           </div>
           <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">{funnel?.bugs_total ?? 0}</span>
           <span className={`ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium ${
@@ -636,6 +681,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           <div className="flex items-center gap-1.5 mb-1">
             <Clock className="w-4 h-4 text-gray-400" />
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Cycle Time</span>
+            <DashboardMetricHelp
+              label="Cycle Time"
+              description="Average elapsed time for done tasks in the selected date range."
+              targetId="analytics-entity-drilldown"
+            />
           </div>
           <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">
             {funnel?.avg_cycle_hours != null ? formatCycleTime(funnel.avg_cycle_hours) : '--'}
@@ -649,7 +699,7 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       {/* ------------------------------------------------------------------ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Scatter Completeness x Drift */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+        <div id="analytics-quality-scatter" className="scroll-mt-20 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">
             Completeness x Drift
           </h3>
@@ -698,7 +748,7 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
         </div>
 
         {/* Coverage by Spec (Tests, Rules, Contracts) */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+        <div id="analytics-coverage-by-spec" className="scroll-mt-20 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">
             Coverage by Spec
           </h3>
@@ -706,6 +756,12 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
             <span className="flex items-center gap-1" title="Acceptance Criteria covered by Test Scenarios"><span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> AC</span>
             <span className="flex items-center gap-1" title="Functional Requirements covered by Business Rules"><span className="w-2 h-2 rounded-full bg-amber-500 inline-block" /> FR</span>
             <span className="flex items-center gap-1" title="Technical Requirements with active linked tasks"><span className="w-2 h-2 rounded-full bg-purple-500 inline-block" /> TRs</span>
+            {hasIrCoverageMetrics && (
+              <span className="flex items-center gap-1" title="Integration Requirements with active linked tasks"><span className="w-2 h-2 rounded-full bg-sky-500 inline-block" /> IRs</span>
+            )}
+            {hasOrCoverageMetrics && (
+              <span className="flex items-center gap-1" title="Observability Requirements with active linked tasks"><span className="w-2 h-2 rounded-full bg-teal-500 inline-block" /> ORs</span>
+            )}
             <span className="flex items-center gap-1" title="Decisions with active linked tasks"><span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" /> Decisions</span>
           </div>
           {coverageBars.length > 0 ? (
@@ -714,6 +770,10 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
                 const acPct = s.ac_coverage_pct ?? s.pct;
                 const frPct = s.fr_coverage_pct ?? s.fr_with_rules_pct ?? 0;
                 const trPct = s.tr_task_linkage_pct ?? 0;
+                const irPct = s.ir_task_linkage_pct ?? 0;
+                const orPct = s.or_task_linkage_pct ?? 0;
+                const irSkipped = s.skip_ir_coverage === true;
+                const orSkipped = s.skip_or_coverage === true;
                 const decPct = s.decisions_coverage_pct ?? 0;
                 return (
                   <div key={s.spec_id}>
@@ -757,6 +817,40 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
                           {trPct}%
                         </span>
                       </div>
+                      {/* IR coverage bar */}
+                      {hasIrCoverageMetrics && (
+                        <div
+                          className="flex items-center gap-2"
+                          title={irSkipped ? 'IR coverage skipped by coverage calculator' : `IRs: ${s.irs_linked ?? 0}/${s.irs_total ?? 0} linked to active tasks`}
+                        >
+                          <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
+                            <div
+                              className={`h-full rounded transition-all duration-500 ${irSkipped ? 'bg-gray-400 dark:bg-gray-500' : 'bg-sky-500'}`}
+                              style={{ width: `${irSkipped ? 100 : irPct}%` }}
+                            />
+                          </div>
+                          <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
+                            {irSkipped ? 'skip' : `${irPct}%`}
+                          </span>
+                        </div>
+                      )}
+                      {/* OR coverage bar */}
+                      {hasOrCoverageMetrics && (
+                        <div
+                          className="flex items-center gap-2"
+                          title={orSkipped ? 'OR coverage skipped by coverage calculator' : `ORs: ${s.ors_linked ?? 0}/${s.ors_total ?? 0} linked to active tasks`}
+                        >
+                          <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
+                            <div
+                              className={`h-full rounded transition-all duration-500 ${orSkipped ? 'bg-gray-400 dark:bg-gray-500' : 'bg-teal-500'}`}
+                              style={{ width: `${orSkipped ? 100 : orPct}%` }}
+                            />
+                          </div>
+                          <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
+                            {orSkipped ? 'skip' : `${orPct}%`}
+                          </span>
+                        </div>
+                      )}
                       {/* Decisions coverage bar (spec 233eaad3) */}
                       <div className="flex items-center gap-2" title={`Decisions: ${s.decisions_total ?? 0} total`}>
                         <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
@@ -785,7 +879,7 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       {/* ------------------------------------------------------------------ */}
       {/* Agent Ranking + Entity Table                                       */}
       {/* ------------------------------------------------------------------ */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div id="analytics-entity-drilldown" className="scroll-mt-20 grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Agent Ranking (1/3) */}
         <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">

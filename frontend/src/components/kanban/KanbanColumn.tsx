@@ -10,6 +10,7 @@ import { useDroppable } from '@dnd-kit/core';
 import { Plus } from 'lucide-react';
 import type { CardSummary, CardStatus } from '@/types';
 import { STATUS_LABELS } from '@/types';
+import type { KGCognitivePendingBadgeView } from '@/services/kg-health-api';
 import { KanbanCard } from './KanbanCard';
 
 interface KanbanColumnProps {
@@ -18,6 +19,10 @@ interface KanbanColumnProps {
   onCardClick: (cardId: string) => void;
   onAddCard: (status: CardStatus) => void;
   nameMap: Record<string, string>;
+  /** KG-03.6 — read-only cognitive badges keyed by source_ref.
+   * Resolved at the KanbanBoard level in ONE batch HTTP request and
+   * passed down so per-card rendering needs no extra fetch. */
+  cognitiveBadges?: Record<string, KGCognitivePendingBadgeView>;
 }
 
 const columnColors: Record<CardStatus, string> = {
@@ -30,7 +35,7 @@ const columnColors: Record<CardStatus, string> = {
   cancelled: 'border-t-gray-500',
 };
 
-export function KanbanColumn({ status, cards, onCardClick, onAddCard, nameMap }: KanbanColumnProps) {
+export function KanbanColumn({ status, cards, onCardClick, onAddCard, nameMap, cognitiveBadges }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
   return (
@@ -63,9 +68,27 @@ export function KanbanColumn({ status, cards, onCardClick, onAddCard, nameMap }:
       {/* Cards area */}
       <div className="space-y-2 flex-1">
         <SortableContext items={cards.map((c) => c.id)} strategy={verticalListSortingStrategy}>
-          {cards.map((card) => (
-            <KanbanCard key={card.id} card={card} onClick={onCardClick} nameMap={nameMap} />
-          ))}
+          {cards.map((card) => {
+            const sourceRef =
+              card.card_type === 'test'
+                ? `test:${card.id}`
+                : card.card_type === 'bug'
+                  ? `bug:${card.id}`
+                : !card.card_type || card.card_type === 'normal'
+                  ? `task:${card.id}`
+                  : null;
+            return (
+              <KanbanCard
+                key={card.id}
+                card={card}
+                onClick={onCardClick}
+                nameMap={nameMap}
+                cognitiveBadge={
+                  sourceRef ? cognitiveBadges?.[sourceRef] : undefined
+                }
+              />
+            );
+          })}
         </SortableContext>
 
         {/* Empty state / drop placeholder */}

@@ -4,12 +4,13 @@
  * Spec 8 / Sprint 4:
  *   - S4.4: 10 coloured chips, one per KGEdgeType; independent toggle.
  *   - S4.5: confidence slider restricted to 0..1 with step 0.05.
- *   - S4.6: node-limit dropdown (50/100/200/500); `onNodeLimitChange` bubbles
+ *   - S4.6: node-limit dropdown (50/100/200/500/1000); `onNodeLimitChange` bubbles
  *     up so the parent can refetch with the new page size.
  */
 
 import type { KGEdgeType, KGNodeType } from '@/types/knowledge-graph';
 import {
+  ALL_NODE_TYPES,
   ALL_EDGE_TYPES,
   EDGE_TYPE_CONFIG,
   NODE_TYPE_CONFIG,
@@ -33,7 +34,7 @@ interface Props {
   subView: SubView;
   onSubViewChange: (v: SubView) => void;
   nodeCount: number;
-  /** Current page size driving the /graph fetch (50/100/200/500). */
+  /** Current page size driving the /graph fetch (50/100/200/500/1000). */
   nodeLimit: number;
   /** Notified when the user picks a new page size — parent refetches. */
   onNodeLimitChange: (limit: number) => void;
@@ -58,8 +59,7 @@ const SUB_VIEWS: { key: SubView; label: string }[] = [
   { key: 'settings', label: 'Settings' },
 ];
 
-const ALL_NODE_TYPES = Object.keys(NODE_TYPE_CONFIG) as KGNodeType[];
-export const NODE_LIMIT_OPTIONS = [50, 100, 200, 500] as const;
+export const NODE_LIMIT_OPTIONS = [50, 100, 200, 500, 1000] as const;
 
 // Maps each sub-view to the permission flag that gates its visibility.
 // Absent entry = always visible.

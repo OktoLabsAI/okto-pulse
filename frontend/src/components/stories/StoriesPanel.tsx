@@ -25,6 +25,7 @@ import { sanitizePreview } from '@/lib/sanitizePreview';
 import type { StoryStatus, StorySummary, TopicSummary } from '@/types';
 import { STORY_STATUS_LABELS } from '@/types';
 import { StoryModal } from './StoryModal';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface StoriesPanelProps {
   boardId: string;
@@ -497,7 +498,7 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
 
         <section className="min-h-0 overflow-auto">
           {loading ? (
-            <div className="py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading stories...</div>
+            <PulseLoader size="sm" label="Loading stories..." />
           ) : topics.length === 0 ? (
             <div className="flex min-h-[300px] items-center justify-center rounded-xl border border-dashed border-surface-300 dark:border-surface-700">
               <div className="text-center">

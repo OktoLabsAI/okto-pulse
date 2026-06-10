@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle, ChevronDown, ChevronUp, Link, Network, Pencil, Plus, Trash2, Unlink, XCircle } from 'lucide-react';
 import type { ApiContract, CardSummaryForSpec, IntegrationRequirement, IntegrationRequirementType, Spec } from '@/types';
 
@@ -14,6 +14,9 @@ interface IntegrationRequirementsTabProps {
   canDelete?: boolean;
   canLinkTask?: boolean;
   canEditCoverageFlags?: boolean;
+  focusEditId?: string | null;
+  focusCreateToken?: number | null;
+  onFocusHandled?: () => void;
 }
 
 const TYPES: IntegrationRequirementType[] = ['api', 'queue', 'stored_procedure', 'data_contract', 'event', 'file', 'other'];
@@ -87,6 +90,9 @@ export function IntegrationRequirementsTab({
   canDelete = true,
   canLinkTask = true,
   canEditCoverageFlags = true,
+  focusEditId = null,
+  focusCreateToken = null,
+  onFocusHandled,
 }: IntegrationRequirementsTabProps) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -104,9 +110,11 @@ export function IntegrationRequirementsTab({
   const [formLinkedContracts, setFormLinkedContracts] = useState<string[]>([]);
   const [formNotes, setFormNotes] = useState('');
 
-  const requirements = spec.integration_requirements || [];
+  const requirements = (spec.integration_requirements || []).filter((item) => item.status === 'active');
   const activeRequirements = requirements.filter((item) => item.status === 'active');
-  const frs = spec.functional_requirements || [];
+  const frs = (spec.functional_requirements || []).map((fr: any) =>
+    typeof fr === 'string' ? fr : String(fr?.text || fr?.title || '')
+  );
   const contracts = spec.api_contracts || [];
 
   const coverage = useMemo(() => {
@@ -173,6 +181,23 @@ export function IntegrationRequirementsTab({
     setFormLinkedContracts(item.linked_api_contracts || []);
     setFormNotes(item.notes || '');
   };
+
+  useEffect(() => {
+    if (!focusEditId || !canEdit) return;
+    const target = requirements.find((item) => item.id === focusEditId);
+    if (!target) return;
+    handleEdit(target);
+    setExpandedId(null);
+    onFocusHandled?.();
+  }, [focusEditId, canEdit, spec.integration_requirements, onFocusHandled]);
+
+  useEffect(() => {
+    if (!focusCreateToken || !canCreate) return;
+    resetForm();
+    setAdding(true);
+    setEditingId(null);
+    onFocusHandled?.();
+  }, [focusCreateToken, canCreate, onFocusHandled]);
 
   const handleSaveEdit = () => {
     if (!editingId || !formTitle.trim() || !formDescription.trim()) return;

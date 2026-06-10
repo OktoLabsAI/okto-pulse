@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 
 [[package]]
@@ -1488,7 +1488,7 @@ wheels = [
 
 [[package]]
 name = "okto-pulse"
-version = "0.1.12"
+version = "0.2.2"
 source = { editable = "." }
 dependencies = [
     { name = "okto-pulse-core" },
@@ -1497,14 +1497,14 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "okto-pulse-core", directory = "../okto-pulse-core" },
+    { name = "okto-pulse-core", specifier = ">=0.2.1,<1.0.0" },
     { name = "sentence-transformers", specifier = ">=2.5.0,<6.0.0" },
 ]
 
 [[package]]
 name = "okto-pulse-core"
-version = "0.1.12"
-source = { directory = "../okto-pulse-core" }
+version = "0.2.2"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiosqlite" },
@@ -1526,31 +1526,9 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
     { name = "wsproto" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiofiles", specifier = ">=23.2.0,<26.0.0" },
-    { name = "aiosqlite", specifier = ">=0.19.0,<1.0.0" },
-    { name = "apscheduler", specifier = ">=3.10.0,<4.0.0" },
-    { name = "asyncpg", specifier = ">=0.29,<1.0.0" },
-    { name = "authlib", specifier = ">=1.6.5,<1.7.0" },
-    { name = "chardet", specifier = ">=3.0.2,<6.0.0" },
-    { name = "fastapi", specifier = ">=0.109.0,<1.0.0" },
-    { name = "fastmcp", specifier = ">=2.0.0,<3.0.0" },
-    { name = "ladybug", specifier = ">=0.16.0,<0.17.0" },
-    { name = "mcp", specifier = ">=1.0.0,<2.0.0" },
-    { name = "numpy", specifier = ">=1.26.0,<3.0.0" },
-    { name = "pydantic", specifier = ">=2.5.0,<2.14" },
-    { name = "pydantic-core", specifier = ">=2.14.0,<2.47" },
-    { name = "pydantic-settings", specifier = ">=2.1.0,<3.0.0" },
-    { name = "python-multipart", specifier = ">=0.0.6,<1.0.0" },
-    { name = "requests", specifier = ">=2.32.0,<3.0.0" },
-    { name = "sentence-transformers", marker = "extra == 'kg-embeddings'", specifier = ">=2.5.0,<5.0.0" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0,<3.0.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0,<1.0.0" },
-    { name = "wsproto", specifier = ">=1.2.0,<2.0.0" },
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/36/6c/fe88aa1ff2ba4c0e14a90dbed98e9c29d107eb1e2018d6718c4b636d8627/okto_pulse_core-0.2.2-py3-none-any.whl", hash = "sha256:13f134eb3e18abb5190f26c2896c194de260458c7c465f20ea3014c2607cfcf2", size = 758076, upload-time = "2026-05-18T17:09:40.811Z" },
 ]
-provides-extras = ["kg-embeddings"]
 
 [[package]]
 name = "openapi-pydantic"

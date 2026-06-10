@@ -282,12 +282,75 @@ def _configure_sqlite_pragmas(engine) -> None:
         cursor.close()
 
 
+# Paths que nunca recebem o fallback SPA (API, docs, MCP e assets estáticos).
+_SPA_PASSTHROUGH_PREFIXES = (
+    "/api/", "/health", "/docs", "/openapi.json", "/redoc", "/mcp",
+    "/config.js", "/assets",
+)
+
+
+class SPAFallbackMiddleware:
+    """Fallback de SPA (404 → index.html) como ASGI puro.
+
+    Root-cause fix (2026-06-09): a versão anterior era BaseHTTPMiddleware,
+    que envolve TODA resposta — inclusive os SSE de
+    ``/api/v1/kg/.../events`` — num task group do anyio. Na desconexão do
+    cliente, o cancel scope hard-cancelava o generator no meio de awaits de
+    DB, vazando conexões do pool (exaustão → "travamento"). Como ASGI puro,
+    só intercepta o ``http.response.start``: 404 em path de SPA vira
+    index.html; todo o resto passa direto, sem cancel scope adicional.
+    """
+
+    def __init__(self, app, index_body: bytes) -> None:
+        self.app = app
+        self.index_body = index_body
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if any(path.startswith(p) for p in _SPA_PASSTHROUGH_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+
+        replaced = False
+        index_body = self.index_body
+
+        async def send_wrapper(message) -> None:
+            nonlocal replaced
+            if message["type"] == "http.response.start" and message["status"] == 404:
+                replaced = True
+                await send({
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-type", b"text/html; charset=utf-8"),
+                        (b"content-length", str(len(index_body)).encode("ascii")),
+                    ],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": index_body,
+                    "more_body": False,
+                })
+                return
+            if replaced:
+                # Descarta o body do 404 original — a resposta SPA já foi
+                # enviada por inteiro acima.
+                return
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 def _mount_frontend(
     app,
     frontend_dir: Path,
     api_port: int = 8100,
     mcp_port: int = 8101,
     public_host: str = "127.0.0.1",
+    explicit_public_host: bool = False,
     public_api_port: int | None = None,
     public_mcp_port: int | None = None,
 ) -> None:
@@ -323,21 +386,6 @@ def _mount_frontend(
     else:
         injected_index_html = index_html_content
 
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.responses import Response
-
-    _API_PREFIXES = ("/api/", "/health", "/docs", "/openapi.json", "/redoc", "/mcp", "/config.js")
-
-    class SPAMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            response = await call_next(request)
-            # If the response is 404 and the path is not an API/asset path,
-            # serve index.html for SPA client-side routing
-            if response.status_code == 404:
-                path = request.url.path
-                if not any(path.startswith(p) for p in _API_PREFIXES) and not path.startswith("/assets"):
-                    return Response(content=injected_index_html, media_type="text/html")
-            return response
 
     # Inject runtime configuration BEFORE SPA middleware.
     # PUBLIC_* env vars override the URLs the browser SPA uses — set them when
@@ -346,10 +394,15 @@ def _mount_frontend(
     _pub_host = public_host
     _pub_api_port = public_api_port if public_api_port is not None else api_port
     _pub_mcp_port = public_mcp_port if public_mcp_port is not None else mcp_port
+    _api_url = (
+        f"http://{_pub_host}:{_pub_api_port}/api/v1"
+        if explicit_public_host or public_api_port is not None
+        else "/api/v1"
+    )
     config_script = f"""
 // Runtime configuration injected by server
 window.OKTO_PULSE_CONFIG = {{
-    API_URL: 'http://{_pub_host}:{_pub_api_port}/api/v1',
+    API_URL: '{_api_url}',
     MCP_URL: 'http://{_pub_host}:{_pub_mcp_port}'
 }};
 """
@@ -360,7 +413,7 @@ window.OKTO_PULSE_CONFIG = {{
         from fastapi.responses import Response
         return Response(content=config_script, media_type="application/javascript")
 
-    app.add_middleware(SPAMiddleware)
+    app.add_middleware(SPAFallbackMiddleware, index_body=injected_index_html.encode("utf-8"))
 
 
 def create_community_app():
@@ -373,7 +426,8 @@ def create_community_app():
     # Public-facing host/ports for the browser SPA config.js.
     # Override when the container is accessed through a different host/port
     # than the internal bind address (NAT, reverse proxy, LAN deployment).
-    public_host = os.environ.get("PUBLIC_HOST", "127.0.0.1")
+    public_host_env = os.environ.get("PUBLIC_HOST")
+    public_host = public_host_env or "127.0.0.1"
     public_api_port_env = os.environ.get("PUBLIC_API_PORT")
     public_mcp_port_env = os.environ.get("PUBLIC_MCP_PORT")
     public_api_port = int(public_api_port_env) if public_api_port_env else None
@@ -400,6 +454,46 @@ def create_community_app():
                 print(f"  API Key: {api_key}")
                 print(f"  MCP URL: http://localhost:{mcp_port}/mcp?api_key={api_key}")
                 print(f"{'='*60}\n")
+
+        # Self-heal: Q&A respondidas herdadas sem answered_at viravam
+        # falso-abertas no badge open_qa_count (a herança não copiava o
+        # timestamp). O combined_lifespan SUBSTITUI o _default_lifespan do
+        # core, então o backfill precisa rodar aqui também. Idempotente.
+        try:
+            from okto_pulse.core.services.main import backfill_qa_answered_at
+
+            async with get_session_factory()() as _qa_db:
+                _qa_fixed = await backfill_qa_answered_at(_qa_db)
+            if _qa_fixed:
+                _STARTUP_LOGGER.info(
+                    "qa.answered_at.backfilled %s", _qa_fixed,
+                )
+        except Exception as _qa_exc:
+            _STARTUP_LOGGER.warning(
+                "qa.answered_at.backfill_failed err=%s", _qa_exc,
+            )
+
+        # Self-heal AFG (investigacao 2026-06-10): materializa finding runs
+        # de arquitetura para designs nunca avaliados (gate avaliava tabela
+        # vazia). Em background para nao atrasar o boot; o combined_lifespan
+        # substitui o lifespan default do core, entao o wiring vive aqui.
+        async def _afg_backfill_task() -> None:
+            try:
+                from okto_pulse.core.services.architecture import (
+                    backfill_architecture_finding_runs,
+                )
+
+                async with get_session_factory()() as _afg_db:
+                    _afg_stats = await backfill_architecture_finding_runs(_afg_db)
+                _STARTUP_LOGGER.info(
+                    "architecture.finding_backfill.completed %s", _afg_stats,
+                )
+            except Exception as _afg_exc:
+                _STARTUP_LOGGER.warning(
+                    "architecture.finding_backfill.failed err=%s", _afg_exc,
+                )
+
+        asyncio.create_task(_afg_backfill_task())
 
         # Preload the embedding model before serving requests so the first
         # KG search doesn't pay the multi-second model-load cost synchronously.
@@ -452,6 +546,26 @@ def create_community_app():
 
                 _interval_minutes = _get_settings().kg_decay_tick_interval_minutes
                 scheduler = AsyncIOScheduler(timezone=timezone.utc)
+                # Catch-up no boot (campo 2026-06-10): IntervalTrigger só
+                # dispara o PRIMEIRO tick um intervalo completo após o
+                # start — com 24h de intervalo e processo que reinicia, o
+                # tick nunca rodava. next_run_time honra o último
+                # kg_tick_runs (vencido → ~2min após o boot).
+                _job_kwargs = {}
+                try:
+                    from okto_pulse.core.app import (
+                        _compute_tick_catch_up_next_run,
+                    )
+
+                    _next_run = await _compute_tick_catch_up_next_run(
+                        _interval_minutes
+                    )
+                    if _next_run is not None:
+                        _job_kwargs["next_run_time"] = _next_run
+                except Exception as _tick_exc:
+                    _STARTUP_LOGGER.warning(
+                        "kg.tick.catch_up_compute_failed err=%s", _tick_exc,
+                    )
                 scheduler.add_job(
                     _emit_daily_tick,
                     # Spec 54399628 (Wave 2 NC f9732afc) — IntervalTrigger
@@ -464,6 +578,7 @@ def create_community_app():
                     replace_existing=True,
                     max_instances=1,
                     coalesce=True,
+                    **_job_kwargs,
                 )
                 scheduler.start()
                 set_scheduler(scheduler)
@@ -530,6 +645,7 @@ def create_community_app():
         app, FRONTEND_DIR,
         api_port=api_port, mcp_port=mcp_port,
         public_host=public_host,
+        explicit_public_host=public_host_env is not None,
         public_api_port=public_api_port,
         public_mcp_port=public_mcp_port,
     )

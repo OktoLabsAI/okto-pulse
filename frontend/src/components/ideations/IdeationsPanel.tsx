@@ -22,11 +22,13 @@ import { IDEATION_STATUS_LABELS } from '@/types';
 import { sanitizePreview } from '@/lib/sanitizePreview';
 import { useListSearch } from '@/hooks/useListSearch';
 import { SearchInput } from '@/components/shared/SearchInput';
+import { QABadge } from '@/components/shared/QABadge';
 import { useViewMode } from '@/hooks/useViewMode';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { openLineageGraph } from '@/components/traceability';
 import { CreateIdeationModal } from './CreateIdeationModal';
 import { IdeationModal } from './IdeationModal';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface IdeationsPanelProps {
   boardId: string;
@@ -55,6 +57,29 @@ const COMPLEXITY_COLORS: Record<IdeationComplexity, string> = {
   medium: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
   large: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
 };
+
+/**
+ * One ideation evaluation score (1-5) as a small pill. Higher score = more
+ * domains / ambiguity / dependencies = more complex, so the tone ramps from
+ * emerald (1-2) through amber (3) to rose (4-5).
+ */
+function ScopeBadge({ label, value }: { label: string; value: number }) {
+  const tone =
+    value >= 4
+      ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
+      : value === 3
+        ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+        : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300';
+  return (
+    <span
+      title={`${label} score: ${value}/5`}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${tone}`}
+    >
+      {label}
+      <span className="font-semibold">{value}</span>
+    </span>
+  );
+}
 
 export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
   const api = useDashboardApi();
@@ -162,7 +187,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
         data-testid={`ideations-${viewMode}`}
       >
         {loading ? (
-          <div className="text-center text-gray-500 dark:text-gray-400 py-8">Loading ideations...</div>
+          <PulseLoader size="sm" label="Loading ideations..." />
         ) : ideations.length === 0 ? (
           <div className="text-center py-12">
             <Lightbulb size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
@@ -198,7 +223,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[ideation.status]}`}>
                       {STATUS_ICON[ideation.status]}
                       {IDEATION_STATUS_LABELS[ideation.status]}
@@ -218,6 +243,20 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
                       {sanitizePreview(ideation.problem_statement)}
                     </p>
                   )}
+                  {/* Evaluation score badges (Domains / Ambiguity / Dependencies) on their own row */}
+                  {ideation.scope_assessment && typeof ideation.scope_assessment.domains === 'number' && (
+                    <div className="flex items-center gap-1.5 flex-wrap mt-2">
+                      <ScopeBadge label="Domains" value={ideation.scope_assessment.domains} />
+                      <ScopeBadge label="Ambiguity" value={ideation.scope_assessment.ambiguity} />
+                      <ScopeBadge label="Dependencies" value={ideation.scope_assessment.dependencies} />
+                    </div>
+                  )}
+                  {/* Open Q&A badge on its own row, above the labels */}
+                  {ideation.open_qa_count ? (
+                    <div className="mt-2">
+                      <QABadge count={ideation.open_qa_count} />
+                    </div>
+                  ) : null}
                   {/* Labels */}
                   {ideation.labels && ideation.labels.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">

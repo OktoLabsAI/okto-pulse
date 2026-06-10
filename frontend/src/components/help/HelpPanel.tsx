@@ -1032,6 +1032,32 @@ When evidence is present, an inline **EvidenceBadge** (✓ green) appears next t
 
 The same evidence is required by the **sprint close** gate as defense-in-depth — a sprint cannot move to \`closed\` if any of its scoped scenarios lack evidence (and the skip flag is off).
 
+### Cognitive Closeout Gate
+
+Specs and refinements cannot transition to \`done\` while they (or their decisions) have **active cognitive consolidation items** (\`pending\` / \`in_progress\` / \`failed\`) in the current KG generation — the knowledge debt must be worked or explicitly skipped first. The "Pending cognitive consolidation" badge on list cards shows exactly which entities hold the debt.
+
+Boards can set \`skip_cognitive_consolidation\` to allow \`done\` transitions anyway — badges and the KG Health pending list **remain visible** so the debt is never silently hidden.
+
+### Resource Gate (Architecture / Mockups / Knowledge)
+
+Task cards must account for the spec's attached resources before completing: each resource type (architecture designs, screen mockups, knowledge-base entries) must be either **covered** (copied/linked to the card) or **explicitly marked N/A** with a justification (\`mark_resource_not_applicable\`). Notes:
+
+- N/A is **per level** — marking a resource N/A on the ideation does *not* propagate to refinement/spec/card (only KB inherits); each level declares its own
+- The gate is **completion-only**: cards move freely through \`started\`/\`in_progress\`/\`validation\`, but \`validation → done\` is blocked until every resource is covered or N/A
+- The **Resource Gate Summary** panel on the card shows the per-resource status
+
+### Architecture Finding Done Gate
+
+When an architecture design review records **findings** against a spec, the spec cannot reach \`done\` until each finding is resolved or explicitly accepted. This keeps architecture review outcomes enforceable instead of advisory.
+
+### Spec validation — two moments
+
+In the dual-agent workflow the spec is validated **twice**: a content **preview** (review → approved, before any cards exist — the validator reviews FRs/BRs/ACs/decisions) and the formal **gate** (approved → validated, with tasks derived). The spec workflow intentionally pauses at \`review\` until the preview happens.
+
+### Open Q&A badge
+
+Ideations, refinements, specs, sprints and cards show an **"N open Q&A"** badge while they have unanswered questions (\`answered_at\` not set). Answered Q&A inherited from a parent entity carries its answer timestamp, so it never counts as open.
+
 ### Overrides
 
 All coverage checks can be bypassed:
@@ -1159,11 +1185,11 @@ Each consolidation session creates an audit trail: nodes added, updated, superse
 
 ### Graph visualization
 
-The graph view uses **React Flow** for interactive exploration:
-- **Nodes** are color-coded by type and sized by confidence
+The graph view uses **Sigma.js (WebGL)** with a ForceAtlas2 layout for smooth exploration of graphs with thousands of nodes:
+- **Nodes** are color-coded by type and sized by confidence/relevance
 - **Edges** are colored by relationship type (red = contradicts, purple = supersedes, gray = other)
-- Animated edges indicate contradictions
-- **MiniMap** for overview navigation
+- **MiniMap** for overview navigation; pan/zoom stays fluid even on large boards
+- Type filters and search narrow the visible subgraph
 - Click a node to open the **Node Detail Panel** on the right
 
 ### Node Detail Panel
@@ -1178,11 +1204,23 @@ Clicking a node reveals:
 
 The **KG Health** sub-view exposes runtime diagnostics:
 
+- **Overall state** — \`healthy\`, \`at_risk\`, or \`recovery_needed\`. **\`at_risk\` is a preventive warning** (scheduler debt, dead-letter backlog, unavailable telemetry) — it is *not* corruption. \`recovery_needed\` means the graph needs the explicit recovery flow below.
 - **Provider / model** — embedder backend (sentence-transformers or stub fallback)
 - **Schema version** — current graph schema (auto-migrated on hot path)
-- **Queue depth** — pending consolidation entries
+- **Queue depth / dead letters** — pending consolidation entries and DLQ count
 - **\`tick_in_progress\`** — \`true\` when the global advisory lock \`kg_daily_tick\` is held
 - **Dedup snapshot** — entity counts and recent dedup actions
+- **Orphan integrity** — zero-orphan projection (orphan count by type, samples); additive observability that never masks hard recovery signals
+
+### Recovery & deterministic rebuild
+
+When a graph is degraded (or you want a clean re-materialization from the source of truth), the **Recovery panel** inside KG Health runs the ceremonial rebuild:
+
+1. **Preflight** — read-only: enumerates every source artifact and produces a \`preflight_hash\` + \`manifest_ref\`
+2. **Confirm** — issues a **single-use, TTL-bound confirmation token** (audit-trailed)
+3. **Run** — quarantines the old graph files (never deletes), re-enqueues all sources, and waits for the worker to drain. The wait is **progress-aware**: it only fails if the queue stalls, so large boards complete instead of timing out.
+
+A completed rebuild promotes a new **KG generation**, publishes \`kg.rebuilt\`, and marks every consolidable artifact as **pending cognitive consolidation** (see below). The rebuild report and audit row record outcomes, hashes, and affected files.
 
 #### Run tick now
 
@@ -1192,12 +1230,12 @@ The same control surfaces in **Settings → Decay Tick** as **"Save & run now"**
 
 ### Dead Letter Queue (DLQ) Inspector
 
-When a consolidation entry fails 3 times, it lands in the DLQ. The **DLQ Inspector** modal (accessible from the Pending Queue view) lets you:
-- List DLQ rows with full error history (timestamp, exception class, traceback)
+When a consolidation entry exhausts its retries (5 attempts), it lands in the DLQ. The **DLQ Inspector** modal (accessible from the Pending Queue view) lets you:
+- List DLQ rows with full error history (one entry per attempt: timestamp, exception class, message)
 - Inspect the original payload that triggered the failure
-- Read-only in MVP — reprocess is planned for a future release
+- **Reprocess** selected rows (or via the MCP tool \`kg_dead_letter_reprocess\`) after the root cause is fixed — idempotent: existing pending rows are reset instead of duplicated, and \`process_now\` runs an immediate batch
 
-Use this to diagnose extractor regressions, embedder timeouts, or schema mismatches without tailing server logs.
+Boards can also enable \`dlq_auto_drain_enabled\` to re-queue dead letters automatically. Use the inspector to diagnose extractor regressions, connectivity-guard rejections, embedder timeouts, or schema mismatches without tailing server logs.
 
 ### Schema migration self-heal
 
@@ -1209,23 +1247,33 @@ KG schema evolves across releases (e.g. v0.3.2 added \`human_curated\`, \`last_r
 
 > **Important:** Never delete local graph database files manually — the migration preserves all nodes/edges. Deleting forces a full re-consolidation.
 
+### Cognitive consolidation (KG-03)
+
+Structural nodes (Decision, Requirement, TestScenario…) are re-derivable mechanically from the board. **Cognitive knowledge is not** — judgement relations between decisions (\`supersedes\` / \`depends_on\` / \`contradicts\`), learnings, and alternatives need an agent (or human) to re-derive them. The KG tracks this as a per-generation **ledger of cognitive consolidation items**:
+
+- After a rebuild, every consolidable artifact (spec, decision, refinement, task, test, bug) gets a \`pending\` item
+- Eligible entities show a **"Pending cognitive consolidation" badge** on their list cards until the item reaches a terminal status
+- Agents work the ledger via MCP: open a consolidation session (\`kg_begin_consolidation\` → add candidates → \`kg_commit_consolidation\`), then close the item with \`kg_update_cognitive_pending_item\` — \`consolidated\` **requires a real committed session id** (anti-theater), \`skipped\`/\`failed\` require a reason
+- The **KG Health → Cognitive Pending** panel shows per-status counts and the item list for the current generation
+- Promising insights can become **candidate decisions**, reviewed and promoted to formal spec decisions (or dismissed) from the candidate-decisions panel
+
+The zero-orphan **connectivity guard** validates every commit: new nodes must arrive connected (provenance \`belongs_to\` for deterministic writers; strict judgement-edge pairs for cognitive writers), so the graph never accumulates orphans.
+
 ### Cognitive extractors (opt-in)
 
-Beyond the structural extractors (Decision, Constraint, etc.), the KG can extract **Learning**, **Alternative**, and **Assumption** nodes via LLM. This is **opt-in** per board via \`cognitive_llm_config\` (provider + model + API key). When disabled, the system logs a structured event but does not call any LLM. Persistence in the board graph database for cognitive nodes is in v1 (DEFERRED — read the structured logs for now).
+Beyond the structural extractors, the KG can suggest **Learning**, **Alternative**, and **Assumption** candidates via LLM. This is **opt-in** per board via \`cognitive_llm_config\` (provider + model + API key). When disabled, the system logs a structured event but does not call any LLM.
 
 ### AI agent integration
 
-MCP agents can query the Knowledge Graph via 15+ tools:
-- \`kg_get_decision_history\` — Find past decisions on a topic
-- \`kg_find_contradictions\` — Detect conflicting decisions
-- \`kg_find_similar_decisions\` — Semantic similarity search
-- \`kg_explain_constraint\` — Trace constraint to source
-- \`kg_get_supersedence_chain\` — See what replaced what
-- \`kg_query_cypher\` — Direct Cypher queries (read-only, safety-checked)
-- \`kg_query_natural\` — Natural language queries
-- \`kg_migrate_schema\` — Trigger schema migration
-- \`kg_trigger_tick\` — Force a decay tick (returns 202 + tick id)
-- And more (see the full MCP tool list)
+MCP agents can query **and curate** the Knowledge Graph via 25+ tools:
+
+**Query** — \`kg_get_decision_history\`, \`kg_find_contradictions\`, \`kg_find_similar_decisions\`, \`kg_explain_constraint\`, \`kg_get_supersedence_chain\`, \`kg_get_learning_from_bugs\`, \`kg_list_alternatives\`, \`kg_get_related_context\`, \`kg_query_cypher\` (read-only, safety-railed), \`kg_query_natural\`, \`kg_query_global\` (cross-board), \`kg_query_reflective\`, \`kg_verify_grounding\`
+
+**Consolidate** — \`kg_begin_consolidation\` → \`kg_add_node_candidate\` / \`kg_add_edge_candidate\` → \`kg_get_similar_nodes\` / \`kg_propose_reconciliation\` → \`kg_commit_consolidation\` (or \`kg_abort_consolidation\`)
+
+**Cognitive ledger** — \`kg_list_cognitive_pending_items\`, \`kg_update_cognitive_pending_item\`
+
+**Operate** — \`kg_health\`, \`kg_tick_run_now\`, \`kg_migrate_schema\`, \`kg_rebuild_preflight\` / \`kg_rebuild_confirm\` / \`kg_rebuild_run\`, \`kg_dead_letter_list\` / \`kg_dead_letter_reprocess\`, \`kg_orphan_report\` / \`kg_orphan_backfill\`, \`kg_schema_info\`
 `,
     },
     {
@@ -1272,6 +1320,8 @@ These flags bypass specific coverage checks for the entire board:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | \`max_scenarios_per_card\` | 5 | Maximum test scenarios per card (1–10) |
+| \`skip_cognitive_consolidation\` | false | Allow \`done\` transitions even when cognitive consolidation is pending — badges and KG Health pending lists remain visible |
+| \`dlq_auto_drain_enabled\` | false | Automatically re-queue dead-lettered consolidation entries for reprocessing |
 
 ### Runtime Settings Panel
 

@@ -37,6 +37,19 @@ if (typeof globalThis.DOMMatrixReadOnly === 'undefined') {
   globalThis.DOMMatrix = DOMMatrixStub;
 }
 
+// Sigma's bundle references WebGL2RenderingContext at module scope (for
+// instanceof checks). jsdom doesn't define it; an empty class is enough —
+// GraphCanvas never instantiates Sigma in tests (no WebGL context available,
+// so it renders the accessible fallback).
+if (typeof globalThis.WebGL2RenderingContext === 'undefined') {
+  // @ts-expect-error — test-only stub
+  globalThis.WebGL2RenderingContext = class WebGL2RenderingContextStub {};
+}
+if (typeof globalThis.WebGLRenderingContext === 'undefined') {
+  // @ts-expect-error — test-only stub
+  globalThis.WebGLRenderingContext = class WebGLRenderingContextStub {};
+}
+
 // useTheme reads window.matchMedia at module-load time. jsdom does not
 // implement it; provide a noop stub so any test that imports a component
 // using useTheme can mount.

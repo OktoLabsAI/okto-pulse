@@ -16,6 +16,7 @@ import type {
   CreateCardRequest,
   UpdateCardRequest,
   MoveCardRequest,
+  BugRegressionScenarioPreview,
   Agent,
   AgentSummary,
   AgentBoardGrant,
@@ -30,6 +31,10 @@ import type {
   UpdateCommentRequest,
   CardStatus,
   Spec,
+  SpecStructuredEntityMutationRequest,
+  SpecStructuredEntityMutationResult,
+  SpecStructuredEntityOperation,
+  SpecStructuredEntityType,
   SpecSummary,
   CreateSpecRequest,
   UpdateSpecRequest,
@@ -93,6 +98,27 @@ import type {
   ClearResourceNotApplicableRequest,
 } from '@/types';
 
+type StructuredSpecItemField =
+  | 'business_rules'
+  | 'api_contracts'
+  | 'technical_requirements'
+  | 'decisions'
+  | 'integration_requirements'
+  | 'observability_requirements';
+
+export const STRUCTURED_SPEC_ENTITY_TYPE_BY_FIELD: Record<StructuredSpecItemField, SpecStructuredEntityType> = {
+  business_rules: 'business_rule',
+  api_contracts: 'api_contract',
+  technical_requirements: 'technical_requirement',
+  decisions: 'decision',
+  integration_requirements: 'integration_requirement',
+  observability_requirements: 'observability_requirement',
+};
+
+export function specEntityTypeForField(field: StructuredSpecItemField): SpecStructuredEntityType {
+  return STRUCTURED_SPEC_ENTITY_TYPE_BY_FIELD[field];
+}
+
 function architectureParentPath(parentType: ArchitectureParentType, parentId: string): string {
   const segment: Record<ArchitectureParentType, string> = {
     ideation: 'ideations',
@@ -101,6 +127,18 @@ function architectureParentPath(parentType: ArchitectureParentType, parentId: st
     card: 'cards',
   };
   return `/${segment[parentType]}/${parentId}/architecture`;
+}
+
+export interface ActivityLogEntry {
+  id: string;
+  action: string;
+  actor_type: string;
+  actor_id: string;
+  actor_name: string;
+  created_at: string;
+  summary: string;
+  trigger?: string | null;
+  details?: Record<string, unknown> | null;
 }
 
 export function useDashboardApi() {
@@ -254,8 +292,8 @@ export function useDashboardApi() {
       await apiClient.fetch(`/cards/${cardId}`, { method: 'DELETE' });
     },
 
-    async getCardActivity(cardId: string): Promise<{ id: string; action: string; actor_type: string; actor_id: string; actor_name: string; details: Record<string, unknown> | null; created_at: string }[]> {
-      return apiClient.fetchJson(`/cards/${cardId}/activity`);
+    async getCardActivity(cardId: string): Promise<ActivityLogEntry[]> {
+      return apiClient.fetchJson<ActivityLogEntry[]>(`/cards/${cardId}/activity`);
     },
 
     async getCardDependencies(cardId: string): Promise<{ id: string; title: string; status: string }[]> {
@@ -276,6 +314,26 @@ export function useDashboardApi() {
 
     async getCardSeenStatus(cardId: string): Promise<{ items: Record<string, { agent_id: string; agent_name: string; seen_at: string }[]> }> {
       return apiClient.fetchJson(`/cards/${cardId}/seen`);
+    },
+
+    async getBugRegressionScenarioCandidates(
+      cardId: string,
+      boardId: string,
+      params?: {
+        affected_task_ids?: string[];
+        candidate_scenario_ids?: string[];
+      },
+    ): Promise<BugRegressionScenarioPreview> {
+      const query = new URLSearchParams({ board_id: boardId });
+      for (const taskId of params?.affected_task_ids || []) {
+        query.append('affected_task_ids', taskId);
+      }
+      for (const scenarioId of params?.candidate_scenario_ids || []) {
+        query.append('candidate_scenario_ids', scenarioId);
+      }
+      return apiClient.fetchJson<BugRegressionScenarioPreview>(
+        `/cards/${cardId}/regression-scenario-candidates?${query.toString()}`,
+      );
     },
 
     async linkTestTaskToBug(cardId: string, testTaskId: string): Promise<{ success: boolean; bug_card_id: string; test_task_id: string; is_unblocked: boolean }> {
@@ -317,6 +375,82 @@ export function useDashboardApi() {
       });
     },
 
+    async createSpecEntity(
+      specId: string,
+      entityType: SpecStructuredEntityType,
+      payload: Record<string, unknown>,
+      expectedSpecVersion?: number | null,
+    ): Promise<SpecStructuredEntityMutationResult> {
+      return apiClient.fetchJson<SpecStructuredEntityMutationResult>(
+        `/specs/${specId}/structured-entities/${entityType}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            payload,
+            expected_spec_version: expectedSpecVersion ?? null,
+          } satisfies SpecStructuredEntityMutationRequest),
+        },
+      );
+    },
+
+    async updateSpecEntity(
+      specId: string,
+      entityType: SpecStructuredEntityType,
+      entityId: string,
+      payload: Record<string, unknown>,
+      expectedSpecVersion?: number | null,
+    ): Promise<SpecStructuredEntityMutationResult> {
+      return apiClient.fetchJson<SpecStructuredEntityMutationResult>(
+        `/specs/${specId}/structured-entities/${entityType}/${entityId}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            operation: 'update',
+            payload,
+            expected_spec_version: expectedSpecVersion ?? null,
+          } satisfies SpecStructuredEntityMutationRequest),
+        },
+      );
+    },
+
+    async operateSpecEntity(
+      specId: string,
+      entityType: SpecStructuredEntityType,
+      entityId: string,
+      operation: Exclude<SpecStructuredEntityOperation, 'create' | 'update'>,
+      options: Omit<SpecStructuredEntityMutationRequest, 'operation'> = {},
+    ): Promise<SpecStructuredEntityMutationResult> {
+      return apiClient.fetchJson<SpecStructuredEntityMutationResult>(
+        `/specs/${specId}/structured-entities/${entityType}/${entityId}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            ...options,
+            operation,
+          } satisfies SpecStructuredEntityMutationRequest),
+        },
+      );
+    },
+
+    async previewSpecEntityImpact(
+      specId: string,
+      entityType: SpecStructuredEntityType,
+      entityId: string,
+      operation: Extract<SpecStructuredEntityOperation, 'revoke' | 'supersede' | 'reorder'>,
+      options: Omit<SpecStructuredEntityMutationRequest, 'operation'> = {},
+    ): Promise<SpecStructuredEntityMutationResult> {
+      return apiClient.fetchJson<SpecStructuredEntityMutationResult>(
+        `/specs/${specId}/structured-entities/${entityType}/${entityId}/impact-preview`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            ...options,
+            operation,
+          } satisfies SpecStructuredEntityMutationRequest),
+        },
+      );
+    },
+
     async moveSpec(specId: string, data: MoveSpecRequest): Promise<Spec> {
       return apiClient.fetchJson<Spec>(`/specs/${specId}/move`, {
         method: 'POST',
@@ -348,50 +482,34 @@ export function useDashboardApi() {
 
     async linkTaskToSpecItem(
       specId: string,
-      field: 'business_rules' | 'api_contracts' | 'technical_requirements' | 'decisions' | 'integration_requirements' | 'observability_requirements',
+      field: StructuredSpecItemField,
       itemId: string,
       cardId: string,
     ): Promise<Spec> {
-      const spec = await this.getSpec(specId);
-      const rawItems = (spec as any)[field] || [];
-      // Normalize: convert legacy strings to objects (for TRs)
-      const items = rawItems.map((item: any, i: number) =>
-        typeof item === 'string'
-          ? { id: `tr_legacy_${i}`, text: item, linked_task_ids: [] }
-          : item
+      await this.operateSpecEntity(
+        specId,
+        specEntityTypeForField(field),
+        itemId,
+        'link_task',
+        { task_id: cardId },
       );
-      const updated = items.map((item: any) => {
-        if (item.id === itemId) {
-          const taskIds = [...(item.linked_task_ids || [])];
-          if (!taskIds.includes(cardId)) taskIds.push(cardId);
-          return { ...item, linked_task_ids: taskIds };
-        }
-        return item;
-      });
-      return this.updateSpec(specId, { [field]: updated } as any);
+      return this.getSpec(specId);
     },
 
     async unlinkTaskFromSpecItem(
       specId: string,
-      field: 'business_rules' | 'api_contracts' | 'technical_requirements' | 'decisions' | 'integration_requirements' | 'observability_requirements',
+      field: StructuredSpecItemField,
       itemId: string,
       cardId: string,
     ): Promise<Spec> {
-      const spec = await this.getSpec(specId);
-      const rawItems = (spec as any)[field] || [];
-      const items = rawItems.map((item: any, i: number) =>
-        typeof item === 'string'
-          ? { id: `tr_legacy_${i}`, text: item, linked_task_ids: [] }
-          : item
+      await this.operateSpecEntity(
+        specId,
+        specEntityTypeForField(field),
+        itemId,
+        'unlink_task',
+        { task_id: cardId },
       );
-      const updated = items.map((item: any) => {
-        if (item.id === itemId) {
-          const taskIds = (item.linked_task_ids || []).filter((id: string) => id !== cardId);
-          return { ...item, linked_task_ids: taskIds };
-        }
-        return item;
-      });
-      return this.updateSpec(specId, { [field]: updated } as any);
+      return this.getSpec(specId);
     },
 
     // ==================== ARCHITECTURE DESIGN ====================

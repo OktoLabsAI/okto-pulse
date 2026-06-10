@@ -5,7 +5,7 @@
 import { type ReactNode, useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { authAdapter, portalAdapter } from '@/adapters';
-import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity, Image, Trash2 } from 'lucide-react';
+import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity, Image, Trash2, AlertTriangle } from 'lucide-react';
 import { GuidelinesPanel } from '@/components/guidelines';
 import { HelpPanel } from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
@@ -150,6 +150,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const api = useDashboardApi();
   const [showSettings, setShowSettings] = useState(false);
   const [showRuntimeSettings, setShowRuntimeSettings] = useState(false);
+  const [runtimeSettingsInitialTab, setRuntimeSettingsInitialTab] =
+    useState<'graphdb' | 'eventqueue' | 'decaytick'>('graphdb');
   const [showMetricsSettings, setShowMetricsSettings] = useState(false);
   const [showGuidelines, setShowGuidelines] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
@@ -157,6 +159,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const [showAbout, setShowAbout] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
   const [localShowKnowledgeGraph, setLocalShowKnowledgeGraph] = useState(false);
+  const [boardGuidelineCount, setBoardGuidelineCount] = useState<number | null>(null);
+  const [boardGuidelinesLoadFailed, setBoardGuidelinesLoadFailed] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const showHelp = helpOpen ?? localShowHelp;
@@ -197,6 +201,39 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     return () => window.removeEventListener('okto:open-board-settings', handler);
   }, []);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ initialTab?: 'graphdb' | 'eventqueue' | 'decaytick' }>).detail;
+      setRuntimeSettingsInitialTab(detail?.initialTab ?? 'graphdb');
+      setShowRuntimeSettings(true);
+    };
+    window.addEventListener('okto:open-runtime-settings', handler);
+    return () => window.removeEventListener('okto:open-runtime-settings', handler);
+  }, []);
+
+  useEffect(() => {
+    if (!showSettings || !currentBoard?.id) {
+      setBoardGuidelineCount(null);
+      setBoardGuidelinesLoadFailed(false);
+      return;
+    }
+
+    let cancelled = false;
+    setBoardGuidelineCount(null);
+    setBoardGuidelinesLoadFailed(false);
+    api.getBoardGuidelines(currentBoard.id)
+      .then((entries) => {
+        if (!cancelled) setBoardGuidelineCount(entries.length);
+      })
+      .catch(() => {
+        if (!cancelled) setBoardGuidelinesLoadFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showSettings, currentBoard?.id]);
+
   const settings: BoardSettings = currentBoard?.settings
     ? {
         max_scenarios_per_card: currentBoard.settings.max_scenarios_per_card ?? 3,
@@ -207,6 +244,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_ir_coverage_global: currentBoard.settings.skip_ir_coverage_global ?? false,
         skip_or_coverage_global: currentBoard.settings.skip_or_coverage_global ?? false,
         skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false,
+        skip_cognitive_consolidation: currentBoard.settings.skip_cognitive_consolidation ?? false,
+        allow_agent_self_answering: currentBoard.settings.allow_agent_self_answering ?? false,
+        require_full_context_for_critical_actions: currentBoard.settings.require_full_context_for_critical_actions ?? true,
+        qa_require_role_separation: currentBoard.settings.qa_require_role_separation ?? false,
         skip_test_evidence_global: currentBoard.settings.skip_test_evidence_global ?? false,
         require_task_validation: currentBoard.settings.require_task_validation ?? true,
         min_confidence: currentBoard.settings.min_confidence ?? 70,
@@ -229,6 +270,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_ir_coverage_global: false,
         skip_or_coverage_global: false,
         skip_decisions_coverage_global: false,
+        skip_cognitive_consolidation: false,
+        allow_agent_self_answering: false,
+        require_full_context_for_critical_actions: true,
+        qa_require_role_separation: false,
         skip_test_evidence_global: false,
         require_task_validation: true,
         min_confidence: 70,
@@ -281,6 +326,14 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
   const autoDeriveEnabled = settings.auto_derive_spec_resources_enabled ?? false;
   const autoDeriveResourceTypes = settings.auto_derive_spec_resource_types ?? [];
+  const missingBoardContextWarnings = [
+    ...(!currentBoard?.description?.trim()
+      ? ['Board description is empty. Agents have less product context for critical work.']
+      : []),
+    ...(boardGuidelineCount === 0
+      ? ['Board guidelines are empty. Agents will rely only on global process rules.']
+      : []),
+  ];
 
   const toggleSpecResourceAutomation = () => {
     const next = !autoDeriveEnabled;
@@ -467,7 +520,11 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
                     {/* Settings (new in 0.1.4 — runtime graph database tuning) */}
                     <button
-                      onClick={() => { setShowMenu(false); setShowRuntimeSettings(true); }}
+                      onClick={() => {
+                        setShowMenu(false);
+                        setRuntimeSettingsInitialTab('graphdb');
+                        setShowRuntimeSettings(true);
+                      }}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                       data-testid="menu-settings"
                     >
@@ -644,6 +701,15 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                               activeColor="amber"
                             />
                           </SettingRow>
+                          <SettingRow label="Skip cognitive closeout" description="Allow done transitions even when cognitive consolidation is pending. Badges and KG Health pending lists remain visible.">
+                            <SettingsToggle
+                              checked={settings.skip_cognitive_consolidation ?? false}
+                              onChange={() => updateSettings({ skip_cognitive_consolidation: !(settings.skip_cognitive_consolidation ?? false) })}
+                              ariaLabel="Skip cognitive closeout"
+                              activeColor="amber"
+                              testId="toggle-skip-cognitive-closeout"
+                            />
+                          </SettingRow>
                           <SettingRow label="Skip evidence requirement" description="Bypass evidence required to mark scenarios passed, automated or failed.">
                             <SettingsToggle
                               checked={settings.skip_test_evidence_global ?? false}
@@ -657,6 +723,52 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                               testId="toggle-skip-evidence"
                             />
                           </SettingRow>
+                        </SettingsSection>
+
+                        <SettingsSection
+                          title="Agent Governance"
+                          description="Controls agent autonomy and context requirements for critical actions."
+                          icon={<Users size={12} />}
+                          className="lg:col-span-2"
+                        >
+                          <div className="grid gap-3 lg:grid-cols-2">
+                            <SettingRow label="Allow agent self-answering" description="Agents may answer their own Q&A questions when board policy permits it.">
+                              <SettingsToggle
+                                checked={settings.allow_agent_self_answering ?? false}
+                                onChange={() => updateSettings({ allow_agent_self_answering: !(settings.allow_agent_self_answering ?? false) })}
+                                ariaLabel="Allow agent self-answering"
+                                testId="toggle-agent-self-answering"
+                              />
+                            </SettingRow>
+                            <SettingRow label="Require full context for critical actions" description="Status changes, validations, approvals and closeout require full entity context.">
+                              <SettingsToggle
+                                checked={settings.require_full_context_for_critical_actions ?? true}
+                                onChange={() => updateSettings({ require_full_context_for_critical_actions: !(settings.require_full_context_for_critical_actions ?? true) })}
+                                ariaLabel="Require full context for critical actions"
+                                testId="toggle-full-context-critical-actions"
+                              />
+                            </SettingRow>
+                          </div>
+
+                          {(missingBoardContextWarnings.length > 0 || boardGuidelinesLoadFailed) && (
+                            <div
+                              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+                              data-testid="board-context-warning"
+                            >
+                              <div className="mb-1 flex items-center gap-1.5 font-medium">
+                                <AlertTriangle size={12} />
+                                Context warnings
+                              </div>
+                              <ul className="list-disc space-y-1 pl-4">
+                                {missingBoardContextWarnings.map((warning) => (
+                                  <li key={warning}>{warning}</li>
+                                ))}
+                                {boardGuidelinesLoadFailed && (
+                                  <li>Board guidelines could not be checked right now. You can still save settings.</li>
+                                )}
+                              </ul>
+                            </div>
+                          )}
                         </SettingsSection>
 
                         <SettingsSection
@@ -899,6 +1011,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
       {showRuntimeSettings && (
         <RuntimeSettingsPanel
+          key={runtimeSettingsInitialTab}
+          initialTab={runtimeSettingsInitialTab}
           onClose={() => setShowRuntimeSettings(false)}
         />
       )}
@@ -953,7 +1067,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                 Okto Pulse
               </h2>
               <p className="text-sm text-surface-500 dark:text-surface-400 mt-1">
-                Community Edition — v0.2.0
+                Community Edition — v0.2.3
               </p>
               <p className="text-[11px] text-surface-400 dark:text-surface-500 mt-0.5">
                 Elastic License 2.0 + SaaS/Branding Addendum + Trademark Policy
@@ -1008,7 +1122,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                   <li><strong>(d) Internal large-scale platform exposure</strong> — operating the software as an internally hosted service that meets <strong>BOTH</strong> of the following conditions simultaneously:
                     <ul className="list-disc pl-4 mt-1 space-y-1">
                       <li><strong>(i)</strong> the software, or modules extracted/externalized/repackaged from it, are exposed as a hosted service, API, or internal platform to users within your organization who are not directly involved in administering, developing, configuring, or using the software for the projects, teams, or products it is intended to manage; <strong>AND</strong></li>
-                      <li><strong>(ii)</strong> the total population of such exposed users exceeds <strong>five hundred (500)</strong> individuals.</li>
+                      <li><strong>(ii)</strong> the total population of such exposed users exceeds <strong>two hundred (200)</strong> individuals.</li>
                     </ul>
                     <p className="mt-1 text-[11px] italic">Both conditions must be met. Local, desktop, or workstation use by any number of individuals is <strong>never</strong> restricted by this clause.</p>
                   </li>

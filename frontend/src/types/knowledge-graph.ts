@@ -155,3 +155,4 @@ export const EDGE_TYPE_CONFIG: Record<KGEdgeType, {
 };
 
 export const ALL_EDGE_TYPES = Object.keys(EDGE_TYPE_CONFIG) as KGEdgeType[];
+export const ALL_NODE_TYPES = Object.keys(NODE_TYPE_CONFIG) as KGNodeType[];

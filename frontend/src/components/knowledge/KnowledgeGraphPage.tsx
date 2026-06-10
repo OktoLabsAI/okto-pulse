@@ -2,7 +2,7 @@
  * KnowledgeGraphPage — container component orchestrating the KG visualization.
  *
  * Spec 8 / Sprint 4 + Sprint 5 wiring:
- *   - Holds `nodeLimit` (50/100/200/500) + `nextCursor` for paginated fetch.
+ *   - Holds `nodeLimit` (50/100/200/500/1000) + `nextCursor` for paginated fetch.
  *   - Changing `nodeLimit` resets the list and refetches from scratch.
  *   - Clicking the Load More button fetches the next page and APPENDS results.
  *   - The button is only visible while `nextCursor !== null`.
@@ -33,6 +33,7 @@ import { useKgLiveEvents } from '@/hooks/useKgLiveEvents';
 import type { KGNode, KGEdge, KGStats } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
 import { getKGHealth, type KGHealth } from '@/services/kg-health-api';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface Props {
   boardId: string;
@@ -40,7 +41,11 @@ interface Props {
 
 type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'settings' | 'global';
 
-const DEFAULT_NODE_LIMIT = 100;
+// 500 (era 100): com a projeção paginada, edges só materializam quando as
+// duas pontas chegam ao cliente — páginas pequenas deixavam o grafo
+// parecendo desconectado e exigiam dezenas de "Load more". O Sigma/WebGL
+// lida bem com 500+ nós por página.
+const DEFAULT_NODE_LIMIT = 500;
 const HIDE_ALL_NODE_TYPE = '__hide_all__';
 const DEFAULT_FILTERS: Filters = {
   types: [],
@@ -336,9 +341,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         className="flex items-center justify-center h-full"
         data-testid="kg-loading"
       >
-        <div className="animate-pulse text-gray-400 dark:text-gray-600">
-          Loading Knowledge Graph...
-        </div>
+        <PulseLoader size="md" label="Loading Knowledge Graph..." />
       </div>
     );
   }

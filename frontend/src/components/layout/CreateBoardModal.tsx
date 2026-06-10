@@ -5,6 +5,7 @@
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
 
@@ -15,7 +16,7 @@ interface CreateBoardModalProps {
 
 export function CreateBoardModal({ isOpen, onClose }: CreateBoardModalProps) {
   const api = useDashboardApi();
-  const { setBoards, boards } = useDashboardStore();
+  const { addBoard } = useDashboardStore();
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -37,13 +38,13 @@ export function CreateBoardModal({ isOpen, onClose }: CreateBoardModalProps) {
         description: description.trim() || undefined,
       });
 
-      setBoards([board, ...boards]);
+      addBoard(board);
       toast.success('Board created');
       setName('');
       setDescription('');
       onClose();
-    } catch {
-      toast.error('Failed to create board');
+    } catch (err) {
+      toast.error(getErrorMessage(err));
     } finally {
       setIsLoading(false);
     }

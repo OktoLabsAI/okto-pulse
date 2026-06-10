@@ -26,6 +26,10 @@ import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { openLineageGraph } from '@/components/traceability';
 import { CreateRefinementModal } from './CreateRefinementModal';
 import { RefinementModal } from './RefinementModal';
+import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
+import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
+import { QABadge } from '@/components/shared/QABadge';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface RefinementsPanelProps {
   boardId: string;
@@ -139,6 +143,17 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
     displayGroups.get(key)!.refinements.push(item);
   }
 
+  // KG-03.6 — refinement is a first-line badge target (br_b7535ce1 +
+  // ir_21ec0034). Batch by visible refinement source_refs; one HTTP
+  // request per panel mount/refresh (api_28a22fec batch semantics).
+  const visibleRefinementSourceRefs = search.filtered.map(
+    (item) => `refinement:${item.refinement.id}`,
+  );
+  const { badges: cognitiveBadges } = useCognitivePendingBadges(
+    boardId,
+    visibleRefinementSourceRefs,
+  );
+
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
@@ -198,7 +213,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
       {/* Refinement list grouped by ideation */}
       <div className="flex-1 overflow-y-auto space-y-4">
         {loading ? (
-          <div className="text-center text-gray-500 dark:text-gray-400 py-8">Loading refinements...</div>
+          <PulseLoader size="sm" label="Loading refinements..." />
         ) : allRefinements.length === 0 ? (
           <div className="text-center py-12">
             <Layers size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
@@ -244,12 +259,15 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
                           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[refinement.status]}`}>
                             {STATUS_ICON[refinement.status]}
                             {REFINEMENT_STATUS_LABELS[refinement.status]}
                           </span>
                           <span className="text-xs text-gray-400">v{refinement.version}</span>
+                          <CognitivePendingBadge
+                            badge={cognitiveBadges[`refinement:${refinement.id}`]}
+                          />
                         </div>
                         <h3 className="font-medium text-gray-900 dark:text-white text-sm truncate">
                           {refinement.title}
@@ -259,6 +277,12 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
                             {refinement.description}
                           </p>
                         )}
+                        {/* Open Q&A badge on its own row, above the labels */}
+                        {refinement.open_qa_count ? (
+                          <div className="mt-2">
+                            <QABadge count={refinement.open_qa_count} />
+                          </div>
+                        ) : null}
                         {/* Labels */}
                         {refinement.labels && refinement.labels.length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-2">

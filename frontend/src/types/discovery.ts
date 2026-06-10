@@ -5,6 +5,30 @@
  * in the same PR.
  */
 
+export type DiscoveryParamType = 'text' | 'entity_selector' | 'spec_child_selector';
+
+export type SpecChildType =
+  | 'functional_requirement'
+  | 'business_rule'
+  | 'technical_requirement'
+  | 'decision'
+  | 'acceptance_criterion'
+  | 'api_contract'
+  | 'integration_requirement'
+  | 'observability_requirement';
+
+export interface DiscoveryParamSchema {
+  type?: DiscoveryParamType | string;
+  required?: boolean;
+  label?: string;
+  entity_type?: string;
+  child_types?: SpecChildType[] | string[];
+  depends_on?: string[];
+  options_endpoint?: string;
+}
+
+export type DiscoveryParamsSchema = Record<string, DiscoveryParamSchema>;
+
 export interface DiscoveryIntent {
   id: string;
   name: string;
@@ -12,7 +36,7 @@ export interface DiscoveryIntent {
   description: string | null;
   category: string;
   tool_binding: string;
-  params_schema: Record<string, unknown> | null;
+  params_schema: DiscoveryParamsSchema | null;
   renderer: string;
   min_permission: string | null;
   active: boolean;
@@ -40,4 +64,35 @@ export interface SearchHistoryEntry {
   intent_id: string | null;
   result_count: number;
   searched_at: string;
+}
+
+export interface DiscoverySelectorOption {
+  id: string;
+  label: string;
+  entity_type: string;
+  subtitle?: string;
+  spec_id?: string;
+  spec_title?: string;
+  child_type?: SpecChildType | string;
+  child_id?: string;
+  child_index?: number;
+  child_ref?: string;
+  status?: string;
+  version?: number | string;
+  order?: number;
+  refs?: Record<string, unknown>;
+}
+
+export interface DiscoverySelectorOptionsResponse {
+  options: DiscoverySelectorOption[];
+  source: string;
+  cache_status: string;
+  global_refs_used: boolean;
+}
+
+export interface DiscoverySpecChildSelectorValue {
+  spec_id: string;
+  child_type: SpecChildType | string;
+  child_id: string;
+  child_ref: string;
 }
