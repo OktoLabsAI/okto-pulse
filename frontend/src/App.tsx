@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
 import { Header, Sidebar, CreateBoardModal, AgentsModal } from '@/components/layout';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 import { MetricsSettingsPanel } from '@/components/layout/MetricsSettingsPanel';
 import { KanbanBoard } from '@/components/kanban';
 import { StoriesPanel } from '@/components/stories';
@@ -401,13 +402,7 @@ function App() {
   };
 
   if (!isLoaded) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-surface-50 dark:bg-surface-950">
-        <img src={logoLight} alt="Okto Pulse" className="h-16 w-16 mb-4 animate-pulse rounded-xl dark:hidden" />
-        <img src={logoDark} alt="Okto Pulse" className="h-16 w-16 mb-4 animate-pulse rounded-xl hidden dark:block" />
-        <div className="text-gray-500 dark:text-gray-400">Loading...</div>
-      </div>
-    );
+    return <PulseLoader fullScreen size="lg" label="Loading..." />;
   }
 
   if (!isSignedIn) {

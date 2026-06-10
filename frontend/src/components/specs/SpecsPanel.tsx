@@ -32,6 +32,7 @@ import { SpecModal } from './SpecModal';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { QABadge } from '@/components/shared/QABadge';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface SpecsPanelProps {
   boardId: string;
@@ -284,7 +285,7 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
       {/* Spec list */}
       <div className="flex-1 overflow-y-auto" data-testid={`specs-${viewMode}`}>
         {loading ? (
-          <div className="text-center text-gray-500 dark:text-gray-400 py-8">Loading specs...</div>
+          <PulseLoader size="sm" label="Loading specs..." />
         ) : specs.length === 0 ? (
           <div className="text-center py-12">
             <FileText size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />

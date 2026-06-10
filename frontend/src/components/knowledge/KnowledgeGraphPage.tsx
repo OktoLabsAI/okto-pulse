@@ -33,6 +33,7 @@ import { useKgLiveEvents } from '@/hooks/useKgLiveEvents';
 import type { KGNode, KGEdge, KGStats } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
 import { getKGHealth, type KGHealth } from '@/services/kg-health-api';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface Props {
   boardId: string;
@@ -336,9 +337,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         className="flex items-center justify-center h-full"
         data-testid="kg-loading"
       >
-        <div className="animate-pulse text-gray-400 dark:text-gray-600">
-          Loading Knowledge Graph...
-        </div>
+        <PulseLoader size="md" label="Loading Knowledge Graph..." />
       </div>
     );
   }

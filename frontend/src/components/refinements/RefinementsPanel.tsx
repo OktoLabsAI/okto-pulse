@@ -29,6 +29,7 @@ import { RefinementModal } from './RefinementModal';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { QABadge } from '@/components/shared/QABadge';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface RefinementsPanelProps {
   boardId: string;
@@ -212,7 +213,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
       {/* Refinement list grouped by ideation */}
       <div className="flex-1 overflow-y-auto space-y-4">
         {loading ? (
-          <div className="text-center text-gray-500 dark:text-gray-400 py-8">Loading refinements...</div>
+          <PulseLoader size="sm" label="Loading refinements..." />
         ) : allRefinements.length === 0 ? (
           <div className="text-center py-12">
             <Layers size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />

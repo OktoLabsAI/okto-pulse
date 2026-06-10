@@ -28,6 +28,7 @@ import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { openLineageGraph } from '@/components/traceability';
 import { CreateIdeationModal } from './CreateIdeationModal';
 import { IdeationModal } from './IdeationModal';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface IdeationsPanelProps {
   boardId: string;
@@ -186,7 +187,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
         data-testid={`ideations-${viewMode}`}
       >
         {loading ? (
-          <div className="text-center text-gray-500 dark:text-gray-400 py-8">Loading ideations...</div>
+          <PulseLoader size="sm" label="Loading ideations..." />
         ) : ideations.length === 0 ? (
           <div className="text-center py-12">
             <Lightbulb size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
