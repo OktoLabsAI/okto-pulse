@@ -41,7 +41,11 @@ interface Props {
 
 type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'settings' | 'global';
 
-const DEFAULT_NODE_LIMIT = 100;
+// 500 (era 100): com a projeção paginada, edges só materializam quando as
+// duas pontas chegam ao cliente — páginas pequenas deixavam o grafo
+// parecendo desconectado e exigiam dezenas de "Load more". O Sigma/WebGL
+// lida bem com 500+ nós por página.
+const DEFAULT_NODE_LIMIT = 500;
 const HIDE_ALL_NODE_TYPE = '__hide_all__';
 const DEFAULT_FILTERS: Filters = {
   types: [],
