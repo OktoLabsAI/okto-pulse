@@ -22,6 +22,8 @@
     "@xyflow/react": "^12.10.2",
     "d3-force": "^3.0.0",
     "date-fns": "^3.6.0",
+    "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
     "lucide-react": "^0.460.0",
     "mermaid": "^11.14.0",
     "react": "^18.3.1",
@@ -30,6 +32,7 @@
     "react-markdown": "^10.1.0",
     "recharts": "^3.8.1",
     "remark-gfm": "^4.0.1",
+    "sigma": "^3.0.3",
     "uuid": "^11.0.3",
     "zustand": "^5.0.1"
   },
