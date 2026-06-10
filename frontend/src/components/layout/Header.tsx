@@ -1122,7 +1122,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                   <li><strong>(d) Internal large-scale platform exposure</strong> — operating the software as an internally hosted service that meets <strong>BOTH</strong> of the following conditions simultaneously:
                     <ul className="list-disc pl-4 mt-1 space-y-1">
                       <li><strong>(i)</strong> the software, or modules extracted/externalized/repackaged from it, are exposed as a hosted service, API, or internal platform to users within your organization who are not directly involved in administering, developing, configuring, or using the software for the projects, teams, or products it is intended to manage; <strong>AND</strong></li>
-                      <li><strong>(ii)</strong> the total population of such exposed users exceeds <strong>five hundred (500)</strong> individuals.</li>
+                      <li><strong>(ii)</strong> the total population of such exposed users exceeds <strong>two hundred (200)</strong> individuals.</li>
                     </ul>
                     <p className="mt-1 text-[11px] italic">Both conditions must be met. Local, desktop, or workstation use by any number of individuals is <strong>never</strong> restricted by this clause.</p>
                   </li>
