@@ -26,6 +26,7 @@ import { CARD_STATUSES, STATUS_LABELS, type CardStatus, type CardSummary, type S
 import { useListSearch } from '@/hooks/useListSearch';
 import { SearchInput } from '@/components/shared/SearchInput';
 import { KanbanColumn } from './KanbanColumn';
+import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { CardModal } from './CardModal';
 import { CreateCardModal } from './CreateCardModal';
 
@@ -167,6 +168,30 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     }
     return next;
   }, [specFilteredColumns, cardSearch.query, cardSearch.filtered]);
+
+  // KG-03.6 — batch cognitive pending badges for visible task/test/bug
+  // surfaces. ONE HTTP request per (board, visible card-id) change;
+  // never one per card (api_28a22fec batch semantics).
+  const visibleCardSourceRefs = useMemo(() => {
+    const refs: string[] = [];
+    for (const status of CARD_STATUSES) {
+      for (const card of filteredColumns[status] || []) {
+        if (card.card_type === 'test') {
+          refs.push(`test:${card.id}`);
+        } else if (card.card_type === 'bug') {
+          refs.push(`bug:${card.id}`);
+        } else if (!card.card_type || card.card_type === 'normal') {
+          // ``normal`` (default) cards represent tasks.
+          refs.push(`task:${card.id}`);
+        }
+      }
+    }
+    return refs;
+  }, [filteredColumns]);
+  const { badges: cognitiveBadges } = useCognitivePendingBadges(
+    boardId,
+    visibleCardSourceRefs,
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -439,6 +464,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
               onCardClick={handleCardClick}
               onAddCard={handleAddCard}
               nameMap={nameMap}
+              cognitiveBadges={cognitiveBadges}
             />
           ))}
         </div>

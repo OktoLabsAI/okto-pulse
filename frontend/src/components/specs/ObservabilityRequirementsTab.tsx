@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle, ChevronDown, ChevronUp, Gauge, Link, Pencil, Plus, Trash2, Unlink, XCircle } from 'lucide-react';
 import type { CardSummaryForSpec, ObservabilityRequirement, ObservabilitySignalType, Spec } from '@/types';
 
@@ -14,6 +14,9 @@ interface ObservabilityRequirementsTabProps {
   canDelete?: boolean;
   canLinkTask?: boolean;
   canEditCoverageFlags?: boolean;
+  focusEditId?: string | null;
+  focusCreateToken?: number | null;
+  onFocusHandled?: () => void;
 }
 
 const SIGNAL_TYPES: ObservabilitySignalType[] = ['metric', 'log', 'trace', 'dashboard', 'alert', 'slo', 'other'];
@@ -77,6 +80,9 @@ export function ObservabilityRequirementsTab({
   canDelete = true,
   canLinkTask = true,
   canEditCoverageFlags = true,
+  focusEditId = null,
+  focusCreateToken = null,
+  onFocusHandled,
 }: ObservabilityRequirementsTabProps) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -93,9 +99,11 @@ export function ObservabilityRequirementsTab({
   const [formLinkedIRs, setFormLinkedIRs] = useState<string[]>([]);
   const [formNotes, setFormNotes] = useState('');
 
-  const requirements = spec.observability_requirements || [];
+  const requirements = (spec.observability_requirements || []).filter((item) => item.status === 'active');
   const activeRequirements = requirements.filter((item) => item.status === 'active');
-  const frs = spec.functional_requirements || [];
+  const frs = (spec.functional_requirements || []).map((fr: any) =>
+    typeof fr === 'string' ? fr : String(fr?.text || fr?.title || '')
+  );
   const integrationRequirements = spec.integration_requirements || [];
 
   const coverage = useMemo(() => {
@@ -159,6 +167,23 @@ export function ObservabilityRequirementsTab({
     setFormLinkedIRs(item.linked_integration_requirements || []);
     setFormNotes(item.notes || '');
   };
+
+  useEffect(() => {
+    if (!focusEditId || !canEdit) return;
+    const target = requirements.find((item) => item.id === focusEditId);
+    if (!target) return;
+    handleEdit(target);
+    setExpandedId(null);
+    onFocusHandled?.();
+  }, [focusEditId, canEdit, spec.observability_requirements, onFocusHandled]);
+
+  useEffect(() => {
+    if (!focusCreateToken || !canCreate) return;
+    resetForm();
+    setAdding(true);
+    setEditingId(null);
+    onFocusHandled?.();
+  }, [focusCreateToken, canCreate, onFocusHandled]);
 
   const handleSaveEdit = () => {
     if (!editingId || !formTitle.trim() || !formDescription.trim()) return;

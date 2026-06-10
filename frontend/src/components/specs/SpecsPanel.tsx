@@ -29,6 +29,10 @@ import { HierarchicalList } from '@/components/shared/HierarchicalList';
 import { openLineageGraph } from '@/components/traceability';
 import { CreateSpecModal } from './CreateSpecModal';
 import { SpecModal } from './SpecModal';
+import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
+import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
+import { QABadge } from '@/components/shared/QABadge';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface SpecsPanelProps {
   boardId: string;
@@ -174,6 +178,15 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
     { value: 'done', label: 'Done' },
   ];
 
+  // KG-03.6 — batch cognitive pending badges for the visible specs.
+  // ONE HTTP request per (boardId, visible spec ids) change; never one
+  // request per card (api_28a22fec batch semantics).
+  const visibleSpecSourceRefs = search.filtered.map((spec) => `spec:${spec.id}`);
+  const { badges: cognitiveBadges } = useCognitivePendingBadges(
+    boardId,
+    visibleSpecSourceRefs,
+  );
+
   const getSpecGroupKey = (spec: SpecSummary): string | null => {
     if (groupMode === 'none') return null;
     if (groupMode === 'ideation') {
@@ -272,7 +285,7 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
       {/* Spec list */}
       <div className="flex-1 overflow-y-auto" data-testid={`specs-${viewMode}`}>
         {loading ? (
-          <div className="text-center text-gray-500 dark:text-gray-400 py-8">Loading specs...</div>
+          <PulseLoader size="sm" label="Loading specs..." />
         ) : specs.length === 0 ? (
           <div className="text-center py-12">
             <FileText size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
@@ -317,12 +330,15 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[spec.status]}`}>
                         {STATUS_ICON[spec.status]}
                         {SPEC_STATUS_LABELS[spec.status]}
                       </span>
                       <span className="text-xs text-gray-400">v{spec.version}</span>
+                      <CognitivePendingBadge
+                        badge={cognitiveBadges[`spec:${spec.id}`]}
+                      />
                     </div>
                     <h3 className="font-medium text-gray-900 dark:text-white text-sm truncate">
                       {spec.title}
@@ -332,6 +348,12 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
                         {sanitizePreview(spec.description)}
                       </p>
                     )}
+                    {/* Open Q&A badge on its own row, above the labels */}
+                    {spec.open_qa_count ? (
+                      <div className="mt-2">
+                        <QABadge count={spec.open_qa_count} />
+                      </div>
+                    ) : null}
                     {spec.labels && spec.labels.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-2">
                         {spec.labels.map((label, i) => (

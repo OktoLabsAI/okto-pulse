@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportIdeation, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
+import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import { openLineageGraph } from '@/components/traceability';
@@ -139,8 +140,11 @@ function formatValue(val: unknown): string {
   if (val === null || val === undefined) return '(empty)';
   if (Array.isArray(val)) {
     if (val.length === 0) return '(empty list)';
-    return val.map((v, i) => `${i + 1}. ${v}`).join('\n');
+    return val
+      .map((v, i) => `${i + 1}. ${v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+      .join('\n');
   }
+  if (typeof val === 'object') return JSON.stringify(val, null, 2);
   return String(val);
 }
 
@@ -974,7 +978,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
       setIdeation(updated);
       onChanged();
       toast.success(`Ideation moved to ${IDEATION_STATUS_LABELS[status]}`);
-    } catch { toast.error('Failed to move ideation'); } finally { setMovingTo(null); }
+    } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
   };
 
   const handleDelete = async () => {
@@ -1023,7 +1027,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
         toast.success('Spec draft created');
         await loadIdeation();
         onChanged();
-      } catch { toast.error('Failed to create spec'); } finally { setDerivingSpec(false); }
+      } catch (err) { toast.error(getErrorMessage(err)); } finally { setDerivingSpec(false); }
     } else if (selectorTarget === 'refinement') {
       setCreatingRefinement(true);
       try {
@@ -1104,7 +1108,22 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
               <GitBranch size={16} />
             </button>
             <button
-              onClick={() => { const md = exportIdeation(ideation); downloadMarkdown(md, `ideation_${slugify(ideation.title)}_v${ideation.version}.md`); }}
+              onClick={async () => {
+                try {
+                  // Hydrate architecture design summaries into full designs (entities,
+                  // interfaces, diagram payloads) so the Markdown export renders the
+                  // Mermaid diagram — same pattern as Spec/Card export.
+                  const fullArchitecture = await Promise.all(
+                    (ideation.architecture_designs || []).map((d) =>
+                      api.getArchitectureDesign(d.id, true).catch(() => d)
+                    )
+                  );
+                  const md = exportIdeation({ ...ideation, architecture_designs: fullArchitecture as any });
+                  downloadMarkdown(md, `ideation_${slugify(ideation.title)}_v${ideation.version}.md`);
+                } catch {
+                  toast.error('Failed to prepare markdown export');
+                }
+              }}
               disabled={loading}
               className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
               title="Download Markdown"

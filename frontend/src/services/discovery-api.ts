@@ -5,8 +5,10 @@
 
 import type {
   DiscoveryIntent,
+  DiscoverySelectorOptionsResponse,
   SavedSearch,
   SearchHistoryEntry,
+  SpecChildType,
 } from '@/types/discovery';
 
 /** Row in the normalized payload returned by POST /intents/:id/execute. */
@@ -44,7 +46,16 @@ async function dFetch<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
+    const detail = err?.detail;
+    const message =
+      typeof detail === 'string'
+        ? detail
+        : typeof detail?.error === 'string'
+          ? detail.error
+          : typeof err?.message === 'string'
+            ? err.message
+            : `HTTP ${resp.status}`;
+    throw new Error(message);
   }
   if (resp.status === 204 || resp.headers.get('Content-Length') === '0') {
     return undefined as T;
@@ -64,6 +75,37 @@ export async function listSearchHistory(
   boardId: string,
 ): Promise<SearchHistoryEntry[]> {
   return dFetch<SearchHistoryEntry[]>(`/boards/${boardId}/search-history`);
+}
+
+export interface ListSelectorOptionsParams {
+  selectorKind: 'spec' | 'spec_child' | 'card';
+  specId?: string | null;
+  childType?: SpecChildType | string | null;
+  status?: string | null;
+  q?: string | null;
+  limit?: number;
+  offset?: number;
+  includeSuperseded?: boolean;
+}
+
+export async function listSelectorOptions(
+  boardId: string,
+  params: ListSelectorOptionsParams,
+): Promise<DiscoverySelectorOptionsResponse> {
+  const qs = new URLSearchParams();
+  qs.set('selector_kind', params.selectorKind);
+  if (params.specId) qs.set('spec_id', params.specId);
+  if (params.childType) qs.set('child_type', params.childType);
+  if (params.status) qs.set('status', params.status);
+  if (params.q) qs.set('q', params.q);
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params.offset !== undefined) qs.set('offset', String(params.offset));
+  if (params.includeSuperseded !== undefined) {
+    qs.set('include_superseded', String(params.includeSuperseded));
+  }
+  return dFetch<DiscoverySelectorOptionsResponse>(
+    `/boards/${boardId}/selector-options?${qs.toString()}`,
+  );
 }
 
 /**

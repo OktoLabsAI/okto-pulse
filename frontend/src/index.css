@@ -324,3 +324,53 @@ h1, h2, h3, h4, h5, h6,
 .mono {
   font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+/* PulseLoader — landing-page hero pulse trace (see PulseLoader.tsx).
+   Same dash geometry and non-linear sweep as the hero: a 230-unit segment
+   travels the 1260-unit path and accelerates through the heartbeat spike. */
+.pulse-loader__trace {
+  stroke-dasharray: 230 1260;
+  stroke-dashoffset: 1260;
+  animation: pulse-loader-trace-pass 2s linear infinite;
+}
+
+@keyframes pulse-loader-trace-pass {
+  0% {
+    opacity: 0;
+    stroke-dashoffset: 1260;
+  }
+  7% {
+    opacity: 1;
+  }
+  42% {
+    stroke-dashoffset: 790;
+  }
+  55% {
+    stroke-dashoffset: 420;
+  }
+  94% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  100% {
+    opacity: 0;
+    stroke-dashoffset: -230;
+  }
+}
+
+/* Hero backdrop grid for the full-screen loader (28px hairline grid,
+   radially masked like .pulse-stage::before on the landing page). */
+.pulse-loader__grid {
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.16) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.16) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(circle at 50% 50%, #000 0%, transparent 72%);
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 0%, transparent 72%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-loader__trace {
+    animation-duration: 4s;
+  }
+}

@@ -39,13 +39,31 @@ import {
   Network,
   ShieldCheck,
   Gauge,
+  Pencil,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { exportSpec, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
+import { exportSpec, downloadMarkdown, markdownFilenameForSpec } from '@/lib/exportMarkdown';
+import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import { openLineageGraph } from '@/components/traceability';
-import type { IntegrationRequirement, ObservabilityRequirement, Spec, SpecStatus, SpecKnowledgeSummary, SpecQAItem, SpecHistoryEntry, TestScenario, BoardSettings, Decision } from '@/types';
+import type {
+  ApiContract,
+  BusinessRule,
+  IntegrationRequirement,
+  ObservabilityRequirement,
+  Spec,
+  SpecStatus,
+  SpecKnowledgeSummary,
+  SpecQAItem,
+  SpecHistoryEntry,
+  SpecStructuredEntityOperation,
+  SpecStructuredEntityType,
+  TechnicalRequirement,
+  TestScenario,
+  BoardSettings,
+  Decision,
+} from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { EvidenceBadge } from './EvidenceBadge';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -116,7 +134,11 @@ function EditableRequirementsList({
   placeholder,
   renderItemExtra,
   canAdd = true,
+  canEdit = true,
   canRemove = true,
+  onAddItem,
+  onEditItem,
+  onOpenItemEditor,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -125,10 +147,16 @@ function EditableRequirementsList({
   placeholder: string;
   renderItemExtra?: (item: string, index: number) => React.ReactNode;
   canAdd?: boolean;
+  canEdit?: boolean;
   canRemove?: boolean;
+  onAddItem?: () => void;
+  onEditItem?: (index: number, value: string) => void | Promise<void>;
+  onOpenItemEditor?: (index: number) => void;
 }) {
   const [draft, setDraft] = useState('');
   const [editing, setEditing] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState('');
 
   const add = () => {
     const trimmed = draft.trim();
@@ -142,6 +170,28 @@ function EditableRequirementsList({
     onUpdate((items || []).filter((_, i) => i !== idx));
   };
 
+  const startEdit = (idx: number, value: string) => {
+    setEditingIndex(idx);
+    setEditDraft(value);
+  };
+
+  const cancelEdit = () => {
+    setEditingIndex(null);
+    setEditDraft('');
+  };
+
+  const saveEdit = async () => {
+    if (editingIndex === null) return;
+    const trimmed = editDraft.trim();
+    if (!trimmed) return;
+    if (onEditItem) {
+      await onEditItem(editingIndex, trimmed);
+    } else {
+      onUpdate((items || []).map((item, index) => (index === editingIndex ? trimmed : item)));
+    }
+    cancelEdit();
+  };
+
   const hasItems = items && items.length > 0;
 
   return (
@@ -153,7 +203,13 @@ function EditableRequirementsList({
         </h4>
         {!editing && canAdd && (
           <button
-            onClick={() => setEditing(true)}
+            onClick={() => {
+              if (onAddItem) {
+                onAddItem();
+              } else {
+                setEditing(true);
+              }
+            }}
             className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
           >
             <Plus size={12} /> Add
@@ -166,15 +222,51 @@ function EditableRequirementsList({
           {items.map((item, i) => (
             <li key={i} className="flex items-start gap-2 text-sm text-gray-600 dark:text-gray-400 group">
               <span className="text-xs text-gray-400 mt-0.5 w-4 shrink-0">{i + 1}.</span>
-              <span className="flex-1">{item}</span>
-              {renderItemExtra?.(item, i)}
-              {canRemove && (
-                <button
-                  onClick={() => remove(i)}
-                  className="opacity-0 group-hover:opacity-100 p-0.5 text-red-400 hover:text-red-600 transition-opacity"
-                >
-                  <Trash2 size={12} />
-                </button>
+              {editingIndex === i ? (
+                <div className="flex-1 flex gap-2">
+                  <input
+                    type="text"
+                    value={editDraft}
+                    onChange={(event) => setEditDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') void saveEdit();
+                      if (event.key === 'Escape') cancelEdit();
+                    }}
+                    className="flex-1 px-2 py-1 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:border-gray-600"
+                    autoFocus
+                  />
+                  <button onClick={() => void saveEdit()} disabled={!editDraft.trim()} className="btn btn-primary text-xs">Save</button>
+                  <button onClick={cancelEdit} className="btn btn-secondary text-xs">Cancel</button>
+                </div>
+              ) : (
+                <>
+                  <span className="flex-1">{item}</span>
+                  {renderItemExtra?.(item, i)}
+                  {canEdit && (
+                    <button
+                      onClick={() => {
+                        if (onOpenItemEditor) {
+                          onOpenItemEditor(i);
+                        } else {
+                          startEdit(i, item);
+                        }
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-0.5 text-blue-400 hover:text-blue-600 transition-opacity"
+                      title={onOpenItemEditor ? 'Edit details' : 'Edit'}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                  )}
+                  {canRemove && (
+                    <button
+                      onClick={() => remove(i)}
+                      className="opacity-0 group-hover:opacity-100 p-0.5 text-red-400 hover:text-red-600 transition-opacity"
+                      title="Remove"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </>
               )}
             </li>
           ))}
@@ -285,6 +377,47 @@ function reconcileObservabilityRequirements(
   ];
 }
 
+type StructuredObjectEntity =
+  | BusinessRule
+  | ApiContract
+  | TechnicalRequirement
+  | IntegrationRequirement
+  | ObservabilityRequirement
+  | Decision;
+
+type StructuredCollectionField =
+  | 'business_rules'
+  | 'api_contracts'
+  | 'technical_requirements'
+  | 'integration_requirements'
+  | 'observability_requirements'
+  | 'decisions';
+
+const STRUCTURED_ENTITY_BY_FIELD: Record<StructuredCollectionField, SpecStructuredEntityType> = {
+  business_rules: 'business_rule',
+  api_contracts: 'api_contract',
+  technical_requirements: 'technical_requirement',
+  integration_requirements: 'integration_requirement',
+  observability_requirements: 'observability_requirement',
+  decisions: 'decision',
+};
+
+function normalizeTextEntity(item: unknown, index: number): { id: string; text: string; status: string } {
+  if (item && typeof item === 'object') {
+    const record = item as Record<string, unknown>;
+    return {
+      id: String(record.id || index),
+      text: String(record.text || record.title || ''),
+      status: String(record.status || 'active'),
+    };
+  }
+  return { id: String(index), text: String(item || ''), status: 'active' };
+}
+
+function stableEntityPayload(item: StructuredObjectEntity): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
+}
+
 /* ============================================================
    History Tab
    ============================================================ */
@@ -311,8 +444,11 @@ function formatValue(val: unknown): string {
   if (val === null || val === undefined) return '(empty)';
   if (Array.isArray(val)) {
     if (val.length === 0) return '(empty list)';
-    return val.map((v, i) => `${i + 1}. ${v}`).join('\n');
+    return val
+      .map((v, i) => `${i + 1}. ${v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+      .join('\n');
   }
+  if (typeof val === 'object') return JSON.stringify(val, null, 2);
   return String(val);
 }
 
@@ -350,7 +486,11 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
   const [newCriteria, setNewCriteria] = useState<string[]>([]);
 
   const scenarios = spec.test_scenarios || [];
-  const criteria = spec.acceptance_criteria || [];
+  const criteria = ((spec.acceptance_criteria || []) as unknown[]).map((criterion) =>
+    typeof criterion === 'string'
+      ? criterion
+      : String((criterion as Record<string, unknown>).text || (criterion as Record<string, unknown>).title || '')
+  );
 
   const handleAdd = () => {
     if (!newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()) return;
@@ -1329,21 +1469,31 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   const api = useDashboardApi();
   const currentBoard = useCurrentBoard();
   const perms = usePermissions(_boardId || currentBoard?.id);
+  const canStructured = (
+    entityType: SpecStructuredEntityType,
+    operation: SpecStructuredEntityOperation,
+  ) => perms.has(`spec.structured_entity.${entityType}.${operation}`);
   const canReadIR = perms.has('spec.integration_requirements.read');
-  const canCreateIR = perms.has('spec.integration_requirements.create');
-  const canEditIR = perms.has('spec.integration_requirements.edit');
-  const canDeleteIR = perms.has('spec.integration_requirements.delete');
-  const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && perms.has('card.link_to.ir');
+  const canCreateIR = canStructured('integration_requirement', 'create');
+  const canEditIR = canStructured('integration_requirement', 'update');
+  const canDeleteIR = canStructured('integration_requirement', 'revoke');
+  const canLinkIRTasks = canStructured('integration_requirement', 'link_task') && perms.has('card.link_to.ir');
   const canReadOR = perms.has('spec.observability_requirements.read');
-  const canCreateOR = perms.has('spec.observability_requirements.create');
-  const canEditOR = perms.has('spec.observability_requirements.edit');
-  const canDeleteOR = perms.has('spec.observability_requirements.delete');
-  const canLinkORTasks = perms.has('spec.observability_requirements.link_task') && perms.has('card.link_to.or');
+  const canCreateOR = canStructured('observability_requirement', 'create');
+  const canEditOR = canStructured('observability_requirement', 'update');
+  const canDeleteOR = canStructured('observability_requirement', 'revoke');
+  const canLinkORTasks = canStructured('observability_requirement', 'link_task') && perms.has('card.link_to.or');
   const canEditCoverageFlags = perms.has('spec.entity.edit_coverage_flags');
   const [spec, setSpec] = useState<Spec | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<SpecStatus | null>(null);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
+  const [detailsStructuredEditor, setDetailsStructuredEditor] = useState<{
+    tab: ModalTab;
+    mode: 'add' | 'edit';
+    entityId?: string;
+    token: number;
+  } | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [showValidateModal, setShowValidateModal] = useState(false);
   const [validateResult, setValidateResult] = useState<{ success: boolean; error: string | null }>({ success: false, error: null });
@@ -1394,6 +1544,241 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     } catch { toast.error('Failed to load spec'); } finally { setLoading(false); }
   };
 
+  const reloadSpecAfterStructuredEdit = async () => {
+    const updated = await api.getSpec(specId);
+    setSpec(updated);
+    onChanged();
+    return updated;
+  };
+
+  const applyImpactAwareOperation = async (
+    entityType: SpecStructuredEntityType,
+    entityId: string,
+    operation: Extract<SpecStructuredEntityOperation, 'revoke' | 'supersede' | 'reorder'>,
+    version: number | null,
+    payload: Record<string, unknown> = {},
+  ): Promise<number | null> => {
+    const preview = await api.previewSpecEntityImpact(specId, entityType, entityId, operation, {
+      payload,
+      expected_spec_version: version,
+    });
+    const impacted = preview.impact_report?.impacted_refs || [];
+    let ackToken = preview.ack_token || preview.impact_report?.ack_token || null;
+    if (impacted.length > 0) {
+      const counts = Object.entries(preview.impact_report?.counts_by_type || {})
+        .map(([type, count]) => `${count} ${type}`)
+        .join(', ');
+      const accepted = window.confirm(
+        `This ${operation.replace('_', ' ')} impacts ${counts || `${impacted.length} item(s)`}. Continue?`,
+      );
+      if (!accepted) {
+        throw new Error('Operation cancelled');
+      }
+    }
+
+    const result = await api.operateSpecEntity(specId, entityType, entityId, operation, {
+      payload,
+      expected_spec_version: version,
+      ack_token: ackToken,
+    });
+
+    if (!result.success && result.error_code === 'impact_ack_required') {
+      ackToken = result.ack_token || result.impact_report?.ack_token || null;
+      const impactedRefs = result.impact_report?.impacted_refs || [];
+      const accepted = window.confirm(
+        `This ${operation.replace('_', ' ')} impacts ${impactedRefs.length} item(s). Continue?`,
+      );
+      if (!accepted || !ackToken) {
+        throw new Error('Operation cancelled');
+      }
+      const acknowledged = await api.operateSpecEntity(specId, entityType, entityId, operation, {
+        payload,
+        expected_spec_version: version,
+        ack_token: ackToken,
+      });
+      if (!acknowledged.success) {
+        throw new Error(acknowledged.error_message || 'Structured operation failed');
+      }
+      return acknowledged.spec_version;
+    }
+
+    if (!result.success) {
+      throw new Error(result.error_message || 'Structured operation failed');
+    }
+    return result.spec_version;
+  };
+
+  const syncTextEntityList = async (
+    entityType: Extract<SpecStructuredEntityType, 'functional_requirement' | 'acceptance_criterion'>,
+    currentItems: unknown[] | null,
+    nextTexts: string[],
+  ) => {
+    if (!spec) return;
+    try {
+      let version: number | null = spec.version;
+      const currentEntries = (currentItems || [])
+        .map(normalizeTextEntity)
+        .filter((item) => item.status === 'active');
+
+      const nextCounts = new Map<string, number>();
+      for (const text of nextTexts.map((item) => item.trim()).filter(Boolean)) {
+        nextCounts.set(text, (nextCounts.get(text) || 0) + 1);
+      }
+
+      const keptCounts = new Map<string, number>();
+      const entriesToRevoke: typeof currentEntries = [];
+      for (const entry of currentEntries) {
+        const allowed = nextCounts.get(entry.text) || 0;
+        const seen = keptCounts.get(entry.text) || 0;
+        if (seen < allowed) {
+          keptCounts.set(entry.text, seen + 1);
+          continue;
+        }
+        entriesToRevoke.push(entry);
+      }
+      entriesToRevoke.sort((a, b) => {
+        const ai = Number(a.id);
+        const bi = Number(b.id);
+        return Number.isInteger(ai) && Number.isInteger(bi) ? bi - ai : 0;
+      });
+      for (const entry of entriesToRevoke) {
+        version = await applyImpactAwareOperation(entityType, entry.id, 'revoke', version);
+      }
+
+      const currentCounts = new Map<string, number>();
+      for (const entry of currentEntries) {
+        currentCounts.set(entry.text, (currentCounts.get(entry.text) || 0) + 1);
+      }
+      const createdCounts = new Map<string, number>();
+      for (const text of nextTexts.map((item) => item.trim()).filter(Boolean)) {
+        const existing = currentCounts.get(text) || 0;
+        const created = createdCounts.get(text) || 0;
+        if (created < existing) {
+          createdCounts.set(text, created + 1);
+          continue;
+        }
+        const result = await api.createSpecEntity(specId, entityType, { text }, version);
+        if (!result.success) throw new Error(result.error_message || 'Structured create failed');
+        version = result.spec_version;
+        createdCounts.set(text, created + 1);
+      }
+
+      await reloadSpecAfterStructuredEdit();
+    } catch (error) {
+      if ((error as Error).message !== 'Operation cancelled') {
+        toast.error((error as Error).message || 'Failed to update');
+      }
+    }
+  };
+
+  const updateTextEntityAtIndex = async (
+    entityType: Extract<SpecStructuredEntityType, 'functional_requirement' | 'acceptance_criterion'>,
+    currentItems: unknown[] | null,
+    index: number,
+    text: string,
+  ) => {
+    if (!spec) return;
+    const entry = (currentItems || [])
+      .map(normalizeTextEntity)
+      .filter((item) => item.status === 'active')[index];
+    if (!entry) return;
+    const result = await api.updateSpecEntity(specId, entityType, entry.id, { text }, spec.version);
+    if (!result.success) throw new Error(result.error_message || 'Structured update failed');
+    await reloadSpecAfterStructuredEdit();
+  };
+
+  const updateStructuredEntityAtIndex = async (
+    entityType: SpecStructuredEntityType,
+    items: StructuredObjectEntity[] | null,
+    index: number,
+    payload: Record<string, unknown>,
+  ) => {
+    if (!spec) return;
+    const entry = (items || []).filter((item) => ((item as any).status || 'active') === 'active')[index] as any;
+    if (!entry?.id) return;
+    const result = await api.updateSpecEntity(specId, entityType, entry.id, payload, spec.version);
+    if (!result.success) throw new Error(result.error_message || 'Structured update failed');
+    await reloadSpecAfterStructuredEdit();
+  };
+
+  const syncStructuredCollection = async (
+    field: StructuredCollectionField,
+    currentItems: StructuredObjectEntity[] | null,
+    nextItems: StructuredObjectEntity[],
+  ) => {
+    if (!spec) return;
+    try {
+      let version: number | null = spec.version;
+      const entityType = STRUCTURED_ENTITY_BY_FIELD[field];
+      const currentById = new Map((currentItems || []).map((item) => [item.id, item]));
+      const nextById = new Map(nextItems.map((item) => [item.id, item]));
+
+      for (const current of currentItems || []) {
+        const currentStatus = String((stableEntityPayload(current).status as string | undefined) || 'active');
+        if (currentStatus !== 'active' && !nextById.has(current.id)) {
+          continue;
+        }
+        if (!nextById.has(current.id)) {
+          version = await applyImpactAwareOperation(entityType, current.id, 'revoke', version);
+        }
+      }
+
+      for (const next of nextItems) {
+        const current = currentById.get(next.id);
+        if (!current) {
+          const result = await api.createSpecEntity(specId, entityType, stableEntityPayload(next), version);
+          if (!result.success) throw new Error(result.error_message || 'Structured create failed');
+          version = result.spec_version;
+          continue;
+        }
+
+        const currentPayload = stableEntityPayload(current);
+        const nextPayload = stableEntityPayload(next);
+        const currentStatus = String(currentPayload.status || 'active');
+        const nextStatus = String(nextPayload.status || 'active');
+        if (currentStatus !== nextStatus) {
+          if (nextStatus === 'revoked') {
+            version = await applyImpactAwareOperation(entityType, next.id, 'revoke', version);
+          } else if (nextStatus === 'superseded') {
+            version = await applyImpactAwareOperation(entityType, next.id, 'supersede', version, {
+              supersedes_decision_id: nextPayload.supersedes_decision_id,
+            });
+          } else if (nextStatus === 'active') {
+            const result = await api.operateSpecEntity(specId, entityType, next.id, 'restore', {
+              expected_spec_version: version,
+            });
+            if (!result.success) throw new Error(result.error_message || 'Structured restore failed');
+            version = result.spec_version;
+          }
+          delete currentPayload.status;
+          delete nextPayload.status;
+        }
+
+        if (JSON.stringify(currentPayload) !== JSON.stringify(nextPayload)) {
+          const result = await api.updateSpecEntity(specId, entityType, next.id, nextPayload, version);
+          if (!result.success) throw new Error(result.error_message || 'Structured update failed');
+          version = result.spec_version;
+        }
+      }
+
+      const currentIds = (currentItems || []).map((item) => item.id);
+      const nextIds = nextItems.map((item) => item.id);
+      const sameSet = currentIds.length === nextIds.length && currentIds.every((id) => nextIds.includes(id));
+      const sameOrder = currentIds.length === nextIds.length && currentIds.every((id, index) => id === nextIds[index]);
+      if (sameSet && !sameOrder && nextIds.length > 0) {
+        version = await applyImpactAwareOperation(entityType, '__collection__', 'reorder', version, {
+          ordered_entity_ids: nextIds,
+        });
+      }
+
+      await reloadSpecAfterStructuredEdit();
+    } catch (error) {
+      if ((error as Error).message !== 'Operation cancelled') {
+        toast.error((error as Error).message || 'Failed to update');
+      }
+    }
+  };
+
   const boardSettings = (currentBoard?.settings || {}) as BoardSettings;
   const requireSpecValidation = Boolean(boardSettings.require_spec_validation);
   const [showSubmitValidationModal, setShowSubmitValidationModal] = useState(false);
@@ -1442,7 +1827,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
       setSpec(updated);
       onChanged();
       toast.success(`Spec moved to ${SPEC_STATUS_LABELS[status]}`);
-    } catch { toast.error('Failed to move spec'); } finally { setMovingTo(null); }
+    } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
   };
 
   const handleDelete = async () => {
@@ -1484,6 +1869,11 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   if (!spec) return null;
 
   const nextStatuses = getNextStatuses(spec.status);
+  const openDetailsStructuredEditor = (tab: ModalTab, mode: 'add' | 'edit', entityId?: string) => {
+    setDetailsStructuredEditor({ tab, mode, entityId, token: Date.now() });
+    setActiveTab(tab);
+  };
+  const clearDetailsStructuredEditor = () => setDetailsStructuredEditor(null);
 
   const unansweredQA = spec.qa_items?.filter((q) => !q.answer).length || 0;
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
@@ -1536,8 +1926,20 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                       api.getSpecKnowledge(spec.id, kb.id).catch(() => kb)
                     )
                   );
-                  const md = exportSpec({ ...spec, knowledge_bases: fullKnowledge as any });
-                  downloadMarkdown(md, `spec_${slugify(spec.title)}_v${spec.version}.md`);
+                  // Hydrate architecture design summaries into full designs (entities,
+                  // interfaces, diagram payloads) so the Markdown export can render the
+                  // Mermaid diagram. spec.architecture_designs are summaries by default.
+                  const fullArchitecture = await Promise.all(
+                    (spec.architecture_designs || []).map((d) =>
+                      api.getArchitectureDesign(d.id, true).catch(() => d)
+                    )
+                  );
+                  const md = exportSpec({
+                    ...spec,
+                    knowledge_bases: fullKnowledge as any,
+                    architecture_designs: fullArchitecture as any,
+                  });
+                  downloadMarkdown(md, markdownFilenameForSpec(spec));
                 } catch {
                   toast.error('Failed to prepare markdown export');
                 }
@@ -1679,13 +2081,19 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
               <EditableRequirementsList
                 title="Functional Requirements"
                 icon={<Circle size={14} />}
-                items={spec.functional_requirements}
+                items={((spec.functional_requirements || []) as unknown[])
+                  .map(normalizeTextEntity)
+                  .filter((item) => item.status === 'active')
+                  .map((item) => item.text)}
                 placeholder="Add a functional requirement..."
+                canAdd={canStructured('functional_requirement', 'create')}
+                canEdit={canStructured('functional_requirement', 'update')}
+                canRemove={canStructured('functional_requirement', 'revoke')}
+                onEditItem={async (index, text) => {
+                  await updateTextEntityAtIndex('functional_requirement', spec.functional_requirements as unknown[] | null, index, text);
+                }}
                 onUpdate={async (items) => {
-                  try {
-                    const updated = await api.updateSpec(specId, { functional_requirements: items });
-                    setSpec(updated);
-                  } catch { toast.error('Failed to update'); }
+                  await syncTextEntityList('functional_requirement', spec.functional_requirements as unknown[] | null, items);
                 }}
               />
               {canReadIR && (
@@ -1698,14 +2106,28 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                     .filter(Boolean)}
                   placeholder="Add an integration requirement..."
                   canAdd={canCreateIR}
+                  canEdit={canEditIR}
                   canRemove={canDeleteIR}
+                  onAddItem={() => openDetailsStructuredEditor('irs', 'add')}
+                  onOpenItemEditor={(index) => {
+                    const item = (spec.integration_requirements || []).filter((entry) => entry.status === 'active')[index];
+                    if (item) openDetailsStructuredEditor('irs', 'edit', item.id);
+                  }}
+                  onEditItem={async (index, text) => {
+                    const item = (spec.integration_requirements || []).filter((entry) => entry.status === 'active')[index];
+                    await updateStructuredEntityAtIndex(
+                      'integration_requirement',
+                      spec.integration_requirements || [],
+                      index,
+                      { title: text, description: item?.description || text },
+                    );
+                  }}
                   onUpdate={async (items) => {
-                    try {
-                      const updated = await api.updateSpec(specId, {
-                        integration_requirements: reconcileIntegrationRequirements(spec.integration_requirements, items),
-                      });
-                      setSpec(updated);
-                    } catch { toast.error('Failed to update integration requirements'); }
+                    await syncStructuredCollection(
+                      'integration_requirements',
+                      spec.integration_requirements || [],
+                      reconcileIntegrationRequirements(spec.integration_requirements, items),
+                    );
                   }}
                 />
               )}
@@ -1719,49 +2141,91 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                     .filter(Boolean)}
                   placeholder="Add an observability requirement..."
                   canAdd={canCreateOR}
+                  canEdit={canEditOR}
                   canRemove={canDeleteOR}
+                  onAddItem={() => openDetailsStructuredEditor('ors', 'add')}
+                  onOpenItemEditor={(index) => {
+                    const item = (spec.observability_requirements || []).filter((entry) => entry.status === 'active')[index];
+                    if (item) openDetailsStructuredEditor('ors', 'edit', item.id);
+                  }}
+                  onEditItem={async (index, text) => {
+                    const item = (spec.observability_requirements || []).filter((entry) => entry.status === 'active')[index];
+                    await updateStructuredEntityAtIndex(
+                      'observability_requirement',
+                      spec.observability_requirements || [],
+                      index,
+                      { title: text, description: item?.description || text },
+                    );
+                  }}
                   onUpdate={async (items) => {
-                    try {
-                      const updated = await api.updateSpec(specId, {
-                        observability_requirements: reconcileObservabilityRequirements(spec.observability_requirements, items),
-                      });
-                      setSpec(updated);
-                    } catch { toast.error('Failed to update observability requirements'); }
+                    await syncStructuredCollection(
+                      'observability_requirements',
+                      spec.observability_requirements || [],
+                      reconcileObservabilityRequirements(spec.observability_requirements, items),
+                    );
                   }}
                 />
               )}
               <EditableRequirementsList
                 title="Technical Requirements"
                 icon={<Settings size={14} />}
-                items={(spec.technical_requirements || []).map((tr) =>
-                  typeof tr === 'string' ? tr : (tr as any).text || ''
-                )}
+                items={(spec.technical_requirements || [])
+                  .filter((tr) => typeof tr === 'string' || ((tr as TechnicalRequirement).status || 'active') === 'active')
+                  .map((tr) => (typeof tr === 'string' ? tr : (tr as TechnicalRequirement).text || ''))}
                 placeholder="Add a technical constraint..."
+                canAdd={canStructured('technical_requirement', 'create')}
+                canEdit={canStructured('technical_requirement', 'update')}
+                canRemove={canStructured('technical_requirement', 'revoke')}
+                onAddItem={() => openDetailsStructuredEditor('trs', 'add')}
+                onOpenItemEditor={(index) => {
+                  const item = (spec.technical_requirements || [])
+                    .map((tr, trIndex) =>
+                      typeof tr === 'string'
+                        ? { id: `tr_legacy_${trIndex}`, text: tr, linked_task_ids: null }
+                        : tr
+                    )
+                    .filter((tr) => (tr.status || 'active') === 'active')[index] as TechnicalRequirement | undefined;
+                  if (item) openDetailsStructuredEditor('trs', 'edit', item.id);
+                }}
+                onEditItem={async (index, text) => {
+                  const existingTRs = (spec.technical_requirements || []).map((tr, trIndex) =>
+                    typeof tr === 'string'
+                      ? { id: `tr_legacy_${trIndex}`, text: tr, linked_task_ids: null }
+                      : tr
+                  ).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
+                  await updateStructuredEntityAtIndex('technical_requirement', existingTRs as any, index, { text });
+                }}
                 onUpdate={async (items) => {
-                  try {
-                    const existingTRs = (spec.technical_requirements || []).map((tr) =>
-                      typeof tr === 'string' ? { id: `tr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, text: tr, linked_task_ids: null } : tr
-                    );
-                    const newTRs = items.map((text) => {
-                      const existing = existingTRs.find((tr: any) => tr.text === text);
-                      if (existing) return existing;
-                      return { id: `tr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, text, linked_task_ids: null };
-                    });
-                    const updated = await api.updateSpec(specId, { technical_requirements: newTRs as any });
-                    setSpec(updated);
-                  } catch { toast.error('Failed to update'); }
+                  const existingTRs = (spec.technical_requirements || []).map((tr, index) =>
+                    typeof tr === 'string'
+                      ? { id: `tr_legacy_${index}`, text: tr, linked_task_ids: null }
+                      : tr
+                  ).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
+                  const byText = new Map(existingTRs.map((tr) => [tr.text, tr]));
+                  const nextTRs = items.map((text) => byText.get(text) || {
+                    id: `tr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                    text,
+                    linked_task_ids: null,
+                  });
+                  await syncStructuredCollection('technical_requirements', existingTRs, nextTRs);
                 }}
               />
               <EditableRequirementsList
                 title="Acceptance Criteria"
                 icon={<Target size={14} />}
-                items={spec.acceptance_criteria}
+                items={((spec.acceptance_criteria || []) as unknown[])
+                  .map(normalizeTextEntity)
+                  .filter((item) => item.status === 'active')
+                  .map((item) => item.text)}
                 placeholder="Add an acceptance criterion..."
+                canAdd={canStructured('acceptance_criterion', 'create')}
+                canEdit={canStructured('acceptance_criterion', 'update')}
+                canRemove={canStructured('acceptance_criterion', 'revoke')}
+                onEditItem={async (index, text) => {
+                  await updateTextEntityAtIndex('acceptance_criterion', spec.acceptance_criteria as unknown[] | null, index, text);
+                }}
                 onUpdate={async (items) => {
-                  try {
-                    const updated = await api.updateSpec(specId, { acceptance_criteria: items });
-                    setSpec(updated);
-                  } catch { toast.error('Failed to update'); }
+                  await syncTextEntityList('acceptance_criterion', spec.acceptance_criteria as unknown[] | null, items);
                 }}
               />
               {/* Decisions — contextual choices, same bulleted pattern as FR/AC.
@@ -1775,48 +2239,45 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                   .filter((d) => d.status === 'active')
                   .map((d) => d.title)}
                 placeholder="Add a decision (e.g. 'Use embedded graph storage over an external graph database')..."
+                canAdd={canStructured('decision', 'create')}
+                canEdit={canStructured('decision', 'update')}
+                canRemove={canStructured('decision', 'revoke')}
+                onAddItem={() => openDetailsStructuredEditor('decisions', 'add')}
+                onOpenItemEditor={(index) => {
+                  const item = (spec.decisions || []).filter((decision) => decision.status === 'active')[index];
+                  if (item) openDetailsStructuredEditor('decisions', 'edit', item.id);
+                }}
+                onEditItem={async (index, text) => {
+                  await updateStructuredEntityAtIndex('decision', spec.decisions || [], index, { title: text });
+                }}
                 onUpdate={async (items) => {
-                  try {
-                    const existing = spec.decisions || [];
-                    const byTitle = new Map(
-                      existing.filter((d) => d.status === 'active').map((d) => [d.title, d]),
-                    );
-                    const keptTitles = new Set(items);
-                    const next: Decision[] = [];
-                    // Preserve revoked/superseded history untouched.
-                    for (const d of existing) {
-                      if (d.status !== 'active') next.push(d);
-                    }
-                    // Walk incoming items in display order.
-                    for (const text of items) {
-                      const prior = byTitle.get(text);
-                      if (prior) {
-                        next.push(prior);
-                      } else {
-                        next.push({
-                          id: `dec_${Date.now().toString(16).slice(-8)}${Math.random().toString(16).slice(2, 4)}`,
-                          title: text,
-                          rationale: text,
-                          context: null,
-                          alternatives_considered: null,
-                          supersedes_decision_id: null,
-                          linked_requirements: null,
-                          linked_task_ids: null,
-                          status: 'active',
-                          notes: null,
-                        });
-                      }
-                    }
-                    // Active entries removed from the list become revoked
-                    // (soft-delete — preserves history).
-                    for (const [title, d] of byTitle) {
-                      if (!keptTitles.has(title)) {
-                        next.push({ ...d, status: 'revoked' });
-                      }
-                    }
-                    const updated = await api.updateSpec(specId, { decisions: next });
-                    setSpec(updated);
-                  } catch { toast.error('Failed to update decisions'); }
+                  const existing = spec.decisions || [];
+                  const byTitle = new Map(
+                    existing.filter((d) => d.status === 'active').map((d) => [d.title, d]),
+                  );
+                  const keptTitles = new Set(items);
+                  const next: Decision[] = existing
+                    .filter((d) => d.status !== 'active')
+                    .map((d) => ({ ...d }));
+                  for (const text of items) {
+                    const prior = byTitle.get(text);
+                    next.push(prior || {
+                      id: `dec_${Date.now().toString(16).slice(-8)}${Math.random().toString(16).slice(2, 4)}`,
+                      title: text,
+                      rationale: text,
+                      context: null,
+                      alternatives_considered: null,
+                      supersedes_decision_id: null,
+                      linked_requirements: null,
+                      linked_task_ids: null,
+                      status: 'active',
+                      notes: null,
+                    });
+                  }
+                  for (const [title, d] of byTitle) {
+                    if (!keptTitles.has(title)) next.push({ ...d, status: 'revoked' });
+                  }
+                  await syncStructuredCollection('decisions', existing, next);
                 }}
               />
               {spec.labels && spec.labels.length > 0 && (
@@ -1876,11 +2337,11 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           {activeTab === 'rules' && spec && (
             <RulesTab
               spec={spec}
+              canCreate={canStructured('business_rule', 'create')}
+              canEdit={canStructured('business_rule', 'update')}
+              canDelete={canStructured('business_rule', 'revoke')}
               onUpdate={async (rules) => {
-                try {
-                  const updated = await api.updateSpec(specId, { business_rules: rules });
-                  setSpec(updated);
-                } catch { toast.error('Failed to update business rules'); }
+                await syncStructuredCollection('business_rules', spec.business_rules || [], rules);
               }}
               onSpecUpdate={async (patch) => {
                 try {
@@ -1893,11 +2354,12 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           {activeTab === 'contracts' && spec && (
             <ContractsTab
               spec={spec}
+              canCreate={canStructured('api_contract', 'create')}
+              canEdit={canStructured('api_contract', 'update')}
+              canDelete={canStructured('api_contract', 'revoke')}
+              canLinkTask={canStructured('api_contract', 'link_task')}
               onUpdate={async (contracts) => {
-                try {
-                  const updated = await api.updateSpec(specId, { api_contracts: contracts });
-                  setSpec(updated);
-                } catch { toast.error('Failed to update API contracts'); }
+                await syncStructuredCollection('api_contracts', spec.api_contracts || [], contracts);
               }}
               onSpecUpdate={async (data) => {
                 try {
@@ -1924,11 +2386,11 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
               canDelete={canDeleteIR}
               canLinkTask={canLinkIRTasks}
               canEditCoverageFlags={canEditCoverageFlags}
+              focusEditId={detailsStructuredEditor?.tab === 'irs' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
+              focusCreateToken={detailsStructuredEditor?.tab === 'irs' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
+              onFocusHandled={clearDetailsStructuredEditor}
               onUpdate={async (requirements) => {
-                try {
-                  const updated = await api.updateSpec(specId, { integration_requirements: requirements });
-                  setSpec(updated);
-                } catch { toast.error('Failed to update integration requirements'); }
+                await syncStructuredCollection('integration_requirements', spec.integration_requirements || [], requirements);
               }}
               onSpecUpdate={async (patch) => {
                 try {
@@ -1955,11 +2417,11 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
               canDelete={canDeleteOR}
               canLinkTask={canLinkORTasks}
               canEditCoverageFlags={canEditCoverageFlags}
+              focusEditId={detailsStructuredEditor?.tab === 'ors' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
+              focusCreateToken={detailsStructuredEditor?.tab === 'ors' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
+              onFocusHandled={clearDetailsStructuredEditor}
               onUpdate={async (requirements) => {
-                try {
-                  const updated = await api.updateSpec(specId, { observability_requirements: requirements });
-                  setSpec(updated);
-                } catch { toast.error('Failed to update observability requirements'); }
+                await syncStructuredCollection('observability_requirements', spec.observability_requirements || [], requirements);
               }}
               onSpecUpdate={async (patch) => {
                 try {
@@ -1981,11 +2443,20 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           {activeTab === 'trs' && spec && (
             <TechnicalRequirementsTab
               spec={spec}
+              canCreate={canStructured('technical_requirement', 'create')}
+              canEdit={canStructured('technical_requirement', 'update')}
+              canDelete={canStructured('technical_requirement', 'revoke')}
+              canLinkTask={canStructured('technical_requirement', 'link_task')}
+              focusEditId={detailsStructuredEditor?.tab === 'trs' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
+              focusCreateToken={detailsStructuredEditor?.tab === 'trs' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
+              onFocusHandled={clearDetailsStructuredEditor}
               onUpdate={async (trs) => {
-                try {
-                  const updated = await api.updateSpec(specId, { technical_requirements: trs as any });
-                  setSpec(updated);
-                } catch { toast.error('Failed to update technical requirements'); }
+                const currentTRs = (spec.technical_requirements || []).map((tr, index) =>
+                  typeof tr === 'string'
+                    ? { id: `tr_legacy_${index}`, text: tr, linked_task_ids: null }
+                    : tr
+                ).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
+                await syncStructuredCollection('technical_requirements', currentTRs, trs);
               }}
               specCards={spec.cards || []}
               onLinkTask={async (trId, cardId) => {
@@ -2007,11 +2478,15 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           {activeTab === 'decisions' && spec && (
             <DecisionsTab
               spec={spec}
+              canCreate={canStructured('decision', 'create')}
+              canEdit={canStructured('decision', 'update')}
+              canDelete={canStructured('decision', 'revoke')}
+              canLinkTask={canStructured('decision', 'link_task')}
+              focusEditId={detailsStructuredEditor?.tab === 'decisions' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
+              focusCreateToken={detailsStructuredEditor?.tab === 'decisions' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
+              onFocusHandled={clearDetailsStructuredEditor}
               onUpdate={async (decisions) => {
-                try {
-                  const updated = await api.updateSpec(specId, { decisions } as any);
-                  setSpec(updated);
-                } catch { toast.error('Failed to update decisions'); }
+                await syncStructuredCollection('decisions', spec.decisions || [], decisions);
               }}
               onSpecUpdate={async (patch) => {
                 try {

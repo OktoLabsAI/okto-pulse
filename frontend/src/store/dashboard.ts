@@ -28,6 +28,7 @@ interface DashboardState {
 
   // Actions
   setBoards: (boards: BoardSummary[]) => void;
+  addBoard: (board: BoardSummary) => void;
   setSharedBoards: (boards: BoardSummary[]) => void;
   setCurrentBoard: (board: Board | null) => void;
   setColumns: (columns: Record<CardStatus, CardSummary[]>) => void;
@@ -73,6 +74,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   // Setters
   setBoards: (boards) => set({ boards }),
+  addBoard: (board) => set((state) => ({ boards: [board, ...state.boards] })),
   setSharedBoards: (sharedBoards) => set({ sharedBoards }),
   setCurrentBoard: (board) => set({ currentBoard: board }),
   setColumns: (columns) => set({ columns }),

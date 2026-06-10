@@ -263,6 +263,7 @@ export interface CardSummaryForSpec {
 
 // Sprint Status
 export type SprintStatus = 'draft' | 'active' | 'review' | 'closed' | 'cancelled';
+export type SprintLaneType = 'normal' | 'hotfix';
 
 export const SPRINT_STATUSES: SprintStatus[] = [
   'draft', 'active', 'review', 'closed', 'cancelled',
@@ -293,6 +294,10 @@ export interface Sprint {
   objective: string | null;
   expected_outcome: string | null;
   status: SprintStatus;
+  lane_type: SprintLaneType;
+  origin_sprint_id: string | null;
+  origin_bug_id: string | null;
+  normal_sprint_created: boolean;
   spec_version: number;
   start_date: string | null;
   end_date: string | null;
@@ -315,11 +320,16 @@ export interface Sprint {
 
 export interface SprintSummary {
   id: string;
+  open_qa_count?: number;
   spec_id: string;
   board_id: string;
   title: string;
   description: string | null;
   status: SprintStatus;
+  lane_type: SprintLaneType;
+  origin_sprint_id: string | null;
+  origin_bug_id: string | null;
+  normal_sprint_created: boolean;
   spec_version: number;
   start_date: string | null;
   end_date: string | null;
@@ -352,6 +362,9 @@ export interface CreateSprintRequest {
   title: string;
   description?: string;
   spec_id: string;
+  lane_type?: SprintLaneType;
+  origin_sprint_id?: string | null;
+  origin_bug_id?: string | null;
   test_scenario_ids?: string[];
   business_rule_ids?: string[];
   start_date?: string;
@@ -565,6 +578,7 @@ export interface RefinementKnowledgeSummary {
 // Refinement Summary (for nesting in Ideation)
 export interface RefinementSummary {
   id: string;
+  open_qa_count?: number;
   ideation_id: string;
   board_id: string;
   title: string;
@@ -588,6 +602,7 @@ export interface BusinessRule {
   then: string;
   linked_requirements: string[] | null;
   linked_task_ids: string[] | null;
+  status?: 'active' | 'superseded' | 'revoked';
   notes: string | null;
 }
 
@@ -619,6 +634,7 @@ export interface ApiContract {
   linked_requirements: string[] | null;
   linked_rules: string[] | null;
   linked_task_ids: string[] | null;
+  status?: 'active' | 'superseded' | 'revoked';
   notes: string | null;
 }
 
@@ -684,6 +700,70 @@ export interface TechnicalRequirement {
   id: string;
   text: string;
   linked_task_ids: string[] | null;
+  status?: 'active' | 'superseded' | 'revoked';
+  notes?: string | null;
+}
+
+// Structured spec entity editing
+export type SpecStructuredEntityType =
+  | 'functional_requirement'
+  | 'acceptance_criterion'
+  | 'technical_requirement'
+  | 'business_rule'
+  | 'api_contract'
+  | 'integration_requirement'
+  | 'observability_requirement'
+  | 'decision';
+
+export type SpecStructuredEntityOperation =
+  | 'create'
+  | 'update'
+  | 'revoke'
+  | 'supersede'
+  | 'restore'
+  | 'reorder'
+  | 'link_task'
+  | 'unlink_task';
+
+export interface SpecStructuredEntityImpactRef {
+  target_type: string;
+  target_id: string;
+  target_ref: string;
+  severity: string;
+  reason: string;
+  blocking: boolean;
+}
+
+export interface SpecStructuredEntityImpactReport {
+  impacted_refs: SpecStructuredEntityImpactRef[];
+  counts_by_type: Record<string, number>;
+  ack_token?: string | null;
+  expires_at?: string | null;
+}
+
+export interface SpecStructuredEntityMutationRequest {
+  operation?: SpecStructuredEntityOperation;
+  payload?: Record<string, unknown>;
+  expected_spec_version?: number | null;
+  task_id?: string | null;
+  ack_token?: string | null;
+}
+
+export interface SpecStructuredEntityMutationResult {
+  success: boolean;
+  entity_type: SpecStructuredEntityType;
+  operation: SpecStructuredEntityOperation;
+  spec_id: string;
+  entity_id: string | null;
+  child_ref: string | null;
+  spec_version: number | null;
+  changed_fields: string[];
+  error_code: string | null;
+  error_message: string | null;
+  required_permission: string | null;
+  impact_report: SpecStructuredEntityImpactReport | null;
+  ack_token: string | null;
+  expires_at: string | null;
 }
 
 // Test Scenario
@@ -933,18 +1013,44 @@ export interface ArchitectureDiagramPayloadResponse {
 export type CreateArchitectureDesignRequest = Pick<
   ArchitectureDesign,
   'title' | 'global_description' | 'entities' | 'interfaces' | 'diagrams'
-> & Partial<Pick<ArchitectureDesign, 'source_ref' | 'source_version' | 'source_design_id'>>;
+> & Partial<Pick<ArchitectureDesign, 'source_ref' | 'source_version' | 'source_design_id'>> & {
+  design_id?: string;
+  architecture_warning_acknowledgement?: ArchitectureWarningAcknowledgementRequest | null;
+};
 
 export type UpdateArchitectureDesignRequest = Partial<CreateArchitectureDesignRequest> & {
   change_summary?: string;
 };
 
+export interface ArchitectureWarningAcknowledgementRequest {
+  accepted: boolean;
+  warning_keys?: string[];
+  statement?: string | null;
+}
+
 export interface ArchitectureDesignValidationResult {
   valid: boolean;
   issues: string[];
   warnings: string[];
+  structured_warnings?: ArchitectureWarningRecord[];
+  suppressed_warnings?: ArchitectureWarningRecord[];
   suggested_fixes: string[];
   summary: Record<string, unknown>;
+}
+
+export interface ArchitectureWarningRecord {
+  code: string;
+  severity: 'warning';
+  message: string;
+  path: string;
+  suggested_fix: string;
+  diagram_id?: string | null;
+  diagram_type?: string | null;
+  element_id?: string | null;
+  entity_id?: string | null;
+  node_ref?: string | null;
+  justification?: string | null;
+  finding_key?: string | null;
 }
 
 export interface CardKnowledgeBase {
@@ -1065,6 +1171,7 @@ export interface Spec {
 // Spec summary (without nested cards)
 export interface SpecSummary {
   id: string;
+  open_qa_count?: number;
   board_id: string;
   ideation_id: string | null;
   refinement_id: string | null;
@@ -1111,6 +1218,10 @@ export interface Ideation {
 
 export interface IdeationSummary {
   id: string;
+  // Evaluation scores (present after evaluate_ideation) — rendered as score badges.
+  scope_assessment?: { domains: number; ambiguity: number; dependencies: number } | null;
+  // Unanswered Q&A count (answered_at IS NULL) — drives the "open Q&A" badge.
+  open_qa_count?: number;
   board_id: string;
   title: string;
   description: string | null;
@@ -1207,6 +1318,7 @@ export interface ValidationEntry {
 // Card for column view (simplified)
 export interface CardSummary {
   id: string;
+  open_qa_count?: number;
   board_id: string;
   spec_id: string | null;
   title: string;
@@ -1290,6 +1402,10 @@ export interface BoardSettings {
   skip_ir_coverage_global: boolean;
   skip_or_coverage_global: boolean;
   skip_decisions_coverage_global: boolean;
+  skip_cognitive_consolidation?: boolean;
+  allow_agent_self_answering?: boolean;
+  require_full_context_for_critical_actions?: boolean;
+  qa_require_role_separation?: boolean;
   require_task_validation: boolean;
   min_confidence: number;
   min_completeness: number;
@@ -1473,6 +1589,69 @@ export interface MoveCardRequest {
   completeness_justification?: string;
   drift?: number;
   drift_justification?: string;
+}
+
+export type BugWorkflowRemediationPath =
+  | 'path_a_reuse_existing_scenario'
+  | 'path_b_semantic_gap'
+  | 'path_c_hotfix_lane'
+  | 'standard_sprint'
+  | 'none';
+
+export type BugWorkflowNextAction =
+  | 'create_regression_test_card'
+  | 'escalate_semantic_gap'
+  | 'assign_hotfix_lane'
+  | 'activate_hotfix_lane'
+  | 'assign_sprint'
+  | 'activate_sprint'
+  | 'none';
+
+export type BugWorkflowHotfixLaneStatus =
+  | 'not_applicable'
+  | 'missing'
+  | 'inactive'
+  | 'ready';
+
+export interface BugWorkflowRemediationAction {
+  action_id: BugWorkflowNextAction | string;
+  label: string;
+  description: string;
+  primary: boolean;
+}
+
+export interface BugWorkflowRemediationMessage {
+  reason_code: string;
+  remediation_path: BugWorkflowRemediationPath;
+  next_action: BugWorkflowNextAction;
+  semantic_gap_required: boolean;
+  eligible_scenarios_count: number;
+  hotfix_lane_status: BugWorkflowHotfixLaneStatus;
+  message: string;
+  detail: string;
+  actions: BugWorkflowRemediationAction[];
+  facts: Record<string, unknown>;
+}
+
+export interface BugRegressionScenarioCandidate {
+  scenario_id: string;
+  title?: string | null;
+  reason: string;
+  source_task_id?: string;
+  detail?: string | null;
+}
+
+export interface BugRegressionScenarioPreview {
+  bug_id: string;
+  spec_id: string;
+  origin_task_id?: string | null;
+  affected_task_ids: string[];
+  eligible_scenarios: BugRegressionScenarioCandidate[];
+  rejected_scenarios: BugRegressionScenarioCandidate[];
+  next_action: BugWorkflowNextAction;
+  semantic_gap_required: boolean;
+  spec_mutation_required: boolean;
+  remediation: BugWorkflowRemediationMessage;
 }
 
 export interface CreateAgentRequest {

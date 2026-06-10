@@ -14,6 +14,8 @@ import { useViewMode } from '@/hooks/useViewMode';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { HierarchicalList } from '@/components/shared/HierarchicalList';
 import { SprintModal } from './SprintModal';
+import { QABadge } from '@/components/shared/QABadge';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface SprintsPanelProps {
   boardId: string;
@@ -224,9 +226,7 @@ export function SprintsPanel({ boardId }: SprintsPanelProps) {
 
       {/* Sprint list */}
       {loading ? (
-        <div className="flex justify-center py-12">
-          <Layers className="animate-pulse text-gray-400" size={24} />
-        </div>
+        <PulseLoader size="sm" label="Loading sprints..." />
       ) : sprints.length === 0 ? (
         <div className="text-center py-12">
           <Layers size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
@@ -274,6 +274,7 @@ export function SprintsPanel({ boardId }: SprintsPanelProps) {
                 </div>
               </div>
               <div className="flex items-center gap-3 text-xs text-gray-400">
+                <QABadge count={sprint.open_qa_count} />
                 {sprint.test_scenario_ids?.length > 0 && (
                   <span>{sprint.test_scenario_ids.length} tests</span>
                 )}

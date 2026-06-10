@@ -13,7 +13,9 @@ import { exportSprint, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import type { Sprint, SprintStatus } from '@/types';
 import { SPRINT_STATUS_LABELS, SPRINT_STATUS_COLORS } from '@/types';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
+import { EditableField } from '@/components/shared/EditableField';
 import { openLineageGraph } from '@/components/traceability';
+import { deriveSprintDisplayCounts, normalizeSprintCardType } from './sprintDisplayCounts';
 
 type SprintTab = 'details' | 'scope' | 'cards' | 'evaluations' | 'qa' | 'history';
 
@@ -41,8 +43,11 @@ function formatChangeValue(val: unknown): string {
   if (val === null || val === undefined) return '(empty)';
   if (Array.isArray(val)) {
     if (val.length === 0) return '(empty list)';
-    return val.map((v, i) => `${i + 1}. ${v}`).join('\n');
+    return val
+      .map((v, i) => `${i + 1}. ${v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+      .join('\n');
   }
+  if (typeof val === 'object') return JSON.stringify(val, null, 2);
   return String(val);
 }
 
@@ -193,6 +198,16 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
     }
   };
 
+  const handleSprintTextSave = async (field: 'objective' | 'expected_outcome', value: string) => {
+    try {
+      await api.updateSprint(sprintId, { [field]: value.trim() || null });
+      await loadSprint();
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to update sprint');
+      throw e;
+    }
+  };
+
   if (loading || !sprint) {
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -214,11 +229,12 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
 
   const action = nextAction[sprint.status];
   const currentIdx = FLOW_STATUSES.indexOf(sprint.status as any);
+  const displayCounts = deriveSprintDisplayCounts(sprint.cards || []);
 
   const tabs: { id: SprintTab; label: string; icon: React.ReactNode; count?: number }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     { id: 'scope', label: 'Scope', icon: <FlaskConical size={14} />, count: (sprint.test_scenario_ids?.length || 0) + (sprint.business_rule_ids?.length || 0) },
-    { id: 'cards', label: 'Cards', icon: <Link2 size={14} />, count: sprint.cards?.length || 0 },
+    { id: 'cards', label: 'Cards', icon: <Link2 size={14} />, count: displayCounts.cards },
     { id: 'evaluations', label: 'Evaluations', icon: <Scale size={14} />, count: sprint.evaluations?.length || 0 },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: sprint.qa_items?.length || 0 },
     { id: 'history', label: 'History', icon: <History size={14} /> },
@@ -311,7 +327,12 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
               {tab.icon}
               {tab.label}
               {tab.count !== undefined && tab.count > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 text-[10px] bg-gray-100 dark:bg-gray-600 rounded-full">{tab.count}</span>
+                <span
+                  data-testid={`sprint-tab-count-${tab.id}`}
+                  className="ml-1 px-1.5 py-0.5 text-[10px] bg-gray-100 dark:bg-gray-600 rounded-full"
+                >
+                  {tab.count}
+                </span>
               )}
             </button>
           ))}
@@ -324,36 +345,28 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
               {/* Objective */}
               <div>
                 <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">Objective</h4>
-                <textarea
-                  defaultValue={sprint.objective || ''}
-                  onBlur={async (e) => {
-                    const val = e.target.value.trim();
-                    if (val !== (sprint.objective || '')) {
-                      await api.updateSprint(sprintId, { objective: val || null });
-                      loadSprint();
-                    }
-                  }}
+                <EditableField
+                  value={sprint.objective || ''}
+                  onSave={(value) => handleSprintTextSave('objective', value)}
+                  multiline
                   placeholder="What is this sprint trying to achieve?"
-                  rows={2}
-                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 resize-y"
+                  renderView={(value) => (
+                    <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{value}</p>
+                  )}
                 />
               </div>
 
               {/* Expected Outcome */}
               <div>
                 <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">Expected Outcome</h4>
-                <textarea
-                  defaultValue={sprint.expected_outcome || ''}
-                  onBlur={async (e) => {
-                    const val = e.target.value.trim();
-                    if (val !== (sprint.expected_outcome || '')) {
-                      await api.updateSprint(sprintId, { expected_outcome: val || null });
-                      loadSprint();
-                    }
-                  }}
+                <EditableField
+                  value={sprint.expected_outcome || ''}
+                  onSave={(value) => handleSprintTextSave('expected_outcome', value)}
+                  multiline
                   placeholder="What should be deliverable at the end of this sprint?"
-                  rows={2}
-                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 resize-y"
+                  renderView={(value) => (
+                    <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{value}</p>
+                  )}
                 />
               </div>
 
@@ -417,16 +430,16 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
               </div>
 
               {/* Progress + Scope Summary */}
-              {sprint.cards && sprint.cards.length > 0 && (() => {
-                const total = sprint.cards.length;
-                const done = sprint.cards.filter((c: any) => c.status === 'done').length;
-                const pct = Math.round((done / total) * 100);
+              {(() => {
+                const total = displayCounts.workItemsTotal;
+                const done = displayCounts.workItemsDone;
+                const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                 return (
                 <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
                   {/* Progress Bar */}
                   <div className="mb-3">
                     <div className="flex items-center justify-between mb-1">
-                      <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Progress</h4>
+                      <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Work items done</h4>
                       <span className="text-xs font-bold text-gray-700 dark:text-gray-300">{pct}%</span>
                     </div>
                     <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5">
@@ -435,21 +448,25 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-                    <p className="text-[10px] text-gray-400 mt-0.5">{done} of {total} cards done</p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">{done} of {total} work items done</p>
                   </div>
 
                   <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-2">Scope Summary</h4>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div className="p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-center">
-                      <p className="text-lg font-bold text-blue-600 dark:text-blue-400">{total}</p>
-                      <p className="text-[10px] text-blue-500">Cards</p>
+                      <p data-testid="sprint-summary-tasks" className="text-lg font-bold text-blue-600 dark:text-blue-400">{displayCounts.tasks}</p>
+                      <p className="text-[10px] text-blue-500">Tasks</p>
                     </div>
                     <div className="p-2 bg-purple-50 dark:bg-purple-900/20 rounded-lg text-center">
-                      <p className="text-lg font-bold text-purple-600 dark:text-purple-400">{sprint.cards.filter((c: any) => c.card_type === 'test').length}</p>
+                      <p data-testid="sprint-summary-tests" className="text-lg font-bold text-purple-600 dark:text-purple-400">{displayCounts.tests}</p>
                       <p className="text-[10px] text-purple-500">Tests</p>
                     </div>
+                    <div className="p-2 bg-red-50 dark:bg-red-900/20 rounded-lg text-center">
+                      <p data-testid="sprint-summary-bugs" className="text-lg font-bold text-red-600 dark:text-red-400">{displayCounts.bugs}</p>
+                      <p className="text-[10px] text-red-500">Bugs</p>
+                    </div>
                     <div className="p-2 bg-green-50 dark:bg-green-900/20 rounded-lg text-center">
-                      <p className="text-lg font-bold text-green-600 dark:text-green-400">{done}</p>
+                      <p data-testid="sprint-summary-done" className="text-lg font-bold text-green-600 dark:text-green-400">{done}</p>
                       <p className="text-[10px] text-green-500">Done</p>
                     </div>
                   </div>
@@ -464,7 +481,9 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
             const specTs = parentSpec?.test_scenarios || [];
             const specBrs = parentSpec?.business_rules || [];
             const specTrs = parentSpec?.technical_requirements || [];
-            const specAcs: string[] = parentSpec?.acceptance_criteria || [];
+            const specAcs: string[] = ((parentSpec?.acceptance_criteria || []) as unknown[])
+              .map((ac) => typeof ac === 'string' ? ac : String((ac as Record<string, unknown>).text || (ac as Record<string, unknown>).title || ''))
+              .filter(Boolean);
             const specContracts = parentSpec?.api_contracts || [];
             const specIrs = parentSpec?.integration_requirements || [];
             const specOrs = parentSpec?.observability_requirements || [];
@@ -655,7 +674,9 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
           {activeTab === 'cards' && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-500">{sprint.cards?.length || 0} cards assigned</span>
+                <span className="text-xs text-gray-500">
+                  {displayCounts.tasks} tasks and {displayCounts.bugs} bugs assigned
+                </span>
                 <button
                   onClick={async () => {
                     if (!showAssign && sprint.spec_id) {
@@ -677,13 +698,14 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
                 <div className="border border-indigo-200 dark:border-indigo-800 rounded-lg p-3 space-y-1 max-h-48 overflow-y-auto bg-indigo-50/30 dark:bg-indigo-900/10">
                   {specCards.map((c: any) => {
                     const isAssigned = c.sprint_id === sprintId;
+                    const cardType = normalizeSprintCardType(c.card_type);
                     return (
                       <div key={c.id} className="flex items-center justify-between p-1.5 rounded hover:bg-white dark:hover:bg-gray-800">
                         <div className="flex items-center gap-2 flex-1 min-w-0">
                           <span className={`w-2 h-2 rounded-full shrink-0 ${c.status === 'done' ? 'bg-green-500' : c.status === 'in_progress' ? 'bg-blue-500' : 'bg-gray-400'}`} />
                           <span className="text-xs text-gray-800 dark:text-gray-200 truncate">{c.title}</span>
-                          {c.card_type === 'test' && <span className="text-[9px] px-1 bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 rounded">test</span>}
-                          {c.card_type === 'bug' && <span className="text-[9px] px-1 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded">bug</span>}
+                          {cardType === 'test' && <span className="text-[9px] px-1 bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 rounded">test</span>}
+                          {cardType === 'bug' && <span className="text-[9px] px-1 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded">bug</span>}
                         </div>
                         <button
                           onClick={async () => {
@@ -711,24 +733,27 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
               )}
 
               {/* Assigned cards list */}
-              {sprint.cards && sprint.cards.length > 0 ? (
-                sprint.cards.map(card => (
-                  <div key={card.id} className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
-                    <span className={`w-2 h-2 rounded-full ${
-                      card.status === 'done' ? 'bg-green-500' :
-                      card.status === 'in_progress' ? 'bg-blue-500' :
-                      card.status === 'cancelled' ? 'bg-red-500' : 'bg-gray-400'
-                    }`} />
-                    <span className="text-sm text-gray-900 dark:text-white flex-1 truncate">{card.title}</span>
-                    {card.card_type === 'test' && <span className="text-[9px] px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 rounded">test</span>}
-                    <span className="text-xs text-gray-400">{card.status}</span>
-                  </div>
-                ))
+              {displayCounts.visibleCards.length > 0 ? (
+                displayCounts.visibleCards.map(card => {
+                  const cardType = normalizeSprintCardType(card.card_type);
+                  return (
+                    <div key={card.id} data-testid="sprint-card-row" className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
+                      <span className={`w-2 h-2 rounded-full ${
+                        card.status === 'done' ? 'bg-green-500' :
+                        card.status === 'in_progress' ? 'bg-blue-500' :
+                        card.status === 'cancelled' ? 'bg-red-500' : 'bg-gray-400'
+                      }`} />
+                      <span className="text-sm text-gray-900 dark:text-white flex-1 truncate">{card.title}</span>
+                      {cardType === 'bug' && <span className="text-[9px] px-1.5 py-0.5 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded">bug</span>}
+                      <span className="text-xs text-gray-400">{card.status}</span>
+                    </div>
+                  );
+                })
               ) : !showAssign ? (
                 <div className="text-center py-6">
                   <Link2 size={24} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-                  <p className="text-sm text-gray-400">No cards assigned to this sprint</p>
-                  <p className="text-xs text-gray-400 mt-1">Click "Assign Cards" to add tasks</p>
+                  <p className="text-sm text-gray-400">No non-test cards assigned to this sprint</p>
+                  <p className="text-xs text-gray-400 mt-1">Click "Assign Cards" to add tasks or bugs</p>
                 </div>
               ) : null}
             </div>

@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 import { driftIconFor } from './driftIcon';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 // ---------------------------------------------------------------------------
 // Types matching backend GET /analytics/overview response
@@ -224,58 +225,8 @@ function completenessTag(v: number | null): string {
 // Skeleton
 // ---------------------------------------------------------------------------
 
-function SkeletonBlock({ className = '' }: { className?: string }) {
-  return (
-    <div className={`animate-pulse bg-gray-200 dark:bg-gray-700 rounded ${className}`} />
-  );
-}
 
-function KpiSkeleton() {
-  return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
-      <SkeletonBlock className="h-3 w-20" />
-      <SkeletonBlock className="h-8 w-16" />
-      <SkeletonBlock className="h-3 w-24" />
-    </div>
-  );
-}
 
-function LoadingSkeleton() {
-  return (
-    <div className="space-y-6">
-      {/* KPI row */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        {[1, 2, 3, 4, 5].map((i) => (
-          <KpiSkeleton key={i} />
-        ))}
-      </div>
-      {/* Charts row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-          <SkeletonBlock className="h-4 w-40 mb-4" />
-          <SkeletonBlock className="h-48" />
-        </div>
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-          <SkeletonBlock className="h-4 w-40 mb-4" />
-          <SkeletonBlock className="h-48" />
-        </div>
-      </div>
-      {/* Boards row */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {[1, 2, 3].map((i) => (
-          <div
-            key={i}
-            className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3"
-          >
-            <SkeletonBlock className="h-4 w-32" />
-            <SkeletonBlock className="h-3 w-48" />
-            <SkeletonBlock className="h-3 w-40" />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Funnel bar component
@@ -443,7 +394,7 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
     }));
   }, [data]);
 
-  if (loading) return <LoadingSkeleton />;
+  if (loading) return <PulseLoader size="lg" label="Loading analytics..." className="py-20" />;
 
   if (error) {
     return (

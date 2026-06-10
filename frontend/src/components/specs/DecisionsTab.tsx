@@ -7,11 +7,13 @@
  * spec-level skip_decisions_coverage toggle.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle, ChevronDown, ChevronUp, GitBranch, Pencil, Plus, Trash2, XCircle,
 } from 'lucide-react';
 import type { Decision, DecisionStatus, Spec } from '@/types';
+import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
+import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 
 interface DecisionsTabProps {
   spec: Spec;
@@ -20,6 +22,13 @@ interface DecisionsTabProps {
   specCards?: Array<{ id: string; title: string }>;
   onLinkTask?: (decisionId: string, cardId: string) => void | Promise<void>;
   onUnlinkTask?: (decisionId: string, cardId: string) => void | Promise<void>;
+  canCreate?: boolean;
+  canEdit?: boolean;
+  canDelete?: boolean;
+  canLinkTask?: boolean;
+  focusEditId?: string | null;
+  focusCreateToken?: number | null;
+  onFocusHandled?: () => void;
 }
 
 const STATUS_COLORS: Record<DecisionStatus, string> = {
@@ -35,6 +44,13 @@ export function DecisionsTab({
   specCards = [],
   onLinkTask,
   onUnlinkTask,
+  canCreate = true,
+  canEdit = true,
+  canDelete = true,
+  canLinkTask = true,
+  focusEditId = null,
+  focusCreateToken = null,
+  onFocusHandled,
 }: DecisionsTabProps) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -50,7 +66,20 @@ export function DecisionsTab({
   const [formNotes, setFormNotes] = useState('');
 
   const decisions = spec.decisions || [];
-  const frs = spec.functional_requirements || [];
+  const frs = (spec.functional_requirements || []).map((fr: any) =>
+    typeof fr === 'string' ? fr : String(fr?.text || fr?.title || '')
+  );
+  // Canonical source_ref shape per board_source_store.py + cognitive_badge_resolver.py
+  // is `decision:<spec_id>:<decision_id>` — keep the UI in lockstep so badges
+  // resolve against real rebuild/marker entries (KG-03A.6 val_ff050455).
+  const decisionSourceRefs = useMemo(
+    () => decisions.map((d) => `decision:${spec.id}:${d.id}`),
+    [decisions, spec.id],
+  );
+  const { badges: decisionBadges } = useCognitivePendingBadges(
+    spec.board_id ?? null,
+    decisionSourceRefs,
+  );
 
   const resetForm = () => {
     setFormTitle('');
@@ -106,6 +135,23 @@ export function DecisionsTab({
     setFormLinkedFRs(d.linked_requirements || []);
     setFormNotes(d.notes || '');
   };
+
+  useEffect(() => {
+    if (!focusEditId || !canEdit) return;
+    const target = decisions.find((decision) => decision.id === focusEditId);
+    if (!target) return;
+    handleEdit(target);
+    setExpandedId(null);
+    onFocusHandled?.();
+  }, [focusEditId, canEdit, spec.decisions, onFocusHandled]);
+
+  useEffect(() => {
+    if (!focusCreateToken || !canCreate) return;
+    resetForm();
+    setAdding(true);
+    setEditingId(null);
+    onFocusHandled?.();
+  }, [focusCreateToken, canCreate, onFocusHandled]);
 
   const handleSaveEdit = () => {
     if (!editingId || !formTitle.trim() || !formRationale.trim()) return;
@@ -338,6 +384,11 @@ export function DecisionsTab({
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_COLORS[d.status]}`}>
                 {d.status}
               </span>
+              <CognitivePendingBadge
+                badge={decisionBadges[`decision:${spec.id}:${d.id}`]}
+                compact
+              />
+
               {(d.linked_requirements?.length ?? 0) > 0 && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
                   {d.linked_requirements!.length} FR
@@ -360,16 +411,18 @@ export function DecisionsTab({
               )}
               <button
                 onClick={(e) => { e.stopPropagation(); handleEdit(d); }}
-                className="p-0.5 text-gray-400 hover:text-blue-500"
-                title="Edit"
+                disabled={!canEdit}
+                className={`p-0.5 ${canEdit ? 'text-gray-400 hover:text-blue-500' : 'text-gray-300 cursor-not-allowed'}`}
+                title={canEdit ? 'Edit' : 'Requires spec.structured_entity.decision.update'}
               >
                 <Pencil size={12} />
               </button>
               {d.status !== 'revoked' && (
                 <button
                   onClick={(e) => { e.stopPropagation(); handleRevoke(d.id); }}
-                  className="p-0.5 text-gray-400 hover:text-red-500"
-                  title="Revoke (soft-delete)"
+                  disabled={!canDelete}
+                  className={`p-0.5 ${canDelete ? 'text-gray-400 hover:text-red-500' : 'text-gray-300 cursor-not-allowed'}`}
+                  title={canDelete ? 'Revoke (soft-delete)' : 'Requires spec.structured_entity.decision.revoke'}
                 >
                   <Trash2 size={12} />
                 </button>
@@ -435,7 +488,7 @@ export function DecisionsTab({
                         className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300 inline-flex items-center gap-0.5"
                       >
                         {tid.slice(0, 8)}…
-                        {onUnlinkTask && (
+                        {canLinkTask && onUnlinkTask && (
                           <button
                             onClick={() => onUnlinkTask(d.id, tid)}
                             className="ml-0.5 text-green-600 hover:text-red-500"
@@ -455,7 +508,7 @@ export function DecisionsTab({
                 )}
 
                 {/* Task picker */}
-                {onLinkTask && d.status !== 'revoked' && specCards.length > 0 && (
+                {canLinkTask && onLinkTask && d.status !== 'revoked' && specCards.length > 0 && (
                   <div className="pt-1">
                     {linkPickerId === d.id ? (
                       <div className="space-y-1">
@@ -506,7 +559,9 @@ export function DecisionsTab({
         !editingId && (
           <button
             onClick={() => setAdding(true)}
-            className="flex items-center gap-1 text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300"
+            disabled={!canCreate}
+            title={canCreate ? 'Add Decision' : 'Requires spec.structured_entity.decision.create'}
+            className={`flex items-center gap-1 text-sm ${canCreate ? 'text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300' : 'text-gray-300 cursor-not-allowed'}`}
           >
             <Plus size={14} /> Add Decision
           </button>

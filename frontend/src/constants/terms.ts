@@ -155,7 +155,7 @@ the software as a "hosted or managed service" and are **PROHIBITED**:
       configuring, or using the software for the projects, teams, or
       products it is intended to manage; **AND**
     - **(ii)** the total population of such exposed users exceeds
-      five hundred (500) individuals.
+      two hundred (200) individuals.
 
   Both conditions (i) and (ii) must be met for this prohibition to
   apply. Local, desktop, or workstation use of the software by any
@@ -430,7 +430,7 @@ confirm that:
    archive_tree, restore_tree) are irreversible without prior backup.
 5. You will **not** use the software to operate a multi-tenant SaaS,
    competing service, internal large-scale platform exposure exceeding
-   500 unrelated users, white-label, or any other prohibited use
+   200 unrelated users, white-label, or any other prohibited use
    listed in Section 2.I.
 6. If you fork or derive the software, you will rename it (without
    "Okto"/"Pulse") and **retain** the Okto Labs and Okto Pulse names

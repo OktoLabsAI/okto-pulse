@@ -11,6 +11,9 @@ const apiMock = vi.hoisted(() => ({
   getCardSeenStatus: vi.fn(),
   getCardDependencies: vi.fn(),
   getCardDependents: vi.fn(),
+  getCardActivity: vi.fn(),
+  getArchitectureDesign: vi.fn(),
+  getBugRegressionScenarioCandidates: vi.fn(),
   updateCard: vi.fn(),
   moveCard: vi.fn(),
   deleteCard: vi.fn(),
@@ -28,8 +31,20 @@ const storeMock = vi.hoisted(() => ({
   updateCardInColumn: vi.fn(),
 }));
 
+const markdownMock = vi.hoisted(() => ({
+  exportCard: vi.fn(() => '# card export'),
+  downloadMarkdown: vi.fn(),
+  markdownFilenameForCard: vi.fn(() => 'bug_bug-traceability-is-hidden.md'),
+}));
+
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
+}));
+
+vi.mock('@/lib/exportMarkdown', () => ({
+  exportCard: markdownMock.exportCard,
+  downloadMarkdown: markdownMock.downloadMarkdown,
+  markdownFilenameForCard: markdownMock.markdownFilenameForCard,
 }));
 
 vi.mock('@/store/dashboard', () => ({
@@ -190,6 +205,49 @@ describe('CardModal', () => {
     apiMock.getCardSeenStatus.mockResolvedValue({ items: {} });
     apiMock.getCardDependencies.mockResolvedValue([]);
     apiMock.getCardDependents.mockResolvedValue([]);
+    apiMock.getCardActivity.mockResolvedValue([]);
+    apiMock.getBugRegressionScenarioCandidates.mockResolvedValue({
+      bug_id: 'bug-1',
+      spec_id: 'spec-1',
+      origin_task_id: 'task-1',
+      affected_task_ids: [],
+      eligible_scenarios: [
+        {
+          scenario_id: 'ts-1',
+          title: 'Regression: story lineage is visible',
+          reason: 'origin_task_direct',
+          source_task_id: 'task-1',
+        },
+      ],
+      rejected_scenarios: [],
+      next_action: 'create_regression_test_card',
+      semantic_gap_required: false,
+      spec_mutation_required: false,
+      remediation: {
+        reason_code: 'origin_task_direct',
+        remediation_path: 'path_a_reuse_existing_scenario',
+        next_action: 'create_regression_test_card',
+        semantic_gap_required: false,
+        eligible_scenarios_count: 1,
+        hotfix_lane_status: 'not_applicable',
+        message: 'Create a fresh regression test card that references one of the eligible existing scenarios.',
+        detail: 'This is Path A: reuse an existing scenario linked to the bug origin task.',
+        actions: [
+          {
+            action_id: 'create_regression_test_card',
+            label: 'Create regression test card',
+            description: 'Create a new test card in the bug spec using an eligible scenario id.',
+            primary: true,
+          },
+        ],
+        facts: {},
+      },
+    });
+    apiMock.getArchitectureDesign.mockImplementation((id: string) =>
+      Promise.resolve({ id, entities: [], interfaces: [], diagrams: [] }),
+    );
+    markdownMock.exportCard.mockReturnValue('# card export');
+    markdownMock.markdownFilenameForCard.mockReturnValue('bug_bug-traceability-is-hidden.md');
   });
 
   it('shows the bug origin task and linked regression tests in details', async () => {
@@ -276,5 +334,120 @@ describe('CardModal', () => {
     expect(within(tab).getByText('1 passed')).toBeInTheDocument();
     expect(within(tab).getByText('Scenario missing execution evidence')).toBeInTheDocument();
     expect(within(tab).getByText('No evidence recorded')).toBeInTheDocument();
+  });
+
+  it('downloads card Markdown with sanitized type-aware filename and no mutation calls', async () => {
+    render(<CardModal boardId="board-1" />);
+
+    await screen.findByText('Bug: traceability is hidden');
+    fireEvent.click(screen.getByTitle('Download Markdown'));
+
+    await waitFor(() =>
+      expect(markdownMock.exportCard).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'bug-1', card_type: 'bug' }),
+        expect.objectContaining({ id: 'spec-1', title: 'Stories spec' }),
+      ),
+    );
+    expect(markdownMock.markdownFilenameForCard).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'bug-1', card_type: 'bug' }),
+    );
+    expect(markdownMock.downloadMarkdown).toHaveBeenCalledWith(
+      '# card export',
+      'bug_bug-traceability-is-hidden.md',
+    );
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+    expect(apiMock.deleteCard).not.toHaveBeenCalled();
+    expect(apiMock.uploadAttachment).not.toHaveBeenCalled();
+    expect(apiMock.unlinkTestTaskFromBug).not.toHaveBeenCalled();
+  });
+
+  it('hydrates full architecture designs (card-owned and inherited spec) before export', async () => {
+    apiMock.getCard.mockResolvedValue({
+      ...bugCard,
+      architecture_designs: [{ id: 'arch-card', title: 'Card arch', diagrams_count: 1 }] as any,
+    });
+    apiMock.getSpec.mockResolvedValue({
+      id: 'spec-1',
+      title: 'Stories spec',
+      test_scenarios: [],
+      business_rules: [],
+      api_contracts: [],
+      technical_requirements: [],
+      knowledge_bases: [],
+      architecture_designs: [{ id: 'arch-spec', title: 'Spec arch', diagrams_count: 1 }],
+    });
+    apiMock.getArchitectureDesign.mockImplementation((id: string) =>
+      Promise.resolve({ id, title: `${id} full`, entities: [{ id: `${id}-e`, name: 'E' }], interfaces: [], diagrams: [] }),
+    );
+
+    render(<CardModal boardId="board-1" />);
+    await screen.findByText('Bug: traceability is hidden');
+    fireEvent.click(screen.getByTitle('Download Markdown'));
+
+    // Both card-owned and inherited spec architecture summaries are hydrated with payloads.
+    await waitFor(() => expect(apiMock.getArchitectureDesign).toHaveBeenCalledWith('arch-card', true));
+    await waitFor(() => expect(apiMock.getArchitectureDesign).toHaveBeenCalledWith('arch-spec', true));
+
+    // exportCard receives the hydrated full designs (with entities), not the summaries.
+    const lastCall = (markdownMock.exportCard.mock.calls.at(-1) ?? []) as any[];
+    const cardArg = lastCall[0];
+    const specArg = lastCall[1];
+    expect(cardArg.architecture_designs[0]).toMatchObject({ id: 'arch-card', entities: [{ id: 'arch-card-e', name: 'E' }] });
+    expect(specArg.architecture_designs[0]).toMatchObject({ id: 'arch-spec', entities: [{ id: 'arch-spec-e', name: 'E' }] });
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+  });
+
+  it('renders canonical bug workflow remediation in the tests tab', async () => {
+    apiMock.getCard.mockResolvedValue({ ...bugCard, linked_test_task_ids: [] });
+
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Tests/i }));
+
+    const panel = await screen.findByTestId('bug-workflow-remediation-panel');
+    expect(within(panel).getByText('Path A · Reuse eligible scenario')).toBeInTheDocument();
+    expect(within(panel).getByText('create_regression_test_card')).toBeInTheDocument();
+    expect(within(panel).getByText('Create regression test card')).toBeInTheDocument();
+    expect(within(panel).getByText('Regression: story lineage is visible')).toBeInTheDocument();
+    expect(within(panel).queryByText(/Create a new test scenario/i)).not.toBeInTheDocument();
+    expect(apiMock.getBugRegressionScenarioCandidates).toHaveBeenCalledWith('bug-1', 'board-1');
+  });
+
+  it('uses the shared activity renderer in the activity tab', async () => {
+    apiMock.getCardActivity.mockResolvedValue([
+      {
+        id: 'act-1',
+        action: 'structured_entity_updated',
+        actor_type: 'agent',
+        actor_id: 'agent-1',
+        actor_name: 'Validator Agent',
+        created_at: '2026-05-29T10:15:00Z',
+        summary: 'structured_entity updated type=functional_requirement field=description',
+        trigger: 'structured_entity_updated',
+        details: {
+          after: { text: 'new value' },
+          token: '[redacted]',
+        },
+      },
+    ]);
+
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
+
+    expect(await screen.findByTestId('activity-log-list')).toBeInTheDocument();
+    expect(
+      screen.getByText('structured_entity updated type=functional_requirement field=description'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Validator Agent')).toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toContain('[object Object]');
+    expect(document.body.textContent ?? '').not.toContain('[object: object]');
+  });
+
+  it('preserves the no-activity empty state through the shared renderer', async () => {
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
+
+    expect(await screen.findByText('No activity recorded')).toBeInTheDocument();
   });
 });

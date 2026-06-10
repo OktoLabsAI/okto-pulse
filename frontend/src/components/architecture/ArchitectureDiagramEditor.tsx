@@ -113,6 +113,8 @@ interface ArchitectureDiagramEditorProps {
   interfaces?: ArchitectureInterface[];
   mockups?: ScreenMockup[];
   readOnly?: boolean;
+  focusElementId?: string | null;
+  focusSignal?: number;
   onChange: (diagram: ArchitectureDiagram) => void;
   onDeleteLinkedEntity?: (entityRef: string) => void;
 }
@@ -431,6 +433,8 @@ export function ArchitectureDiagramEditor({
   interfaces = [],
   mockups = [],
   readOnly = false,
+  focusElementId = null,
+  focusSignal = 0,
   onChange,
   onDeleteLinkedEntity,
 }: ArchitectureDiagramEditorProps) {
@@ -531,6 +535,22 @@ export function ArchitectureDiagramEditor({
       setDetailsElementId('');
     }
   }, [detailsElementId, elements, selectedElementId]);
+
+  useEffect(() => {
+    if (!focusElementId) return;
+    const target = elements.find((item) => item.id === focusElementId);
+    if (!target) return;
+    setMode('visual');
+    setSelectedElementId(focusElementId);
+    setDetailsElementId('');
+    const viewport = scrollRef.current;
+    if (!viewport) return;
+    const box = elementBox(target);
+    window.requestAnimationFrame(() => {
+      viewport.scrollLeft = Math.max(0, (box.x + box.width / 2) * zoom - viewport.clientWidth / 2);
+      viewport.scrollTop = Math.max(0, (box.y + box.height / 2) * zoom - viewport.clientHeight / 2);
+    });
+  }, [elements, focusElementId, focusSignal, zoom]);
 
   const updateElements = (nextElements: ExcalidrawElement[]) => {
     if (!diagram) return;
