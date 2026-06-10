@@ -273,6 +273,53 @@ describe('GlobalSearchView typed Discovery params', () => {
     );
   });
 
+  it('renders child option labels with the requirement text (subtitle), not just the FR number', async () => {
+    mockSelectorOptions(
+      selectorResponse([
+        {
+          id: 'spec:spec-a:functional_requirement:0',
+          label: 'FR 1',
+          subtitle: 'Analytics coverage rows MUST expose IR/OR…',
+          entity_type: 'spec_child',
+          spec_id: 'spec-a',
+          spec_title: 'Spec A',
+          child_type: 'functional_requirement',
+          child_id: '0',
+          child_ref: 'spec:spec-a:functional_requirement:0',
+          status: 'active',
+        },
+      ]),
+    );
+
+    await openParamsForm(
+      intent({
+        target: {
+          type: 'spec_child_selector',
+          required: true,
+          label: 'Target item',
+          child_types: ['functional_requirement'],
+        },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('discovery-selector-target-spec')).toBeEnabled(),
+    );
+    fireEvent.change(screen.getByTestId('discovery-selector-target-spec'), {
+      target: { value: 'spec-a' },
+    });
+    fireEvent.change(screen.getByTestId('discovery-selector-target-child-type'), {
+      target: { value: 'functional_requirement' },
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('discovery-selector-target-child')).toBeEnabled(),
+    );
+    // "FR 1" sozinho era inutilizável — o texto do requisito acompanha.
+    expect(
+      screen.getByText('FR 1 — Analytics coverage rows MUST expose IR/OR…'),
+    ).toBeInTheDocument();
+  });
+
   it('resets downstream child selections when the parent spec changes', async () => {
     mockSelectorOptions(
       selectorResponse([

@@ -899,7 +899,13 @@ export function GlobalSearchView({ boardId }: Props) {
                             <option value="">Select item</option>
                             {state.childOptions.map((option) => (
                               <option key={option.child_ref || option.id} value={option.child_ref || ''}>
-                                {option.label}
+                                {/* "FR 1" sozinho é inutilizável — anexa o
+                                    texto do requisito (subtitle do backend)
+                                    para o usuário saber o que está
+                                    escolhendo. */}
+                                {option.subtitle
+                                  ? `${option.label} — ${option.subtitle}`
+                                  : option.label}
                               </option>
                             ))}
                           </select>
