@@ -455,6 +455,24 @@ def create_community_app():
                 print(f"  MCP URL: http://localhost:{mcp_port}/mcp?api_key={api_key}")
                 print(f"{'='*60}\n")
 
+        # Self-heal: Q&A respondidas herdadas sem answered_at viravam
+        # falso-abertas no badge open_qa_count (a herança não copiava o
+        # timestamp). O combined_lifespan SUBSTITUI o _default_lifespan do
+        # core, então o backfill precisa rodar aqui também. Idempotente.
+        try:
+            from okto_pulse.core.services.main import backfill_qa_answered_at
+
+            async with get_session_factory()() as _qa_db:
+                _qa_fixed = await backfill_qa_answered_at(_qa_db)
+            if _qa_fixed:
+                _STARTUP_LOGGER.info(
+                    "qa.answered_at.backfilled %s", _qa_fixed,
+                )
+        except Exception as _qa_exc:
+            _STARTUP_LOGGER.warning(
+                "qa.answered_at.backfill_failed err=%s", _qa_exc,
+            )
+
         # Preload the embedding model before serving requests so the first
         # KG search doesn't pay the multi-second model-load cost synchronously.
         await _preload_embedding_model(settings)
@@ -506,6 +524,26 @@ def create_community_app():
 
                 _interval_minutes = _get_settings().kg_decay_tick_interval_minutes
                 scheduler = AsyncIOScheduler(timezone=timezone.utc)
+                # Catch-up no boot (campo 2026-06-10): IntervalTrigger só
+                # dispara o PRIMEIRO tick um intervalo completo após o
+                # start — com 24h de intervalo e processo que reinicia, o
+                # tick nunca rodava. next_run_time honra o último
+                # kg_tick_runs (vencido → ~2min após o boot).
+                _job_kwargs = {}
+                try:
+                    from okto_pulse.core.app import (
+                        _compute_tick_catch_up_next_run,
+                    )
+
+                    _next_run = await _compute_tick_catch_up_next_run(
+                        _interval_minutes
+                    )
+                    if _next_run is not None:
+                        _job_kwargs["next_run_time"] = _next_run
+                except Exception as _tick_exc:
+                    _STARTUP_LOGGER.warning(
+                        "kg.tick.catch_up_compute_failed err=%s", _tick_exc,
+                    )
                 scheduler.add_job(
                     _emit_daily_tick,
                     # Spec 54399628 (Wave 2 NC f9732afc) — IntervalTrigger
@@ -518,6 +556,7 @@ def create_community_app():
                     replace_existing=True,
                     max_instances=1,
                     coalesce=True,
+                    **_job_kwargs,
                 )
                 scheduler.start()
                 set_scheduler(scheduler)
