@@ -473,6 +473,28 @@ def create_community_app():
                 "qa.answered_at.backfill_failed err=%s", _qa_exc,
             )
 
+        # Self-heal AFG (investigacao 2026-06-10): materializa finding runs
+        # de arquitetura para designs nunca avaliados (gate avaliava tabela
+        # vazia). Em background para nao atrasar o boot; o combined_lifespan
+        # substitui o lifespan default do core, entao o wiring vive aqui.
+        async def _afg_backfill_task() -> None:
+            try:
+                from okto_pulse.core.services.architecture import (
+                    backfill_architecture_finding_runs,
+                )
+
+                async with get_session_factory()() as _afg_db:
+                    _afg_stats = await backfill_architecture_finding_runs(_afg_db)
+                _STARTUP_LOGGER.info(
+                    "architecture.finding_backfill.completed %s", _afg_stats,
+                )
+            except Exception as _afg_exc:
+                _STARTUP_LOGGER.warning(
+                    "architecture.finding_backfill.failed err=%s", _afg_exc,
+                )
+
+        asyncio.create_task(_afg_backfill_task())
+
         # Preload the embedding model before serving requests so the first
         # KG search doesn't pay the multi-second model-load cost synchronously.
         await _preload_embedding_model(settings)
