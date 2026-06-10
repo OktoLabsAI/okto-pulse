@@ -52,14 +52,14 @@ Every stage has structured artifacts, lineage, status transitions and validation
 
 ## Platform Surface
 
-Current 0.2.1 surface:
+Current 0.2.3 surface:
 
 | Surface | Count |
 | --- | ---: |
-| Governance gates | 15 |
-| Core MCP tools | 204 |
+| Governance gates | 17 |
+| Core MCP tools | 215 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 204 |
+| MCP tools exposed by `okto-pulse serve` | 215 |
 
 The community package mounts the full `okto-pulse-core` MCP server. That means installed community runtimes expose the complete core tool catalog while keeping the CLI, frontend and packaging layer separate from the core engine.
 
@@ -161,19 +161,20 @@ The lineage graph keeps these relationships inspectable, including story-to-idea
 
 Okto Pulse protects the workflow with checks that run on status transitions.
 
-The platform currently has **15 named governance gates**:
+The platform currently has **17 named governance gates**:
 
 | Gate family | Gates |
 | --- | --- |
 | Resource readiness | Resource readiness; resource-to-task coverage |
 | Spec coverage | Scenario/test coverage; functional requirement/business rule coverage; technical requirement/task coverage; API contract/task coverage; active decision/task coverage |
 | Validation and evaluation | Spec validation; spec qualitative evaluation; task validation |
-| Execution quality | Task start/spec readiness; task conclusion; test evidence; bug test-first/traceability |
+| Execution quality | Task start/spec readiness; task conclusion; cognitive closeout; architecture-findings done; test evidence; bug test-first/traceability |
 | Sprint health | Sprint closure/evaluation |
 
 - Specs require coverage across acceptance criteria, functional requirements, business rules, API contracts, decisions and test scenarios.
 - Tasks cannot start until the parent spec has the required scenario coverage.
 - Tasks moving to `done` require a structured conclusion with completeness and drift assessment.
+- Done transitions are also held while unresolved cognitive-consolidation items remain (cognitive closeout), and active architecture warnings block a spec or card from reaching `done` (architecture-findings gate). Both moved from defined to enforced in 0.2.3.
 - Test cards require evidence before they can be marked as automated, passed or failed.
 - Bug cards follow a test-first workflow and must remain traceable to the task and related test work.
 - Validation gates can require independent review before specs or tasks are considered complete.
@@ -357,7 +358,23 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-### 0.2.2 - current
+### 0.2.3 - current
+
+The UI side of the **53-spec 0.2.3 board** — the KG resilience, governance, cognitive and projection work surfaced in the web app. `155 files changed, +19,162 / −4,510` over `0.2.2`, with 13 new frontend modules and the embedded `frontend_dist/` rebuilt to match. Highlights:
+
+- **Knowledge Graph rendering migrated to Sigma.js / WebGL.** `GraphCanvas` drops React Flow + d3-force for the Marginalia stack (Sigma 3 + graphology + ForceAtlas2 in a Web Worker), so the graph stays fluid and responsive into the thousands of nodes. Full parity with the previous canvas (client-side filters and empty states, AC-4 selection matrix, hover tooltip + preview panels, node drag with persisted positions, refit-on-data, dark/light theme, minimap and zoom controls, always-prominent `contradicts` edges) plus new capabilities: animated ForceAtlas2 layout with a "settling" indicator and a Re-run layout button, hover dimming of non-neighbours, and an accessible no-WebGL fallback list that keeps the same selection semantics. The default graph page size was raised from 100 to 500.
+- **KG health view + controls reflecting the signal-clarity model** (`KGHealthView`, `GraphControlsPanel`, `KGHelpContent`), including a Recovery panel for the ceremonial rebuild (preflight → confirm → run, progress-aware drain), orphan integrity, and DLQ with reprocess.
+- **Cognitive consolidation UI (KG-03/03A)** — `CandidateDecisionPanel`, `CognitivePendingBadge` and `KGHealthCognitivePendingPanel` surface pending cognitive items and candidate-decision promotion, with their hooks (`useCandidateDecisions`, `useCognitivePendingBadges`) and telemetry.
+- **Governance-aware board creation** (`CreateBoardModal`, Header board settings) exposing `skip_cognitive_consolidation` and `dlq_auto_drain_enabled`, plus **Q&A badges with role separation** (`QABadge`) and open-Q&A counts across panels.
+- **Analytics IR/OR coverage drilldown UI** with header-metric help, **Metrics On/Off settings UX** (beacon-off modes), and **structured editing for spec entities** (FR/AC/BR/contract structured links).
+- **Sprint & activity consistency** — sprint details counters with inline-editing parity (`sprintDisplayCounts`), readable activity updates for structured objects (`ActivityLogList`), and architecture-diagram connectivity/coverage validation in the editor.
+- **Markdown export fixes** — Architecture design summaries are hydrated into full designs before export in the Ideation/Refinement/Spec/Card modals, so Mermaid diagrams render instead of `architecture_not_renderable`; export also handles structured entities and revoked content. The Discovery FR selector now shows the requirement text rather than just "FR N".
+- **`PulseLoader`** — screen loading now uses the landing-page hero animation.
+- **Serve lifespan self-heals** — `combined_lifespan` (which replaces the core default) now runs the Q&A `answered_at` backfill, the decay-tick catch-up, and the architecture-finding-runs backfill on boot, so fixes that live in the core lifespan actually run in the deployed runtime. `SPAMiddleware` became pure ASGI, removing a cancel scope over SSE.
+- **License** — the internal-platform large-scale exposure threshold drops from 500 to 200 users (clause I(d)(ii)), reflected in `LICENSE`, the About modal Terms of Use and `terms.ts`. The in-product Help was reviewed end-to-end against the current product state.
+- Pulls in all `okto-pulse-core` 0.2.3 engine changes (KG durability lifecycle, recovery & deterministic rebuild, zero-orphan integrity, cognitive consolidation, health honesty + degraded-mode resilience, governance/lineage/gates, the MCP token-budget/projection layer to 215 tools, the bug-regression workflow, structured spec entities and analytics IR/OR coverage). See the `okto-pulse-core` CHANGELOG for engine-level detail.
+
+### 0.2.2
 
 Patch release rolling up four targeted fixes on top of `0.2.1`. Same surface, no migration needed.
 
