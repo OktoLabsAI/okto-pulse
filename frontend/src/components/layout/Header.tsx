@@ -257,6 +257,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80,
         min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80,
         max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30,
+        require_ideation_ambiguity_gate: currentBoard.settings.require_ideation_ambiguity_gate ?? false,
+        max_ideation_ambiguity: currentBoard.settings.max_ideation_ambiguity ?? 3,
         require_spec_resource_task_coverage: currentBoard.settings.require_spec_resource_task_coverage ?? true,
         auto_derive_spec_resources_enabled: currentBoard.settings.auto_derive_spec_resources_enabled ?? false,
         auto_derive_spec_resource_types: currentBoard.settings.auto_derive_spec_resource_types ?? [],
@@ -283,6 +285,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         min_spec_completeness: 80,
         min_spec_assertiveness: 80,
         max_spec_ambiguity: 30,
+        require_ideation_ambiguity_gate: false,
+        max_ideation_ambiguity: 3,
         require_spec_resource_task_coverage: true,
         auto_derive_spec_resources_enabled: false,
         auto_derive_spec_resource_types: [],
@@ -297,6 +301,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const [minSpecCompletenessDraft, setMinSpecCompletenessDraft] = useState<string>(String(settings.min_spec_completeness ?? 80));
   const [minSpecAssertivenessDraft, setMinSpecAssertivenessDraft] = useState<string>(String(settings.min_spec_assertiveness ?? 80));
   const [maxSpecAmbiguityDraft, setMaxSpecAmbiguityDraft] = useState<string>(String(settings.max_spec_ambiguity ?? 30));
+  // Ideation Ambiguity Gate threshold — clamped 1-5 (NOT the 0-100 spec clamp).
+  const [maxIdeationAmbiguityDraft, setMaxIdeationAmbiguityDraft] = useState<string>(String(settings.max_ideation_ambiguity ?? 3));
 
   useEffect(() => { setMinConfidenceDraft(String(settings.min_confidence)); }, [settings.min_confidence]);
   useEffect(() => { setMinCompletenessDraft(String(settings.min_completeness)); }, [settings.min_completeness]);
@@ -304,6 +310,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   useEffect(() => { setMinSpecCompletenessDraft(String(settings.min_spec_completeness ?? 80)); }, [settings.min_spec_completeness]);
   useEffect(() => { setMinSpecAssertivenessDraft(String(settings.min_spec_assertiveness ?? 80)); }, [settings.min_spec_assertiveness]);
   useEffect(() => { setMaxSpecAmbiguityDraft(String(settings.max_spec_ambiguity ?? 30)); }, [settings.max_spec_ambiguity]);
+  useEffect(() => { setMaxIdeationAmbiguityDraft(String(settings.max_ideation_ambiguity ?? 3)); }, [settings.max_ideation_ambiguity]);
 
   const updateSettings = async (patch: Partial<BoardSettings>) => {
     if (!currentBoard) return;
@@ -373,6 +380,20 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       return;
     }
     updateSettings({ [key]: safe } as Partial<BoardSettings>);
+  };
+
+  // Dedicated 1-5 clamp for the Ideation Ambiguity Gate threshold. It must NOT
+  // reuse the 0-100 commitNumericSetting clamp above (spec 2485780b TR10).
+  const commitIdeationAmbiguity = (raw: string) => {
+    const n = Math.round(Number(raw));
+    const current = settings.max_ideation_ambiguity ?? 3;
+    const safe = Number.isFinite(n) ? Math.min(5, Math.max(1, n)) : current;
+    if (safe === current) {
+      // Re-sync the draft so invalid/out-of-range input snaps back to 1-5.
+      setMaxIdeationAmbiguityDraft(String(safe));
+      return;
+    }
+    updateSettings({ max_ideation_ambiguity: safe });
   };
 
   return (
@@ -960,6 +981,43 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                                   />
                                   <span className="text-[10px] text-gray-400">/ 100</span>
                                 </div>
+                              </div>
+                            </div>
+                          )}
+                        </SettingsSection>
+
+                        <SettingsSection
+                          title="Ideation Ambiguity Gate"
+                          description="Block evaluating→done when an ideation's ambiguity score is missing or above the threshold."
+                          icon={<Shield size={12} />}
+                        >
+                          <SettingRow label="Require ideation ambiguity gate" description="Opt-in. Each ideation can still skip the gate individually.">
+                            <SettingsToggle
+                              checked={settings.require_ideation_ambiguity_gate ?? false}
+                              onChange={() => updateSettings({ require_ideation_ambiguity_gate: !(settings.require_ideation_ambiguity_gate ?? false) })}
+                              ariaLabel="Require ideation ambiguity gate"
+                              testId="toggle-ideation-ambiguity-gate"
+                            />
+                          </SettingRow>
+
+                          {(settings.require_ideation_ambiguity_gate ?? false) && (
+                            <div>
+                              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                                Max Ambiguity
+                              </label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={5}
+                                  value={maxIdeationAmbiguityDraft}
+                                  onChange={(e) => setMaxIdeationAmbiguityDraft(e.target.value)}
+                                  onBlur={(e) => commitIdeationAmbiguity(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                  data-testid="input-max-ideation-ambiguity"
+                                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                                />
+                                <span className="text-[10px] text-gray-400">/ 5</span>
                               </div>
                             </div>
                           )}

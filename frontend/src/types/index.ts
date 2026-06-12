@@ -1209,6 +1209,8 @@ export interface Ideation {
   labels: string[] | null;
   archived?: boolean;
   pre_archive_status?: string | null;
+  // Per-ideation opt-out of the board Max ambiguity gate (spec 2485780b).
+  skip_ambiguity_gate?: boolean;
   refinements: RefinementSummary[];
   stories: StorySummary[];
   specs: SpecSummary[];
@@ -1415,6 +1417,10 @@ export interface BoardSettings {
   min_spec_completeness?: number;
   min_spec_assertiveness?: number;
   max_spec_ambiguity?: number;
+  // Max ambiguity gate for ideation completion (spec 2485780b) — opt-in, default off.
+  // Blocks evaluating→done when ideation ambiguity is missing or exceeds the threshold.
+  require_ideation_ambiguity_gate?: boolean;
+  max_ideation_ambiguity?: number; // 1-5, default 3
   // Resource Gate Level 2 - effective spec resources must be copied/attached to tasks.
   require_spec_resource_task_coverage?: boolean;
   // Spec resource automation - copies selected Spec resources to newly-created/linked cards.

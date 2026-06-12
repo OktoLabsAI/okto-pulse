@@ -24,6 +24,7 @@ import {
   ArrowRight,
   Layers,
   Gauge,
+  Shield,
   Archive,
   Eye,
   RefreshCw,
@@ -933,6 +934,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
   const [ideation, setIdeation] = useState<Ideation | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<IdeationStatus | null>(null);
+  const [savingSkip, setSavingSkip] = useState(false);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [expanded, setExpanded] = useState(false);
   const [derivingSpec, setDerivingSpec] = useState(false);
@@ -979,6 +981,20 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
       onChanged();
       toast.success(`Ideation moved to ${IDEATION_STATUS_LABELS[status]}`);
     } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
+  };
+
+  // Persist the per-ideation Max ambiguity gate skip via the dedicated endpoint
+  // (spec 2485780b TR11) and refresh state from the response. Backend failures
+  // surface through getErrorMessage/toast without a generic replacement.
+  const handleToggleAmbiguitySkip = async (next: boolean) => {
+    if (!ideation) return;
+    setSavingSkip(true);
+    try {
+      const updated = await api.setIdeationAmbiguityGateSkip(ideationId, next);
+      setIdeation(updated);
+      onChanged();
+      toast.success(next ? 'Max ambiguity gate will be skipped for this ideation' : 'Max ambiguity gate re-enabled for this ideation');
+    } catch (err) { toast.error(getErrorMessage(err)); } finally { setSavingSkip(false); }
   };
 
   const handleDelete = async () => {
@@ -1266,6 +1282,53 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
                   </div>
                 </div>
               )}
+
+              {/* Max Ambiguity Gate (spec 2485780b) — only when the board gate is enabled */}
+              {(currentBoard?.settings?.require_ideation_ambiguity_gate ?? false) && (() => {
+                const threshold = currentBoard?.settings?.max_ideation_ambiguity ?? 3;
+                const current = ideation.scope_assessment?.ambiguity ?? null;
+                const skip = ideation.skip_ambiguity_gate ?? false;
+                const blocks = !skip && (current == null || current > threshold);
+                const statusLabel = skip ? 'Skipped' : blocks ? 'Blocks completion' : 'Passing';
+                const statusClass = skip
+                  ? 'text-gray-500 dark:text-gray-400'
+                  : blocks
+                    ? 'text-red-600 dark:text-red-400'
+                    : 'text-green-600 dark:text-green-400';
+                return (
+                  <div
+                    className="rounded-lg border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-500/30 dark:bg-amber-500/10"
+                    data-testid="ambiguity-gate-panel"
+                  >
+                    <h4 className="text-sm font-semibold text-amber-800 dark:text-amber-200 flex items-center gap-1.5 mb-2">
+                      <Shield size={14} /> Max Ambiguity Gate
+                    </h4>
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-600 dark:text-gray-300">
+                        <span>Board threshold: <strong>{threshold}</strong>/5</span>
+                        <span>
+                          Current ambiguity:{' '}
+                          <strong>{current ?? 'not evaluated'}</strong>{current != null ? '/5' : ''}
+                        </span>
+                        <span data-testid="ambiguity-gate-status">
+                          Status: <strong className={statusClass}>{statusLabel}</strong>
+                        </span>
+                      </div>
+                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={skip}
+                          disabled={savingSkip}
+                          onChange={(e) => handleToggleAmbiguitySkip(e.target.checked)}
+                          data-testid="toggle-skip-ambiguity-gate"
+                          className="h-3.5 w-3.5 rounded border-gray-300"
+                        />
+                        Skip the Max ambiguity gate for this ideation
+                      </label>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Complexity badge */}
               {ideation.complexity && (

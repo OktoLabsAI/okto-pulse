@@ -231,6 +231,65 @@ describe('Header Board settings resource automation', () => {
     );
   });
 
+  it('persists the ideation ambiguity gate toggle through the existing board update flow', async () => {
+    renderOpenHeader();
+
+    fireEvent.click(screen.getByTestId('toggle-ideation-ambiguity-gate'));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          require_ideation_ambiguity_gate: true,
+          max_ideation_ambiguity: 3,
+          // The spec ambiguity gate is untouched — distinct setting.
+          max_spec_ambiguity: 30,
+        }),
+      }),
+    );
+  });
+
+  it('clamps an above-range ideation ambiguity threshold down to 5 (not the 0-100 spec clamp)', async () => {
+    boardState.currentBoard = boardWith({ require_ideation_ambiguity_gate: true, max_ideation_ambiguity: 3 });
+    renderOpenHeader();
+
+    const input = screen.getByTestId('input-max-ideation-ambiguity');
+    fireEvent.change(input, { target: { value: '7' } });
+    fireEvent.blur(input);
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({ max_ideation_ambiguity: 5 }),
+      }),
+    );
+  });
+
+  it('clamps a below-range ideation ambiguity threshold up to 1', async () => {
+    boardState.currentBoard = boardWith({ require_ideation_ambiguity_gate: true, max_ideation_ambiguity: 3 });
+    renderOpenHeader();
+
+    const input = screen.getByTestId('input-max-ideation-ambiguity');
+    fireEvent.change(input, { target: { value: '0' } });
+    fireEvent.blur(input);
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({ max_ideation_ambiguity: 1 }),
+      }),
+    );
+  });
+
+  it('hides the ideation ambiguity threshold input until the gate is enabled', () => {
+    renderOpenHeader();
+    expect(screen.queryByTestId('input-max-ideation-ambiguity')).not.toBeInTheDocument();
+    expect(screen.getByTestId('toggle-ideation-ambiguity-gate')).toBeInTheDocument();
+  });
+
   it('opens runtime settings on Decay Tick tab from the global KG Health handoff event', async () => {
     render(<Header />);
 

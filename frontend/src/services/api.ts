@@ -739,6 +739,15 @@ export function useDashboardApi() {
       });
     },
 
+    // Dedicated per-ideation Max ambiguity gate skip write path (spec 2485780b).
+    // Works while the ideation is in evaluating status; does not touch other fields.
+    async setIdeationAmbiguityGateSkip(ideationId: string, skip: boolean): Promise<Ideation> {
+      return apiClient.fetchJson<Ideation>(`/ideations/${ideationId}/ambiguity-gate-skip`, {
+        method: 'PATCH',
+        body: JSON.stringify({ skip_ambiguity_gate: skip }),
+      });
+    },
+
     async deleteIdeation(ideationId: string): Promise<void> {
       await apiClient.fetch(`/ideations/${ideationId}`, { method: 'DELETE' });
     },
