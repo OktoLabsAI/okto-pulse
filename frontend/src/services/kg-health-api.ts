@@ -56,6 +56,30 @@ export interface StorageFootprintProxy {
   unavailable_reason: string | null;
 }
 
+export interface KGLayerCounts {
+  status: 'ok' | 'unavailable' | string;
+  by_layer: Record<string, number>;
+  by_maturity_status: Record<string, number>;
+  reason?: string;
+}
+
+export interface CanonicalDebtSummary {
+  open_count: number;
+  retryable_count: number;
+  blocked_count: number;
+  retry_scheduled_count: number;
+  terminal_count: number;
+  by_state: Record<string, number>;
+  status?: string;
+}
+
+export interface RebuildDiagnostics {
+  last_outcome: string;
+  canonical_open_debt_count: number;
+  layer_counts_status: string;
+  operator_action: string;
+}
+
 export interface KGHealth {
   queue_depth: number;
   oldest_pending_age_s: number;
@@ -87,6 +111,9 @@ export interface KGHealth {
   health_issues?: KGHealthIssue[];
   decay_scheduler_diagnostics?: DecaySchedulerDiagnostics;
   storage_footprint_proxy?: StorageFootprintProxy;
+  kg_layer_counts?: KGLayerCounts;
+  canonical_debt?: CanonicalDebtSummary;
+  rebuild_diagnostics?: RebuildDiagnostics;
 }
 
 // ---- KG-02 rebuild lifecycle (spec e7360ffe, mockup sm_a30278ad) -------
@@ -102,6 +129,13 @@ export interface RebuildPreflightResult {
   eligible_source_count: number;
   skipped_cancelled_count: number;
   has_non_deterministic_inputs: boolean;
+  canonical_source_count?: number;
+  working_source_count?: number;
+  skipped_by_maturity_count?: number;
+  skipped_expired_working_count?: number;
+  legacy_unknown_count?: number;
+  layer_counts?: Record<string, number>;
+  source_partition_counts?: Record<string, number>;
   preflight_hash: string;
   generated_at: string;
   rebuild_status?: string;
@@ -209,6 +243,70 @@ export async function getKGHealth(
       signal,
     },
   );
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+export interface CanonicalDebtItem {
+  id: string;
+  board_id: string;
+  artifact_type: string;
+  artifact_id: string;
+  source_ref: string;
+  source_version: string | null;
+  content_hash: string;
+  target_status: string;
+  canonical_state: string;
+  graph_layer: string;
+  maturity_status: string | null;
+  failure_reason: string | null;
+  last_error: string | null;
+  retry_count: number;
+  next_retry_at: string | null;
+  last_attempt_at: string | null;
+  owner_agent_id: string | null;
+  correlation_id: string | null;
+  queue_ref: string | null;
+  dlq_ref: string | null;
+  evidence_ref: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CanonicalDebtListResponse {
+  board_id: string;
+  items: CanonicalDebtItem[];
+  counts: CanonicalDebtSummary;
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface GetCanonicalDebtOptions {
+  artifactType?: string;
+  state?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function getCanonicalDebt(
+  boardId: string,
+  options: GetCanonicalDebtOptions = {},
+  signal?: AbortSignal,
+): Promise<CanonicalDebtListResponse> {
+  const params = new URLSearchParams({ board_id: boardId });
+  if (options.artifactType) params.set('artifact_type', options.artifactType);
+  if (options.state) params.set('state', options.state);
+  if (typeof options.limit === 'number') params.set('limit', String(options.limit));
+  if (typeof options.offset === 'number') params.set('offset', String(options.offset));
+
+  const resp = await fetch(`${BASE}/kg/canonical-debt?${params.toString()}`, {
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+  });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }));
     throw new Error(err.detail || err.message || `HTTP ${resp.status}`);

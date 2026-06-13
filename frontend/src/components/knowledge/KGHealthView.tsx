@@ -44,8 +44,11 @@ import {
   runRebuildRun,
   type KGHealth,
   type KGCognitivePendingCounts,
+  type CanonicalDebtSummary,
   type DecaySchedulerDiagnostics,
+  type KGLayerCounts,
   type RebuildPreflightResult,
+  type RebuildDiagnostics,
   type RebuildRunResult,
   type StorageFootprintProxy,
   type TopDisconnectedNode,
@@ -234,6 +237,11 @@ export function KGHealthView({
                 contradictWarnCount={data.contradict_warn_count}
                 metricStatus={data.metric_status ?? null}
                 healthIssues={data.health_issues ?? []}
+              />
+              <CanonicalDebtCard
+                summary={data.canonical_debt ?? null}
+                layerCounts={data.kg_layer_counts ?? null}
+                diagnostics={data.rebuild_diagnostics ?? null}
               />
               <StorageFootprintCard
                 proxy={data.storage_footprint_proxy ?? null}
@@ -783,6 +791,67 @@ function KGHealthCard({
   );
 }
 
+interface CanonicalDebtCardProps {
+  summary: CanonicalDebtSummary | null;
+  layerCounts: KGLayerCounts | null;
+  diagnostics: RebuildDiagnostics | null;
+}
+
+function CanonicalDebtCard({
+  summary,
+  layerCounts,
+  diagnostics,
+}: CanonicalDebtCardProps) {
+  const openCount = summary?.open_count ?? 0;
+  const canonicalCount = layerCounts?.by_layer?.canonical ?? 0;
+  const workingCount = layerCounts?.by_layer?.working ?? 0;
+  const retryable = summary?.retryable_count ?? 0;
+  const blocked = summary?.blocked_count ?? 0;
+  const debtClass =
+    openCount === 0
+      ? 'text-emerald-700 dark:text-emerald-400'
+      : blocked > 0
+      ? 'text-rose-700 dark:text-rose-400'
+      : 'text-amber-700 dark:text-amber-400';
+  const outcome = diagnostics?.last_outcome ?? 'unknown';
+  return (
+    <Card
+      title="Canonical Debt"
+      testId="kg-health-card"
+      icon={<Database className="w-4 h-4" aria-hidden />}
+    >
+      <Row label="Open debt">
+        <span className={`text-2xl font-bold ${debtClass}`}>
+          {openCount.toLocaleString()}
+        </span>
+      </Row>
+      <Row label="Retryable / blocked">
+        <span className="text-sm text-surface-700 dark:text-surface-300">
+          {retryable.toLocaleString()} / {blocked.toLocaleString()}
+        </span>
+      </Row>
+      <Row label="Graph layers">
+        <span className="text-xs text-right text-surface-600 dark:text-surface-400">
+          canonical {canonicalCount.toLocaleString()} · working {workingCount.toLocaleString()}
+        </span>
+      </Row>
+      <Row label="Layer status">
+        <span className="text-sm text-surface-700 dark:text-surface-300">
+          {layerCounts?.status ?? 'unavailable'}
+        </span>
+      </Row>
+      <Row label="Rebuild outcome">
+        <span
+          className="text-xs text-right text-surface-600 dark:text-surface-400 max-w-[14rem] truncate"
+          title={outcome}
+        >
+          {formatActionLabel(outcome)}
+        </span>
+      </Row>
+    </Card>
+  );
+}
+
 interface StorageFootprintCardProps {
   proxy: StorageFootprintProxy | null;
 }
@@ -941,7 +1010,7 @@ function SkeletonGrid() {
   return (
     <>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        {[0, 1, 2, 3, 4].map((i) => (
+        {[0, 1, 2, 3, 4, 5].map((i) => (
           <div
             key={i}
             data-testid="skeleton-card"
@@ -1446,6 +1515,11 @@ function RecoveryPanel({
   const cognitiveTooltip = `Cognitive consolidation tracks items marked during rebuild for semantic agent review. Current status: ${cognitiveStatus.reportValue}. ${cognitiveStatus.subtitle}.`;
   const legacyFallback = preflight?.has_non_deterministic_inputs ?? false;
   const eligibleCount = preflight?.eligible_source_count ?? 0;
+  const canonicalCount = preflight?.canonical_source_count ?? eligibleCount;
+  const workingCount = preflight?.working_source_count ?? 0;
+  const skippedByMaturity = preflight?.skipped_by_maturity_count ?? 0;
+  const expiredWorking = preflight?.skipped_expired_working_count ?? 0;
+  const legacyUnknown = preflight?.legacy_unknown_count ?? 0;
   const skipped = preflight?.skipped_cancelled_count ?? 0;
   const reasonInvalid = reason.trim().length === 0;
   const isCompleted = lastResult?.outcome === 'completed';
@@ -1519,9 +1593,19 @@ function RecoveryPanel({
             )}
             {preflight && (
               <>
-                <PreflightRow label="Source specs">
+                <PreflightRow label="Canonical sources">
                   <strong>
-                    {eligibleCount} eligible · {skipped} cancelled
+                    {canonicalCount} eligible · {skipped} cancelled
+                  </strong>
+                </PreflightRow>
+                <PreflightRow label="Working/debt">
+                  <span className="text-xs text-right text-surface-600 dark:text-surface-400">
+                    {workingCount} working · {skippedByMaturity} immature · {expiredWorking} expired
+                  </span>
+                </PreflightRow>
+                <PreflightRow label="Legacy unknown">
+                  <strong className={legacyUnknown > 0 ? 'text-amber-700' : ''}>
+                    {legacyUnknown}
                   </strong>
                 </PreflightRow>
                 <PreflightRow label="Legacy fallback">
