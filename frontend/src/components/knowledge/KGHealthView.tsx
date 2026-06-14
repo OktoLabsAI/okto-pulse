@@ -2,8 +2,7 @@
  * KGHealthView — fullscreen overlay rendering the live KG health snapshot
  * for the active board (spec d754d004, MVP visualization-only).
  *
- * Renders 4 cards in a 2x2 grid (Schema&Tick, Queue&DeadLetter, KG Health,
- * Activity) plus the Top-10 most disconnected nodes table. Polls
+ * Renders KG health cards for schema/tick, queues, health, debt, and storage. Polls
  * GET /api/v1/kg/health every `pollIntervalMs` (default 30000) while the
  * tab is visible. Pauses on document.visibilityState='hidden', skips
  * overlapping fetches (BR4), aborts in-flight requests on unmount or
@@ -51,7 +50,6 @@ import {
   type RebuildDiagnostics,
   type RebuildRunResult,
   type StorageFootprintProxy,
-  type TopDisconnectedNode,
 } from '@/services/kg-health-api';
 import { triggerKGTick } from '@/services/kg-tick-api';
 import { KGHealthCognitivePendingPanel } from './KGHealthCognitivePendingPanel';
@@ -246,11 +244,7 @@ export function KGHealthView({
               <StorageFootprintCard
                 proxy={data.storage_footprint_proxy ?? null}
               />
-              <ActivityCard
-                disconnectedCount={data.top_disconnected_nodes.length}
-              />
             </div>
-            <TopDisconnectedTable rows={data.top_disconnected_nodes} />
           </>
         )}
       </div>
@@ -918,119 +912,18 @@ function StorageFootprintCard({ proxy }: StorageFootprintCardProps) {
   );
 }
 
-interface ActivityCardProps {
-  disconnectedCount: number;
-}
-
-function ActivityCard({ disconnectedCount }: ActivityCardProps) {
-  const cls =
-    disconnectedCount === 0
-      ? 'text-emerald-600 dark:text-emerald-400'
-      : 'text-amber-600 dark:text-amber-400';
-  return (
-    <Card title="Activity" testId="kg-health-card" icon={<Activity className="w-4 h-4" aria-hidden />}>
-      <Row label="Disconnected nodes (top 10)">
-        <span className={`text-sm font-bold ${cls}`}>
-          {disconnectedCount === 0 ? 'none detected' : `${disconnectedCount} detected`}
-        </span>
-      </Row>
-      <p className="text-xs text-surface-500 dark:text-surface-400 italic mt-2">
-        See the table below for details (id/type/degree). Nodes with degree=0 or 1 may indicate
-        incomplete imports or disconnections during consolidation.
-      </p>
-    </Card>
-  );
-}
-
-interface TopDisconnectedTableProps {
-  rows: TopDisconnectedNode[];
-}
-
-function TopDisconnectedTable({ rows }: TopDisconnectedTableProps) {
-  return (
-    <div className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 shadow-sm overflow-hidden">
-      <div className="px-5 py-3 border-b border-surface-200 dark:border-surface-700">
-        <h2 className="text-sm font-semibold text-surface-700 dark:text-surface-300">
-          Top 10 most disconnected nodes
-        </h2>
-      </div>
-      {rows.length === 0 ? (
-        <div className="px-5 py-8 text-center text-sm text-surface-500 dark:text-surface-400 italic">
-          No disconnected nodes
-        </div>
-      ) : (
-        <table className="w-full text-sm">
-          <caption className="sr-only">List of lowest-degree nodes in the current board's KG</caption>
-          <thead className="bg-surface-50 dark:bg-surface-900/50 text-xs uppercase text-surface-500 dark:text-surface-400">
-            <tr>
-              <th scope="col" className="text-left px-5 py-2.5">
-                Node ID
-              </th>
-              <th scope="col" className="text-left px-5 py-2.5">
-                Type
-              </th>
-              <th scope="col" className="text-right px-5 py-2.5">
-                Degree
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-surface-200 dark:divide-surface-700">
-            {rows.map((row) => (
-              <tr key={row.id} className="hover:bg-surface-50 dark:hover:bg-surface-900/30">
-                <td className="px-5 py-2 font-mono text-xs text-surface-700 dark:text-surface-300 max-w-xs truncate" title={row.id}>
-                  {row.id}
-                </td>
-                <td className="px-5 py-2">
-                  <span className={`px-1.5 py-0.5 text-xs rounded ${typeBadgeClasses(row.type)}`}>
-                    {row.type}
-                  </span>
-                </td>
-                <td className="px-5 py-2 text-right font-mono">{row.degree}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
-}
-
-function typeBadgeClasses(type: string): string {
-  const lower = type.toLowerCase();
-  if (lower.includes('decision'))
-    return 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300';
-  if (lower.includes('criterion'))
-    return 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300';
-  if (lower.includes('constraint'))
-    return 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300';
-  return 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300';
-}
-
 function SkeletonGrid() {
   return (
-    <>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        {[0, 1, 2, 3, 4, 5].map((i) => (
-          <div
-            key={i}
-            data-testid="skeleton-card"
-            className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 p-5 h-40 animate-pulse"
-            aria-hidden
-          />
-        ))}
-      </div>
-      <div
-        className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 p-6 animate-pulse"
-        data-testid="skeleton-table"
-        aria-hidden
-      >
-        <div className="space-y-3">
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="h-6 bg-surface-200 dark:bg-surface-700 rounded" />
-          ))}
-        </div>
-      </div>
-    </>
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+      {[0, 1, 2, 3, 4].map((i) => (
+        <div
+          key={i}
+          data-testid="skeleton-card"
+          className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 p-5 h-40 animate-pulse"
+          aria-hidden
+        />
+      ))}
+    </div>
   );
 }
 

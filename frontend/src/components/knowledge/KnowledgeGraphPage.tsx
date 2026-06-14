@@ -50,6 +50,7 @@ const HIDE_ALL_NODE_TYPE = '__hide_all__';
 const DEFAULT_FILTERS: Filters = {
   types: [],
   edgeTypes: [],
+  graphLayer: 'canonical',
   // Default 0% so the slider doesn't hide nodes until the user opts in.
   // Backend currently sends constant relevance_score for most nodes, so a
   // non-zero default would silently filter without producing visible value.
@@ -201,10 +202,15 @@ export function KnowledgeGraphPage({ boardId }: Props) {
       setError(null);
       try {
         const [data, health, historical, stats] = await Promise.all([
-          kgApi.getSubgraph(boardId, { limit, min_relevance: 0, type: serverNodeType }),
+          kgApi.getSubgraph(boardId, {
+            limit,
+            min_relevance: 0,
+            type: serverNodeType,
+            graph_layer: filters.graphLayer,
+          }),
           getKGHealth(boardId).catch(() => null),
           kgApi.getHistoricalProgress(boardId).catch(() => null),
-          kgApi.getStats(boardId).catch(() => null),
+          kgApi.getStats(boardId, { graph_layer: filters.graphLayer }).catch(() => null),
         ]);
         setNodes(data.nodes || []);
         setEdges(data.edges || []);
@@ -219,7 +225,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         setLoading(false);
       }
     },
-    [boardId, serverNodeType],
+    [boardId, filters.graphLayer, serverNodeType],
   );
 
   useEffect(() => {
@@ -251,6 +257,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         cursor: nextCursor,
         min_relevance: 0,
         type: serverNodeType,
+        graph_layer: filters.graphLayer,
       });
       // Dedupe appended nodes/edges on id to defend against overlap if the
       // cursor was advanced by a concurrent consolidation.
@@ -271,7 +278,15 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     } finally {
       setLoadingMore(false);
     }
-  }, [boardId, nodeLimit, nextCursor, loadingMore, graphMetadata, serverNodeType]);
+  }, [
+    boardId,
+    nodeLimit,
+    nextCursor,
+    loadingMore,
+    graphMetadata,
+    serverNodeType,
+    filters.graphLayer,
+  ]);
 
   const handleClearFilters = useCallback(() => {
     setFilters(DEFAULT_FILTERS);

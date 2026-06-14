@@ -1488,7 +1488,7 @@ wheels = [
 
 [[package]]
 name = "okto-pulse"
-version = "0.2.2"
+version = "0.2.5"
 source = { editable = "." }
 dependencies = [
     { name = "okto-pulse-core" },
@@ -1497,14 +1497,14 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "okto-pulse-core", specifier = ">=0.2.1,<1.0.0" },
+    { name = "okto-pulse-core", specifier = ">=0.2.5,<1.0.0" },
     { name = "sentence-transformers", specifier = ">=2.5.0,<6.0.0" },
 ]
 
 [[package]]
 name = "okto-pulse-core"
-version = "0.2.2"
-source = { registry = "https://pypi.org/simple" }
+version = "0.2.5"
+source = { registry = "../okto_labs_pulse_core/dist" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiosqlite" },
@@ -1526,8 +1526,9 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
     { name = "wsproto" },
 ]
+sdist = { path = "okto_pulse_core-0.2.5.tar.gz" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/36/6c/fe88aa1ff2ba4c0e14a90dbed98e9c29d107eb1e2018d6718c4b636d8627/okto_pulse_core-0.2.2-py3-none-any.whl", hash = "sha256:13f134eb3e18abb5190f26c2896c194de260458c7c465f20ea3014c2607cfcf2", size = 758076, upload-time = "2026-05-18T17:09:40.811Z" },
+    { path = "okto_pulse_core-0.2.5-py3-none-any.whl" },
 ]
 
 [[package]]

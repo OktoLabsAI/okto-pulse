@@ -1314,17 +1314,34 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
                           Status: <strong className={statusClass}>{statusLabel}</strong>
                         </span>
                       </div>
-                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={skip}
+                      <div className="flex items-center justify-between gap-3 rounded border border-amber-200/70 bg-white/50 px-3 py-2 dark:border-amber-500/20 dark:bg-gray-900/30">
+                        <div>
+                          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                            Skip Max ambiguity gate
+                          </span>
+                          <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                            Allow this ideation to complete without the board ambiguity threshold.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={skip}
+                          aria-label="Skip the Max ambiguity gate for this ideation"
                           disabled={savingSkip}
-                          onChange={(e) => handleToggleAmbiguitySkip(e.target.checked)}
+                          onClick={() => handleToggleAmbiguitySkip(!skip)}
                           data-testid="toggle-skip-ambiguity-gate"
-                          className="h-3.5 w-3.5 rounded border-gray-300"
-                        />
-                        Skip the Max ambiguity gate for this ideation
-                      </label>
+                          className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                            skip ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                              skip ? 'translate-x-5' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );

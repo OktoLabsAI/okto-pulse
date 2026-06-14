@@ -99,7 +99,8 @@ describe('IdeationModal Max ambiguity gate panel', () => {
     expect(panel).toHaveTextContent('Current ambiguity:');
     // ambiguity 4 > threshold 3, not skipped -> blocks
     expect(screen.getByTestId('ambiguity-gate-status')).toHaveTextContent('Blocks completion');
-    expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toBeInTheDocument();
+    expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute('role', 'switch');
+    expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute('aria-checked', 'false');
   });
 
   it('persists skip through the dedicated endpoint and refreshes state', async () => {

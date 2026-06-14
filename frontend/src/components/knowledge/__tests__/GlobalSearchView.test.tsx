@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GlobalSearchView } from '../GlobalSearchView';
 import * as discoveryApi from '@/services/discovery-api';
+import * as kgApi from '@/services/kg-api';
 import type {
   DiscoveryIntent,
   DiscoverySelectorOptionsResponse,
@@ -139,6 +140,32 @@ beforeEach(() => {
 });
 
 describe('GlobalSearchView typed Discovery params', () => {
+  it('sends the selected graph layer to free-text global search', async () => {
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([]);
+    vi.mocked(kgApi.globalSearch).mockResolvedValue({
+      results: [],
+      total: 0,
+      graph_layer: 'working',
+    });
+
+    render(<GlobalSearchView boardId={BOARD} />);
+
+    fireEvent.click(screen.getByTestId('discovery-graph-layer-working'));
+    fireEvent.change(screen.getByTestId('discovery-search-input'), {
+      target: { value: 'canonical debt' },
+    });
+    fireEvent.click(screen.getByTestId('discovery-search-submit'));
+
+    await waitFor(() =>
+      expect(kgApi.globalSearch).toHaveBeenCalledWith(
+        'canonical debt',
+        20,
+        0.3,
+        'working',
+      ),
+    );
+  });
+
   it('preserves legacy text params and sends text values unchanged', async () => {
     await openParamsForm(
       intent({

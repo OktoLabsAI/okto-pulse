@@ -3,7 +3,14 @@
  * Thin wrapper over fetch with typed responses from types/knowledge-graph.ts.
  */
 
-import type { KGNode, KGEdge, KGStats, KGSettings, AuditEntry } from '@/types/knowledge-graph';
+import type {
+  KGNode,
+  KGEdge,
+  KGStats,
+  KGSettings,
+  AuditEntry,
+  GraphLayerMode,
+} from '@/types/knowledge-graph';
 
 const KG_BASE = '/api/v1/kg';
 
@@ -32,6 +39,7 @@ export async function listNodes(boardId: string, params?: {
   min_relevance?: number;
   limit?: number;
   cursor?: string;
+  graph_layer?: GraphLayerMode;
 }) {
   const qs = new URLSearchParams();
   if (params?.type) qs.set('type', params.type);
@@ -39,6 +47,7 @@ export async function listNodes(boardId: string, params?: {
   if (params?.min_relevance !== undefined) qs.set('min_relevance', String(params.min_relevance));
   if (params?.limit) qs.set('limit', String(params.limit));
   if (params?.cursor) qs.set('cursor', params.cursor);
+  if (params?.graph_layer) qs.set('graph_layer', params.graph_layer);
   return kgFetch<{
     nodes: KGNode[];
     next_cursor: string | null;
@@ -46,6 +55,7 @@ export async function listNodes(boardId: string, params?: {
     total_hint: number;
     /** Number of nodes returned in this page. */
     page_count?: number;
+    graph_layer?: GraphLayerMode;
   }>(
     `/boards/${boardId}/nodes?${qs}`
   );
@@ -88,6 +98,7 @@ export async function getSubgraph(boardId: string, params?: {
   cursor?: string;
   min_relevance?: number;
   type?: string;
+  graph_layer?: GraphLayerMode;
 }) {
   const qs = new URLSearchParams();
   if (params?.center) qs.set('center', params.center);
@@ -96,12 +107,16 @@ export async function getSubgraph(boardId: string, params?: {
   if (params?.cursor) qs.set('cursor', params.cursor);
   if (params?.min_relevance !== undefined) qs.set('min_relevance', String(params.min_relevance));
   if (params?.type) qs.set('type', params.type);
+  if (params?.graph_layer) qs.set('graph_layer', params.graph_layer);
   return kgFetch<SubgraphResponse>(`/boards/${boardId}/graph?${qs}`);
 }
 
 // Stats
-export async function getStats(boardId: string) {
-  return kgFetch<KGStats>(`/boards/${boardId}/stats`);
+export async function getStats(boardId: string, params?: { graph_layer?: GraphLayerMode }) {
+  const qs = new URLSearchParams();
+  if (params?.graph_layer) qs.set('graph_layer', params.graph_layer);
+  const suffix = qs.toString() ? `?${qs}` : '';
+  return kgFetch<KGStats>(`/boards/${boardId}/stats${suffix}`);
 }
 
 // Audit
@@ -165,7 +180,12 @@ export async function findContradictions(boardId: string, nodeId?: string, limit
 }
 
 // Global search
-export async function globalSearch(query: string, limit = 20, minSimilarity = 0.3) {
+export async function globalSearch(
+  query: string,
+  limit = 20,
+  minSimilarity = 0.3,
+  graphLayer: GraphLayerMode = 'canonical',
+) {
   return kgFetch<{
     results: Array<{
       board_id: string;
@@ -174,11 +194,13 @@ export async function globalSearch(query: string, limit = 20, minSimilarity = 0.
       title: string;
       summary?: string;
       node_type?: string;
+      graph_layer?: 'canonical' | 'working';
       similarity: number;
     }>;
     total: number;
+    graph_layer?: GraphLayerMode;
   }>(
-    `/global/search?q=${encodeURIComponent(query)}&limit=${limit}&min_similarity=${minSimilarity}`
+    `/global/search?q=${encodeURIComponent(query)}&limit=${limit}&min_similarity=${minSimilarity}&graph_layer=${graphLayer}`
   );
 }
 

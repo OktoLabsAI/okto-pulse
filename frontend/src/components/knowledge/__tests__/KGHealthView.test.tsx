@@ -156,7 +156,7 @@ afterEach(() => {
 });
 
 describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', () => {
-  it('faz 1 fetch e mostra Scheduler/Queue/Health/Footprint/Activity', async () => {
+  it('faz 1 fetch e mostra Scheduler/Queue/Health/Footprint/Debt', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve(baseHealth));
 
@@ -171,7 +171,6 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
       expect(screen.getAllByText('KG Health').length).toBeGreaterThan(0);
       expect(screen.getByText('Storage Footprint Proxy')).toBeInTheDocument();
       expect(screen.getByText('Canonical Debt')).toBeInTheDocument();
-      expect(screen.getByText('Activity')).toBeInTheDocument();
     });
   });
 });
@@ -516,31 +515,8 @@ describe('KG-HS.4 — Runtime Settings cadence handoff', () => {
   });
 });
 
-describe('TS7 — tabela Top-N renderiza N rows até max 10', () => {
-  it('0 entries → message "No disconnected nodes"', async () => {
-    mockBoard('b1');
-    mockApi(() => Promise.resolve({ ...baseHealth, top_disconnected_nodes: [] }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('No disconnected nodes')).toBeInTheDocument());
-  });
-
-  it('5 entries → 5 tbody rows', async () => {
-    mockBoard('b1');
-    const five = Array.from({ length: 5 }, (_, i) => ({
-      id: `entity_${i}`,
-      type: 'Entity',
-      degree: i,
-    }));
-    mockApi(() => Promise.resolve({ ...baseHealth, top_disconnected_nodes: five }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('entity_0')).toBeInTheDocument());
-    const table = screen.getByRole('table');
-    expect(table.querySelectorAll('tbody tr')).toHaveLength(5);
-  });
-
-  it('10 entries → 10 tbody rows com 3 cells cada', async () => {
+describe('TS7 — disconnected nodes panel removed', () => {
+  it('does not render the disconnected-node panel even when payload includes rows', async () => {
     mockBoard('b1');
     const ten = Array.from({ length: 10 }, (_, i) => ({
       id: `entity_${i}`,
@@ -550,10 +526,11 @@ describe('TS7 — tabela Top-N renderiza N rows até max 10', () => {
     mockApi(() => Promise.resolve({ ...baseHealth, top_disconnected_nodes: ten }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('entity_9')).toBeInTheDocument());
-    const rows = screen.getByRole('table').querySelectorAll('tbody tr');
-    expect(rows).toHaveLength(10);
-    rows.forEach((r) => expect(r.querySelectorAll('td')).toHaveLength(3));
+    await waitFor(() => expect(screen.getByText('Decay Scheduler')).toBeInTheDocument());
+    expect(screen.queryByText('Top 10 most disconnected nodes')).not.toBeInTheDocument();
+    expect(screen.queryByText('No disconnected nodes')).not.toBeInTheDocument();
+    expect(screen.queryByText('entity_9')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Disconnected nodes/i)).not.toBeInTheDocument();
   });
 });
 
@@ -600,7 +577,7 @@ describe('TS11 — skeleton em loading inicial', () => {
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
     await waitFor(() => {
-      expect(screen.getAllByTestId('skeleton-card')).toHaveLength(6);
+      expect(screen.getAllByTestId('skeleton-card')).toHaveLength(5);
     });
   });
 
@@ -615,7 +592,7 @@ describe('TS11 — skeleton em loading inicial', () => {
     );
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getAllByTestId('skeleton-card')).toHaveLength(6));
+    await waitFor(() => expect(screen.getAllByTestId('skeleton-card')).toHaveLength(5));
     resolvers[0]?.(baseHealth);
     await waitFor(() => expect(screen.getByText('Decay Scheduler')).toBeInTheDocument());
     expect(screen.queryAllByTestId('skeleton-card')).toHaveLength(0);

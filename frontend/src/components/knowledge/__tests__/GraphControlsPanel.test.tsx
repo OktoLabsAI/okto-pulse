@@ -19,6 +19,7 @@ function baseFilters(overrides: Partial<Filters> = {}): Filters {
   return {
     types: [],
     edgeTypes: [],
+    graphLayer: 'canonical',
     minRelevance: 0.5,
     searchQuery: '',
     ...overrides,
@@ -108,6 +109,21 @@ describe('GraphControlsPanel — node type filters', () => {
 
     expect(screen.getByTitle('Total Learning nodes in KG')).toHaveTextContent('0');
     expect(screen.getByText(/\bLearning\b/)).toBeInTheDocument();
+  });
+});
+
+describe('GraphControlsPanel — graph layer selector', () => {
+  it('defaults to the canonical layer and emits working/all changes', () => {
+    const { onFiltersChange } = renderPanel();
+
+    expect(screen.getByTestId('kg-graph-layer-canonical')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    fireEvent.click(screen.getByTestId('kg-graph-layer-working'));
+    expect(onFiltersChange).toHaveBeenCalledTimes(1);
+    expect((onFiltersChange.mock.calls[0][0] as Filters).graphLayer).toBe('working');
   });
 });
 

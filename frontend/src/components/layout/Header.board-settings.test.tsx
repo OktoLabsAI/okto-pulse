@@ -250,13 +250,15 @@ describe('Header Board settings resource automation', () => {
     );
   });
 
-  it('clamps an above-range ideation ambiguity threshold down to 5 (not the 0-100 spec clamp)', async () => {
+  it('renders the ideation ambiguity threshold as five discrete buttons and persists selection', async () => {
     boardState.currentBoard = boardWith({ require_ideation_ambiguity_gate: true, max_ideation_ambiguity: 3 });
     renderOpenHeader();
 
-    const input = screen.getByTestId('input-max-ideation-ambiguity');
-    fireEvent.change(input, { target: { value: '7' } });
-    fireEvent.blur(input);
+    for (const value of [1, 2, 3, 4, 5]) {
+      expect(screen.getByTestId(`button-max-ideation-ambiguity-${value}`)).toBeInTheDocument();
+    }
+
+    fireEvent.click(screen.getByTestId('button-max-ideation-ambiguity-5'));
 
     await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
     expect(apiMock.updateBoard).toHaveBeenCalledWith(
@@ -267,13 +269,12 @@ describe('Header Board settings resource automation', () => {
     );
   });
 
-  it('clamps a below-range ideation ambiguity threshold up to 1', async () => {
+  it('persists ideation ambiguity threshold 1 without using free-text input', async () => {
     boardState.currentBoard = boardWith({ require_ideation_ambiguity_gate: true, max_ideation_ambiguity: 3 });
     renderOpenHeader();
 
-    const input = screen.getByTestId('input-max-ideation-ambiguity');
-    fireEvent.change(input, { target: { value: '0' } });
-    fireEvent.blur(input);
+    expect(screen.queryByTestId('input-max-ideation-ambiguity')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('button-max-ideation-ambiguity-1'));
 
     await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
     expect(apiMock.updateBoard).toHaveBeenCalledWith(
@@ -284,9 +285,10 @@ describe('Header Board settings resource automation', () => {
     );
   });
 
-  it('hides the ideation ambiguity threshold input until the gate is enabled', () => {
+  it('hides the ideation ambiguity threshold selector until the gate is enabled', () => {
     renderOpenHeader();
     expect(screen.queryByTestId('input-max-ideation-ambiguity')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('button-max-ideation-ambiguity-1')).not.toBeInTheDocument();
     expect(screen.getByTestId('toggle-ideation-ambiguity-gate')).toBeInTheDocument();
   });
 

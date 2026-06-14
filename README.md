@@ -52,7 +52,7 @@ Every stage has structured artifacts, lineage, status transitions and validation
 
 ## Platform Surface
 
-Current 0.2.3 surface:
+Current 0.2.5 surface:
 
 | Surface | Count |
 | --- | ---: |
@@ -358,7 +358,11 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-### 0.2.3 - current
+### 0.2.5 - current
+
+Release focused on surfacing the KG working/canonical split in the packaged UI. The community bundle includes KG Health canonical-debt diagnostics and the updated core engine contracts for layer-aware rebuild, canonical-only query defaults and reprocessable canonical debt.
+
+### 0.2.3
 
 The UI side of the **53-spec 0.2.3 board** — the KG resilience, governance, cognitive and projection work surfaced in the web app. `155 files changed, +19,162 / −4,510` over `0.2.2`, with 13 new frontend modules and the embedded `frontend_dist/` rebuilt to match. Highlights:
 
