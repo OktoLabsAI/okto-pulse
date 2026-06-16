@@ -250,3 +250,59 @@ describe('MetricsHealthPanel — main states render without raw log (ts_c66a417e
     expect((screen.getByTestId('health-status') as HTMLElement).className).not.toContain('green');
   });
 });
+
+describe('MetricsHealthPanel — minimum health state coverage (ts_155de001)', () => {
+  beforeEach(() => {
+    healthApi.getPublishHealth.mockReset();
+  });
+
+  const minStates = [
+    { status: 'healthy', severity: 'none', color: 'green' },
+    { status: 'degraded', severity: 'warning', color: 'amber' },
+    { status: 'failing', severity: 'critical', color: 'red' },
+    { status: 'stale', severity: 'warning', color: 'amber' },
+    { status: 'disabled', severity: 'info', color: 'gray' },
+    { status: 'unavailable', severity: 'warning', color: 'gray' },
+  ];
+
+  it('covers exactly the six minimum states (teeth: dropping one breaks coverage)', () => {
+    expect(new Set(minStates.map((s) => s.status)).size).toBe(6);
+    expect(minStates.map((s) => s.status).slice().sort()).toEqual([
+      'degraded',
+      'disabled',
+      'failing',
+      'healthy',
+      'stale',
+      'unavailable',
+    ]);
+  });
+
+  it.each(minStates)(
+    'renders the $status state with severity + message; non-healthy never green',
+    async ({ status, severity, color }) => {
+      const dto = health({
+        status,
+        severity,
+        message: `Actionable guidance for ${status}.`,
+        last_success_at: '2026-06-15T13:00:00Z',
+      });
+      healthApi.getPublishHealth.mockResolvedValue(dto);
+      const { container } = render(<MetricsHealthPanel onClose={() => {}} />);
+
+      const badge = await screen.findByTestId('health-status');
+      expect(badge.textContent?.toLowerCase()).toContain(status);
+      expect(badge.className).toContain(color); // visual indicator matches the state
+      expect(screen.getByTestId('health-severity').textContent).toContain(severity);
+      expect(screen.getByTestId('health-message').textContent).toContain(`Actionable guidance for ${status}.`);
+
+      if (status === 'healthy') {
+        expect(badge.className).toContain('green');
+      } else {
+        // a non-healthy state is NEVER rendered as a success/green visual.
+        expect(badge.className).not.toContain('green');
+      }
+      expect(container.querySelector('textarea')).toBeNull();
+      expect(container.querySelector('pre')).toBeNull();
+    },
+  );
+});
