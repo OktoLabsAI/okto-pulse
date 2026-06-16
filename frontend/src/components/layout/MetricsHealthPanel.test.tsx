@@ -163,3 +163,90 @@ describe('MetricsHealthPanel', () => {
     expect(dom.toLowerCase()).toContain('degraded');
   });
 });
+
+describe('MetricsHealthPanel — main states render without raw log (ts_c66a417e)', () => {
+  beforeEach(() => {
+    healthApi.getPublishHealth.mockReset();
+  });
+
+  // color token expected on the status badge per state (visual indicator).
+  const stateCases = [
+    { status: 'healthy', severity: 'none', reason_code: null, color: 'green' },
+    { status: 'degraded', severity: 'warning', reason_code: 'USAGE_503', color: 'amber' },
+    { status: 'failing', severity: 'critical', reason_code: 'INVALID_SIGNATURE', color: 'red' },
+    { status: 'stale', severity: 'warning', reason_code: null, color: 'amber' },
+    { status: 'disabled', severity: 'info', reason_code: null, color: 'gray' },
+  ];
+
+  it.each(stateCases)(
+    'renders the $status state: status, severity, timestamps, next action — no raw log',
+    async ({ status, severity, reason_code, color }) => {
+      const dto = health({
+        status,
+        severity,
+        reason_code,
+        last_success_at: '2026-06-15T13:00:00Z',
+        last_failure_at: '2026-06-15T12:55:00Z',
+        next_retry_at: '2026-06-15T13:10:00Z',
+        retry_count: 2,
+      });
+      healthApi.getPublishHealth.mockResolvedValue(dto);
+      const { container } = render(<MetricsHealthPanel onClose={() => {}} />);
+
+      // status label (verbatim) + a coherent COLORED visual indicator + severity
+      const badge = await screen.findByTestId('health-status');
+      expect(badge.textContent?.toLowerCase()).toContain(status);
+      expect(badge.querySelector('span')).toBeTruthy();
+      expect(badge.className).toContain(color); // visual indicator matches the state
+      if (status !== 'healthy') {
+        // NO-PROXY: a non-healthy state is never painted green / promoted to healthy.
+        expect(badge.className).not.toContain('green');
+        expect(badge.textContent?.toLowerCase()).not.toContain('healthy');
+      }
+      expect(screen.getByTestId('health-severity').textContent).toContain(severity);
+
+      // relevant timestamps
+      expect(screen.getByTestId('health-last-success').textContent).toContain('2026-06-15T13:00:00Z');
+      expect(screen.getByTestId('health-last-failure').textContent).toContain('2026-06-15T12:55:00Z');
+      expect(screen.getByTestId('health-next-retry').textContent).toContain('2026-06-15T13:10:00Z');
+      expect(screen.getByTestId('health-retry-count').textContent).toBe('2');
+
+      // an actionable next action / message
+      expect((screen.getByTestId('health-message').textContent ?? '').trim().length).toBeGreaterThan(0);
+
+      // NO raw log / serialized dump: no textarea, <pre>, <code>, or JSON of the DTO.
+      expect(container.querySelector('textarea')).toBeNull();
+      expect(container.querySelector('pre')).toBeNull();
+      expect(container.querySelector('code')).toBeNull();
+      const dom = container.textContent ?? '';
+      expect(dom).not.toContain('"status":');
+      expect(dom).not.toContain('redaction_applied');
+      expect(dom).not.toContain('"sources"');
+      expect(dom).not.toContain('stale_threshold_seconds');
+    },
+  );
+
+  it('does not render hostile internal debug/log/payload fields (anti-tautology)', async () => {
+    const hostile = {
+      ...health({ status: 'degraded' }),
+      debug_log: 'RAWLOGsentinel_should_not_render',
+      _internal_payload: 'PAYLOADsentinel_xyz',
+      raw_dump: { token: 'tok_internal_sentinel', signature: 'sig_internal_sentinel' },
+    } as unknown as PublishHealth;
+    healthApi.getPublishHealth.mockResolvedValue(hostile);
+    const { container } = render(<MetricsHealthPanel onClose={() => {}} />);
+    await screen.findByTestId('health-status');
+    const dom = container.textContent ?? '';
+
+    expect(dom).not.toContain('RAWLOGsentinel_should_not_render');
+    expect(dom).not.toContain('PAYLOADsentinel_xyz');
+    expect(dom).not.toContain('tok_internal_sentinel');
+    expect(dom).not.toContain('sig_internal_sentinel');
+    expect(container.querySelector('textarea')).toBeNull();
+    expect(container.querySelector('pre')).toBeNull();
+    expect(container.querySelector('code')).toBeNull();
+    // sanity: the panel did render real content, painted for degraded (amber, not green).
+    expect(dom.toLowerCase()).toContain('degraded');
+    expect((screen.getByTestId('health-status') as HTMLElement).className).not.toContain('green');
+  });
+});
