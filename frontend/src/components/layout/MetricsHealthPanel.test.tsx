@@ -124,4 +124,42 @@ describe('MetricsHealthPanel', () => {
     render(<MetricsHealthPanel onClose={() => {}} />);
     await waitFor(() => expect(screen.getByTestId('health-error')).toBeTruthy());
   });
+
+  it('never surfaces any secret category in the rendered DOM (ts_26974d8d)', async () => {
+    const sentinels = {
+      install_token: 'oat_INSTALLTOKENsentinel_aaaa1111',
+      token_hash: 'f0e1d2c3b4a5f0e1d2c3b4a5f0e1d2c3',
+      signature: 'sig_SIGNATUREsentinel_cccc3333',
+      nonce: 'NONCEsentinel0000aaaa1111bbbb2222',
+      raw_install_id: 'install-RAWID-sentinel-dddd4444',
+      payload: 'PAYLOADsentinel_eeee5555_body',
+    };
+    // a hostile DTO: redacted known fields, but sentinels planted in UNKNOWN/extra
+    // nested fields/lists the panel must never dump.
+    const hostile = {
+      ...health({ status: 'degraded' }),
+      install_id_redacted: 'iid_onlythis',
+      debug_blob: sentinels.payload,
+      nested: { token: sentinels.install_token, list: [{ sig: sentinels.signature }] },
+      raw_state: {
+        install_id: sentinels.raw_install_id,
+        nonce: sentinels.nonce,
+        token_hash: sentinels.token_hash,
+      },
+    } as unknown as PublishHealth;
+    healthApi.getPublishHealth.mockResolvedValue(hostile);
+
+    const { container } = render(<MetricsHealthPanel onClose={() => {}} />);
+    await screen.findByTestId('health-status');
+    const dom = container.textContent ?? '';
+
+    for (const value of Object.values(sentinels)) {
+      expect(dom).not.toContain(value);
+    }
+    // only the redacted id is shown; no raw payload dump element.
+    expect(screen.getByTestId('health-install-id').textContent).toContain('iid_onlythis');
+    expect(container.querySelector('textarea')).toBeNull();
+    // sanity: the panel DID render real content, so the negative checks are meaningful.
+    expect(dom.toLowerCase()).toContain('degraded');
+  });
 });
