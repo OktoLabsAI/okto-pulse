@@ -22,6 +22,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowLeft,
+  Brain,
   Database,
   HardDrive,
   Inbox,
@@ -395,6 +396,17 @@ function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose 
         </div>
       </div>
       <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() =>
+            window.dispatchEvent(new CustomEvent('okto:open-cognitive-action-center'))
+          }
+          className="px-3 py-1.5 text-sm bg-violet-600 hover:bg-violet-700 text-white rounded-lg flex items-center gap-1.5"
+          aria-label="Open Cognitive Action Center"
+          data-testid="kg-open-cognitive-action-center"
+        >
+          <Brain className="w-4 h-4" aria-hidden /> Cognitive Action Center
+        </button>
         <button
           type="button"
           onClick={onRefresh}
