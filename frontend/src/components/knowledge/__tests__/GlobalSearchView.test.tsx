@@ -123,6 +123,9 @@ async function openParamsForm(testIntent: DiscoveryIntent) {
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
+  // jsdom has no layout engine — stub scrollIntoView so the post-search scroll
+  // (which only fires when results render) doesn't throw.
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
   window.requestAnimationFrame = (callback: FrameRequestCallback) => {
     callback(0);
     return 0;
@@ -163,6 +166,46 @@ describe('GlobalSearchView typed Discovery params', () => {
         0.3,
         'working',
       ),
+    );
+  });
+
+  // R6-TEST3 (ts_ecf530d5): default canonical, explicit `all`, and the per-result
+  // layer returned by the backend is rendered.
+  it('defaults to canonical, sends all when selected, and renders the per-result layer', async () => {
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([]);
+    vi.mocked(kgApi.globalSearch).mockResolvedValue({
+      results: [
+        {
+          id: 'n1',
+          board_id: BOARD,
+          title: 'Node 1',
+          summary: '',
+          node_type: 'Decision',
+          similarity: 0.9,
+          graph_layer: 'working',
+        },
+      ],
+      total: 1,
+      graph_layer: 'working',
+    } as Awaited<ReturnType<typeof kgApi.globalSearch>>);
+
+    render(<GlobalSearchView boardId={BOARD} />);
+
+    // Default (no layer click) -> canonical.
+    fireEvent.change(screen.getByTestId('discovery-search-input'), {
+      target: { value: 'q1' },
+    });
+    fireEvent.click(screen.getByTestId('discovery-search-submit'));
+    await waitFor(() =>
+      expect(kgApi.globalSearch).toHaveBeenLastCalledWith('q1', 20, 0.3, 'canonical'),
+    );
+    // The per-result layer returned by the backend renders ("working" badge).
+    expect(await screen.findByText('working')).toBeInTheDocument();
+
+    // Switching the layer to `all` re-runs the current query with graph_layer='all'.
+    fireEvent.click(screen.getByTestId('discovery-graph-layer-all'));
+    await waitFor(() =>
+      expect(kgApi.globalSearch).toHaveBeenCalledWith('q1', 20, 0.3, 'all'),
     );
   });
 

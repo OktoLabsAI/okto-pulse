@@ -125,6 +125,19 @@ describe('GraphControlsPanel — graph layer selector', () => {
     expect(onFiltersChange).toHaveBeenCalledTimes(1);
     expect((onFiltersChange.mock.calls[0][0] as Filters).graphLayer).toBe('working');
   });
+
+  // R6-TEST3 (ts_ecf530d5): all three layer selectors are exposed and each emits
+  // its value coherently — canonical|working|all, never a partial set.
+  it('exposes canonical/working/all and emits the selected layer (incl. all)', () => {
+    const { onFiltersChange } = renderPanel();
+    for (const v of ['canonical', 'working', 'all'] as const) {
+      expect(screen.getByTestId(`kg-graph-layer-${v}`)).toBeInTheDocument();
+    }
+    // canonical is the active default; only working/all are pressable transitions.
+    expect(screen.getByTestId('kg-graph-layer-all')).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByTestId('kg-graph-layer-all'));
+    expect((onFiltersChange.mock.calls[0][0] as Filters).graphLayer).toBe('all');
+  });
 });
 
 describe('GraphControlsPanel — relevance slider (S4.5, AC-6)', () => {
