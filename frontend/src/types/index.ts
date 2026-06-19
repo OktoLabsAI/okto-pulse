@@ -770,12 +770,31 @@ export interface SpecStructuredEntityMutationResult {
 export type TestScenarioType = 'unit' | 'integration' | 'e2e' | 'manual';
 export type TestScenarioStatus = 'draft' | 'ready' | 'automated' | 'passed' | 'failed';
 
+// Re-executable validation evidence contract (spec 9e0bf979).
+export type EvidenceClass =
+  | 'automated_test_pointer'
+  | 'replay_command'
+  | 'mcp_replay_manifest'
+  | 'manual_checklist'
+  | 'run_log'
+  | 'non_replayable_justified';
+
 export interface TestScenarioEvidence {
+  // Legacy / minimal fields (NC-9).
   test_file_path?: string | null;
   test_function?: string | null;
   last_run_at?: string | null;
   test_run_id?: string | null;
   output_snippet?: string | null;
+  // Re-executable evidence contract (spec 9e0bf979). All optional; legacy
+  // evidence simply omits them.
+  evidence_class?: EvidenceClass | null;
+  replay_command?: string | null;
+  mcp_replay_manifest?: string | null;
+  manual_checklist_ref?: string | null;
+  expected_output_snapshot?: string | null;
+  replay_should_exist?: boolean | null;
+  non_replayable_justification?: string | null;
 }
 
 export interface TestScenario {

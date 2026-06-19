@@ -67,6 +67,15 @@ const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
   'last_run_at',
   'test_run_id',
   'output_snippet',
+  // Re-executable evidence contract (spec 9e0bf979): evidence may carry only
+  // these fields (e.g. a replay_command + expected_output_snapshot), so they
+  // must count as "has evidence" for rendering.
+  'evidence_class',
+  'replay_command',
+  'mcp_replay_manifest',
+  'manual_checklist_ref',
+  'expected_output_snapshot',
+  'non_replayable_justification',
 ];
 
 function getScenarioEvidence(scenario: TestScenario): TestScenarioEvidence | null {
@@ -1554,7 +1563,8 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   );
 }
 
-function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
+// Exported for focused component tests (spec 9e0bf979 evidence visibility).
+export function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
   const evidenceCount = scenarios.filter(hasScenarioEvidence).length;
   const missingCount = scenarios.length - evidenceCount;
 
@@ -1598,8 +1608,14 @@ function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
           const evidence = getScenarioEvidence(scenario);
           const hasEvidence = hasScenarioEvidence(scenario);
           const evidenceRows = [
+            // Re-executable evidence contract (spec 9e0bf979): class + artifact
+            // pointers a validator can rerun/inspect without reading comments.
+            { label: 'Evidence class', value: evidence?.evidence_class, mono: true },
             { label: 'Test file', value: evidence?.test_file_path, mono: true },
             { label: 'Function', value: evidence?.test_function, mono: true },
+            { label: 'Replay command', value: evidence?.replay_command, mono: true },
+            { label: 'MCP replay manifest', value: evidence?.mcp_replay_manifest, mono: true },
+            { label: 'Manual checklist', value: evidence?.manual_checklist_ref, mono: true },
             { label: 'Last run', value: formatEvidenceTimestamp(evidence?.last_run_at), mono: false },
             { label: 'Run ID', value: evidence?.test_run_id, mono: true },
           ].filter((row): row is { label: string; value: string; mono: boolean } => Boolean(row.value));
@@ -1647,6 +1663,22 @@ function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
                       <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md border border-gray-200 dark:border-gray-700 bg-gray-950 p-3 text-xs text-gray-100">
                         {evidence.output_snippet}
                       </pre>
+                    </div>
+                  )}
+                  {evidence?.expected_output_snapshot && (
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Expected output</p>
+                      <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md border border-gray-200 dark:border-gray-700 bg-gray-950 p-3 text-xs text-gray-100">
+                        {evidence.expected_output_snapshot}
+                      </pre>
+                    </div>
+                  )}
+                  {evidence?.non_replayable_justification && (
+                    <div className="rounded-md border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-900/10 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-1">Non-replayable justification</p>
+                      <p className="whitespace-pre-wrap break-words text-xs text-amber-800 dark:text-amber-200">
+                        {evidence.non_replayable_justification}
+                      </p>
                     </div>
                   )}
                 </div>
