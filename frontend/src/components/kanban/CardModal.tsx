@@ -13,8 +13,9 @@ import {
   useIsCardModalOpen,
   useColumns,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse } from '@/types';
 import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
+import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { ActivityLogList } from '@/components/shared/ActivityLogList';
@@ -277,6 +278,8 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const [specORs, setSpecORs] = useState<any[]>([]);
   const [specTRs, setSpecTRs] = useState<any[]>([]);
   const [bugRegressionPreview, setBugRegressionPreview] = useState<BugRegressionScenarioPreview | null>(null);
+  const [amendmentRevisions, setAmendmentRevisions] = useState<AmendmentRevisionListResponse | null>(null);
+  const [amendmentBusy, setAmendmentBusy] = useState(false);
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
@@ -320,6 +323,7 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const loadCard = (cardId: string) => {
     setIsLoading(true);
     setBugRegressionPreview(null);
+    setAmendmentRevisions(null);
     api.getCard(cardId)
       .then((data) => {
         setCard(data);
@@ -327,6 +331,9 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
             .then(setBugRegressionPreview)
             .catch(() => setBugRegressionPreview(null));
+          api.listAmendmentRevisions(data.board_id, data.id)
+            .then(setAmendmentRevisions)
+            .catch(() => setAmendmentRevisions(null));
         }
         if (data.spec_id) {
           api.getSpec(data.spec_id)
@@ -377,8 +384,12 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
             .then(setBugRegressionPreview)
             .catch(() => setBugRegressionPreview(null));
+          api.listAmendmentRevisions(data.board_id, data.id)
+            .then(setAmendmentRevisions)
+            .catch(() => setAmendmentRevisions(null));
         } else {
           setBugRegressionPreview(null);
+          setAmendmentRevisions(null);
         }
         if (data.spec_id) {
           api.getSpec(data.spec_id)
@@ -401,6 +412,41 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
     api.getCardDependencies(cardId).then(setDependencies).catch(() => {});
     api.getCardDependents(cardId).then(setDependents).catch(() => {});
   }, [api]);
+
+  // Path B safe actions (spec be089cd3). User-click only — NO auto-mutation on
+  // render, and NEVER a gate skip/bypass; these only REMEDIATE via the new
+  // amendment-revision surfaces.
+  const handleCreateAmendment = useCallback(async () => {
+    if (!card) return;
+    setAmendmentBusy(true);
+    try {
+      await api.createAmendmentRevision(card.board_id, card.id, {
+        origin_task_ids: card.origin_task_id ? [card.origin_task_id] : undefined,
+      });
+      toast.success('Amendment revision created (draft)');
+      silentRefresh(card.id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create amendment revision');
+    } finally {
+      setAmendmentBusy(false);
+    }
+  }, [api, card, silentRefresh]);
+
+  const handleAssociateAmendment = useCallback(async (amendmentId: string) => {
+    if (!card) return;
+    setAmendmentBusy(true);
+    try {
+      await api.associateAmendmentRevisionArtifacts(card.board_id, card.id, amendmentId, {
+        regression_test_task_ids: card.linked_test_task_ids ?? [],
+      });
+      toast.success('Regression artifacts associated');
+      silentRefresh(card.id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to associate artifacts');
+    } finally {
+      setAmendmentBusy(false);
+    }
+  }, [api, card, silentRefresh]);
 
   useEffect(() => {
     if (selectedCardId && isOpen) {
@@ -1235,6 +1281,15 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                   <BugWorkflowRemediationPanel
                     preview={bugRegressionPreview}
                     linkedTestCount={card.linked_test_task_ids?.length ?? 0}
+                  />
+
+                  <PathBRemediationPanel
+                    revisions={amendmentRevisions?.revisions ?? []}
+                    pathBResolution={amendmentRevisions?.path_b_resolution ?? null}
+                    bugRegressionPreview={bugRegressionPreview}
+                    onCreateAmendment={handleCreateAmendment}
+                    onAssociate={handleAssociateAmendment}
+                    busy={amendmentBusy}
                   />
 
                   {/* Linked Test Tasks */}

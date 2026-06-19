@@ -17,6 +17,10 @@ import type {
   UpdateCardRequest,
   MoveCardRequest,
   BugRegressionScenarioPreview,
+  AmendmentRevision,
+  AmendmentRevisionListResponse,
+  CreateAmendmentRevisionRequest,
+  AssociateAmendmentArtifactsRequest,
   Agent,
   AgentSummary,
   AgentBoardGrant,
@@ -345,6 +349,50 @@ export function useDashboardApi() {
 
     async unlinkTestTaskFromBug(cardId: string, testTaskId: string): Promise<void> {
       await apiClient.fetch(`/cards/${cardId}/test-tasks/${testTaskId}`, { method: 'DELETE' });
+    },
+
+    // ==================== PATH B AMENDMENT REVISIONS (spec be089cd3) ====================
+
+    async listAmendmentRevisions(
+      boardId: string,
+      bugId: string,
+    ): Promise<AmendmentRevisionListResponse> {
+      return apiClient.fetchJson<AmendmentRevisionListResponse>(
+        `/boards/${boardId}/bugs/${bugId}/amendment-revisions`,
+      );
+    },
+
+    async getAmendmentRevision(
+      boardId: string,
+      bugId: string,
+      amendmentId: string,
+    ): Promise<{ amendment_revision: AmendmentRevision }> {
+      return apiClient.fetchJson(
+        `/boards/${boardId}/bugs/${bugId}/amendment-revisions/${amendmentId}`,
+      );
+    },
+
+    async createAmendmentRevision(
+      boardId: string,
+      bugId: string,
+      payload: CreateAmendmentRevisionRequest = {},
+    ): Promise<AmendmentRevision> {
+      return apiClient.fetchJson<AmendmentRevision>(
+        `/boards/${boardId}/bugs/${bugId}/amendment-revisions`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async associateAmendmentRevisionArtifacts(
+      boardId: string,
+      bugId: string,
+      amendmentId: string,
+      payload: AssociateAmendmentArtifactsRequest,
+    ): Promise<AmendmentRevision> {
+      return apiClient.fetchJson<AmendmentRevision>(
+        `/boards/${boardId}/bugs/${bugId}/amendment-revisions/${amendmentId}/associate`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
     },
 
     // ==================== SPECS ====================

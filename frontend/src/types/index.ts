@@ -1679,6 +1679,87 @@ export interface BugRegressionScenarioPreview {
   remediation: BugWorkflowRemediationMessage;
 }
 
+// ==================== PATH B AMENDMENT REVISIONS (spec be089cd3) ====================
+
+export interface AmendmentRevisionEligibility {
+  lineage_eligible: boolean;
+  canonicalization_candidate: boolean;
+  blocked: boolean;
+  reason_code: string;
+}
+
+export interface AmendmentRevision {
+  id: string;
+  board_id: string;
+  original_spec_id: string;
+  origin_bug_id: string;
+  revision_spec_id?: string | null;
+  status: string; // draft | review | approved | done | cancelled | superseded
+  lineage_state: string; // incomplete | complete
+  origin_task_ids: string[];
+  affected_task_ids: string[];
+  regression_scenario_ids: string[];
+  regression_test_task_ids: string[];
+  automated_regression_refs: string[];
+  eligibility: AmendmentRevisionEligibility;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+// coverage_state is rendered tolerant to BOTH vocabularies seen in the system:
+//   not_applicable | coverage_pending | path_b_ready  (resolver)
+//   missing | pending | validated                      (spec prose)
+// pending/coverage_pending must NEVER look closure-ready.
+export type AmendmentCoverageState =
+  | 'not_applicable'
+  | 'coverage_pending'
+  | 'path_b_ready'
+  | 'missing'
+  | 'pending'
+  | 'validated'
+  | string;
+
+export interface AmendmentPathBResolution {
+  available?: boolean;
+  coverage_state?: AmendmentCoverageState | null;
+  coverage_pending_scenarios?: string[] | null;
+  missing_links?: string[] | null;
+  safe_next_actions?: string[] | null;
+  next_action?: string | null;
+  eligible_regression_artifacts?: string[] | null;
+  rejected_regression_artifacts?: string[] | null;
+  rejected_scenarios?: BugRegressionScenarioCandidate[] | null;
+  amendment_revision_id?: string | null;
+  // structured error fields when available === false
+  error?: string | null;
+  code?: string | null;
+  message?: string | null;
+}
+
+export interface AmendmentRevisionListResponse {
+  board_id: string;
+  bug_id: string;
+  original_spec_id?: string | null;
+  revisions: AmendmentRevision[];
+  path_b_resolution: AmendmentPathBResolution;
+}
+
+export interface CreateAmendmentRevisionRequest {
+  original_spec_id?: string;
+  revision_spec_id?: string;
+  origin_task_ids?: string[];
+  affected_task_ids?: string[];
+  regression_scenario_ids?: string[];
+  regression_test_task_ids?: string[];
+  automated_regression_refs?: string[];
+}
+
+export interface AssociateAmendmentArtifactsRequest {
+  regression_scenario_ids?: string[];
+  regression_test_task_ids?: string[];
+  automated_regression_refs?: string[];
+}
+
 export interface CreateAgentRequest {
   name: string;
   description?: string;
