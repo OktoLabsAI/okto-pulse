@@ -66,6 +66,7 @@ import type {
 } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { EvidenceBadge } from './EvidenceBadge';
+import { SCENARIO_TYPES, ScenarioTypeBadge } from './ScenarioTypeBadge';
 import { usePermissions } from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
 import { RulesTab } from './RulesTab';
@@ -452,7 +453,6 @@ function formatValue(val: unknown): string {
   return String(val);
 }
 
-const SCENARIO_TYPES = ['unit', 'integration', 'e2e', 'manual'] as const;
 const SCENARIO_STATUSES = ['draft', 'ready', 'automated', 'passed', 'failed'] as const;
 
 const SCENARIO_STATUS_COLORS: Record<string, string> = {
@@ -461,13 +461,6 @@ const SCENARIO_STATUS_COLORS: Record<string, string> = {
   automated: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
   passed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
   failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-};
-
-const SCENARIO_TYPE_COLORS: Record<string, string> = {
-  unit: 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300',
-  integration: 'bg-violet-50 text-violet-600 dark:bg-violet-900/30 dark:text-violet-300',
-  e2e: 'bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300',
-  manual: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
 };
 
 function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpdate: (scenarios: TestScenario[]) => void; onSpecUpdate: (data: Record<string, unknown>) => Promise<void> }) {
@@ -610,9 +603,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
             >
               <FlaskConical size={14} className={linkedCards > 0 ? 'text-violet-500 shrink-0' : 'text-amber-500 shrink-0'} />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{scenario.title}</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${SCENARIO_TYPE_COLORS[scenario.scenario_type] || ''}`}>
-                {scenario.scenario_type}
-              </span>
+              <ScenarioTypeBadge scenarioType={scenario.scenario_type} />
               <select
                 value={scenario.status}
                 onChange={(e) => { e.stopPropagation(); handleStatusChange(scenario.id, e.target.value); }}
@@ -2324,13 +2315,20 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
                 try {
                   const updated = await api.updateSpec(specId, { test_scenarios: scenarios });
                   setSpec(updated);
-                } catch { toast.error('Failed to update test scenarios'); }
+                } catch (err) {
+                  // Surface the backend validation message (e.g. the strict
+                  // scenario_type contract) instead of a generic string so a
+                  // stale client/agent can correct the request (spec ac16b3c9).
+                  toast.error(err instanceof Error && err.message ? err.message : 'Failed to update test scenarios');
+                }
               }}
               onSpecUpdate={async (data) => {
                 try {
                   const updated = await api.updateSpec(specId, data as any);
                   setSpec(updated);
-                } catch { toast.error('Failed to update spec'); }
+                } catch (err) {
+                  toast.error(err instanceof Error && err.message ? err.message : 'Failed to update spec');
+                }
               }}
             />
           )}
