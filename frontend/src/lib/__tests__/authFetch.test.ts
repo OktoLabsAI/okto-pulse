@@ -162,6 +162,87 @@ describe('authFetch – backend_error.detail proxy pattern', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Top-level structured error (no `detail`) — human message wins over machine code
+// ---------------------------------------------------------------------------
+
+describe('authFetch – top-level structured error without detail', () => {
+  it('prefers errorData.message over errorData.error when there is no detail (BUG 3 teeth)', async () => {
+    // DesignSystemError-style payload: structured fields at the TOP level, no `detail`.
+    const response = fakeResponse(422, {
+      error: 'design_system_required',
+      code: 'design_system_required',
+      message: 'Design System reference is required',
+      status_code: 422,
+    });
+    const client = makeClient(response);
+    // the human-readable message must win — NOT the machine code.
+    await expect(client.fetchJson('/api/test')).rejects.toThrow('Design System reference is required');
+  });
+
+  it('does NOT surface the machine code when a human message exists (regression guard)', async () => {
+    const response = fakeResponse(422, {
+      error: 'design_system_required',
+      message: 'Design System reference is required',
+    });
+    const client = makeClient(response);
+    try {
+      await client.fetchJson('/api/test');
+      expect.fail('should have thrown');
+    } catch (err) {
+      expect((err as Error).message).toBe('Design System reference is required');
+      expect((err as Error).message).not.toBe('design_system_required');
+    }
+  });
+
+  it('falls back to errorData.error when there is no message and no detail', async () => {
+    const response = fakeResponse(422, { error: 'only_a_code' });
+    const client = makeClient(response);
+    await expect(client.fetchJson('/api/test')).rejects.toThrow('only_a_code');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Empty-body success responses (204 No Content / DELETE) — must not throw on parse
+// ---------------------------------------------------------------------------
+
+/** Success-path Response stub exposing text(); json() rejects to prove it is not used. */
+function fakeOkResponse(status: number, text: string): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: `Status ${status}`,
+    json: vi.fn().mockRejectedValue(new SyntaxError('Unexpected end of JSON input')),
+    text: vi.fn().mockResolvedValue(text),
+    headers: new Headers(),
+  } as unknown as Response;
+}
+
+describe('authFetch – empty-body success (204 / DELETE)', () => {
+  it('returns undefined for a 204 No Content without calling json() (unlink teeth)', async () => {
+    const response = fakeOkResponse(204, '');
+    const client = makeClient(response);
+
+    await expect(client.fetchJson('/api/test', { method: 'DELETE' })).resolves.toBeUndefined();
+    // json() on an empty body throws "Unexpected end of JSON input" — it must NOT run.
+    expect(response.json).not.toHaveBeenCalled();
+  });
+
+  it('returns undefined for a 200 with an empty body', async () => {
+    const response = fakeOkResponse(200, '');
+    const client = makeClient(response);
+
+    await expect(client.fetchJson('/api/test')).resolves.toBeUndefined();
+  });
+
+  it('still parses a normal JSON body on success', async () => {
+    const response = fakeOkResponse(200, JSON.stringify({ ok: true, n: 7 }));
+    const client = makeClient(response);
+
+    await expect(client.fetchJson('/api/test')).resolves.toEqual({ ok: true, n: 7 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getErrorMessage helper
 // ---------------------------------------------------------------------------
 

@@ -7,6 +7,14 @@ import type { Board, BoardSettings } from '@/types';
 const apiMock = vi.hoisted(() => ({
   updateBoard: vi.fn(),
   getBoardGuidelines: vi.fn(),
+  getActiveDefaultBoardConfig: vi.fn(),
+  listDefaultBoardConfigVersions: vi.fn(),
+  getBoardDefaultConfigDiff: vi.fn(),
+  listDefaultGuidelineCandidates: vi.fn(),
+  createDefaultBoardConfigVersion: vi.fn(),
+  activateDefaultBoardConfigVersion: vi.fn(),
+  deactivateDefaultBoardConfigVersion: vi.fn(),
+  updateDefaultGuidelineRefs: vi.fn(),
 }));
 
 const boardState = vi.hoisted(() => ({
@@ -72,6 +80,7 @@ const baseSettings: BoardSettings = {
   skip_test_evidence_global: false,
   auto_derive_spec_resources_enabled: false,
   auto_derive_spec_resource_types: [],
+  design_system_gate_mode: 'off',
 };
 
 function boardWith(settings: Partial<BoardSettings>): Board {
@@ -101,6 +110,32 @@ describe('Header Board settings resource automation', () => {
     apiMock.updateBoard.mockResolvedValue({});
     apiMock.getBoardGuidelines.mockReset();
     apiMock.getBoardGuidelines.mockResolvedValue([]);
+    apiMock.getActiveDefaultBoardConfig.mockReset();
+    apiMock.getActiveDefaultBoardConfig.mockResolvedValue({ scope: 'global', active: null });
+    apiMock.listDefaultBoardConfigVersions.mockReset();
+    apiMock.listDefaultBoardConfigVersions.mockResolvedValue({ scope: 'global', active_id: null, versions: [] });
+    apiMock.getBoardDefaultConfigDiff.mockReset();
+    apiMock.getBoardDefaultConfigDiff.mockResolvedValue({
+      board_id: 'board-1',
+      snapshot_state: 'legacy_no_snapshot',
+      applied_template_id: null,
+      applied_template_version: null,
+      active_template_id: null,
+      active_template_version: null,
+      is_outdated: false,
+      fields: [],
+    });
+    apiMock.listDefaultGuidelineCandidates.mockReset();
+    apiMock.listDefaultGuidelineCandidates.mockResolvedValue({
+      scope: 'global',
+      template_id: null,
+      template_version: null,
+      candidates: [],
+    });
+    apiMock.createDefaultBoardConfigVersion.mockReset();
+    apiMock.activateDefaultBoardConfigVersion.mockReset();
+    apiMock.deactivateDefaultBoardConfigVersion.mockReset();
+    apiMock.updateDefaultGuidelineRefs.mockReset();
     boardState.currentBoard = boardWith({});
   });
 
@@ -129,6 +164,32 @@ describe('Header Board settings resource automation', () => {
     expect(modal).toHaveClass('modal-content');
     expect(screen.getByRole('dialog', { name: 'Board' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close board settings' })).toBeInTheDocument();
+  });
+
+  it('separates board config and global defaults into dedicated tabs', async () => {
+    renderOpenHeader();
+
+    // Board Config tab: the shared settings form plus the board-only context warnings.
+    expect(screen.getByTestId('board-settings-tab-board-config')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Agent Governance')).toBeInTheDocument();
+    expect(await screen.findByTestId('board-context-warning')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-default-board-config')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('board-settings-tab-global-default'));
+
+    // Global Default tab: the template admin panel. It renders the SAME settings
+    // form (parity with Board Config, so 'Agent Governance' appears here too), but
+    // without the board-only context warnings — a template has no board to warn about.
+    expect(screen.getByTestId('board-settings-tab-global-default')).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByTestId('settings-default-board-config')).toBeInTheDocument();
+    expect(await screen.findByTestId('default-board-config-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('board-context-warning')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('board-settings-tab-board-config'));
+
+    expect(screen.getByTestId('board-settings-tab-board-config')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Agent Governance')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-default-board-config')).not.toBeInTheDocument();
   });
 
   it('does not send an invalid payload when removing the last active resource type', async () => {
@@ -265,6 +326,24 @@ describe('Header Board settings resource automation', () => {
       'board-1',
       expect.objectContaining({
         settings: expect.objectContaining({ max_ideation_ambiguity: 5 }),
+      }),
+    );
+  });
+
+  it('renders and persists the Design System mockup gate mode', async () => {
+    renderOpenHeader();
+
+    expect(screen.getByTestId('toggle-design-system-gate')).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.click(screen.getByTestId('toggle-design-system-gate'));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          design_system_gate_mode: 'blocking',
+        }),
       }),
     );
   });

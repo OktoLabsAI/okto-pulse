@@ -831,6 +831,11 @@ export interface ScreenMockup {
   origin_id?: string | null;
   origin_story_id?: string | null;
   origin_entity_type?: string | null;
+  // Design System consumption metadata (spec 3a006f65 / card 0192f58d). Normalized
+  // {design_system_id, version}; the server's MockupDesignSystemGate validates it
+  // against the board's real effective Design System. Optional (legacy/off-mode).
+  design_system_ref?: { design_system_id: string; version?: number | null } | null;
+  design_system_evidence?: string | Record<string, unknown> | null;
 }
 
 export type StoryStatus = 'draft' | 'triage' | 'ready' | 'converted';
@@ -1445,6 +1450,9 @@ export interface BoardSettings {
   // Spec resource automation - copies selected Spec resources to newly-created/linked cards.
   auto_derive_spec_resources_enabled?: boolean;
   auto_derive_spec_resource_types?: SpecResourceAutoDeriveType[];
+  // Design System mockup gate (spec 3a006f65). `blocking` means mockup
+  // submissions must carry real Design System identity + evidence.
+  design_system_gate_mode?: 'off' | 'advisory' | 'blocking';
   // NC-9 evidence gate bypass (Wave 2 spec 873e98cc, frontend spec 5cb09dbc)
   skip_test_evidence_global?: boolean;
 }
@@ -1758,6 +1766,140 @@ export interface AssociateAmendmentArtifactsRequest {
   regression_scenario_ids?: string[];
   regression_test_task_ids?: string[];
   automated_regression_refs?: string[];
+}
+
+// ==================== DEFAULT BOARD CONFIGURATION (spec 9df814bc) ============
+
+export interface DefaultBoardConfigGuidelineRef {
+  guideline_id: string;
+  priority?: number;
+}
+
+export interface DefaultBoardConfigDesignSystemRef {
+  design_system_id?: string;
+  version?: number | null;
+  gate_mode?: 'off' | 'advisory' | 'blocking' | null;
+  snapshot?: Record<string, unknown> | null;
+}
+
+export interface SetDefaultDesignSystemRequest {
+  design_system_id: string;
+  version?: number | null;
+  gate_mode?: 'off' | 'advisory' | 'blocking';
+  snapshot?: Record<string, unknown> | null;
+}
+
+export interface DefaultBoardConfigTemplate {
+  id: string;
+  version: number;
+  status: string;
+  is_active: boolean;
+  scope: string;
+  settings_payload: Record<string, unknown>;
+  guideline_default_refs: DefaultBoardConfigGuidelineRef[];
+  design_system_default_ref: DefaultBoardConfigDesignSystemRef | null;
+  created_by: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface DefaultBoardConfigActiveResponse {
+  scope: string;
+  active: DefaultBoardConfigTemplate | null;
+}
+
+export interface DefaultBoardConfigVersionsResponse {
+  scope: string;
+  active_id: string | null;
+  versions: DefaultBoardConfigTemplate[];
+}
+
+export interface DefaultBoardConfigDiffField {
+  field: string;
+  template_value: unknown;
+  current_value: unknown;
+  state: string;
+}
+
+export interface DefaultBoardConfigDiff {
+  board_id: string;
+  snapshot_state: 'applied' | 'legacy_no_snapshot';
+  applied_template_id: string | null;
+  applied_template_version: number | null;
+  active_template_id: string | null;
+  active_template_version: number | null;
+  is_outdated: boolean;
+  fields: DefaultBoardConfigDiffField[];
+}
+
+export interface CreateDefaultBoardConfigVersionRequest {
+  settings_payload?: Record<string, unknown> | null;
+  scope?: string;
+  guideline_default_refs?: DefaultBoardConfigGuidelineRef[] | null;
+  design_system_default_ref?: DefaultBoardConfigDesignSystemRef | null;
+  activate?: boolean;
+}
+
+// Guideline defaults administration (spec 8a2fad91 / card 5cb88511)
+export interface DefaultGuidelineCandidate {
+  guideline_id: string;
+  title: string;
+  scope: string;
+  guideline_version: number | null;
+  eligible: boolean;
+  is_default: boolean;
+  priority: number | null;
+}
+
+export interface DefaultGuidelineCandidatesResponse {
+  scope: string;
+  template_id: string | null;
+  template_version: number | null;
+  candidates: DefaultGuidelineCandidate[];
+}
+
+// Design System catalog (spec 3a006f65 / card 1392f59d)
+export interface DesignSystem {
+  id: string;
+  scope: string;
+  board_id: string | null;
+  title: string;
+  payload: Record<string, unknown> | null;
+  version: number;
+  status: string;
+  owner_id: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface BoardDesignSystemEffective {
+  source: string;
+  design_system_id: string | null;
+  version: number | null;
+  title?: string | null;
+  status?: string | null;
+  scope?: string | null;
+  gate_mode?: string | null;
+  exists?: boolean;
+}
+
+export interface BoardDesignSystemEffectiveResponse {
+  board_id: string;
+  effective: BoardDesignSystemEffective | null;
+}
+
+export interface CreateDesignSystemRequest {
+  title: string;
+  scope?: string;
+  board_id?: string | null;
+  payload?: Record<string, unknown> | null;
+  status?: string;
+}
+
+export interface UpdateDesignSystemRequest {
+  title?: string;
+  payload?: Record<string, unknown> | null;
+  status?: string;
 }
 
 export interface CreateAgentRequest {

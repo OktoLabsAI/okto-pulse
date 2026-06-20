@@ -19,6 +19,18 @@ import type {
   BugRegressionScenarioPreview,
   AmendmentRevision,
   AmendmentRevisionListResponse,
+  CreateDefaultBoardConfigVersionRequest,
+  DefaultBoardConfigActiveResponse,
+  DefaultBoardConfigDiff,
+  DefaultBoardConfigGuidelineRef,
+  DefaultBoardConfigTemplate,
+  DefaultBoardConfigVersionsResponse,
+  DefaultGuidelineCandidatesResponse,
+  BoardDesignSystemEffectiveResponse,
+  CreateDesignSystemRequest,
+  DesignSystem,
+  SetDefaultDesignSystemRequest,
+  UpdateDesignSystemRequest,
   CreateAmendmentRevisionRequest,
   AssociateAmendmentArtifactsRequest,
   Agent,
@@ -392,6 +404,136 @@ export function useDashboardApi() {
       return apiClient.fetchJson<AmendmentRevision>(
         `/boards/${boardId}/bugs/${bugId}/amendment-revisions/${amendmentId}/associate`,
         { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    // ==================== DEFAULT BOARD CONFIGURATION ====================
+
+    async getActiveDefaultBoardConfig(scope = 'global'): Promise<DefaultBoardConfigActiveResponse> {
+      return apiClient.fetchJson<DefaultBoardConfigActiveResponse>(
+        `/default-board-config/active?scope=${encodeURIComponent(scope)}`,
+      );
+    },
+
+    async listDefaultBoardConfigVersions(scope = 'global'): Promise<DefaultBoardConfigVersionsResponse> {
+      return apiClient.fetchJson<DefaultBoardConfigVersionsResponse>(
+        `/default-board-config/versions?scope=${encodeURIComponent(scope)}`,
+      );
+    },
+
+    async createDefaultBoardConfigVersion(
+      payload: CreateDefaultBoardConfigVersionRequest = {},
+    ): Promise<DefaultBoardConfigTemplate> {
+      return apiClient.fetchJson<DefaultBoardConfigTemplate>(
+        `/default-board-config/versions`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async activateDefaultBoardConfigVersion(templateId: string): Promise<DefaultBoardConfigTemplate> {
+      return apiClient.fetchJson<DefaultBoardConfigTemplate>(
+        `/default-board-config/versions/${templateId}/activate`,
+        { method: 'POST' },
+      );
+    },
+
+    async deactivateDefaultBoardConfigVersion(templateId: string): Promise<DefaultBoardConfigTemplate> {
+      return apiClient.fetchJson<DefaultBoardConfigTemplate>(
+        `/default-board-config/versions/${templateId}/deactivate`,
+        { method: 'POST' },
+      );
+    },
+
+    async getBoardDefaultConfigDiff(boardId: string): Promise<DefaultBoardConfigDiff> {
+      return apiClient.fetchJson<DefaultBoardConfigDiff>(
+        `/boards/${boardId}/default-config-diff`,
+      );
+    },
+
+    async listDefaultGuidelineCandidates(
+      templateId?: string,
+      scope = 'global',
+    ): Promise<DefaultGuidelineCandidatesResponse> {
+      const params = new URLSearchParams({ scope });
+      if (templateId) params.set('template_id', templateId);
+      return apiClient.fetchJson<DefaultGuidelineCandidatesResponse>(
+        `/guidelines/default-candidates?${params.toString()}`,
+      );
+    },
+
+    async updateDefaultGuidelineRefs(
+      templateId: string,
+      guidelineDefaultRefs: DefaultBoardConfigGuidelineRef[],
+    ): Promise<DefaultBoardConfigTemplate> {
+      return apiClient.fetchJson<DefaultBoardConfigTemplate>(
+        `/default-board-configurations/${templateId}/guidelines`,
+        { method: 'POST', body: JSON.stringify({ guideline_default_refs: guidelineDefaultRefs }) },
+      );
+    },
+
+    async setDefaultDesignSystem(
+      templateId: string,
+      payload: SetDefaultDesignSystemRequest,
+    ): Promise<DefaultBoardConfigTemplate> {
+      return apiClient.fetchJson<DefaultBoardConfigTemplate>(
+        `/default-board-configurations/${templateId}/design-system`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    // ==================== DESIGN SYSTEM (spec 3a006f65) ====================
+
+    async listDesignSystems(scope = 'global', boardId?: string): Promise<DesignSystem[]> {
+      const params = new URLSearchParams({ scope });
+      if (boardId) params.set('board_id', boardId);
+      return apiClient.fetchJson<DesignSystem[]>(`/design-systems?${params.toString()}`);
+    },
+
+    async getDesignSystem(designSystemId: string): Promise<DesignSystem> {
+      return apiClient.fetchJson<DesignSystem>(`/design-systems/${designSystemId}`);
+    },
+
+    async createDesignSystem(payload: CreateDesignSystemRequest): Promise<DesignSystem> {
+      return apiClient.fetchJson<DesignSystem>(
+        `/design-systems`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async updateDesignSystem(
+      designSystemId: string,
+      payload: UpdateDesignSystemRequest,
+    ): Promise<DesignSystem> {
+      return apiClient.fetchJson<DesignSystem>(
+        `/design-systems/${designSystemId}`,
+        { method: 'PATCH', body: JSON.stringify(payload) },
+      );
+    },
+
+    async deleteDesignSystem(designSystemId: string): Promise<void> {
+      return apiClient.fetchJson<void>(
+        `/design-systems/${designSystemId}`,
+        { method: 'DELETE' },
+      );
+    },
+
+    async getBoardDesignSystem(boardId: string): Promise<BoardDesignSystemEffectiveResponse> {
+      return apiClient.fetchJson<BoardDesignSystemEffectiveResponse>(
+        `/boards/${boardId}/design-system`,
+      );
+    },
+
+    async linkBoardDesignSystem(boardId: string, designSystemId: string): Promise<unknown> {
+      return apiClient.fetchJson<unknown>(
+        `/boards/${boardId}/design-system`,
+        { method: 'POST', body: JSON.stringify({ design_system_id: designSystemId }) },
+      );
+    },
+
+    async unlinkBoardDesignSystem(boardId: string): Promise<void> {
+      return apiClient.fetchJson<void>(
+        `/boards/${boardId}/design-system`,
+        { method: 'DELETE' },
       );
     },
 
