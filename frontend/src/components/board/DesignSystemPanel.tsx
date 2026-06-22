@@ -202,6 +202,13 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
   const filteredGlobals = globals.filter((d) =>
     !globalSearch || d.title.toLowerCase().includes(globalSearch.toLowerCase()),
   );
+  const boardLinkedDesignSystemCount =
+    effective?.effective?.source === 'board_link'
+    && effectiveId
+    && !inlines.some((d) => d.id === effectiveId)
+      ? 1
+      : 0;
+  const boardDesignSystemCount = inlines.length + boardLinkedDesignSystemCount;
 
   const setAsDefault = (designSystem: DesignSystem) => run(async () => {
     const templateId = await ensureTemplateId();
@@ -366,7 +373,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
             <nav className="space-y-1 text-sm">
               {([
                 { id: 'global' as Tab, label: 'Global Catalog', icon: <Globe size={14} />, count: globals.length, testId: 'dsp-tab-global' },
-                { id: 'board' as Tab, label: 'Board Design System', icon: <FileText size={14} />, count: inlines.length, testId: 'dsp-tab-board' },
+                { id: 'board' as Tab, label: 'Board Design System', icon: <FileText size={14} />, count: boardDesignSystemCount, testId: 'dsp-tab-board' },
               ]).map((tab) => (
                 <button
                   key={tab.id}
@@ -383,7 +390,10 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                     {tab.icon}
                     <span className="truncate">{tab.label}</span>
                   </span>
-                  <span className="shrink-0 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                  <span
+                    data-testid={`${tab.testId}-count`}
+                    className="shrink-0 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                  >
                     {tab.count}
                   </span>
                 </button>

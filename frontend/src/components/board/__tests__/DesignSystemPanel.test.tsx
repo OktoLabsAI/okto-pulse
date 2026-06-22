@@ -90,6 +90,7 @@ describe('DesignSystemPanel', () => {
     expect(screen.getByTestId('dsp-linked-g1')).toBeInTheDocument();
     expect(screen.getByTestId('dsp-default-g1')).toBeInTheDocument();
     expect(screen.getByTestId('dsp-link-g2')).toBeInTheDocument();
+    expect(screen.getByTestId('dsp-tab-board-count')).toHaveTextContent('2');
     expect(screen.queryByTestId('dsp-default-gate-mode')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dsp-tab-gate')).not.toBeInTheDocument();
 
@@ -153,6 +154,54 @@ describe('DesignSystemPanel', () => {
     await waitFor(() =>
       expect(apiMock.linkBoardDesignSystem).toHaveBeenCalledWith('b1', 'g2'),
     );
+  });
+
+  it('counts an explicit global board link in the Board Design System tab badge', async () => {
+    apiMock.listDesignSystems.mockImplementation((scope: string) =>
+      scope === 'global'
+        ? Promise.resolve([ds({ id: 'g1', title: 'DS1' })])
+        : Promise.resolve([]),
+    );
+    apiMock.getBoardDesignSystem.mockResolvedValue({
+      board_id: 'b1',
+      effective: { source: 'board_link', design_system_id: 'g1', version: 1 },
+    });
+
+    render(<DesignSystemPanel boardId="b1" onClose={() => {}} />);
+
+    expect(await screen.findByTestId('dsp-tab-board-count')).toHaveTextContent('1');
+  });
+
+  it('does not count the default fallback as a board-associated Design System', async () => {
+    apiMock.listDesignSystems.mockImplementation((scope: string) =>
+      scope === 'global'
+        ? Promise.resolve([ds({ id: 'g1', title: 'DS1' })])
+        : Promise.resolve([]),
+    );
+    apiMock.getBoardDesignSystem.mockResolvedValue({
+      board_id: 'b1',
+      effective: { source: 'default_snapshot', design_system_id: 'g1', version: 1 },
+    });
+
+    render(<DesignSystemPanel boardId="b1" onClose={() => {}} />);
+
+    expect(await screen.findByTestId('dsp-tab-board-count')).toHaveTextContent('0');
+  });
+
+  it('does not double-count an inline Design System when it is the explicit board link', async () => {
+    apiMock.listDesignSystems.mockImplementation((scope: string) =>
+      scope === 'global'
+        ? Promise.resolve([])
+        : Promise.resolve([ds({ id: 'i1', scope: 'inline', board_id: 'b1', title: 'Inline DS' })]),
+    );
+    apiMock.getBoardDesignSystem.mockResolvedValue({
+      board_id: 'b1',
+      effective: { source: 'board_link', design_system_id: 'i1', version: 1 },
+    });
+
+    render(<DesignSystemPanel boardId="b1" onClose={() => {}} />);
+
+    expect(await screen.findByTestId('dsp-tab-board-count')).toHaveTextContent('1');
   });
 
   it('sets a global Design System as default through the active template', async () => {

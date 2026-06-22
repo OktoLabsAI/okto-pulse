@@ -27,7 +27,6 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
   // Board tab state
   const [entries, setEntries] = useState<BoardGuidelineEntry[]>([]);
   const [boardLoading, setBoardLoading] = useState(true);
-  const [showLinkModal, setShowLinkModal] = useState(false);
   const [showInlineForm, setShowInlineForm] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -37,11 +36,6 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
   const [globalSearch, setGlobalSearch] = useState('');
   const [editingGlobal, setEditingGlobal] = useState<Guideline | null>(null);
   const [showGlobalForm, setShowGlobalForm] = useState(false);
-
-  // Link modal state
-  const [linkSearch, setLinkSearch] = useState('');
-  const [linkCandidates, setLinkCandidates] = useState<Guideline[]>([]);
-  const [linkLoading, setLinkLoading] = useState(false);
 
   // Form state (shared between inline create, global create, and edit)
   const [formTitle, setFormTitle] = useState('');
@@ -167,32 +161,21 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     } catch { toast.error('Failed to create'); }
   };
 
-  // ==================== LINK MODAL ====================
-
-  const fetchLinkCandidates = async () => {
-    try {
-      setLinkLoading(true);
-      const all = await api.listGuidelines(0, 100);
-      const linkedIds = new Set(entries.map(e => e.guideline.id));
-      setLinkCandidates(all.filter(g => g.scope === 'global' && !linkedIds.has(g.id)));
-    } catch { toast.error('Failed to load'); }
-    finally { setLinkLoading(false); }
-  };
-
-  useEffect(() => { if (showLinkModal) fetchLinkCandidates(); }, [showLinkModal]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const handleLink = async (id: string) => {
     try {
       await api.linkGuidelineToBoard(boardId, id);
       toast.success('Guideline linked');
-      setLinkCandidates(prev => prev.filter(g => g.id !== id));
       fetchBoard();
     } catch { toast.error('Failed to link'); }
   };
 
-  const filteredLinkCandidates = linkCandidates.filter(g =>
-    !linkSearch || g.title.toLowerCase().includes(linkSearch.toLowerCase())
-  );
+  const handleUnlinkByGuidelineId = async (guidelineId: string) => {
+    try {
+      await api.unlinkGuidelineFromBoard(boardId, guidelineId);
+      toast.success('Guideline removed from board');
+      fetchBoard();
+    } catch { toast.error('Failed to remove'); }
+  };
 
   // ==================== GLOBAL TAB ====================
 
@@ -384,9 +367,6 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
             <div className="space-y-4">
               {/* Actions */}
               <div className="flex items-center gap-2">
-                <button onClick={() => { setShowLinkModal(true); }} className="btn btn-secondary flex items-center gap-1 text-sm">
-                  <Link size={14} /> Link Global
-                </button>
                 <button onClick={() => { resetForm(); setShowInlineForm(!showInlineForm); }} className="btn btn-secondary flex items-center gap-1 text-sm">
                   <Plus size={14} /> Create Inline
                 </button>
@@ -402,7 +382,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                 <div className="text-center py-12 text-gray-400">
                   <BookOpen size={36} className="mx-auto mb-2 opacity-40" />
                   <p className="text-sm">No guidelines on this board</p>
-                  <p className="text-xs mt-1">Link a global guideline or create an inline one</p>
+                  <p className="text-xs mt-1">Use Global Catalog to link a global guideline, or create an inline one</p>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -524,7 +504,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
               ) : (
                 <div className="space-y-2">
                   {filteredGlobals.map(g => {
-                    const linkedBoards = entries.some(e => e.guideline.id === g.id);
+                    const linkedToBoard = entries.some(e => e.guideline.id === g.id);
                     const isDefault = isGuidelineDefault(g.id);
                     return (
                       <div key={g.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-white dark:bg-gray-800/50">
@@ -533,13 +513,34 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                             <div className="flex items-center gap-2 mb-1">
                               <h3 className="text-sm font-medium text-gray-900 dark:text-white truncate">{g.title}</h3>
                               <span className="text-[10px] text-gray-400 shrink-0">v{g.version || 1}</span>
-                              {linkedBoards && <span className="text-[10px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 shrink-0">linked</span>}
+                              {linkedToBoard && <span className="text-[10px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 shrink-0">linked</span>}
                               {isDefault && <span className="text-[10px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 shrink-0">default</span>}
                             </div>
                             <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{g.content.slice(0, 150)}{g.content.length > 150 ? '...' : ''}</p>
                             {tagBadges(g.tags)}
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
+                            {linkedToBoard ? (
+                              <button
+                                onClick={() => handleUnlinkByGuidelineId(g.id)}
+                                className="inline-flex items-center gap-1 rounded border border-orange-200 px-2 py-1 text-[10px] text-orange-600 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-900/20"
+                                title="Unlink this guideline from the current board"
+                                data-testid={`guideline-unlink-board-${g.id}`}
+                              >
+                                <Unlink size={11} />
+                                Unlink
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleLink(g.id)}
+                                className="inline-flex items-center gap-1 rounded border border-green-200 px-2 py-1 text-[10px] text-green-700 hover:bg-green-50 dark:border-green-800 dark:text-green-300 dark:hover:bg-green-900/20"
+                                title="Link this guideline to the current board"
+                                data-testid={`guideline-link-board-${g.id}`}
+                              >
+                                <Link size={11} />
+                                Link
+                              </button>
+                            )}
                             <button
                               onClick={() => toggleDefault(g.id)}
                               title="Toggle as a global default for new boards"
@@ -569,43 +570,6 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
           )}
           </main>
         </div>
-
-        {/* Link Modal overlay */}
-        {showLinkModal && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/30 rounded-xl">
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-md mx-6 max-h-[60vh] flex flex-col">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Link Global Guideline</h3>
-                <button onClick={() => setShowLinkModal(false)} className="p-1 text-gray-400 hover:text-gray-600"><X size={16} /></button>
-              </div>
-              <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-700 shrink-0">
-                <div className="relative">
-                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input type="text" value={linkSearch} onChange={e => setLinkSearch(e.target.value)} placeholder="Search guidelines..." className="w-full pl-9 pr-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white outline-none" autoFocus />
-                </div>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-1.5">
-                {linkLoading ? (
-                  <p className="text-center text-gray-400 py-4 text-sm">Loading...</p>
-                ) : filteredLinkCandidates.length === 0 ? (
-                  <p className="text-center text-gray-400 py-4 text-sm">{linkSearch ? 'No matching guidelines' : 'No unlinked global guidelines available'}</p>
-                ) : (
-                  filteredLinkCandidates.map(g => (
-                    <div key={g.id} className="flex items-center justify-between p-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 border border-transparent hover:border-gray-200 dark:hover:border-gray-600">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{g.title}</p>
-                        <p className="text-[10px] text-gray-400">v{g.version || 1}</p>
-                      </div>
-                      <button onClick={() => handleLink(g.id)} className="btn btn-primary text-xs flex items-center gap-1 shrink-0 ml-2">
-                        <Link size={10} /> Link
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

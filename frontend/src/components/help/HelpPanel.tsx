@@ -938,8 +938,8 @@ Guidelines are reusable documents that define standards, patterns, and conventio
 ### Creating guidelines
 
 Open **Guidelines** from the menu. You'll see two tabs:
-1. **Board Guidelines** — Create inline or link from the global catalog
-2. **Global Catalog** — Create, edit, and manage global guidelines
+1. **Board Guidelines** — Review current board guidelines and create inline guidelines
+2. **Global Catalog** — Create, edit, link, and unlink global guidelines for the current board
 
 Guidelines support **Markdown** with Mermaid diagrams, tags, and version tracking (global only).
 

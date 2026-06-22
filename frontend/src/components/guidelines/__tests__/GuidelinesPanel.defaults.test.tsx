@@ -9,6 +9,8 @@ const apiMock = vi.hoisted(() => ({
   listDefaultGuidelineCandidates: vi.fn(),
   updateDefaultGuidelineRefs: vi.fn(),
   createDefaultBoardConfigVersion: vi.fn(),
+  linkGuidelineToBoard: vi.fn(),
+  unlinkGuidelineFromBoard: vi.fn(),
   // unused-on-mount methods referenced by the panel; stubbed defensively.
   listGuidelines: vi.fn().mockResolvedValue([]),
 }));
@@ -32,6 +34,8 @@ describe('GuidelinesPanel guideline defaults', () => {
     });
     apiMock.listGuidelines.mockResolvedValue([]);
     apiMock.updateDefaultGuidelineRefs.mockResolvedValue({});
+    apiMock.linkGuidelineToBoard.mockResolvedValue({});
+    apiMock.unlinkGuidelineFromBoard.mockResolvedValue({});
     apiMock.createDefaultBoardConfigVersion.mockResolvedValue({
       id: 'created-template',
       version: 1,
@@ -91,6 +95,29 @@ describe('GuidelinesPanel guideline defaults', () => {
     expect(apiMock.updateDefaultGuidelineRefs.mock.calls[0][1]).toEqual([
       { guideline_id: 'g1', priority: 1 },
     ]);
+  });
+
+  it('keeps board linking actions in the Global Catalog, not Board Guidelines', async () => {
+    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
+    fireEvent.click(await screen.findByText('Board Guidelines'));
+
+    expect(screen.queryByText('Link Global')).not.toBeInTheDocument();
+    expect(screen.getByText('Create Inline')).toBeInTheDocument();
+  });
+
+  it('links and unlinks global catalog guidelines to the current board', async () => {
+    apiMock.listGuidelines.mockResolvedValue([
+      { id: 'g1', title: 'Linked Global', content: 'linked content', tags: null, version: 1, scope: 'global' },
+      { id: 'g3', title: 'Available Global', content: 'available content', tags: null, version: 1, scope: 'global' },
+    ]);
+
+    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByTestId('guideline-link-board-g3'));
+    await waitFor(() => expect(apiMock.linkGuidelineToBoard).toHaveBeenCalledWith('b1', 'g3'));
+
+    fireEvent.click(await screen.findByTestId('guideline-unlink-board-g1'));
+    await waitFor(() => expect(apiMock.unlinkGuidelineFromBoard).toHaveBeenCalledWith('b1', 'g1'));
   });
 
   it('updates the visible default state after setting a guideline as default', async () => {
