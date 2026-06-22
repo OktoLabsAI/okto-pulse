@@ -46,10 +46,17 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
   const [formHtml, setFormHtml] = useState('');
   const [formPreview, setFormPreview] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Design System consumption (spec 3a006f65 / card 0192f58d). When the board enforces
+  // a Design System (blocking), these feed the server-side MockupDesignSystemGate.
+  const [formDsRef, setFormDsRef] = useState('');
+  const [formDsVersion, setFormDsVersion] = useState('');
+  const [formDsEvidence, setFormDsEvidence] = useState('');
+  const [gateError, setGateError] = useState<string | null>(null);
 
   const handleCreate = async () => {
     if (!formTitle.trim() || !formHtml.trim() || !onUpdate) return;
     setSaving(true);
+    setGateError(null);
     try {
       const newMockup: ScreenMockup = {
         id: `mockup_${Date.now()}`,
@@ -59,6 +66,10 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
         html_content: formHtml,
         annotations: null,
         order: screens.length,
+        design_system_ref: formDsRef.trim()
+          ? { design_system_id: formDsRef.trim(), version: formDsVersion.trim() ? Number(formDsVersion) : null }
+          : null,
+        design_system_evidence: formDsEvidence.trim() || null,
       };
       await onUpdate([...screens, newMockup]);
       setSelectedId(newMockup.id);
@@ -68,6 +79,16 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
       setFormType('page');
       setFormHtml('');
       setFormPreview(false);
+      setFormDsRef('');
+      setFormDsVersion('');
+      setFormDsEvidence('');
+    } catch (e) {
+      // The MockupDesignSystemGate (blocking) rejects with an actionable message/code.
+      // authFetch.fetchJson throws an Error whose `.message` already carries the backend's
+      // structured message/code; older HTTPException-style payloads expose it under `detail`.
+      const detail = (e as { detail?: { message?: string; code?: string } })?.detail;
+      const errMsg = e instanceof Error ? e.message : undefined;
+      setGateError(detail?.message || detail?.code || errMsg || 'Failed to save mockup.');
     } finally {
       setSaving(false);
     }
@@ -145,6 +166,44 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
             className="w-full px-2.5 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
           />
         </div>
+
+        {/* Design System consumption — required by boards that enforce a Design System */}
+        <div className="grid grid-cols-3 gap-2" data-testid="mockup-design-system-fields">
+          <div className="col-span-2">
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Design System ref</label>
+            <input
+              value={formDsRef}
+              onChange={(e) => setFormDsRef(e.target.value)}
+              placeholder="Design System id (board effective)"
+              data-testid="mockup-ds-ref"
+              className="w-full px-2.5 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Version</label>
+            <input
+              value={formDsVersion}
+              onChange={(e) => setFormDsVersion(e.target.value)}
+              placeholder="e.g. 1"
+              data-testid="mockup-ds-version"
+              className="w-full px-2.5 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+            />
+          </div>
+          <div className="col-span-3">
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Design System evidence</label>
+            <input
+              value={formDsEvidence}
+              onChange={(e) => setFormDsEvidence(e.target.value)}
+              placeholder="Link/notes proving the screen consumes the Design System"
+              data-testid="mockup-ds-evidence"
+              className="w-full px-2.5 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+            />
+          </div>
+        </div>
+
+        {gateError && (
+          <p data-testid="mockup-gate-error" className="text-xs text-red-600 dark:text-red-400">{gateError}</p>
+        )}
 
         <div>
           <div className="flex items-center justify-between mb-1">
@@ -264,6 +323,13 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
         <div className={`mx-auto transition-all ${viewMode === 'mobile' ? 'max-w-sm' : 'w-full'}`}>
           {selected.description && (
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2 italic">{selected.description}</p>
+          )}
+          {selected.design_system_ref?.design_system_id && (
+            <div data-testid="mockup-ds-badge" className="mb-2 inline-flex items-center gap-1 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+              DS {selected.design_system_ref.design_system_id}
+              {selected.design_system_ref.version != null && ` v${selected.design_system_ref.version}`}
+              {selected.design_system_evidence ? ' · evidence ✓' : ' · evidence ✗'}
+            </div>
           )}
           <iframe
             srcDoc={srcDoc}

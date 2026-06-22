@@ -770,12 +770,31 @@ export interface SpecStructuredEntityMutationResult {
 export type TestScenarioType = 'unit' | 'integration' | 'e2e' | 'manual';
 export type TestScenarioStatus = 'draft' | 'ready' | 'automated' | 'passed' | 'failed';
 
+// Re-executable validation evidence contract (spec 9e0bf979).
+export type EvidenceClass =
+  | 'automated_test_pointer'
+  | 'replay_command'
+  | 'mcp_replay_manifest'
+  | 'manual_checklist'
+  | 'run_log'
+  | 'non_replayable_justified';
+
 export interface TestScenarioEvidence {
+  // Legacy / minimal fields (NC-9).
   test_file_path?: string | null;
   test_function?: string | null;
   last_run_at?: string | null;
   test_run_id?: string | null;
   output_snippet?: string | null;
+  // Re-executable evidence contract (spec 9e0bf979). All optional; legacy
+  // evidence simply omits them.
+  evidence_class?: EvidenceClass | null;
+  replay_command?: string | null;
+  mcp_replay_manifest?: string | null;
+  manual_checklist_ref?: string | null;
+  expected_output_snapshot?: string | null;
+  replay_should_exist?: boolean | null;
+  non_replayable_justification?: string | null;
 }
 
 export interface TestScenario {
@@ -812,6 +831,11 @@ export interface ScreenMockup {
   origin_id?: string | null;
   origin_story_id?: string | null;
   origin_entity_type?: string | null;
+  // Design System consumption metadata (spec 3a006f65 / card 0192f58d). Normalized
+  // {design_system_id, version}; the server's MockupDesignSystemGate validates it
+  // against the board's real effective Design System. Optional (legacy/off-mode).
+  design_system_ref?: { design_system_id: string; version?: number | null } | null;
+  design_system_evidence?: string | Record<string, unknown> | null;
 }
 
 export type StoryStatus = 'draft' | 'triage' | 'ready' | 'converted';
@@ -1209,6 +1233,8 @@ export interface Ideation {
   labels: string[] | null;
   archived?: boolean;
   pre_archive_status?: string | null;
+  // Per-ideation opt-out of the board Max ambiguity gate (spec 2485780b).
+  skip_ambiguity_gate?: boolean;
   refinements: RefinementSummary[];
   stories: StorySummary[];
   specs: SpecSummary[];
@@ -1415,11 +1441,18 @@ export interface BoardSettings {
   min_spec_completeness?: number;
   min_spec_assertiveness?: number;
   max_spec_ambiguity?: number;
+  // Max ambiguity gate for ideation completion (spec 2485780b) — opt-in, default off.
+  // Blocks evaluating→done when ideation ambiguity is missing or exceeds the threshold.
+  require_ideation_ambiguity_gate?: boolean;
+  max_ideation_ambiguity?: number; // 1-5, default 3
   // Resource Gate Level 2 - effective spec resources must be copied/attached to tasks.
   require_spec_resource_task_coverage?: boolean;
   // Spec resource automation - copies selected Spec resources to newly-created/linked cards.
   auto_derive_spec_resources_enabled?: boolean;
   auto_derive_spec_resource_types?: SpecResourceAutoDeriveType[];
+  // Design System mockup gate (spec 3a006f65). `blocking` means mockup
+  // submissions must carry real Design System identity + evidence.
+  design_system_gate_mode?: 'off' | 'advisory' | 'blocking';
   // NC-9 evidence gate bypass (Wave 2 spec 873e98cc, frontend spec 5cb09dbc)
   skip_test_evidence_global?: boolean;
 }
@@ -1652,6 +1685,221 @@ export interface BugRegressionScenarioPreview {
   semantic_gap_required: boolean;
   spec_mutation_required: boolean;
   remediation: BugWorkflowRemediationMessage;
+}
+
+// ==================== PATH B AMENDMENT REVISIONS (spec be089cd3) ====================
+
+export interface AmendmentRevisionEligibility {
+  lineage_eligible: boolean;
+  canonicalization_candidate: boolean;
+  blocked: boolean;
+  reason_code: string;
+}
+
+export interface AmendmentRevision {
+  id: string;
+  board_id: string;
+  original_spec_id: string;
+  origin_bug_id: string;
+  revision_spec_id?: string | null;
+  status: string; // draft | review | approved | done | cancelled | superseded
+  lineage_state: string; // incomplete | complete
+  origin_task_ids: string[];
+  affected_task_ids: string[];
+  regression_scenario_ids: string[];
+  regression_test_task_ids: string[];
+  automated_regression_refs: string[];
+  eligibility: AmendmentRevisionEligibility;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+// coverage_state is rendered tolerant to BOTH vocabularies seen in the system:
+//   not_applicable | coverage_pending | path_b_ready  (resolver)
+//   missing | pending | validated                      (spec prose)
+// pending/coverage_pending must NEVER look closure-ready.
+export type AmendmentCoverageState =
+  | 'not_applicable'
+  | 'coverage_pending'
+  | 'path_b_ready'
+  | 'missing'
+  | 'pending'
+  | 'validated'
+  | string;
+
+export interface AmendmentPathBResolution {
+  available?: boolean;
+  coverage_state?: AmendmentCoverageState | null;
+  coverage_pending_scenarios?: string[] | null;
+  missing_links?: string[] | null;
+  safe_next_actions?: string[] | null;
+  next_action?: string | null;
+  eligible_regression_artifacts?: string[] | null;
+  rejected_regression_artifacts?: string[] | null;
+  rejected_scenarios?: BugRegressionScenarioCandidate[] | null;
+  amendment_revision_id?: string | null;
+  // structured error fields when available === false
+  error?: string | null;
+  code?: string | null;
+  message?: string | null;
+}
+
+export interface AmendmentRevisionListResponse {
+  board_id: string;
+  bug_id: string;
+  original_spec_id?: string | null;
+  revisions: AmendmentRevision[];
+  path_b_resolution: AmendmentPathBResolution;
+}
+
+export interface CreateAmendmentRevisionRequest {
+  original_spec_id?: string;
+  revision_spec_id?: string;
+  origin_task_ids?: string[];
+  affected_task_ids?: string[];
+  regression_scenario_ids?: string[];
+  regression_test_task_ids?: string[];
+  automated_regression_refs?: string[];
+}
+
+export interface AssociateAmendmentArtifactsRequest {
+  regression_scenario_ids?: string[];
+  regression_test_task_ids?: string[];
+  automated_regression_refs?: string[];
+}
+
+// ==================== DEFAULT BOARD CONFIGURATION (spec 9df814bc) ============
+
+export interface DefaultBoardConfigGuidelineRef {
+  guideline_id: string;
+  priority?: number;
+}
+
+export interface DefaultBoardConfigDesignSystemRef {
+  design_system_id?: string;
+  version?: number | null;
+  gate_mode?: 'off' | 'advisory' | 'blocking' | null;
+  snapshot?: Record<string, unknown> | null;
+}
+
+export interface SetDefaultDesignSystemRequest {
+  design_system_id: string;
+  version?: number | null;
+  gate_mode?: 'off' | 'advisory' | 'blocking';
+  snapshot?: Record<string, unknown> | null;
+}
+
+export interface DefaultBoardConfigTemplate {
+  id: string;
+  version: number;
+  status: string;
+  is_active: boolean;
+  scope: string;
+  settings_payload: Record<string, unknown>;
+  guideline_default_refs: DefaultBoardConfigGuidelineRef[];
+  design_system_default_ref: DefaultBoardConfigDesignSystemRef | null;
+  created_by: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface DefaultBoardConfigActiveResponse {
+  scope: string;
+  active: DefaultBoardConfigTemplate | null;
+}
+
+export interface DefaultBoardConfigVersionsResponse {
+  scope: string;
+  active_id: string | null;
+  versions: DefaultBoardConfigTemplate[];
+}
+
+export interface DefaultBoardConfigDiffField {
+  field: string;
+  template_value: unknown;
+  current_value: unknown;
+  state: string;
+}
+
+export interface DefaultBoardConfigDiff {
+  board_id: string;
+  snapshot_state: 'applied' | 'legacy_no_snapshot';
+  applied_template_id: string | null;
+  applied_template_version: number | null;
+  active_template_id: string | null;
+  active_template_version: number | null;
+  is_outdated: boolean;
+  fields: DefaultBoardConfigDiffField[];
+}
+
+export interface CreateDefaultBoardConfigVersionRequest {
+  settings_payload?: Record<string, unknown> | null;
+  scope?: string;
+  guideline_default_refs?: DefaultBoardConfigGuidelineRef[] | null;
+  design_system_default_ref?: DefaultBoardConfigDesignSystemRef | null;
+  activate?: boolean;
+}
+
+// Guideline defaults administration (spec 8a2fad91 / card 5cb88511)
+export interface DefaultGuidelineCandidate {
+  guideline_id: string;
+  title: string;
+  scope: string;
+  guideline_version: number | null;
+  eligible: boolean;
+  is_default: boolean;
+  priority: number | null;
+}
+
+export interface DefaultGuidelineCandidatesResponse {
+  scope: string;
+  template_id: string | null;
+  template_version: number | null;
+  candidates: DefaultGuidelineCandidate[];
+}
+
+// Design System catalog (spec 3a006f65 / card 1392f59d)
+export interface DesignSystem {
+  id: string;
+  scope: string;
+  board_id: string | null;
+  title: string;
+  payload: Record<string, unknown> | null;
+  version: number;
+  status: string;
+  owner_id: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface BoardDesignSystemEffective {
+  source: string;
+  design_system_id: string | null;
+  version: number | null;
+  title?: string | null;
+  status?: string | null;
+  scope?: string | null;
+  gate_mode?: string | null;
+  exists?: boolean;
+}
+
+export interface BoardDesignSystemEffectiveResponse {
+  board_id: string;
+  effective: BoardDesignSystemEffective | null;
+}
+
+export interface CreateDesignSystemRequest {
+  title: string;
+  scope?: string;
+  board_id?: string | null;
+  payload?: Record<string, unknown> | null;
+  status?: string;
+}
+
+export interface UpdateDesignSystemRequest {
+  title?: string;
+  payload?: Record<string, unknown> | null;
+  status?: string;
 }
 
 export interface CreateAgentRequest {

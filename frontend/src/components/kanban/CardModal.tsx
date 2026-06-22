@@ -13,8 +13,9 @@ import {
   useIsCardModalOpen,
   useColumns,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse } from '@/types';
 import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
+import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { ActivityLogList } from '@/components/shared/ActivityLogList';
@@ -67,6 +68,15 @@ const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
   'last_run_at',
   'test_run_id',
   'output_snippet',
+  // Re-executable evidence contract (spec 9e0bf979): evidence may carry only
+  // these fields (e.g. a replay_command + expected_output_snapshot), so they
+  // must count as "has evidence" for rendering.
+  'evidence_class',
+  'replay_command',
+  'mcp_replay_manifest',
+  'manual_checklist_ref',
+  'expected_output_snapshot',
+  'non_replayable_justification',
 ];
 
 function getScenarioEvidence(scenario: TestScenario): TestScenarioEvidence | null {
@@ -268,6 +278,8 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const [specORs, setSpecORs] = useState<any[]>([]);
   const [specTRs, setSpecTRs] = useState<any[]>([]);
   const [bugRegressionPreview, setBugRegressionPreview] = useState<BugRegressionScenarioPreview | null>(null);
+  const [amendmentRevisions, setAmendmentRevisions] = useState<AmendmentRevisionListResponse | null>(null);
+  const [amendmentBusy, setAmendmentBusy] = useState(false);
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
@@ -311,6 +323,7 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const loadCard = (cardId: string) => {
     setIsLoading(true);
     setBugRegressionPreview(null);
+    setAmendmentRevisions(null);
     api.getCard(cardId)
       .then((data) => {
         setCard(data);
@@ -318,6 +331,9 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
             .then(setBugRegressionPreview)
             .catch(() => setBugRegressionPreview(null));
+          api.listAmendmentRevisions(data.board_id, data.id)
+            .then(setAmendmentRevisions)
+            .catch(() => setAmendmentRevisions(null));
         }
         if (data.spec_id) {
           api.getSpec(data.spec_id)
@@ -368,8 +384,12 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
             .then(setBugRegressionPreview)
             .catch(() => setBugRegressionPreview(null));
+          api.listAmendmentRevisions(data.board_id, data.id)
+            .then(setAmendmentRevisions)
+            .catch(() => setAmendmentRevisions(null));
         } else {
           setBugRegressionPreview(null);
+          setAmendmentRevisions(null);
         }
         if (data.spec_id) {
           api.getSpec(data.spec_id)
@@ -392,6 +412,41 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
     api.getCardDependencies(cardId).then(setDependencies).catch(() => {});
     api.getCardDependents(cardId).then(setDependents).catch(() => {});
   }, [api]);
+
+  // Path B safe actions (spec be089cd3). User-click only — NO auto-mutation on
+  // render, and NEVER a gate skip/bypass; these only REMEDIATE via the new
+  // amendment-revision surfaces.
+  const handleCreateAmendment = useCallback(async () => {
+    if (!card) return;
+    setAmendmentBusy(true);
+    try {
+      await api.createAmendmentRevision(card.board_id, card.id, {
+        origin_task_ids: card.origin_task_id ? [card.origin_task_id] : undefined,
+      });
+      toast.success('Amendment revision created (draft)');
+      silentRefresh(card.id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create amendment revision');
+    } finally {
+      setAmendmentBusy(false);
+    }
+  }, [api, card, silentRefresh]);
+
+  const handleAssociateAmendment = useCallback(async (amendmentId: string) => {
+    if (!card) return;
+    setAmendmentBusy(true);
+    try {
+      await api.associateAmendmentRevisionArtifacts(card.board_id, card.id, amendmentId, {
+        regression_test_task_ids: card.linked_test_task_ids ?? [],
+      });
+      toast.success('Regression artifacts associated');
+      silentRefresh(card.id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to associate artifacts');
+    } finally {
+      setAmendmentBusy(false);
+    }
+  }, [api, card, silentRefresh]);
 
   useEffect(() => {
     if (selectedCardId && isOpen) {
@@ -1228,6 +1283,15 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                     linkedTestCount={card.linked_test_task_ids?.length ?? 0}
                   />
 
+                  <PathBRemediationPanel
+                    revisions={amendmentRevisions?.revisions ?? []}
+                    pathBResolution={amendmentRevisions?.path_b_resolution ?? null}
+                    bugRegressionPreview={bugRegressionPreview}
+                    onCreateAmendment={handleCreateAmendment}
+                    onAssociate={handleAssociateAmendment}
+                    busy={amendmentBusy}
+                  />
+
                   {/* Linked Test Tasks */}
                   <div>
                     <div className="flex items-center justify-between mb-2">
@@ -1554,7 +1618,8 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   );
 }
 
-function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
+// Exported for focused component tests (spec 9e0bf979 evidence visibility).
+export function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
   const evidenceCount = scenarios.filter(hasScenarioEvidence).length;
   const missingCount = scenarios.length - evidenceCount;
 
@@ -1598,8 +1663,14 @@ function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
           const evidence = getScenarioEvidence(scenario);
           const hasEvidence = hasScenarioEvidence(scenario);
           const evidenceRows = [
+            // Re-executable evidence contract (spec 9e0bf979): class + artifact
+            // pointers a validator can rerun/inspect without reading comments.
+            { label: 'Evidence class', value: evidence?.evidence_class, mono: true },
             { label: 'Test file', value: evidence?.test_file_path, mono: true },
             { label: 'Function', value: evidence?.test_function, mono: true },
+            { label: 'Replay command', value: evidence?.replay_command, mono: true },
+            { label: 'MCP replay manifest', value: evidence?.mcp_replay_manifest, mono: true },
+            { label: 'Manual checklist', value: evidence?.manual_checklist_ref, mono: true },
             { label: 'Last run', value: formatEvidenceTimestamp(evidence?.last_run_at), mono: false },
             { label: 'Run ID', value: evidence?.test_run_id, mono: true },
           ].filter((row): row is { label: string; value: string; mono: boolean } => Boolean(row.value));
@@ -1647,6 +1718,22 @@ function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
                       <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md border border-gray-200 dark:border-gray-700 bg-gray-950 p-3 text-xs text-gray-100">
                         {evidence.output_snippet}
                       </pre>
+                    </div>
+                  )}
+                  {evidence?.expected_output_snapshot && (
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Expected output</p>
+                      <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md border border-gray-200 dark:border-gray-700 bg-gray-950 p-3 text-xs text-gray-100">
+                        {evidence.expected_output_snapshot}
+                      </pre>
+                    </div>
+                  )}
+                  {evidence?.non_replayable_justification && (
+                    <div className="rounded-md border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-900/10 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-1">Non-replayable justification</p>
+                      <p className="whitespace-pre-wrap break-words text-xs text-amber-800 dark:text-amber-200">
+                        {evidence.non_replayable_justification}
+                      </p>
                     </div>
                   )}
                 </div>

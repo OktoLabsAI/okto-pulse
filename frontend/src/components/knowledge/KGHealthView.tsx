@@ -2,8 +2,7 @@
  * KGHealthView — fullscreen overlay rendering the live KG health snapshot
  * for the active board (spec d754d004, MVP visualization-only).
  *
- * Renders 4 cards in a 2x2 grid (Schema&Tick, Queue&DeadLetter, KG Health,
- * Activity) plus the Top-10 most disconnected nodes table. Polls
+ * Renders KG health cards for schema/tick, queues, health, debt, and storage. Polls
  * GET /api/v1/kg/health every `pollIntervalMs` (default 30000) while the
  * tab is visible. Pauses on document.visibilityState='hidden', skips
  * overlapping fetches (BR4), aborts in-flight requests on unmount or
@@ -23,6 +22,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowLeft,
+  Brain,
   Database,
   HardDrive,
   Inbox,
@@ -36,6 +36,7 @@ import toast from 'react-hot-toast';
 
 import { useDashboardStore } from '@/store/dashboard';
 import { EXPECTED_KG_HEALTH_SCHEMA_VERSION } from '@/constants/kg';
+import { CanonicalPartitionIntegrityInspectorModal } from './CanonicalPartitionIntegrityInspectorModal';
 import {
   getKGCognitivePendingItems,
   getKGHealth,
@@ -44,11 +45,13 @@ import {
   runRebuildRun,
   type KGHealth,
   type KGCognitivePendingCounts,
+  type CanonicalDebtSummary,
   type DecaySchedulerDiagnostics,
+  type KGLayerCounts,
   type RebuildPreflightResult,
+  type RebuildDiagnostics,
   type RebuildRunResult,
   type StorageFootprintProxy,
-  type TopDisconnectedNode,
 } from '@/services/kg-health-api';
 import { triggerKGTick } from '@/services/kg-tick-api';
 import { KGHealthCognitivePendingPanel } from './KGHealthCognitivePendingPanel';
@@ -233,16 +236,18 @@ export function KGHealthView({
                 avgRelevance={data.avg_relevance}
                 contradictWarnCount={data.contradict_warn_count}
                 metricStatus={data.metric_status ?? null}
+                boardId={boardId}
                 healthIssues={data.health_issues ?? []}
+              />
+              <CanonicalDebtCard
+                summary={data.canonical_debt ?? null}
+                layerCounts={data.kg_layer_counts ?? null}
+                diagnostics={data.rebuild_diagnostics ?? null}
               />
               <StorageFootprintCard
                 proxy={data.storage_footprint_proxy ?? null}
               />
-              <ActivityCard
-                disconnectedCount={data.top_disconnected_nodes.length}
-              />
             </div>
-            <TopDisconnectedTable rows={data.top_disconnected_nodes} />
           </>
         )}
       </div>
@@ -393,6 +398,17 @@ function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose 
         </div>
       </div>
       <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() =>
+            window.dispatchEvent(new CustomEvent('okto:open-cognitive-action-center'))
+          }
+          className="px-3 py-1.5 text-sm bg-violet-600 hover:bg-violet-700 text-white rounded-lg flex items-center gap-1.5"
+          aria-label="Open Cognitive Action Center"
+          data-testid="kg-open-cognitive-action-center"
+        >
+          <Brain className="w-4 h-4" aria-hidden /> Cognitive Action Center
+        </button>
         <button
           type="button"
           onClick={onRefresh}
@@ -715,11 +731,15 @@ interface KGHealthCardProps {
   avgRelevance: number;
   contradictWarnCount: number;
   metricStatus: string | null;
+  boardId: string;
   healthIssues: Array<{
     code: string;
     component: string;
     severity: string;
     reason: string;
+    description?: string;
+    drill_down_tool?: string | null;
+    counts?: Record<string, number>;
   }>;
 }
 
@@ -730,8 +750,17 @@ function KGHealthCard({
   avgRelevance,
   contradictWarnCount,
   metricStatus,
+  boardId,
   healthIssues,
 }: KGHealthCardProps) {
+  const [showPartitionInspector, setShowPartitionInspector] = useState(false);
+  // R7 IMP4: the aggregate canonical_partition_integrity issue links to a
+  // read-only drilldown (NO skip/resolve affordance — those are human-only).
+  const partitionIssue = healthIssues.find(
+    (issue) =>
+      issue.drill_down_tool ===
+      'okto_pulse_kg_canonical_partition_integrity_list',
+  );
   const contradictClass =
     contradictWarnCount === 0
       ? 'text-emerald-600 dark:text-emerald-400'
@@ -747,6 +776,7 @@ function KGHealthCard({
       .map((issue) => `${issue.component}:${issue.reason}`)
       .join('; ');
   return (
+    <>
     <Card title="KG Health" testId="kg-health-card" icon={<Activity className="w-4 h-4" aria-hidden />}>
       <Row label="Total nodes">
         <span className="text-2xl font-bold text-surface-900 dark:text-white">
@@ -777,6 +807,90 @@ function KGHealthCard({
           title={issueSummary}
         >
           {healthIssues.length === 0 ? 'none' : `${healthIssues.length} signal${healthIssues.length === 1 ? '' : 's'}`}
+        </span>
+      </Row>
+      {partitionIssue && (
+        <Row label="Canonical partition integrity">
+          <button
+            type="button"
+            onClick={() => setShowPartitionInspector(true)}
+            className="text-xs px-2 py-0.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white"
+            data-testid="kg-cpi-inspect"
+            title={partitionIssue.description ?? 'Inspect canonical partition integrity'}
+          >
+            Inspect
+            {partitionIssue.counts
+              ? ` (${Object.values(partitionIssue.counts).reduce((a, b) => a + b, 0)})`
+              : ''}
+          </button>
+        </Row>
+      )}
+    </Card>
+    {showPartitionInspector && (
+      <CanonicalPartitionIntegrityInspectorModal
+        boardId={boardId}
+        onClose={() => setShowPartitionInspector(false)}
+      />
+    )}
+    </>
+  );
+}
+
+interface CanonicalDebtCardProps {
+  summary: CanonicalDebtSummary | null;
+  layerCounts: KGLayerCounts | null;
+  diagnostics: RebuildDiagnostics | null;
+}
+
+function CanonicalDebtCard({
+  summary,
+  layerCounts,
+  diagnostics,
+}: CanonicalDebtCardProps) {
+  const openCount = summary?.open_count ?? 0;
+  const canonicalCount = layerCounts?.by_layer?.canonical ?? 0;
+  const workingCount = layerCounts?.by_layer?.working ?? 0;
+  const retryable = summary?.retryable_count ?? 0;
+  const blocked = summary?.blocked_count ?? 0;
+  const debtClass =
+    openCount === 0
+      ? 'text-emerald-700 dark:text-emerald-400'
+      : blocked > 0
+      ? 'text-rose-700 dark:text-rose-400'
+      : 'text-amber-700 dark:text-amber-400';
+  const outcome = diagnostics?.last_outcome ?? 'unknown';
+  return (
+    <Card
+      title="Canonical Debt"
+      testId="kg-health-card"
+      icon={<Database className="w-4 h-4" aria-hidden />}
+    >
+      <Row label="Open debt">
+        <span className={`text-2xl font-bold ${debtClass}`}>
+          {openCount.toLocaleString()}
+        </span>
+      </Row>
+      <Row label="Retryable / blocked">
+        <span className="text-sm text-surface-700 dark:text-surface-300">
+          {retryable.toLocaleString()} / {blocked.toLocaleString()}
+        </span>
+      </Row>
+      <Row label="Graph layers">
+        <span className="text-xs text-right text-surface-600 dark:text-surface-400">
+          canonical {canonicalCount.toLocaleString()} · working {workingCount.toLocaleString()}
+        </span>
+      </Row>
+      <Row label="Layer status">
+        <span className="text-sm text-surface-700 dark:text-surface-300">
+          {layerCounts?.status ?? 'unavailable'}
+        </span>
+      </Row>
+      <Row label="Rebuild outcome">
+        <span
+          className="text-xs text-right text-surface-600 dark:text-surface-400 max-w-[14rem] truncate"
+          title={outcome}
+        >
+          {formatActionLabel(outcome)}
         </span>
       </Row>
     </Card>
@@ -849,119 +963,18 @@ function StorageFootprintCard({ proxy }: StorageFootprintCardProps) {
   );
 }
 
-interface ActivityCardProps {
-  disconnectedCount: number;
-}
-
-function ActivityCard({ disconnectedCount }: ActivityCardProps) {
-  const cls =
-    disconnectedCount === 0
-      ? 'text-emerald-600 dark:text-emerald-400'
-      : 'text-amber-600 dark:text-amber-400';
-  return (
-    <Card title="Activity" testId="kg-health-card" icon={<Activity className="w-4 h-4" aria-hidden />}>
-      <Row label="Disconnected nodes (top 10)">
-        <span className={`text-sm font-bold ${cls}`}>
-          {disconnectedCount === 0 ? 'none detected' : `${disconnectedCount} detected`}
-        </span>
-      </Row>
-      <p className="text-xs text-surface-500 dark:text-surface-400 italic mt-2">
-        See the table below for details (id/type/degree). Nodes with degree=0 or 1 may indicate
-        incomplete imports or disconnections during consolidation.
-      </p>
-    </Card>
-  );
-}
-
-interface TopDisconnectedTableProps {
-  rows: TopDisconnectedNode[];
-}
-
-function TopDisconnectedTable({ rows }: TopDisconnectedTableProps) {
-  return (
-    <div className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 shadow-sm overflow-hidden">
-      <div className="px-5 py-3 border-b border-surface-200 dark:border-surface-700">
-        <h2 className="text-sm font-semibold text-surface-700 dark:text-surface-300">
-          Top 10 most disconnected nodes
-        </h2>
-      </div>
-      {rows.length === 0 ? (
-        <div className="px-5 py-8 text-center text-sm text-surface-500 dark:text-surface-400 italic">
-          No disconnected nodes
-        </div>
-      ) : (
-        <table className="w-full text-sm">
-          <caption className="sr-only">List of lowest-degree nodes in the current board's KG</caption>
-          <thead className="bg-surface-50 dark:bg-surface-900/50 text-xs uppercase text-surface-500 dark:text-surface-400">
-            <tr>
-              <th scope="col" className="text-left px-5 py-2.5">
-                Node ID
-              </th>
-              <th scope="col" className="text-left px-5 py-2.5">
-                Type
-              </th>
-              <th scope="col" className="text-right px-5 py-2.5">
-                Degree
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-surface-200 dark:divide-surface-700">
-            {rows.map((row) => (
-              <tr key={row.id} className="hover:bg-surface-50 dark:hover:bg-surface-900/30">
-                <td className="px-5 py-2 font-mono text-xs text-surface-700 dark:text-surface-300 max-w-xs truncate" title={row.id}>
-                  {row.id}
-                </td>
-                <td className="px-5 py-2">
-                  <span className={`px-1.5 py-0.5 text-xs rounded ${typeBadgeClasses(row.type)}`}>
-                    {row.type}
-                  </span>
-                </td>
-                <td className="px-5 py-2 text-right font-mono">{row.degree}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
-}
-
-function typeBadgeClasses(type: string): string {
-  const lower = type.toLowerCase();
-  if (lower.includes('decision'))
-    return 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300';
-  if (lower.includes('criterion'))
-    return 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300';
-  if (lower.includes('constraint'))
-    return 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300';
-  return 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300';
-}
-
 function SkeletonGrid() {
   return (
-    <>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        {[0, 1, 2, 3, 4].map((i) => (
-          <div
-            key={i}
-            data-testid="skeleton-card"
-            className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 p-5 h-40 animate-pulse"
-            aria-hidden
-          />
-        ))}
-      </div>
-      <div
-        className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 p-6 animate-pulse"
-        data-testid="skeleton-table"
-        aria-hidden
-      >
-        <div className="space-y-3">
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="h-6 bg-surface-200 dark:bg-surface-700 rounded" />
-          ))}
-        </div>
-      </div>
-    </>
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+      {[0, 1, 2, 3, 4].map((i) => (
+        <div
+          key={i}
+          data-testid="skeleton-card"
+          className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 p-5 h-40 animate-pulse"
+          aria-hidden
+        />
+      ))}
+    </div>
   );
 }
 
@@ -1446,6 +1459,11 @@ function RecoveryPanel({
   const cognitiveTooltip = `Cognitive consolidation tracks items marked during rebuild for semantic agent review. Current status: ${cognitiveStatus.reportValue}. ${cognitiveStatus.subtitle}.`;
   const legacyFallback = preflight?.has_non_deterministic_inputs ?? false;
   const eligibleCount = preflight?.eligible_source_count ?? 0;
+  const canonicalCount = preflight?.canonical_source_count ?? eligibleCount;
+  const workingCount = preflight?.working_source_count ?? 0;
+  const skippedByMaturity = preflight?.skipped_by_maturity_count ?? 0;
+  const expiredWorking = preflight?.skipped_expired_working_count ?? 0;
+  const legacyUnknown = preflight?.legacy_unknown_count ?? 0;
   const skipped = preflight?.skipped_cancelled_count ?? 0;
   const reasonInvalid = reason.trim().length === 0;
   const isCompleted = lastResult?.outcome === 'completed';
@@ -1519,9 +1537,19 @@ function RecoveryPanel({
             )}
             {preflight && (
               <>
-                <PreflightRow label="Source specs">
+                <PreflightRow label="Canonical sources">
                   <strong>
-                    {eligibleCount} eligible · {skipped} cancelled
+                    {canonicalCount} eligible · {skipped} cancelled
+                  </strong>
+                </PreflightRow>
+                <PreflightRow label="Working/debt">
+                  <span className="text-xs text-right text-surface-600 dark:text-surface-400">
+                    {workingCount} working · {skippedByMaturity} immature · {expiredWorking} expired
+                  </span>
+                </PreflightRow>
+                <PreflightRow label="Legacy unknown">
+                  <strong className={legacyUnknown > 0 ? 'text-amber-700' : ''}>
+                    {legacyUnknown}
                   </strong>
                 </PreflightRow>
                 <PreflightRow label="Legacy fallback">

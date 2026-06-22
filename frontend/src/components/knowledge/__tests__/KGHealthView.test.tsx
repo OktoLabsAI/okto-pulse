@@ -66,6 +66,25 @@ const baseHealth: KGHealth = {
     tooltip: 'This is not live Ladybug memory telemetry. It is a file-size proxy used as an early warning signal.',
     unavailable_reason: null,
   },
+  kg_layer_counts: {
+    status: 'ok',
+    by_layer: { canonical: 1840, working: 7 },
+    by_maturity_status: { canonical_eligible: 1840, working_immature: 7 },
+  },
+  canonical_debt: {
+    open_count: 0,
+    retryable_count: 0,
+    blocked_count: 0,
+    retry_scheduled_count: 0,
+    terminal_count: 0,
+    by_state: {},
+  },
+  rebuild_diagnostics: {
+    last_outcome: 'rebuild_complete',
+    canonical_open_debt_count: 0,
+    layer_counts_status: 'ok',
+    operator_action: 'none',
+  },
 };
 
 function mockBoard(id: string | null) {
@@ -120,6 +139,11 @@ beforeEach(() => {
     eligible_source_count: 1,
     skipped_cancelled_count: 0,
     has_non_deterministic_inputs: false,
+    canonical_source_count: 1,
+    working_source_count: 0,
+    skipped_by_maturity_count: 0,
+    skipped_expired_working_count: 0,
+    legacy_unknown_count: 0,
     preflight_hash: 'hash1',
     generated_at: new Date().toISOString(),
     manifest_ref: 'manifest1',
@@ -132,7 +156,7 @@ afterEach(() => {
 });
 
 describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', () => {
-  it('faz 1 fetch e mostra Scheduler/Queue/Health/Footprint/Activity', async () => {
+  it('faz 1 fetch e mostra Scheduler/Queue/Health/Footprint/Debt', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve(baseHealth));
 
@@ -146,7 +170,7 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
       expect(screen.getByText('Queue & Dead Letter')).toBeInTheDocument();
       expect(screen.getAllByText('KG Health').length).toBeGreaterThan(0);
       expect(screen.getByText('Storage Footprint Proxy')).toBeInTheDocument();
-      expect(screen.getByText('Activity')).toBeInTheDocument();
+      expect(screen.getByText('Canonical Debt')).toBeInTheDocument();
     });
   });
 });
@@ -326,6 +350,40 @@ describe('TS6 — schema banner', () => {
 });
 
 describe('KG-HS.3 — scheduler debt and storage-footprint clarity', () => {
+  it('renders canonical debt and graph layer counts', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({
+      ...baseHealth,
+      canonical_debt: {
+        open_count: 4,
+        retryable_count: 3,
+        blocked_count: 1,
+        retry_scheduled_count: 0,
+        terminal_count: 9,
+        by_state: { failed: 2, deferred: 1, blocked: 1, committed: 9 },
+      },
+      kg_layer_counts: {
+        status: 'ok',
+        by_layer: { canonical: 120, working: 4 },
+        by_maturity_status: { canonical_eligible: 120, working_immature: 4 },
+      },
+      rebuild_diagnostics: {
+        last_outcome: 'rebuild_complete_with_canonical_debt',
+        canonical_open_debt_count: 4,
+        layer_counts_status: 'ok',
+        operator_action: 'inspect_canonical_debt',
+      },
+    }));
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText('Canonical Debt')).toBeInTheDocument());
+    expect(screen.getByText('Open debt')).toBeInTheDocument();
+    expect(screen.getByText('3 / 1')).toBeInTheDocument();
+    expect(screen.getByText(/canonical 120 · working 4/)).toBeInTheDocument();
+    expect(screen.getByText('Rebuild Complete With Canonical Debt')).toBeInTheDocument();
+  });
+
   it('renders storage footprint proxy copy without memory/buffer telemetry claims', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({
@@ -457,31 +515,8 @@ describe('KG-HS.4 — Runtime Settings cadence handoff', () => {
   });
 });
 
-describe('TS7 — tabela Top-N renderiza N rows até max 10', () => {
-  it('0 entries → message "No disconnected nodes"', async () => {
-    mockBoard('b1');
-    mockApi(() => Promise.resolve({ ...baseHealth, top_disconnected_nodes: [] }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('No disconnected nodes')).toBeInTheDocument());
-  });
-
-  it('5 entries → 5 tbody rows', async () => {
-    mockBoard('b1');
-    const five = Array.from({ length: 5 }, (_, i) => ({
-      id: `entity_${i}`,
-      type: 'Entity',
-      degree: i,
-    }));
-    mockApi(() => Promise.resolve({ ...baseHealth, top_disconnected_nodes: five }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('entity_0')).toBeInTheDocument());
-    const table = screen.getByRole('table');
-    expect(table.querySelectorAll('tbody tr')).toHaveLength(5);
-  });
-
-  it('10 entries → 10 tbody rows com 3 cells cada', async () => {
+describe('TS7 — disconnected nodes panel removed', () => {
+  it('does not render the disconnected-node panel even when payload includes rows', async () => {
     mockBoard('b1');
     const ten = Array.from({ length: 10 }, (_, i) => ({
       id: `entity_${i}`,
@@ -491,10 +526,11 @@ describe('TS7 — tabela Top-N renderiza N rows até max 10', () => {
     mockApi(() => Promise.resolve({ ...baseHealth, top_disconnected_nodes: ten }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('entity_9')).toBeInTheDocument());
-    const rows = screen.getByRole('table').querySelectorAll('tbody tr');
-    expect(rows).toHaveLength(10);
-    rows.forEach((r) => expect(r.querySelectorAll('td')).toHaveLength(3));
+    await waitFor(() => expect(screen.getByText('Decay Scheduler')).toBeInTheDocument());
+    expect(screen.queryByText('Top 10 most disconnected nodes')).not.toBeInTheDocument();
+    expect(screen.queryByText('No disconnected nodes')).not.toBeInTheDocument();
+    expect(screen.queryByText('entity_9')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Disconnected nodes/i)).not.toBeInTheDocument();
   });
 });
 

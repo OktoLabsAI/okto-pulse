@@ -14,6 +14,8 @@ export type KGEdgeType =
   | 'tests' | 'validates' | 'belongs_to' | 'originates_from'
   | 'covered_by';
 
+export type GraphLayerMode = 'canonical' | 'working' | 'all';
+
 export interface KGNode {
   id: string;
   title: string;
@@ -27,6 +29,8 @@ export interface KGNode {
   last_queried_at?: string | null;
   created_at?: string;
   superseded_by?: string;
+  graph_layer?: 'canonical' | 'working';
+  maturity_status?: string | null;
   node_type: KGNodeType;
 }
 
@@ -69,6 +73,7 @@ export interface KGSettings {
 export interface KGStats {
   schema_version: string;
   graph_schema_version?: string | null;
+  graph_layer?: GraphLayerMode;
   node_counts_by_type: Record<string, number>;
   edge_counts_by_type: Record<string, number>;
   avg_confidence: number;

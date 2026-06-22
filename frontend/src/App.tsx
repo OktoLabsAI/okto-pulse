@@ -16,6 +16,7 @@ import { SprintsPanel } from '@/components/sprints';
 import { AnalyticsPage } from '@/components/analytics';
 import { GlobalKGActivityIndicator } from '@/components/knowledge/GlobalKGActivityIndicator';
 import { KGHealthView } from '@/components/knowledge/KGHealthView';
+import { CognitiveActionCenterView } from '@/components/knowledge/CognitiveActionCenterView';
 import { ModalStackProvider, useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { ModalStackRenderer } from '@/components/modals/ModalStackRenderer';
 import { LineageGraphModal } from '@/components/traceability';
@@ -227,6 +228,11 @@ function App() {
   const [showKGHealth, setShowKGHealth] = useState(
     () => typeof window !== 'undefined' && window.location.pathname.startsWith('/kg-health'),
   );
+  const [showCognitiveActionCenter, setShowCognitiveActionCenter] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      window.location.pathname.startsWith('/cognitive-action-center'),
+  );
   const guidedHelpSurface: GuidedHelpSurface = showAnalytics
     ? 'metrics'
     : showKGHealth
@@ -248,9 +254,25 @@ function App() {
     const handlePopstate = () => {
       setShowAnalytics(window.location.pathname.startsWith('/analytics'));
       setShowKGHealth(window.location.pathname.startsWith('/kg-health'));
+      setShowCognitiveActionCenter(
+        window.location.pathname.startsWith('/cognitive-action-center'),
+      );
     };
     window.addEventListener('popstate', handlePopstate);
     return () => window.removeEventListener('popstate', handlePopstate);
+  }, []);
+
+  // Cognitive Action Center opens via a custom event (dispatched from the KG
+  // Health header drill-down), mirroring the okto:open-board-settings pattern.
+  useEffect(() => {
+    const open = () => {
+      if (!window.location.pathname.startsWith('/cognitive-action-center')) {
+        window.history.pushState({}, '', '/cognitive-action-center');
+      }
+      setShowCognitiveActionCenter(true);
+    };
+    window.addEventListener('okto:open-cognitive-action-center', open);
+    return () => window.removeEventListener('okto:open-cognitive-action-center', open);
   }, []);
 
   // NC-9 Wave 2 frontend (spec 5cb09dbc): poll board settings to drive the
@@ -326,6 +348,13 @@ function App() {
       window.history.pushState({}, '', '/');
     }
     setShowKGHealth(false);
+  };
+
+  const closeCognitiveActionCenter = () => {
+    if (window.location.pathname.startsWith('/cognitive-action-center')) {
+      window.history.pushState({}, '', '/');
+    }
+    setShowCognitiveActionCenter(false);
   };
 
   useEffect(() => {
@@ -579,6 +608,16 @@ function App() {
       {showKGHealth && (
         <div className="fixed inset-0 z-50 bg-gray-50 dark:bg-gray-900 flex flex-col">
           <KGHealthView onClose={closeKGHealth} />
+        </div>
+      )}
+
+      {/* Cognitive Action Center fullscreen overlay (spec 2731a346 / S3.3) */}
+      {showCognitiveActionCenter && currentBoard && (
+        <div className="fixed inset-0 z-50 bg-gray-50 dark:bg-gray-900 flex flex-col">
+          <CognitiveActionCenterView
+            boardId={currentBoard.id}
+            onClose={closeCognitiveActionCenter}
+          />
         </div>
       )}
 
