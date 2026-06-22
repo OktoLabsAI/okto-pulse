@@ -8,7 +8,7 @@
  *     up so the parent can refetch with the new page size.
  */
 
-import type { KGEdgeType, KGNodeType } from '@/types/knowledge-graph';
+import type { GraphLayerMode, KGEdgeType, KGNodeType } from '@/types/knowledge-graph';
 import {
   ALL_NODE_TYPES,
   ALL_EDGE_TYPES,
@@ -23,6 +23,7 @@ type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'settings' | 'gl
 export interface Filters {
   types: KGNodeType[];
   edgeTypes: KGEdgeType[];
+  graphLayer: GraphLayerMode;
   /** Minimum relevance_score (0..1) for the visibility slider. */
   minRelevance: number;
   searchQuery: string;
@@ -60,6 +61,12 @@ const SUB_VIEWS: { key: SubView; label: string }[] = [
 ];
 
 export const NODE_LIMIT_OPTIONS = [50, 100, 200, 500, 1000] as const;
+
+const GRAPH_LAYER_OPTIONS: Array<{ value: GraphLayerMode; label: string }> = [
+  { value: 'canonical', label: 'Canonical' },
+  { value: 'working', label: 'Working' },
+  { value: 'all', label: 'All' },
+];
 
 // Maps each sub-view to the permission flag that gates its visibility.
 // Absent entry = always visible.
@@ -135,6 +142,35 @@ export function GraphControlsPanel({
           className="w-full px-3 py-1.5 text-sm border rounded dark:bg-gray-800 dark:border-gray-700"
           aria-label="Search knowledge graph nodes"
         />
+      </div>
+
+      <div>
+        <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Graph Type</h3>
+        <div
+          className="grid grid-cols-3 overflow-hidden rounded border border-gray-300 dark:border-gray-700"
+          role="group"
+          aria-label="Graph type filter"
+        >
+          {GRAPH_LAYER_OPTIONS.map((option) => {
+            const active = filters.graphLayer === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                data-testid={`kg-graph-layer-${option.value}`}
+                aria-pressed={active}
+                onClick={() => updateFilters({ graphLayer: option.value })}
+                className={`min-h-8 px-2 text-xs font-medium transition ${
+                  active
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Node type filter — header shows page-vs-total context.

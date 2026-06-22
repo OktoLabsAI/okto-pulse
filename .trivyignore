@@ -14,3 +14,10 @@
 
 CVE-2026-32871
 CVE-2026-27124
+
+# CVE-2026-45447: OpenSSL PKCS#7/S-MIME issue in the debian 13.5 base image
+# (libssl3t64 / openssl / openssl-provider-legacy 3.5.6-1~deb13u1). Fix
+# exists in 3.5.6-1~deb13u2; temporary ignore until the base image picks it
+# up. Failed the v0.2.3 release trivy gate (run 27315635576). Remove once
+# the rebuilt base includes deb13u2.
+CVE-2026-45447

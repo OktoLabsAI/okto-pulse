@@ -63,11 +63,18 @@ export class AuthenticatedFetch {
           ? ((detail as Record<string, unknown>).message as string | undefined)
             ?? ((detail as Record<string, unknown>).error as string | undefined)
             ?? JSON.stringify(detail)
-          : errorData.error || errorData.message || `HTTP ${response.status}: ${response.statusText}`;
+          : errorData.message || errorData.error || `HTTP ${response.status}: ${response.statusText}`;
       throw new Error(message);
     }
 
-    return response.json();
+    // 204 No Content (and any other empty-body success, e.g. DELETE endpoints) carry
+    // no JSON. Calling response.json() on an empty body throws "Unexpected end of JSON
+    // input", so guard it: return undefined for empty bodies, parse otherwise.
+    if (response.status === 204) {
+      return undefined as T;
+    }
+    const text = await response.text();
+    return (text ? (JSON.parse(text) as T) : (undefined as T));
   }
 }
 

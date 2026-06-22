@@ -22,6 +22,12 @@ export interface KGHealthIssue {
   reason: string;
   description: string;
   operator_action: string;
+  // Aggregate signals (e.g. canonical_partition_integrity) point at a read-only
+  // drilldown tool and carry bounded counts + a precedence note. Per-node detail
+  // never appears in Health — only in the drilldown.
+  drill_down_tool?: string | null;
+  counts?: Record<string, number>;
+  precedence_explanation?: string;
 }
 
 export interface DecaySchedulerDiagnostics {
@@ -56,6 +62,30 @@ export interface StorageFootprintProxy {
   unavailable_reason: string | null;
 }
 
+export interface KGLayerCounts {
+  status: 'ok' | 'unavailable' | string;
+  by_layer: Record<string, number>;
+  by_maturity_status: Record<string, number>;
+  reason?: string;
+}
+
+export interface CanonicalDebtSummary {
+  open_count: number;
+  retryable_count: number;
+  blocked_count: number;
+  retry_scheduled_count: number;
+  terminal_count: number;
+  by_state: Record<string, number>;
+  status?: string;
+}
+
+export interface RebuildDiagnostics {
+  last_outcome: string;
+  canonical_open_debt_count: number;
+  layer_counts_status: string;
+  operator_action: string;
+}
+
 export interface KGHealth {
   queue_depth: number;
   oldest_pending_age_s: number;
@@ -87,6 +117,9 @@ export interface KGHealth {
   health_issues?: KGHealthIssue[];
   decay_scheduler_diagnostics?: DecaySchedulerDiagnostics;
   storage_footprint_proxy?: StorageFootprintProxy;
+  kg_layer_counts?: KGLayerCounts;
+  canonical_debt?: CanonicalDebtSummary;
+  rebuild_diagnostics?: RebuildDiagnostics;
 }
 
 // ---- KG-02 rebuild lifecycle (spec e7360ffe, mockup sm_a30278ad) -------
@@ -102,6 +135,13 @@ export interface RebuildPreflightResult {
   eligible_source_count: number;
   skipped_cancelled_count: number;
   has_non_deterministic_inputs: boolean;
+  canonical_source_count?: number;
+  working_source_count?: number;
+  skipped_by_maturity_count?: number;
+  skipped_expired_working_count?: number;
+  legacy_unknown_count?: number;
+  layer_counts?: Record<string, number>;
+  source_partition_counts?: Record<string, number>;
   preflight_hash: string;
   generated_at: string;
   rebuild_status?: string;
@@ -216,6 +256,70 @@ export async function getKGHealth(
   return resp.json();
 }
 
+export interface CanonicalDebtItem {
+  id: string;
+  board_id: string;
+  artifact_type: string;
+  artifact_id: string;
+  source_ref: string;
+  source_version: string | null;
+  content_hash: string;
+  target_status: string;
+  canonical_state: string;
+  graph_layer: string;
+  maturity_status: string | null;
+  failure_reason: string | null;
+  last_error: string | null;
+  retry_count: number;
+  next_retry_at: string | null;
+  last_attempt_at: string | null;
+  owner_agent_id: string | null;
+  correlation_id: string | null;
+  queue_ref: string | null;
+  dlq_ref: string | null;
+  evidence_ref: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CanonicalDebtListResponse {
+  board_id: string;
+  items: CanonicalDebtItem[];
+  counts: CanonicalDebtSummary;
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface GetCanonicalDebtOptions {
+  artifactType?: string;
+  state?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function getCanonicalDebt(
+  boardId: string,
+  options: GetCanonicalDebtOptions = {},
+  signal?: AbortSignal,
+): Promise<CanonicalDebtListResponse> {
+  const params = new URLSearchParams({ board_id: boardId });
+  if (options.artifactType) params.set('artifact_type', options.artifactType);
+  if (options.state) params.set('state', options.state);
+  if (typeof options.limit === 'number') params.set('limit', String(options.limit));
+  if (typeof options.offset === 'number') params.set('offset', String(options.offset));
+
+  const resp = await fetch(`${BASE}/kg/canonical-debt?${params.toString()}`, {
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
 // ---- KG-03.4/3.5 cognitive pending (api_cce40fa6 + api_897dde99) -------
 
 export type KGCognitiveItemStatus =
@@ -298,6 +402,83 @@ export async function getKGCognitivePendingItems(
       typeof detail === 'string'
         ? detail
         : detail?.message || detail?.code || err.message || `HTTP ${resp.status}`;
+    throw new Error(message);
+  }
+  return resp.json();
+}
+
+// ---- R7 IMP4 canonical partition integrity (read-only drilldown) -------
+// api_24f4c9c0: GET /api/v1/kg/{board_id}/canonical-partition-integrity.
+// Aggregate KG Health points here via drill_down_tool. READ-ONLY: there is no
+// skip/resolve affordance for R7 holds/debt — that is human-only and lives on
+// the cognitive-readiness surface, never here.
+
+export type CanonicalPartitionStatus =
+  | 'cognitive_pending'
+  | 'canonical_debt'
+  | 'mixed_evidence_deferred'
+  | 'provenance_only_observed'
+  | string;
+
+export interface CanonicalPartitionIntegrityItem {
+  node_id: string | null;
+  node_type: string;
+  artifact_id: string;
+  source_artifact_ref: string;
+  reason_code: string;
+  graph_layer: string;
+  status: CanonicalPartitionStatus;
+  blocking: boolean;
+  canonical_degree: number;
+  working_endpoint_refs: string[];
+  operator_action: string;
+}
+
+export interface CanonicalPartitionIntegrityResponse {
+  board_id: string;
+  items: CanonicalPartitionIntegrityItem[];
+  counts: Record<string, number>;
+  health_issue_code: string;
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface GetCanonicalPartitionIntegrityOptions {
+  reasonCode?: string;
+  graphLayer?: string;
+  sourceRef?: string;
+  nodeId?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function getCanonicalPartitionIntegrity(
+  boardId: string,
+  options: GetCanonicalPartitionIntegrityOptions = {},
+  signal?: AbortSignal,
+): Promise<CanonicalPartitionIntegrityResponse> {
+  const params = new URLSearchParams();
+  if (options.reasonCode) params.set('reason_code', options.reasonCode);
+  if (options.graphLayer) params.set('graph_layer', options.graphLayer);
+  if (options.sourceRef) params.set('source_ref', options.sourceRef);
+  if (options.nodeId) params.set('node_id', options.nodeId);
+  if (options.status) params.set('status', options.status);
+  if (typeof options.limit === 'number') params.set('limit', String(options.limit));
+  if (typeof options.offset === 'number') params.set('offset', String(options.offset));
+  const qs = params.toString();
+  const resp = await fetch(
+    `${BASE}/kg/${encodeURIComponent(boardId)}/canonical-partition-integrity${qs ? `?${qs}` : ''}`,
+    { headers: { 'Content-Type': 'application/json' }, signal },
+  );
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    const detail = err.detail;
+    const message =
+      typeof detail === 'string'
+        ? detail
+        : detail?.message || detail?.error || err.message || `HTTP ${resp.status}`;
     throw new Error(message);
   }
   return resp.json();

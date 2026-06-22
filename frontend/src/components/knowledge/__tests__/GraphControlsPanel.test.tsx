@@ -19,6 +19,7 @@ function baseFilters(overrides: Partial<Filters> = {}): Filters {
   return {
     types: [],
     edgeTypes: [],
+    graphLayer: 'canonical',
     minRelevance: 0.5,
     searchQuery: '',
     ...overrides,
@@ -108,6 +109,34 @@ describe('GraphControlsPanel — node type filters', () => {
 
     expect(screen.getByTitle('Total Learning nodes in KG')).toHaveTextContent('0');
     expect(screen.getByText(/\bLearning\b/)).toBeInTheDocument();
+  });
+});
+
+describe('GraphControlsPanel — graph layer selector', () => {
+  it('defaults to the canonical layer and emits working/all changes', () => {
+    const { onFiltersChange } = renderPanel();
+
+    expect(screen.getByTestId('kg-graph-layer-canonical')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    fireEvent.click(screen.getByTestId('kg-graph-layer-working'));
+    expect(onFiltersChange).toHaveBeenCalledTimes(1);
+    expect((onFiltersChange.mock.calls[0][0] as Filters).graphLayer).toBe('working');
+  });
+
+  // R6-TEST3 (ts_ecf530d5): all three layer selectors are exposed and each emits
+  // its value coherently — canonical|working|all, never a partial set.
+  it('exposes canonical/working/all and emits the selected layer (incl. all)', () => {
+    const { onFiltersChange } = renderPanel();
+    for (const v of ['canonical', 'working', 'all'] as const) {
+      expect(screen.getByTestId(`kg-graph-layer-${v}`)).toBeInTheDocument();
+    }
+    // canonical is the active default; only working/all are pressable transitions.
+    expect(screen.getByTestId('kg-graph-layer-all')).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByTestId('kg-graph-layer-all'));
+    expect((onFiltersChange.mock.calls[0][0] as Filters).graphLayer).toBe('all');
   });
 });
 

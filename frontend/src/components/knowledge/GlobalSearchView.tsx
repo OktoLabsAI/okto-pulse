@@ -19,7 +19,11 @@ import { ChevronDown, ChevronRight, ExternalLink, Sparkles } from 'lucide-react'
 import * as kgApi from '@/services/kg-api';
 import * as discoveryApi from '@/services/discovery-api';
 import type { IntentExecutionResult } from '@/services/discovery-api';
-import { NODE_TYPE_CONFIG, type KGNodeType } from '@/types/knowledge-graph';
+import {
+  NODE_TYPE_CONFIG,
+  type GraphLayerMode,
+  type KGNodeType,
+} from '@/types/knowledge-graph';
 import type {
   DiscoveryIntent,
   DiscoveryParamSchema,
@@ -43,8 +47,15 @@ interface SearchResult {
   title: string;
   summary?: string;
   node_type?: string;
+  graph_layer?: 'canonical' | 'working';
   similarity: number;
 }
+
+const GRAPH_LAYER_OPTIONS: Array<{ value: GraphLayerMode; label: string }> = [
+  { value: 'canonical', label: 'Canonical' },
+  { value: 'working', label: 'Working' },
+  { value: 'all', label: 'All' },
+];
 
 const CATEGORY_LABELS: Record<string, string> = {
   coverage_tracing: 'Coverage & Tracing',
@@ -178,6 +189,7 @@ export function GlobalSearchView({ boardId }: Props) {
   const [searched, setSearched] = useState(false);
   const [selected, setSelected] = useState<SearchResult | null>(null);
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
+  const [graphLayer, setGraphLayer] = useState<GraphLayerMode>('canonical');
   const resultsRef = useRef<HTMLDivElement | null>(null);
 
   // Real-tool execution state (ideação a4f526df).
@@ -467,7 +479,10 @@ export function GlobalSearchView({ boardId }: Props) {
     }));
   }
 
-  async function runSearch(text: string): Promise<void> {
+  async function runSearch(
+    text: string,
+    layer: GraphLayerMode = graphLayer,
+  ): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
     setLoading(true);
@@ -479,7 +494,7 @@ export function GlobalSearchView({ boardId }: Props) {
     setActiveIntent(null);
     setIntentError(null);
     try {
-      const data = await kgApi.globalSearch(trimmed, 20);
+      const data = await kgApi.globalSearch(trimmed, 20, 0.3, layer);
       setResults(data.results || []);
     } catch {
       setResults([]);
@@ -498,6 +513,13 @@ export function GlobalSearchView({ boardId }: Props) {
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     await runSearch(query);
+  }
+
+  function handleGraphLayerChange(layer: GraphLayerMode): void {
+    setGraphLayer(layer);
+    if (searched && query.trim() && !intentResult) {
+      void runSearch(query, layer);
+    }
   }
 
   async function runIntent(
@@ -624,6 +646,36 @@ export function GlobalSearchView({ boardId }: Props) {
             Clear
           </button>
         </form>
+        <div className="mt-3 flex items-center gap-3">
+          <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+            Graph Type
+          </span>
+          <div
+            className="grid w-full max-w-xs grid-cols-3 overflow-hidden rounded border border-gray-300 dark:border-gray-700"
+            role="group"
+            aria-label="Global discovery graph type"
+          >
+            {GRAPH_LAYER_OPTIONS.map((option) => {
+              const active = graphLayer === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  data-testid={`discovery-graph-layer-${option.value}`}
+                  aria-pressed={active}
+                  onClick={() => handleGraphLayerChange(option.value)}
+                  className={`min-h-8 px-2 text-xs font-medium transition ${
+                    active
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </section>
 
       {/* 2. Collapsible intent catalog */}
@@ -1368,8 +1420,15 @@ export function GlobalSearchView({ boardId }: Props) {
                                   )}
                                 </td>
                                 <td className="px-3 py-2 align-top">
-                                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                                    {r.title || 'Untitled'}
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                      {r.title || 'Untitled'}
+                                    </span>
+                                    {r.graph_layer && (
+                                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                                        {r.graph_layer}
+                                      </span>
+                                    )}
                                   </div>
                                   {r.summary && (
                                     <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">

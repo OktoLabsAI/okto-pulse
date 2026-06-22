@@ -6,11 +6,12 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   X, Plus, Search, BookOpen, Link, Unlink, Trash2,
   ChevronUp, ChevronDown, Tag, Globe, FileText, Edit3, Eye, EyeOff,
+  HelpCircle,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import toast from 'react-hot-toast';
-import type { BoardGuidelineEntry, Guideline } from '@/types';
+import type { BoardGuidelineEntry, DefaultGuidelineCandidatesResponse, Guideline } from '@/types';
 
 interface GuidelinesPanelProps {
   boardId: string;
@@ -21,12 +22,11 @@ type Tab = 'board' | 'global';
 
 export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
   const api = useDashboardApi();
-  const [activeTab, setActiveTab] = useState<Tab>('board');
+  const [activeTab, setActiveTab] = useState<Tab>('global');
 
   // Board tab state
   const [entries, setEntries] = useState<BoardGuidelineEntry[]>([]);
   const [boardLoading, setBoardLoading] = useState(true);
-  const [showLinkModal, setShowLinkModal] = useState(false);
   const [showInlineForm, setShowInlineForm] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -37,15 +37,69 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
   const [editingGlobal, setEditingGlobal] = useState<Guideline | null>(null);
   const [showGlobalForm, setShowGlobalForm] = useState(false);
 
-  // Link modal state
-  const [linkSearch, setLinkSearch] = useState('');
-  const [linkCandidates, setLinkCandidates] = useState<Guideline[]>([]);
-  const [linkLoading, setLinkLoading] = useState(false);
-
   // Form state (shared between inline create, global create, and edit)
   const [formTitle, setFormTitle] = useState('');
   const [formContent, setFormContent] = useState('');
   const [formTags, setFormTags] = useState('');
+  const [showHelp, setShowHelp] = useState(false);
+
+  // Guideline default state, derived from the umbrella template (spec 8a2fad91 /
+  // card 5cb88511). Only GLOBAL catalog guidelines are eligible defaults; the
+  // Set-default action is blocked for inline guidelines (FR5/AC7).
+  const [defaultInfo, setDefaultInfo] = useState<DefaultGuidelineCandidatesResponse | null>(null);
+
+  const fetchDefaults = useCallback(async () => {
+    try {
+      const info = await api.listDefaultGuidelineCandidates();
+      setDefaultInfo(info);
+      return info;
+    } catch {
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => { fetchDefaults(); }, [fetchDefaults]);
+
+  const isGuidelineDefault = (guidelineId: string) =>
+    (defaultInfo?.candidates ?? []).some((c) => c.guideline_id === guidelineId && c.is_default);
+
+  const toggleDefault = async (guidelineId: string) => {
+    let templateId = defaultInfo?.template_id;
+    const current = (defaultInfo?.candidates ?? [])
+      .filter((c) => c.is_default)
+      .map((c) => ({ guideline_id: c.guideline_id, priority: c.priority ?? 0 }));
+    const already = current.some((r) => r.guideline_id === guidelineId);
+    const refs = already
+      ? current.filter((r) => r.guideline_id !== guidelineId)
+      : [...current, { guideline_id: guidelineId, priority: current.reduce((m, r) => Math.max(m, r.priority ?? 0), 0) + 1 }];
+    try {
+      if (!templateId) {
+        const template = await api.createDefaultBoardConfigVersion({ activate: true });
+        templateId = template.id;
+      }
+      await api.updateDefaultGuidelineRefs(templateId, refs);
+      setDefaultInfo((prev) => {
+        if (!prev) return prev;
+        const nextRef = refs.find((ref) => ref.guideline_id === guidelineId);
+        return {
+          ...prev,
+          template_id: templateId ?? prev.template_id,
+          candidates: prev.candidates.map((candidate) =>
+            candidate.guideline_id === guidelineId
+              ? {
+                  ...candidate,
+                  is_default: !already,
+                  priority: nextRef?.priority ?? null,
+                }
+              : candidate,
+          ),
+        };
+      });
+      toast.success(already ? 'Removed from defaults' : 'Set as board default');
+      await fetchDefaults();
+    } catch { toast.error('Failed to update default'); }
+  };
 
   const resetForm = () => { setFormTitle(''); setFormContent(''); setFormTags(''); };
 
@@ -107,32 +161,21 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     } catch { toast.error('Failed to create'); }
   };
 
-  // ==================== LINK MODAL ====================
-
-  const fetchLinkCandidates = async () => {
-    try {
-      setLinkLoading(true);
-      const all = await api.listGuidelines(0, 100);
-      const linkedIds = new Set(entries.map(e => e.guideline.id));
-      setLinkCandidates(all.filter(g => g.scope === 'global' && !linkedIds.has(g.id)));
-    } catch { toast.error('Failed to load'); }
-    finally { setLinkLoading(false); }
-  };
-
-  useEffect(() => { if (showLinkModal) fetchLinkCandidates(); }, [showLinkModal]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const handleLink = async (id: string) => {
     try {
       await api.linkGuidelineToBoard(boardId, id);
       toast.success('Guideline linked');
-      setLinkCandidates(prev => prev.filter(g => g.id !== id));
       fetchBoard();
     } catch { toast.error('Failed to link'); }
   };
 
-  const filteredLinkCandidates = linkCandidates.filter(g =>
-    !linkSearch || g.title.toLowerCase().includes(linkSearch.toLowerCase())
-  );
+  const handleUnlinkByGuidelineId = async (guidelineId: string) => {
+    try {
+      await api.unlinkGuidelineFromBoard(boardId, guidelineId);
+      toast.success('Guideline removed from board');
+      fetchBoard();
+    } catch { toast.error('Failed to remove'); }
+  };
 
   // ==================== GLOBAL TAB ====================
 
@@ -217,52 +260,113 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     </div>
   );
 
+  const helpPanel = showHelp && (
+    <section
+      data-testid="guideline-help-examples"
+      className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-100"
+    >
+      <div className="mb-2 flex items-center gap-2 font-semibold">
+        <HelpCircle size={15} />
+        Assistant context examples
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <div>
+          <div className="text-xs font-semibold uppercase opacity-75">Board workflow</div>
+          <p className="mt-1 text-xs leading-5">
+            Agents must read board guidelines before moving entities, request validator review at every review gate,
+            and document blockers as comments with the responsible owner mentioned.
+          </p>
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase opacity-75">Engineering policy</div>
+          <p className="mt-1 text-xs leading-5">
+            Preserve existing architecture, keep changes scoped to the card objective, and run focused tests before validation.
+          </p>
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase opacity-75">Ownership</div>
+          <p className="mt-1 text-xs leading-5">
+            Use guidelines for repo boundaries, agent responsibilities, approval roles, and board-specific escalation rules.
+          </p>
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase opacity-75">Default usage</div>
+          <p className="mt-1 text-xs leading-5">
+            Mark global catalog guidelines as default when every new board should inherit that assistant context.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-3xl h-[90vh] flex flex-col border border-gray-200 dark:border-gray-700">
+      <div className="flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
           <div className="flex items-center gap-2">
             <BookOpen size={20} className="text-blue-500" />
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Guidelines</h2>
           </div>
-          <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
-            <X size={18} />
-          </button>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex border-b border-gray-200 dark:border-gray-700 px-6 shrink-0">
-          {([
-            { id: 'board' as Tab, label: 'Board Guidelines', icon: <FileText size={14} />, count: entries.length },
-            { id: 'global' as Tab, label: 'Global Catalog', icon: <Globe size={14} />, count: globals.length },
-          ]).map(tab => (
+          <div className="flex items-center gap-2">
             <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                activeTab === tab.id
-                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'
-              }`}
+              type="button"
+              onClick={() => setShowHelp((value) => !value)}
+              data-testid="guideline-help-toggle"
+              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
             >
-              {tab.icon} {tab.label}
-              {tab.count > 0 && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300">{tab.count}</span>}
+              <HelpCircle size={14} />
+              Help
             </button>
-          ))}
+            <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="grid min-h-0 flex-1 grid-cols-[240px_minmax(0,1fr)]">
+          <aside className="border-r border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-950/30">
+            <nav className="space-y-1 text-sm">
+              {([
+                { id: 'global' as Tab, label: 'Global Catalog', icon: <Globe size={14} />, count: globals.length || defaultInfo?.candidates?.length || 0 },
+                { id: 'board' as Tab, label: 'Board Guidelines', icon: <FileText size={14} />, count: entries.length },
+              ]).map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 font-medium transition-colors ${
+                    activeTab === tab.id
+                      ? 'bg-white text-gray-900 shadow-sm ring-1 ring-gray-200 dark:bg-gray-800 dark:text-white dark:ring-gray-700'
+                      : 'text-gray-600 hover:bg-white/70 dark:text-gray-400 dark:hover:bg-gray-800/60'
+                  }`}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    {tab.icon}
+                    <span className="truncate">{tab.label}</span>
+                  </span>
+                  <span className="shrink-0 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                    {tab.count}
+                  </span>
+                </button>
+              ))}
+              <div className="mt-3 rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400">
+                <div className="font-medium text-gray-700 dark:text-gray-200">Default template</div>
+                <div className="mt-0.5">
+                  {defaultInfo?.template_version ? `v${defaultInfo.template_version}` : 'No active template'}
+                </div>
+              </div>
+            </nav>
+          </aside>
+
+          {/* Body */}
+          <main className="min-w-0 flex-1 overflow-y-auto p-6">
+          {helpPanel}
 
           {/* ==================== BOARD TAB ==================== */}
           {activeTab === 'board' && (
             <div className="space-y-4">
               {/* Actions */}
               <div className="flex items-center gap-2">
-                <button onClick={() => { setShowLinkModal(true); }} className="btn btn-secondary flex items-center gap-1 text-sm">
-                  <Link size={14} /> Link Global
-                </button>
                 <button onClick={() => { resetForm(); setShowInlineForm(!showInlineForm); }} className="btn btn-secondary flex items-center gap-1 text-sm">
                   <Plus size={14} /> Create Inline
                 </button>
@@ -278,7 +382,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                 <div className="text-center py-12 text-gray-400">
                   <BookOpen size={36} className="mx-auto mb-2 opacity-40" />
                   <p className="text-sm">No guidelines on this board</p>
-                  <p className="text-xs mt-1">Link a global guideline or create an inline one</p>
+                  <p className="text-xs mt-1">Use Global Catalog to link a global guideline, or create an inline one</p>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -319,6 +423,21 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                           }`}>
                             {isGlobal ? 'Global' : 'Inline'}
                           </span>
+
+                          {/* Default state + Set-default action (blocked for inline, FR5/AC7) */}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleDefault(entry.guideline.id); }}
+                            disabled={!isGlobal}
+                            title={isGlobal ? 'Toggle as a global default for new boards' : 'Inline guidelines cannot be defaults'}
+                            data-testid={`guideline-set-default-${entry.guideline.id}`}
+                            className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
+                              isGuidelineDefault(entry.guideline.id)
+                                ? 'bg-blue-500 text-white border-blue-500'
+                                : 'text-gray-500 border-gray-300 dark:border-gray-600'
+                            }`}
+                          >
+                            {isGuidelineDefault(entry.guideline.id) ? 'Default ✓' : 'Set default'}
+                          </button>
 
                           {entry.guideline.version && entry.guideline.version > 1 && (
                             <span className="text-[10px] text-gray-400 shrink-0">v{entry.guideline.version}</span>
@@ -385,7 +504,8 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
               ) : (
                 <div className="space-y-2">
                   {filteredGlobals.map(g => {
-                    const linkedBoards = entries.some(e => e.guideline.id === g.id);
+                    const linkedToBoard = entries.some(e => e.guideline.id === g.id);
+                    const isDefault = isGuidelineDefault(g.id);
                     return (
                       <div key={g.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-white dark:bg-gray-800/50">
                         <div className="flex items-start justify-between gap-3">
@@ -393,12 +513,46 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                             <div className="flex items-center gap-2 mb-1">
                               <h3 className="text-sm font-medium text-gray-900 dark:text-white truncate">{g.title}</h3>
                               <span className="text-[10px] text-gray-400 shrink-0">v{g.version || 1}</span>
-                              {linkedBoards && <span className="text-[10px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 shrink-0">linked</span>}
+                              {linkedToBoard && <span className="text-[10px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 shrink-0">linked</span>}
+                              {isDefault && <span className="text-[10px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 shrink-0">default</span>}
                             </div>
                             <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{g.content.slice(0, 150)}{g.content.length > 150 ? '...' : ''}</p>
                             {tagBadges(g.tags)}
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
+                            {linkedToBoard ? (
+                              <button
+                                onClick={() => handleUnlinkByGuidelineId(g.id)}
+                                className="inline-flex items-center gap-1 rounded border border-orange-200 px-2 py-1 text-[10px] text-orange-600 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-900/20"
+                                title="Unlink this guideline from the current board"
+                                data-testid={`guideline-unlink-board-${g.id}`}
+                              >
+                                <Unlink size={11} />
+                                Unlink
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleLink(g.id)}
+                                className="inline-flex items-center gap-1 rounded border border-green-200 px-2 py-1 text-[10px] text-green-700 hover:bg-green-50 dark:border-green-800 dark:text-green-300 dark:hover:bg-green-900/20"
+                                title="Link this guideline to the current board"
+                                data-testid={`guideline-link-board-${g.id}`}
+                              >
+                                <Link size={11} />
+                                Link
+                              </button>
+                            )}
+                            <button
+                              onClick={() => toggleDefault(g.id)}
+                              title="Toggle as a global default for new boards"
+                              data-testid={`guideline-set-default-${g.id}`}
+                              className={`text-[10px] px-2 py-1 rounded border shrink-0 ${
+                                isDefault
+                                  ? 'bg-blue-500 text-white border-blue-500'
+                                  : 'text-gray-500 border-gray-300 dark:border-gray-600'
+                              }`}
+                            >
+                              {isDefault ? 'Default' : 'Set default'}
+                            </button>
                             <button onClick={() => openEditGlobal(g)} className="p-1.5 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded" title="Edit">
                               <Edit3 size={14} />
                             </button>
@@ -414,44 +568,8 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
               )}
             </div>
           )}
+          </main>
         </div>
-
-        {/* Link Modal overlay */}
-        {showLinkModal && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/30 rounded-xl">
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-md mx-6 max-h-[60vh] flex flex-col">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Link Global Guideline</h3>
-                <button onClick={() => setShowLinkModal(false)} className="p-1 text-gray-400 hover:text-gray-600"><X size={16} /></button>
-              </div>
-              <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-700 shrink-0">
-                <div className="relative">
-                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input type="text" value={linkSearch} onChange={e => setLinkSearch(e.target.value)} placeholder="Search guidelines..." className="w-full pl-9 pr-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white outline-none" autoFocus />
-                </div>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-1.5">
-                {linkLoading ? (
-                  <p className="text-center text-gray-400 py-4 text-sm">Loading...</p>
-                ) : filteredLinkCandidates.length === 0 ? (
-                  <p className="text-center text-gray-400 py-4 text-sm">{linkSearch ? 'No matching guidelines' : 'No unlinked global guidelines available'}</p>
-                ) : (
-                  filteredLinkCandidates.map(g => (
-                    <div key={g.id} className="flex items-center justify-between p-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 border border-transparent hover:border-gray-200 dark:hover:border-gray-600">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{g.title}</p>
-                        <p className="text-[10px] text-gray-400">v{g.version || 1}</p>
-                      </div>
-                      <button onClick={() => handleLink(g.id)} className="btn btn-primary text-xs flex items-center gap-1 shrink-0 ml-2">
-                        <Link size={10} /> Link
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

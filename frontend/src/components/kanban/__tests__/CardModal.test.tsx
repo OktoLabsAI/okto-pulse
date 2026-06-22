@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CardModal } from '../CardModal';
-import type { Card, CardSummary, CardStatus } from '@/types';
+import { CardModal, TestEvidenceTab } from '../CardModal';
+import type { Card, CardSummary, CardStatus, TestScenario } from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   getCard: vi.fn(),
@@ -14,6 +14,14 @@ const apiMock = vi.hoisted(() => ({
   getCardActivity: vi.fn(),
   getArchitectureDesign: vi.fn(),
   getBugRegressionScenarioCandidates: vi.fn(),
+  listAmendmentRevisions: vi.fn().mockResolvedValue({
+    board_id: 'b',
+    bug_id: 'bug-1',
+    revisions: [],
+    path_b_resolution: { coverage_state: 'not_applicable' },
+  }),
+  createAmendmentRevision: vi.fn(),
+  associateAmendmentRevisionArtifacts: vi.fn(),
   updateCard: vi.fn(),
   moveCard: vi.fn(),
   deleteCard: vi.fn(),
@@ -449,5 +457,97 @@ describe('CardModal', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
 
     expect(await screen.findByText('No activity recorded')).toBeInTheDocument();
+  });
+});
+
+describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)', () => {
+  function scenario(overrides: Partial<TestScenario>): TestScenario {
+    return {
+      id: 's1',
+      title: 'Scenario',
+      linked_criteria: null,
+      scenario_type: 'integration',
+      given: 'g',
+      when: 'w',
+      then: 't',
+      notes: null,
+      status: 'passed',
+      linked_task_ids: null,
+      evidence: null,
+      latest_evidence: null,
+      ...overrides,
+    } as TestScenario;
+  }
+
+  it('renders the new re-executable evidence fields for a replay_command scenario', () => {
+    render(
+      <TestEvidenceTab
+        scenarios={[
+          scenario({
+            id: 'replay',
+            evidence: {
+              evidence_class: 'replay_command',
+              replay_command: 'pytest tests/test_x.py::test_y',
+              expected_output_snapshot: '1 passed',
+            },
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('Evidence class')).toBeInTheDocument();
+    expect(screen.getByText('Replay command')).toBeInTheDocument();
+    expect(screen.getByText('pytest tests/test_x.py::test_y')).toBeInTheDocument();
+    expect(screen.getByText('Expected output')).toBeInTheDocument();
+    expect(screen.getByText('1 passed')).toBeInTheDocument();
+    // The badge reflects the real class/artifact, not a decorative flag.
+    expect(screen.getByTestId('evidence-badge-class')).toHaveAttribute(
+      'data-evidence-class',
+      'replay_command',
+    );
+  });
+
+  it('renders the non_replayable_justification block for a run_log scenario', () => {
+    render(
+      <TestEvidenceTab
+        scenarios={[
+          scenario({
+            id: 'runlog',
+            evidence: {
+              evidence_class: 'run_log',
+              last_run_at: '2026-06-19T00:00:00',
+              output_snippet: 'ok',
+              non_replayable_justification: 'dogfood MCP flow, no harness yet',
+              expected_output_snapshot: 'spec done',
+            },
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('Non-replayable justification')).toBeInTheDocument();
+    expect(screen.getByText('dogfood MCP flow, no harness yet')).toBeInTheDocument();
+  });
+
+  it('renders legacy evidence (no evidence_class) without breaking', () => {
+    render(
+      <TestEvidenceTab
+        scenarios={[
+          scenario({
+            id: 'legacy',
+            evidence: {
+              test_file_path: 'tests/foo.py',
+              test_function: 'test_bar',
+              last_run_at: '2026-04-27T20:00:00',
+              output_snippet: '1 passed',
+            },
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('Test file')).toBeInTheDocument();
+    expect(screen.getByText('tests/foo.py')).toBeInTheDocument();
+    // legacy → binary present badge, no class badge, no new-field labels.
+    expect(screen.getByTestId('evidence-badge-present')).toBeInTheDocument();
+    expect(screen.queryByText('Replay command')).not.toBeInTheDocument();
+    expect(screen.queryByText('Non-replayable justification')).not.toBeInTheDocument();
   });
 });

@@ -52,7 +52,7 @@ Every stage has structured artifacts, lineage, status transitions and validation
 
 ## Platform Surface
 
-Current 0.2.3 surface:
+Current 0.2.5 surface:
 
 | Surface | Count |
 | --- | ---: |
@@ -358,7 +358,21 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-### 0.2.3 - current
+### 0.2.5 - current
+
+Scope is taken from the finalized specs on the **Okto Pulse 0.2.5** board and the `feature/0.2.5` branch diff over `feature/0.2.3`: `182 files changed, +16,113 / -10,922`. This release packages the 0.2.5 core engine and adds the UI needed to operate its new governance, KG, metrics and Design System surfaces.
+
+- **Board settings were split into clearer ownership boundaries** — the Board menu now separates current-board configuration from Global Default configuration, with shared board-gate controls and a dedicated default-template panel for activation, version review, diffs and forward-only application to new boards.
+- **Guidelines defaults and Global Catalog linking** — the Guidelines modal keeps board-local content separate from Global Catalog actions, moves Link/Unlink to catalog rows, surfaces default indicators, supports default guideline template updates and includes contextual help/examples for agent-facing guideline content.
+- **Design System became a first-class surface** — the new Design System menu mirrors the Guidelines pattern with global/inline records, editable content, board Link/Unlink, default selection, count refresh, help/examples and board-level gate configuration instead of hiding the gate in create flows.
+- **Mockups consume Design System evidence** — the Spec mockups tab sends Design System reference/version/evidence to the server so blocking/advisory `MockupDesignSystemGate` results are visible at save time instead of appearing later as opaque resource-gate failures.
+- **KG operations moved from raw health to actionable UI** — KG Health now includes canonical-debt diagnostics, graph controls, canonical partition integrity drilldown and clearer failure states for layer/canonical issues inherited from the core.
+- **Cognitive Action Center** — a new operational view exposes cognitive readiness items, human-only skip/clear actions, bounded metrics and blocker context so closeout work can be handled without reading raw KG internals.
+- **Metrics Publish Health panel** — the Header exposes a redacted health panel for local producer state, publish status, reason codes and AWS/reporting gap visibility, aligned with the new core publish-health DTO.
+- **Bug regression and validation UX polish** — Path B remediation is visible in card modals, test evidence is shown with replayable-evidence fields, unsupported scenario types are flagged explicitly, validation errors explain the relevant gate/scale, and test-card scenario limits are covered before operators hit hidden API failures.
+- **Packaged runtime refreshed** — `okto-pulse serve` now ships the rebuilt frontend bundle for these screens and the community package pulls in the full `okto-pulse-core` 0.2.5 engine changes: KG canonical maturity, canonical debt, cognitive readiness, default board configuration, Design System gates, Path B amendments, metrics publish health and MCP contract hardening.
+
+### 0.2.3
 
 The UI side of the **53-spec 0.2.3 board** — the KG resilience, governance, cognitive and projection work surfaced in the web app. `155 files changed, +19,162 / −4,510` over `0.2.2`, with 13 new frontend modules and the embedded `frontend_dist/` rebuilt to match. Highlights:
 
