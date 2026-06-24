@@ -1488,7 +1488,7 @@ wheels = [
 
 [[package]]
 name = "okto-pulse"
-version = "0.2.5"
+version = "0.2.6"
 source = { editable = "." }
 dependencies = [
     { name = "okto-pulse-core" },
@@ -1497,13 +1497,13 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "okto-pulse-core", specifier = ">=0.2.5,<1.0.0" },
+    { name = "okto-pulse-core", specifier = ">=0.2.6,<1.0.0" },
     { name = "sentence-transformers", specifier = ">=2.5.0,<6.0.0" },
 ]
 
 [[package]]
 name = "okto-pulse-core"
-version = "0.2.5"
+version = "0.2.6"
 source = { registry = "../okto_labs_pulse_core/dist" }
 dependencies = [
     { name = "aiofiles" },
@@ -1526,9 +1526,9 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
     { name = "wsproto" },
 ]
-sdist = { path = "okto_pulse_core-0.2.5.tar.gz" }
+sdist = { path = "okto_pulse_core-0.2.6.tar.gz" }
 wheels = [
-    { path = "okto_pulse_core-0.2.5-py3-none-any.whl" },
+    { path = "okto_pulse_core-0.2.6-py3-none-any.whl" },
 ]
 
 [[package]]

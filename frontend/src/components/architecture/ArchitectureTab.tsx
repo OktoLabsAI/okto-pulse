@@ -44,6 +44,8 @@ import type {
   ArchitectureParentType,
   ArchitectureWarningRecord,
   CreateArchitectureDesignRequest,
+  EffectiveResourceItem,
+  ResourceGateEntityType,
   ScreenMockup,
 } from '@/types';
 import { ArchitectureDiagramEditor } from './ArchitectureDiagramEditor';
@@ -58,12 +60,24 @@ import {
 interface ArchitectureTabProps {
   parentType: ArchitectureParentType;
   parentId: string;
+  boardId?: string | null;
+  entityType?: ResourceGateEntityType;
+  entityId?: string | null;
   specIdForCopy?: string | null;
   locked?: boolean;
   expanded?: boolean;
   screenMockups?: ScreenMockup[] | null;
   onChanged?: (designs: ArchitectureDesignSummary[]) => void;
 }
+
+type EffectiveArchitectureDesignSummary = ArchitectureDesignSummary & {
+  inherited?: boolean;
+  read_only?: boolean;
+  source_entity_type?: string | null;
+  source_entity_id?: string | null;
+  source_entity_title?: string | null;
+  effective_payload?: ArchitectureDesign;
+};
 
 interface ArchitectureCanvasElement {
   id: string;
@@ -574,11 +588,87 @@ function makeBlankInterface(): ArchitectureInterface {
   };
 }
 
-export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = false, expanded = false, screenMockups = [], onChanged }: ArchitectureTabProps) {
+function effectiveArchitectureToSummary(item: EffectiveResourceItem): EffectiveArchitectureDesignSummary | null {
+  const resource = item.resource && typeof item.resource === 'object'
+    ? item.resource as Partial<ArchitectureDesign>
+    : item as Partial<ArchitectureDesign>;
+  const id = String(item.id || resource.id || '');
+  if (!id) return null;
+  const diagrams = Array.isArray(resource.diagrams) ? resource.diagrams : [];
+  return {
+    id,
+    board_id: String(resource.board_id || ''),
+    parent_type: (resource.parent_type || item.source_entity_type || 'ideation') as ArchitectureParentType,
+    parent_id: String(resource.parent_id || item.source_entity_id || ''),
+    title: String(resource.title || item.title || 'Inherited architecture'),
+    version: Number(resource.version || 1),
+    source_ref: resource.source_ref ?? null,
+    source_version: resource.source_version ?? null,
+    source_design_id: resource.source_design_id ?? null,
+    stale: Boolean(resource.stale),
+    breaking_change_flag: Boolean(resource.breaking_change_flag),
+    requires_arch_review: Boolean(resource.requires_arch_review),
+    diagrams_count: diagrams.length,
+    adapter_payload_refs: diagrams
+      .map((diagram) => diagram.adapter_payload_ref)
+      .filter((ref): ref is string => Boolean(ref)),
+    created_at: String(resource.created_at || ''),
+    updated_at: String(resource.updated_at || ''),
+    inherited: item.inherited,
+    read_only: item.read_only,
+    source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
+    source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
+    source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
+    effective_payload: resource.global_description !== undefined ? resource as ArchitectureDesign : undefined,
+  };
+}
+
+function effectiveMockupToScreen(item: EffectiveResourceItem): ScreenMockup | null {
+  const resource = item.resource && typeof item.resource === 'object'
+    ? item.resource as Partial<ScreenMockup>
+    : item as Partial<ScreenMockup>;
+  const id = String(item.id || resource.id || '');
+  if (!id || !resource.html_content) return null;
+  return {
+    id,
+    title: String(resource.title || item.title || 'Inherited mockup'),
+    description: typeof resource.description === 'string' ? resource.description : null,
+    screen_type: resource.screen_type || 'page',
+    html_content: String(resource.html_content),
+    annotations: resource.annotations ?? null,
+    order: typeof resource.order === 'number' ? resource.order : 9999,
+    origin_id: resource.origin_id ?? null,
+    origin_story_id: resource.origin_story_id ?? null,
+    origin_entity_type: resource.origin_entity_type ?? null,
+    design_system_ref: resource.design_system_ref ?? null,
+    design_system_evidence: resource.design_system_evidence ?? null,
+  };
+}
+
+function inheritedSourceLabel(item: EffectiveArchitectureDesignSummary): string {
+  const type = item.source_entity_type || 'source';
+  const title = item.source_entity_title || item.source_entity_id || 'parent';
+  return `${type}: ${title}`;
+}
+
+export function ArchitectureTab({
+  parentType,
+  parentId,
+  boardId,
+  entityType,
+  entityId,
+  specIdForCopy,
+  locked: lockedProp = false,
+  expanded = false,
+  screenMockups = [],
+  onChanged,
+}: ArchitectureTabProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
   const onChangedRef = useRef(onChanged);
-  const [summaries, setSummaries] = useState<ArchitectureDesignSummary[]>([]);
+  const [directSummaries, setDirectSummaries] = useState<ArchitectureDesignSummary[]>([]);
+  const [effectiveArchitecture, setEffectiveArchitecture] = useState<EffectiveResourceItem[]>([]);
+  const [effectiveMockups, setEffectiveMockups] = useState<EffectiveResourceItem[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [design, setDesign] = useState<ArchitectureDesign | null>(null);
   const [selectedDiagramId, setSelectedDiagramId] = useState('');
@@ -605,7 +695,29 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
     screens: true,
   });
   const [selectedComponentSegmentId, setSelectedComponentSegmentId] = useState(COMPONENT_SEGMENTS[0].id);
-  const availableMockups = screenMockups || [];
+  const summaries = useMemo<EffectiveArchitectureDesignSummary[]>(() => {
+    const directIds = new Set(directSummaries.map((item) => item.id));
+    const inherited = effectiveArchitecture
+      .filter((item) => item.inherited && !directIds.has(String(item.id || '')))
+      .map(effectiveArchitectureToSummary)
+      .filter((item): item is EffectiveArchitectureDesignSummary => Boolean(item));
+    return [...directSummaries, ...inherited];
+  }, [directSummaries, effectiveArchitecture]);
+  const availableMockups = useMemo(() => {
+    const direct = screenMockups || [];
+    const directIds = new Set(direct.map((item) => item.id));
+    const inherited = effectiveMockups
+      .filter((item) => item.inherited && !directIds.has(String(item.id || '')))
+      .map(effectiveMockupToScreen)
+      .filter((item): item is ScreenMockup => Boolean(item));
+    return [...direct, ...inherited];
+  }, [effectiveMockups, screenMockups]);
+  const selectedSummary = summaries.find((item) => item.id === selectedId) || null;
+  const selectedInheritedReadOnly = Boolean(selectedSummary?.inherited && selectedSummary.read_only);
+  const cardSnapshotReadOnly = parentType === 'card';
+  const locked = lockedProp || cardSnapshotReadOnly || selectedInheritedReadOnly;
+  const entityAuthoringLocked = lockedProp || cardSnapshotReadOnly;
+  const authoringLocked = locked;
 
   const selectedDiagram = useMemo(
     () => design?.diagrams.find((item) => item.id === selectedDiagramId) || design?.diagrams[0] || null,
@@ -655,11 +767,11 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
     setLoading(true);
     try {
       const data = await apiRef.current.listArchitectureDesigns(parentType, parentId);
-      setSummaries(data);
+      setDirectSummaries(data);
       onChangedRef.current?.(data);
       setSelectedId((current) => {
         const requested = preferredSelectedId || current;
-        if (requested && data.some((item) => item.id === requested)) return requested;
+        if (requested) return requested;
         return data[0]?.id || '';
       });
       return data;
@@ -671,13 +783,56 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
     }
   }, [parentId, parentType]);
 
+  const loadEffectiveResources = useCallback(async () => {
+    const resolvedBoardId = boardId || '';
+    const resolvedEntityType = entityType || parentType;
+    const resolvedEntityId = entityId || parentId;
+    if (!resolvedBoardId || !resolvedEntityType || !resolvedEntityId) {
+      setEffectiveArchitecture([]);
+      setEffectiveMockups([]);
+      return;
+    }
+    try {
+      const response = await apiRef.current.getEffectiveResources(
+        resolvedBoardId,
+        resolvedEntityType,
+        resolvedEntityId,
+      );
+      setEffectiveArchitecture(response.resources.architecture || []);
+      setEffectiveMockups(response.resources.mockup || []);
+    } catch {
+      setEffectiveArchitecture([]);
+      setEffectiveMockups([]);
+    }
+  }, [boardId, entityId, entityType, parentId, parentType]);
+
   useEffect(() => {
     void loadList();
   }, [loadList]);
 
   useEffect(() => {
+    void loadEffectiveResources();
+  }, [loadEffectiveResources]);
+
+  useEffect(() => {
+    if (summaries.length === 0) {
+      if (selectedId) setSelectedId('');
+      return;
+    }
+    if (!selectedId || !summaries.some((item) => item.id === selectedId)) {
+      setSelectedId(summaries[0].id);
+    }
+  }, [selectedId, summaries]);
+
+  useEffect(() => {
     if (!selectedId) {
       setDesign(null);
+      return;
+    }
+    if (selectedSummary?.effective_payload) {
+      const payload = selectedSummary.effective_payload;
+      setDesign(payload);
+      setSelectedDiagramId((current) => resolveSelectedDiagramId(payload.diagrams, current));
       return;
     }
     let cancelled = false;
@@ -693,7 +848,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
     return () => {
       cancelled = true;
     };
-  }, [selectedId]);
+  }, [selectedId, selectedSummary]);
 
   useEffect(() => {
     if (!design) {
@@ -738,6 +893,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
 
   const refresh = async () => {
     const data = await loadList(selectedId);
+    await loadEffectiveResources();
     const detailId = selectedId && data.some((item) => item.id === selectedId) ? selectedId : data[0]?.id;
     if (detailId) {
       try {
@@ -759,7 +915,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const createDesign = async () => {
-    if (!newTitle.trim() || !newDescription.trim()) return;
+    if (entityAuthoringLocked || !newTitle.trim() || !newDescription.trim()) return;
     setCreating(true);
     try {
       const created = await apiRef.current.createArchitectureDesign(parentType, parentId, {
@@ -784,7 +940,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const saveDesign = async () => {
-    if (!design) return;
+    if (!design || authoringLocked) return;
     const structuredWarnings = validation?.structured_warnings || [];
     if (structuredWarnings.length > 0 && !warningAcknowledged) {
       toast.error('Review and acknowledge architecture warnings before saving.');
@@ -823,7 +979,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const deleteDesign = async () => {
-    if (!design || locked || !confirm('Delete this architecture design?')) return;
+    if (!design || authoringLocked || !confirm('Delete this architecture design?')) return;
     await apiRef.current.deleteArchitectureDesign(design.id);
     toast.success('Architecture design deleted');
     setDesign(null);
@@ -852,8 +1008,8 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
     payload: Record<string, unknown>;
     replaceDiagramId?: string | null;
   }) => {
-    if (locked) return;
-    if (!design) {
+    if (entityAuthoringLocked) return;
+    if (!design || selectedInheritedReadOnly) {
       const created = await apiRef.current.createArchitectureDesign(parentType, parentId, {
         title: data.title,
         global_description: data.description || `Imported ${data.title}`,
@@ -942,7 +1098,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const addDiagram = () => {
-    if (!design || locked) return;
+    if (!design || authoringLocked) return;
     const next = makeBlankDiagram(design.diagrams.length);
     patchDesign({ diagrams: [...design.diagrams, next] });
     setSelectedDiagramId(next.id || '');
@@ -972,7 +1128,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const addEntityToCurrentDiagram = (entity: ArchitectureEntity, index: number) => {
-    if (!design || !selectedDiagram) return;
+    if (!design || !selectedDiagram || authoringLocked) return;
     const nextDiagram = addEntityNodeToDiagram(selectedDiagram, entity, index);
     patchDesign({
       diagrams: design.diagrams.map((diagram) => (diagram.id === nextDiagram.id ? nextDiagram : diagram)),
@@ -980,7 +1136,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const addComponentToCurrentDiagram = (preset: ArchitectureComponentPreset) => {
-    if (!design || !selectedDiagram || locked) return;
+    if (!design || !selectedDiagram || authoringLocked) return;
     const entity: ArchitectureEntityDraft = {
       id: nextCanvasId(preset.id),
       name: `New ${preset.label}`,
@@ -1003,7 +1159,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const updateEntity = (index: number, patch: Partial<ArchitectureEntity>) => {
-    if (!design) return;
+    if (!design || authoringLocked) return;
     const previous = design.entities[index];
     const previousRefs = entityRefsFor(previous, index);
     const nextEntities = design.entities.map((item, i) => (i === index ? { ...item, ...patch } : item));
@@ -1020,7 +1176,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const updateInterface = (index: number, patch: Partial<ArchitectureInterface>) => {
-    if (!design) return;
+    if (!design || authoringLocked) return;
     const previous = design.interfaces[index];
     const previousRefs = interfaceRefsFor(previous, index);
     const nextInterfaces = design.interfaces.map((item, i) => (i === index ? { ...item, ...patch } : item));
@@ -1038,7 +1194,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const deleteEntity = (index: number) => {
-    if (!design) return;
+    if (!design || authoringLocked) return;
     const entity = design.entities[index];
     const refs = entityRefsFor(entity, index);
     const nextInterfaces = design.interfaces.map((item) => ({
@@ -1063,7 +1219,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const deleteInterface = (index: number) => {
-    if (!design) return;
+    if (!design || authoringLocked) return;
     const item = design.interfaces[index];
     const refs = interfaceRefsFor(item, index);
     const nextDiagrams = design.diagrams.map((diagram) => {
@@ -1078,7 +1234,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const commitEntityDraft = () => {
-    if (!design || !entityDraft) return;
+    if (!design || !entityDraft || authoringLocked) return;
     const draft: ArchitectureEntityDraft = {
       ...entityDraft,
       color: entityDraft.color || colorForEntityType(entityDraft.entity_type),
@@ -1094,7 +1250,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const commitInterfaceDraft = () => {
-    if (!design || !interfaceDraft) return;
+    if (!design || !interfaceDraft || authoringLocked) return;
     const nextInterfaces = [...design.interfaces, interfaceDraft];
     patchDesign({ interfaces: nextInterfaces });
     setInterfaceDraft(null);
@@ -1123,7 +1279,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const updateEntityVisual = (index: number, patch: { color?: string; icon?: ArchitectureVisualIcon }) => {
-    if (!design) return;
+    if (!design || authoringLocked) return;
     const entity = design.entities[index];
     const currentVisual = entity as ArchitectureEntityDraft;
     const nextEntities = design.entities.map((item, itemIndex) => {
@@ -1152,7 +1308,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const deleteEntityByRef = (ref: string) => {
-    if (!design) return;
+    if (!design || authoringLocked) return;
     const index = design.entities.findIndex((entity, entityIndex) => (
       [entity.id, entity.name, entityRef(entity, entityIndex)].filter(Boolean).includes(ref)
     ));
@@ -1160,7 +1316,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const duplicateEntity = (index: number) => {
-    if (!design) return;
+    if (!design || authoringLocked) return;
     const source = design.entities[index];
     const visual = entityVisual(source, index);
     const entity: ArchitectureEntityDraft = {
@@ -1180,7 +1336,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
   };
 
   const duplicateInterface = (index: number) => {
-    if (!design) return;
+    if (!design || authoringLocked) return;
     const source = design.interfaces[index];
     const item: ArchitectureInterface = {
       ...source,
@@ -1212,9 +1368,14 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
             >
               <Boxes size={12} />
               {item.title}
+              {item.inherited && (
+                <span className="rounded bg-slate-200 px-1 py-0.5 text-[9px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                  inherited
+                </span>
+              )}
             </button>
           ))}
-          {!locked && (
+          {!entityAuthoringLocked && (
             <button type="button" onClick={() => setNewTitle(newTitle ? '' : 'New architecture')} className="px-2 py-1 rounded text-xs text-cyan-600 hover:bg-cyan-50 dark:hover:bg-cyan-950/30 flex items-center gap-1">
               <Plus size={12} /> New
             </button>
@@ -1226,7 +1387,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
               <Copy size={15} />
             </button>
           )}
-          {!locked && (
+          {!entityAuthoringLocked && (
             <button type="button" onClick={() => setShowImport(true)} className="p-1.5 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="Import Excalidraw">
               <FileUp size={15} />
             </button>
@@ -1237,14 +1398,31 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
         </div>
       </div>
 
-      {locked && (
+      {lockedProp && !cardSnapshotReadOnly && (
         <div className="px-3 py-2 rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/30 text-sm text-amber-800 dark:text-amber-200 flex items-center gap-2">
           <Shield size={15} />
           Spec architecture is locked
         </div>
       )}
 
-      {newTitle && !locked && (
+      {cardSnapshotReadOnly && (
+        <div className="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
+          <Shield size={15} />
+          Card architecture snapshots are read-only
+        </div>
+      )}
+
+      {selectedInheritedReadOnly && selectedSummary && (
+        <div
+          data-testid="architecture-inherited-origin"
+          className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-sm text-slate-600 dark:text-slate-300 flex items-center gap-2"
+        >
+          <Shield size={15} />
+          Read-only inherited from {inheritedSourceLabel(selectedSummary)}
+        </div>
+      )}
+
+      {newTitle && !entityAuthoringLocked && (
         <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-gray-50 dark:bg-gray-950 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
@@ -1279,7 +1457,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                 <input
                   value={design.title}
                   onChange={(event) => patchDesign({ title: event.target.value })}
-                  readOnly={locked}
+                  readOnly={authoringLocked}
                   className="mt-1 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100"
                 />
               </label>
@@ -1288,7 +1466,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                 <textarea
                   value={design.global_description}
                   onChange={(event) => patchDesign({ global_description: event.target.value })}
-                  readOnly={locked}
+                  readOnly={authoringLocked}
                   rows={4}
                   className="mt-1 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 resize-none"
                 />
@@ -1302,12 +1480,12 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                 />
               </label>
               <div className="flex gap-2 pt-1">
-                {!locked && (
+                {!authoringLocked && (
                   <button type="button" onClick={saveDesign} disabled={saving} className="btn btn-primary text-sm flex items-center gap-1 disabled:opacity-50">
                     <Save size={14} /> Save
                   </button>
                 )}
-                {!locked && (
+                {!authoringLocked && (
                   <button type="button" onClick={deleteDesign} className="btn btn-secondary text-sm flex items-center gap-1">
                     <Trash2 size={14} /> Delete
                   </button>
@@ -1348,7 +1526,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                       key={item.id}
                       type="button"
                       onClick={() => addComponentToCurrentDiagram(item)}
-                      disabled={locked}
+                      disabled={authoringLocked}
                       title={`Add ${item.label} component`}
                       className="min-h-[58px] rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-950 px-1.5 py-2 text-[11px] font-medium text-gray-700 dark:text-gray-200 hover:border-cyan-400 hover:text-cyan-700 dark:hover:text-cyan-200 disabled:opacity-50 flex flex-col items-center justify-center gap-1"
                     >
@@ -1373,7 +1551,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                   {diagram.title}
                 </button>
               ))}
-              {!locked && (
+              {!authoringLocked && (
                 <button type="button" onClick={addDiagram} className="px-2 py-1 rounded text-xs text-cyan-600 hover:bg-cyan-50 dark:hover:bg-cyan-950/30 flex items-center gap-1">
                   <Plus size={12} /> Diagram
                 </button>
@@ -1383,11 +1561,11 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
               <div className="shrink-0 grid grid-cols-2 gap-2">
                 <label className="block">
                   <span className="text-xs text-gray-500 dark:text-gray-400">Diagram title</span>
-                  <input value={selectedDiagram.title} onChange={(event) => updateDiagram({ ...selectedDiagram, title: event.target.value })} readOnly={locked} className="mt-1 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100" />
+                  <input value={selectedDiagram.title} onChange={(event) => updateDiagram({ ...selectedDiagram, title: event.target.value })} readOnly={authoringLocked} className="mt-1 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100" />
                 </label>
                 <label className="block">
                   <span className="text-xs text-gray-500 dark:text-gray-400">Diagram description</span>
-                  <input value={selectedDiagram.description || ''} onChange={(event) => updateDiagram({ ...selectedDiagram, description: event.target.value })} readOnly={locked} className="mt-1 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100" />
+                  <input value={selectedDiagram.description || ''} onChange={(event) => updateDiagram({ ...selectedDiagram, description: event.target.value })} readOnly={authoringLocked} className="mt-1 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100" />
                 </label>
               </div>
             )}
@@ -1397,7 +1575,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
                 entities={design.entities}
                 interfaces={design.interfaces}
                 mockups={availableMockups}
-                readOnly={locked}
+                readOnly={authoringLocked}
                 onChange={updateDiagram}
                 onDeleteLinkedEntity={deleteEntityByRef}
                 focusElementId={focusRequest && focusRequest.diagramId === selectedDiagram?.id ? focusRequest.elementId : null}
@@ -1412,7 +1590,7 @@ export function ArchitectureTab({ parentType, parentId, specIdForCopy, locked = 
               title="Entities"
               open={openPanels.entities}
               onToggle={togglePanel}
-              action={!locked && (
+              action={!authoringLocked && (
                 <button
                   type="button"
                   onClick={() => {

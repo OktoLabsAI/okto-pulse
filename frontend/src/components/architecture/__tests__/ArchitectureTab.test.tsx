@@ -13,6 +13,7 @@ const apiMock = vi.hoisted(() => ({
   deleteArchitectureDesign: vi.fn(),
   copyArchitectureToCard: vi.fn(),
   importExcalidrawArchitectureDiagram: vi.fn(),
+  getEffectiveResources: vi.fn(),
 }));
 
 vi.mock('@/services/api', () => ({
@@ -95,6 +96,9 @@ describe('ArchitectureTab', () => {
       suggested_fixes: [],
       summary: {},
     });
+    apiMock.getEffectiveResources.mockResolvedValue({
+      resources: { architecture: [], mockup: [], knowledge_base: [] },
+    });
   });
 
   it('loads architecture once when parent passes an inline onChanged callback', async () => {
@@ -112,6 +116,80 @@ describe('ArchitectureTab', () => {
     expect(screen.queryByLabelText('Stale')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Breaking')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Review')).not.toBeInTheDocument();
+  });
+
+  it('renders card architecture as a read-only snapshot with copy refresh', async () => {
+    apiMock.listArchitectureDesigns.mockResolvedValue([
+      { ...summary, parent_type: 'card', parent_id: 'card-1' },
+    ]);
+    apiMock.getArchitectureDesign.mockResolvedValue({
+      ...design,
+      parent_type: 'card',
+      parent_id: 'card-1',
+      source_design_id: 'source-arch-1',
+    });
+
+    render(<ArchitectureTab parentType="card" parentId="card-1" specIdForCopy="spec-1" />);
+
+    await waitFor(() => expect(screen.getByText('Runtime Architecture')).toBeInTheDocument());
+    expect(screen.getByText('Card architecture snapshots are read-only')).toBeInTheDocument();
+    expect(screen.getByTitle('Copy from spec')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /New/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Save/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Delete/i })).not.toBeInTheDocument();
+  });
+
+  it('renders inherited effective architecture as read-only with provenance', async () => {
+    const inheritedDesign: ArchitectureDesign = {
+      ...design,
+      id: 'arch-parent-1',
+      parent_type: 'ideation',
+      parent_id: 'idea-1',
+      title: 'Parent Architecture',
+      global_description: 'Inherited parent architecture.',
+    };
+    apiMock.listArchitectureDesigns.mockResolvedValue([]);
+    apiMock.getEffectiveResources.mockResolvedValue({
+      resources: {
+        mockup: [],
+        knowledge_base: [],
+        architecture: [
+          {
+            id: 'arch-parent-1',
+            title: 'Parent Architecture',
+            resource_type: 'architecture',
+            attachment_kind: 'inherited_reference',
+            inherited: true,
+            read_only: true,
+            hydrated: true,
+            source_entity_type: 'ideation',
+            source_entity_id: 'idea-1',
+            source_entity_title: 'Source idea',
+            resource: inheritedDesign,
+          },
+        ],
+      },
+    });
+
+    render(
+      <ArchitectureTab
+        parentType="refinement"
+        parentId="refinement-1"
+        boardId="board-1"
+        entityType="refinement"
+        entityId="refinement-1"
+      />,
+    );
+
+    expect(await screen.findByText('Parent Architecture')).toBeInTheDocument();
+    expect(screen.getByTestId('architecture-inherited-origin').textContent).toMatch(
+      /Read-only inherited from ideation: Source idea/,
+    );
+    expect(screen.getByRole('button', { name: /New/i })).toBeInTheDocument();
+    expect(screen.getByTitle('Import Excalidraw')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Save/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Delete/i })).not.toBeInTheDocument();
+    expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
   });
 
   it('shows labeled architecture fields and parent mockup screens', async () => {

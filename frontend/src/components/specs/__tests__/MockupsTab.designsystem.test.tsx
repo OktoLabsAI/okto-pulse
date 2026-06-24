@@ -8,8 +8,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MockupsTab } from '../MockupsTab';
 import type { ScreenMockup } from '@/types';
 
+const apiMock = vi.hoisted(() => ({
+  getEffectiveResources: vi.fn(),
+}));
+
+vi.mock('@/services/api', () => ({
+  useDashboardApi: () => apiMock,
+}));
+
 describe('MockupsTab Design System fields', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.getEffectiveResources.mockResolvedValue({
+      resources: { architecture: [], mockup: [], knowledge_base: [] },
+    });
+  });
 
   it('includes design_system_ref + version + evidence in the created mockup', async () => {
     const onUpdate = vi.fn().mockResolvedValue(undefined);
@@ -66,5 +79,54 @@ describe('MockupsTab Design System fields', () => {
     const err = await screen.findByTestId('mockup-gate-error');
     expect(err.textContent).toMatch(/This board enforces a Design System/);
     expect(err.textContent).not.toMatch(/Failed to save mockup/);
+  });
+
+  it('renders inherited effective mockups as read-only with source provenance', async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    apiMock.getEffectiveResources.mockResolvedValue({
+      resources: {
+        architecture: [],
+        knowledge_base: [],
+        mockup: [
+          {
+            id: 'mock-parent-1',
+            title: 'Parent checkout',
+            resource_type: 'mockup',
+            attachment_kind: 'inherited_reference',
+            inherited: true,
+            read_only: true,
+            hydrated: true,
+            source_entity_type: 'ideation',
+            source_entity_id: 'idea-1',
+            source_entity_title: 'Source idea',
+            resource: {
+              id: 'mock-parent-1',
+              title: 'Parent checkout',
+              description: 'Inherited parent screen',
+              screen_type: 'page',
+              html_content: '<main>checkout</main>',
+              annotations: null,
+              order: 0,
+            },
+          },
+        ],
+      },
+    });
+
+    render(
+      <MockupsTab
+        screenMockups={[]}
+        boardId="board-1"
+        entityType="refinement"
+        entityId="refinement-1"
+        onUpdate={onUpdate}
+      />,
+    );
+
+    expect(await screen.findByText('Parent checkout')).toBeInTheDocument();
+    expect(screen.getByTestId('mockup-inherited-origin').textContent).toMatch(
+      /Read-only inherited from ideation: Source idea/,
+    );
+    expect(screen.queryByTitle('Delete mockup')).not.toBeInTheDocument();
   });
 });

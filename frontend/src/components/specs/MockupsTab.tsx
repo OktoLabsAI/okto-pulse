@@ -3,9 +3,10 @@
  * Supports viewing existing mockups and creating new ones via HTML editor.
  */
 
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Monitor, Smartphone, MessageSquare, Plus, X, Eye, Code } from 'lucide-react';
-import type { ScreenMockup } from '@/types';
+import { useDashboardApi } from '@/services/api';
+import type { EffectiveResourceItem, ResourceGateEntityType, ScreenMockup } from '@/types';
 
 function sanitizeHtml(html: string): string {
   // Strip <script> tags and on* event handlers
@@ -30,10 +31,69 @@ interface MockupsTabProps {
   screenMockups: ScreenMockup[] | null;
   expanded?: boolean;
   onUpdate?: (mockups: ScreenMockup[]) => Promise<void>;
+  boardId?: string | null;
+  entityType?: ResourceGateEntityType;
+  entityId?: string | null;
 }
 
-export function MockupsTab({ screenMockups, expanded = false, onUpdate }: MockupsTabProps) {
-  const screens = (screenMockups || []).sort((a, b) => a.order - b.order);
+type EffectiveScreenMockup = ScreenMockup & {
+  inherited?: boolean;
+  read_only?: boolean;
+  source_entity_type?: string | null;
+  source_entity_id?: string | null;
+  source_entity_title?: string | null;
+};
+
+function effectiveMockupToScreen(item: EffectiveResourceItem): EffectiveScreenMockup | null {
+  const resource = item.resource && typeof item.resource === 'object'
+    ? item.resource as Partial<ScreenMockup>
+    : item as Partial<ScreenMockup>;
+  const id = String(item.id || resource.id || '');
+  if (!id || !resource.html_content) return null;
+  return {
+    id,
+    title: String(resource.title || item.title || 'Inherited mockup'),
+    description: typeof resource.description === 'string' ? resource.description : null,
+    screen_type: resource.screen_type || 'page',
+    html_content: String(resource.html_content),
+    annotations: resource.annotations ?? null,
+    order: typeof resource.order === 'number' ? resource.order : 9999,
+    origin_id: resource.origin_id ?? null,
+    origin_story_id: resource.origin_story_id ?? null,
+    origin_entity_type: resource.origin_entity_type ?? null,
+    design_system_ref: resource.design_system_ref ?? null,
+    design_system_evidence: resource.design_system_evidence ?? null,
+    inherited: item.inherited,
+    read_only: item.read_only,
+    source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
+    source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
+    source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
+  };
+}
+
+function sourceLabel(screen: EffectiveScreenMockup): string {
+  const type = screen.source_entity_type || 'source';
+  const title = screen.source_entity_title || screen.source_entity_id || 'parent';
+  return `${type}: ${title}`;
+}
+
+export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId, entityType, entityId }: MockupsTabProps) {
+  const api = useDashboardApi();
+  const apiRef = useRef(api);
+  const directScreens = useMemo(
+    () => [...(screenMockups || [])].sort((a, b) => a.order - b.order),
+    [screenMockups],
+  );
+  const [effectiveMockups, setEffectiveMockups] = useState<EffectiveResourceItem[]>([]);
+  const screens = useMemo<EffectiveScreenMockup[]>(() => {
+    const directIds = new Set(directScreens.map((item) => item.id));
+    const inherited = effectiveMockups
+      .filter((item) => item.inherited && !directIds.has(String(item.id || '')))
+      .map(effectiveMockupToScreen)
+      .filter((item): item is EffectiveScreenMockup => Boolean(item))
+      .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
+    return [...directScreens, ...inherited];
+  }, [directScreens, effectiveMockups]);
   const [selectedId, setSelectedId] = useState<string>(screens[0]?.id || '');
   const [viewMode, setViewMode] = useState<'desktop' | 'mobile'>('desktop');
   const selected = screens.find((s) => s.id === selectedId);
@@ -53,6 +113,38 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
   const [formDsEvidence, setFormDsEvidence] = useState('');
   const [gateError, setGateError] = useState<string | null>(null);
 
+  useEffect(() => {
+    apiRef.current = api;
+  }, [api]);
+
+  useEffect(() => {
+    if (!boardId || !entityType || !entityId) {
+      setEffectiveMockups([]);
+      return;
+    }
+    let cancelled = false;
+    apiRef.current.getEffectiveResources(boardId, entityType, entityId)
+      .then((response) => {
+        if (!cancelled) setEffectiveMockups(response.resources.mockup || []);
+      })
+      .catch(() => {
+        if (!cancelled) setEffectiveMockups([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [boardId, entityId, entityType]);
+
+  useEffect(() => {
+    if (screens.length === 0) {
+      if (selectedId) setSelectedId('');
+      return;
+    }
+    if (!selectedId || !screens.some((screen) => screen.id === selectedId)) {
+      setSelectedId(screens[0].id);
+    }
+  }, [screens, selectedId]);
+
   const handleCreate = async () => {
     if (!formTitle.trim() || !formHtml.trim() || !onUpdate) return;
     setSaving(true);
@@ -71,7 +163,7 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
           : null,
         design_system_evidence: formDsEvidence.trim() || null,
       };
-      await onUpdate([...screens, newMockup]);
+      await onUpdate([...directScreens, newMockup]);
       setSelectedId(newMockup.id);
       setShowForm(false);
       setFormTitle('');
@@ -97,10 +189,10 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
   const handleDelete = async (id: string) => {
     if (!onUpdate) return;
     if (!confirm('Delete this mockup?')) return;
-    const updated = screens.filter((s) => s.id !== id);
+    const updated = directScreens.filter((s) => s.id !== id);
     await onUpdate(updated);
     if (selectedId === id) {
-      setSelectedId(updated[0]?.id || '');
+      setSelectedId(updated[0]?.id || screens.find((screen) => screen.id !== id)?.id || '');
     }
   };
 
@@ -278,6 +370,14 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
             >
               {s.title}
               <span className="text-[9px] text-gray-400">{s.screen_type}</span>
+              {s.inherited && (
+                <span
+                  data-testid="mockup-inherited-tab-badge"
+                  className="rounded bg-slate-200 px-1 py-0.5 text-[9px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-200"
+                >
+                  inherited
+                </span>
+              )}
             </button>
           ))}
           {onUpdate && (
@@ -290,7 +390,7 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
           )}
         </div>
         <div className="flex items-center gap-1">
-          {onUpdate && selected && (
+          {onUpdate && selected && !selected.read_only && (
             <button
               onClick={() => handleDelete(selected.id)}
               className="p-1 text-gray-400 hover:text-red-500 rounded mr-1"
@@ -321,6 +421,14 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate }: Mockup
       {/* Iframe viewport */}
       {selected && (
         <div className={`mx-auto transition-all ${viewMode === 'mobile' ? 'max-w-sm' : 'w-full'}`}>
+          {selected.inherited && (
+            <div
+              data-testid="mockup-inherited-origin"
+              className="mb-2 inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+            >
+              Read-only inherited from {sourceLabel(selected)}
+            </div>
+          )}
           {selected.description && (
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2 italic">{selected.description}</p>
           )}

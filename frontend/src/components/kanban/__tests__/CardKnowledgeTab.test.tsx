@@ -1,12 +1,18 @@
 /**
- * CardKnowledgeTab — TC-3 (TS3) covering CRUD on a card's knowledge bases.
- * Verifies: add, list/expand, edit, delete, link-from-spec, and the new
- * markdown download (Blob URL is created and revoked).
+ * CardKnowledgeTab - read-only card Knowledge snapshots.
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { CardKnowledgeTab } from '../CardKnowledgeTab';
+
+const apiMock = vi.hoisted(() => ({
+  getEffectiveResources: vi.fn(),
+}));
+
+vi.mock('@/services/api', () => ({
+  useDashboardApi: () => apiMock,
+}));
 
 const baseCard = {
   id: 'c1',
@@ -19,87 +25,48 @@ const baseCard = {
   position: 0,
   card_type: 'normal',
   knowledge_bases: [
-    { id: 'kb_existing', title: 'Existing KB', description: 'desc', content: 'orig content', mime_type: 'text/markdown' },
+    {
+      id: 'kb_existing',
+      title: 'Existing KB',
+      description: 'desc',
+      content: 'orig content',
+      mime_type: 'text/markdown',
+      source: 'copied_from_spec:s1:sk_1',
+      source_kb_id: 'sk_1',
+    },
   ],
 } as any;
 
 beforeEach(() => {
-  // toast.success/error use document.body
   document.body.innerHTML = '';
+  vi.clearAllMocks();
+  apiMock.getEffectiveResources.mockResolvedValue({
+    resources: { architecture: [], mockup: [], knowledge_base: [] },
+  });
 });
 
 describe('CardKnowledgeTab', () => {
-  it('renders existing knowledge bases', () => {
+  it('renders existing knowledge snapshots as read-only rows', () => {
     render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
+
+    expect(screen.getByText('Card knowledge snapshots are read-only')).toBeTruthy();
     expect(screen.getByText('Existing KB')).toBeTruthy();
+    expect(screen.getByText('from spec')).toBeTruthy();
     expect(screen.getByTestId('kb-row-kb_existing')).toBeTruthy();
+    expect(screen.queryByText(/New KB/i)).toBeNull();
+    expect(screen.queryByText(/Link from Spec/i)).toBeNull();
+    expect(screen.queryByTestId('kb-edit-kb_existing')).toBeNull();
+    expect(screen.queryByTestId('kb-delete-kb_existing')).toBeNull();
   });
 
-  it('adds a new KB through the form (calls onUpdate with appended array)', async () => {
-    const onUpdate = vi.fn().mockResolvedValue(undefined);
-    render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={onUpdate} />);
-    fireEvent.click(screen.getByText(/New KB/i));
-    const inputs = screen.getAllByRole('textbox');
-    // First input = title, then the textarea
-    fireEvent.change(inputs[0], { target: { value: 'New entry' } });
-    fireEvent.change(inputs[1], { target: { value: 'New body content' } });
-    fireEvent.click(screen.getByText('Add'));
-    await waitFor(() => expect(onUpdate).toHaveBeenCalled());
-    const next = onUpdate.mock.calls[0][0];
-    expect(next).toHaveLength(2);
-    expect(next[1].title).toBe('New entry');
-    expect(next[1].content).toBe('New body content');
-    expect(next[1].source).toBe('manual');
+  it('expands a snapshot to show markdown content', () => {
+    render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('kb-row-kb_existing'));
+    expect(screen.getByText('orig content')).toBeTruthy();
   });
 
-  it('deletes a KB (calls onUpdate without that id)', async () => {
-    const onUpdate = vi.fn().mockResolvedValue(undefined);
-    render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={onUpdate} />);
-    fireEvent.click(screen.getByTestId('kb-delete-kb_existing'));
-    await waitFor(() => expect(onUpdate).toHaveBeenCalled());
-    const next = onUpdate.mock.calls[0][0];
-    expect(next.find((k: any) => k.id === 'kb_existing')).toBeUndefined();
-  });
-
-  it('edits a KB in place (calls onUpdate with updated content)', async () => {
-    const onUpdate = vi.fn().mockResolvedValue(undefined);
-    render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={onUpdate} />);
-    fireEvent.click(screen.getByTestId('kb-edit-kb_existing'));
-    const titleInput = screen.getByTestId('kb-edit-title-kb_existing');
-    const contentInput = screen.getByTestId('kb-edit-content-kb_existing');
-    fireEvent.change(titleInput, { target: { value: 'Renamed' } });
-    fireEvent.change(contentInput, { target: { value: 'updated body' } });
-    fireEvent.click(screen.getByTestId('kb-edit-save-kb_existing'));
-    await waitFor(() => expect(onUpdate).toHaveBeenCalled());
-    const next = onUpdate.mock.calls[0][0];
-    const updated = next.find((k: any) => k.id === 'kb_existing');
-    expect(updated.title).toBe('Renamed');
-    expect(updated.content).toBe('updated body');
-  });
-
-  it('links a KB from the parent spec (preserves source_id and tags source=spec)', async () => {
-    const onUpdate = vi.fn().mockResolvedValue(undefined);
-    render(
-      <CardKnowledgeTab
-        card={{ ...baseCard, knowledge_bases: [] }}
-        specKnowledgeBases={[
-          { id: 'sk_1', title: 'From Spec', description: 'd', content: 'spec body', mime_type: 'text/markdown' },
-        ]}
-        onUpdate={onUpdate}
-      />,
-    );
-    fireEvent.click(screen.getByText(/Link from Spec/));
-    fireEvent.click(screen.getByText('+ Link'));
-    await waitFor(() => expect(onUpdate).toHaveBeenCalled());
-    const next = onUpdate.mock.calls[0][0];
-    expect(next).toHaveLength(1);
-    expect(next[0].source).toBe('spec');
-    expect(next[0].source_id).toBe('sk_1');
-    expect(next[0].title).toBe('From Spec');
-  });
-
-  it('download button creates a Blob URL and triggers <a download>', () => {
-    // jsdom does not implement createObjectURL — stub it.
+  it('download button creates a Blob URL and triggers download', () => {
     const createObjectURL = vi.fn().mockReturnValue('blob:mock-url');
     const revokeObjectURL = vi.fn();
     (URL as any).createObjectURL = createObjectURL;
@@ -107,12 +74,84 @@ describe('CardKnowledgeTab', () => {
 
     render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
     fireEvent.click(screen.getByTestId('kb-download-kb_existing'));
+
     expect(createObjectURL).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
   });
 
-  it('shows empty state with no KBs and no open forms', () => {
+  it('shows empty state with copy guidance', () => {
     render(<CardKnowledgeTab card={{ ...baseCard, knowledge_bases: [] }} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
+
     expect(screen.getByText('No knowledge bases')).toBeTruthy();
+    expect(screen.getByText('Copy knowledge from the parent spec to populate card context.')).toBeTruthy();
+  });
+
+  it('renders inherited effective knowledge as read-only context', async () => {
+    apiMock.getEffectiveResources.mockResolvedValue({
+      resources: {
+        architecture: [],
+        mockup: [],
+        knowledge_base: [
+          {
+            id: 'kb_parent',
+            title: 'Parent KB',
+            resource_type: 'knowledge_base',
+            attachment_kind: 'inherited_reference',
+            inherited: true,
+            read_only: true,
+            hydrated: true,
+            source_entity_type: 'spec',
+            source_entity_id: 's1',
+            source_entity_title: 'Parent spec',
+            resource: {
+              id: 'kb_parent',
+              title: 'Parent KB',
+              content: 'parent content',
+              mime_type: 'text/markdown',
+            },
+          },
+        ],
+      },
+    });
+
+    render(<CardKnowledgeTab card={{ ...baseCard, knowledge_bases: [] }} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
+
+    expect(await screen.findByText('Parent KB')).toBeTruthy();
+    expect(screen.getByText('from spec: Parent spec')).toBeTruthy();
+    expect(screen.queryByText('Copy knowledge from the parent spec to populate card context.')).toBeNull();
+  });
+
+  it('deduplicates inherited effective knowledge already copied to the card', async () => {
+    apiMock.getEffectiveResources.mockResolvedValue({
+      resources: {
+        architecture: [],
+        mockup: [],
+        knowledge_base: [
+          {
+            id: 'sk_1',
+            title: 'Existing KB',
+            resource_type: 'knowledge_base',
+            attachment_kind: 'inherited_reference',
+            inherited: true,
+            read_only: true,
+            hydrated: true,
+            source_entity_type: 'spec',
+            source_entity_id: 's1',
+            source_entity_title: 'Parent spec',
+            resource: {
+              id: 'sk_1',
+              title: 'Existing KB',
+              content: 'parent content',
+              mime_type: 'text/markdown',
+            },
+          },
+        ],
+      },
+    });
+
+    render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
+
+    expect(await screen.findByText('Existing KB')).toBeTruthy();
+    expect(screen.getAllByText('Existing KB')).toHaveLength(1);
   });
 });

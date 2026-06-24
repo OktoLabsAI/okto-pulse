@@ -121,6 +121,7 @@ export interface ResourceGateRef {
   title?: string | null;
   source_entity_type?: string | null;
   source_entity_id?: string | null;
+  source_entity_title?: string | null;
   [key: string]: unknown;
 }
 
@@ -154,6 +155,32 @@ export interface ResourceGateSummary {
   blocking: boolean;
   missing_resources: ResourceGateResource[];
   warnings: Array<{ code?: string; message: string; resource_type?: string }>;
+}
+
+export interface EffectiveResourceItem extends ResourceGateRef {
+  resource_type: ResourceGateResourceType;
+  resource_id?: string | null;
+  attachment_kind: 'direct' | 'inherited_reference' | string;
+  inherited: boolean;
+  read_only: boolean;
+  hydrated: boolean;
+  hydration_error?: string | null;
+  provenance?: {
+    source_entity_type?: string | null;
+    source_entity_id?: string | null;
+    source_entity_title?: string | null;
+    resource_id?: string | null;
+  };
+  resource?: Record<string, unknown> | ArchitectureDesign | ScreenMockup | null;
+}
+
+export interface EffectiveResourcesResponse {
+  board_id: string;
+  entity_type: ResourceGateEntityType;
+  entity_id: string;
+  resources: Record<ResourceGateResourceType, EffectiveResourceItem[]>;
+  lineage_counts?: Record<string, unknown>;
+  resource_lineage?: Record<string, unknown>;
 }
 
 export interface MarkResourceNotApplicableRequest {
