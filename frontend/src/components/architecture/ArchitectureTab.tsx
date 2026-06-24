@@ -716,6 +716,7 @@ export function ArchitectureTab({
   const selectedInheritedReadOnly = Boolean(selectedSummary?.inherited && selectedSummary.read_only);
   const cardSnapshotReadOnly = parentType === 'card';
   const locked = lockedProp || cardSnapshotReadOnly || selectedInheritedReadOnly;
+  const entityAuthoringLocked = lockedProp || cardSnapshotReadOnly;
   const authoringLocked = locked;
 
   const selectedDiagram = useMemo(
@@ -914,7 +915,7 @@ export function ArchitectureTab({
   };
 
   const createDesign = async () => {
-    if (authoringLocked || !newTitle.trim() || !newDescription.trim()) return;
+    if (entityAuthoringLocked || !newTitle.trim() || !newDescription.trim()) return;
     setCreating(true);
     try {
       const created = await apiRef.current.createArchitectureDesign(parentType, parentId, {
@@ -1007,8 +1008,8 @@ export function ArchitectureTab({
     payload: Record<string, unknown>;
     replaceDiagramId?: string | null;
   }) => {
-    if (authoringLocked) return;
-    if (!design) {
+    if (entityAuthoringLocked) return;
+    if (!design || selectedInheritedReadOnly) {
       const created = await apiRef.current.createArchitectureDesign(parentType, parentId, {
         title: data.title,
         global_description: data.description || `Imported ${data.title}`,
@@ -1374,7 +1375,7 @@ export function ArchitectureTab({
               )}
             </button>
           ))}
-          {!authoringLocked && (
+          {!entityAuthoringLocked && (
             <button type="button" onClick={() => setNewTitle(newTitle ? '' : 'New architecture')} className="px-2 py-1 rounded text-xs text-cyan-600 hover:bg-cyan-50 dark:hover:bg-cyan-950/30 flex items-center gap-1">
               <Plus size={12} /> New
             </button>
@@ -1386,7 +1387,7 @@ export function ArchitectureTab({
               <Copy size={15} />
             </button>
           )}
-          {!authoringLocked && (
+          {!entityAuthoringLocked && (
             <button type="button" onClick={() => setShowImport(true)} className="p-1.5 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="Import Excalidraw">
               <FileUp size={15} />
             </button>
@@ -1421,7 +1422,7 @@ export function ArchitectureTab({
         </div>
       )}
 
-      {newTitle && !authoringLocked && (
+      {newTitle && !entityAuthoringLocked && (
         <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-gray-50 dark:bg-gray-950 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <label className="block">

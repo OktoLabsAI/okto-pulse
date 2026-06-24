@@ -185,7 +185,8 @@ describe('ArchitectureTab', () => {
     expect(screen.getByTestId('architecture-inherited-origin').textContent).toMatch(
       /Read-only inherited from ideation: Source idea/,
     );
-    expect(screen.queryByRole('button', { name: /New/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /New/i })).toBeInTheDocument();
+    expect(screen.getByTitle('Import Excalidraw')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Save/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Delete/i })).not.toBeInTheDocument();
     expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
