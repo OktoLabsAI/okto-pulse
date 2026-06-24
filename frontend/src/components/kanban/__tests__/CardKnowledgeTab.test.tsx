@@ -120,4 +120,38 @@ describe('CardKnowledgeTab', () => {
     expect(screen.getByText('from spec: Parent spec')).toBeTruthy();
     expect(screen.queryByText('Copy knowledge from the parent spec to populate card context.')).toBeNull();
   });
+
+  it('deduplicates inherited effective knowledge already copied to the card', async () => {
+    apiMock.getEffectiveResources.mockResolvedValue({
+      resources: {
+        architecture: [],
+        mockup: [],
+        knowledge_base: [
+          {
+            id: 'sk_1',
+            title: 'Existing KB',
+            resource_type: 'knowledge_base',
+            attachment_kind: 'inherited_reference',
+            inherited: true,
+            read_only: true,
+            hydrated: true,
+            source_entity_type: 'spec',
+            source_entity_id: 's1',
+            source_entity_title: 'Parent spec',
+            resource: {
+              id: 'sk_1',
+              title: 'Existing KB',
+              content: 'parent content',
+              mime_type: 'text/markdown',
+            },
+          },
+        ],
+      },
+    });
+
+    render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
+
+    expect(await screen.findByText('Existing KB')).toBeTruthy();
+    expect(screen.getAllByText('Existing KB')).toHaveLength(1);
+  });
 });

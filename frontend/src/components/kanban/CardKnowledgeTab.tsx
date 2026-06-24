@@ -36,7 +36,23 @@ function effectiveKnowledgeToCardSnapshot(item: EffectiveResourceItem): any | nu
     source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
     source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
     source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
+    source_id: item.source_id ?? resource.source_id ?? null,
+    source_kb_id: item.source_kb_id ?? resource.source_kb_id ?? null,
+    root_source_kb_id: item.root_source_kb_id ?? resource.root_source_kb_id ?? null,
   };
+}
+
+function knowledgeIdentityValues(kb: any): string[] {
+  return [
+    kb?.id,
+    kb?.source_id,
+    kb?.source_kb_id,
+    kb?.root_source_kb_id,
+    kb?.source_ref,
+    kb?.source,
+  ]
+    .filter((value): value is string | number => value !== null && value !== undefined && value !== '')
+    .map((value) => String(value));
 }
 
 function sourceLabel(kb: any): string {
@@ -52,11 +68,12 @@ export function CardKnowledgeTab({ card }: CardKnowledgeTabProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const cardKBs: any[] = useMemo(() => {
     const direct = card.knowledge_bases || [];
-    const directIds = new Set(direct.map((item: any) => item.id));
+    const directIds = new Set(direct.flatMap(knowledgeIdentityValues));
     const inherited = effectiveItems
-      .filter((item) => item.inherited && !directIds.has(item.id))
+      .filter((item) => item.inherited)
       .map(effectiveKnowledgeToCardSnapshot)
-      .filter(Boolean);
+      .filter((item): item is any => Boolean(item))
+      .filter((item) => !knowledgeIdentityValues(item).some((value) => directIds.has(value)));
     return [...direct, ...inherited];
   }, [card.knowledge_bases, effectiveItems]);
 
