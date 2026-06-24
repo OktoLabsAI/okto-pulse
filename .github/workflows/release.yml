@@ -78,12 +78,12 @@ jobs:
           echo "okto-pulse-core has matching tag $TAG"
 
       - name: Checkout okto-pulse @ ${{ steps.version.outputs.tag }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: okto-pulse
 
       - name: Checkout okto-pulse-core @ ${{ steps.version.outputs.tag }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: OktoLabsAI/okto-pulse-core
           ref: ${{ steps.version.outputs.tag }}
@@ -248,7 +248,7 @@ jobs:
       - name: Checkout mcp-replay-test (replay tool + trace fixtures)
         # The replay script and the 2.6 MB long trace live in their own repo
         # so okto-pulse stays small. Audit Phase 4d.
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: OktoLabsAI/mcp-replay-test
           path: mcp-replay-test
