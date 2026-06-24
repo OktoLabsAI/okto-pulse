@@ -360,8 +360,14 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ### 0.2.6 - current
 
-- Packages `okto-pulse-core` 0.2.6 and keeps the community runtime aligned with the hardened Architecture Design propagation contract: active architecture critic findings block copy/propagation/card creation, acknowledgement remains audit-only, and the legacy propagation report remains read-only.
-- Preserves the 0.2.5 community UI/runtime surface while carrying the 0.2.6 core policy and MCP contract updates.
+Changeset:
+
+- **Packages `okto-pulse-core` 0.2.6** — the community runtime carries the hardened Architecture Design propagation contract: active critic findings, unavailable verdicts and revalidation blockers fail closed; acknowledgement remains audit-only; legacy propagation diagnostics stay read-only.
+- **Packaged runtime exposes the canonical architecture critic** — `okto-pulse serve` ships the `0.2.6` API surface where `/api/v1/architecture/validate` returns structured warnings used by the propagation/resource-gate policy, so UI and MCP clients see the same blocking decision as the backend.
+- **Architecture UI keeps entity authoring available** — selecting an inherited read-only architecture no longer hides `New` or Excalidraw import for editable ideations/refinements/specs. The inherited design remains read-only, while users can create direct architecture for the current entity.
+- **Card Knowledge snapshots no longer duplicate inherited context** — the card Knowledge tab de-duplicates effective inherited KBs against already-copied card snapshots using source ids, not only card-local ids.
+- **Release pins are aligned to 0.2.6** — `Dockerfile`, `docker-compose.prod.yml` and `uv.lock` now point to `okto-pulse`/`okto-pulse-core` 0.2.6 so prod compose and locked installs do not accidentally serve 0.2.5.
+- **Runtime and regression coverage** — focused frontend tests cover inherited architecture authoring availability and card Knowledge de-duplication, alongside the core 0.2.6 propagation/resource-gate tests. The installed package was smoke-tested with API `0.2.6`, MCP listening on the configured port and the rebuilt frontend bundle served by the local runtime.
 
 ### 0.2.5
 
