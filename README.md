@@ -52,7 +52,7 @@ Every stage has structured artifacts, lineage, status transitions and validation
 
 ## Platform Surface
 
-Current 0.2.5 surface:
+Current 0.2.6 surface:
 
 | Surface | Count |
 | --- | ---: |
@@ -358,7 +358,12 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-### 0.2.5 - current
+### 0.2.6 - current
+
+- Packages `okto-pulse-core` 0.2.6 and keeps the community runtime aligned with the hardened Architecture Design propagation contract: active architecture critic findings block copy/propagation/card creation, acknowledgement remains audit-only, and the legacy propagation report remains read-only.
+- Preserves the 0.2.5 community UI/runtime surface while carrying the 0.2.6 core policy and MCP contract updates.
+
+### 0.2.5
 
 Scope is taken from the finalized specs on the **Okto Pulse 0.2.5** board and the `feature/0.2.5` branch diff over `feature/0.2.3`: `182 files changed, +16,113 / -10,922`. This release packages the 0.2.5 core engine and adds the UI needed to operate its new governance, KG, metrics and Design System surfaces.
 

@@ -50,6 +50,7 @@ import type {
   IdeationSnapshotSummary,
   RefinementSummary,
   StorySummary,
+  EffectiveResourceItem,
 } from '@/types';
 import {
   IDEATION_STATUSES,
@@ -270,9 +271,47 @@ function VersionsTab({ ideationId }: { ideationId: string }) {
   );
 }
 
-function KnowledgeTab({ ideationId }: { ideationId: string }) {
+type IdeationKnowledgeListItem = IdeationKnowledgeSummary & {
+  inherited?: boolean;
+  read_only?: boolean;
+  source_entity_type?: string | null;
+  source_entity_id?: string | null;
+  source_entity_title?: string | null;
+  content?: string;
+};
+
+function effectiveKnowledgeToIdeationItem(item: EffectiveResourceItem): IdeationKnowledgeListItem | null {
+  const resource = item.resource && typeof item.resource === 'object'
+    ? item.resource as Partial<IdeationKnowledgeListItem>
+    : item as Partial<IdeationKnowledgeListItem>;
+  const id = String(item.id || resource.id || '');
+  if (!id) return null;
+  return {
+    id,
+    ideation_id: String(resource.ideation_id || item.source_entity_id || ''),
+    title: String(resource.title || item.title || 'Inherited knowledge'),
+    description: typeof resource.description === 'string' ? resource.description : null,
+    mime_type: String(resource.mime_type || 'text/markdown'),
+    created_at: String(resource.created_at || ''),
+    content: typeof resource.content === 'string' ? resource.content : '',
+    inherited: item.inherited,
+    read_only: item.read_only,
+    source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
+    source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
+    source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
+  };
+}
+
+function knowledgeSourceLabel(item: IdeationKnowledgeListItem): string {
+  const type = item.source_entity_type || 'source';
+  const title = item.source_entity_title || item.source_entity_id || 'parent';
+  return `${type}: ${title}`;
+}
+
+function KnowledgeTab({ ideationId, boardId }: { ideationId: string; boardId: string }) {
   const api = useDashboardApi();
   const [items, setItems] = useState<IdeationKnowledgeSummary[]>([]);
+  const [effectiveItems, setEffectiveItems] = useState<EffectiveResourceItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
@@ -283,10 +322,23 @@ function KnowledgeTab({ ideationId }: { ideationId: string }) {
 
   useEffect(() => { load(); }, [ideationId]);
 
+  const visibleItems: IdeationKnowledgeListItem[] = [
+    ...items,
+    ...effectiveItems
+      .filter((item) => item.inherited && !items.some((direct) => direct.id === item.id))
+      .map(effectiveKnowledgeToIdeationItem)
+      .filter((item): item is IdeationKnowledgeListItem => Boolean(item)),
+  ];
+
   const load = async () => {
     setLoading(true);
     try {
-      setItems(await api.listIdeationKnowledge(ideationId));
+      const [direct, effective] = await Promise.all([
+        api.listIdeationKnowledge(ideationId),
+        api.getEffectiveResources(boardId, 'ideation', ideationId).catch(() => null),
+      ]);
+      setItems(direct);
+      setEffectiveItems(effective?.resources.knowledge_base || []);
     } catch {
       toast.error('Failed to load knowledge base');
     } finally {
@@ -333,6 +385,12 @@ function KnowledgeTab({ ideationId }: { ideationId: string }) {
       setViewContent('');
       return;
     }
+    const inherited = visibleItems.find((item) => item.id === id && item.inherited);
+    if (inherited) {
+      setViewingId(id);
+      setViewContent(inherited.content || '');
+      return;
+    }
     try {
       const kb = await api.getIdeationKnowledge(ideationId, id);
       setViewingId(id);
@@ -348,14 +406,14 @@ function KnowledgeTab({ ideationId }: { ideationId: string }) {
 
   return (
     <div className="space-y-3">
-      {items.length === 0 && !adding && (
+      {visibleItems.length === 0 && !adding && (
         <div className="text-center py-6">
           <BookOpen size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
           <p className="text-sm text-gray-500 dark:text-gray-400">No knowledge base items</p>
           <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Attach reference documents, discovery notes, or context docs</p>
         </div>
       )}
-      {items.map((item) => (
+      {visibleItems.map((item) => (
         <div key={item.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
           <div
             className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-700/50 cursor-pointer"
@@ -364,15 +422,22 @@ function KnowledgeTab({ ideationId }: { ideationId: string }) {
             <div className="flex items-center gap-2 min-w-0">
               <BookOpen size={14} className="text-amber-500 shrink-0" />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{item.title}</span>
+              {item.inherited && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                  from {knowledgeSourceLabel(item)}
+                </span>
+              )}
               <span className="text-[10px] px-1 py-0.5 rounded bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400">{item.mime_type}</span>
             </div>
             <div className="flex items-center gap-1 shrink-0">
-              <button
-                onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
-                className="p-1 text-gray-400 hover:text-red-500"
-              >
-                <Trash2 size={14} />
-              </button>
+              {!item.read_only && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
+                  className="p-1 text-gray-400 hover:text-red-500"
+                >
+                  <Trash2 size={14} />
+                </button>
+              )}
               {viewingId === item.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </div>
           </div>
@@ -1371,6 +1436,9 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
           {activeTab === 'mockups' && (
             <MockupsTab
               screenMockups={ideation.screen_mockups}
+              boardId={ideation.board_id}
+              entityType="ideation"
+              entityId={ideationId}
               expanded={expanded}
               onUpdate={async (mockups) => {
                 await api.updateIdeation(ideationId, { screen_mockups: mockups });
@@ -1382,13 +1450,16 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
             <ArchitectureTab
               parentType="ideation"
               parentId={ideationId}
+              boardId={ideation.board_id}
+              entityType="ideation"
+              entityId={ideationId}
               expanded={expanded}
               screenMockups={ideation.screen_mockups || []}
               onChanged={(items) => setIdeation((current) => current ? { ...current, architecture_designs: items } : current)}
             />
           )}
           {activeTab === 'qa' && <QATab ideationId={ideationId} mentionables={mentionables} />}
-          {activeTab === 'knowledge' && <KnowledgeTab ideationId={ideationId} />}
+          {activeTab === 'knowledge' && <KnowledgeTab ideationId={ideationId} boardId={ideation.board_id} />}
           {activeTab === 'versions' && <VersionsTab ideationId={ideationId} />}
           {activeTab === 'history' && <HistoryTab ideationId={ideationId} />}
 
