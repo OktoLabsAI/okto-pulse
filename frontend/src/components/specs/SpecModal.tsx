@@ -63,6 +63,7 @@ import type {
   TestScenario,
   BoardSettings,
   Decision,
+  EffectiveResourceItem,
 } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { EvidenceBadge } from './EvidenceBadge';
@@ -1326,9 +1327,47 @@ function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<type
    Knowledge Base Tab
    ============================================================ */
 
-function KnowledgeTab({ specId }: { specId: string }) {
+type SpecKnowledgeListItem = SpecKnowledgeSummary & {
+  inherited?: boolean;
+  read_only?: boolean;
+  source_entity_type?: string | null;
+  source_entity_id?: string | null;
+  source_entity_title?: string | null;
+  content?: string;
+};
+
+function effectiveKnowledgeToSpecItem(item: EffectiveResourceItem): SpecKnowledgeListItem | null {
+  const resource = item.resource && typeof item.resource === 'object'
+    ? item.resource as Partial<SpecKnowledgeListItem>
+    : item as Partial<SpecKnowledgeListItem>;
+  const id = String(item.id || resource.id || '');
+  if (!id) return null;
+  return {
+    id,
+    spec_id: String(resource.spec_id || item.source_entity_id || ''),
+    title: String(resource.title || item.title || 'Inherited knowledge'),
+    description: typeof resource.description === 'string' ? resource.description : null,
+    mime_type: String(resource.mime_type || 'text/markdown'),
+    created_at: String(resource.created_at || ''),
+    content: typeof resource.content === 'string' ? resource.content : '',
+    inherited: item.inherited,
+    read_only: item.read_only,
+    source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
+    source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
+    source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
+  };
+}
+
+function knowledgeSourceLabel(item: SpecKnowledgeListItem): string {
+  const type = item.source_entity_type || 'source';
+  const title = item.source_entity_title || item.source_entity_id || 'parent';
+  return `${type}: ${title}`;
+}
+
+function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) {
   const api = useDashboardApi();
   const [items, setItems] = useState<SpecKnowledgeSummary[]>([]);
+  const [effectiveItems, setEffectiveItems] = useState<EffectiveResourceItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
@@ -1341,11 +1380,23 @@ function KnowledgeTab({ specId }: { specId: string }) {
 
   useEffect(() => { load(); }, [specId]);
 
+  const visibleItems: SpecKnowledgeListItem[] = [
+    ...items,
+    ...effectiveItems
+      .filter((item) => item.inherited && !items.some((direct) => direct.id === item.id))
+      .map(effectiveKnowledgeToSpecItem)
+      .filter((item): item is SpecKnowledgeListItem => Boolean(item)),
+  ];
+
   const load = async () => {
     setLoading(true);
     try {
-      const data = await api.listSpecKnowledge(specId);
-      setItems(data);
+      const [direct, effective] = await Promise.all([
+        api.listSpecKnowledge(specId),
+        api.getEffectiveResources(boardId, 'spec', specId).catch(() => null),
+      ]);
+      setItems(direct);
+      setEffectiveItems(effective?.resources.knowledge_base || []);
     } catch { /* ignore */ } finally { setLoading(false); }
   };
 
@@ -1376,6 +1427,12 @@ function KnowledgeTab({ specId }: { specId: string }) {
 
   const handleView = async (knowledgeId: string) => {
     if (viewingId === knowledgeId) { setViewingId(null); setViewContent(''); return; }
+    const inherited = visibleItems.find((item) => item.id === knowledgeId && item.inherited);
+    if (inherited) {
+      setViewingId(knowledgeId);
+      setViewContent(inherited.content || '');
+      return;
+    }
     try {
       const kb = await api.getSpecKnowledge(specId, knowledgeId);
       setViewingId(knowledgeId);
@@ -1387,7 +1444,7 @@ function KnowledgeTab({ specId }: { specId: string }) {
 
   return (
     <div className="space-y-3">
-      {items.length === 0 && !adding && (
+      {visibleItems.length === 0 && !adding && (
         <div className="text-center py-6">
           <BookOpen size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
           <p className="text-sm text-gray-500 dark:text-gray-400">No knowledge base items</p>
@@ -1395,7 +1452,7 @@ function KnowledgeTab({ specId }: { specId: string }) {
         </div>
       )}
 
-      {items.map((item) => (
+      {visibleItems.map((item) => (
         <div key={item.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
           <div
             className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-700/50 cursor-pointer"
@@ -1404,15 +1461,22 @@ function KnowledgeTab({ specId }: { specId: string }) {
             <div className="flex items-center gap-2 min-w-0">
               <BookOpen size={14} className="text-amber-500 shrink-0" />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{item.title}</span>
+              {item.inherited && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                  from {knowledgeSourceLabel(item)}
+                </span>
+              )}
               <span className="text-[10px] px-1 py-0.5 rounded bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400">{item.mime_type}</span>
             </div>
             <div className="flex items-center gap-1 shrink-0">
-              <button
-                onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
-                className="p-1 text-gray-400 hover:text-red-500"
-              >
-                <Trash2 size={14} />
-              </button>
+              {!item.read_only && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
+                  className="p-1 text-gray-400 hover:text-red-500"
+                >
+                  <Trash2 size={14} />
+                </button>
+              )}
               {viewingId === item.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </div>
           </div>
@@ -2506,6 +2570,9 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           {activeTab === 'mockups' && spec && (
             <MockupsTab
               screenMockups={spec.screen_mockups}
+              boardId={spec.board_id}
+              entityType="spec"
+              entityId={specId}
               expanded={expanded}
               onUpdate={async (mockups) => {
                 const updated = await api.updateSpec(specId, { screen_mockups: mockups });
@@ -2517,6 +2584,9 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
             <ArchitectureTab
               parentType="spec"
               parentId={specId}
+              boardId={spec.board_id}
+              entityType="spec"
+              entityId={specId}
               expanded={expanded}
               locked={['validated', 'in_progress', 'done'].includes(spec.status)}
               screenMockups={spec.screen_mockups || []}
@@ -2533,7 +2603,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           )}
           {activeTab === 'history' && <HistoryTab specId={specId} />}
           {activeTab === 'qa' && <QATab specId={specId} mentionables={mentionables} />}
-          {activeTab === 'knowledge' && <KnowledgeTab specId={specId} />}
+          {activeTab === 'knowledge' && <KnowledgeTab specId={specId} boardId={spec.board_id} />}
 
           {activeTab === 'sprints' && (
             <SpecSprintsTab sprints={linkedSprints} api={api} />

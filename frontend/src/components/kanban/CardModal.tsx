@@ -1392,7 +1392,13 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               {/* Mockups Tab */}
               {activeTab === 'mockups' && (
                 <div className="modal-body">
-                  <MockupsTab screenMockups={card.screen_mockups} expanded={expanded} />
+                  <MockupsTab
+                    screenMockups={card.screen_mockups}
+                    boardId={card.board_id}
+                    entityType="card"
+                    entityId={card.id}
+                    expanded={expanded}
+                  />
                 </div>
               )}
 
@@ -1402,6 +1408,9 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                   <ArchitectureTab
                     parentType="card"
                     parentId={card.id}
+                    boardId={card.board_id}
+                    entityType="card"
+                    entityId={card.id}
                     specIdForCopy={card.spec_id}
                     expanded={expanded}
                     screenMockups={card.screen_mockups || []}

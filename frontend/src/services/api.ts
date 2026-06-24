@@ -110,6 +110,7 @@ import type {
   ResourceGateEntityType,
   ResourceGateResourceType,
   ResourceGateSummary,
+  EffectiveResourcesResponse,
   MarkResourceNotApplicableRequest,
   ClearResourceNotApplicableRequest,
 } from '@/types';
@@ -223,6 +224,17 @@ export function useDashboardApi() {
       const p = new URLSearchParams({ board_id: boardId });
       return apiClient.fetchJson<ResourceGateSummary>(
         `/resource-gate/${entityType}/${entityId}?${p.toString()}`
+      );
+    },
+
+    async getEffectiveResources(
+      boardId: string,
+      entityType: ResourceGateEntityType,
+      entityId: string,
+    ): Promise<EffectiveResourcesResponse> {
+      const p = new URLSearchParams({ board_id: boardId });
+      return apiClient.fetchJson<EffectiveResourcesResponse>(
+        `/resource-gate/${entityType}/${entityId}/effective-resources?${p.toString()}`
       );
     },
 
