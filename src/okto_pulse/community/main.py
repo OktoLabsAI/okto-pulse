@@ -26,14 +26,17 @@ from sqlalchemy import event
 from okto_pulse.core.app import create_app
 from okto_pulse.core.infra.config import get_settings
 from okto_pulse.core.infra.database import get_engine, get_session_factory, init_db, close_db
-from okto_pulse.core.infra.storage import FileSystemStorageProvider
-from okto_pulse.core.kg.embedding import SentenceTransformerProvider, StubEmbeddingProvider
-from okto_pulse.core.kg.interfaces.registry import configure_kg_registry, get_kg_registry
+from okto_pulse.core.kg.interfaces.registry import get_kg_registry
 # NOTE: MCP server is imported lazily inside create_community_app (after
 # create_app has called configure_settings) and inside combined_lifespan
 # (after init_db). Module-level import would cache the default settings
 # singleton via get_settings() at import time and break runtime config.
 # Settings cache trap respected by Spec 23350275 (Fix C, BR5).
+from okto_pulse.community.adapters.composition import (
+    community_storage_provider,
+    configure_community_kg_registry,
+)
+from okto_pulse.community.adapters.embedding import CommunityStubEmbeddingProvider
 from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.community.runtime import (
@@ -139,13 +142,15 @@ def _metrics_beacon_timing() -> tuple[float, float]:
 
 async def _metrics_beacon_loop(settings: CommunitySettings) -> None:
     interval, delay = _metrics_beacon_timing()
-    from okto_pulse.core.telemetry.sender import TelemetryBeaconSender
+    # R10-C: resolve the REGISTERED telemetry sender (the Community TelemetrySink
+    # adapter) through the port registry — never import the concrete core sender.
+    from okto_pulse.core.telemetry.sender_registry import get_telemetry_sender
 
     while True:
         await asyncio.sleep(delay)
         delay = interval
         try:
-            result = await asyncio.to_thread(TelemetryBeaconSender(settings).send_once)
+            result = await asyncio.to_thread(get_telemetry_sender(settings).send_pending)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -192,15 +197,16 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
     """
     registry = get_kg_registry()
     provider = registry.embedding_provider
-    if not isinstance(provider, SentenceTransformerProvider):
-        # Stub mode or custom provider — nothing to preload.
+    # R05-B: capability/metadata-driven (NO isinstance against a concrete
+    # provider). Only a non-stub provider that exposes preload() needs warming.
+    meta = provider.embedding_metadata() if hasattr(provider, "embedding_metadata") else {}
+    if meta.get("is_stub", True) or not hasattr(provider, "preload"):
+        # Stub mode or a provider with no preload — nothing to do.
         return
 
-    model_name = provider.model_name
+    model_name = meta.get("model_name")
+    dim = meta.get("embedding_dimension", settings.kg_embedding_dim)
     started = time.monotonic()
-
-    def _load() -> None:
-        provider._get_model()
 
     last_exc: Exception | None = None
     for attempt in range(1, _EMBEDDING_PRELOAD_ATTEMPTS + 1):
@@ -208,14 +214,14 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
             last_exc = last_exc or TimeoutError("embedding preload budget exhausted")
             break
         try:
-            _load()
+            provider.preload()
             duration_ms = int((time.monotonic() - started) * 1000)
             _EMBEDDING_LOGGER.info(
                 "kg.embedding.loaded",
                 extra={
                     "event": "kg.embedding.loaded",
                     "model": model_name,
-                    "dimension": provider.dim,
+                    "dimension": dim,
                     "duration_ms": duration_ms,
                     "attempt": attempt,
                 },
@@ -233,14 +239,15 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
                     break
                 await asyncio.sleep(min(backoff, remaining))
 
-    registry.embedding_provider = StubEmbeddingProvider(dim=settings.kg_embedding_dim)
+    # Degrade to the deterministic stub, preserving the dimension + event.
+    registry.embedding_provider = CommunityStubEmbeddingProvider(dim=dim)
     _EMBEDDING_LOGGER.warning(
         "kg.embedding.load_failed",
         extra={
             "event": "kg.embedding.load_failed",
             "model": model_name,
             "error": repr(last_exc) if last_exc else "unknown",
-            "fallback": "StubEmbeddingProvider",
+            "fallback": "CommunityStubEmbeddingProvider",
         },
     )
 
@@ -436,7 +443,7 @@ def create_community_app():
     _ensure_data_dir(settings)
 
     auth = LocalAuthProvider()
-    storage = FileSystemStorageProvider(settings.upload_dir)
+    storage = community_storage_provider(settings.upload_dir)
 
     # Combined lifespan: seed data, preload embeddings, start KG workers,
     # register the MCP session factory so the mounted sub-app finds the DB.
@@ -594,6 +601,41 @@ def create_community_app():
         from okto_pulse.core.mcp.server import register_session_factory
         register_session_factory(get_session_factory())
 
+        # R11-A: inject the Community operational resource catalog (via the core
+        # contracts — core never imports community) and FREEZE the effective
+        # catalog now that ALL providers are wired. A late mutation/registration
+        # after this raises (fail-closed). URIs/content are preserved exactly.
+        from okto_pulse.community.adapters.resources import (
+            register_and_freeze_community_resource_catalog,
+        )
+        register_and_freeze_community_resource_catalog()
+
+        # R10-B/R10-C/R10-D: register the Community telemetry providers BEFORE the
+        # metrics beacon loop starts, so the core telemetry runtime resolves the
+        # Community store / product aggregator / publish-health sources / beacon
+        # sender through their ports (not the gated fallback shims).
+        from okto_pulse.community.adapters.product_telemetry import (
+            register_community_product_aggregator,
+        )
+        from okto_pulse.community.adapters.publish_health_sources import (
+            register_community_publish_health_sources,
+        )
+        from okto_pulse.community.adapters.telemetry_port import (
+            register_community_telemetry_port,
+        )
+        from okto_pulse.community.adapters.telemetry_sender import (
+            register_community_telemetry_sender,
+        )
+        from okto_pulse.community.adapters.telemetry_store import (
+            register_community_telemetry_event_store,
+        )
+        register_community_telemetry_event_store()
+        register_community_product_aggregator()
+        register_community_publish_health_sources()
+        register_community_telemetry_sender()
+        # R10-E (Stage A, additive): the composed TelemetryPort facade factory.
+        register_community_telemetry_port()
+
         metrics_beacon_task = asyncio.create_task(_metrics_beacon_loop(settings))
 
         yield
@@ -628,9 +670,39 @@ def create_community_app():
     # Configure SQLite pragmas AFTER create_database was called by create_app
     _configure_sqlite_pragmas(get_engine())
 
-    # Bootstrap the KG provider registry with all embedded providers.
-    # session_factory auto-wires audit_repo + event_bus.
-    configure_kg_registry(session_factory=get_session_factory())
+    # Bootstrap the KG provider registry via the Community composition root.
+    # (R05-D) The Community composition registers event_bus, audit_repo and
+    # config EXPLICITLY (Community data adapters) ahead of any fallback; the
+    # core's session_factory auto-wire is only a ledgered fallback for
+    # non-composed callers, so it does not run for this edition.
+    #
+    # R08-B (pass-through, DEC-R08B-01): the composition root injects the
+    # AuthContext factory bound to the MCP server's current agent/db providers,
+    # so the KG query tools resolve agent_id + accessible boards via the
+    # AuthContext port (MCPAuthContext). Board ACL still flows through
+    # AgentService.list_boards_for_agent (no bypass); api_key path untouched. The
+    # core server module is imported lazily (per first call) to avoid pulling the
+    # heavy MCP module at boot. R08-C removes the _active_api_key ContextVar.
+    async def _mcp_auth_get_agent():
+        from okto_pulse.core.mcp.server import _get_authenticated_agent
+
+        return await _get_authenticated_agent()
+
+    def _mcp_auth_get_db():
+        from okto_pulse.core.mcp.server import get_db_for_mcp
+
+        return get_db_for_mcp()
+
+    from okto_pulse.core.kg.providers.embedded.mcp_auth_context import (
+        create_mcp_auth_factory,
+    )
+
+    configure_community_kg_registry(
+        get_session_factory(),
+        auth_context_factory=create_mcp_auth_factory(
+            _mcp_auth_get_agent, _mcp_auth_get_db
+        ),
+    )
 
     # System flags endpoint — used by the frontend to honor CLI/env terms pre-acceptance.
     from okto_pulse.community.acceptance import acceptance_status

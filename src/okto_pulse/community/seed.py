@@ -200,14 +200,16 @@ async def _commit_demo_graph(board_id: str, spec_id: str) -> None:
     import gc
 
     from okto_pulse.core.infra.database import get_session_factory
-    from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
     from okto_pulse.core.kg.primitives import (
         add_edge_candidate,
         begin_consolidation,
         commit_consolidation,
         propose_reconciliation,
     )
-    from okto_pulse.core.kg.schema import bootstrap_board_graph
+    from okto_pulse.core.kg.interfaces import get_kg_registry
     from okto_pulse.core.kg.schemas import (
         AddEdgeCandidateRequest,
         BeginConsolidationRequest,
@@ -223,14 +225,20 @@ async def _commit_demo_graph(board_id: str, spec_id: str) -> None:
     # Make sure the registry is wired to the same factory the seed uses so
     # the audit_repo path writes into the current SQLite file. No-op when
     # already configured.
-    configure_kg_registry(session_factory=session_factory)
+    configure_community_kg_registry(session_factory)
 
     # Bootstrap the board's Kùzu graph up front. Without this the first
     # BoardConnection in propose_reconciliation would both bootstrap AND
     # open, racing the Windows file lock on the bootstrap's just-closed
     # Database. ``gc.collect`` releases the bootstrap's C++ handle so the
     # subsequent open sees a clean lock.
-    bootstrap_board_graph(board_id)
+    #
+    # R05-C: migrated off the direct kg.schema symbol onto the #06
+    # GraphSchemaManager port (Community composition supplies the graph
+    # adapters via configure_community_kg_registry above). For a fresh board
+    # ensure_bootstrapped wraps the same bootstrap_board_graph — schema +
+    # HNSW vector indexes — and additionally primes the bootstrap cache.
+    await get_kg_registry().graph_schema_manager.ensure_bootstrapped(board_id)
     gc.collect()
 
     # On a freshly-bootstrapped board the HNSW index is empty, which sends

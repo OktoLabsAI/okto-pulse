@@ -85,7 +85,8 @@ def cmd_init(args):
     from okto_pulse.core.infra.config import configure_settings
     from okto_pulse.core.infra.database import create_database, init_db, close_db, get_session_factory
     from okto_pulse.core.infra.auth import configure_auth
-    from okto_pulse.core.infra.storage import FileSystemStorageProvider, configure_storage
+    from okto_pulse.core.infra.storage import configure_storage
+    from okto_pulse.community.adapters.composition import community_storage_provider
     from okto_pulse.community.auth import LocalAuthProvider
     from okto_pulse.community.seed import seed_community_defaults
     from sqlalchemy import event, select
@@ -93,7 +94,7 @@ def cmd_init(args):
 
     configure_settings(settings)
     configure_auth(LocalAuthProvider())
-    configure_storage(FileSystemStorageProvider(settings.upload_dir))
+    configure_storage(community_storage_provider(settings.upload_dir))
     create_database(settings.database_url, echo=False)
 
     from okto_pulse.core.infra.database import get_engine
@@ -129,9 +130,18 @@ def cmd_init(args):
         # schema and vector indexes are ready before the first agent call.
         if board_id:
             try:
-                from okto_pulse.core.kg.schema import bootstrap_board_graph
-                handle = bootstrap_board_graph(board_id)
-                print(f"  Knowledge Graph: {handle.path} (schema {handle.schema_version})")
+                # R05-C: bootstrap via the #06 KG ports instead of the direct
+                # kg.schema symbol. ensure_bootstrapped wraps the same
+                # bootstrap_board_graph for a fresh board; path/version are
+                # reconstructed from the GraphPathResolver / GraphSchemaManager
+                # ports (equivalent to the old BoardGraphHandle fields).
+                from okto_pulse.core.kg.interfaces import get_kg_registry
+
+                _kg_reg = get_kg_registry()
+                await _kg_reg.graph_schema_manager.ensure_bootstrapped(board_id)
+                _kg_path = _kg_reg.graph_path_resolver.board_graph_path(board_id)
+                _kg_ver = await _kg_reg.graph_schema_manager.current_version(board_id)
+                print(f"  Knowledge Graph: {_kg_path} (schema {_kg_ver})")
             except Exception as exc:
                 print(f"  Knowledge Graph: bootstrap skipped ({exc})")
 
@@ -156,12 +166,13 @@ def _generate_mcp_json(mcp_port: int, agent_names: list[str] | None):
     from okto_pulse.core.infra.auth import configure_auth
     from okto_pulse.core.infra.config import configure_settings
     from okto_pulse.community.auth import LocalAuthProvider
-    from okto_pulse.core.infra.storage import FileSystemStorageProvider, configure_storage
+    from okto_pulse.core.infra.storage import configure_storage
+    from okto_pulse.community.adapters.composition import community_storage_provider
 
     settings = CommunitySettings()
     configure_settings(settings)
     configure_auth(LocalAuthProvider())
-    configure_storage(FileSystemStorageProvider(settings.upload_dir))
+    configure_storage(community_storage_provider(settings.upload_dir))
     create_database(settings.database_url, echo=False)
 
     async def _fetch_agents():
@@ -332,11 +343,19 @@ def cmd_status(args):
 
 def cmd_metrics(args):
     """Control metrics On/Off settings and local data."""
+    from okto_pulse.community.adapters.telemetry_port import register_community_telemetry_port
+    from okto_pulse.community.adapters.telemetry_store import register_community_telemetry_event_store
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core.telemetry.service import TelemetryService
+    from okto_pulse.core.telemetry.telemetry_port_registry import get_telemetry_port
+
+    # R10-E Pass 2: registries are fail-closed; compose the minimum factories for
+    # the CLI before calling get_telemetry_port (idempotent — safe if already registered
+    # by the full composition root in a server context).
+    register_community_telemetry_event_store()
+    register_community_telemetry_port()
 
     settings = CommunitySettings()
-    service = TelemetryService(settings)
+    service = get_telemetry_port(settings)
     command = args.metrics_command
 
     if command == "status":
@@ -469,7 +488,9 @@ def cmd_verify_pipeline(args):
         check_outbox,
         check_queue,
     )
-    from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
 
     board_id: str = args.board_id
     emit_json: bool = bool(getattr(args, "json", False))
@@ -481,7 +502,7 @@ def cmd_verify_pipeline(args):
     async def _run() -> list:
         await init_db()
         factory = get_session_factory()
-        configure_kg_registry(session_factory=factory)
+        configure_community_kg_registry(factory)
         try:
             async with factory() as db:
                 queue_h = await check_queue(db, board_id)
@@ -643,8 +664,10 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
         init_db,
         close_db,
     )
-    from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
-    from okto_pulse.core.kg.schema import bootstrap_board_graph
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
+    from okto_pulse.core.kg.interfaces import get_kg_registry
     from okto_pulse.core.kg.governance import start_historical_consolidation
     from okto_pulse.core.kg.workers.consolidation import ConsolidationWorker
     from okto_pulse.core.models.db import ConsolidationQueue as CQ
@@ -652,11 +675,13 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
 
     await init_db()
     factory = get_session_factory()
-    configure_kg_registry(session_factory=factory)
+    configure_community_kg_registry(factory)
 
     try:
-        # Bootstrap Kùzu graph schema for this board
-        bootstrap_board_graph(board_id)
+        # Bootstrap Kùzu graph schema for this board.
+        # R05-C: via the #06 GraphSchemaManager port (community registry
+        # configured just above) rather than the direct kg.schema symbol.
+        await get_kg_registry().graph_schema_manager.ensure_bootstrapped(board_id)
 
         # Enqueue all artifacts via governance
         async with factory() as db:

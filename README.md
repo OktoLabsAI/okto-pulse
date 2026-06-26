@@ -52,7 +52,7 @@ Every stage has structured artifacts, lineage, status transitions and validation
 
 ## Platform Surface
 
-Current 0.2.6 surface:
+Current 0.3.0 surface:
 
 | Surface | Count |
 | --- | ---: |
@@ -358,7 +358,15 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-### 0.2.6 - current
+### 0.3.0 - current
+
+Changeset:
+
+- **Packages `okto-pulse-core` 0.3.0** — the community runtime installs against the local 0.3.0 core package, including the backend SaaS-refactor preparation work and the Architecture Resource Gate multi-hop coverage fix.
+- **Release pins are aligned to 0.3.0** — `Dockerfile`, `docker-compose.prod.yml`, package metadata and lock metadata now point to `okto-pulse`/`okto-pulse-core` 0.3.0 for the local rebuild/reinstall path.
+- **Community behavior remains functionally stable** — no frontend feature change was introduced in this bump; the community wheel was rebuilt with the existing embedded frontend bundle and the updated core runtime.
+
+### 0.2.6
 
 Changeset:
 
