@@ -8,10 +8,10 @@ Two distinct things are reconciled:
 
   - The three data ADAPTERS are COMMUNITY-LOCAL: the edition registers
     CommunityOutboxEventBus / CommunityAuditRepository / CommunityKGConfig via the
-    composition. The core may only instantiate them at the single ledgered
-    fallback (``kg/interfaces/registry.py`` auto-wire), enforced fail-closed by
-    the core ``data_provider_ownership_gate``. A NEW core consumer, or any
-    core→community import, fails the audit.
+    composition. R-P2-02 retired the core relational auto-wire, so the relational
+    fallback ledger is empty and the core ``data_provider_ownership_gate`` fails
+    closed on any new core EventBus/AuditRepository concrete instantiation. A NEW
+    core consumer, or any core→community import, fails the audit.
 
   - SQLAlchemy / the relational ORM is a GATED spec #04 temporary exception: it
     STAYS in core (R05-D does NOT strangle the Repository-UoW). Its presence is

@@ -11,10 +11,9 @@ the core embedded Onda A; the core still mounts the Kùzu/graph slots it leaves
 R05-D (Onda B): the composition now ALSO supplies the three DATA providers —
 ``event_bus`` (CommunityOutboxEventBus), ``audit_repo`` (CommunityAuditRepository)
 and ``config`` (CommunityKGConfig) — EXPLICITLY via ``_apply_data_providers``
-(register-before-fallback). Because the core auto-wire only fills a slot that is
-still ``None``, the Community adapters win and the core ``session_factory``
-auto-wire never fires for this edition (it remains a ledgered fallback for
-non-composed callers).
+(register-before-fail-closed). R-P2-02 retired the core ``session_factory``
+auto-wire for relational data providers; the Community adapters are now required
+composition input, not a way to beat a fallback.
 """
 
 from __future__ import annotations
@@ -89,10 +88,10 @@ def _apply_graph_providers(base: Any) -> None:
 
 def _apply_data_providers(base: Any, session_factory: Any) -> None:
     """(R05-D) Fill the base registry's three DATA slots (event_bus / audit_repo /
-    config) with the Community adapters, REGISTER-BEFORE-FALLBACK — supplied
-    EXPLICITLY here so the core's ``session_factory`` auto-wire never fires for the
-    Community edition (the auto-wire only fires when a slot is still ``None``).
-    Lazy-imported so importing this module never eager-loads the SQLAlchemy ORM."""
+    config) with the Community adapters, REGISTER-BEFORE-FAIL-CLOSED — supplied
+    EXPLICITLY here because the core registry no longer creates relational
+    fallbacks. Lazy-imported so importing this module never eager-loads the
+    SQLAlchemy ORM."""
     from okto_pulse.community.adapters.data import build_community_data_providers
 
     for key, value in build_community_data_providers(session_factory).items():
@@ -183,8 +182,9 @@ def configure_community_kg_registry(
     base = build_community_base_registry(settings=settings)
     if include_graph:
         _apply_graph_providers(base)
-    # R05-D: supply event_bus / audit_repo / config from the Community adapters
-    # EXPLICITLY (register-before-fallback) so the core auto-wire is bypassed.
+    # R05-D/R-P2-02: supply event_bus / audit_repo / config from the Community
+    # adapters EXPLICITLY so the core fail-closed registry validation can pass
+    # without any relational fallback.
     _apply_data_providers(base, session_factory)
     overrides: dict[str, Any] = {}
     if auth_context_factory is not None:

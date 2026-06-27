@@ -4,7 +4,7 @@ Scenario mapping (TS1, TS3-TS8 live here; TS2 lives in the core gate test):
 
   TS1 register-before-fallback — configure_community_kg_registry wires the
        registry's event_bus/audit_repo/config to the Community adapters
-       EXPLICITLY; the core session_factory auto-wire is bypassed (the slots are
+       EXPLICITLY; the retired core session_factory auto-wire is absent (the slots are
        CommunityOutboxEventBus / CommunityAuditRepository / CommunityKGConfig and
        carry the SAME session_factory) — REAL wiring, not nominal/ledger-only.
   TS3 outbox-replay-queue-semantics — CommunityOutboxEventBus.publish enqueues a
@@ -50,7 +50,11 @@ from okto_pulse.core.kg.interfaces.kg_config import KGConfig
 from okto_pulse.core.kg.providers.embedded.settings_config import SettingsKGConfig
 
 CORE_PKG = Path(_core_app.__file__).parent
-_DATA_MODULE = "okto_pulse.community.adapters.data"
+_DATA_MODULES = {
+    "CommunityOutboxEventBus": "okto_pulse.community.adapters.sqlite_outbox_event_bus",
+    "CommunityAuditRepository": "okto_pulse.community.adapters.sqlalchemy_audit_repo",
+    "CommunityKGConfig": "okto_pulse.community.adapters.data",
+}
 
 
 def _is_community_data(obj, cls_name: str) -> bool:
@@ -58,7 +62,7 @@ def _is_community_data(obj, cls_name: str) -> bool:
     modules in other tests, diverging the class OBJECT identity, so ``is`` on the
     class is fragile while (qualified name, module) is stable."""
     t = type(obj)
-    return t.__name__ == cls_name and t.__module__ == _DATA_MODULE
+    return t.__name__ == cls_name and t.__module__ == _DATA_MODULES[cls_name]
 
 
 @pytest.fixture
@@ -119,8 +123,8 @@ def test_ts1_register_before_fallback_wires_community_data_adapters(_isolated_db
     reg = _isolated_db_kg
     sf = _db_mod.get_session_factory()
 
-    # The registry's three data slots are the COMMUNITY adapters (not the core
-    # embedded auto-wire) — instantiated by the composition, not nominal.
+    # The registry's three data slots are the COMMUNITY adapters — instantiated
+    # by the composition, not nominal and not core fallback.
     assert _is_community_data(reg.event_bus, "CommunityOutboxEventBus")
     assert _is_community_data(reg.audit_repo, "CommunityAuditRepository")
     assert _is_community_data(reg.config, "CommunityKGConfig")
@@ -131,8 +135,8 @@ def test_ts1_register_before_fallback_wires_community_data_adapters(_isolated_db
     assert isinstance(reg.audit_repo, AuditRepository)
     assert isinstance(reg.config, KGConfig)
 
-    # The SAME session_factory threaded through — the core auto-wire would have
-    # built core embedded types; instead the Community adapters hold the factory.
+    # The SAME session_factory threaded through — the retired core auto-wire used
+    # this factory too, so row-level behaviour stays identical.
     assert reg.event_bus._sf is sf
     assert reg.audit_repo._sf is sf
     # The bare core embedded classes are NOT used for these slots (name differs).
@@ -333,18 +337,14 @@ def test_ts7_dependency_audit_real_core_is_community_local_sqlalchemy_gated():
     assert report["sqlalchemy_status"] == GATED_04_RELATIONAL_STATUS
     assert report["sqlalchemy_core_files"] > 0  # ORM stays in core (not removed)
     assert report["aiosqlite_status"] == GATED_04_RELATIONAL_STATUS
-    # The single ledgered fallback is registry.py.
-    assert report["ledgered_fallback"] == ["kg/interfaces/registry.py"]
+    # R-P2-02 retired the relational fallback path entirely.
+    assert report["ledgered_fallback"] == []
 
 
 def test_ts7_dependency_audit_flags_new_core_data_consumer(tmp_path):
-    # Synthetic "core" tree with a NEW data-adapter instantiation outside the
-    # ledgered registry.py -> the audit must fail-closed.
+    # Synthetic "core" tree with a NEW data-adapter instantiation -> the audit
+    # must fail-closed. There is no ledgered relational fallback path anymore.
     pkg = tmp_path
-    (pkg / "kg" / "interfaces").mkdir(parents=True, exist_ok=True)
-    (pkg / "kg" / "interfaces" / "registry.py").write_text(
-        "SettingsKGConfig()\n", encoding="utf-8"
-    )  # ledgered location — allowed
     (pkg / "services").mkdir(parents=True, exist_ok=True)
     (pkg / "services" / "rogue.py").write_text(
         "from x import SqliteOutboxEventBus\n"

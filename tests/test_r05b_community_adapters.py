@@ -180,6 +180,22 @@ def test_ts_87cf9551_preload_degrades_to_stub_keeping_event_and_dim(caplog):
 
     reset_registry_for_tests()
     try:
+        from okto_pulse.core.kg.interfaces.registry import (
+            _build_defaults,
+            configure_kg_registry,
+        )
+        from okto_pulse.core.kg.providers.testing.memory_audit_repo import (
+            InMemoryAuditRepository,
+        )
+        from okto_pulse.core.kg.providers.testing.memory_event_bus import (
+            InMemoryEventBus,
+        )
+
+        configure_kg_registry(
+            defaults_factory=_build_defaults,
+            event_bus=InMemoryEventBus(),
+            audit_repo=InMemoryAuditRepository(),
+        )
         reg = get_kg_registry()
         reg.embedding_provider = _FailingDuckProvider()
         with caplog.at_level(logging.WARNING, logger="okto_pulse.community.embedding"):
@@ -206,6 +222,22 @@ def test_ts_87cf9551_preload_noop_for_stub_provider():
 
     reset_registry_for_tests()
     try:
+        from okto_pulse.core.kg.interfaces.registry import (
+            _build_defaults,
+            configure_kg_registry,
+        )
+        from okto_pulse.core.kg.providers.testing.memory_audit_repo import (
+            InMemoryAuditRepository,
+        )
+        from okto_pulse.core.kg.providers.testing.memory_event_bus import (
+            InMemoryEventBus,
+        )
+
+        configure_kg_registry(
+            defaults_factory=_build_defaults,
+            event_bus=InMemoryEventBus(),
+            audit_repo=InMemoryAuditRepository(),
+        )
         reg = get_kg_registry()
         original = CommunityStubEmbeddingProvider(dim=5)
         reg.embedding_provider = original
@@ -350,13 +382,13 @@ def test_ts_2b099962_audit_flags_synthetic_contamination(tmp_path):
 
 
 def test_ts_2b099962_deferred_adapters_not_physically_moved():
-    # R05-B moves NOTHING physically: the deferred/out-of-scope core adapters
-    # still exist at their core paths (only Onda A were extracted, in parallel).
+    # R05-B moved nothing physically; R-P2-02 later moved the relational
+    # EventBus/AuditRepository implementations to the Community edition. The
+    # remaining deferred/out-of-scope core adapters still exist at their core
+    # paths.
     for rel in (
         "kg/providers/embedded/mcp_auth_context.py",
         "kg/providers/embedded/kuzu_graph_store.py",
-        "kg/providers/embedded/sqlite_outbox_event_bus.py",
-        "kg/providers/embedded/sqlalchemy_audit_repo.py",
         "telemetry/store.py",
         # Onda A concretes ALSO stay (register-before-remove, removal = R05-E).
         "infra/storage.py",
@@ -365,3 +397,16 @@ def test_ts_2b099962_deferred_adapters_not_physically_moved():
         "kg/providers/embedded/memory_cache.py",
     ):
         assert (CORE_PKG / rel).exists(), f"core adapter unexpectedly moved/removed: {rel}"
+
+    for rel in (
+        "kg/providers/embedded/sqlite_outbox_event_bus.py",
+        "kg/providers/embedded/sqlalchemy_audit_repo.py",
+    ):
+        assert not (CORE_PKG / rel).exists(), f"relational data adapter still in core: {rel}"
+
+    community_pkg = Path(__file__).resolve().parents[1] / "src" / "okto_pulse" / "community"
+    for rel in (
+        "adapters/sqlite_outbox_event_bus.py",
+        "adapters/sqlalchemy_audit_repo.py",
+    ):
+        assert (community_pkg / rel).exists(), f"community adapter missing: {rel}"

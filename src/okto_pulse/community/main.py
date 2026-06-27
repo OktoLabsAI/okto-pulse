@@ -694,10 +694,10 @@ def create_community_app():
     _configure_sqlite_pragmas(get_engine())
 
     # Bootstrap the KG provider registry via the Community composition root.
-    # (R05-D) The Community composition registers event_bus, audit_repo and
-    # config EXPLICITLY (Community data adapters) ahead of any fallback; the
-    # core's session_factory auto-wire is only a ledgered fallback for
-    # non-composed callers, so it does not run for this edition.
+    # (R05-D/R-P2-02) The Community composition registers event_bus, audit_repo
+    # and config EXPLICITLY (Community data adapters). The core registry no
+    # longer owns a relational session_factory auto-wire and fails closed if one
+    # of these slots is missing.
     #
     # R08-B (pass-through, DEC-R08B-01): the composition root injects the
     # AuthContext factory bound to the MCP server's current agent/db providers,
