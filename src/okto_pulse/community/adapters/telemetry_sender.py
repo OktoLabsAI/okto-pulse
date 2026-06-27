@@ -38,16 +38,17 @@ import requests
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry.product_aggregator_registry import get_product_aggregator
 from okto_pulse.core.telemetry.schema import canonical_json, now_utc
-from okto_pulse.core.telemetry.settings import (
-    resolve_telemetry_config,
-    save_state,
-)
+from okto_pulse.core.telemetry.settings import resolve_telemetry_config
 from okto_pulse.core.telemetry import failure_state as fs
 from okto_pulse.core.telemetry import watermark as wm
 from okto_pulse.core.telemetry.era import POST_FIX_DELTA_MARKER, POST_FIX_SNAPSHOT_MARKER
 from okto_pulse.core.telemetry.event_store_registry import get_telemetry_event_store
 from okto_pulse.core.ports.telemetry import TelemetryEventStore, TelemetrySink
 from okto_pulse.community.adapters._telemetry_helpers import add_guided_help_counts, parse_iso
+
+# R-P2-08: telemetry STATE persistence (state.json) is Community-owned — the
+# sender NEVER imports the core's settings ``save_state`` / ``load_state``.
+from okto_pulse.community.adapters.telemetry_state import save_state
 
 logger = logging.getLogger("okto_pulse.telemetry.sender")
 

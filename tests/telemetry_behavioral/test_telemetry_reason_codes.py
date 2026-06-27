@@ -18,6 +18,7 @@ import requests
 
 from okto_pulse.community.adapters.telemetry_sender import CommunityTelemetryBeaconSender
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
+from okto_pulse.community.adapters import telemetry_state as tstate  # R-P2-08: Community-owned state persistence
 import okto_pulse.community.adapters.telemetry_sender as sender_mod  # patches _utcnow/_backoff_jitter
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry import failure_state as fs
@@ -201,7 +202,7 @@ def test_duplicate_confirms_events_idempotently_no_replay(tmp_path, monkeypatch)
 
     # The duplicate confirmed the events durably (ledger) and advanced the cursor.
     assert LocalTelemetryStore(metrics_dir).confirmed_event_ids() == event_ids
-    wmark = wm.load_watermark(metrics_dir)
+    wmark = tstate.load_watermark(metrics_dir)
     assert not wmark.is_empty
     assert wmark.watermark_event_id in event_ids
 
@@ -273,7 +274,7 @@ def test_failure_before_accept_preserves_watermark_and_window(tmp_path, monkeypa
 
     # Window preserved: nothing confirmed, watermark untouched (br_7bced648).
     assert LocalTelemetryStore(metrics_dir).confirmed_event_ids() == set()
-    assert wm.load_watermark(metrics_dir).is_empty
+    assert tstate.load_watermark(metrics_dir).is_empty
 
     # The same events are still pending → re-eligible for a future retry.
     sender = TelemetryBeaconSender(settings)
