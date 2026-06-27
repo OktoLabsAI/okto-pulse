@@ -22,7 +22,6 @@ from okto_pulse.community.adapters import telemetry_state as tstate  # R-P2-08: 
 import okto_pulse.community.adapters.telemetry_sender as sender_mod  # patches _utcnow/_backoff_jitter
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry import failure_state as fs
-from okto_pulse.core.telemetry import watermark as wm
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
 from okto_pulse.core.telemetry.service import TelemetryService
 from okto_pulse.core.telemetry.settings import resolve_telemetry_config
