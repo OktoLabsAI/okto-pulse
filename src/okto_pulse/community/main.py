@@ -667,6 +667,29 @@ def create_community_app():
         lifespan=combined_lifespan,
     )
 
+    # R-P2-06B: expose the composition-owned SchedulerControl so a runtime
+    # settings PUT reschedules the KG tick through the port. The core no longer
+    # builds an implicit SingletonSchedulerControl fallback, so the Community
+    # composition root must supply it. Built here (after create_app registered
+    # the session_factory via create_database); SingletonSchedulerControl reads
+    # the scheduler singleton lazily at call time, so the lifespan set_scheduler
+    # still wires it. Jobs / cadence / lifecycle are unchanged.
+    from okto_pulse.community.adapters.data import CommunityOutboxEventBus
+    from okto_pulse.core.composition import RuntimeComposition
+    from okto_pulse.core.services.scheduler_control_adapter import (
+        SingletonSchedulerControl,
+    )
+
+    _rc_session_factory = get_session_factory()
+    app.state.runtime_composition = RuntimeComposition(
+        settings_provider=settings,
+        auth_provider=auth,
+        storage_provider=storage,
+        session_factory=_rc_session_factory,
+        event_bus=CommunityOutboxEventBus(_rc_session_factory),
+        scheduler_control=SingletonSchedulerControl(),
+    )
+
     # Configure SQLite pragmas AFTER create_database was called by create_app
     _configure_sqlite_pragmas(get_engine())
 
