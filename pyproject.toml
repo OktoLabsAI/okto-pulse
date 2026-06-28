@@ -27,6 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "okto-pulse-core>=0.3.0,<1.0.0",
+    "ladybug>=0.16.0,<0.17.0",
     "sentence-transformers>=2.5.0,<6.0.0",
 ]
 

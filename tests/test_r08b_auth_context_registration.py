@@ -51,9 +51,8 @@ def test_ts_0fda322a_composition_registers_auth_context_factory(
     )
 
     factory = create_mcp_auth_factory(lambda: None, lambda: None)
-    # include_graph=False keeps this a fast wiring check (no Ladybug).
     configure_community_kg_registry(
-        None, include_graph=False, auth_context_factory=factory
+        None, auth_context_factory=factory
     )
 
     reg = _reg.get_kg_registry()
@@ -71,5 +70,5 @@ def test_ts_0fda322a_omitted_factory_leaves_slot_none(_clean_settings_registry):
 
     # No auth_context_factory -> slot stays None (transitional get_agent/get_db
     # fallback path in the KG query tools is used instead).
-    configure_community_kg_registry(None, include_graph=False)
+    configure_community_kg_registry(None)
     assert _reg.get_kg_registry().auth_context_factory is None

@@ -2,13 +2,11 @@
 
 Documents the Ladybug/Kùzu (the ``import ladybug as kuzu`` graph-DB binary) as
 COMMUNITY-LOCAL ownership: the Community edition registers the KG graph adapters
-behind the #06 ports. In the CORE the Ladybug imports are a register-before-
-remove LEDGERED EXCEPTION (the embedded runtime stays until R05-E does the
-physical move + dependency cleanup).
+behind the #06 ports. In the CORE the Ladybug imports must be absent after the
+R05-E/R12 physical move + dependency cleanup.
 
-The audit FAILS if the core exposes the Ladybug dependency in a module that is
-NOT in the ledgered set — i.e. a NEW Ladybug import outside the embedded runtime
-is a boundary violation. Read-only static analysis; imports nothing heavy.
+The audit FAILS if the core exposes the Ladybug dependency in any module.
+Read-only static analysis; imports nothing heavy.
 """
 
 from __future__ import annotations
@@ -16,15 +14,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-#: Core modules permitted to import ``ladybug`` (the embedded Kùzu runtime) as a
-#: ledgered temporary exception. Everything else importing Ladybug is a NEW
-#: dependency leak that the audit blocks.
-LADYBUG_LEDGERED_CORE_MODULES: frozenset[str] = frozenset(
-    {
-        "kg/schema.py",
-        "kg/global_discovery/schema.py",
-    }
-)
+#: Core modules permitted to import ``ladybug``. The set is intentionally empty:
+#: Ladybug/Kuzu is now a Community adapter dependency, not a core runtime import.
+LADYBUG_LEDGERED_CORE_MODULES: frozenset[str] = frozenset()
 
 _LADYBUG_IMPORT = re.compile(r"^\s*import\s+ladybug\b", re.MULTILINE)
 
@@ -32,7 +24,7 @@ _LADYBUG_IMPORT = re.compile(r"^\s*import\s+ladybug\b", re.MULTILINE)
 def audit_ladybug_ownership(core_pkg: Path) -> dict:
     """Scan ``core_pkg`` (the ``okto_pulse/core`` package dir) for ``ladybug``
     imports and reconcile against the ledger. ``ownership`` is Community-local;
-    ``ok`` is False when a non-ledgered core module imports Ladybug."""
+    ``ok`` is False when any core module imports Ladybug."""
     ladybug_files: list[str] = []
     for py in core_pkg.rglob("*.py"):
         if "__pycache__" in py.parts:

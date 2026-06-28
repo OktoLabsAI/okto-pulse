@@ -29,8 +29,8 @@ for mod in list(sys.modules):
 async def test_demo_graph_seed_uses_schema_supported_cognitive_edge(monkeypatch):
     from okto_pulse.community import seed as seed_mod
     from okto_pulse.core.infra import database as database_mod
+    import okto_pulse.core.kg.interfaces as interfaces_mod
     from okto_pulse.core.kg import primitives as primitives_mod
-    from okto_pulse.core.kg import schema as schema_mod
     from okto_pulse.core.kg.interfaces import registry as registry_mod
     from okto_pulse.core.kg.schemas import KGEdgeType, KGNodeType
 
@@ -61,13 +61,21 @@ async def test_demo_graph_seed_uses_schema_supported_cognitive_edge(monkeypatch)
     async def fake_commit(req, *, agent_id, db):
         return SimpleNamespace()
 
+    class FakeGraphSchemaManager:
+        async def ensure_bootstrapped(self, board_id):
+            return None
+
     monkeypatch.setattr(
         database_mod,
         "get_session_factory",
         lambda: fake_session_factory,
     )
     monkeypatch.setattr(registry_mod, "configure_kg_registry", lambda **_: None)
-    monkeypatch.setattr(schema_mod, "bootstrap_board_graph", lambda _board_id: None)
+    monkeypatch.setattr(
+        interfaces_mod,
+        "get_kg_registry",
+        lambda: SimpleNamespace(graph_schema_manager=FakeGraphSchemaManager()),
+    )
     monkeypatch.setattr(primitives_mod, "begin_consolidation", fake_begin)
     monkeypatch.setattr(primitives_mod, "add_edge_candidate", fake_add_edge)
     monkeypatch.setattr(primitives_mod, "propose_reconciliation", fake_propose)

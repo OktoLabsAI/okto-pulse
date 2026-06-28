@@ -382,18 +382,15 @@ def test_ts_2b099962_audit_flags_synthetic_contamination(tmp_path):
 
 
 def test_ts_2b099962_deferred_adapters_not_physically_moved():
-    # R05-B moved nothing physically; R-P2-02 later moved the relational
-    # EventBus/AuditRepository implementations to the Community edition. The
-    # remaining deferred/out-of-scope core adapters still exist at their core
-    # paths.
+    # R05-B moved nothing physically; later refactor specs moved concrete
+    # relational, Kuzu/Ladybug and ML provider adapters to Community.
+    # Remaining deferred/out-of-scope core helpers still exist at their core paths.
     for rel in (
         "kg/providers/embedded/mcp_auth_context.py",
-        "kg/providers/embedded/kuzu_graph_store.py",
         "telemetry/store.py",
-        # Onda A concretes ALSO stay (register-before-remove, removal = R05-E).
+        # Core-owned helpers/ports still stay; concrete ML providers moved out.
         "infra/storage.py",
         "kg/embedding.py",
-        "kg/rerank/cross_encoder.py",
         "kg/providers/embedded/memory_cache.py",
     ):
         assert (CORE_PKG / rel).exists(), f"core adapter unexpectedly moved/removed: {rel}"
@@ -401,12 +398,27 @@ def test_ts_2b099962_deferred_adapters_not_physically_moved():
     for rel in (
         "kg/providers/embedded/sqlite_outbox_event_bus.py",
         "kg/providers/embedded/sqlalchemy_audit_repo.py",
+        "kg/providers/embedded/kuzu_graph_store.py",
+        "kg/providers/embedded/kuzu_cypher_executor.py",
+        "kg/providers/embedded/kuzu_graph_transaction.py",
+        "kg/providers/embedded/kuzu_graph_schema_manager.py",
+        "kg/providers/embedded/kuzu_graph_lifecycle.py",
+        "kg/providers/embedded/kuzu_graph_path_resolver.py",
+        "kg/rerank/cross_encoder.py",
     ):
-        assert not (CORE_PKG / rel).exists(), f"relational data adapter still in core: {rel}"
+        assert not (CORE_PKG / rel).exists(), f"moved adapter still in core: {rel}"
 
     community_pkg = Path(__file__).resolve().parents[1] / "src" / "okto_pulse" / "community"
     for rel in (
         "adapters/sqlite_outbox_event_bus.py",
         "adapters/sqlalchemy_audit_repo.py",
+        "adapters/kuzu_graph_store.py",
+        "adapters/kuzu_cypher_executor.py",
+        "adapters/kuzu_graph_transaction.py",
+        "adapters/kuzu_graph_schema_manager.py",
+        "adapters/kuzu_graph_lifecycle.py",
+        "adapters/kuzu_graph_path_resolver.py",
+        "adapters/embedding.py",
+        "adapters/rerank.py",
     ):
         assert (community_pkg / rel).exists(), f"community adapter missing: {rel}"

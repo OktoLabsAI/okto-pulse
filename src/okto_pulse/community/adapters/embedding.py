@@ -76,7 +76,7 @@ class CommunitySentenceTransformerProvider:
             except ImportError as exc:
                 raise RuntimeError(
                     "sentence-transformers is not installed — install with "
-                    "`pip install okto-pulse-core[kg-embeddings]` or use stub mode"
+                    "`pip install okto-pulse-community` or use stub mode"
                 ) from exc
             self._model = SentenceTransformer(self.model_name)
         return self._model

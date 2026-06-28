@@ -191,7 +191,7 @@ def test_ts_7413e7b2_lifecycle_returns_structured_reports(_isolated_kg):
 # ts_fde3a548 — KG replay (e2e) through the Community adapters.
 # ===========================================================================
 def test_ts_fde3a548_kg_replay_through_community_adapters(_isolated_kg):
-    from okto_pulse.core.kg.schema import SCHEMA_VERSION
+    from okto_pulse.core.kg.schema_contract import SCHEMA_VERSION
 
     reg = _isolated_kg
     board_id = "r05c-replay-board"
@@ -259,9 +259,9 @@ def test_ts_6145a84f_dependency_audit_real_core_is_ledgered():
     assert report["ownership"] == "community-local"
     assert report["ok"] is True, f"non-ledgered Ladybug import: {report['offenders']}"
     assert report["offenders"] == []
-    # the ledgered core Ladybug modules are exactly the embedded runtime.
-    assert set(report["core_ladybug_files"]) <= set(LADYBUG_LEDGERED_CORE_MODULES)
-    assert "kg/schema.py" in report["core_ladybug_files"]
+    # the core must no longer expose Ladybug at all; the Community runtime owns it.
+    assert report["core_ladybug_files"] == []
+    assert LADYBUG_LEDGERED_CORE_MODULES == frozenset()
 
 
 def test_ts_6145a84f_dependency_audit_flags_new_ladybug_import(tmp_path):
@@ -274,8 +274,7 @@ def test_ts_6145a84f_dependency_audit_flags_new_ladybug_import(tmp_path):
     )
     report = audit_ladybug_ownership(pkg)
     assert report["ok"] is False
-    assert report["offenders"] == ["services/rogue.py"]
-    assert "kg/schema.py" not in report["offenders"]  # ledgered -> allowed
+    assert report["offenders"] == ["kg/schema.py", "services/rogue.py"]
 
 
 # ===========================================================================
@@ -283,7 +282,7 @@ def test_ts_6145a84f_dependency_audit_flags_new_ladybug_import(tmp_path):
 # ===========================================================================
 def test_ts_a6c30200_schema_layer_safety_invariants():
     from okto_pulse.community.adapters.kg import CommunityKuzuGraphStore
-    from okto_pulse.core.kg.schema import (
+    from okto_pulse.core.kg.schema_contract import (
         EDGE_LAYERS,
         NODE_TYPES,
         SCHEMA_VERSION,

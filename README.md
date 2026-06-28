@@ -30,6 +30,8 @@
 - [Core Workflow](#core-workflow)
 - [Governance Gates](#governance-gates)
 - [Knowledge Graph](#knowledge-graph)
+- [Architecture](#architecture)
+  - [Adapters](#adapters)
 - [CLI Reference](#cli-reference)
 - [Run with Docker](#run-with-docker)
 - [Data Storage](#data-storage)
@@ -199,6 +201,79 @@ Operational health is visible through:
 - MCP health tools
 - dead-letter and queue metrics
 - graph database runtime settings in the board settings panel
+
+## Architecture
+
+The `okto-pulse` package is the Community edition runtime for
+`okto-pulse-core`. Core owns the domain, application services, REST/MCP
+contracts and pure backend ports. Community owns the local runtime composition:
+CLI, frontend bundle, local auth, storage, SQLite/LadybugDB wiring, telemetry
+adapters and operational MCP resource overlays.
+
+This does not mean every concrete backend has already been removed from core.
+Core's `adapter_readiness_inventory` remains the executable ledger for embedded
+technical adapters. Community registers the local adapters listed below and
+hosts the concrete runtime components used by the single-node distribution.
+
+### Adapters
+
+Community registers its adapters from `okto_pulse.community.main` and
+`okto_pulse.community.adapters.composition`. The main backend adapter package is
+`src/okto_pulse/community/adapters`.
+
+| Adapter | Core port or seam | Component used by Community |
+| --- | --- | --- |
+| `LocalAuthProvider` | `core.infra.auth.AuthProvider` | Local API-key style user context for the single-node runtime. |
+| `CommunityFileSystemStorage` | `core.infra.storage.StorageProvider` | Filesystem-backed attachment storage under the configured upload/data directory. |
+| `CommunityInMemoryCache` | `core.kg.interfaces.CacheBackend` | Process-local KG query cache for the Community runtime. |
+| `CommunityInMemoryRateLimiter` | `core.kg.interfaces.RateLimiter` | Process-local agent rate limiting for the Community runtime. |
+| `CommunityInMemorySessionStore` | `core.kg.interfaces.SessionStore` | In-memory KG consolidation sessions for the Community runtime. |
+| `CommunityStubEmbeddingProvider` / `CommunitySentenceTransformerProvider` | `core.kg.interfaces.EmbeddingProvider` | Deterministic stub mode or local `sentence-transformers` model (`all-MiniLM-L6-v2` by default); concrete ML ownership lives in Community. |
+| `CommunityKuzuGraphStore` | `core.kg.interfaces.SemanticGraphStore` | LadybugDB/Kuzu semantic graph reads and writes. |
+| `CommunityKuzuCypherExecutor` | `core.kg.interfaces.CypherExecutor` | Safe read-only Cypher execution. |
+| `CommunityKuzuGraphTransaction` | `core.kg.interfaces.GraphTransaction` | Board-scoped graph write transactions. |
+| `CommunityKuzuGraphSchemaManager` | `core.kg.interfaces.GraphSchemaManager` | Board graph schema bootstrap, migration, inspection and validation. |
+| `CommunityKuzuGraphLifecycle` | `core.kg.interfaces.GraphLifecycle` | Board graph open, close, rebuild and purge lifecycle. |
+| `CommunityKuzuGraphPathResolver` | `core.kg.interfaces.GraphPathResolver` | Board graph path and storage-state resolution for `graph.lbug`. |
+| `CommunityBoardGraphRuntime` | `core.kg.interfaces.BoardGraphRuntime` | Compatibility adapter behind the historical `core.kg.schema` API; delegates to `community.adapters.kg_runtime`. |
+| `apply_ladybug_lifecycle_step` | `KGProviderRegistry.safe_write_step_adapter` | LadybugDB safe-write lifecycle step implementation registered by Community. |
+| `CommunityOutboxEventBus` | `core.kg.interfaces.EventBus` | SQLite-backed KG/global-discovery outbox. |
+| `CommunityAuditRepository` | `core.kg.interfaces.AuditRepository` | SQLAlchemy-backed KG consolidation audit records and node refs. |
+| `CommunityKGConfig` | `core.kg.interfaces.KGConfig` | KG settings read from the Community/Core settings object. |
+| `CommunityMcpAuthenticator` | `core.ports.McpAuthenticator` | MCP API-key authentication against the local relational store. |
+| `build_community_resource_catalog` | `core.ports.McpResourceCatalog` | Community operational MCP resource overlays under `community/resources/operational`. |
+| `CommunityCapabilityDescriptorSource` | `core.ports.CapabilityDescriptorSource` | Runtime capability descriptors derived from the active Community composition. |
+| `CommunityRelationalSchemaMigrator` | `core.ports.RelationalSchemaMigrator` | Describes and executes the same relational `init_db` migration steps through the port. |
+| `CommunityDataBootstrapper` | `core.ports.DataBootstrapper` | Describes and executes local data/bootstrap steps for `okto-pulse init`. |
+| `CommunityCrossEncoderReranker` | `core.kg.interfaces.Reranker` | Optional local cross-encoder reranking factory; falls back to core token-overlap behavior when unavailable. |
+| `CommunityLocalTelemetryStore` | `core.ports.TelemetryEventStore` | Local JSONL telemetry event, sent, failure, export and snapshot files. |
+| `CommunityTelemetryBeaconSender` | `core.ports.TelemetrySink` | HTTP telemetry beacon sender with local failure state, token lifecycle and watermark handling. |
+| `CommunityProductTelemetryAggregator` | `core.ports.ProductAggregationPort` | SQLite-derived product metrics aggregation over local Pulse data. |
+| `LocalPublishHealthSource`, `InstallLifecycleSource`, `AwsIngestSource`, `ReportAthenaSource` | `core.ports.PublishHealthSource` | Publish-health source descriptors; AWS/reporting sources are explicit gaps unless a deployment wires real downstream adapters. |
+| `build_community_telemetry_port` | `core.ports.TelemetryPort` | Composed telemetry facade that resolves store, sender, product and publish-health through Community-registered factories. |
+| `community.adapters.telemetry_state` | telemetry state persistence seam | Community-owned persistence for telemetry `state.json`, failure-state and watermark files used by the local sender. |
+| SPA/static mount | FastAPI app composition | Bundled React frontend from `community/frontend_dist`, served with SPA fallback. |
+
+Community runtime components:
+
+- SQLite relational database: `pulse.db` under the configured data directory,
+  with WAL, busy-timeout and foreign keys configured on startup.
+- LadybugDB/Kuzu board graph: per-board `graph.lbug` directories under the KG
+  base path, owned by `community.adapters.kg_runtime`.
+- Global discovery graph: `discovery.lbug` under the global graph directory.
+  The global handle lifecycle is still a ledgered core exception even though
+  board graph runtime ownership has moved to Community.
+- Upload/data filesystem: attachment storage and other local files under the
+  configured upload/data directory.
+- Metrics files: local JSONL event, sent, failure, export and snapshot files,
+  plus telemetry state, watermark and failure-state files.
+- Frontend bundle: React assets from `community/frontend_dist`, mounted by the
+  Community app with SPA fallback.
+
+The ORM models and many SQLAlchemy services still live in core while the
+repository/unit-of-work strangler expands. Treat the core
+`ARCHITECTURE.md` and adapter readiness ledger as the source of truth for
+remaining extraction work.
 
 ## CLI Reference
 

@@ -705,7 +705,7 @@ def create_community_app():
     # AuthContext port (MCPAuthContext). Board ACL still flows through
     # AgentService.list_boards_for_agent (no bypass); api_key path untouched. The
     # core server module is imported lazily (per first call) to avoid pulling the
-    # heavy MCP module at boot. R08-C removes the _active_api_key ContextVar.
+    # heavy MCP module at boot. R-P2-09 resolves MCP credentials from request scope.
     async def _mcp_auth_get_agent():
         from okto_pulse.core.mcp.server import _get_authenticated_agent
 
@@ -844,7 +844,7 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     process (the embedded DB does not support multiple writers). The two
     listeners share the same module-level state — including the
     ``_global_db`` cache, the ``_mcp_session_factory`` registered by the
-    API lifespan, and the ``_active_api_key`` ``ContextVar`` — so the MCP
+    API lifespan, and the request-scoped MCP credential provider — so the MCP
     sub-app sees a fully-initialised runtime.
     """
     from okto_pulse.core.mcp.server import build_mcp_asgi_app

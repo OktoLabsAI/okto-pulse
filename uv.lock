@@ -1443,12 +1443,14 @@ name = "okto-pulse"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
+    { name = "ladybug" },
     { name = "okto-pulse-core" },
     { name = "sentence-transformers" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "ladybug", specifier = ">=0.16.0,<0.17.0" },
     { name = "okto-pulse-core", specifier = ">=0.3.0,<1.0.0" },
     { name = "sentence-transformers", specifier = ">=2.5.0,<6.0.0" },
 ]
@@ -1465,7 +1467,6 @@ dependencies = [
     { name = "chardet" },
     { name = "fastapi" },
     { name = "fastmcp" },
-    { name = "ladybug" },
     { name = "mcp" },
     { name = "numpy" },
     { name = "pydantic" },

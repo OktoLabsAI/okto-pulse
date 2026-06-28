@@ -5,8 +5,8 @@ builds the edition's storage + embedding + base registry + reranker wiring.
 adapters — never the core Onda A concretes (FileSystemStorageProvider /
 InMemory* / SentenceTransformer* / CrossEncoder). The base registry supplies the
 Onda A slots so ``configure_kg_registry(base_registry=...)`` does NOT instantiate
-the core embedded Onda A; the core still mounts the Kùzu/graph slots it leaves
-``None`` (R05-B/C).
+core embedded defaults; Community also fills the Ladybug/Kuzu graph slots before
+the registry is exposed to core consumers.
 
 R05-D (Onda B): the composition now ALSO supplies the three DATA providers —
 ``event_bus`` (CommunityOutboxEventBus), ``audit_repo`` (CommunityAuditRepository)
@@ -59,8 +59,8 @@ def build_community_embedding(*, settings: Any | None = None):
 
 def build_community_base_registry(*, embedding: Any | None = None, settings: Any | None = None):
     """Build a ``KGProviderRegistry`` whose Onda A slots (cache / rate_limiter /
-    session_store / embedding) are the Community adapters. The Kùzu/graph slots +
-    config are left ``None`` for the core to mount (R05-B IMP2)."""
+    session_store / embedding) are the Community adapters. Graph, data and auth
+    slots are filled by the composition root before the registry is configured."""
     from okto_pulse.core.kg.interfaces.registry import KGProviderRegistry
 
     s = settings if settings is not None else _core_settings()
@@ -81,9 +81,15 @@ def _apply_graph_providers(base: Any) -> None:
     Ladybug; loaded only when the KG registry is actually configured (the same
     point the core already loaded it)."""
     from okto_pulse.community.adapters.kg import build_community_graph_providers
+    from okto_pulse.community.adapters.kg_runtime import apply_ladybug_lifecycle_step
+    from okto_pulse.community.adapters.board_graph_runtime import (
+        CommunityBoardGraphRuntime,
+    )
 
     for key, value in build_community_graph_providers().items():
         setattr(base, key, value)
+    base.safe_write_step_adapter = apply_ladybug_lifecycle_step
+    base.board_graph_runtime = CommunityBoardGraphRuntime()
 
 
 def _apply_data_providers(base: Any, session_factory: Any) -> None:

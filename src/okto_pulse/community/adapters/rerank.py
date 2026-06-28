@@ -1,8 +1,8 @@
 """Community CrossEncoder reranker adapter (spec R05-B, Onda A / IMP3).
 
-Implements the ``cross_encoder`` rerank strategy with the SAME semantics as the
-core ``CrossEncoderReranker`` and registers it with the core rerank factory's
-registration hook — so the concrete adapter lives in the Community edition
+Implements the ``cross_encoder`` rerank strategy with Community-owned concrete
+ML dependencies and registers it with the core rerank factory's registration
+hook — so the concrete adapter lives in the Community edition
 WITHOUT the core importing community. ``none`` / ``token_overlap`` / ``llm`` and
 the token_overlap fallback are unchanged (register-before-remove).
 
@@ -34,7 +34,7 @@ class CommunityCrossEncoderReranker:
             raise ImportError(
                 "CommunityCrossEncoderReranker needs `sentence-transformers`. "
                 "Install the optional extra: `pip install "
-                "'okto-pulse-core[kg-embeddings]'`."
+                "okto-pulse-community`."
             ) from exc
         self._model = CrossEncoder(model_name or self.default_model)
 
