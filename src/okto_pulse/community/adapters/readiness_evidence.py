@@ -26,14 +26,14 @@ ONDA_A_ADAPTER_KEYS: tuple[str, ...] = (
 )
 
 
-def community_onda_a_evidence() -> dict[str, AdapterEvidence]:
-    """The Community's register-before-remove evidence per Onda A adapter_key.
+def _registered_not_removed_evidence() -> AdapterEvidence:
+    """Build a FRESH register-before-remove evidence object.
 
     ``dependency_audit_passed=False`` (the core concrete/dep is still present —
-    removed only in R05-E) keeps every adapter ``blocked`` under
+    removed only in R05-E) keeps the adapter ``blocked`` under
     ``evaluate_removal`` (fail-closed): registered + audited, but NOT removed.
     """
-    registered_not_removed = AdapterEvidence(
+    return AdapterEvidence(
         port_closed=True,
         community_registered=True,
         oracle_passed=True,
@@ -41,7 +41,22 @@ def community_onda_a_evidence() -> dict[str, AdapterEvidence]:
         dependency_audit_passed=False,  # core concrete/dep NOT removed (R05-E)
         register_before_remove_passed=True,
     )
-    return {key: registered_not_removed for key in ONDA_A_ADAPTER_KEYS}
+
+
+def community_onda_a_evidence() -> dict[str, AdapterEvidence]:
+    """The Community's register-before-remove evidence per Onda A adapter_key.
+
+    R03 IMP1 (FR1/TR2/AC1, ts_e4c2a991): every key — and the three in-memory
+    slots ``inmemory_cache_backend`` / ``inmemory_token_bucket_rate_limiter`` /
+    ``inmemory_session_store`` in particular — owns a DISTINCT, immutable
+    ``AdapterEvidence`` instance. Previously a single shared instance was aliased
+    across all keys; although ``AdapterEvidence`` is frozen (so value isolation
+    already held), the keys were IDENTITY-coupled (``ev[a] is ev[b]``). Per-key
+    construction guarantees that mutating/replacing one slot's evidence can never
+    alias another's — cache_backend, rate_limiter and session_store stay
+    independent.
+    """
+    return {key: _registered_not_removed_evidence() for key in ONDA_A_ADAPTER_KEYS}
 
 
 __all__ = ["ONDA_A_ADAPTER_KEYS", "community_onda_a_evidence"]

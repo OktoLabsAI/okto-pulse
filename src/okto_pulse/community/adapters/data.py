@@ -33,7 +33,6 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from okto_pulse.core.kg.providers.embedded.settings_config import SettingsKGConfig
 from okto_pulse.community.adapters.sqlalchemy_audit_repo import (
     CommunityAuditRepository,
 )
@@ -42,10 +41,47 @@ from okto_pulse.community.adapters.sqlite_outbox_event_bus import (
 )
 
 
-class CommunityKGConfig(SettingsKGConfig):
-    """KGConfig (Community) — CoreSettings-backed, mirrors the embedded bit-for-bit.
+class CommunityKGConfig:
+    """Community KGConfig backed by the captured settings object.
 
-    Preserves TR6: the effective KG settings values are unchanged (no overrides)."""
+    The object reference is captured at construction time, matching the previous
+    effective-value behavior without inheriting the core concrete helper.
+    """
+
+    def __init__(self, settings: Any | None = None) -> None:
+        if settings is None:
+            from okto_pulse.core.infra.config import get_settings
+
+            settings = get_settings()
+        self._settings = settings
+
+    @property
+    def kg_base_dir(self) -> str:
+        return self._settings.kg_base_dir
+
+    @property
+    def kg_embedding_mode(self) -> str:
+        return self._settings.kg_embedding_mode
+
+    @property
+    def kg_embedding_model(self) -> str:
+        return self._settings.kg_embedding_model
+
+    @property
+    def kg_embedding_dim(self) -> int:
+        return self._settings.kg_embedding_dim
+
+    @property
+    def kg_session_ttl_seconds(self) -> int:
+        return self._settings.kg_session_ttl_seconds
+
+    @property
+    def kg_cleanup_interval_seconds(self) -> int:
+        return self._settings.kg_cleanup_interval_seconds
+
+    @property
+    def kg_cleanup_enabled(self) -> bool:
+        return self._settings.kg_cleanup_enabled
 
 
 def build_community_data_providers(session_factory: Callable) -> dict[str, Any]:

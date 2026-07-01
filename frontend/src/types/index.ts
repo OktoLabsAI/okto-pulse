@@ -606,6 +606,7 @@ export interface RefinementKnowledgeSummary {
 export interface RefinementSummary {
   id: string;
   open_qa_count?: number;
+  active_spec_count?: number;
   ideation_id: string;
   board_id: string;
   title: string;
@@ -1275,6 +1276,8 @@ export interface IdeationSummary {
   scope_assessment?: { domains: number; ambiguity: number; dependencies: number } | null;
   // Unanswered Q&A count (answered_at IS NULL) — drives the "open Q&A" badge.
   open_qa_count?: number;
+  // Non-archived, non-cancelled child refinements — drives the "Sem refinamento" badge.
+  active_refinement_count?: number;
   board_id: string;
   title: string;
   description: string | null;
@@ -1353,6 +1356,7 @@ export interface Card {
   steps_to_reproduce?: string | null;
   action_plan?: string | null;
   linked_test_task_ids?: string[] | null;
+  skip_task_requirement_link_gate?: boolean;
   validations?: ValidationEntry[] | null;
 }
 
@@ -1394,6 +1398,7 @@ export interface CardSummary {
   origin_task_id?: string | null;
   severity?: BugSeverity | null;
   linked_test_task_ids?: string[] | null;
+  skip_task_requirement_link_gate?: boolean;
   archived?: boolean;
 }
 
@@ -1454,6 +1459,7 @@ export interface BoardSettings {
   skip_contract_coverage_global: boolean;
   skip_ir_coverage_global: boolean;
   skip_or_coverage_global: boolean;
+  skip_task_requirement_link_gate_global?: boolean;
   skip_decisions_coverage_global: boolean;
   skip_cognitive_consolidation?: boolean;
   allow_agent_self_answering?: boolean;
@@ -1583,7 +1589,7 @@ export interface CreateBoardRequest {
 export interface UpdateBoardRequest {
   name?: string;
   description?: string;
-  settings?: BoardSettings;
+  settings?: Partial<BoardSettings>;
 }
 
 export interface CreateCardRequest {
@@ -1627,6 +1633,7 @@ export interface UpdateCardRequest {
   steps_to_reproduce?: string;
   action_plan?: string;
   linked_test_task_ids?: string[];
+  skip_task_requirement_link_gate?: boolean;
 }
 
 export interface ConclusionEntry {

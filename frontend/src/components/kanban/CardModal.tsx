@@ -27,6 +27,7 @@ import { ArchitectureTab } from '@/components/architecture';
 import { openLineageGraph } from '@/components/traceability';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 import { usePermissions } from '@/hooks/usePermissions';
+import { SettingsToggle } from '@/components/board/BoardSettingsForm';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -854,6 +855,28 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                     entityType="card"
                     entityId={card.id}
                   />
+                  {(card.card_type ?? 'normal') === 'normal' && (
+                    <div className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-800/60 dark:bg-amber-950/20">
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Skip task requirement link gate</h3>
+                        <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">
+                          Allow this task to start without a direct FR/TR/BR/IR/OR link.
+                        </p>
+                      </div>
+                      <SettingsToggle
+                        checked={card.skip_task_requirement_link_gate ?? false}
+                        onChange={async () => {
+                          const updated = await api.updateCard(card.id, {
+                            skip_task_requirement_link_gate: !(card.skip_task_requirement_link_gate ?? false),
+                          });
+                          setCard(updated);
+                          updateCardInColumn(updated);
+                        }}
+                        ariaLabel="Skip task requirement link gate for this card"
+                        activeColor="amber"
+                      />
+                    </div>
+                  )}
                   <div>
                     <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Description</h3>
                     <EditableField

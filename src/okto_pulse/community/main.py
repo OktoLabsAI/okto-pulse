@@ -21,11 +21,14 @@ from typing import AsyncGenerator
 
 import uvicorn
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import event
 
+from okto_pulse.core.infra.daily_tick import (
+    compute_tick_catch_up_next_run,
+    emit_daily_tick,
+)
 from okto_pulse.core.app import create_app
 from okto_pulse.core.infra.config import get_settings
-from okto_pulse.core.infra.database import get_engine, get_session_factory, init_db, close_db
+from okto_pulse.core.infra.database import get_session_factory, init_db, close_db
 from okto_pulse.core.kg.interfaces.registry import get_kg_registry
 # NOTE: MCP server is imported lazily inside create_community_app (after
 # create_app has called configure_settings) and inside combined_lifespan
@@ -37,6 +40,7 @@ from okto_pulse.community.adapters.composition import (
     configure_community_kg_registry,
 )
 from okto_pulse.community.adapters.embedding import CommunityStubEmbeddingProvider
+from okto_pulse.community.adapters.workers import build_community_worker_registry
 from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.community.runtime import (
@@ -245,6 +249,7 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
         "kg.embedding.load_failed",
         extra={
             "event": "kg.embedding.load_failed",
+            "reason": "load_failed",
             "model": model_name,
             "error": repr(last_exc) if last_exc else "unknown",
             "fallback": "CommunityStubEmbeddingProvider",
@@ -279,14 +284,11 @@ def _ensure_data_dir(settings: CommunitySettings) -> None:
         pass
 
 
-def _configure_sqlite_pragmas(engine) -> None:
-    """Configure SQLite WAL mode and foreign keys via event listener."""
-    @event.listens_for(engine.sync_engine, "connect")
-    def set_sqlite_pragmas(dbapi_conn, connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+# R01B REPLAN-IMP2 (TR5): the former _configure_sqlite_pragmas helper (a partial
+# WAL + foreign_keys connect listener) was removed. SQLite hardening is now owned
+# by the single edition installer install_community_sqlite_pragmas (the UNION:
+# WAL + busy_timeout=30000 + synchronous=NORMAL + foreign_keys=ON), registered on
+# the core runtime seam before create_database builds the engine.
 
 
 # Paths que nunca recebem o fallback SPA (API, docs, MCP e assets estáticos).
@@ -506,38 +508,20 @@ def create_community_app():
         # KG search doesn't pay the multi-second model-load cost synchronously.
         await _preload_embedding_model(settings)
 
-        # Start the KG background workers
-        from okto_pulse.core.events.dispatcher import EventDispatcher, set_dispatcher
-        from okto_pulse.core.kg.workers.consolidation import ConsolidationWorker
-        from okto_pulse.core.kg.workers.cleanup import get_cleanup_worker
-        from okto_pulse.core.kg.global_discovery.outbox_worker import OutboxWorker
         from okto_pulse.core.services.settings_service import apply_persisted_settings_to_core_settings
 
         await apply_persisted_settings_to_core_settings()
 
-        event_dispatcher = EventDispatcher(get_session_factory())
-        await event_dispatcher.start()
-        set_dispatcher(event_dispatcher)
-
-        cleanup_worker = None
-        consolidation_worker = None
-        outbox_worker = None
+        worker_registry = None
         scheduler = None
         metrics_beacon_task = None
 
         kg_settings = get_settings()
-        if getattr(kg_settings, "kg_cleanup_enabled", True):
-            # Singleton picks interval_seconds from settings — passing
-            # a session_factory positionally would shadow that field
-            # and crash asyncio.sleep() with a TypeError.
-            cleanup_worker = get_cleanup_worker()
-            await cleanup_worker.start()
-
-        consolidation_worker = ConsolidationWorker(get_session_factory())
-        await consolidation_worker.start()
-
-        outbox_worker = OutboxWorker(get_session_factory())
-        await outbox_worker.start()
+        worker_registry = build_community_worker_registry(
+            get_session_factory(),
+            kg_cleanup_enabled=getattr(kg_settings, "kg_cleanup_enabled", True),
+        )
+        await worker_registry.start_all()
 
         # Daily decay tick scheduler (Ideação #4 IMPL-D, dec_bc0eaeec).
         # Honor KG_DAILY_TICK_DISABLED for tests; soft-fail if APScheduler
@@ -547,7 +531,6 @@ def create_community_app():
             try:
                 from apscheduler.schedulers.asyncio import AsyncIOScheduler
                 from apscheduler.triggers.interval import IntervalTrigger
-                from okto_pulse.core.app import _emit_daily_tick
                 from okto_pulse.core.infra.config import get_settings as _get_settings
                 from okto_pulse.core.kg.scheduler_singleton import set_scheduler
 
@@ -560,11 +543,7 @@ def create_community_app():
                 # kg_tick_runs (vencido → ~2min após o boot).
                 _job_kwargs = {}
                 try:
-                    from okto_pulse.core.app import (
-                        _compute_tick_catch_up_next_run,
-                    )
-
-                    _next_run = await _compute_tick_catch_up_next_run(
+                    _next_run = await compute_tick_catch_up_next_run(
                         _interval_minutes
                     )
                     if _next_run is not None:
@@ -574,7 +553,7 @@ def create_community_app():
                         "kg.tick.catch_up_compute_failed err=%s", _tick_exc,
                     )
                 scheduler.add_job(
-                    _emit_daily_tick,
+                    emit_daily_tick,
                     # Spec 54399628 (Wave 2 NC f9732afc) — IntervalTrigger
                     # honra setting persistido + hot-reload via singleton.
                     trigger=IntervalTrigger(
@@ -629,6 +608,10 @@ def create_community_app():
         from okto_pulse.community.adapters.telemetry_store import (
             register_community_telemetry_event_store,
         )
+        from okto_pulse.community.adapters.telemetry_state import (
+            register_community_telemetry_state_carrier,
+        )
+        register_community_telemetry_state_carrier()
         register_community_telemetry_event_store()
         register_community_product_aggregator()
         register_community_publish_health_sources()
@@ -649,15 +632,42 @@ def create_community_app():
                 scheduler.shutdown(wait=False)
             except Exception:
                 pass
-        await event_dispatcher.stop(timeout=5.0)
-        set_dispatcher(None)
-        if outbox_worker:
-            await outbox_worker.stop()
-        if cleanup_worker:
-            await cleanup_worker.stop()
-        if consolidation_worker:
-            await consolidation_worker.stop()
+        if worker_registry is not None:
+            for failure in await worker_registry.stop_all():
+                _STARTUP_LOGGER.warning(
+                    "community.worker.stop_failed family=%s err=%s",
+                    failure.family,
+                    failure.message,
+                )
         await close_db()
+
+    # R01B REPLAN-IMP2 (TR5): register the Community UNION SQLite PRAGMA installer
+    # as the SINGLE owner of the effective connect listener BEFORE create_app calls
+    # create_database. The core resolves THIS installer (WAL + busy_timeout=30000 +
+    # synchronous=NORMAL + foreign_keys=ON) and attaches exactly ONE connect
+    # listener; the old partial listeners (this module's _configure_sqlite_pragmas
+    # and the core inline one) are gone. Registered before the engine is built, so
+    # it is in effect before the first connection.
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        install_community_sqlite_pragmas,
+    )
+    from okto_pulse.core.runtime_registry import register_sqlite_pragma_installer
+
+    register_sqlite_pragma_installer(install_community_sqlite_pragmas)
+
+    # R01C REPLAN-IMP4 (FR3/FR5): register the Community relational SCHEMA-LIFECYCLE
+    # orchestrator on the core seam BEFORE the lifespan runs init_db, so the core
+    # delegates the WHOLE migrate->create_all->seed lifecycle to the Community
+    # migrator (R16-B) + bootstrapper (R16-C) instead of running init_db's inline
+    # body. Register-before-remove (TR4): the core inline fallback stays until the
+    # final R01C physical removal, gated by r01c_lifecycle_removal_readiness. The
+    # R01B engine/session/pool/PRAGMA ownership is untouched (the orchestrator runs
+    # against the live engine resolved by create_database, which still owns it).
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        register_community_relational_schema_lifecycle,
+    )
+
+    register_community_relational_schema_lifecycle()
 
     app = create_app(
         settings=settings,
@@ -667,20 +677,20 @@ def create_community_app():
         lifespan=combined_lifespan,
     )
 
-    # R-P2-06B: expose the composition-owned SchedulerControl so a runtime
-    # settings PUT reschedules the KG tick through the port. The core no longer
-    # builds an implicit SingletonSchedulerControl fallback, so the Community
-    # composition root must supply it. Built here (after create_app registered
-    # the session_factory via create_database); SingletonSchedulerControl reads
-    # the scheduler singleton lazily at call time, so the lifespan set_scheduler
-    # still wires it. Jobs / cadence / lifecycle are unchanged.
+    # R08: expose the composition-owned SchedulerControl so a runtime settings
+    # PUT reschedules the KG tick through the port. The concrete adapter is
+    # Community-owned and reads the scheduler singleton lazily at call time, so
+    # the lifespan set_scheduler still wires it. Jobs / cadence / lifecycle are
+    # unchanged.
     from okto_pulse.community.adapters.data import CommunityOutboxEventBus
-    from okto_pulse.core.composition import RuntimeComposition
-    from okto_pulse.core.services.scheduler_control_adapter import (
-        SingletonSchedulerControl,
+    from okto_pulse.community.adapters.scheduler import SingletonSchedulerControl
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
+        build_community_unit_of_work_factory,
     )
+    from okto_pulse.core.composition import RuntimeComposition
 
     _rc_session_factory = get_session_factory()
+    _community_uow_factory = build_community_unit_of_work_factory(_rc_session_factory)
     app.state.runtime_composition = RuntimeComposition(
         settings_provider=settings,
         auth_provider=auth,
@@ -688,10 +698,26 @@ def create_community_app():
         session_factory=_rc_session_factory,
         event_bus=CommunityOutboxEventBus(_rc_session_factory),
         scheduler_control=SingletonSchedulerControl(),
+        # R01B REPLAN-IMP1/IMP2: the Community relational UnitOfWorkFactory is the
+        # composition-owned provider (bound to the SAME live session factory). IMP2
+        # (FR3) re-points the REST + MCP consumers to it; the core ``create_database``
+        # stays live this phase (DEC dec_ba1450dd).
+        uow_factory=_community_uow_factory,
     )
 
-    # Configure SQLite pragmas AFTER create_database was called by create_app
-    _configure_sqlite_pragmas(get_engine())
+    # R01B REPLAN-IMP2 (FR3): register the SAME edition UnitOfWorkFactory on the
+    # process-level seam so the inbound MCP path (no request/app.state) and any
+    # non-request consumer resolve the edition provider WITHOUT the core
+    # constructing a concrete (TR4 / AC4 fail-closed). REST prefers app.state; both
+    # paths resolve this exact object.
+    from okto_pulse.core.runtime_registry import register_unit_of_work_factory
+
+    register_unit_of_work_factory(_community_uow_factory)
+
+    # R01B REPLAN-IMP2 (TR5): SQLite PRAGMAs are now installed by the single
+    # edition-owned installer registered above (resolved inside create_database),
+    # so there is no longer a second _configure_sqlite_pragmas(get_engine()) call
+    # here — that partial WAL+foreign_keys listener was folded into the UNION.
 
     # Bootstrap the KG provider registry via the Community composition root.
     # (R05-D/R-P2-02) The Community composition registers event_bus, audit_repo
@@ -699,13 +725,12 @@ def create_community_app():
     # longer owns a relational session_factory auto-wire and fails closed if one
     # of these slots is missing.
     #
-    # R08-B (pass-through, DEC-R08B-01): the composition root injects the
-    # AuthContext factory bound to the MCP server's current agent/db providers,
-    # so the KG query tools resolve agent_id + accessible boards via the
-    # AuthContext port (MCPAuthContext). Board ACL still flows through
-    # AgentService.list_boards_for_agent (no bypass); api_key path untouched. The
-    # core server module is imported lazily (per first call) to avoid pulling the
-    # heavy MCP module at boot. R-P2-09 resolves MCP credentials from request scope.
+    # R06/R08-B: the Community composition root injects the AuthContext factory
+    # bound to the MCP server's current agent/db providers, so the KG query tools
+    # resolve agent_id + accessible boards via the AuthContext port. Board ACL
+    # still flows through AgentService.list_boards_for_agent inside the Community
+    # adapter; api_key path untouched. The core server module is imported lazily
+    # (per first call) to avoid pulling the heavy MCP module at boot.
     async def _mcp_auth_get_agent():
         from okto_pulse.core.mcp.server import _get_authenticated_agent
 
@@ -716,7 +741,7 @@ def create_community_app():
 
         return get_db_for_mcp()
 
-    from okto_pulse.core.kg.providers.embedded.mcp_auth_context import (
+    from okto_pulse.community.adapters.mcp_auth import (
         create_mcp_auth_factory,
     )
 
@@ -842,10 +867,10 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
 
     Single-process is required to keep the Kùzu lock owned by exactly one
     process (the embedded DB does not support multiple writers). The two
-    listeners share the same module-level state — including the
-    ``_global_db`` cache, the ``_mcp_session_factory`` registered by the
-    API lifespan, and the request-scoped MCP credential provider — so the MCP
-    sub-app sees a fully-initialised runtime.
+    listeners share the same composed runtime state — including the Global
+    Discovery runtime handle, the ``_mcp_session_factory`` registered by the API
+    lifespan, and the request-scoped MCP credential provider — so the MCP sub-app
+    sees a fully-initialised runtime.
     """
     from okto_pulse.core.mcp.server import build_mcp_asgi_app
 

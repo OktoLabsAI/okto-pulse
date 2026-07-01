@@ -44,6 +44,10 @@ import { MentionInput, type Mentionable } from '@/components/shared/MentionInput
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { ContextSelector, buildRefinementItems, type SelectableItem } from '@/components/shared/ContextSelector';
+import {
+  DerivationPendingBadge,
+  getRefinementPendingDerivationLabel,
+} from '@/components/shared/DerivationPendingBadge';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { ArchitectureTab } from '@/components/architecture';
@@ -1007,6 +1011,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
               {STATUS_ICON[refinement.status]}
               {REFINEMENT_STATUS_LABELS[refinement.status]}
             </span>
+            <DerivationPendingBadge label={getRefinementPendingDerivationLabel(refinement)} />
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{refinement.title}</h2>
             <span className="text-xs text-gray-400 shrink-0">v{refinement.version}</span>
           </div>

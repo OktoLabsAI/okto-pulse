@@ -33,12 +33,14 @@ import pytest
 
 # Importing the core app registers every ORM model on Base.metadata so init_db
 # builds the full schema (GlobalUpdateOutbox / ConsolidationAudit / KuzuNodeRef).
+import okto_pulse.community as _community_pkg
 import okto_pulse.core.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
 from okto_pulse.community.adapters.data_dependency_audit import (
     GATED_04_RELATIONAL_STATUS,
     audit_data_provider_ownership,
 )
+from okto_pulse.community.config import CommunitySettings
 from okto_pulse.core.kg.interfaces.audit_dtos import (
     ConsolidationAuditData,
     NodeRefData,
@@ -50,6 +52,7 @@ from okto_pulse.core.kg.interfaces.kg_config import KGConfig
 from okto_pulse.core.kg.providers.embedded.settings_config import SettingsKGConfig
 
 CORE_PKG = Path(_core_app.__file__).parent
+COMMUNITY_PKG = Path(_community_pkg.__file__).parent
 _DATA_MODULES = {
     "CommunityOutboxEventBus": "okto_pulse.community.adapters.sqlite_outbox_event_bus",
     "CommunityAuditRepository": "okto_pulse.community.adapters.sqlalchemy_audit_repo",
@@ -202,6 +205,22 @@ def test_ts3_outbox_publish_enqueues_and_fires_handlers(_isolated_db_kg):
 # ===========================================================================
 # TS4 — audit replay contract (behavioral, TR5).
 # ===========================================================================
+async def _seed_board(board_id: str) -> None:
+    """Seed the parent Board row before a consolidation audit commit.
+
+    ``ConsolidationAudit.board_id`` is a real FK to ``boards.id``. TR5 made
+    ``foreign_keys=ON`` effective on the single Community PRAGMA owner, so the
+    audit insert now requires its board to exist — the production invariant (a
+    board exists before its consolidation is audited). Board itself has no FKs,
+    so this is a single leaf insert.
+    """
+    from okto_pulse.core.models.db import Board
+
+    async with _db_mod.get_session_factory()() as session:
+        session.add(Board(id=board_id, name=f"seed-{board_id}", owner_id="test-owner"))
+        await session.commit()
+
+
 def test_ts4_audit_commit_get_undone_purge_contract(_isolated_db_kg):
     reg = _isolated_db_kg
     repo = reg.audit_repo
@@ -241,6 +260,7 @@ def test_ts4_audit_commit_get_undone_purge_contract(_isolated_db_kg):
     )
 
     async def drive():
+        await _seed_board("board-X")
         await repo.commit_consolidation_records(audit, node_refs, outbox)
         by_session = await repo.get_audit_by_session("sess-1")
         latest = await repo.get_latest_for_artifact("board-X", "art-1")
@@ -269,10 +289,15 @@ def test_ts4_audit_commit_get_undone_purge_contract(_isolated_db_kg):
 # ===========================================================================
 def test_ts5_kg_config_effective_values_match(_isolated_db_kg):
     from okto_pulse.core.infra.config import get_settings
+    from okto_pulse.community.adapters.data import CommunityKGConfig
 
     cfg = _isolated_db_kg.config
     s = get_settings()
     embedded = SettingsKGConfig()
+
+    assert type(cfg) is CommunityKGConfig
+    assert not issubclass(CommunityKGConfig, SettingsKGConfig)
+    assert isinstance(cfg, KGConfig)
 
     for prop in (
         "kg_base_dir",
@@ -286,6 +311,70 @@ def test_ts5_kg_config_effective_values_match(_isolated_db_kg):
         community_val = getattr(cfg, prop)
         assert community_val == getattr(s, prop), prop  # effective settings value
         assert community_val == getattr(embedded, prop), prop  # bit-identical
+
+
+def test_r07_community_kg_config_preserves_object_reference_snapshot(tmp_path):
+    import okto_pulse.core.infra.config as _config
+    from okto_pulse.community.adapters.data import CommunityKGConfig
+    from okto_pulse.core.infra.config import CoreSettings
+
+    original = _config.get_settings()
+    first = CoreSettings(
+        kg_base_dir=str(tmp_path / "first"),
+        kg_embedding_mode="stub",
+        kg_embedding_model="model-a",
+        kg_embedding_dim=128,
+        kg_session_ttl_seconds=111,
+        kg_cleanup_interval_seconds=7,
+        kg_cleanup_enabled=True,
+    )
+    second = CoreSettings(
+        kg_base_dir=str(tmp_path / "second"),
+        kg_embedding_mode="stub",
+        kg_embedding_model="model-b",
+        kg_embedding_dim=256,
+        kg_session_ttl_seconds=222,
+        kg_cleanup_interval_seconds=9,
+        kg_cleanup_enabled=False,
+    )
+
+    try:
+        _config.configure_settings(first)
+        cfg_before_reconfig = CommunityKGConfig()
+        _config.configure_settings(second)
+        cfg_after_reconfig = CommunityKGConfig()
+
+        assert cfg_before_reconfig.kg_base_dir == str(tmp_path / "first")
+        assert cfg_before_reconfig.kg_embedding_model == "model-a"
+        assert cfg_before_reconfig.kg_embedding_dim == 128
+        assert cfg_before_reconfig.kg_session_ttl_seconds == 111
+        assert cfg_before_reconfig.kg_cleanup_interval_seconds == 7
+        assert cfg_before_reconfig.kg_cleanup_enabled is True
+
+        assert cfg_after_reconfig.kg_base_dir == str(tmp_path / "second")
+        assert cfg_after_reconfig.kg_embedding_model == "model-b"
+        assert cfg_after_reconfig.kg_embedding_dim == 256
+        assert cfg_after_reconfig.kg_session_ttl_seconds == 222
+        assert cfg_after_reconfig.kg_cleanup_interval_seconds == 9
+        assert cfg_after_reconfig.kg_cleanup_enabled is False
+    finally:
+        _config.configure_settings(original)
+
+
+def test_r07_community_kg_base_dir_uses_community_settings_normalization(tmp_path):
+    from okto_pulse.community.adapters.data import CommunityKGConfig
+
+    data_dir = tmp_path / "home"
+    default_settings = CommunitySettings(data_dir=str(data_dir))
+    custom_settings = CommunitySettings(
+        data_dir=str(data_dir),
+        kg_base_dir=str(tmp_path / "custom" / ".." / "boards"),
+    )
+
+    assert CommunityKGConfig(default_settings).kg_base_dir == str(data_dir.resolve())
+    assert CommunityKGConfig(custom_settings).kg_base_dir == str(
+        (tmp_path / "boards").resolve()
+    )
 
 
 # ===========================================================================
@@ -326,12 +415,13 @@ def test_ts6_configure_is_idempotent_and_equivalent(_isolated_db_kg):
 # TS7 — dependency audit: SQLAlchemy gated #04 (neg).
 # ===========================================================================
 def test_ts7_dependency_audit_real_core_is_community_local_sqlalchemy_gated():
-    report = audit_data_provider_ownership(CORE_PKG)
+    report = audit_data_provider_ownership(CORE_PKG, COMMUNITY_PKG)
 
     assert report["ownership"] == "community-local"
     assert report["ok"] is True
     assert report["new_core_consumers"] == []
     assert report["core_imports_community"] == []
+    assert report["community_settings_config_offenders"] == []
     # SQLAlchemy / aiosqlite are the gated #04 relational stack — PRESENT in core
     # (documented exception), NOT a violation.
     assert report["sqlalchemy_status"] == GATED_04_RELATIONAL_STATUS
@@ -339,6 +429,44 @@ def test_ts7_dependency_audit_real_core_is_community_local_sqlalchemy_gated():
     assert report["aiosqlite_status"] == GATED_04_RELATIONAL_STATUS
     # R-P2-02 retired the relational fallback path entirely.
     assert report["ledgered_fallback"] == []
+
+
+def test_r07_real_community_package_scan_blocks_settingskgconfig_contamination(
+    tmp_path,
+):
+    from okto_pulse.core.kg.data_provider_ownership_gate import (
+        run_data_provider_ownership_gate,
+    )
+
+    community_pkg = tmp_path / "community"
+    (community_pkg / "adapters").mkdir(parents=True, exist_ok=True)
+    (community_pkg / "adapters" / "data.py").write_text(
+        "from okto_pulse.core.kg.interfaces.kg_config import KGConfig\n"
+        "from okto_pulse.core.kg.providers.embedded.settings_config "
+        "import SettingsKGConfig\n"
+        "class CommunityKGConfig(SettingsKGConfig):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    contaminated = run_data_provider_ownership_gate(
+        CORE_PKG,
+        community_root=community_pkg,
+    )
+    real_package = run_data_provider_ownership_gate(
+        CORE_PKG,
+        community_root=COMMUNITY_PKG,
+    )
+
+    assert contaminated.ok is False
+    assert any(
+        hit["file"] == "adapters/data.py"
+        and hit["kind"] == "subclass"
+        and hit["symbol"] == "SettingsKGConfig"
+        for hit in contaminated.community_settings_config_offenders
+    )
+    assert real_package.ok is True
+    assert real_package.community_settings_config_offenders == []
 
 
 def test_ts7_dependency_audit_flags_new_core_data_consumer(tmp_path):
@@ -372,6 +500,7 @@ def test_ts8_smoke_kg_healthy_through_community_data_and_graph(_isolated_db_kg):
     board_id = "r05d-smoke-board"
 
     async def drive():
+        await _seed_board(board_id)
         # graph bootstrap via the #06 port (Community graph adapter)
         await reg.graph_schema_manager.ensure_bootstrapped(board_id)
         version = await reg.graph_schema_manager.current_version(board_id)

@@ -52,12 +52,12 @@ export function Sidebar({ onSelectBoard, onCreateBoard, isOpen }: SidebarProps) 
 
   return (
     <aside
-      className={`backdrop-blur-md bg-surface-50/80 dark:bg-surface-900/80 border-r border-surface-200/50 dark:border-surface-700/30 flex flex-col overflow-hidden transition-all duration-300 ease-in-out ${
+      className={`flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-surface-200/50 bg-surface-50/80 backdrop-blur-md transition-all duration-300 ease-in-out dark:border-surface-700/30 dark:bg-surface-900/80 ${
         isOpen ? 'w-64' : 'w-0 border-r-0'
       }`}
     >
-      <div className="w-64 flex flex-col h-full">
-        <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+      <div className="flex h-full min-h-0 w-64 flex-col">
+        <div className="shrink-0 border-b border-gray-200 p-4 dark:border-gray-700">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold text-gray-700 dark:text-gray-200">Boards</h2>
             <button
@@ -70,7 +70,7 @@ export function Sidebar({ onSelectBoard, onCreateBoard, isOpen }: SidebarProps) 
           </div>
         </div>
 
-        <nav className="flex-1 overflow-y-auto p-2">
+        <nav className="min-h-0 flex-1 overflow-y-auto p-2">
           {/* My Boards */}
           <div className="mb-4">
             <h3 className="px-3 py-1 text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">

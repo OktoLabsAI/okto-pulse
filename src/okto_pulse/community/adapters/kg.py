@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from okto_pulse.community.adapters.global_discovery_runtime import (
+    CommunityGlobalDiscoveryRuntime,
+)
 from okto_pulse.community.adapters.kuzu_cypher_executor import (
     CommunityKuzuCypherExecutor,
 )
@@ -37,6 +40,7 @@ def build_community_graph_providers() -> dict[str, Any]:
         "graph_schema_manager": CommunityKuzuGraphSchemaManager(),
         "graph_lifecycle": CommunityKuzuGraphLifecycle(),
         "graph_path_resolver": CommunityKuzuGraphPathResolver(),
+        "global_discovery_runtime": CommunityGlobalDiscoveryRuntime(),
     }
 
 
@@ -47,5 +51,6 @@ __all__ = [
     "CommunityKuzuGraphSchemaManager",
     "CommunityKuzuGraphLifecycle",
     "CommunityKuzuGraphPathResolver",
+    "CommunityGlobalDiscoveryRuntime",
     "build_community_graph_providers",
 ]

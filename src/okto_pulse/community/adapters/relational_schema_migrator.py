@@ -84,6 +84,8 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
      "Add comment choice columns."),
     ("_migrate_add_bug_card_columns", "pre_create_all", False,
      "Add bug-card columns."),
+    ("_migrate_add_task_requirement_gate_card_column", "pre_create_all", False,
+     "Add task requirement-link gate skip column on cards."),
     ("_migrate_add_skip_rules_coverage", "pre_create_all", False,
      "Add skip-rules-coverage column."),
     ("_migrate_add_skip_trs_coverage", "pre_create_all", False,

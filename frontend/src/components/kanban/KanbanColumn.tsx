@@ -7,7 +7,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { useDroppable } from '@dnd-kit/core';
-import { Plus } from 'lucide-react';
+import { Bug, FlaskConical, ListChecks, Plus } from 'lucide-react';
 import type { CardSummary, CardStatus } from '@/types';
 import { STATUS_LABELS } from '@/types';
 import type { KGCognitivePendingBadgeView } from '@/services/kg-health-api';
@@ -35,38 +35,111 @@ const columnColors: Record<CardStatus, string> = {
   cancelled: 'border-t-gray-500',
 };
 
+type KanbanCardCounterType = 'task' | 'test' | 'bug';
+
+interface KanbanCardTypeCounts {
+  total: number;
+  task: number;
+  test: number;
+  bug: number;
+}
+
+function normalizeKanbanCardType(cardType: CardSummary['card_type'] | { value?: string } | null | undefined): KanbanCardCounterType {
+  if (!cardType) return 'task';
+  if (typeof cardType === 'object') return normalizeKanbanCardType(cardType.value as CardSummary['card_type']);
+  const normalized = String(cardType).replace(/^CardType\./i, '').toLowerCase();
+  if (normalized === 'test') return 'test';
+  if (normalized === 'bug') return 'bug';
+  return 'task';
+}
+
+export function deriveKanbanCardTypeCounts(cards: CardSummary[]): KanbanCardTypeCounts {
+  return cards.reduce<KanbanCardTypeCounts>(
+    (counts, card) => {
+      counts.total += 1;
+      counts[normalizeKanbanCardType(card.card_type)] += 1;
+      return counts;
+    },
+    { total: 0, task: 0, test: 0, bug: 0 },
+  );
+}
+
 export function KanbanColumn({ status, cards, onCardClick, onAddCard, nameMap, cognitiveBadges }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
+  const counts = deriveKanbanCardTypeCounts(cards);
 
   return (
     <div
       ref={setNodeRef}
       data-tour-id={status === 'validation' ? 'tasks.validation.column' : undefined}
-      className={`kanban-column border-t-4 ${columnColors[status]} transition-all duration-200 ${
+      className={`kanban-column h-full min-h-0 border-t-4 ${columnColors[status]} transition-all duration-200 ${
         isOver ? 'ring-2 ring-blue-400 ring-inset bg-blue-50/50 dark:bg-blue-900/20' : ''
       }`}
     >
       {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <h3 className="kanban-column-header text-gray-700 dark:text-gray-200">
-            {STATUS_LABELS[status]}
-          </h3>
-          <span className="text-xs bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 rounded">
-            {cards.length}
-          </span>
+      <div className="mb-3 shrink-0">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <h3 className="truncate font-display text-xs font-semibold uppercase tracking-wider text-gray-700 dark:text-gray-200">
+                {STATUS_LABELS[status]}
+              </h3>
+              <span
+                className="inline-flex shrink-0 items-center rounded bg-gray-200 px-1.5 py-0.5 text-xs font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-200"
+                title={`${counts.total} total cards`}
+                aria-label={`${counts.total} total cards`}
+              >
+                {counts.total}
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-1.5 text-[10px] font-semibold">
+              <span
+                className="inline-flex min-w-0 items-center justify-between gap-1 rounded-md bg-slate-100 px-1.5 py-1 text-slate-600 dark:bg-slate-800/80 dark:text-slate-300"
+                title={`${counts.task} task cards`}
+                aria-label={`${counts.task} task cards`}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1">
+                  <ListChecks size={11} className="shrink-0" />
+                  <span className="truncate">Task</span>
+                </span>
+                <span>{counts.task}</span>
+              </span>
+              <span
+                className="inline-flex min-w-0 items-center justify-between gap-1 rounded-md bg-purple-100 px-1.5 py-1 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
+                title={`${counts.test} test cards`}
+                aria-label={`${counts.test} test cards`}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1">
+                  <FlaskConical size={11} className="shrink-0" />
+                  <span className="truncate">Test</span>
+                </span>
+                <span>{counts.test}</span>
+              </span>
+              <span
+                className="inline-flex min-w-0 items-center justify-between gap-1 rounded-md bg-red-100 px-1.5 py-1 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                title={`${counts.bug} bug cards`}
+                aria-label={`${counts.bug} bug cards`}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1">
+                  <Bug size={11} className="shrink-0" />
+                  <span className="truncate">Bug</span>
+                </span>
+                <span>{counts.bug}</span>
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={() => onAddCard(status)}
+            className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+            title="Add card"
+          >
+            <Plus size={16} />
+          </button>
         </div>
-        <button
-          onClick={() => onAddCard(status)}
-          className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded"
-          title="Add card"
-        >
-          <Plus size={16} />
-        </button>
       </div>
 
       {/* Cards area */}
-      <div className="space-y-2 flex-1">
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
         <SortableContext items={cards.map((c) => c.id)} strategy={verticalListSortingStrategy}>
           {cards.map((card) => {
             const sourceRef =

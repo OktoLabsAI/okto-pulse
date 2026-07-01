@@ -149,6 +149,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false,
         skip_ir_coverage_global: currentBoard.settings.skip_ir_coverage_global ?? false,
         skip_or_coverage_global: currentBoard.settings.skip_or_coverage_global ?? false,
+        skip_task_requirement_link_gate_global: currentBoard.settings.skip_task_requirement_link_gate_global ?? false,
         skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false,
         skip_cognitive_consolidation: currentBoard.settings.skip_cognitive_consolidation ?? false,
         allow_agent_self_answering: currentBoard.settings.allow_agent_self_answering ?? false,
@@ -178,6 +179,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_contract_coverage_global: false,
         skip_ir_coverage_global: false,
         skip_or_coverage_global: false,
+        skip_task_requirement_link_gate_global: false,
         skip_decisions_coverage_global: false,
         skip_cognitive_consolidation: false,
         allow_agent_self_answering: false,
@@ -202,9 +204,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
   const updateSettings = async (patch: Partial<BoardSettings>) => {
     if (!currentBoard) return;
-    const newSettings = { ...settings, ...patch };
     try {
-      await api.updateBoard(currentBoard.id, { settings: newSettings });
+      await api.updateBoard(currentBoard.id, { settings: patch });
       onBoardUpdated?.();
       toast.success('Board settings updated');
       // Bug fix (banner inversion): notify the global EvidenceGateSkipBanner

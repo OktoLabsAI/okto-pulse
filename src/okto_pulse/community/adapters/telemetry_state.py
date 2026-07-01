@@ -24,6 +24,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from okto_pulse.core.ports.telemetry import TelemetryStateCarrier
 from okto_pulse.core.telemetry import failure_state as fs
 from okto_pulse.core.telemetry import watermark as wm
 
@@ -46,6 +47,30 @@ def save_state(metrics_dir: Path, state: dict[str, Any]) -> None:
     tmp = state_path(metrics_dir).with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(state_path(metrics_dir))
+
+
+class CommunityTelemetryStateCarrier:
+    """Community-owned full-dict carrier for ``metrics_dir/state.json``."""
+
+    def load_state(self, metrics_dir: Path) -> dict[str, Any]:
+        return load_state(metrics_dir)
+
+    def save_state(self, metrics_dir: Path, state: dict[str, Any]) -> None:
+        save_state(metrics_dir, state)
+
+
+def build_community_telemetry_state_carrier() -> TelemetryStateCarrier:
+    """Factory for the full-dict state carrier registered in the core registry."""
+    return CommunityTelemetryStateCarrier()
+
+
+def register_community_telemetry_state_carrier() -> None:
+    """Register the Community full-dict state carrier at the core registry."""
+    from okto_pulse.core.telemetry.telemetry_state_registry import (
+        register_telemetry_state_carrier,
+    )
+
+    register_telemetry_state_carrier(build_community_telemetry_state_carrier())
 
 
 # --- watermark / failure_state persistence (formerly core helpers) -----------
@@ -78,6 +103,9 @@ def persist_failure_state(
 
 
 __all__ = [
+    "CommunityTelemetryStateCarrier",
+    "build_community_telemetry_state_carrier",
+    "register_community_telemetry_state_carrier",
     "state_path",
     "load_state",
     "save_state",

@@ -141,6 +141,7 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     assert set(providers) == {
         "graph_store", "cypher_executor", "graph_transaction",
         "graph_schema_manager", "graph_lifecycle", "graph_path_resolver",
+        "global_discovery_runtime",
     }
     # Each satisfies its #06 port (subclass IS-A the embedded which IS-A port).
     assert isinstance(providers["graph_store"], SemanticGraphStore)
@@ -148,6 +149,8 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     assert isinstance(providers["graph_lifecycle"], GraphLifecycle)
     assert isinstance(providers["graph_path_resolver"], GraphPathResolver)
     assert isinstance(providers["graph_transaction"], GraphTransaction)
+    assert callable(providers["global_discovery_runtime"].open_connection)
+    assert callable(providers["global_discovery_runtime"].global_graph_path)
     # They are the Community classes (registered behind the ports).
     assert type(providers["graph_store"]).__name__ == "CommunityKuzuGraphStore"
 
@@ -158,6 +161,7 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     _apply_graph_providers(base)
     assert type(base.graph_store).__name__ == "CommunityKuzuGraphStore"
     assert type(base.cypher_executor).__name__ == "CommunityKuzuCypherExecutor"
+    assert type(base.global_discovery_runtime).__name__ == "CommunityGlobalDiscoveryRuntime"
 
 
 # ===========================================================================

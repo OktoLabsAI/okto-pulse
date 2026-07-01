@@ -211,7 +211,7 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4 flex shrink-0 items-center justify-between">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Specifications</h2>
           <span className="text-sm text-gray-400">
@@ -256,7 +256,7 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
       </div>
 
       {/* Status filter pills */}
-      <div className="flex gap-1.5 mb-4 flex-wrap">
+      <div className="mb-4 flex shrink-0 flex-wrap gap-1.5">
         {statusFilters.map((f) => (
           <button
             key={f.value}
@@ -283,7 +283,7 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
       </div>
 
       {/* Spec list */}
-      <div className="flex-1 overflow-y-auto" data-testid={`specs-${viewMode}`}>
+      <div className="min-h-0 flex-1 overflow-y-auto" data-testid={`specs-${viewMode}`}>
         {loading ? (
           <PulseLoader size="sm" label="Loading specs..." />
         ) : specs.length === 0 ? (

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import sys
 import tempfile
@@ -134,9 +135,11 @@ def run_preservation_smoke() -> dict[str, object]:
         # --- 4. serve (route inventory, no port binding) -------------------- #
         app = community_main.create_community_app()
         routes = sorted({getattr(r, "path", None) for r in app.routes if getattr(r, "path", None)})
+        evidence["routes"] = routes
         evidence["route_count"] = len(routes)
         evidence["has_health_route"] = "/health" in routes
         api_routes = [p for p in routes if p.startswith("/api/v1")]
+        evidence["api_v1_routes"] = api_routes
         evidence["api_v1_route_count"] = len(api_routes)
         assert "/health" in routes, "the /health route disappeared"
         assert api_routes, "the /api/v1 surface disappeared"
@@ -149,6 +152,8 @@ def run_preservation_smoke() -> dict[str, object]:
         evidence["mcp_asgi_app"] = type(mcp_app).__name__
         tools = asyncio.run(_srv.mcp.get_tools())
         tool_names = list(tools.keys()) if hasattr(tools, "keys") else [getattr(t, "name", t) for t in tools]
+        tool_names = sorted(str(name) for name in tool_names)
+        evidence["mcp_tools"] = tool_names
         evidence["mcp_tool_count"] = len(tool_names)
         evidence["has_create_ideation_tool"] = any("create_ideation" in str(n) for n in tool_names)
         assert len(tool_names) >= _MIN_MCP_TOOLS, (
@@ -176,8 +181,62 @@ def run_preservation_smoke() -> dict[str, object]:
     return evidence
 
 
+def run_runtime_smoke_evidence(
+    *,
+    core_version: str,
+    community_version: str,
+    core_commit: str,
+    community_commit: str,
+    core_wheel_hash: str,
+    community_wheel_hash: str,
+    removed_dependencies: tuple[str, ...] = (),
+    community_adapters_registered: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """Run the Community smoke and emit the R15B evidence package."""
+    from okto_pulse.community.adapters.smoke_evidence import (
+        build_community_runtime_smoke_evidence,
+    )
+
+    evidence = run_preservation_smoke()
+    return build_community_runtime_smoke_evidence(
+        core_version=core_version,
+        community_version=community_version,
+        core_commit=core_commit,
+        community_commit=community_commit,
+        core_wheel_hash=core_wheel_hash,
+        community_wheel_hash=community_wheel_hash,
+        routes=tuple(evidence.get("routes") or ()),
+        mcp_tools=tuple(evidence.get("mcp_tools") or ()),
+        cli_commands=tuple(evidence.get("cli_commands_present") or ()),
+        commands_executed=("python scripts/r05e_community_preservation_smoke.py",),
+        artifact_paths={"runner": "scripts/r05e_community_preservation_smoke.py"},
+        removed_dependencies=removed_dependencies,
+        community_adapters_registered=community_adapters_registered,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = list(argv if argv is not None else sys.argv[1:])
     try:
+        if "--json-evidence" in argv:
+            payload = run_runtime_smoke_evidence(
+                core_version=os.environ.get("R15B_CORE_VERSION", "0.3.0"),
+                community_version=os.environ.get("R15B_COMMUNITY_VERSION", "0.3.0"),
+                core_commit=os.environ.get("R15B_CORE_COMMIT", "working-tree"),
+                community_commit=os.environ.get("R15B_COMMUNITY_COMMIT", "working-tree"),
+                core_wheel_hash=os.environ.get("R15B_CORE_WHEEL_HASH", "sha256:working-tree-core"),
+                community_wheel_hash=os.environ.get(
+                    "R15B_COMMUNITY_WHEEL_HASH", "sha256:working-tree-community"
+                ),
+                removed_dependencies=tuple(
+                    item for item in os.environ.get("R15B_REMOVED_DEPENDENCIES", "").split(",") if item
+                ),
+                community_adapters_registered=tuple(
+                    item for item in os.environ.get("R15B_COMMUNITY_ADAPTERS", "").split(",") if item
+                ),
+            )
+            print(json.dumps(payload, sort_keys=True))
+            return 0
         evidence = run_preservation_smoke()
     except AssertionError as exc:
         print(f"{_FAILURE_SENTINEL}: {exc}", file=sys.stderr)

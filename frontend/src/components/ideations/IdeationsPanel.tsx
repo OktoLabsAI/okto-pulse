@@ -23,6 +23,10 @@ import { sanitizePreview } from '@/lib/sanitizePreview';
 import { useListSearch } from '@/hooks/useListSearch';
 import { SearchInput } from '@/components/shared/SearchInput';
 import { QABadge } from '@/components/shared/QABadge';
+import {
+  DerivationPendingBadge,
+  getIdeationPendingDerivationLabel,
+} from '@/components/shared/DerivationPendingBadge';
 import { useViewMode } from '@/hooks/useViewMode';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { openLineageGraph } from '@/components/traceability';
@@ -124,7 +128,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4 flex shrink-0 items-center justify-between">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Ideations</h2>
           <span className="text-sm text-gray-400">
@@ -151,7 +155,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
       </div>
 
       {/* Status filter pills */}
-      <div className="flex gap-1.5 mb-4 flex-wrap">
+      <div className="mb-4 flex shrink-0 flex-wrap gap-1.5">
         {statusFilters.map((f) => (
           <button
             key={f.value}
@@ -179,7 +183,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
 
       {/* Ideation list */}
       <div
-        className={`flex-1 overflow-y-auto animate-list ${
+        className={`min-h-0 flex-1 overflow-y-auto animate-list ${
           viewMode === 'grid'
             ? 'grid gap-3 grid-cols-1 sm:grid-cols-2 md:grid-cols-3'
             : 'space-y-2'
@@ -233,6 +237,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
                         {ideation.complexity.charAt(0).toUpperCase() + ideation.complexity.slice(1)}
                       </span>
                     )}
+                    <DerivationPendingBadge label={getIdeationPendingDerivationLabel(ideation)} />
                     <span className="text-xs text-gray-400">v{ideation.version}</span>
                   </div>
                   <h3 className="font-medium text-gray-900 dark:text-white text-sm truncate">

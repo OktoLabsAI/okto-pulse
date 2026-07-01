@@ -221,6 +221,38 @@ Community registers its adapters from `okto_pulse.community.main` and
 `okto_pulse.community.adapters.composition`. The main backend adapter package is
 `src/okto_pulse/community/adapters`.
 
+Registration flow:
+
+- `create_community_app()` builds the local data directory, SQLite engine/session
+  factory, auth/storage providers, runtime composition, REST app, MCP listener
+  and frontend mount.
+- `configure_community_kg_registry()` builds the Community KG registry and
+  registers memory, embedding, rerank, telemetry, product, publish-health,
+  graph, audit, event-bus and KG config providers before core consumers read the
+  registry.
+- `register_and_freeze_community_resource_catalog()` and
+  `CommunityCapabilityDescriptorSource` extend the core MCP/resource metadata
+  without importing Community from core.
+- `CommunityRelationalSchemaMigrator` and `CommunityDataBootstrapper` are the
+  initialization adapters consumed by `okto-pulse init` and startup.
+
+Adapter source map:
+
+- Runtime composition: `community/main.py` and `community/adapters/composition.py`.
+- Auth/storage/init: `community/auth.py`, `adapters/storage.py`,
+  `adapters/relational_schema_migrator.py` and `adapters/data_bootstrapper.py`.
+- KG data and graph runtime: `adapters/data.py`, `adapters/memory.py`,
+  `adapters/kg.py`, `adapters/kg_runtime.py`, `adapters/board_graph_runtime.py`
+  and the `adapters/kuzu_*` modules.
+- ML search helpers: `adapters/embedding.py` and `adapters/rerank.py`.
+- MCP/resource overlays: `adapters/mcp_auth.py`, `adapters/resources.py` and
+  `adapters/capability_descriptors.py`.
+- Telemetry: `adapters/telemetry_store.py`, `adapters/telemetry_sender.py`,
+  `adapters/telemetry_state.py`, `adapters/telemetry_port.py`,
+  `adapters/product_telemetry.py` and `adapters/publish_health_sources.py`.
+- Boundary/conformance evidence: `adapters/readiness_evidence.py`,
+  `adapters/data_dependency_audit.py` and `adapters/kg_dependency_audit.py`.
+
 | Adapter | Core port or seam | Component used by Community |
 | --- | --- | --- |
 | `LocalAuthProvider` | `core.infra.auth.AuthProvider` | Local API-key style user context for the single-node runtime. |
@@ -257,7 +289,8 @@ Community registers its adapters from `okto_pulse.community.main` and
 Community runtime components:
 
 - SQLite relational database: `pulse.db` under the configured data directory,
-  with WAL, busy-timeout and foreign keys configured on startup.
+  with WAL, busy-timeout and foreign keys configured on startup. It also backs
+  the Community KG consolidation audit/outbox adapters.
 - LadybugDB/Kuzu board graph: per-board `graph.lbug` directories under the KG
   base path, owned by `community.adapters.kg_runtime`.
 - Global discovery graph: `discovery.lbug` under the global graph directory.
@@ -269,6 +302,20 @@ Community runtime components:
   plus telemetry state, watermark and failure-state files.
 - Frontend bundle: React assets from `community/frontend_dist`, mounted by the
   Community app with SPA fallback.
+
+Adapter ownership rules:
+
+- Community may import core port definitions; core must never import Community.
+- Concrete local technologies belong here: SQLite, LadybugDB/Kuzu, filesystem
+  storage, local `sentence-transformers`, telemetry files/HTTP transport and
+  bundled frontend assets.
+- Required KG slots are registered before use. Missing production providers are
+  treated as composition errors, not as silent core fallbacks.
+- When a new concrete dependency is needed for Community, add it behind a core
+  port or document it as adapter-readiness debt before wiring runtime code.
+- Boundary/conformance evidence adapters are not runtime providers, but they
+  live in Community because they prove Community-owned dependencies and
+  registration behavior to core gates without requiring a core import.
 
 The ORM models and many SQLAlchemy services still live in core while the
 repository/unit-of-work strangler expands. Treat the core

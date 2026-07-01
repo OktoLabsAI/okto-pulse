@@ -12,6 +12,9 @@ core implicit ``SettingsKGConfig``), with effective config values preserved.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta, timezone
+
 from okto_pulse.core.kg.interfaces.registry import (
     get_kg_registry,
     reset_registry_for_tests,
@@ -71,3 +74,94 @@ def test_community_cache_backend_roundtrips():
         assert after_hit is False  # invalidated → miss again
     finally:
         reset_registry_for_tests()
+
+
+def test_community_cache_backend_honors_ttl(monkeypatch):
+    from okto_pulse.community.adapters import memory as memory_mod
+
+    clock = [100.0]
+    monkeypatch.setattr(memory_mod.time, "monotonic", lambda: clock[0])
+    cache = memory_mod.CommunityInMemoryCache(ttl_seconds=5.0)
+
+    params = {"q": "ttl"}
+    cache.put("kg_query_global", "board-r-p2-03", params, {"answer": 2})
+
+    assert cache.get("kg_query_global", "board-r-p2-03", params) == (
+        True,
+        {"answer": 2},
+    )
+    clock[0] += 4.9
+    assert cache.get("kg_query_global", "board-r-p2-03", params)[0] is True
+    clock[0] += 0.2
+    assert cache.get("kg_query_global", "board-r-p2-03", params) == (False, None)
+
+
+def test_community_rate_limiter_consumes_window_and_reset(monkeypatch):
+    from okto_pulse.community.adapters import memory as memory_mod
+
+    clock = [200.0]
+    monkeypatch.setattr(memory_mod.time, "monotonic", lambda: clock[0])
+    limiter = memory_mod.CommunityInMemoryRateLimiter(rate=2, window=10.0)
+
+    assert limiter.allow("agent-1") == (True, 0)
+    assert limiter.allow("agent-1") == (True, 0)
+    allowed, retry_after = limiter.allow("agent-1")
+    assert allowed is False
+    assert retry_after > 0
+
+    limiter.reset("agent-1")
+    assert limiter.allow("agent-1") == (True, 0)
+
+    clock[0] += 10.1
+    assert limiter.allow("agent-1") == (True, 0)
+
+
+def test_community_session_store_ttl_get_and_sweep(monkeypatch):
+    from okto_pulse.community.adapters import memory as memory_mod
+    import okto_pulse.core.kg.session_manager as session_manager
+
+    now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+    monkeypatch.setattr(memory_mod, "_now", lambda: now[0])
+    monkeypatch.setattr(session_manager, "_now", lambda: now[0])
+    store = memory_mod.CommunityInMemorySessionStore(default_ttl_seconds=10)
+
+    async def drive():
+        await store.create(
+            session_id="s1",
+            board_id="b1",
+            artifact_id="a1",
+            artifact_type="spec",
+            agent_id="agent-1",
+            raw_content="content",
+        )
+        assert await store.get("s1") is not None
+        assert await store.active_count() == 1
+
+        now[0] += timedelta(seconds=11)
+        assert await store.get("s1") is None
+        assert await store.active_count() == 0
+
+        await store.create(
+            session_id="s2",
+            board_id="b1",
+            artifact_id="a2",
+            artifact_type="spec",
+            agent_id="agent-1",
+            raw_content="content-2",
+            ttl_seconds=5,
+        )
+        await store.create(
+            session_id="s3",
+            board_id="b1",
+            artifact_id="a3",
+            artifact_type="spec",
+            agent_id="agent-1",
+            raw_content="content-3",
+            ttl_seconds=50,
+        )
+        now[0] += timedelta(seconds=6)
+        assert await store.sweep_expired() == 1
+        assert await store.get("s2") is None
+        assert await store.get("s3") is not None
+
+    asyncio.run(drive())

@@ -61,6 +61,10 @@ import {
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { ContextSelector, buildIdeationItems, compileSelectedContext, type SelectableItem } from '@/components/shared/ContextSelector';
+import {
+  DerivationPendingBadge,
+  getIdeationPendingDerivationLabel,
+} from '@/components/shared/DerivationPendingBadge';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { ArchitectureTab } from '@/components/architecture';
@@ -1177,6 +1181,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
               {STATUS_ICON[ideation.status]}
               {IDEATION_STATUS_LABELS[ideation.status]}
             </span>
+            <DerivationPendingBadge label={getIdeationPendingDerivationLabel(ideation)} />
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{ideation.title}</h2>
             <span className="text-xs text-gray-400 shrink-0">v{ideation.version}</span>
           </div>

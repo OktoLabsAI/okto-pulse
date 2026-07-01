@@ -35,7 +35,7 @@ _AIOSQLITE_IMPORT = re.compile(r"^\s*(?:import|from)\s+aiosqlite\b", re.MULTILIN
 GATED_04_RELATIONAL_STATUS = "core-gated-04-temporary-exception"
 
 
-def audit_data_provider_ownership(core_pkg: Path) -> dict:
+def audit_data_provider_ownership(core_pkg: Path, community_pkg: Path | None = None) -> dict:
     """Audit data-provider ownership for ``core_pkg`` (the ``okto_pulse/core`` dir).
 
     ``ownership`` of the three data adapters is Community-local; ``ok`` is the
@@ -63,7 +63,11 @@ def audit_data_provider_ownership(core_pkg: Path) -> dict:
         if _AIOSQLITE_IMPORT.search(text):
             aiosqlite_files.append(rel)
 
-    gate = run_data_provider_ownership_gate(core_pkg)
+    community_root = community_pkg or Path(__file__).resolve().parents[1]
+    gate = run_data_provider_ownership_gate(
+        core_pkg,
+        community_root=community_root,
+    )
 
     return {
         "ownership": "community-local",
@@ -72,6 +76,9 @@ def audit_data_provider_ownership(core_pkg: Path) -> dict:
         "gate_ok": gate.ok,
         "new_core_consumers": list(gate.new_data_consumers),
         "core_imports_community": list(gate.community_import_offenders),
+        "community_settings_config_offenders": list(
+            gate.community_settings_config_offenders
+        ),
         # Gated #04 relational stack — documented exception, NOT a violation.
         "sqlalchemy_status": GATED_04_RELATIONAL_STATUS,
         "sqlalchemy_core_files": len(sqlalchemy_files),

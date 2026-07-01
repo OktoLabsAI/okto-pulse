@@ -205,6 +205,7 @@ def test_ts_87cf9551_preload_degrades_to_stub_keeping_event_and_dim(caplog):
         assert swapped.dim == 11  # dimension preserved from the provider metadata
         failed = [r for r in caplog.records if getattr(r, "event", None) == "kg.embedding.load_failed"]
         assert failed, "kg.embedding.load_failed not emitted"
+        assert failed[0].reason == "load_failed"
         assert failed[0].fallback == "CommunityStubEmbeddingProvider"
     finally:
         reset_registry_for_tests()
@@ -383,10 +384,10 @@ def test_ts_2b099962_audit_flags_synthetic_contamination(tmp_path):
 
 def test_ts_2b099962_deferred_adapters_not_physically_moved():
     # R05-B moved nothing physically; later refactor specs moved concrete
-    # relational, Kuzu/Ladybug and ML provider adapters to Community.
+    # relational, Kuzu/Ladybug, MCP auth context and ML provider adapters to
+    # Community.
     # Remaining deferred/out-of-scope core helpers still exist at their core paths.
     for rel in (
-        "kg/providers/embedded/mcp_auth_context.py",
         "telemetry/store.py",
         # Core-owned helpers/ports still stay; concrete ML providers moved out.
         "infra/storage.py",
@@ -418,7 +419,15 @@ def test_ts_2b099962_deferred_adapters_not_physically_moved():
         "adapters/kuzu_graph_schema_manager.py",
         "adapters/kuzu_graph_lifecycle.py",
         "adapters/kuzu_graph_path_resolver.py",
+        "adapters/mcp_auth.py",
         "adapters/embedding.py",
         "adapters/rerank.py",
     ):
         assert (community_pkg / rel).exists(), f"community adapter missing: {rel}"
+
+    tombstone = CORE_PKG / "kg/providers/embedded/mcp_auth_context.py"
+    assert tombstone.exists()
+    tombstone_src = tombstone.read_text(encoding="utf-8")
+    assert "okto_pulse.community.adapters.mcp_auth" in tombstone_src
+    assert "AgentService" not in tombstone_src
+    assert "list_boards_for_agent" not in tombstone_src

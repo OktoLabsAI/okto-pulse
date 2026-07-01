@@ -104,6 +104,30 @@ def _apply_data_providers(base: Any, session_factory: Any) -> None:
         setattr(base, key, value)
 
 
+def _apply_source_reader(base: Any) -> None:
+    """Fill the board source read port with the Community SQLite adapter."""
+    from okto_pulse.community.adapters.board_source_reader import (
+        CommunityBoardSourceReader,
+        resolve_pulse_db_path,
+    )
+
+    base.board_source_reader = CommunityBoardSourceReader(
+        db_path_provider=resolve_pulse_db_path
+    )
+
+
+def _apply_rebuild_ingestion(base: Any) -> None:
+    """Fill the rebuild ingestion port with the Community SQLite adapter."""
+    from okto_pulse.community.adapters.board_rebuild_ingestion import (
+        CommunityBoardRebuildIngestionAdapter,
+    )
+    from okto_pulse.community.adapters.board_source_reader import resolve_pulse_db_path
+
+    base.rebuild_ingestion_port = CommunityBoardRebuildIngestionAdapter(
+        db_path_provider=resolve_pulse_db_path
+    )
+
+
 def build_community_kg_composition(
     *,
     upload_dir: str,
@@ -116,6 +140,8 @@ def build_community_kg_composition(
     s = settings if settings is not None else _core_settings()
     embedding = build_community_embedding(settings=s)
     base = build_community_base_registry(embedding=embedding, settings=s)
+    _apply_source_reader(base)
+    _apply_rebuild_ingestion(base)
     if include_graph:
         _apply_graph_providers(base)
     register_community_reranker()
@@ -139,14 +165,12 @@ def configure_community_kg_registry(
     Community Kùzu adapters so the KG runtime is registered behind the ports
     (register-before-remove; the core embedded stays as a ledgered exception).
 
-    R08-B (pass-through, DEC-R08B-01): when ``auth_context_factory`` is provided,
-    the composition root registers it on the registry's ``auth_context_factory``
-    slot (a pure pass-through — the factory itself, typically
-    ``create_mcp_auth_factory(get_agent, get_db)`` returning an MCPAuthContext, is
-    built by the caller and bound to the current agent/db providers). The KG query
-    tools then resolve agent_id + accessible boards via the AuthContext port. When
-    omitted, the slot stays ``None`` and the tools use their transitional
-    get_agent/get_db fallback (no ACL bypass either way)."""
+    R06/R08-B: when ``auth_context_factory`` is provided, the composition root
+    registers it on the registry's ``auth_context_factory`` slot. The factory is
+    built by the Community MCP auth adapter and bound to the current agent/db
+    providers. The KG query tools then resolve agent_id + accessible boards via
+    the AuthContext port. When omitted, the slot stays ``None`` and KG query
+    tools fail closed instead of using a local relational ACL fallback."""
     from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
 
     from okto_pulse.community.adapters.product_telemetry import (
@@ -164,7 +188,13 @@ def configure_community_kg_registry(
     from okto_pulse.community.adapters.telemetry_store import (
         register_community_telemetry_event_store,
     )
+    from okto_pulse.community.adapters.telemetry_state import (
+        register_community_telemetry_state_carrier,
+    )
 
+    # R12: register the Community full-dict telemetry state carrier before any
+    # core telemetry settings/service code resolves persisted state.
+    register_community_telemetry_state_carrier()
     # R10-B: register the Community TelemetryEventStore factory at the composition
     # root so the core telemetry runtime obtains its store through the port
     # (instead of instantiating LocalTelemetryStore). Idempotent; covers the
@@ -186,6 +216,8 @@ def configure_community_kg_registry(
 
     register_community_reranker()
     base = build_community_base_registry(settings=settings)
+    _apply_source_reader(base)
+    _apply_rebuild_ingestion(base)
     if include_graph:
         _apply_graph_providers(base)
     # R05-D/R-P2-02: supply event_bus / audit_repo / config from the Community

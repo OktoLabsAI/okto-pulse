@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
 from okto_pulse.core.kg.interfaces import registry as _reg
-from okto_pulse.core.kg.providers.embedded.mcp_auth_context import (
+from okto_pulse.community.adapters.mcp_auth import (
     create_mcp_auth_factory,
 )
 
@@ -68,7 +69,14 @@ def test_ts_0fda322a_omitted_factory_leaves_slot_none(_clean_settings_registry):
         configure_community_kg_registry,
     )
 
-    # No auth_context_factory -> slot stays None (transitional get_agent/get_db
-    # fallback path in the KG query tools is used instead).
+    # No auth_context_factory -> slot stays None; KG query tools fail closed.
     configure_community_kg_registry(None)
     assert _reg.get_kg_registry().auth_context_factory is None
+
+
+def test_r06_main_uses_community_auth_context_factory():
+    import okto_pulse.community.main as community_main
+
+    src = Path(community_main.__file__).read_text(encoding="utf-8")
+    assert "okto_pulse.community.adapters.mcp_auth" in src
+    assert "okto_pulse.core.kg.providers.embedded.mcp_auth_context" not in src

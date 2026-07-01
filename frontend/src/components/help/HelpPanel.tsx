@@ -1295,6 +1295,7 @@ These flags bypass specific coverage checks for the entire board:
 | \`skip_rules_coverage_global\` | Business rules → functional requirements coverage |
 | \`skip_trs_coverage_global\` | Technical requirements → task card linkage |
 | \`skip_contract_coverage_global\` | API contract → task card linkage |
+| \`skip_task_requirement_link_gate_global\` | Task start gate requiring a direct FR/TR/BR/IR/OR link |
 | \`skip_test_evidence_global\` | **Test Evidence Gate** (NC-9) — when ON, test scenarios can be marked \`automated/passed/failed\` without proof of execution. A persistent amber banner appears app-wide until disabled. |
 
 ### Task Validation Gate thresholds

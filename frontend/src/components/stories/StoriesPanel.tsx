@@ -299,7 +299,7 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="mb-4 flex shrink-0 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Stories</h2>
           <span className="text-sm text-gray-400">
@@ -326,7 +326,7 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
         </div>
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-1.5">
+      <div className="mb-4 flex shrink-0 flex-wrap gap-1.5">
         {STATUS_FILTERS.map((filter) => (
           <button
             key={filter.value || 'all'}
@@ -354,7 +354,7 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
         </button>
       </div>
 
-      <div className="grid flex-1 min-h-0 grid-cols-1 gap-4 lg:grid-cols-[280px_1fr]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,220px)_minmax(0,1fr)] gap-4 overflow-hidden lg:grid-cols-[280px_1fr] lg:grid-rows-[minmax(0,1fr)]">
         <aside className="min-h-0 overflow-auto rounded-xl border border-surface-200/80 bg-white p-3 dark:border-surface-700/40 dark:bg-surface-800/80">
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-white">

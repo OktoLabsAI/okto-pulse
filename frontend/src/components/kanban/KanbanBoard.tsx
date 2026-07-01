@@ -322,9 +322,9 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
   const conclusionTargetLabel = conclusionPending ? STATUS_LABELS[conclusionPending.targetStatus] : 'target column';
 
   return (
-    <>
+    <div className="flex h-full min-h-0 flex-col">
       {/* Spec filter bar */}
-      <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+      <div className="mb-3 flex shrink-0 flex-wrap items-center gap-1.5">
         <SearchInput
           value={cardSearch.query}
           onChange={cardSearch.setQuery}
@@ -448,35 +448,37 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
         </button>
       </div>
 
-      <DndContext
-        sensors={sensors}
-        collisionDetection={rectIntersection}
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDragEnd={handleDragEnd}
-      >
-        <div className="flex gap-4 overflow-x-auto pb-4 h-full">
-          {CARD_STATUSES.map((status) => (
-            <KanbanColumn
-              key={status}
-              status={status}
-              cards={filteredColumns[status] || []}
-              onCardClick={handleCardClick}
-              onAddCard={handleAddCard}
-              nameMap={nameMap}
-              cognitiveBadges={cognitiveBadges}
-            />
-          ))}
-        </div>
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <DndContext
+          sensors={sensors}
+          collisionDetection={rectIntersection}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+        >
+          <div className="flex h-full gap-4 overflow-x-auto overflow-y-hidden pb-4">
+            {CARD_STATUSES.map((status) => (
+              <KanbanColumn
+                key={status}
+                status={status}
+                cards={filteredColumns[status] || []}
+                onCardClick={handleCardClick}
+                onAddCard={handleAddCard}
+                nameMap={nameMap}
+                cognitiveBadges={cognitiveBadges}
+              />
+            ))}
+          </div>
 
-        <DragOverlay>
-          {activeCard && (
-            <div className="kanban-card shadow-lg rotate-2">
-              <h4 className="font-medium text-sm">{activeCard.title}</h4>
-            </div>
-          )}
-        </DragOverlay>
-      </DndContext>
+          <DragOverlay>
+            {activeCard && (
+              <div className="kanban-card shadow-lg rotate-2">
+                <h4 className="font-medium text-sm">{activeCard.title}</h4>
+              </div>
+            )}
+          </DragOverlay>
+        </DndContext>
+      </div>
 
       {/* Card Detail Modal */}
       <CardModal boardId={boardId} />
@@ -585,6 +587,6 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }

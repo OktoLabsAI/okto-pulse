@@ -153,8 +153,8 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    assert len(migrate_names) == 33, f"expected 33 _migrate_*, found {len(migrate_names)}"
-    assert len(ledger_migrate_ids) == 33
+    assert len(migrate_names) == 34, f"expected 34 _migrate_*, found {len(migrate_names)}"
+    assert len(ledger_migrate_ids) == 34
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]

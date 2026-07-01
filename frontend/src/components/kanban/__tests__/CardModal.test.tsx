@@ -272,6 +272,42 @@ describe('CardModal', () => {
     expect(within(panel).getByText('Started')).toBeInTheDocument();
   });
 
+  it('toggles the human task requirement link skip from card details', async () => {
+    const taskCard: Card = {
+      ...bugCard,
+      id: 'task-skip-1',
+      title: 'Task: implement requirement gate',
+      card_type: 'normal',
+      origin_task_id: null,
+      severity: null,
+      expected_behavior: null,
+      observed_behavior: null,
+      linked_test_task_ids: null,
+      skip_task_requirement_link_gate: false,
+    };
+    storeMock.selectedCardId = 'task-skip-1';
+    apiMock.getCard.mockResolvedValue(taskCard);
+    apiMock.updateCard.mockResolvedValue({
+      ...taskCard,
+      skip_task_requirement_link_gate: true,
+    });
+
+    render(<CardModal boardId="board-1" />);
+
+    const toggle = await screen.findByRole('switch', {
+      name: 'Skip task requirement link gate for this card',
+    });
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(apiMock.updateCard).toHaveBeenCalledWith('task-skip-1', {
+      skip_task_requirement_link_gate: true,
+    }));
+    expect(storeMock.updateCardInColumn).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'task-skip-1',
+      skip_task_requirement_link_gate: true,
+    }));
+  });
+
   it('shows a dedicated evidence tab for test cards', async () => {
     storeMock.selectedCardId = 'test-1';
     const testCard: Card = {

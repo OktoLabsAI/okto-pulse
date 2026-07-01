@@ -89,23 +89,34 @@ def cmd_init(args):
     from okto_pulse.community.adapters.composition import community_storage_provider
     from okto_pulse.community.auth import LocalAuthProvider
     from okto_pulse.community.seed import seed_community_defaults
-    from sqlalchemy import event, select
+    from sqlalchemy import select
     from okto_pulse.core.models.db import Board
 
     configure_settings(settings)
     configure_auth(LocalAuthProvider())
     configure_storage(community_storage_provider(settings.upload_dir))
+
+    # R01B REPLAN-IMP2 (TR5): register the single Community UNION SQLite PRAGMA
+    # installer BEFORE create_database builds the engine, so the core attaches
+    # exactly ONE connect listener (WAL + busy_timeout=30000 + synchronous=NORMAL
+    # + foreign_keys=ON). Replaces the former inline WAL+foreign_keys listener that
+    # this command attached on its own engine.
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        install_community_sqlite_pragmas,
+    )
+    from okto_pulse.core.runtime_registry import register_sqlite_pragma_installer
+
+    register_sqlite_pragma_installer(install_community_sqlite_pragmas)
+
+    # R01C REPLAN-IMP4 (FR3/FR5): register the Community schema-lifecycle
+    # orchestrator BEFORE init_db so the core delegates the migrate->create_all->seed
+    # lifecycle to the edition (same migrator+bootstrapper as the serve path).
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        register_community_relational_schema_lifecycle,
+    )
+
+    register_community_relational_schema_lifecycle()
     create_database(settings.database_url, echo=False)
-
-    from okto_pulse.core.infra.database import get_engine
-    engine = get_engine()
-
-    @event.listens_for(engine.sync_engine, "connect")
-    def set_sqlite_pragmas(dbapi_conn, connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
 
     async def _init():
         await init_db()
@@ -174,6 +185,14 @@ def _generate_mcp_json(mcp_port: int, agent_names: list[str] | None):
     configure_auth(LocalAuthProvider())
     configure_storage(community_storage_provider(settings.upload_dir))
     create_database(settings.database_url, echo=False)
+    # R01C REPLAN-IMP4: Community owns the schema lifecycle here too — register
+    # the orchestrator so this command's init_db delegates to the edition
+    # migrator+bootstrapper (idempotent; same lifecycle as serve/init).
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        register_community_relational_schema_lifecycle,
+    )
+
+    register_community_relational_schema_lifecycle()
 
     async def _fetch_agents():
         await init_db()
@@ -344,6 +363,7 @@ def cmd_status(args):
 def cmd_metrics(args):
     """Control metrics On/Off settings and local data."""
     from okto_pulse.community.adapters.telemetry_port import register_community_telemetry_port
+    from okto_pulse.community.adapters.telemetry_state import register_community_telemetry_state_carrier
     from okto_pulse.community.adapters.telemetry_store import register_community_telemetry_event_store
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core.telemetry.telemetry_port_registry import get_telemetry_port
@@ -351,6 +371,7 @@ def cmd_metrics(args):
     # R10-E Pass 2: registries are fail-closed; compose the minimum factories for
     # the CLI before calling get_telemetry_port (idempotent — safe if already registered
     # by the full composition root in a server context).
+    register_community_telemetry_state_carrier()
     register_community_telemetry_event_store()
     register_community_telemetry_port()
 
@@ -498,6 +519,14 @@ def cmd_verify_pipeline(args):
     settings = CommunitySettings()
     configure_settings(settings)
     create_database(settings.database_url, echo=False)
+    # R01C REPLAN-IMP4: Community owns the schema lifecycle here too — register
+    # the orchestrator so this command's init_db delegates to the edition
+    # migrator+bootstrapper (idempotent; same lifecycle as serve/init).
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        register_community_relational_schema_lifecycle,
+    )
+
+    register_community_relational_schema_lifecycle()
 
     async def _run() -> list:
         await init_db()
@@ -573,6 +602,14 @@ def cmd_kg_backfill(args):
     settings = CommunitySettings()
     configure_settings(settings)
     create_database(settings.database_url, echo=False)
+    # R01C REPLAN-IMP4: Community owns the schema lifecycle here too — register
+    # the orchestrator so both the dry-run and apply (_apply_backfill) init_db
+    # calls delegate to the edition migrator+bootstrapper (idempotent).
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        register_community_relational_schema_lifecycle,
+    )
+
+    register_community_relational_schema_lifecycle()
 
     # ── Path B: Apply ────────────────────────────────────────────────
     if apply_writes:

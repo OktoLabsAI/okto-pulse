@@ -469,7 +469,7 @@ function App() {
     {metricsPromptOpen && !terms.needsAcceptance && !onboardingOpen && (
       <MetricsSettingsPanel initialPrompt onClose={closeMetricsPrompt} />
     )}
-    <div className={`min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950 ${terms.needsAcceptance ? 'pointer-events-none select-none' : ''}`}>
+    <div className={`flex h-screen min-h-0 flex-col overflow-hidden bg-surface-50 dark:bg-surface-950 ${terms.needsAcceptance ? 'pointer-events-none select-none' : ''}`}>
       {portalAdapter.PortalBar && (
         <portalAdapter.PortalBar
           visible={portalBarVisible}
@@ -498,14 +498,14 @@ function App() {
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
       />
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
           isOpen={sidebarOpen}
           onSelectBoard={selectBoard}
           onCreateBoard={() => setCreateBoardOpen(true)}
         />
 
-        <main className="flex-1 min-w-0 overflow-auto p-4 flex flex-col">
+        <main className="flex min-h-0 flex-1 min-w-0 flex-col overflow-hidden p-4">
           {currentBoard ? (
             <>
               {/* Tab switcher */}
@@ -538,7 +538,7 @@ function App() {
               </div>
 
               {/* Content */}
-              <div className="flex-1 min-h-0 min-w-0">
+              <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                 {activeTab === 'stories' && <StoriesPanel boardId={currentBoard.id} refreshKey={refreshKey} />}
                 {activeTab === 'ideations' && <IdeationsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'refinements' && <RefinementsPanel key={refreshKey} boardId={currentBoard.id} />}

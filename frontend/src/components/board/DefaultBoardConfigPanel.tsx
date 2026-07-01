@@ -86,6 +86,10 @@ function formatValue(value: unknown): string {
   }
 }
 
+function omitUndefinedValues<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+}
+
 function shortId(value: string | undefined | null): string {
   if (!value) return 'none';
   return value.length > 12 ? `${value.slice(0, 8)}...` : value;
@@ -107,6 +111,9 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
     skip_contract_coverage_global: bool('skip_contract_coverage_global', false),
     skip_ir_coverage_global: bool('skip_ir_coverage_global', false),
     skip_or_coverage_global: bool('skip_or_coverage_global', false),
+    skip_task_requirement_link_gate_global: typeof raw.skip_task_requirement_link_gate_global === 'boolean'
+      ? (raw.skip_task_requirement_link_gate_global as boolean)
+      : undefined,
     skip_decisions_coverage_global: bool('skip_decisions_coverage_global', false),
     skip_cognitive_consolidation: bool('skip_cognitive_consolidation', false),
     allow_agent_self_answering: bool('allow_agent_self_answering', false),
@@ -290,11 +297,11 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
     if (draftRef.current === null && guidelineRefsRef.current === null) return;
     // Build ONE new active version from the accumulated drafts, mirroring the gate
     // mode into the Design System default ref so the two never drift apart.
-    const nextSettings = {
+    const nextSettings = omitUndefinedValues({
       ...DEFAULT_TEMPLATE_SETTINGS,
       ...(activeTemplate?.settings_payload ?? {}),
       ...settingsCurrent,
-    };
+    });
     const nextDesignSystemRef = activeTemplate?.design_system_default_ref
       ? { ...activeTemplate.design_system_default_ref }
       : null;

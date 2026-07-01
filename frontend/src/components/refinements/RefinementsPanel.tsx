@@ -21,6 +21,10 @@ import type { IdeationSummary, RefinementSummary, RefinementStatus } from '@/typ
 import { REFINEMENT_STATUS_LABELS } from '@/types';
 import { useListSearch } from '@/hooks/useListSearch';
 import { SearchInput } from '@/components/shared/SearchInput';
+import {
+  DerivationPendingBadge,
+  getRefinementPendingDerivationLabel,
+} from '@/components/shared/DerivationPendingBadge';
 import { useViewMode } from '@/hooks/useViewMode';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { openLineageGraph } from '@/components/traceability';
@@ -157,7 +161,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4 flex shrink-0 items-center justify-between">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Refinements</h2>
           <span className="text-sm text-gray-400">
@@ -184,7 +188,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
       </div>
 
       {/* Status filter pills */}
-      <div className="flex gap-1.5 mb-4 flex-wrap">
+      <div className="mb-4 flex shrink-0 flex-wrap gap-1.5">
         {statusFilters.map((f) => (
           <button
             key={f.value}
@@ -211,7 +215,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
       </div>
 
       {/* Refinement list grouped by ideation */}
-      <div className="flex-1 overflow-y-auto space-y-4">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
         {loading ? (
           <PulseLoader size="sm" label="Loading refinements..." />
         ) : allRefinements.length === 0 ? (
@@ -264,6 +268,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
                             {STATUS_ICON[refinement.status]}
                             {REFINEMENT_STATUS_LABELS[refinement.status]}
                           </span>
+                          <DerivationPendingBadge label={getRefinementPendingDerivationLabel(refinement)} />
                           <span className="text-xs text-gray-400">v{refinement.version}</span>
                           <CognitivePendingBadge
                             badge={cognitiveBadges[`refinement:${refinement.id}`]}

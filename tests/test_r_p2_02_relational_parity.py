@@ -85,6 +85,22 @@ def _stored_dt(value: datetime) -> datetime:
     return value.replace(tzinfo=None)
 
 
+async def _seed_board(board_id: str) -> None:
+    """Seed the parent Board row before a consolidation audit commit.
+
+    ``ConsolidationAudit.board_id`` is a real FK to ``boards.id``. TR5 made
+    ``foreign_keys=ON`` effective on the single Community PRAGMA owner, so the
+    audit insert now requires its board to exist — the production invariant (a
+    board exists before its consolidation is audited). Board itself has no FKs,
+    so this is a single leaf insert.
+    """
+    from okto_pulse.core.models.db import Board
+
+    async with _db_mod.get_session_factory()() as session:
+        session.add(Board(id=board_id, name=f"seed-{board_id}", owner_id="test-owner"))
+        await session.commit()
+
+
 def test_p2_02_outbox_publish_row_matches_normalized_contract(
     _community_registry_with_temp_db,
 ):
@@ -184,6 +200,7 @@ def test_p2_02_audit_commit_rows_match_normalized_contract(
     )
 
     async def drive():
+        await _seed_board("board-p2-02")
         await reg.audit_repo.commit_consolidation_records(audit, node_refs, outbox)
         by_session = await reg.audit_repo.get_audit_by_session(
             "session-p2-02-audit"

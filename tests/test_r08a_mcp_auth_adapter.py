@@ -4,8 +4,9 @@ Scenarios covered here (community-target):
 
   ts_b22ce5b0 — conformance: isinstance(CommunityMcpAuthenticator,
                 McpAuthenticator); the resolved session is the canonical
-                core.ports AgentAuthSession (no parallel DTOs); + no SaaS-redesign
-                symbols in the adapter (ts_178da21e parallel).
+                core.ports AgentAuthSession (no parallel DTOs); R06 permits the
+                Community-owned MCPAuthContext bridge in this adapter; + no
+                SaaS-redesign symbols in the adapter (ts_178da21e parallel).
   ts_75846b3a — a valid key authenticates: SHA-256 -> api_key_hash lookup,
                 last_used_at touched, identity mapped to AgentAuthSession.
   ts_5f381019 — fail-closed: invalid key / inactive agent / absent credential ->
@@ -87,7 +88,7 @@ def test_ts_b22ce5b0_isinstance_of_port_protocol():
 def test_ts_b22ce5b0_adapter_defines_no_parallel_dtos():
     tree = ast.parse(ADAPTER_PY.read_text(encoding="utf-8"))
     class_names = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
-    assert class_names == {"CommunityMcpAuthenticator"}
+    assert class_names == {"CommunityMcpAuthenticator", "MCPAuthContext"}
     for forbidden in {"McpCredential", "AgentAuthSession", "AuthSession"}:
         assert forbidden not in class_names
 
