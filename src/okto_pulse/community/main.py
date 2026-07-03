@@ -656,8 +656,12 @@ def create_community_app():
     from okto_pulse.community.adapters.sqlalchemy_database import (
         install_community_sqlite_pragmas,
     )
+    from okto_pulse.community.adapters.coordination import (
+        register_community_coordination_providers,
+    )
     from okto_pulse.core.runtime_registry import register_sqlite_pragma_installer
 
+    register_community_coordination_providers()
     register_sqlite_pragma_installer(install_community_sqlite_pragmas)
 
     # R01C REPLAN-IMP4 (FR3/FR5): register the Community relational SCHEMA-LIFECYCLE

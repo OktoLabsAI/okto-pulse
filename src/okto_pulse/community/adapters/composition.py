@@ -128,6 +128,18 @@ def _apply_rebuild_ingestion(base: Any) -> None:
     )
 
 
+def _apply_rebuild_audit_storage(base: Any) -> None:
+    """Fill rebuild/audit JSON artifact storage with the Community filesystem adapter."""
+    from okto_pulse.core.kg.rebuild_audit import default_rebuild_base_dir
+    from okto_pulse.community.adapters.rebuild_audit_storage import (
+        CommunityFileSystemRebuildAuditArtifactStore,
+    )
+
+    base.rebuild_audit_artifact_store = CommunityFileSystemRebuildAuditArtifactStore(
+        default_rebuild_base_dir()
+    )
+
+
 def build_community_kg_composition(
     *,
     upload_dir: str,
@@ -142,6 +154,7 @@ def build_community_kg_composition(
     base = build_community_base_registry(embedding=embedding, settings=s)
     _apply_source_reader(base)
     _apply_rebuild_ingestion(base)
+    _apply_rebuild_audit_storage(base)
     if include_graph:
         _apply_graph_providers(base)
     register_community_reranker()
@@ -218,6 +231,7 @@ def configure_community_kg_registry(
     base = build_community_base_registry(settings=settings)
     _apply_source_reader(base)
     _apply_rebuild_ingestion(base)
+    _apply_rebuild_audit_storage(base)
     if include_graph:
         _apply_graph_providers(base)
     # R05-D/R-P2-02: supply event_bus / audit_repo / config from the Community

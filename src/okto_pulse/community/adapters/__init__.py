@@ -19,6 +19,14 @@ from .content_ingestion import (
     CommunityContentIngestionResolver,
     register_community_content_ingestion_resolver,
 )
+from .coordination import (
+    CommunityLocalLeaseProvider,
+    CommunityLocalWriteLockPort,
+    CommunityRuntimeSettingsProvider,
+    CommunitySqlAlchemyClaimRepository,
+    register_community_coordination_providers,
+)
+from .rebuild_audit_storage import CommunityFileSystemRebuildAuditArtifactStore
 from .board_rebuild_ingestion import CommunityBoardRebuildIngestionAdapter
 from .board_source_reader import CommunityBoardSourceReader, resolve_pulse_db_path
 from .boundary_evidence import (
@@ -81,6 +89,11 @@ __all__ = [
     "CommunityDataBootstrapper",
     "CommunityBoundaryCheckResult",
     "CommunityContentIngestionResolver",
+    "CommunityLocalLeaseProvider",
+    "CommunityLocalWriteLockPort",
+    "CommunityRuntimeSettingsProvider",
+    "CommunitySqlAlchemyClaimRepository",
+    "CommunityFileSystemRebuildAuditArtifactStore",
     "CommunityFileSystemStorage",
     "CommunityInMemoryCache",
     "CommunityInMemoryRateLimiter",
@@ -111,6 +124,7 @@ __all__ = [
     "make_community_relational_schema_migrator",
     "register_community_relational_schema_lifecycle",
     "register_community_content_ingestion_resolver",
+    "register_community_coordination_providers",
     "register_community_reranker",
     "register_community_telemetry_state_carrier",
     "resolve_pulse_db_path",
