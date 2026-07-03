@@ -580,6 +580,11 @@ def create_community_app():
         from okto_pulse.core.mcp.server import register_session_factory
         register_session_factory(get_session_factory())
 
+        from okto_pulse.community.adapters.content_ingestion import (
+            register_community_content_ingestion_resolver,
+        )
+        register_community_content_ingestion_resolver()
+
         # R11-A: inject the Community operational resource catalog (via the core
         # contracts — core never imports community) and FREEZE the effective
         # catalog now that ALL providers are wired. A late mutation/registration

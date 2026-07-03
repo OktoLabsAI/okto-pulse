@@ -14,7 +14,6 @@ aborts when any board already exists — deleting the demo board therefore does
 not trigger a re-seed on subsequent starts.
 """
 
-import hashlib
 import logging
 import os
 import secrets
@@ -24,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.core.models.db import Agent, AgentBoard, Board
+from okto_pulse.core.services import AgentService
 
 logger = logging.getLogger("okto_pulse.community.seed")
 
@@ -54,14 +54,14 @@ async def seed_community_defaults(db: AsyncSession) -> tuple | None:
 
     # Create default agent with API key
     api_key = f"dash_{secrets.token_hex(24)}"
-    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    api_key_hash = AgentService.hash_api_key(api_key)
     agent_id = str(uuid4())
     agent = Agent(
         id=agent_id,
         name="Local Agent",
         description="Default agent for local MCP integration",
         objective="Assist the local user with board operations",
-        api_key=api_key,
+        api_key=AgentService.credential_marker(api_key_hash),
         api_key_hash=api_key_hash,
         is_active=True,
         permissions=None,  # Full access

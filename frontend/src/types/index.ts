@@ -1412,13 +1412,12 @@ export interface PermissionPreset {
   created_at: string;
 }
 
-// Agent (global, always includes api_key)
+// Agent (global, secret-free; credentials are reveal-once responses)
 export interface Agent {
   id: string;
   name: string;
   description: string | null;
   objective: string | null;
-  api_key: string;
   is_active: boolean;
   permissions: string[] | null;
   permission_flags: Record<string, Record<string, Record<string, boolean>>> | null;
@@ -1426,6 +1425,12 @@ export interface Agent {
   created_by: string;
   created_at: string;
   last_used_at: string | null;
+}
+
+export interface AgentRevealResponse {
+  agent: Agent;
+  reveal_once_secret: string;
+  message: string | null;
 }
 
 // Agent summary (without sensitive data, used in board context)

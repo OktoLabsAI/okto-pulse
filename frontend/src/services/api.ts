@@ -34,6 +34,7 @@ import type {
   CreateAmendmentRevisionRequest,
   AssociateAmendmentArtifactsRequest,
   Agent,
+  AgentRevealResponse,
   AgentSummary,
   AgentBoardGrant,
   CreateAgentRequest,
@@ -1212,8 +1213,8 @@ export function useDashboardApi() {
 
     // ==================== AGENTS ====================
 
-    async createAgent(data: CreateAgentRequest): Promise<Agent> {
-      return apiClient.fetchJson<Agent>('/agents', {
+    async createAgent(data: CreateAgentRequest): Promise<AgentRevealResponse> {
+      return apiClient.fetchJson<AgentRevealResponse>('/agents', {
         method: 'POST',
         body: JSON.stringify(data),
       });
@@ -1238,8 +1239,8 @@ export function useDashboardApi() {
       });
     },
 
-    async regenerateAgentKey(agentId: string): Promise<{ message: string; api_key: string }> {
-      return apiClient.fetchJson(`/agents/${agentId}/regenerate-key`, {
+    async regenerateAgentKey(agentId: string): Promise<AgentRevealResponse> {
+      return apiClient.fetchJson<AgentRevealResponse>(`/agents/${agentId}/regenerate-key`, {
         method: 'POST',
       });
     },

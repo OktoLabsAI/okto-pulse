@@ -15,6 +15,10 @@ from .composition import (
     community_storage_provider,
     configure_community_kg_registry,
 )
+from .content_ingestion import (
+    CommunityContentIngestionResolver,
+    register_community_content_ingestion_resolver,
+)
 from .board_rebuild_ingestion import CommunityBoardRebuildIngestionAdapter
 from .board_source_reader import CommunityBoardSourceReader, resolve_pulse_db_path
 from .boundary_evidence import (
@@ -76,6 +80,7 @@ __all__ = [
     "CommunityBoardRebuildIngestionAdapter",
     "CommunityDataBootstrapper",
     "CommunityBoundaryCheckResult",
+    "CommunityContentIngestionResolver",
     "CommunityFileSystemStorage",
     "CommunityInMemoryCache",
     "CommunityInMemoryRateLimiter",
@@ -105,6 +110,7 @@ __all__ = [
     "make_community_relational_schema_lifecycle_orchestrator",
     "make_community_relational_schema_migrator",
     "register_community_relational_schema_lifecycle",
+    "register_community_content_ingestion_resolver",
     "register_community_reranker",
     "register_community_telemetry_state_carrier",
     "resolve_pulse_db_path",

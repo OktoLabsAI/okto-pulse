@@ -362,7 +362,7 @@ Evaluate the ideation → refine if needed → write a spec with acceptance crit
 ### Managing agents
 
 To create additional agents or manage board access, open **Menu** (☰) → **Agents**:
-- **My Agents** tab — create, view API keys, regenerate keys, delete agents
+- **My Agents** tab — create agents, copy reveal-once API keys, regenerate keys, delete agents
 - **Board Access** tab — grant or revoke agent access to the current board
 
 ### Custom ports
@@ -542,7 +542,7 @@ In **Menu** (☰) → **Agents** → **"Board Access"** tab:
 
 ### API key management
 
-- **View key** — In the Agents panel, your key is visible (copy it)
+- **Reveal key** — New and regenerated keys are shown once in the Agents panel
 - **Regenerate key** — If compromised, click **Regenerate**. The old key stops working immediately.
 - **Lost key** — Keys are hashed in the database. If lost, regenerate a new one.
 

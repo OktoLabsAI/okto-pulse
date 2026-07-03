@@ -19,6 +19,7 @@ import socket
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from types import SimpleNamespace
 
 # Default ports
 DEFAULT_API_PORT = 8100
@@ -26,6 +27,10 @@ DEFAULT_MCP_PORT = 8101
 
 _BANNER_PATH = Path(__file__).parent / "banner.txt"
 _METRICS_CLI_LOGGER = logging.getLogger("okto_pulse.community.metrics.cli")
+
+
+def _is_recoverable_agent_key(value: str | None) -> bool:
+    return bool(value and value.startswith("dash_"))
 
 
 def _package_version(package_name: str) -> str:
@@ -119,12 +124,14 @@ def cmd_init(args):
     create_database(settings.database_url, echo=False)
 
     async def _init():
+        revealed_agents: list[tuple[str, str]] = []
         await init_db()
         board_id = None
         async with get_session_factory()() as db:
             result = await seed_community_defaults(db)
             if result:
                 board, agent, api_key = result
+                revealed_agents.append((agent.name, api_key))
                 board_id = board.id
                 print(f"\n  Board created: {board.name}")
                 print(f"  Agent created: {agent.name}")
@@ -157,17 +164,22 @@ def cmd_init(args):
                 print(f"  Knowledge Graph: bootstrap skipped ({exc})")
 
         await close_db()
+        return revealed_agents
 
-    asyncio.run(_init())
+    revealed_agents = asyncio.run(_init())
     print("\nRun 'okto-pulse serve' to start the server.")
 
     # Handle --agents flag: generate .mcp.json with specified agents
     agents_param = getattr(args, "agents", None)
     if agents_param is not None:  # None = not specified, [] = specified but empty (all agents)
-        _generate_mcp_json(settings.mcp_port, agents_param)
+        _generate_mcp_json(settings.mcp_port, agents_param, revealed_agents=revealed_agents)
 
 
-def _generate_mcp_json(mcp_port: int, agent_names: list[str] | None):
+def _generate_mcp_json(
+    mcp_port: int,
+    agent_names: list[str] | None,
+    revealed_agents: list[tuple[str, str]] | None = None,
+):
     """Generate .mcp.json with specified agents (or all if agent_names is empty)."""
     import asyncio
     from sqlalchemy import select
@@ -202,31 +214,46 @@ def _generate_mcp_json(mcp_port: int, agent_names: list[str] | None):
                 select(Agent).where(Agent.api_key.isnot(None)).order_by(Agent.name)
             )
             all_agents = result.scalars().all()
+            exportable_by_name = {
+                a.name: a for a in all_agents if _is_recoverable_agent_key(a.api_key)
+            }
+            for name, key in revealed_agents or []:
+                exportable_by_name[name] = SimpleNamespace(name=name, api_key=key)
+            exportable_agents = list(exportable_by_name.values())
+            all_agent_names = {a.name for a in all_agents} | {
+                name for name, _key in revealed_agents or []
+            }
 
-            if not all_agents:
-                print("\n  ⚠ No agents found with API keys.")
-                print("  Create agents via the web interface (Menu → Agents) first.")
+            if not exportable_agents:
+                print("\n  ⚠ No recoverable agent API keys found.")
+                print("  Newly created keys are reveal-once; regenerate one in the UI/API if needed.")
                 await close_db()
                 return None
 
             # Filter by name if specified
             if agent_names:  # Specific names provided
                 name_set = {name.strip() for name in agent_names}
-                found_agents = [a for a in all_agents if a.name in name_set]
-                missing = name_set - {a.name for a in found_agents}
+                found_agents = [a for a in exportable_agents if a.name in name_set]
+                missing = name_set - all_agent_names
+                unrecoverable = (all_agent_names & name_set) - set(exportable_by_name)
 
                 if not found_agents:
                     print(f"\n  ⚠ No matching agents found: {', '.join(sorted(name_set))}")
-                    print(f"  Available agents: {', '.join(a.name for a in all_agents)}")
+                    print(f"  Available exportable agents: {', '.join(a.name for a in exportable_agents)}")
                     await close_db()
                     return None
 
                 if missing:
                     print(f"\n  ⚠ Agents not found: {', '.join(sorted(missing))}")
+                if unrecoverable:
+                    print(
+                        "\n  ⚠ Agents skipped because their keys are reveal-once only: "
+                        f"{', '.join(sorted(unrecoverable))}"
+                    )
 
                 agents_to_export = found_agents
             else:  # No names provided = export all
-                agents_to_export = all_agents
+                agents_to_export = exportable_agents
 
             await close_db()
             return agents_to_export
@@ -482,6 +509,12 @@ def cmd_api_key(args):
 
     if row is None or not row[0]:
         print("No bootstrap API key found in database.", file=sys.stderr)
+        sys.exit(1)
+    if not _is_recoverable_agent_key(row[0]):
+        print(
+            "Bootstrap API key is reveal-once and is not recoverable from the database.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print(row[0])
