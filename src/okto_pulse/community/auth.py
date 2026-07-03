@@ -9,6 +9,7 @@ LOCAL_USER = {
     "sub": "local-user",
     "email": "local@okto-pulse.dev",
     "name": "Local User",
+    "roles": ["admin"],
 }
 
 class LocalAuthProvider(AuthProvider):
