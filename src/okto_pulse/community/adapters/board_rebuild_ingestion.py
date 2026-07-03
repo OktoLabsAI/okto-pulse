@@ -133,10 +133,14 @@ class CommunityBoardRebuildIngestionAdapter:
         sources: Sequence[Mapping[str, Any]],
     ) -> dict[str, int]:
         """UPSERT one ConsolidationQueue row per source. Returns counts
-        bucketed by (inserted | reset_to_pending | left_alone). Uses
-        ``priority='high'`` because an explicit rebuild is an operator
-        recovery action; it must preempt unrelated backlog from other boards
-        that may themselves be corrupt."""
+        bucketed by (inserted | reset_to_pending | left_alone). Pending and
+        claimed rows are left alone, preserving attempts, errors, retry and
+        claim ownership fields; terminal/retryable rows are reset to pending.
+        This supersedes older behavior that reset pending/claimed rows; active
+        rows now intentionally count as ``left_alone``. Uses
+        ``priority='high'`` because an explicit rebuild is an operator recovery
+        action; it must preempt unrelated backlog from other boards that may
+        themselves be corrupt."""
 
         counts = {"inserted": 0, "reset_to_pending": 0, "left_alone": 0}
         if not sources:
@@ -152,47 +156,37 @@ class CommunityBoardRebuildIngestionAdapter:
                 queue_artifact_type = _queue_artifact_type(artifact_type)
                 if not artifact_id:
                     continue
-                existing = conn.execute(
-                    "SELECT id, status FROM consolidation_queue "
-                    "WHERE board_id=? AND artifact_type=? AND artifact_id=?",
-                    (board_id, queue_artifact_type, artifact_id),
+                queue_id = str(uuid.uuid4())
+                written = conn.execute(
+                    "INSERT INTO consolidation_queue "
+                    "(id, board_id, artifact_type, artifact_id, priority, "
+                    "source, status, triggered_at, attempts) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'pending', datetime('now'), 0) "
+                    "ON CONFLICT(board_id, artifact_type, artifact_id) "
+                    "DO UPDATE SET "
+                    "status='pending', attempts=0, last_error=NULL, "
+                    "claimed_by_session_id=NULL, claimed_at=NULL, "
+                    "worker_id=NULL, claim_timeout_at=NULL, "
+                    "next_retry_at=NULL, priority=excluded.priority, "
+                    "source=excluded.source "
+                    "WHERE consolidation_queue.status NOT IN "
+                    "('pending', 'claimed') "
+                    "RETURNING id",
+                    (
+                        queue_id,
+                        board_id,
+                        queue_artifact_type,
+                        artifact_id,
+                        "high",
+                        f"rebuild:{run_id}",
+                    ),
                 ).fetchone()
-                if existing is None:
-                    conn.execute(
-                        "INSERT INTO consolidation_queue "
-                        "(id, board_id, artifact_type, artifact_id, priority, "
-                        "source, status, triggered_at, attempts) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 0)",
-                        (
-                            str(uuid.uuid4()),
-                            board_id,
-                            queue_artifact_type,
-                            artifact_id,
-                            "high",
-                            f"rebuild:{run_id}",
-                            "pending",
-                        ),
-                    )
-                    counts["inserted"] += 1
-                elif existing["status"] in (
-                    "done",
-                    "failed",
-                    "paused",
-                    "pending",
-                    "claimed",
-                ):
-                    conn.execute(
-                        "UPDATE consolidation_queue SET "
-                        "status='pending', attempts=0, last_error=NULL, "
-                        "claimed_by_session_id=NULL, claimed_at=NULL, "
-                        "worker_id=NULL, claim_timeout_at=NULL, "
-                        "next_retry_at=NULL, priority=?, source=? "
-                        "WHERE id=?",
-                        ("high", f"rebuild:{run_id}", existing["id"]),
-                    )
-                    counts["reset_to_pending"] += 1
-                else:
+                if written is None:
                     counts["left_alone"] += 1
+                elif written["id"] == queue_id:
+                    counts["inserted"] += 1
+                else:
+                    counts["reset_to_pending"] += 1
             conn.commit()
         return counts
 

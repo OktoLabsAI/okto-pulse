@@ -872,6 +872,7 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     lifespan, and the request-scoped MCP credential provider — so the MCP sub-app
     sees a fully-initialised runtime.
     """
+    from okto_pulse.community.adapters.mcp_trace import build_mcp_trace_sink_from_env
     from okto_pulse.core.mcp.server import build_mcp_asgi_app
 
     settings = CommunitySettings()
@@ -897,7 +898,7 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     api_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
 
     mcp_config = uvicorn.Config(
-        build_mcp_asgi_app(),
+        build_mcp_asgi_app(trace_sink=build_mcp_trace_sink_from_env()),
         # Read host from environment (set by Docker / compose) or fall back to
         # loopback so a stray process doesn't accidentally expose the MCP
         # server. Override via MCP_HOST=0.0.0.0 in docker-compose.yml when
