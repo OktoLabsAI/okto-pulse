@@ -79,6 +79,7 @@ describe('AgentsModal reveal-once credentials', () => {
     fireEvent.click(screen.getByText('Existing Agent'));
 
     expect(screen.getByText('Hidden. Regenerate to reveal a new key.')).toBeInTheDocument();
+    expect(screen.getByTitle('Regenerate key')).toBeEnabled();
     expect(screen.queryByText('dash_new_secret')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
@@ -88,6 +89,9 @@ describe('AgentsModal reveal-once credentials', () => {
     fireEvent.click(screen.getByRole('button', { name: /^create agent$/i }));
 
     await screen.findByText('dash_new_secret');
+    fireEvent.click(screen.getByText('Existing Agent'));
+    expect(screen.getByText('Hidden. Regenerate to reveal a new key.')).toBeInTheDocument();
+    expect(screen.queryByText('dash_new_secret')).not.toBeInTheDocument();
     expect(apiMock.createAgent).toHaveBeenCalledWith({
       name: 'New Agent',
       description: undefined,
