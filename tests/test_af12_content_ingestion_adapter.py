@@ -106,8 +106,8 @@ async def test_af12_blocks_redirect_to_private_network_before_second_fetch(
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def get(self, url):
-            calls.append(url)
+        async def get(self, url, *, headers=None, extensions=None):
+            calls.append((str(url), headers, extensions))
             return httpx.Response(
                 302,
                 headers={"location": "http://127.0.0.1/secret"},
@@ -121,4 +121,187 @@ async def test_af12_blocks_redirect_to_private_network_before_second_fetch(
         await resolver.resolve_binary("http://safe.example/start", max_bytes=1024)
 
     assert exc.value.code == "ssrf_blocked"
-    assert calls == ["http://safe.example/start"]
+    assert calls == [
+        (
+            "http://93.184.216.34/start",
+            {"Host": "safe.example"},
+            {
+                "validated_ip": "93.184.216.34",
+                "effective_connect_ip": "93.184.216.34",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_af12_blocks_remote_fetch_after_redirect_limit(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_getaddrinfo(host, port, type):  # noqa: A002 - mirrors socket API
+        assert host == "safe.example"
+        return [(None, None, None, None, ("93.184.216.34", port or 80))]
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, *, headers=None, extensions=None):
+            calls.append((str(url), headers, extensions))
+            return httpx.Response(
+                302,
+                headers={"location": f"http://safe.example/hop-{len(calls)}"},
+            )
+
+    monkeypatch.setattr(adapter_module.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(adapter_module.httpx, "AsyncClient", FakeAsyncClient)
+    resolver = CommunityContentIngestionResolver(root=tmp_path)
+
+    with pytest.raises(ContentIngestionError) as exc:
+        await resolver.resolve_binary("http://safe.example/start", max_bytes=1024)
+
+    assert exc.value.code == "too_many_redirects"
+    assert len(calls) == 6
+    assert all(call[0].startswith("http://93.184.216.34/") for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_af12_remote_fetch_ignores_invalid_content_length_and_checks_body(
+    monkeypatch,
+    tmp_path,
+):
+    def fake_getaddrinfo(host, port, type):  # noqa: A002 - mirrors socket API
+        assert host == "safe.example"
+        return [(None, None, None, None, ("93.184.216.34", port or 80))]
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, *, headers=None, extensions=None):
+            return httpx.Response(
+                200,
+                content=b"small",
+                headers={"content-length": "not-an-int", "content-type": "text/plain"},
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(adapter_module.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(adapter_module.httpx, "AsyncClient", FakeAsyncClient)
+    resolver = CommunityContentIngestionResolver(root=tmp_path)
+
+    resolved = await resolver.resolve_binary("http://safe.example/start", max_bytes=1024)
+
+    assert resolved.data == b"small"
+
+
+@pytest.mark.asyncio
+async def test_af12_remote_fetch_connects_to_validated_ip_not_rebound_host(
+    monkeypatch,
+    tmp_path,
+):
+    calls = []
+
+    def fake_getaddrinfo(host, port, type):  # noqa: A002 - mirrors socket API
+        assert host == "safe.example"
+        return [(None, None, None, None, ("93.184.216.34", port or 80))]
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, *, headers=None, extensions=None):
+            calls.append((str(url), headers, extensions))
+            if "safe.example" in str(url):
+                return httpx.Response(200, content=b"private-secret", request=httpx.Request("GET", url))
+            return httpx.Response(
+                200,
+                content=b"public-content",
+                headers={"content-type": "text/plain"},
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(adapter_module.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(adapter_module.httpx, "AsyncClient", FakeAsyncClient)
+    resolver = CommunityContentIngestionResolver(root=tmp_path)
+
+    resolved = await resolver.resolve_binary("http://safe.example/start", max_bytes=1024)
+
+    assert resolved.data == b"public-content"
+    assert calls == [
+        (
+            "http://93.184.216.34/start",
+            {"Host": "safe.example"},
+            {
+                "validated_ip": "93.184.216.34",
+                "effective_connect_ip": "93.184.216.34",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_af12_https_fetch_preserves_host_header_and_sni_for_validated_ip(
+    monkeypatch,
+    tmp_path,
+):
+    calls = []
+
+    def fake_getaddrinfo(host, port, type):  # noqa: A002 - mirrors socket API
+        assert host == "safe.example"
+        return [(None, None, None, None, ("93.184.216.34", port or 443))]
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, *, headers=None, extensions=None):
+            calls.append((str(url), headers, extensions))
+            return httpx.Response(
+                200,
+                content=b"secure-public-content",
+                headers={"content-type": "text/plain"},
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(adapter_module.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(adapter_module.httpx, "AsyncClient", FakeAsyncClient)
+    resolver = CommunityContentIngestionResolver(root=tmp_path)
+
+    resolved = await resolver.resolve_binary("https://safe.example/start", max_bytes=1024)
+
+    assert resolved.data == b"secure-public-content"
+    assert calls == [
+        (
+            "https://93.184.216.34/start",
+            {"Host": "safe.example"},
+            {
+                "validated_ip": "93.184.216.34",
+                "effective_connect_ip": "93.184.216.34",
+                "sni_hostname": "safe.example",
+            },
+        )
+    ]

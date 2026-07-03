@@ -144,6 +144,23 @@ def test_af14_ts6_mcp_export_skips_deferred_markers_but_exports_revealed_and_leg
     assert urls["new-agent"].endswith("?api_key=dash_revealed_once")
 
 
+def test_af14_ts6_mcp_export_marker_only_writes_no_config(
+    tmp_path, monkeypatch, capsys
+):
+    from okto_pulse.community.cli import _generate_mcp_json
+
+    rows = [SimpleNamespace(name="Deferred Agent", api_key="sha256:deadbeef")]
+    _patch_mcp_export_runtime(monkeypatch, rows)
+    monkeypatch.chdir(tmp_path)
+
+    _generate_mcp_json(8101, ["Deferred Agent"], revealed_agents=[])
+
+    output = capsys.readouterr().out
+    assert "No recoverable agent API keys found" in output
+    assert "reveal-once; regenerate one in the UI/API if needed" in output
+    assert not (tmp_path / ".mcp.json").exists()
+
+
 def test_af14_ts6_api_key_cli_refuses_reveal_once_marker(tmp_path, monkeypatch, capsys):
     import okto_pulse.community.config as community_config
     from okto_pulse.community.cli import cmd_api_key

@@ -80,6 +80,9 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
     if (isOpen) {
       loadMyAgents();
       loadPresets();
+    } else {
+      setRevealedAgentKeys({});
+      setExpandedAgentId(null);
     }
   }, [isOpen]);
 

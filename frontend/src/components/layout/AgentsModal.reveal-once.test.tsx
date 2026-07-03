@@ -122,4 +122,75 @@ describe('AgentsModal reveal-once credentials', () => {
       );
     });
   });
+
+  it('clears revealed keys on close and does not rehydrate them after reopen', async () => {
+    apiMock.listMyAgents.mockResolvedValue([agent('agent-1', 'Claude Agent')]);
+    apiMock.regenerateAgentKey.mockResolvedValue({
+      agent: agent('agent-1', 'Claude Agent'),
+      reveal_once_secret: 'dash_rotated_secret',
+      message: 'Copy this key now.',
+    });
+
+    const { rerender } = render(<AgentsModal isOpen onClose={() => {}} />);
+
+    await screen.findByText('Claude Agent');
+    fireEvent.click(screen.getByTitle('Regenerate key'));
+    await screen.findByText('dash_rotated_secret');
+
+    rerender(<AgentsModal isOpen={false} onClose={() => {}} />);
+    expect(screen.queryByText('dash_rotated_secret')).not.toBeInTheDocument();
+
+    rerender(<AgentsModal isOpen onClose={() => {}} />);
+    await screen.findByText('Claude Agent');
+    fireEvent.click(screen.getByText('Claude Agent'));
+
+    expect(screen.queryByText('dash_rotated_secret')).not.toBeInTheDocument();
+    expect(screen.getByText('Hidden. Regenerate to reveal a new key.')).toBeInTheDocument();
+  });
+
+  it('keeps the reveal-once buffer through refetch while the modal stays open', async () => {
+    apiMock.listPresets.mockResolvedValue([
+      {
+        id: 'preset-reviewer',
+        name: 'Reviewer',
+        description: null,
+        is_builtin: true,
+        flags: {},
+        created_at: '2026-07-03T00:00:00Z',
+      } satisfies PermissionPreset,
+    ]);
+    apiMock.listMyAgents.mockResolvedValue([agent('agent-1', 'Claude Agent')]);
+    apiMock.regenerateAgentKey.mockResolvedValue({
+      agent: agent('agent-1', 'Claude Agent'),
+      reveal_once_secret: 'dash_rotated_secret',
+      message: 'Copy this key now.',
+    });
+    apiMock.updateAgent.mockResolvedValue(agent('agent-1', 'Claude Agent'));
+
+    render(<AgentsModal isOpen onClose={() => {}} />);
+
+    await screen.findByText('Claude Agent');
+    fireEvent.click(screen.getByTitle('Regenerate key'));
+    await screen.findByText('dash_rotated_secret');
+
+    fireEvent.change(screen.getByDisplayValue('Full Control'), {
+      target: { value: 'preset-reviewer' },
+    });
+
+    await waitFor(() => {
+      expect(apiMock.updateAgent).toHaveBeenCalledWith('agent-1', {
+        preset_id: 'preset-reviewer',
+      });
+      expect(apiMock.listMyAgents).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.getByText('dash_rotated_secret')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('claude_desktop_config.json'));
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        expect.stringContaining('api_key=dash_rotated_secret'),
+      );
+    });
+  });
 });

@@ -176,7 +176,7 @@ describe('OnboardingModal — TS-9 (Copy MCP URL writes to clipboard)', () => {
       value: { writeText },
     });
 
-    open({ mcpUrl: 'http://127.0.0.1:8101/mcp?api_key=dash_unit-test' });
+    open({ mcpUrl: 'http://127.0.0.1:8101/mcp?api_key=dash_...' });
     fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> slide 2
     fireEvent.click(screen.getByTestId('onboarding-primary-cta')); // -> slide 3
 
@@ -188,7 +188,7 @@ describe('OnboardingModal — TS-9 (Copy MCP URL writes to clipboard)', () => {
       await Promise.resolve();
     });
 
-    expect(writeText).toHaveBeenCalledWith('http://127.0.0.1:8101/mcp?api_key=dash_unit-test');
+    expect(writeText).toHaveBeenCalledWith('http://127.0.0.1:8101/mcp?api_key=dash_...');
     expect(copyBtn.textContent).toBe('Copied!');
   });
 });

@@ -15,7 +15,7 @@ const getMcpBaseUrl = () => {
 };
 const MCP_BASE_URL = getMcpBaseUrl();
 const MCP_URL_EXAMPLE = `${MCP_BASE_URL}?api_key=dash_your_key_here`;
-const MCP_URL_EXAMPLE_KEY = `${MCP_BASE_URL}?api_key=dash_a1b2c3d4...`;
+const MCP_URL_EXAMPLE_KEY = `${MCP_BASE_URL}?api_key=dash_your_key_here`;
 
 // Helper to extract port from MCP URL for display
 const getMcpPort = () => {
@@ -314,7 +314,7 @@ The output will show something like:
 \`\`\`
 Board created: My Board
 Agent created: Local Agent
-API Key: dash_a1b2c3d4...
+API Key: dash_your_key_here
 MCP URL: ${MCP_URL_EXAMPLE_KEY}
 
 .mcp.json generated at: /your/project/.mcp.json

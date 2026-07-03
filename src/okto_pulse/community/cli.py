@@ -17,9 +17,10 @@ import os
 import shutil
 import socket
 import sys
+from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from types import SimpleNamespace
+from typing import Literal
 
 # Default ports
 DEFAULT_API_PORT = 8100
@@ -28,9 +29,43 @@ DEFAULT_MCP_PORT = 8101
 _BANNER_PATH = Path(__file__).parent / "banner.txt"
 _METRICS_CLI_LOGGER = logging.getLogger("okto_pulse.community.metrics.cli")
 
+_CredentialSource = Literal["governed_legacy_plaintext", "reveal_once"]
+
+
+@dataclass(frozen=True)
+class _ExportableAgentCredential:
+    name: str
+    plaintext: str
+    source: _CredentialSource
+
 
 def _is_recoverable_agent_key(value: str | None) -> bool:
-    return bool(value and value.startswith("dash_"))
+    return _stored_agent_credential_source(value) == "governed_legacy_plaintext"
+
+
+def _stored_agent_credential_source(value: str | None) -> _CredentialSource | None:
+    if value and value.startswith("dash_"):
+        return "governed_legacy_plaintext"
+    return None
+
+
+def _exportable_credential_from_legacy_agent(agent) -> _ExportableAgentCredential | None:
+    plaintext = agent.api_key
+    if _stored_agent_credential_source(plaintext) != "governed_legacy_plaintext":
+        return None
+    return _ExportableAgentCredential(
+        name=agent.name,
+        plaintext=plaintext,
+        source="governed_legacy_plaintext",
+    )
+
+
+def _exportable_credential_from_reveal_once(
+    name: str, plaintext: str
+) -> _ExportableAgentCredential | None:
+    if not plaintext.startswith("dash_"):
+        return None
+    return _ExportableAgentCredential(name=name, plaintext=plaintext, source="reveal_once")
 
 
 def _package_version(package_name: str) -> str:
@@ -214,11 +249,15 @@ def _generate_mcp_json(
                 select(Agent).where(Agent.api_key.isnot(None)).order_by(Agent.name)
             )
             all_agents = result.scalars().all()
-            exportable_by_name = {
-                a.name: a for a in all_agents if _is_recoverable_agent_key(a.api_key)
-            }
+            exportable_by_name: dict[str, _ExportableAgentCredential] = {}
+            for agent in all_agents:
+                credential = _exportable_credential_from_legacy_agent(agent)
+                if credential is not None:
+                    exportable_by_name[credential.name] = credential
             for name, key in revealed_agents or []:
-                exportable_by_name[name] = SimpleNamespace(name=name, api_key=key)
+                credential = _exportable_credential_from_reveal_once(name, key)
+                if credential is not None:
+                    exportable_by_name[credential.name] = credential
             exportable_agents = list(exportable_by_name.values())
             all_agent_names = {a.name for a in all_agents} | {
                 name for name, _key in revealed_agents or []
@@ -268,7 +307,7 @@ def _generate_mcp_json(
         # Use a sanitized name for the server key (replace spaces with hyphens)
         server_key = agent.name.lower().replace(" ", "-").replace("_", "-")
         mcp_config["mcpServers"][server_key] = {
-            "url": f"http://127.0.0.1:{mcp_port}/mcp?api_key={agent.api_key}"
+            "url": f"http://127.0.0.1:{mcp_port}/mcp?api_key={agent.plaintext}"
         }
 
     mcp_json_path = Path.cwd() / ".mcp.json"

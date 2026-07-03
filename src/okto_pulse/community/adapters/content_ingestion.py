@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import mimetypes
 import os
 import socket
+from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urljoin, urlparse, unquote
+from urllib.parse import urljoin, urlparse, urlunparse, unquote
 
 import httpx
 
@@ -29,6 +31,16 @@ _TEXT_MIME_TYPES = {
     "application/yaml",
     "application/x-yaml",
 }
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _ValidatedRemoteTarget:
+    original_url: str
+    connect_url: str
+    hostname: str
+    host_header: str
+    validated_ip: str
 
 
 def _is_blocked_ip(ip: str) -> bool:
@@ -43,7 +55,47 @@ def _is_blocked_ip(ip: str) -> bool:
     )
 
 
-def _validate_remote_url(raw: str) -> str:
+def _raise_ssrf_blocked(host: str, ip: str | None, reason: str) -> None:
+    _LOGGER.warning(
+        "blocked remote content fetch host=%s ip=%s reason=%s",
+        host,
+        ip or "",
+        reason,
+    )
+    raise ContentIngestionError("ssrf_blocked", "remote content host is not allowed")
+
+
+def _host_header_for(parsed) -> str:
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if parsed.port is not None:
+        return f"{host}:{parsed.port}"
+    return host
+
+
+def _url_host_for_ip(ip: str) -> str:
+    return f"[{ip}]" if ":" in ip else ip
+
+
+def _connect_url_for(raw: str, validated_ip: str) -> str:
+    parsed = urlparse(raw)
+    host = _url_host_for_ip(validated_ip)
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return urlunparse(
+        (
+            parsed.scheme,
+            host,
+            parsed.path or "/",
+            parsed.params,
+            parsed.query,
+            "",
+        )
+    )
+
+
+def _validate_remote_url(raw: str) -> _ValidatedRemoteTarget:
     parsed = urlparse(raw)
     if parsed.scheme not in _REMOTE_SCHEMES:
         raise ContentIngestionError("unsupported_reference", "unsupported content reference scheme")
@@ -52,10 +104,10 @@ def _validate_remote_url(raw: str) -> str:
 
     host = parsed.hostname.strip().lower()
     if host == "localhost" or host.endswith(".localhost"):
-        raise ContentIngestionError("ssrf_blocked", "remote content host is not allowed")
+        _raise_ssrf_blocked(host, None, "localhost")
     try:
         if _is_blocked_ip(host):
-            raise ContentIngestionError("ssrf_blocked", "remote content host is not allowed")
+            _raise_ssrf_blocked(host, host, "literal_ip_blocked")
     except ValueError:
         pass
 
@@ -63,9 +115,18 @@ def _validate_remote_url(raw: str) -> str:
         addresses = socket.getaddrinfo(host, parsed.port, type=socket.SOCK_STREAM)
     except socket.gaierror:
         raise ContentIngestionError("invalid_reference", "remote content host could not be resolved")
-    if any(_is_blocked_ip(addr[-1][0]) for addr in addresses):
-        raise ContentIngestionError("ssrf_blocked", "remote content host is not allowed")
-    return raw
+    resolved_ips = [addr[-1][0] for addr in addresses]
+    for ip in resolved_ips:
+        if _is_blocked_ip(ip):
+            _raise_ssrf_blocked(host, ip, "resolved_ip_blocked")
+    validated_ip = resolved_ips[0]
+    return _ValidatedRemoteTarget(
+        original_url=raw,
+        connect_url=_connect_url_for(raw, validated_ip),
+        hostname=host,
+        host_header=_host_header_for(parsed),
+        validated_ip=validated_ip,
+    )
 
 
 class CommunityContentIngestionResolver:
@@ -117,17 +178,31 @@ class CommunityContentIngestionResolver:
         return mime_type.startswith(_TEXT_MIME_PREFIXES) or mime_type in _TEXT_MIME_TYPES
 
     async def _remote_bytes(self, reference: str, *, max_bytes: int) -> IngestedBinaryContent:
-        url = _validate_remote_url(reference)
+        target = _validate_remote_url(reference)
         async with httpx.AsyncClient(follow_redirects=False, timeout=self.timeout_s) as client:
             for _ in range(_MAX_REDIRECTS + 1):
-                response = await client.get(url)
+                extensions = {
+                    "validated_ip": target.validated_ip,
+                    "effective_connect_ip": target.validated_ip,
+                }
+                if target.original_url.startswith("https://"):
+                    extensions["sni_hostname"] = target.hostname
+                response = await client.get(
+                    target.connect_url,
+                    headers={"Host": target.host_header},
+                    extensions=extensions,
+                )
                 if 300 <= response.status_code < 400 and response.headers.get("location"):
-                    url = _validate_remote_url(urljoin(url, response.headers["location"]))
+                    target = _validate_remote_url(urljoin(target.original_url, response.headers["location"]))
                     continue
                 response.raise_for_status()
                 declared_size = response.headers.get("content-length")
-                if declared_size and int(declared_size) > max_bytes:
-                    raise ContentIngestionError("content_too_large", "remote content exceeds limit")
+                if declared_size:
+                    try:
+                        if int(declared_size) > max_bytes:
+                            raise ContentIngestionError("content_too_large", "remote content exceeds limit")
+                    except ValueError:
+                        pass
                 data = response.content
                 if len(data) > max_bytes:
                     raise ContentIngestionError("content_too_large", "remote content exceeds limit")
