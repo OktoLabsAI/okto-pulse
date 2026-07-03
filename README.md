@@ -240,6 +240,18 @@ application-layer violations. Inbound/outbound/legacy baseline debt remains
 outside that criterion and continues to be tracked by the core architecture
 ledger.
 
+AF-20 adds a stricter baseline policy that Community must respect when packaging
+or registering local-first adapters. Core owns `IMPORT_BOUNDARY_BASELINE_LEDGER`,
+the import-boundary gate, transition rules and singleton runtime ownership
+checks; each accepted non-relational baseline needs owner, reason, removal criterion,
+source spec/wave and risk. Community owns adapter-specific debt for
+local concrete dependencies such as SQLite, LadybugDB/Kuzu, filesystem storage,
+local ML providers and telemetry beacon sending. When a concrete dependency is
+needed for the local runtime, wire it through a core port and register it in
+Community instead of normalizing a new core baseline. The existing
+`okto_pulse/core/ports` package is a real pure ports layer consumed by Community,
+not a future target.
+
 ### Adapters
 
 Community registers its adapters from `okto_pulse.community.main` and
