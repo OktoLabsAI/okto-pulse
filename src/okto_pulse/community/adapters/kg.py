@@ -20,6 +20,9 @@ from okto_pulse.community.adapters.kuzu_graph_lifecycle import (
 from okto_pulse.community.adapters.kuzu_graph_path_resolver import (
     CommunityKuzuGraphPathResolver,
 )
+from okto_pulse.community.adapters.kuzu_graph_runtime_store import (
+    CommunityKuzuGraphRuntimeStore,
+)
 from okto_pulse.community.adapters.kuzu_graph_schema_manager import (
     CommunityKuzuGraphSchemaManager,
 )
@@ -40,6 +43,7 @@ def build_community_graph_providers() -> dict[str, Any]:
         "graph_schema_manager": CommunityKuzuGraphSchemaManager(),
         "graph_lifecycle": CommunityKuzuGraphLifecycle(),
         "graph_path_resolver": CommunityKuzuGraphPathResolver(),
+        "graph_runtime_store": CommunityKuzuGraphRuntimeStore(),
         "global_discovery_runtime": CommunityGlobalDiscoveryRuntime(),
     }
 
@@ -51,6 +55,7 @@ __all__ = [
     "CommunityKuzuGraphSchemaManager",
     "CommunityKuzuGraphLifecycle",
     "CommunityKuzuGraphPathResolver",
+    "CommunityKuzuGraphRuntimeStore",
     "CommunityGlobalDiscoveryRuntime",
     "build_community_graph_providers",
 ]
