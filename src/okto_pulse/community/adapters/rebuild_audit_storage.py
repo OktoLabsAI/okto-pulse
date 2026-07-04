@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -14,6 +16,19 @@ from okto_pulse.core.kg.interfaces.rebuild_audit_storage import (
 )
 
 
+def default_community_rebuild_base_dir() -> Path:
+    """Resolve the local-first rebuild artifact root for Community."""
+
+    configured = os.getenv("OKTO_PULSE_REBUILD_BASE_DIR")
+    base_dir = (
+        Path(configured)
+        if configured
+        else Path(tempfile.gettempdir()) / "okto_pulse_kg_rebuild"
+    )
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return base_dir
+
+
 class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
     """Preserve the current local-first rebuild/audit directory layout."""
 
@@ -23,6 +38,7 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
 
     def _namespace_dir(self, key: RebuildAuditKey) -> Path:
         audit_dir = self._base_dir / "rebuild" / "audit"
+        generations_dir = self._base_dir / "rebuild" / "generations" / key.board_id
         if key.namespace == "event_audit":
             return audit_dir / "events" / key.board_id
         if key.namespace == "cognitive_pending":
@@ -31,12 +47,16 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             return audit_dir / "confirmation" / key.board_id
         if key.namespace == "run_audit":
             return audit_dir
+        if key.namespace == "generation_current":
+            return generations_dir
+        if key.namespace == "generation_history":
+            return generations_dir / "history"
         raise ValueError(f"unsupported rebuild audit namespace: {key.namespace}")
 
     def _artifact_id(self, key: RebuildAuditKey) -> str:
-        if key.namespace == "cognitive_pending":
+        if key.namespace in {"cognitive_pending", "generation_history"}:
             if not key.kg_generation_id:
-                raise ValueError("cognitive_pending key requires kg_generation_id")
+                raise ValueError(f"{key.namespace} key requires kg_generation_id")
             return key.kg_generation_id
         if not key.artifact_id:
             raise ValueError(f"{key.namespace} key requires artifact_id")
@@ -106,4 +126,7 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             return dict(next_payload)
 
 
-__all__ = ["CommunityFileSystemRebuildAuditArtifactStore"]
+__all__ = [
+    "CommunityFileSystemRebuildAuditArtifactStore",
+    "default_community_rebuild_base_dir",
+]
