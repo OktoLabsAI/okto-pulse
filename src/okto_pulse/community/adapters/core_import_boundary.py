@@ -1,0 +1,596 @@
+"""Community -> core private-import boundary audit for AF21.
+
+The Community edition may depend on public core ports/facades. Direct imports
+from core internals are temporary reach-ins and must be either removed or
+explicitly ledgered with ownership and withdrawal criteria.
+"""
+
+from __future__ import annotations
+
+import ast
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Iterable
+
+
+PRIVATE_CORE_IMPORT_PREFIXES: tuple[str, ...] = (
+    "okto_pulse.core.infra.database",
+    "okto_pulse.core.models.db",
+    "okto_pulse.core.services.main",
+    "okto_pulse.core.kg.interfaces.registry",
+    "okto_pulse.core.kg.workers.deterministic_worker",
+    "okto_pulse.core.kg.workers.consolidation",
+    "okto_pulse.core.kg.governance",
+    "okto_pulse.core.mcp.server",
+)
+
+PRIVATE_CORE_SYMBOL_IMPORTS: tuple[tuple[str, str], ...] = (
+    ("okto_pulse.core.kg.interfaces", "get_kg_registry"),
+)
+
+PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "okto_pulse.core.infra",
+        (
+            "Base",
+            "close_db",
+            "create_database",
+            "get_db",
+            "get_db_session",
+            "get_engine",
+            "get_session_factory",
+            "init_db",
+        ),
+    ),
+)
+
+PRIVATE_CORE_SERVICE_REEXPORT_MODULE = "okto_pulse.core.services"
+
+
+@dataclass(frozen=True)
+class CoreReachInLedgerEntry:
+    file_path: str
+    scope: str
+    module: str
+    symbols: tuple[str, ...]
+    owner: str
+    reason: str
+    target_public_surface: str
+    removal_path: str
+    withdrawal_criterion: str
+
+    @property
+    def key(self) -> tuple[str, str, str, tuple[str, ...]]:
+        return (self.file_path, self.scope, self.module, tuple(sorted(self.symbols)))
+
+
+@dataclass(frozen=True)
+class CoreReachInOccurrence:
+    file_path: str
+    scope: str
+    module: str
+    symbols: tuple[str, ...]
+    line: int
+
+    @property
+    def key(self) -> tuple[str, str, str, tuple[str, ...]]:
+        return (self.file_path, self.scope, self.module, tuple(sorted(self.symbols)))
+
+
+def _ledger(
+    file_path: str,
+    scope: str,
+    module: str,
+    symbols: Iterable[str],
+    *,
+    target: str,
+    reason: str,
+    removal_path: str,
+    withdrawal_criterion: str,
+    owner: str = "okto-pulse-community/adapters",
+) -> CoreReachInLedgerEntry:
+    return CoreReachInLedgerEntry(
+        file_path=file_path,
+        scope=scope,
+        module=module,
+        symbols=tuple(sorted(symbols)),
+        owner=owner,
+        reason=reason,
+        target_public_surface=target,
+        removal_path=removal_path,
+        withdrawal_criterion=withdrawal_criterion,
+    )
+
+
+COMMUNITY_CORE_REACH_IN_LEDGER: tuple[CoreReachInLedgerEntry, ...] = (
+    _ledger(
+        "src/okto_pulse/community/adapters/board_source_reader.py",
+        "resolve_pulse_db_path",
+        "okto_pulse.core.infra.database",
+        ("get_engine",),
+        target="Community relational source-reader adapter",
+        reason="Local-first reader resolves the active SQLite database URL from the current core engine.",
+        removal_path="Move SQLite path resolution behind an edition-owned relational runtime facade.",
+        withdrawal_criterion="Board source readers no longer import core.infra.database.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/coordination.py",
+        "<module>",
+        "okto_pulse.core.models.db",
+        (
+            "ConsolidationQueue",
+            "DomainEventHandlerExecution",
+            "DomainEventRow",
+            "GlobalUpdateOutbox",
+        ),
+        target="Community SQLAlchemy coordination repositories",
+        reason="Local SQLite adapters still persist core-owned coordination rows through SQLAlchemy models.",
+        removal_path="Replace direct ORM imports with repository DTOs or generated table mappings.",
+        withdrawal_criterion="Community coordination adapters import no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/data_bootstrapper.py",
+        "make_community_data_bootstrapper",
+        "okto_pulse.core.infra",
+        ("database",),
+        target="Community data-bootstrap lifecycle adapter",
+        reason=(
+            "R16-C binds the Community data-bootstrap ledger to the current "
+            "core.infra.database bootstrap callables until the lifecycle facade "
+            "is fully activated."
+        ),
+        removal_path=(
+            "Replace the database-module reach-in with a public schema/data "
+            "lifecycle binding facade or edition-owned callable registry."
+        ),
+        withdrawal_criterion=(
+            "Community data bootstrapper imports no core.infra database module "
+            "or database lifecycle symbols."
+        ),
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/mcp_auth.py",
+        "CommunityMcpAuthenticator.authenticate",
+        "okto_pulse.core.services.main",
+        ("AgentService",),
+        target="Core auth/application service facade",
+        reason="Community MCP authentication delegates board/API-key policy to the existing core service.",
+        removal_path="Expose an auth/session application facade that hides services.main.",
+        withdrawal_criterion="Community MCP auth imports no core.services.main symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/mcp_auth.py",
+        "make_community_mcp_authenticator",
+        "okto_pulse.core.infra.database",
+        ("get_session_factory",),
+        target="Community composition-owned session provider",
+        reason="Local MCP authenticator factory defaults to the active SQLite session factory.",
+        removal_path="Require the session factory to be injected by the composition root.",
+        withdrawal_criterion="Community MCP auth imports no core.infra.database symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/mcp_auth.py",
+        "MCPAuthContext.get_accessible_boards",
+        "okto_pulse.core.services.main",
+        ("AgentService",),
+        target="Core auth/application service facade",
+        reason="Community MCP request context delegates board ACL policy to the existing core service.",
+        removal_path="Expose an auth/session application facade that hides services.main.",
+        withdrawal_criterion="Community MCP auth imports no core.services.main symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/sqlalchemy_audit_repo.py",
+        "CommunityAuditRepository.get_latest_for_artifact",
+        "okto_pulse.core.models.db",
+        ("ConsolidationAudit",),
+        target="Community SQLAlchemy audit repository",
+        reason="Local-first audit adapter persists current core audit rows.",
+        removal_path="Move audit persistence behind an edition-neutral repository port.",
+        withdrawal_criterion="Community audit repository imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/sqlalchemy_audit_repo.py",
+        "CommunityAuditRepository.get_audit_by_session",
+        "okto_pulse.core.models.db",
+        ("ConsolidationAudit",),
+        target="Community SQLAlchemy audit repository",
+        reason="Local-first audit adapter persists current core audit rows.",
+        removal_path="Move audit persistence behind an edition-neutral repository port.",
+        withdrawal_criterion="Community audit repository imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/sqlalchemy_audit_repo.py",
+        "CommunityAuditRepository.commit_consolidation_records",
+        "okto_pulse.core.models.db",
+        ("ConsolidationAudit", "GlobalUpdateOutbox", "KuzuNodeRef"),
+        target="Community SQLAlchemy audit repository",
+        reason="Local-first audit adapter persists current audit/outbox/node-ref rows.",
+        removal_path="Move audit/outbox persistence behind edition-neutral repository ports.",
+        withdrawal_criterion="Community audit repository imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/sqlalchemy_audit_repo.py",
+        "CommunityAuditRepository.mark_audit_undone",
+        "okto_pulse.core.models.db",
+        ("ConsolidationAudit",),
+        target="Community SQLAlchemy audit repository",
+        reason="Local-first audit adapter updates current core audit rows.",
+        removal_path="Move audit persistence behind an edition-neutral repository port.",
+        withdrawal_criterion="Community audit repository imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/sqlalchemy_audit_repo.py",
+        "CommunityAuditRepository.purge_by_board",
+        "okto_pulse.core.models.db",
+        ("ConsolidationAudit",),
+        target="Community SQLAlchemy audit repository",
+        reason="Local-first audit adapter deletes current core audit rows for board cleanup.",
+        removal_path="Move audit persistence behind an edition-neutral repository port.",
+        withdrawal_criterion="Community audit repository imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/sqlalchemy_repositories.py",
+        "<module>",
+        "okto_pulse.core.models.db",
+        ("Board", "Ideation", "Spec"),
+        target="Community SQLAlchemy UnitOfWork repositories",
+        reason="Local repository adapters still adapt the current SQLAlchemy ORM entities.",
+        removal_path="Keep ORM confined to the Community relational adapter layer or replace with DTO mappers.",
+        withdrawal_criterion="Community repository adapters no longer import core.models.db at module top.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/sqlite_outbox_event_bus.py",
+        "CommunityOutboxEventBus.publish",
+        "okto_pulse.core.models.db",
+        ("GlobalUpdateOutbox",),
+        target="Community SQLite outbox event bus",
+        reason="Local event bus persists outbox rows into the current SQLAlchemy schema.",
+        removal_path="Move outbox persistence behind a storage-neutral event bus repository port.",
+        withdrawal_criterion="Community outbox adapter imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/cli.py",
+        "cmd_init",
+        "okto_pulse.core.infra.database",
+        ("close_db", "create_database", "get_session_factory", "init_db"),
+        target="Community CLI database lifecycle adapter",
+        reason="Local init command still drives the current SQLite-backed database lifecycle.",
+        removal_path="Move CLI lifecycle calls behind a public startup/schema lifecycle facade.",
+        withdrawal_criterion="Community CLI init imports no core.infra.database symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/cli.py",
+        "cmd_init",
+        "okto_pulse.core.models.db",
+        ("Board",),
+        target="Community CLI local seed/read adapter",
+        reason="Local init command reads seeded board rows from the current SQLAlchemy schema.",
+        removal_path="Replace direct ORM reads with public query/read-model facades.",
+        withdrawal_criterion="Community CLI init imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/cli.py",
+        "_generate_mcp_json",
+        "okto_pulse.core.infra.database",
+        ("close_db", "create_database", "get_session_factory", "init_db"),
+        target="Community CLI database lifecycle adapter",
+        reason="Local MCP config generation opens the current SQLite database.",
+        removal_path="Move CLI lifecycle calls behind a public startup/schema lifecycle facade.",
+        withdrawal_criterion="Community MCP config generation imports no core.infra.database symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/relational_schema_migrator.py",
+        "make_community_relational_schema_migrator",
+        "okto_pulse.core.infra",
+        ("database",),
+        target="Community relational schema lifecycle adapter",
+        reason=(
+            "R16-B binds the Community migration ledger to the current "
+            "core.infra.database migration/create_all callables until the "
+            "lifecycle facade is fully activated."
+        ),
+        removal_path=(
+            "Replace the database-module reach-in with a public schema "
+            "lifecycle binding facade or edition-owned callable registry."
+        ),
+        withdrawal_criterion=(
+            "Community relational schema migrator imports no core.infra "
+            "database module or database lifecycle symbols."
+        ),
+    ),
+    _ledger(
+        "src/okto_pulse/community/cli.py",
+        "_generate_mcp_json",
+        "okto_pulse.core.models.db",
+        ("Agent",),
+        target="Community CLI local agent read adapter",
+        reason="Local MCP config generation reads agent credentials from the current SQLAlchemy schema.",
+        removal_path="Replace direct ORM reads with public query/read-model facades.",
+        withdrawal_criterion="Community MCP config generation imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/cli.py",
+        "cmd_verify_pipeline",
+        "okto_pulse.core.infra.database",
+        ("close_db", "create_database", "get_session_factory", "init_db"),
+        target="Community CLI database lifecycle adapter",
+        reason="Local KG pipeline verification opens the current SQLite database.",
+        removal_path="Move CLI lifecycle calls behind a public startup/schema lifecycle facade.",
+        withdrawal_criterion="Community verify-pipeline imports no core.infra.database symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/cli.py",
+        "cmd_kg_backfill",
+        "okto_pulse.core.infra.database",
+        ("close_db", "create_database", "get_session_factory", "init_db"),
+        target="Community CLI database lifecycle adapter",
+        reason="Local KG backfill dry-run opens the current SQLite database.",
+        removal_path="Move CLI lifecycle calls behind a public startup/schema lifecycle facade.",
+        withdrawal_criterion="Community KG backfill imports no core.infra.database lifecycle symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/cli.py",
+        "cmd_kg_backfill",
+        "okto_pulse.core.models.db",
+        ("Card", "Spec", "Sprint"),
+        target="Community CLI local artifact read adapter",
+        reason="Local KG dry-run loads current SQLAlchemy artifact rows for deterministic projection.",
+        removal_path="Replace direct ORM reads with public query/read-model facades.",
+        withdrawal_criterion="Community KG backfill dry-run imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/cli.py",
+        "_apply_backfill",
+        "okto_pulse.core.infra.database",
+        ("close_db", "get_session_factory", "init_db"),
+        target="Community CLI database lifecycle adapter",
+        reason="Local KG backfill apply path opens the current SQLite database.",
+        removal_path="Move CLI lifecycle calls behind a public startup/schema lifecycle facade.",
+        withdrawal_criterion="Community KG backfill apply imports no core.infra.database lifecycle symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/cli.py",
+        "_apply_backfill",
+        "okto_pulse.core.models.db",
+        ("ConsolidationQueue",),
+        target="Community CLI local queue read adapter",
+        reason="Local KG backfill apply path checks queue failures in the current SQLAlchemy schema.",
+        removal_path="Replace direct ORM reads with a public queue status facade.",
+        withdrawal_criterion="Community KG backfill apply imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/main.py",
+        "<module>",
+        "okto_pulse.core.infra.database",
+        ("close_db", "get_session_factory", "init_db"),
+        target="Community server database lifecycle adapter",
+        reason="Local API lifespan drives the current SQLite-backed database lifecycle.",
+        removal_path="Move server lifecycle calls behind a public startup/schema lifecycle facade.",
+        withdrawal_criterion="Community main module imports no core.infra.database symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/main.py",
+        "create_community_app.combined_lifespan",
+        "okto_pulse.core.services.main",
+        ("backfill_qa_answered_at",),
+        target="Core startup/self-heal facade",
+        reason="Community replaces the core lifespan and must run the same Q&A self-heal.",
+        removal_path="Expose this self-heal through a public startup maintenance facade.",
+        withdrawal_criterion="Community main lifespan imports no core.services.main symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/seed.py",
+        "<module>",
+        "okto_pulse.core.models.db",
+        ("Agent", "AgentBoard", "Board"),
+        target="Community local seed adapter",
+        reason="Community first-boot seed creates rows in the current SQLAlchemy schema.",
+        removal_path="Move first-boot seed writes behind a public seed/use-case facade.",
+        withdrawal_criterion="Community seed module imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/seed.py",
+        "_seed_demo_board",
+        "okto_pulse.core.models.db",
+        ("Card", "Spec"),
+        target="Community demo seed adapter",
+        reason="Community demo seed creates sample artifact rows in the current SQLAlchemy schema.",
+        removal_path="Move demo seed writes behind a public seed/use-case facade.",
+        withdrawal_criterion="Community demo seed imports no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/seed.py",
+        "_commit_demo_graph",
+        "okto_pulse.core.infra.database",
+        ("get_session_factory",),
+        target="Community seed composition-owned session provider",
+        reason="Community demo graph commit opens the current local SQLite session factory.",
+        removal_path="Inject the session factory from the seed composition root.",
+        withdrawal_criterion="Community seed imports no core.infra.database symbols.",
+    ),
+)
+
+
+class _ImportVisitor(ast.NodeVisitor):
+    def __init__(self, file_path: str) -> None:
+        self.file_path = file_path
+        self.scope_stack: list[str] = []
+        self.occurrences: list[CoreReachInOccurrence] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.scope_stack.append(node.name)
+        self.generic_visit(node)
+        self.scope_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.scope_stack.append(node.name)
+        self.generic_visit(node)
+        self.scope_stack.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.scope_stack.append(node.name)
+        self.generic_visit(node)
+        self.scope_stack.pop()
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self._capture(node.lineno, alias.name, ("*",))
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module:
+            self._capture(
+                node.lineno,
+                node.module,
+                tuple(sorted(alias.name for alias in node.names)),
+            )
+
+    def _capture(self, line: int, module: str, symbols: tuple[str, ...]) -> None:
+        if not _is_private_core_import(module, symbols):
+            return
+        self.occurrences.append(
+            CoreReachInOccurrence(
+                file_path=self.file_path,
+                scope=".".join(self.scope_stack) if self.scope_stack else "<module>",
+                module=module,
+                symbols=tuple(sorted(symbols)),
+                line=line,
+            )
+        )
+
+
+def _is_private_core_import(module: str, symbols: tuple[str, ...]) -> bool:
+    private_prefix = any(
+        module == prefix or module.startswith(prefix + ".")
+        for prefix in PRIVATE_CORE_IMPORT_PREFIXES
+    )
+    private_parent_submodule = any(
+        _resolves_to_private_core_module(module, symbol)
+        for symbol in symbols
+        if symbol != "*"
+    )
+    private_symbol = any(
+        module == symbol_module and (symbol in symbols or symbols == ("*",))
+        for symbol_module, symbol in PRIVATE_CORE_SYMBOL_IMPORTS
+    )
+    private_reexport_symbol = any(
+        module == reexport_module
+        and (symbols == ("*",) or any(symbol in reexported for symbol in symbols))
+        for reexport_module, reexported in PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS
+    )
+    private_service_reexport = (
+        module == PRIVATE_CORE_SERVICE_REEXPORT_MODULE
+        and (symbols == ("*",) or any(symbol.endswith("Service") for symbol in symbols))
+    )
+    return (
+        private_prefix
+        or private_parent_submodule
+        or private_symbol
+        or private_reexport_symbol
+        or private_service_reexport
+    )
+
+
+def _resolves_to_private_core_module(module: str, symbol: str) -> bool:
+    fully_qualified = f"{module}.{symbol}"
+    return any(
+        fully_qualified == prefix or fully_qualified.startswith(prefix + ".")
+        for prefix in PRIVATE_CORE_IMPORT_PREFIXES
+    )
+
+
+def _community_package_root(source_root: Path) -> Path:
+    candidate = source_root / "src" / "okto_pulse" / "community"
+    if candidate.exists():
+        return candidate
+    return source_root
+
+
+def _scan_private_imports(source_root: Path) -> tuple[CoreReachInOccurrence, ...]:
+    package_root = _community_package_root(source_root)
+    occurrences: list[CoreReachInOccurrence] = []
+    for py_file in sorted(package_root.rglob("*.py")):
+        if "__pycache__" in py_file.parts:
+            continue
+        try:
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+        except SyntaxError as exc:
+            rel = py_file.relative_to(source_root).as_posix()
+            raise ValueError(f"Cannot parse {rel}: {exc}") from exc
+        try:
+            rel_path = py_file.relative_to(source_root).as_posix()
+        except ValueError:
+            rel_path = py_file.as_posix()
+        visitor = _ImportVisitor(rel_path)
+        visitor.visit(tree)
+        occurrences.extend(visitor.occurrences)
+    return tuple(occurrences)
+
+
+def audit_community_core_import_boundary(
+    source_root: Path,
+    *,
+    ledger: tuple[CoreReachInLedgerEntry, ...] = COMMUNITY_CORE_REACH_IN_LEDGER,
+) -> dict[str, object]:
+    occurrences = _scan_private_imports(source_root)
+    ledger_by_key = {entry.key: entry for entry in ledger}
+    occurrence_by_key = {occurrence.key: occurrence for occurrence in occurrences}
+
+    violations = [
+        {
+            **asdict(occurrence),
+            "reason": "missing_community_core_reach_in_ledger",
+            "remediation_hint": (
+                "Route through a public core facade/port, or add a ledger entry "
+                "with owner, reason, target_public_surface, removal_path and "
+                "withdrawal_criterion."
+            ),
+        }
+        for occurrence in occurrences
+        if occurrence.key not in ledger_by_key
+    ]
+    stale_ledger = [
+        asdict(entry) for entry in ledger if entry.key not in occurrence_by_key
+    ]
+    ledgered = [
+        {**asdict(ledger_by_key[occurrence.key]), "line": occurrence.line}
+        for occurrence in occurrences
+        if occurrence.key in ledger_by_key
+    ]
+    incomplete_ledger = [
+        asdict(entry)
+        for entry in ledger
+        if not all(
+            (
+                entry.owner,
+                entry.reason,
+                entry.target_public_surface,
+                entry.removal_path,
+                entry.withdrawal_criterion,
+            )
+        )
+    ]
+
+    return {
+        "ok": not violations and not stale_ledger and not incomplete_ledger,
+        "private_prefixes": PRIVATE_CORE_IMPORT_PREFIXES,
+        "private_reexport_symbol_imports": PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS,
+        "private_symbol_imports": PRIVATE_CORE_SYMBOL_IMPORTS,
+        "private_service_reexport_module": PRIVATE_CORE_SERVICE_REEXPORT_MODULE,
+        "occurrence_count": len(occurrences),
+        "ledger_count": len(ledger),
+        "ledgered": ledgered,
+        "violations": violations,
+        "stale_ledger": stale_ledger,
+        "incomplete_ledger": incomplete_ledger,
+    }
+
+
+__all__ = [
+    "COMMUNITY_CORE_REACH_IN_LEDGER",
+    "PRIVATE_CORE_IMPORT_PREFIXES",
+    "PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS",
+    "PRIVATE_CORE_SERVICE_REEXPORT_MODULE",
+    "PRIVATE_CORE_SYMBOL_IMPORTS",
+    "CoreReachInLedgerEntry",
+    "audit_community_core_import_boundary",
+]

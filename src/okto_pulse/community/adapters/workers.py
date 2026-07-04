@@ -93,9 +93,9 @@ async def _start_cleanup_worker() -> Any:
 
 
 async def _start_consolidation_worker(session_factory: Any) -> Any:
-    from okto_pulse.core.kg.workers.consolidation import ConsolidationWorker
+    from okto_pulse.core.services.application_kg import create_consolidation_worker
 
-    worker = ConsolidationWorker(session_factory)
+    worker = create_consolidation_worker(session_factory)
     await worker.start()
     return worker
 

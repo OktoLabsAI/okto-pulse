@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.core.models.db import Agent, AgentBoard, Board
-from okto_pulse.core.services import AgentService
+from okto_pulse.core.services.application_agents import credential_marker, hash_api_key
 
 logger = logging.getLogger("okto_pulse.community.seed")
 
@@ -54,14 +54,14 @@ async def seed_community_defaults(db: AsyncSession) -> tuple | None:
 
     # Create default agent with API key
     api_key = f"dash_{secrets.token_hex(24)}"
-    api_key_hash = AgentService.hash_api_key(api_key)
+    api_key_hash = hash_api_key(api_key)
     agent_id = str(uuid4())
     agent = Agent(
         id=agent_id,
         name="Local Agent",
         description="Default agent for local MCP integration",
         objective="Assist the local user with board operations",
-        api_key=AgentService.credential_marker(api_key_hash),
+        api_key=credential_marker(api_key_hash),
         api_key_hash=api_key_hash,
         is_active=True,
         permissions=None,  # Full access
@@ -209,7 +209,7 @@ async def _commit_demo_graph(board_id: str, spec_id: str) -> None:
         commit_consolidation,
         propose_reconciliation,
     )
-    from okto_pulse.core.kg.interfaces import get_kg_registry
+    from okto_pulse.core.services.application_kg import get_current_provider_registry
     from okto_pulse.core.kg.schemas import (
         AddEdgeCandidateRequest,
         BeginConsolidationRequest,
@@ -238,7 +238,7 @@ async def _commit_demo_graph(board_id: str, spec_id: str) -> None:
     # adapters via configure_community_kg_registry above). For a fresh board
     # ensure_bootstrapped wraps the same bootstrap_board_graph — schema +
     # HNSW vector indexes — and additionally primes the bootstrap cache.
-    await get_kg_registry().graph_schema_manager.ensure_bootstrapped(board_id)
+    await get_current_provider_registry().graph_schema_manager.ensure_bootstrapped(board_id)
     gc.collect()
 
     # On a freshly-bootstrapped board the HNSW index is empty, which sends

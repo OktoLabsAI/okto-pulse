@@ -101,9 +101,9 @@ class CommunityBoardRebuildIngestionAdapter:
         the original files.
         """
 
-        from okto_pulse.core.kg.interfaces import get_kg_registry
+        from okto_pulse.core.services.application_kg import get_current_provider_registry
 
-        registry = get_kg_registry()
+        registry = get_current_provider_registry()
         path = registry.graph_path_resolver.board_graph_path(board_id)
         targets: list[Path] = []
         if path.exists():
@@ -265,7 +265,7 @@ class CommunityBoardRebuildIngestionAdapter:
 
             # 3. Wake the worker so the queue starts draining immediately.
             try:
-                from okto_pulse.core.kg.workers.consolidation import (
+                from okto_pulse.core.services.application_kg import (
                     signal_consolidation_worker,
                 )
                 signal_consolidation_worker()

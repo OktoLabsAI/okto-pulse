@@ -29,7 +29,7 @@ from okto_pulse.core.infra.daily_tick import (
 from okto_pulse.core.app import create_app
 from okto_pulse.core.infra.config import get_settings
 from okto_pulse.core.infra.database import get_session_factory, init_db, close_db
-from okto_pulse.core.kg.interfaces.registry import get_kg_registry
+from okto_pulse.core.services.application_kg import get_current_provider_registry
 # NOTE: MCP server is imported lazily inside create_community_app (after
 # create_app has called configure_settings) and inside combined_lifespan
 # (after init_db). Module-level import would cache the default settings
@@ -199,7 +199,7 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
     the registry to a StubEmbeddingProvider and emits `kg.embedding.load_failed`
     so the server keeps serving (semantic search degrades, but app is up).
     """
-    registry = get_kg_registry()
+    registry = get_current_provider_registry()
     provider = registry.embedding_provider
     # R05-B: capability/metadata-driven (NO isinstance against a concrete
     # provider). Only a non-stub provider that exposes preload() needs warming.
@@ -577,7 +577,7 @@ def create_community_app():
         # routing table is finalized before uvicorn starts serving.
         # Lazy import preserves the settings cache trap: configure_settings
         # has already run via create_app().
-        from okto_pulse.core.mcp.server import register_session_factory
+        from okto_pulse.core.mcp import register_session_factory
         register_session_factory(get_session_factory())
 
         from okto_pulse.community.adapters.content_ingestion import (
@@ -741,14 +741,14 @@ def create_community_app():
     # adapter; api_key path untouched. The core server module is imported lazily
     # (per first call) to avoid pulling the heavy MCP module at boot.
     async def _mcp_auth_get_agent():
-        from okto_pulse.core.mcp.server import _get_authenticated_agent
+        from okto_pulse.core.mcp import get_authenticated_agent_for_mcp
 
-        return await _get_authenticated_agent()
+        return await get_authenticated_agent_for_mcp()
 
     def _mcp_auth_get_db():
-        from okto_pulse.core.mcp.server import get_db_for_mcp
+        from okto_pulse.core.mcp import get_db_for_current_mcp_request
 
-        return get_db_for_mcp()
+        return get_db_for_current_mcp_request()
 
     from okto_pulse.community.adapters.mcp_auth import (
         create_mcp_auth_factory,
@@ -882,7 +882,7 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     sees a fully-initialised runtime.
     """
     from okto_pulse.community.adapters.mcp_trace import build_mcp_trace_sink_from_env
-    from okto_pulse.core.mcp.server import build_mcp_asgi_app
+    from okto_pulse.core.mcp import build_mcp_asgi_app
 
     settings = CommunitySettings()
     uvicorn_log_config = build_uvicorn_log_config()

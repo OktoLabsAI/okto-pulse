@@ -61,11 +61,11 @@ def build_community_base_registry(*, embedding: Any | None = None, settings: Any
     """Build a ``KGProviderRegistry`` whose Onda A slots (cache / rate_limiter /
     session_store / embedding) are the Community adapters. Graph, data and auth
     slots are filled by the composition root before the registry is configured."""
-    from okto_pulse.core.kg.interfaces.registry import KGProviderRegistry
+    from okto_pulse.core.services.application_kg import create_provider_registry
 
     s = settings if settings is not None else _core_settings()
     emb = embedding if embedding is not None else build_community_embedding(settings=s)
-    return KGProviderRegistry(
+    return create_provider_registry(
         cache_backend=CommunityInMemoryCache(),
         rate_limiter=CommunityInMemoryRateLimiter(),
         session_store=CommunityInMemorySessionStore(
@@ -184,7 +184,7 @@ def configure_community_kg_registry(
     providers. The KG query tools then resolve agent_id + accessible boards via
     the AuthContext port. When omitted, the slot stays ``None`` and KG query
     tools fail closed instead of using a local relational ACL fallback."""
-    from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
+    from okto_pulse.core.services.application_kg import configure_provider_registry
 
     from okto_pulse.community.adapters.product_telemetry import (
         register_community_product_aggregator,
@@ -241,7 +241,7 @@ def configure_community_kg_registry(
     overrides: dict[str, Any] = {}
     if auth_context_factory is not None:
         overrides["auth_context_factory"] = auth_context_factory
-    configure_kg_registry(
+    configure_provider_registry(
         session_factory=session_factory, base_registry=base, **overrides
     )
 

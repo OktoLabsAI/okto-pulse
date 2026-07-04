@@ -541,9 +541,9 @@ class BoardConnection:
 
 def _kg_base_dir() -> Path:
     """Resolve the KG base directory (defaults to ~/.okto-pulse)."""
-    from okto_pulse.core.kg.interfaces.registry import get_kg_registry
+    from okto_pulse.core.services.application_kg import get_current_provider_registry
 
-    raw = get_kg_registry().config.kg_base_dir
+    raw = get_current_provider_registry().config.kg_base_dir
     return Path(os.path.expanduser(raw)).resolve()
 
 

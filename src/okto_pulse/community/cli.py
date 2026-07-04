@@ -188,9 +188,9 @@ def cmd_init(args):
                 # bootstrap_board_graph for a fresh board; path/version are
                 # reconstructed from the GraphPathResolver / GraphSchemaManager
                 # ports (equivalent to the old BoardGraphHandle fields).
-                from okto_pulse.core.kg.interfaces import get_kg_registry
+                from okto_pulse.core.services.application_kg import get_current_provider_registry
 
-                _kg_reg = get_kg_registry()
+                _kg_reg = get_current_provider_registry()
                 await _kg_reg.graph_schema_manager.ensure_bootstrapped(board_id)
                 _kg_path = _kg_reg.graph_path_resolver.board_graph_path(board_id)
                 _kg_ver = await _kg_reg.graph_schema_manager.current_version(board_id)
@@ -662,7 +662,7 @@ def cmd_kg_backfill(args):
         init_db,
         close_db,
     )
-    from okto_pulse.core.kg.workers.deterministic_worker import DeterministicWorker
+    from okto_pulse.core.services.application_kg import create_deterministic_worker
     from okto_pulse.core.models.db import Card, Spec, Sprint
     from sqlalchemy import select
 
@@ -710,7 +710,7 @@ def cmd_kg_backfill(args):
 
     data = asyncio.run(_load())
 
-    worker = DeterministicWorker()
+    worker = create_deterministic_worker()
     summary = {
         "board_id": board_id,
         "dry_run": True,
@@ -776,9 +776,11 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
     from okto_pulse.community.adapters.composition import (
         configure_community_kg_registry,
     )
-    from okto_pulse.core.kg.interfaces import get_kg_registry
-    from okto_pulse.core.kg.governance import start_historical_consolidation
-    from okto_pulse.core.kg.workers.consolidation import ConsolidationWorker
+    from okto_pulse.core.services.application_kg import (
+        create_consolidation_worker,
+        get_current_provider_registry,
+        start_historical_consolidation,
+    )
     from okto_pulse.core.models.db import ConsolidationQueue as CQ
     from sqlalchemy import select
 
@@ -790,7 +792,7 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
         # Bootstrap Kùzu graph schema for this board.
         # R05-C: via the #06 GraphSchemaManager port (community registry
         # configured just above) rather than the direct kg.schema symbol.
-        await get_kg_registry().graph_schema_manager.ensure_bootstrapped(board_id)
+        await get_current_provider_registry().graph_schema_manager.ensure_bootstrapped(board_id)
 
         # Enqueue all artifacts via governance
         async with factory() as db:
@@ -812,7 +814,7 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
             return
 
         # Drain the queue via ConsolidationWorker
-        worker = ConsolidationWorker(factory)
+        worker = create_consolidation_worker(factory)
         total_processed = 0
         batch_num = 0
         while True:

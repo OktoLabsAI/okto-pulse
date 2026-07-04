@@ -32,9 +32,11 @@ class CommunityGlobalDiscoveryRuntime:
 
     def _runtime(self):
         try:
-            from okto_pulse.core.kg.interfaces import get_kg_registry
+            from okto_pulse.core.services.application_kg import (
+                get_current_provider_registry,
+            )
 
-            runtime = getattr(get_kg_registry(), "board_graph_runtime", None)
+            runtime = getattr(get_current_provider_registry(), "board_graph_runtime", None)
             if runtime is not None:
                 return runtime
         except Exception:
@@ -42,9 +44,9 @@ class CommunityGlobalDiscoveryRuntime:
         return self._graph_runtime
 
     def _kg_base_dir(self) -> Path:
-        from okto_pulse.core.kg.interfaces import get_kg_registry
+        from okto_pulse.core.services.application_kg import get_current_provider_registry
 
-        raw = get_kg_registry().config.kg_base_dir
+        raw = get_current_provider_registry().config.kg_base_dir
         return Path(os.path.expanduser(raw)).resolve()
 
     def global_graph_path(self) -> Path:

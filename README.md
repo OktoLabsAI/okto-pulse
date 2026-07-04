@@ -252,6 +252,18 @@ Community instead of normalizing a new core baseline. The existing
 `okto_pulse/core/ports` package is a real pure ports layer consumed by Community,
 not a future target.
 
+AF-21 adds the Community Core Reach-In Ledger for the remaining direct imports
+from private core modules. The executable gate is
+`audit_community_core_import_boundary` in
+`okto_pulse.community.adapters.core_import_boundary`. A Community adapter may
+consume public core facades such as `okto_pulse.core.services.application_kg`,
+`okto_pulse.core.mcp` and `okto_pulse.core.ports.*`; direct reach-ins to ORM,
+database lifecycle, KG workers/registry, `services.main` or private MCP server
+symbols must be removed or ledgered with owner, reason, target public surface,
+removal path and withdrawal criterion. Stale ledger entries fail the same gate,
+so deleting the last reach-in for a dependency requires deleting its exception
+too.
+
 ### Adapters
 
 Community registers its adapters from `okto_pulse.community.main` and

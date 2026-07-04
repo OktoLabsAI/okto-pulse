@@ -183,9 +183,9 @@ def classify_effective_catalog(
     descriptors (VIA the descriptors, not a hard-coded table). When ``catalog`` is
     omitted, the live effective catalog from the core MCP server is used."""
     if catalog is None:
-        from okto_pulse.core.mcp import server as core_mcp_server
+        from okto_pulse.core.mcp import effective_resource_catalog
 
-        catalog = core_mcp_server.effective_resource_catalog()
+        catalog = effective_resource_catalog()
     descriptors = derive_capability_descriptors(composition)
     return classify_resources(tuple(catalog.specs()), descriptors)
 

@@ -21,9 +21,9 @@ class CommunityKuzuGraphSchemaManager:
     def _read_persisted_version(self, board_id: str) -> str | None:
         # Reads the board's persisted version via the live store. Exceptions are
         # NOT swallowed here — callers decide (validate fails closed).
-        from okto_pulse.core.kg.interfaces import get_kg_registry
+        from okto_pulse.core.services.application_kg import get_current_provider_registry
 
-        store = get_kg_registry().graph_store
+        store = get_current_provider_registry().graph_store
         if store is None:
             return None
         return store.get_schema_version(board_id)

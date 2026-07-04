@@ -84,12 +84,12 @@ def register_and_freeze_community_resource_catalog() -> None:
     catalog into the core effective catalog, then FREEZE it (after all providers
     are registered). Idempotent-safe: a second freeze is a no-op, but a late
     register AFTER the freeze raises (fail-closed)."""
-    from okto_pulse.core.mcp import server as core_mcp_server
+    from okto_pulse.core.mcp import freeze_resource_catalog, register_resource_catalog
 
     catalog = build_community_resource_catalog()
     if catalog.specs():
-        core_mcp_server.register_resource_catalog(catalog)
-    core_mcp_server.freeze_resource_catalog()
+        register_resource_catalog(catalog)
+    freeze_resource_catalog()
 
 
 __all__ = [
