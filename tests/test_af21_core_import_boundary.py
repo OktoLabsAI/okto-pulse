@@ -27,7 +27,7 @@ def test_ts_33e252d6_current_private_core_reach_ins_are_ledgered() -> None:
     assert report["stale_ledger"] == []
     assert report["incomplete_ledger"] == []
     assert report["occurrence_count"] == report["ledger_count"]
-    assert report["occurrence_count"] == 28
+    assert report["occurrence_count"] == 30
 
 
 def test_ts_33e252d6_ledger_entries_have_withdrawal_criteria() -> None:
@@ -63,6 +63,7 @@ def test_ts_7cc90963_new_private_core_import_fails_closed(tmp_path: Path) -> Non
             "module": "okto_pulse.core.models.db",
             "symbols": ("Card",),
             "line": 1,
+            "category": "private_namespace_import",
             "reason": "missing_community_core_reach_in_ledger",
             "remediation_hint": (
                 "Route through a public core facade/port, or add a ledger entry "
@@ -237,6 +238,89 @@ def test_af28_dynamic_private_import_module_fails_closed(tmp_path: Path) -> None
     assert report["ok"] is False
     assert report["violations"][0]["module"] == (
         "okto_pulse.core.kg._private_runtime"
+    )
+
+
+def test_af28_s2_dynamic_internal_access_reports_structured_violations(
+    tmp_path: Path,
+) -> None:
+    rogue = tmp_path / "src" / "okto_pulse" / "community" / "dynamic_access.py"
+    rogue.parent.mkdir(parents=True)
+    rogue.write_text(
+        "import importlib\n"
+        "from okto_pulse.core.infra import database as _database\n"
+        "step_id = '_migrate_legacy'\n"
+        "mod = importlib.import_module('okto_pulse.core.infra.database')\n"
+        "fn = getattr(_database, step_id)\n",
+        encoding="utf-8",
+    )
+
+    report = audit_community_core_import_boundary(tmp_path, ledger=())
+
+    assert report["ok"] is False
+    assert [
+        (violation["module"], violation["symbols"], violation["category"])
+        for violation in report["violations"]
+    ] == [
+        (
+            "okto_pulse.core.infra",
+            ("database",),
+            "private_namespace_import",
+        ),
+        (
+            "okto_pulse.core.infra.database",
+            ("*",),
+            "dynamic_import_module",
+        ),
+        (
+            "okto_pulse.core.infra.database",
+            ("<dynamic:step_id>",),
+            "dynamic_getattr",
+        ),
+    ]
+    assert all("remediation_hint" in violation for violation in report["violations"])
+
+
+def test_af28_s2_tracked_af30_getattrs_and_broad_allowlist_fail_closed() -> None:
+    report = audit_community_core_import_boundary(REPO_ROOT)
+
+    tracked = [
+        entry
+        for entry in report["ledgered"]
+        if entry["category"] == "tracked_dynamic_getattr"
+    ]
+
+    assert [(entry["file_path"], entry["symbols"], entry["owner"]) for entry in tracked] == [
+        (
+            "src/okto_pulse/community/adapters/data_bootstrapper.py",
+            ("<dynamic:step.step_id>",),
+            "AF30-3c",
+        ),
+        (
+            "src/okto_pulse/community/adapters/relational_schema_migrator.py",
+            ("<dynamic:step.step_id>",),
+            "AF30-3c",
+        ),
+    ]
+    assert all(entry["withdrawal_criterion"] for entry in tracked)
+
+    allowlist_report = audit_community_core_import_boundary(
+        REPO_ROOT,
+        public_allowlist=("okto_pulse.core.kg",),
+    )
+
+    assert allowlist_report["ok"] is False
+    assert allowlist_report["invalid_allowlist_entries"] == (
+        {
+            "module": "okto_pulse.core.kg",
+            "category": "invalid_public_core_allowlist",
+            "reason": "broad_or_private_public_allowlist",
+            "remediation_hint": (
+                "Replace broad/private allowlist entries with explicit public "
+                "facades or ledgered temporary exceptions carrying owner and "
+                "withdrawal criteria."
+            ),
+        },
     )
 
 

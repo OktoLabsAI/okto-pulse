@@ -72,6 +72,7 @@ class CoreReachInLedgerEntry:
     scope: str
     module: str
     symbols: tuple[str, ...]
+    category: str
     owner: str
     reason: str
     target_public_surface: str
@@ -90,6 +91,7 @@ class CoreReachInOccurrence:
     module: str
     symbols: tuple[str, ...]
     line: int
+    category: str
 
     @property
     def key(self) -> tuple[str, str, str, tuple[str, ...]]:
@@ -106,6 +108,7 @@ def _ledger(
     reason: str,
     removal_path: str,
     withdrawal_criterion: str,
+    category: str = "private_core_import",
     owner: str = "okto-pulse-community/adapters",
 ) -> CoreReachInLedgerEntry:
     return CoreReachInLedgerEntry(
@@ -113,6 +116,7 @@ def _ledger(
         scope=scope,
         module=module,
         symbols=tuple(sorted(symbols)),
+        category=category,
         owner=owner,
         reason=reason,
         target_public_surface=target,
@@ -165,6 +169,27 @@ COMMUNITY_CORE_REACH_IN_LEDGER: tuple[CoreReachInLedgerEntry, ...] = (
         withdrawal_criterion=(
             "Community data bootstrapper imports no core.infra database module "
             "or database lifecycle symbols."
+        ),
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/data_bootstrapper.py",
+        "make_community_data_bootstrapper",
+        "okto_pulse.core.infra.database",
+        ("<dynamic:step.step_id>",),
+        category="tracked_dynamic_getattr",
+        owner="AF30-3c",
+        target="Community data-bootstrap lifecycle adapter",
+        reason=(
+            "AF30-3c owns removal of dynamic binding from Community bootstrap "
+            "steps to core.infra.database callables."
+        ),
+        removal_path=(
+            "Replace getattr(_database, step.step_id) with an edition-owned "
+            "schema/data lifecycle callable registry."
+        ),
+        withdrawal_criterion=(
+            "data_bootstrapper no longer dynamically resolves callables from "
+            "core.infra.database."
         ),
     ),
     _ledger(
@@ -315,6 +340,27 @@ COMMUNITY_CORE_REACH_IN_LEDGER: tuple[CoreReachInLedgerEntry, ...] = (
         withdrawal_criterion=(
             "Community relational schema migrator imports no core.infra "
             "database module or database lifecycle symbols."
+        ),
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/relational_schema_migrator.py",
+        "make_community_relational_schema_migrator",
+        "okto_pulse.core.infra.database",
+        ("<dynamic:step.step_id>",),
+        category="tracked_dynamic_getattr",
+        owner="AF30-3c",
+        target="Community relational schema lifecycle adapter",
+        reason=(
+            "AF30-3c owns removal of dynamic binding from Community migration "
+            "steps to core.infra.database callables."
+        ),
+        removal_path=(
+            "Replace getattr(_database, step.step_id) with an edition-owned "
+            "schema lifecycle callable registry."
+        ),
+        withdrawal_criterion=(
+            "relational_schema_migrator no longer dynamically resolves "
+            "callables from core.infra.database."
         ),
     ),
     _ledger(
@@ -480,17 +526,18 @@ class _ImportVisitor(ast.NodeVisitor):
         func = node.func
         if isinstance(func, ast.Name) and func.id == "getattr" and len(node.args) >= 2:
             target, symbol_node = node.args[0], node.args[1]
-            if (
-                isinstance(target, ast.Name)
-                and target.id in self.core_aliases
-                and isinstance(symbol_node, ast.Constant)
-                and isinstance(symbol_node.value, str)
-                and _is_private_symbol_name(symbol_node.value)
-            ):
+            if isinstance(target, ast.Name) and target.id in self.core_aliases:
+                if isinstance(symbol_node, ast.Constant) and isinstance(
+                    symbol_node.value, str
+                ):
+                    symbol = symbol_node.value
+                else:
+                    symbol = f"<dynamic:{_safe_unparse(symbol_node)}>"
                 self._capture(
                     node.lineno,
                     self.core_aliases[target.id],
-                    (symbol_node.value,),
+                    (symbol,),
+                    category="dynamic_getattr",
                 )
             return
 
@@ -512,13 +559,18 @@ class _ImportVisitor(ast.NodeVisitor):
         ):
             return
         module = module_node.value
-        if module.startswith("okto_pulse.core.") and any(
-            _is_private_symbol_name(part) for part in module.split(".")
-        ):
-            self._capture(node.lineno, module, ("*",))
+        self._capture(node.lineno, module, ("*",), category="dynamic_import_module")
 
-    def _capture(self, line: int, module: str, symbols: tuple[str, ...]) -> None:
-        if not _is_private_core_import(module, symbols):
+    def _capture(
+        self,
+        line: int,
+        module: str,
+        symbols: tuple[str, ...],
+        *,
+        category: str | None = None,
+    ) -> None:
+        resolved_category = category or _classify_private_core_access(module, symbols)
+        if not resolved_category or not _is_private_core_import(module, symbols):
             return
         self.occurrences.append(
             CoreReachInOccurrence(
@@ -527,11 +579,19 @@ class _ImportVisitor(ast.NodeVisitor):
                 module=module,
                 symbols=tuple(sorted(symbols)),
                 line=line,
+                category=resolved_category,
             )
         )
 
 
-def _is_private_core_import(module: str, symbols: tuple[str, ...]) -> bool:
+def _safe_unparse(node: ast.AST) -> str:
+    try:
+        return ast.unparse(node)
+    except Exception:  # pragma: no cover - defensive fallback for future AST nodes
+        return node.__class__.__name__
+
+
+def _classify_private_core_access(module: str, symbols: tuple[str, ...]) -> str | None:
     is_core_module = module == "okto_pulse.core" or module.startswith(
         "okto_pulse.core."
     )
@@ -568,16 +628,52 @@ def _is_private_core_import(module: str, symbols: tuple[str, ...]) -> bool:
         module == PRIVATE_CORE_SERVICE_REEXPORT_MODULE
         and (symbols == ("*",) or any(symbol.endswith("Service") for symbol in symbols))
     )
-    return (
-        private_prefix
-        or private_core_module_by_name
-        or private_parent_submodule
-        or private_symbol
-        or private_symbol_by_name
-        or private_ddl_symbol
-        or private_reexport_symbol
-        or private_service_reexport
-    )
+    if private_ddl_symbol:
+        return "leaked_ddl_symbol"
+    if private_reexport_symbol:
+        return "private_reexport_symbol"
+    if private_service_reexport:
+        return "private_service_reexport"
+    if private_symbol or private_symbol_by_name:
+        return "private_symbol_import"
+    if private_prefix or private_core_module_by_name or private_parent_submodule:
+        return "private_namespace_import"
+    return None
+
+
+def _is_private_core_import(module: str, symbols: tuple[str, ...]) -> bool:
+    return _classify_private_core_access(module, symbols) is not None
+
+
+def _invalid_public_allowlist_entries(
+    allowlist: tuple[str, ...],
+) -> tuple[dict[str, str], ...]:
+    invalid: list[dict[str, str]] = []
+    for module in allowlist:
+        broad_core = module in {
+            "okto_pulse.core",
+            "okto_pulse.core.kg",
+            "okto_pulse.core.infra",
+            "okto_pulse.core.services",
+        }
+        private_prefix = any(
+            module == prefix or module.startswith(prefix + ".")
+            for prefix in PRIVATE_CORE_IMPORT_PREFIXES
+        )
+        if broad_core or private_prefix:
+            invalid.append(
+                {
+                    "module": module,
+                    "category": "invalid_public_core_allowlist",
+                    "reason": "broad_or_private_public_allowlist",
+                    "remediation_hint": (
+                        "Replace broad/private allowlist entries with explicit "
+                        "public facades or ledgered temporary exceptions carrying "
+                        "owner and withdrawal criteria."
+                    ),
+                }
+            )
+    return tuple(invalid)
 
 
 def _is_private_symbol_name(symbol: str) -> bool:
@@ -624,10 +720,12 @@ def audit_community_core_import_boundary(
     source_root: Path,
     *,
     ledger: tuple[CoreReachInLedgerEntry, ...] = COMMUNITY_CORE_REACH_IN_LEDGER,
+    public_allowlist: tuple[str, ...] = PUBLIC_CORE_IMPORT_ALLOWLIST,
 ) -> dict[str, object]:
     occurrences = _scan_private_imports(source_root)
     ledger_by_key = {entry.key: entry for entry in ledger}
     occurrence_by_key = {occurrence.key: occurrence for occurrence in occurrences}
+    invalid_allowlist_entries = _invalid_public_allowlist_entries(public_allowlist)
 
     violations = [
         {
@@ -655,6 +753,7 @@ def audit_community_core_import_boundary(
         for entry in ledger
         if not all(
             (
+                entry.category,
                 entry.owner,
                 entry.reason,
                 entry.target_public_surface,
@@ -665,8 +764,11 @@ def audit_community_core_import_boundary(
     ]
 
     return {
-        "ok": not violations and not stale_ledger and not incomplete_ledger,
-        "public_core_import_allowlist": PUBLIC_CORE_IMPORT_ALLOWLIST,
+        "ok": not violations
+        and not stale_ledger
+        and not incomplete_ledger
+        and not invalid_allowlist_entries,
+        "public_core_import_allowlist": public_allowlist,
         "private_prefixes": PRIVATE_CORE_IMPORT_PREFIXES,
         "private_ddl_symbol_imports": PRIVATE_CORE_DDL_SYMBOL_IMPORTS,
         "private_reexport_symbol_imports": PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS,
@@ -678,6 +780,7 @@ def audit_community_core_import_boundary(
         "violations": violations,
         "stale_ledger": stale_ledger,
         "incomplete_ledger": incomplete_ledger,
+        "invalid_allowlist_entries": invalid_allowlist_entries,
     }
 
 
