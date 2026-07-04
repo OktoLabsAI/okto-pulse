@@ -45,9 +45,9 @@ from typing import Any, Callable
 
 from okto_pulse.core.kg.async_bridge import run_async_blocking
 from okto_pulse.core.kg.board_rebuild_adapter import (
-    _DETERMINISTIC_SOURCE_ARTIFACT_TYPES,
-    _expected_layers_from_sources,
-    _queue_artifact_type,
+    DETERMINISTIC_SOURCE_ARTIFACT_TYPES,
+    expected_layers_from_sources,
+    queue_artifact_type,
 )
 
 from okto_pulse.community.adapters.board_source_reader import resolve_pulse_db_path
@@ -151,9 +151,9 @@ class CommunityBoardRebuildIngestionAdapter:
             for row in sources:
                 artifact_type = str(row.get("artifact_type", ""))
                 artifact_id = str(row.get("id", ""))
-                if artifact_type not in _DETERMINISTIC_SOURCE_ARTIFACT_TYPES:
+                if artifact_type not in DETERMINISTIC_SOURCE_ARTIFACT_TYPES:
                     continue
-                queue_artifact_type = _queue_artifact_type(artifact_type)
+                queued_artifact_type = queue_artifact_type(artifact_type)
                 if not artifact_id:
                     continue
                 queue_id = str(uuid.uuid4())
@@ -175,7 +175,7 @@ class CommunityBoardRebuildIngestionAdapter:
                     (
                         queue_id,
                         board_id,
-                        queue_artifact_type,
+                        queued_artifact_type,
                         artifact_id,
                         "high",
                         f"rebuild:{run_id}",
@@ -366,7 +366,7 @@ class CommunityBoardRebuildIngestionAdapter:
             # close-reopen probe would interfere with that durability gate.
             merged_counts = {
                 **merged_counts,
-                "expected_by_layer": _expected_layers_from_sources(sources),
+                "expected_by_layer": expected_layers_from_sources(sources),
             }
 
             success_drilldown = {

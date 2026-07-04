@@ -121,7 +121,6 @@ def test_community_session_store_ttl_get_and_sweep(monkeypatch):
     import okto_pulse.core.kg.session_manager as session_manager
 
     now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
-    monkeypatch.setattr(memory_mod, "_now", lambda: now[0])
     monkeypatch.setattr(session_manager, "_now", lambda: now[0])
     store = memory_mod.CommunityInMemorySessionStore(default_ttl_seconds=10)
 

@@ -167,12 +167,12 @@ class CommunityKuzuGraphStore:
         # v0.3.2 (spec 20f67c2a — Ideação #5): the Cypher ORDER BY clause is
         # preserved (BR4) — but we now over-fetch a pool of
         # max_rows * DECAY_REORDER_POOL_MULTIPLIER and run
-        # _apply_decay_reorder in Python so stale-but-high-scoring nodes
+        # apply_decay_reorder in Python so stale-but-high-scoring nodes
         # don't outrank fresh-and-active ones. We additionally select
         # query_hits and last_queried_at to feed the reorder helper.
         from okto_pulse.core.kg.scoring import (
             DECAY_REORDER_POOL_MULTIPLIER,
-            _apply_decay_reorder,
+            apply_decay_reorder,
         )
 
         pool_size = max(filters.max_rows, filters.max_rows * DECAY_REORDER_POOL_MULTIPLIER)
@@ -211,7 +211,7 @@ class CommunityKuzuGraphStore:
             }
             for r in rows
         ]
-        reordered = _apply_decay_reorder(enriched, filters.max_rows)
+        reordered = apply_decay_reorder(enriched, filters.max_rows)
         return [
             [
                 row["node_id"],

@@ -15,18 +15,13 @@ import logging
 import math
 import os
 import time
-from datetime import timezone
 from pathlib import Path
 from typing import AsyncGenerator
 
 import uvicorn
 from fastapi.staticfiles import StaticFiles
 
-from okto_pulse.core.infra.daily_tick import (
-    compute_tick_catch_up_next_run,
-    emit_daily_tick,
-)
-from okto_pulse.core.app import create_app
+from okto_pulse.core.app import create_app, register_kg_daily_tick_job
 from okto_pulse.core.infra.config import get_settings
 from okto_pulse.core.infra.database import get_session_factory, init_db, close_db
 from okto_pulse.core.services.application_kg import get_current_provider_registry
@@ -40,6 +35,7 @@ from okto_pulse.community.adapters.composition import (
     configure_community_kg_registry,
 )
 from okto_pulse.community.adapters.embedding import CommunityStubEmbeddingProvider
+from okto_pulse.community.adapters.scheduler import SingletonSchedulerControl
 from okto_pulse.community.adapters.workers import build_community_worker_registry
 from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
@@ -446,6 +442,7 @@ def create_community_app():
 
     auth = LocalAuthProvider()
     storage = community_storage_provider(settings.upload_dir)
+    scheduler_control = SingletonSchedulerControl()
 
     # Combined lifespan: seed data, preload embeddings, start KG workers,
     # register the MCP session factory so the mounted sub-app finds the DB.
@@ -513,7 +510,6 @@ def create_community_app():
         await apply_persisted_settings_to_core_settings()
 
         worker_registry = None
-        scheduler = None
         metrics_beacon_task = None
 
         kg_settings = get_settings()
@@ -523,53 +519,12 @@ def create_community_app():
         )
         await worker_registry.start_all()
 
-        # Daily decay tick scheduler (Ideação #4 IMPL-D, dec_bc0eaeec).
-        # Honor KG_DAILY_TICK_DISABLED for tests; soft-fail if APScheduler
-        # is unavailable (community ships it, but the catch keeps boot
-        # resilient if the wheel was stripped down).
-        if os.getenv("KG_DAILY_TICK_DISABLED") != "1":
-            try:
-                from apscheduler.schedulers.asyncio import AsyncIOScheduler
-                from apscheduler.triggers.interval import IntervalTrigger
-                from okto_pulse.core.infra.config import get_settings as _get_settings
-                from okto_pulse.core.kg.scheduler_singleton import set_scheduler
-
-                _interval_minutes = _get_settings().kg_decay_tick_interval_minutes
-                scheduler = AsyncIOScheduler(timezone=timezone.utc)
-                # Catch-up no boot (campo 2026-06-10): IntervalTrigger só
-                # dispara o PRIMEIRO tick um intervalo completo após o
-                # start — com 24h de intervalo e processo que reinicia, o
-                # tick nunca rodava. next_run_time honra o último
-                # kg_tick_runs (vencido → ~2min após o boot).
-                _job_kwargs = {}
-                try:
-                    _next_run = await compute_tick_catch_up_next_run(
-                        _interval_minutes
-                    )
-                    if _next_run is not None:
-                        _job_kwargs["next_run_time"] = _next_run
-                except Exception as _tick_exc:
-                    _STARTUP_LOGGER.warning(
-                        "kg.tick.catch_up_compute_failed err=%s", _tick_exc,
-                    )
-                scheduler.add_job(
-                    emit_daily_tick,
-                    # Spec 54399628 (Wave 2 NC f9732afc) — IntervalTrigger
-                    # honra setting persistido + hot-reload via singleton.
-                    trigger=IntervalTrigger(
-                        minutes=_interval_minutes,
-                        timezone=timezone.utc,
-                    ),
-                    id="kg_daily_tick",
-                    replace_existing=True,
-                    max_instances=1,
-                    coalesce=True,
-                    **_job_kwargs,
-                )
-                scheduler.start()
-                set_scheduler(scheduler)
-            except Exception:
-                scheduler = None
+        # Core owns the KG decay job policy as JobSpec; Community owns the
+        # APScheduler runtime and maps the JobSpec through SchedulerControl.
+        await register_kg_daily_tick_job(
+            scheduler_control,
+            logger=_STARTUP_LOGGER,
+        )
 
         # Spec 23350275 (Fix C): the MCP sub-app shares this process, this
         # FastAPI app, and this database. Register the session factory now
@@ -578,7 +533,10 @@ def create_community_app():
         # Lazy import preserves the settings cache trap: configure_settings
         # has already run via create_app().
         from okto_pulse.core.mcp import register_session_factory
-        register_session_factory(get_session_factory())
+        register_session_factory(
+            get_session_factory(),
+            scheduler_control=scheduler_control,
+        )
 
         from okto_pulse.community.adapters.content_ingestion import (
             register_community_content_ingestion_resolver,
@@ -632,11 +590,7 @@ def create_community_app():
             metrics_beacon_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await metrics_beacon_task
-        if scheduler is not None:
-            try:
-                scheduler.shutdown(wait=False)
-            except Exception:
-                pass
+        await scheduler_control.shutdown(wait=False)
         if worker_registry is not None:
             for failure in await worker_registry.stop_all():
                 _STARTUP_LOGGER.warning(
@@ -686,13 +640,10 @@ def create_community_app():
         lifespan=combined_lifespan,
     )
 
-    # R08: expose the composition-owned SchedulerControl so a runtime settings
-    # PUT reschedules the KG tick through the port. The concrete adapter is
-    # Community-owned and reads the scheduler singleton lazily at call time, so
-    # the lifespan set_scheduler still wires it. Jobs / cadence / lifecycle are
-    # unchanged.
+    # R08/AF31: expose the composition-owned SchedulerControl so a runtime
+    # settings PUT reschedules the KG tick through the same Community adapter
+    # that owns APScheduler startup, registration and shutdown.
     from okto_pulse.community.adapters.data import CommunityOutboxEventBus
-    from okto_pulse.community.adapters.scheduler import SingletonSchedulerControl
     from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
         build_community_unit_of_work_factory,
     )
@@ -706,7 +657,7 @@ def create_community_app():
         storage_provider=storage,
         session_factory=_rc_session_factory,
         event_bus=CommunityOutboxEventBus(_rc_session_factory),
-        scheduler_control=SingletonSchedulerControl(),
+        scheduler_control=scheduler_control,
         # R01B REPLAN-IMP1/IMP2: the Community relational UnitOfWorkFactory is the
         # composition-owned provider (bound to the SAME live session factory). IMP2
         # (FR3) re-points the REST + MCP consumers to it; the core ``create_database``

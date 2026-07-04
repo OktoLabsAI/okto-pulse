@@ -10,6 +10,10 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from okto_pulse.core.kg.interfaces.cognitive_pending_work import (
+    CognitivePendingRecordRef,
+    CognitivePendingWorkProvider,
+)
 from okto_pulse.core.kg.interfaces.rebuild_audit_storage import (
     RebuildAuditArtifactStore,
     RebuildAuditKey,
@@ -126,7 +130,33 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             return dict(next_payload)
 
 
+class CommunityFileSystemCognitivePendingWorkProvider(CognitivePendingWorkProvider):
+    """Discover local cognitive_pending ledgers for the closeout worker."""
+
+    def __init__(self, base_dir: Path) -> None:
+        self._base_dir = base_dir
+
+    def list_records(self) -> Sequence[CognitivePendingRecordRef]:
+        root = self._base_dir / "rebuild" / "audit" / "cognitive_pending"
+        if not root.is_dir():
+            return []
+
+        records: list[CognitivePendingRecordRef] = []
+        for board_dir in sorted(root.iterdir()):
+            if not board_dir.is_dir():
+                continue
+            for record_path in sorted(board_dir.glob("*.json")):
+                records.append(
+                    CognitivePendingRecordRef(
+                        board_id=board_dir.name,
+                        kg_generation_id=record_path.stem,
+                    )
+                )
+        return records
+
+
 __all__ = [
+    "CommunityFileSystemCognitivePendingWorkProvider",
     "CommunityFileSystemRebuildAuditArtifactStore",
     "default_community_rebuild_base_dir",
 ]

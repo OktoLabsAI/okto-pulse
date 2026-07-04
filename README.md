@@ -252,17 +252,21 @@ Community instead of normalizing a new core baseline. The existing
 `okto_pulse/core/ports` package is a real pure ports layer consumed by Community,
 not a future target.
 
-AF-21 adds the Community Core Reach-In Ledger for the remaining direct imports
-from private core modules. The executable gate is
+AF-21 and AF-28 define the Community Core Reach-In Ledger and public core
+facades for the remaining direct imports from private core modules. The
+executable gate is
 `audit_community_core_import_boundary` in
 `okto_pulse.community.adapters.core_import_boundary`. A Community adapter may
 consume public core facades such as `okto_pulse.core.services.application_kg`,
-`okto_pulse.core.mcp` and `okto_pulse.core.ports.*`; direct reach-ins to ORM,
-database lifecycle, KG workers/registry, `services.main` or private MCP server
-symbols must be removed or ledgered with owner, reason, target public surface,
-removal path and withdrawal criterion. Stale ledger entries fail the same gate,
-so deleting the last reach-in for a dependency requires deleting its exception
-too.
+`okto_pulse.core.mcp`, `okto_pulse.core.ports.*` and the adapter-neutral KG
+helpers in `core.kg.board_source_store`, `core.kg.board_rebuild_adapter`,
+`core.kg.tier_power`, `core.kg.scoring`, `core.kg.session_manager` and
+`core.kg.global_discovery.schema`; direct reach-ins to ORM, database lifecycle,
+KG workers/registry, `services.main`, private MCP server symbols, private core
+helper symbols or core-owned concrete DDL constants must be removed or ledgered
+with owner, reason, target public surface, removal path and withdrawal
+criterion. Stale ledger entries fail the same gate, so deleting the last
+reach-in for a dependency requires deleting its exception too.
 
 ### Adapters
 
@@ -302,6 +306,9 @@ Adapter source map:
   `community/adapters/sqlalchemy_database.py`.
 - KG source/rebuild ingestion: `community/adapters/board_source_reader.py` and
   `community/adapters/board_rebuild_ingestion.py`.
+- KG local schema/durability adapters: `community/adapters/global_discovery_schema.py`,
+  `community/adapters/global_discovery_runtime.py` and
+  `community/adapters/rebuild_audit_storage.py`.
 - KG outbox/audit persistence: `community/adapters/sqlite_outbox_event_bus.py`
   and `community/adapters/sqlalchemy_audit_repo.py`.
 - KG data and graph runtime: `community/adapters/data.py`,
@@ -349,8 +356,12 @@ core.
 | `CommunityKuzuGraphSchemaManager` | `core.kg.interfaces.GraphSchemaManager` | Board graph schema bootstrap, migration, inspection and validation. |
 | `CommunityKuzuGraphLifecycle` | `core.kg.interfaces.GraphLifecycle` | Board graph open, close, rebuild and purge lifecycle. |
 | `CommunityKuzuGraphPathResolver` | `core.kg.interfaces.GraphPathResolver` | Board graph path and storage-state resolution for `graph.lbug`. |
+| `CommunityKuzuGraphRuntimeStore` | `core.kg.interfaces.GraphRuntimeStore` | Local graph existence, footprint and purge operations for LadybugDB/Kuzu graph files. |
 | `CommunityBoardGraphRuntime` | `core.kg.interfaces.BoardGraphRuntime` | Compatibility adapter behind the historical `core.kg.schema` API; delegates to `community.adapters.kg_runtime`. |
 | `CommunityGlobalDiscoveryRuntime` | `core.kg.interfaces.GlobalDiscoveryRuntime` | Local global discovery graph handle, path, bootstrap, schema and purge lifecycle for `discovery.lbug`. |
+| `community.adapters.global_discovery_schema` | `core.kg.global_discovery.schema` adapter-neutral compatibility helpers | LadybugDB/Kuzu global-discovery node/relationship DDL and vector-index definitions; concrete schema layout is Community-owned. |
+| `CommunityFileSystemCognitivePendingWorkProvider` | `core.kg.interfaces.CognitivePendingWorkProvider` | Enumerates local cognitive-pending rebuild audit records from the Community data directory for core closeout policy. |
+| `CommunityFileSystemRebuildAuditArtifactStore` | `core.kg.interfaces.RebuildAuditArtifactStore` | Reads and writes local rebuild audit artifacts under the Community data directory. |
 | `apply_ladybug_lifecycle_step` | `KGProviderRegistry.safe_write_step_adapter` | LadybugDB safe-write lifecycle step implementation registered by Community. |
 | `CommunityOutboxEventBus` | `core.kg.interfaces.EventBus` | SQLite-backed KG/global-discovery outbox. |
 | `CommunityAuditRepository` | `core.kg.interfaces.AuditRepository` | SQLAlchemy-backed KG consolidation audit records and node refs. |
@@ -379,7 +390,13 @@ Community runtime components:
 - Global discovery graph: `discovery.lbug` under the global graph directory.
   The local handle lifecycle is owned by
   `community.adapters.global_discovery_runtime` behind the core
-  `GlobalDiscoveryRuntime` port.
+  `GlobalDiscoveryRuntime` port. Community also owns concrete global-discovery
+  DDL/vector-index definitions and local reopen/fsync flush behavior; core owns
+  only the graph rules, schema compatibility helpers and write/drain policy.
+- Rebuild audit and cognitive-pending artifacts: JSON files under the Community
+  rebuild audit directory, enumerated through `CognitivePendingWorkProvider` and
+  read through `RebuildAuditArtifactStore` so core does not scan filesystem
+  paths directly.
 - Upload/data filesystem: attachment storage and other local files under the
   configured upload/data directory.
 - Metrics files: local JSONL event, sent, failure, export and snapshot files,
@@ -405,10 +422,10 @@ The ORM models and many SQLAlchemy services still live in core while the
 repository/unit-of-work strangler expands. Treat the core
 `ARCHITECTURE.md` and adapter readiness ledger as the source of truth for
 remaining extraction work. Packaging ownership is also transitional: Community
-currently imports `requests` and APScheduler for the local telemetry sender and
-scheduler, while those dependencies still reach the installed runtime
-transitively through core's ledgered manifest until packaging cleanup moves the
-direct runtime declarations only after the owning oracle is green.
+currently imports `requests` for the local telemetry sender while that
+dependency remains governed by the telemetry oracle. APScheduler is no longer a
+core exception: Community declares it directly and owns the local scheduler
+adapter that maps core `JobSpec` values to APScheduler runtime calls.
 
 AF-05 dependency owner matrix. This package follows the core
 `dependency_ledger.py`, `CANONICAL_TEMPORARY_EXCEPTION_TOKENS` and
@@ -421,7 +438,7 @@ source of ownership truth for this matrix.
 | `aiofiles` | `removed` | Not Community-owned and not declared here. The isolated smoke must prove the locally built core wheel no longer requires it instead of hand-editing this lock to hide the published-core dependency. |
 | `requests` | `temporary_exception` | Used by the local telemetry sender, but ownership remains governed by core `#10_telemetry` / `tr_03abf5ab` until the telemetry oracle is green. |
 | `chardet` | `temporary_exception` | Kept as the requests/telemetry charset companion; it is not omitted from the matrix and is not moved independently. |
-| `apscheduler` | `temporary_exception` | Used by local scheduler wiring, but direct packaging ownership waits for `#03_lifecycle_composition` / `SchedulerControl` cleanup while core still imports APScheduler. |
+| `apscheduler` | `community_owned` | Declared directly by Community. `community/adapters/scheduler.py` owns APScheduler startup, `IntervalTrigger` mapping and shutdown behind the core `SchedulerControl` port. |
 
 ## CLI Reference
 

@@ -6,10 +6,12 @@ from pathlib import Path
 
 from okto_pulse.community.adapters.core_import_boundary import (
     COMMUNITY_CORE_REACH_IN_LEDGER,
+    PRIVATE_CORE_DDL_SYMBOL_IMPORTS,
     PRIVATE_CORE_IMPORT_PREFIXES,
     PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS,
     PRIVATE_CORE_SERVICE_REEXPORT_MODULE,
     PRIVATE_CORE_SYMBOL_IMPORTS,
+    PUBLIC_CORE_IMPORT_ALLOWLIST,
     audit_community_core_import_boundary,
 )
 
@@ -87,6 +89,8 @@ def test_ts_7cc90963_public_core_ports_are_not_private_reach_ins(
     assert report["ok"] is True
     assert report["violations"] == []
     assert report["private_prefixes"] == PRIVATE_CORE_IMPORT_PREFIXES
+    assert report["public_core_import_allowlist"] == PUBLIC_CORE_IMPORT_ALLOWLIST
+    assert report["private_ddl_symbol_imports"] == PRIVATE_CORE_DDL_SYMBOL_IMPORTS
     assert (
         report["private_reexport_symbol_imports"]
         == PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS
@@ -169,6 +173,71 @@ def test_ts_7cc90963_core_infra_database_reexports_fail_closed(
     assert report["ok"] is False
     assert report["violations"][0]["module"] == "okto_pulse.core.infra"
     assert report["violations"][0]["symbols"] == ("get_engine", "init_db")
+
+
+def test_af28_private_core_symbol_import_fails_closed(tmp_path: Path) -> None:
+    rogue = tmp_path / "src" / "okto_pulse" / "community" / "kg_adapter.py"
+    rogue.parent.mkdir(parents=True)
+    rogue.write_text(
+        "from okto_pulse.core.kg.tier_power import _normalize_unicode\n",
+        encoding="utf-8",
+    )
+
+    report = audit_community_core_import_boundary(tmp_path, ledger=())
+
+    assert report["ok"] is False
+    assert report["violations"][0]["module"] == "okto_pulse.core.kg.tier_power"
+    assert report["violations"][0]["symbols"] == ("_normalize_unicode",)
+
+
+def test_af28_core_global_discovery_ddl_import_fails_closed(tmp_path: Path) -> None:
+    rogue = tmp_path / "src" / "okto_pulse" / "community" / "global_adapter.py"
+    rogue.parent.mkdir(parents=True)
+    rogue.write_text(
+        "from okto_pulse.core.kg.global_discovery.schema import NODE_DDL, VECTOR_INDEXES\n",
+        encoding="utf-8",
+    )
+
+    report = audit_community_core_import_boundary(tmp_path, ledger=())
+
+    assert report["ok"] is False
+    assert report["violations"][0]["module"] == (
+        "okto_pulse.core.kg.global_discovery.schema"
+    )
+    assert report["violations"][0]["symbols"] == ("NODE_DDL", "VECTOR_INDEXES")
+
+
+def test_af28_dynamic_private_getattr_fails_closed(tmp_path: Path) -> None:
+    rogue = tmp_path / "src" / "okto_pulse" / "community" / "dynamic_adapter.py"
+    rogue.parent.mkdir(parents=True)
+    rogue.write_text(
+        "from okto_pulse.core.kg import tier_power as tp\n"
+        "fn = getattr(tp, '_normalize_unicode')\n",
+        encoding="utf-8",
+    )
+
+    report = audit_community_core_import_boundary(tmp_path, ledger=())
+
+    assert report["ok"] is False
+    assert report["violations"][0]["module"] == "okto_pulse.core.kg.tier_power"
+    assert report["violations"][0]["symbols"] == ("_normalize_unicode",)
+
+
+def test_af28_dynamic_private_import_module_fails_closed(tmp_path: Path) -> None:
+    rogue = tmp_path / "src" / "okto_pulse" / "community" / "dynamic_import.py"
+    rogue.parent.mkdir(parents=True)
+    rogue.write_text(
+        "import importlib\n"
+        "mod = importlib.import_module('okto_pulse.core.kg._private_runtime')\n",
+        encoding="utf-8",
+    )
+
+    report = audit_community_core_import_boundary(tmp_path, ledger=())
+
+    assert report["ok"] is False
+    assert report["violations"][0]["module"] == (
+        "okto_pulse.core.kg._private_runtime"
+    )
 
 
 def test_ts_7cc90963_core_infra_database_reexport_guard_matches_core() -> None:

@@ -131,12 +131,17 @@ def _apply_rebuild_ingestion(base: Any) -> None:
 def _apply_rebuild_audit_storage(base: Any) -> None:
     """Fill rebuild/audit JSON artifact storage with the Community filesystem adapter."""
     from okto_pulse.community.adapters.rebuild_audit_storage import (
+        CommunityFileSystemCognitivePendingWorkProvider,
         CommunityFileSystemRebuildAuditArtifactStore,
         default_community_rebuild_base_dir,
     )
 
+    base_dir = default_community_rebuild_base_dir()
     base.rebuild_audit_artifact_store = CommunityFileSystemRebuildAuditArtifactStore(
-        default_community_rebuild_base_dir()
+        base_dir
+    )
+    base.cognitive_pending_work_provider = (
+        CommunityFileSystemCognitivePendingWorkProvider(base_dir)
     )
 
 

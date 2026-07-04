@@ -70,12 +70,14 @@ class CommunityGlobalDiscoveryRuntime:
         return self._runtime().is_ladybug_corruption_error(exc)
 
     def bootstrap(self) -> Path:
-        from okto_pulse.core.kg.global_discovery.schema import (
+        from okto_pulse.community.adapters.global_discovery_schema import (
             NODE_DDL,
             REL_DDL,
             VECTOR_INDEXES,
-            _ensure_decision_digest_layer_column,
-            _raise_existing_global_graph_open_failed,
+        )
+        from okto_pulse.core.kg.global_discovery.schema import (
+            ensure_decision_digest_layer_column,
+            raise_existing_global_graph_open_failed,
         )
 
         self.require_write_token(operation="bootstrap")
@@ -85,7 +87,7 @@ class CommunityGlobalDiscoveryRuntime:
         try:
             db = self._runtime().open_kuzu_db(path)
         except Exception as exc:
-            _raise_existing_global_graph_open_failed(
+            raise_existing_global_graph_open_failed(
                 path=path,
                 operation="bootstrap",
                 exc=exc,
@@ -98,7 +100,7 @@ class CommunityGlobalDiscoveryRuntime:
                 conn.execute(ddl)
             for ddl in REL_DDL:
                 conn.execute(ddl)
-            _ensure_decision_digest_layer_column(conn)
+            ensure_decision_digest_layer_column(conn)
             for table, idx_name, col in VECTOR_INDEXES:
                 try:
                     conn.execute(
@@ -123,13 +125,13 @@ class CommunityGlobalDiscoveryRuntime:
 
     def ensure_layer_schema(self) -> list[str]:
         from okto_pulse.core.kg.global_discovery.schema import (
-            _ensure_decision_digest_layer_column,
+            ensure_decision_digest_layer_column,
         )
 
         self.require_write_token(operation="ensure_layer_schema")
         _db, conn = self.open_connection()
         try:
-            return _ensure_decision_digest_layer_column(conn)
+            return ensure_decision_digest_layer_column(conn)
         finally:
             try:
                 conn.close()
@@ -138,7 +140,7 @@ class CommunityGlobalDiscoveryRuntime:
 
     def open_connection(self) -> tuple[Any, Any]:
         from okto_pulse.core.kg.global_discovery.schema import (
-            _raise_existing_global_graph_open_failed,
+            raise_existing_global_graph_open_failed,
         )
 
         path = self.global_graph_path()
@@ -150,7 +152,7 @@ class CommunityGlobalDiscoveryRuntime:
                 try:
                     self._db = self._runtime().open_kuzu_db(path)
                 except Exception as exc:
-                    _raise_existing_global_graph_open_failed(
+                    raise_existing_global_graph_open_failed(
                         path=path,
                         operation="open_connection",
                         exc=exc,
@@ -158,6 +160,50 @@ class CommunityGlobalDiscoveryRuntime:
             conn = self._runtime().new_connection(self._db)
         self._runtime().load_vector_extension(conn)
         return self._db, conn
+
+    @staticmethod
+    def _fsync_if_file(path: Path) -> None:
+        if not path.is_file():
+            return
+        # Windows rejects os.fsync on a read-only descriptor. r+b does not
+        # truncate and gives a real durability boundary for file contents.
+        with path.open("r+b") as fh:
+            os.fsync(fh.fileno())
+
+    def _fsync_global_artifacts(self, path: Path) -> None:
+        self._fsync_if_file(path)
+        if not path.parent.exists():
+            return
+        for sibling in sorted(path.parent.glob(path.name + ".*")):
+            self._fsync_if_file(sibling)
+
+    def flush_after_write_batch(self) -> None:
+        """Close, fsync and reopen-probe discovery.lbug after a write batch."""
+
+        path = self.global_graph_path()
+        self.close()
+        if not path.exists():
+            raise RuntimeError(f"global discovery file missing at {path}")
+
+        self._fsync_global_artifacts(path)
+
+        _db, conn = self.open_connection()
+        try:
+            res = conn.execute("CALL SHOW_TABLES() RETURN name")
+            try:
+                if res.has_next():
+                    res.get_next()
+            finally:
+                if hasattr(res, "close"):
+                    res.close()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self.close()
+
+        self._fsync_global_artifacts(path)
 
     def close(self) -> None:
         with self._lock:

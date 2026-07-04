@@ -22,8 +22,8 @@ from typing import Any
 from okto_pulse.core.kg.schemas import SessionStatus
 from okto_pulse.core.kg.session_manager import (
     ConsolidationSession,
-    _now,
     compute_content_hash,
+    now_utc,
 )
 
 _MAX_SIZE = 1000
@@ -130,7 +130,7 @@ class CommunityInMemorySessionStore:
         ttl_seconds: int | None = None,
     ) -> ConsolidationSession:
         ttl = ttl_seconds or self._default_ttl
-        now = _now()
+        now = now_utc()
         content_hash = compute_content_hash(raw_content, artifact_id, board_id)
         session = ConsolidationSession(
             session_id=session_id,

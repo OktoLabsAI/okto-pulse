@@ -133,6 +133,7 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     from okto_pulse.community.adapters.kg import build_community_graph_providers
     from okto_pulse.core.kg.interfaces.graph_lifecycle import GraphLifecycle
     from okto_pulse.core.kg.interfaces.graph_path_resolver import GraphPathResolver
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import GraphRuntimeStore
     from okto_pulse.core.kg.interfaces.graph_schema_manager import GraphSchemaManager
     from okto_pulse.core.kg.interfaces.graph_store import SemanticGraphStore
     from okto_pulse.core.kg.interfaces.graph_transaction import GraphTransaction
@@ -141,13 +142,14 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     assert set(providers) == {
         "graph_store", "cypher_executor", "graph_transaction",
         "graph_schema_manager", "graph_lifecycle", "graph_path_resolver",
-        "global_discovery_runtime",
+        "global_discovery_runtime", "graph_runtime_store",
     }
     # Each satisfies its #06 port (subclass IS-A the embedded which IS-A port).
     assert isinstance(providers["graph_store"], SemanticGraphStore)
     assert isinstance(providers["graph_schema_manager"], GraphSchemaManager)
     assert isinstance(providers["graph_lifecycle"], GraphLifecycle)
     assert isinstance(providers["graph_path_resolver"], GraphPathResolver)
+    assert isinstance(providers["graph_runtime_store"], GraphRuntimeStore)
     assert isinstance(providers["graph_transaction"], GraphTransaction)
     assert callable(providers["global_discovery_runtime"].open_connection)
     assert callable(providers["global_discovery_runtime"].global_graph_path)

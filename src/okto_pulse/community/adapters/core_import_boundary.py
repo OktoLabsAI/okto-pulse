@@ -13,6 +13,18 @@ from pathlib import Path
 from typing import Iterable
 
 
+PUBLIC_CORE_IMPORT_ALLOWLIST: tuple[str, ...] = (
+    "okto_pulse.core.ports",
+    "okto_pulse.core.kg.interfaces",
+    "okto_pulse.core.kg.board_source_store",
+    "okto_pulse.core.kg.tier_power",
+    "okto_pulse.core.kg.global_discovery.schema",
+    "okto_pulse.core.kg.schema_contract",
+    "okto_pulse.core.application",
+    "okto_pulse.core.domain",
+)
+
+
 PRIVATE_CORE_IMPORT_PREFIXES: tuple[str, ...] = (
     "okto_pulse.core.infra.database",
     "okto_pulse.core.models.db",
@@ -26,6 +38,13 @@ PRIVATE_CORE_IMPORT_PREFIXES: tuple[str, ...] = (
 
 PRIVATE_CORE_SYMBOL_IMPORTS: tuple[tuple[str, str], ...] = (
     ("okto_pulse.core.kg.interfaces", "get_kg_registry"),
+)
+
+PRIVATE_CORE_DDL_SYMBOL_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "okto_pulse.core.kg.global_discovery.schema",
+        ("NODE_DDL", "REL_DDL", "VECTOR_INDEXES"),
+    ),
 )
 
 PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -416,6 +435,7 @@ class _ImportVisitor(ast.NodeVisitor):
         self.file_path = file_path
         self.scope_stack: list[str] = []
         self.occurrences: list[CoreReachInOccurrence] = []
+        self.core_aliases: dict[str, str] = {}
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.scope_stack.append(node.name)
@@ -434,15 +454,68 @@ class _ImportVisitor(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
+            if alias.name.startswith("okto_pulse.core.") and alias.asname:
+                self.core_aliases[alias.asname] = alias.name
             self._capture(node.lineno, alias.name, ("*",))
+        self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module:
+            if node.module.startswith("okto_pulse.core."):
+                for alias in node.names:
+                    bound_name = alias.asname or alias.name
+                    self.core_aliases[bound_name] = f"{node.module}.{alias.name}"
             self._capture(
                 node.lineno,
                 node.module,
                 tuple(sorted(alias.name for alias in node.names)),
             )
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self._capture_dynamic_private_access(node)
+        self.generic_visit(node)
+
+    def _capture_dynamic_private_access(self, node: ast.Call) -> None:
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "getattr" and len(node.args) >= 2:
+            target, symbol_node = node.args[0], node.args[1]
+            if (
+                isinstance(target, ast.Name)
+                and target.id in self.core_aliases
+                and isinstance(symbol_node, ast.Constant)
+                and isinstance(symbol_node.value, str)
+                and _is_private_symbol_name(symbol_node.value)
+            ):
+                self._capture(
+                    node.lineno,
+                    self.core_aliases[target.id],
+                    (symbol_node.value,),
+                )
+            return
+
+        import_module = (
+            isinstance(func, ast.Attribute)
+            and func.attr == "import_module"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "importlib"
+        ) or (
+            isinstance(func, ast.Name)
+            and func.id == "import_module"
+        )
+        if not import_module or not node.args:
+            return
+        module_node = node.args[0]
+        if not (
+            isinstance(module_node, ast.Constant)
+            and isinstance(module_node.value, str)
+        ):
+            return
+        module = module_node.value
+        if module.startswith("okto_pulse.core.") and any(
+            _is_private_symbol_name(part) for part in module.split(".")
+        ):
+            self._capture(node.lineno, module, ("*",))
 
     def _capture(self, line: int, module: str, symbols: tuple[str, ...]) -> None:
         if not _is_private_core_import(module, symbols):
@@ -459,9 +532,15 @@ class _ImportVisitor(ast.NodeVisitor):
 
 
 def _is_private_core_import(module: str, symbols: tuple[str, ...]) -> bool:
+    is_core_module = module == "okto_pulse.core" or module.startswith(
+        "okto_pulse.core."
+    )
     private_prefix = any(
         module == prefix or module.startswith(prefix + ".")
         for prefix in PRIVATE_CORE_IMPORT_PREFIXES
+    )
+    private_core_module_by_name = is_core_module and any(
+        _is_private_symbol_name(part) for part in module.split(".")
     )
     private_parent_submodule = any(
         _resolves_to_private_core_module(module, symbol)
@@ -471,6 +550,14 @@ def _is_private_core_import(module: str, symbols: tuple[str, ...]) -> bool:
     private_symbol = any(
         module == symbol_module and (symbol in symbols or symbols == ("*",))
         for symbol_module, symbol in PRIVATE_CORE_SYMBOL_IMPORTS
+    )
+    private_symbol_by_name = is_core_module and any(
+        _is_private_symbol_name(symbol) for symbol in symbols if symbol != "*"
+    )
+    private_ddl_symbol = any(
+        module == ddl_module
+        and (symbols == ("*",) or any(symbol in ddl_symbols for symbol in symbols))
+        for ddl_module, ddl_symbols in PRIVATE_CORE_DDL_SYMBOL_IMPORTS
     )
     private_reexport_symbol = any(
         module == reexport_module
@@ -483,11 +570,18 @@ def _is_private_core_import(module: str, symbols: tuple[str, ...]) -> bool:
     )
     return (
         private_prefix
+        or private_core_module_by_name
         or private_parent_submodule
         or private_symbol
+        or private_symbol_by_name
+        or private_ddl_symbol
         or private_reexport_symbol
         or private_service_reexport
     )
+
+
+def _is_private_symbol_name(symbol: str) -> bool:
+    return symbol.startswith("_") and not symbol.startswith("__")
 
 
 def _resolves_to_private_core_module(module: str, symbol: str) -> bool:
@@ -572,7 +666,9 @@ def audit_community_core_import_boundary(
 
     return {
         "ok": not violations and not stale_ledger and not incomplete_ledger,
+        "public_core_import_allowlist": PUBLIC_CORE_IMPORT_ALLOWLIST,
         "private_prefixes": PRIVATE_CORE_IMPORT_PREFIXES,
+        "private_ddl_symbol_imports": PRIVATE_CORE_DDL_SYMBOL_IMPORTS,
         "private_reexport_symbol_imports": PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS,
         "private_symbol_imports": PRIVATE_CORE_SYMBOL_IMPORTS,
         "private_service_reexport_module": PRIVATE_CORE_SERVICE_REEXPORT_MODULE,
@@ -588,9 +684,11 @@ def audit_community_core_import_boundary(
 __all__ = [
     "COMMUNITY_CORE_REACH_IN_LEDGER",
     "PRIVATE_CORE_IMPORT_PREFIXES",
+    "PRIVATE_CORE_DDL_SYMBOL_IMPORTS",
     "PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS",
     "PRIVATE_CORE_SERVICE_REEXPORT_MODULE",
     "PRIVATE_CORE_SYMBOL_IMPORTS",
+    "PUBLIC_CORE_IMPORT_ALLOWLIST",
     "CoreReachInLedgerEntry",
     "audit_community_core_import_boundary",
 ]

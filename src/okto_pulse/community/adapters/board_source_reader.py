@@ -19,13 +19,13 @@ from okto_pulse.core.kg.board_source_store import (
     SPEC_SOURCE_MANIFEST_VERSION,
     SPRINT_CONTENT_COLUMNS,
     STORY_CONTENT_COLUMNS,
-    _bug_has_minimal_evidence,
-    _canonical_content_hash,
-    _card_artifact_type,
-    _decision_sources_from_spec,
-    _row_status,
-    _to_iso,
-    _updated_at,
+    bug_has_minimal_evidence,
+    canonical_content_hash,
+    card_artifact_type,
+    decision_sources_from_spec,
+    row_status,
+    to_iso,
+    updated_at,
 )
 from okto_pulse.core.kg.interfaces.board_source_reader import (
     SourceReadFailure,
@@ -178,21 +178,21 @@ class CommunityBoardSourceReader:
                 row_id = str(row["id"])
                 version_raw = row["version"] if "version" in row.keys() else 1
                 source_version = str(version_raw if version_raw is not None else 1)
-                content_hash = _canonical_content_hash(row, content_cols)
+                content_hash = canonical_content_hash(row, content_cols)
                 source_row = {
                     "artifact_type": artifact_type,
                     "id": row_id,
                     "source_ref": f"{artifact_type}:{row_id}",
                     "source_version": source_version,
                     "content_hash": content_hash,
-                    "created_at": _to_iso(row["created_at"]),
-                    "updated_at": _updated_at(row),
-                    "status": _row_status(row, status_col),
-                    "source_artifact_status": _row_status(row, status_col),
+                    "created_at": to_iso(row["created_at"]),
+                    "updated_at": updated_at(row),
+                    "status": row_status(row, status_col),
+                    "source_artifact_status": row_status(row, status_col),
                     "has_minimal_evidence": True,
                 }
                 if artifact_type == "spec":
-                    source_row["content_hash_v1"] = _canonical_content_hash(
+                    source_row["content_hash_v1"] = canonical_content_hash(
                         row, SPEC_CONTENT_COLUMNS_V1
                     )
                     source_row["source_manifest_version"] = SPEC_SOURCE_MANIFEST_VERSION
@@ -200,7 +200,7 @@ class CommunityBoardSourceReader:
                     source_row["working_ttl_days"] = working_ttl_days
                 out.append(source_row)
                 if artifact_type == "spec":
-                    out.extend(_decision_sources_from_spec(row))
+                    out.extend(decision_sources_from_spec(row))
         self._append_card_rows(conn, board_id, working_ttl_days, out)
         self._append_amendment_rows(conn, board_id, working_ttl_days, out)
         return out
@@ -228,18 +228,18 @@ class CommunityBoardSourceReader:
         ).fetchall()
         for row in rows:
             row_id = str(row["id"])
-            artifact_type = _card_artifact_type(row)
+            artifact_type = card_artifact_type(row)
             source_row = {
                 "artifact_type": artifact_type,
                 "id": row_id,
                 "source_ref": f"{artifact_type}:{row_id}",
                 "source_version": "1",
-                "content_hash": _canonical_content_hash(row, CARD_CONTENT_COLUMNS),
-                "created_at": _to_iso(row["created_at"]),
-                "updated_at": _updated_at(row),
-                "status": _row_status(row),
-                "source_artifact_status": _row_status(row),
-                "has_minimal_evidence": _bug_has_minimal_evidence(row),
+                "content_hash": canonical_content_hash(row, CARD_CONTENT_COLUMNS),
+                "created_at": to_iso(row["created_at"]),
+                "updated_at": updated_at(row),
+                "status": row_status(row),
+                "source_artifact_status": row_status(row),
+                "has_minimal_evidence": bug_has_minimal_evidence(row),
             }
             if working_ttl_days is not None:
                 source_row["working_ttl_days"] = working_ttl_days
@@ -276,11 +276,11 @@ class CommunityBoardSourceReader:
                 "id": row_id,
                 "source_ref": f"amendment_hotfix_revision:{row_id}",
                 "source_version": "1",
-                "content_hash": _canonical_content_hash(row, AMENDMENT_CONTENT_COLUMNS),
-                "created_at": _to_iso(row["created_at"]),
-                "updated_at": _updated_at(row),
-                "status": _row_status(row, "status"),
-                "source_artifact_status": _row_status(row, "status"),
+                "content_hash": canonical_content_hash(row, AMENDMENT_CONTENT_COLUMNS),
+                "created_at": to_iso(row["created_at"]),
+                "updated_at": updated_at(row),
+                "status": row_status(row, "status"),
+                "source_artifact_status": row_status(row, "status"),
                 "lineage_complete": str(lineage_raw or "").strip().lower() == "complete",
             }
             if working_ttl_days is not None:
