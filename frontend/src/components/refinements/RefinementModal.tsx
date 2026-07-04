@@ -889,6 +889,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
   const [loading, setLoading] = useState(true);
   const [derivingSpec, setDerivingSpec] = useState(false);
   const [movingTo, setMovingTo] = useState<RefinementStatus | null>(null);
+  const [nextStatuses, setNextStatuses] = useState<RefinementStatus[]>([]);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [expanded, setExpanded] = useState(false);
 
@@ -908,11 +909,28 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
 
   useEffect(() => { loadRefinement(); }, [refinementId]);
 
+  const loadAllowedTransitions = async (data: Refinement) => {
+    try {
+      const response = await api.getAllowedTransitions(data.board_id || _boardId, {
+        entity_type: 'refinement',
+        entity_id: data.id,
+      });
+      setNextStatuses(
+        response.allowed_transitions
+          .map((item) => item.to_status)
+          .filter((status): status is RefinementStatus => REFINEMENT_STATUSES.includes(status as RefinementStatus))
+      );
+    } catch {
+      setNextStatuses([]);
+    }
+  };
+
   const loadRefinement = async () => {
     setLoading(true);
     try {
       const data = await api.getRefinement(refinementId);
       setRefinement(data);
+      await loadAllowedTransitions(data);
       if (data.ideation_id) {
         try {
           const ideation = await api.getIdeation(data.ideation_id);
@@ -928,6 +946,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
     try {
       const updated = await api.moveRefinement(refinementId, { status });
       setRefinement(updated);
+      await loadAllowedTransitions(updated);
       onChanged();
       toast.success(`Refinement moved to ${REFINEMENT_STATUS_LABELS[status]}`);
     } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
@@ -963,17 +982,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
     } catch { toast.error('Failed to delete refinement'); }
   };
 
-  const getNextStatuses = (current: RefinementStatus): RefinementStatus[] => {
-    const flow: Record<RefinementStatus, RefinementStatus[]> = {
-      draft: ['review', 'cancelled'],
-      review: ['approved', 'draft', 'cancelled'],
-      approved: ['done', 'review', 'cancelled'],
-      done: ['draft'],
-      cancelled: [],
-    };
-    return (flow[current] || []).filter((s) => REFINEMENT_STATUSES.includes(s));
-  };
-
   if (loading) {
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -986,7 +994,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
 
   if (!refinement) return null;
 
-  const nextStatuses = getNextStatuses(refinement.status);
   const canDeriveSpec = refinement.status === 'done';
 
   const unansweredQA = refinement.qa_items?.filter((q) => !q.answer).length || 0;

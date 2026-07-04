@@ -1003,6 +1003,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
   const [ideation, setIdeation] = useState<Ideation | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<IdeationStatus | null>(null);
+  const [nextStatuses, setNextStatuses] = useState<IdeationStatus[]>([]);
   const [savingSkip, setSavingSkip] = useState(false);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [expanded, setExpanded] = useState(false);
@@ -1033,11 +1034,28 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
 
   useEffect(() => { loadIdeation(); }, [ideationId]);
 
+  const loadAllowedTransitions = async (data: Ideation) => {
+    try {
+      const response = await api.getAllowedTransitions(data.board_id || _boardId, {
+        entity_type: 'ideation',
+        entity_id: data.id,
+      });
+      setNextStatuses(
+        response.allowed_transitions
+          .map((item) => item.to_status)
+          .filter((status): status is IdeationStatus => IDEATION_STATUSES.includes(status as IdeationStatus))
+      );
+    } catch {
+      setNextStatuses([]);
+    }
+  };
+
   const loadIdeation = async () => {
     setLoading(true);
     try {
       const data = await api.getIdeation(ideationId);
       setIdeation(data);
+      await loadAllowedTransitions(data);
     } catch { toast.error('Failed to load ideation'); } finally { setLoading(false); }
   };
 
@@ -1047,6 +1065,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
     try {
       const updated = await api.moveIdeation(ideationId, { status });
       setIdeation(updated);
+      await loadAllowedTransitions(updated);
       onChanged();
       toast.success(`Ideation moved to ${IDEATION_STATUS_LABELS[status]}`);
     } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
@@ -1061,6 +1080,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
     try {
       const updated = await api.setIdeationAmbiguityGateSkip(ideationId, next);
       setIdeation(updated);
+      await loadAllowedTransitions(updated);
       onChanged();
       toast.success(next ? 'Max ambiguity gate will be skipped for this ideation' : 'Max ambiguity gate re-enabled for this ideation');
     } catch (err) { toast.error(getErrorMessage(err)); } finally { setSavingSkip(false); }
@@ -1089,6 +1109,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
         dependencies_justification: evalDependenciesJust.trim(),
       });
       setIdeation(updated);
+      await loadAllowedTransitions(updated);
       setShowEvalForm(false);
       onChanged();
       toast.success('Ideation evaluated');
@@ -1129,18 +1150,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
     setSelectorTarget(null);
   };
 
-  const getNextStatuses = (current: IdeationStatus): IdeationStatus[] => {
-    const flow: Record<IdeationStatus, IdeationStatus[]> = {
-      draft: ['review', 'cancelled'],
-      review: ['approved', 'draft', 'cancelled'],
-      approved: ['evaluating', 'review', 'cancelled'],
-      evaluating: ['done', 'approved', 'cancelled'],
-      done: ['draft'],
-      cancelled: [],
-    };
-    return (flow[current] || []).filter((s) => IDEATION_STATUSES.includes(s));
-  };
-
   if (loading) {
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -1153,7 +1162,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
 
   if (!ideation) return null;
 
-  const nextStatuses = getNextStatuses(ideation.status);
   const canEvaluate = ideation.status === 'evaluating';
   const canDeriveSpec = ideation.status === 'done' && ideation.complexity === 'small';
   const needsRefinements = ideation.status === 'done' && ideation.complexity && ideation.complexity !== 'small';

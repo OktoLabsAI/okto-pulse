@@ -112,6 +112,24 @@ export interface LineageGraphResponse {
   warnings: string[];
 }
 
+export type AllowedTransitionEntityType = 'ideation' | 'refinement' | 'spec';
+
+export interface AllowedTransition {
+  to_status: string;
+  label: string;
+  gate: string;
+  blocked_reason?: string | null;
+}
+
+export interface AllowedTransitionsResponse {
+  board_id: string;
+  entity_type: AllowedTransitionEntityType;
+  entity_id: string | null;
+  current_status: string;
+  allowed_transitions: AllowedTransition[];
+  source: string;
+}
+
 export type ResourceGateEntityType = 'ideation' | 'refinement' | 'spec' | 'card';
 export type ResourceGateResourceType = 'architecture' | 'mockup' | 'knowledge_base';
 export type ResourceGateState = 'provided' | 'not_applicable' | 'missing';

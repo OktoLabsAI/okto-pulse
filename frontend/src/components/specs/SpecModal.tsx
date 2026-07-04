@@ -1542,6 +1542,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   const [spec, setSpec] = useState<Spec | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<SpecStatus | null>(null);
+  const [nextStatuses, setNextStatuses] = useState<SpecStatus[]>([]);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [detailsStructuredEditor, setDetailsStructuredEditor] = useState<{
     tab: ModalTab;
@@ -1574,11 +1575,28 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
 
   useEffect(() => { loadSpec(); }, [specId]);
 
+  const loadAllowedTransitions = async (data: Spec) => {
+    try {
+      const response = await api.getAllowedTransitions(data.board_id, {
+        entity_type: 'spec',
+        entity_id: data.id,
+      });
+      setNextStatuses(
+        response.allowed_transitions
+          .map((item) => item.to_status)
+          .filter((status): status is SpecStatus => SPEC_STATUSES.includes(status as SpecStatus))
+      );
+    } catch {
+      setNextStatuses([]);
+    }
+  };
+
   const loadSpec = async () => {
     setLoading(true);
     try {
       const data = await api.getSpec(specId);
       setSpec(data);
+      await loadAllowedTransitions(data);
       if (data.ideation_id) {
         try {
           const ideation = await api.getIdeation(data.ideation_id);
@@ -1602,6 +1620,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   const reloadSpecAfterStructuredEdit = async () => {
     const updated = await api.getSpec(specId);
     setSpec(updated);
+    await loadAllowedTransitions(updated);
     onChanged();
     return updated;
   };
@@ -1857,6 +1876,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
       try {
         const updated = await api.moveSpec(specId, { status });
         setSpec(updated);
+        await loadAllowedTransitions(updated);
         onChanged();
         setValidateResult({ success: true, error: null });
         if (updated.cards && updated.cards.length >= 6) {
@@ -1880,6 +1900,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     try {
       const updated = await api.moveSpec(specId, { status });
       setSpec(updated);
+      await loadAllowedTransitions(updated);
       onChanged();
       toast.success(`Spec moved to ${SPEC_STATUS_LABELS[status]}`);
     } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
@@ -1896,21 +1917,6 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     } catch { toast.error('Failed to delete spec'); }
   };
 
-  const getNextStatuses = (current: SpecStatus): SpecStatus[] => {
-    // Spec Validation Gate adds direct approved→draft and validated→draft
-    // transitions to unlock content editing in 1 click after a passed validation.
-    const flow: Record<SpecStatus, SpecStatus[]> = {
-      draft: ['review', 'cancelled'],
-      review: ['approved', 'draft', 'cancelled'],
-      approved: ['validated', 'review', 'draft', 'cancelled'],
-      validated: ['in_progress', 'approved', 'draft', 'cancelled'],
-      in_progress: ['done', 'validated', 'cancelled'],
-      done: ['draft'],
-      cancelled: ['draft'],
-    };
-    return (flow[current] || []).filter((s) => SPEC_STATUSES.includes(s));
-  };
-
   if (loading) {
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -1923,7 +1929,8 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
 
   if (!spec) return null;
 
-  const nextStatuses = getNextStatuses(spec.status);
+  const statusFlowStatuses = nextStatuses.filter((s) => !(s === 'validated' && spec.status === 'approved'));
+  const canSubmitValidation = nextStatuses.includes('validated');
   const openDetailsStructuredEditor = (tab: ModalTab, mode: 'add' | 'edit', entityId?: string) => {
     setDetailsStructuredEditor({ tab, mode, entityId, token: Date.now() });
     setActiveTab(tab);
@@ -2018,25 +2025,23 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
         </div>
 
         {/* Status flow */}
-        {nextStatuses.length > 0 && (
+        {statusFlowStatuses.length > 0 && (
           <div className="px-6 py-2.5 border-b border-gray-100 dark:border-gray-700/50 flex items-center gap-2 flex-wrap">
             <span className="text-xs text-gray-500 dark:text-gray-400">Move to:</span>
-            {nextStatuses
-              .filter((s) => !(s === 'validated' && spec.status === 'approved'))
-              .map((status) => (
-                <button
-                  key={status}
-                  onClick={() => handleMoveSpec(status)}
-                  disabled={movingTo !== null}
-                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-colors
-                    ${STATUS_COLORS[status]} hover:ring-2 hover:ring-offset-1 hover:ring-gray-300 dark:hover:ring-gray-600
-                    disabled:opacity-50`}
-                >
-                  <ChevronRight size={12} />
-                  {SPEC_STATUS_LABELS[status]}
-                  {movingTo === status && '...'}
-                </button>
-              ))}
+            {statusFlowStatuses.map((status) => (
+              <button
+                key={status}
+                onClick={() => handleMoveSpec(status)}
+                disabled={movingTo !== null}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-colors
+                  ${STATUS_COLORS[status]} hover:ring-2 hover:ring-offset-1 hover:ring-gray-300 dark:hover:ring-gray-600
+                  disabled:opacity-50`}
+              >
+                <ChevronRight size={12} />
+                {SPEC_STATUS_LABELS[status]}
+                {movingTo === status && '...'}
+              </button>
+            ))}
           </div>
         )}
 
@@ -2638,7 +2643,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
             Delete spec
           </button>
           <div className="flex items-center gap-2">
-            {spec.status === 'approved' && perms.has('spec.validation.submit') && (
+            {spec.status === 'approved' && canSubmitValidation && perms.has('spec.validation.submit') && (
               <button
                 onClick={() => handleMoveSpec('validated' as SpecStatus)}
                 disabled={validating}
@@ -2767,14 +2772,8 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           onClose={() => setShowSubmitValidationModal(false)}
           onSubmitted={async () => {
             setShowSubmitValidationModal(false);
-            // Refetch the spec to reflect the new status and current_validation_id
-            try {
-              const updated = await api.getSpec(specId);
-              setSpec(updated);
-              onChanged();
-            } catch {
-              // Non-fatal; user can manually refresh
-            }
+            await loadSpec();
+            onChanged();
           }}
         />
       )}

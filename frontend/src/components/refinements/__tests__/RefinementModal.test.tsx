@@ -11,6 +11,7 @@ const apiMock = vi.hoisted(() => ({
   listRefinementSnapshots: vi.fn(),
   listRefinementHistory: vi.fn(),
   listRefinementQA: vi.fn(),
+  getAllowedTransitions: vi.fn(),
   moveRefinement: vi.fn(),
   deleteRefinement: vi.fn(),
   updateRefinement: vi.fn(),
@@ -113,6 +114,18 @@ describe('RefinementModal handleMove error surfacing (AC1)', () => {
     apiMock.listRefinementSnapshots.mockResolvedValue([]);
     apiMock.listRefinementHistory.mockResolvedValue([]);
     apiMock.listRefinementQA.mockResolvedValue([]);
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'refinement',
+      entity_id: 'refinement-1',
+      current_status: 'review',
+      source: 'programmatic_backend_transition_authority',
+      allowed_transitions: [
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
+      ],
+    });
     apiMock.getArchitectureDesign.mockResolvedValue(null);
   });
 
@@ -149,6 +162,18 @@ describe('RefinementModal Markdown export', () => {
     apiMock.listRefinementSnapshots.mockResolvedValue([]);
     apiMock.listRefinementHistory.mockResolvedValue([]);
     apiMock.listRefinementQA.mockResolvedValue([]);
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'refinement',
+      entity_id: 'refinement-1',
+      current_status: 'review',
+      source: 'programmatic_backend_transition_authority',
+      allowed_transitions: [
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
+      ],
+    });
     apiMock.getArchitectureDesign.mockImplementation((id: string) =>
       Promise.resolve({ id, title: `${id} full`, entities: [{ id: `${id}-e`, name: 'E' }], interfaces: [], diagrams: [] }),
     );
@@ -195,5 +220,32 @@ describe('RefinementModal Markdown export', () => {
     expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
     const arg = ((markdownMock.exportRefinement.mock.calls.at(-1) ?? []) as any[])[0];
     expect(arg.architecture_designs).toEqual([]);
+  });
+
+  it('renders move actions from the allowed_transitions contract', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValueOnce({
+      board_id: 'board-1',
+      entity_type: 'refinement',
+      entity_id: 'refinement-1',
+      current_status: 'review',
+      source: 'programmatic_backend_transition_authority',
+      allowed_transitions: [
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
+      ],
+    });
+
+    render(<RefinementModal refinementId="refinement-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
+
+    await screen.findByText('My Refinement');
+    await waitFor(() =>
+      expect(apiMock.getAllowedTransitions).toHaveBeenCalledWith('board-1', {
+        entity_type: 'refinement',
+        entity_id: 'refinement-1',
+      }),
+    );
+
+    expect(screen.getByRole('button', { name: /Draft/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Approved/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Cancelled/ })).toBeNull();
   });
 });

@@ -47,6 +47,8 @@ import type {
   CreateCommentRequest,
   UpdateCommentRequest,
   CardStatus,
+  AllowedTransitionEntityType,
+  AllowedTransitionsResponse,
   Spec,
   SpecStructuredEntityMutationRequest,
   SpecStructuredEntityMutationResult,
@@ -199,6 +201,22 @@ export function useDashboardApi() {
         `/boards/${boardId}/columns${qs}`
       );
       return response.columns;
+    },
+
+    async getAllowedTransitions(
+      boardId: string,
+      params: {
+        entity_type: AllowedTransitionEntityType;
+        entity_id?: string;
+        current_status?: string;
+      },
+    ): Promise<AllowedTransitionsResponse> {
+      const p = new URLSearchParams({ entity_type: params.entity_type });
+      if (params.entity_id) p.set('entity_id', params.entity_id);
+      if (params.current_status) p.set('current_status', params.current_status);
+      return apiClient.fetchJson<AllowedTransitionsResponse>(
+        `/boards/${boardId}/allowed-transitions?${p.toString()}`
+      );
     },
 
     async getLineageGraph(

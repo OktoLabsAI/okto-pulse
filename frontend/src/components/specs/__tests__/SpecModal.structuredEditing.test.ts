@@ -44,4 +44,16 @@ describe('SpecModal structured entity editing', () => {
     expect(block).not.toContain('api.updateSpecEntity');
     expect(block).not.toContain('api.operateSpecEntity');
   });
+
+  it('drives status actions from allowed_transitions instead of a local status flow map', () => {
+    const loadBlock = sourceBlock('const loadAllowedTransitions = async', 'const loadSpec = async');
+    const statusFlowBlock = sourceBlock('{/* Status flow */}', '{/* Provenance breadcrumb */}');
+
+    expect(loadBlock).toContain('api.getAllowedTransitions');
+    expect(loadBlock).toContain("entity_type: 'spec'");
+    expect(statusFlowBlock).toContain('statusFlowStatuses');
+    expect(statusFlowBlock).toContain('handleMoveSpec(status)');
+    expect(source).not.toContain('const getNextStatuses');
+    expect(source).not.toContain('Record<SpecStatus, SpecStatus[]>');
+  });
 });
