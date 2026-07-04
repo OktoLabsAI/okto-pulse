@@ -18,7 +18,7 @@ plus the `okto-pulse-core` sibling.
 ### Multi-stage Dockerfile
 
 ```
-python:3.14-slim (digest-pinned)
+python:3.12-slim
     │
     ├─ base                  apt deps + python env
     │
@@ -29,7 +29,7 @@ python:3.14-slim (digest-pinned)
     │                        --frozen → /wheels/*.whl on top
     │   ↓
     └─ local-runtime         pre-download all-MiniLM-L6-v2,
-                             verify HF_MODEL_SHA256, EXPOSE 8100/8101,
+                             verify model cache presence, EXPOSE 8100/8101,
                              HEALTHCHECK, CMD ["okto-pulse", "serve"]
     │
     ├─ pypi-install          uv pip install okto-pulse==${OKTO_PULSE_VERSION}

@@ -15,7 +15,6 @@ name: Release
 # This workflow runs on step 4 and:
 #   - Verifies okto-pulse-core has a matching tag (preflight, fails fast if not)
 #   - Verifies pyproject.toml version matches the git tag
-#   - Runs the kg pytest suite (excluding e2e)
 #   - Builds the Docker image (target=local-runtime) into the local daemon
 #   - Spins up the container, waits healthy, runs the MCP replay smoke test
 #   - Gates on container health + log scan (no SIGBUS/SIGSEGV/ResourceWarning)
