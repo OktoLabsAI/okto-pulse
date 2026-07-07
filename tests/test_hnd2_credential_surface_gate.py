@@ -97,9 +97,9 @@ class _FakeSession:
 def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     tmp_path, monkeypatch, capsys
 ):
+    import okto_pulse.community.cli as cli
     import okto_pulse.community.adapters.composition as composition
     import okto_pulse.community.adapters.relational_schema_lifecycle as lifecycle
-    import okto_pulse.community.adapters.sqlalchemy_database as sqlite_adapter
     import okto_pulse.community.config as community_config
     import okto_pulse.community.main as community_main
     import okto_pulse.community.seed as community_seed
@@ -108,7 +108,6 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     import okto_pulse.core.infra.database as database
     import okto_pulse.core.infra.storage as storage
     import okto_pulse.core.kg.interfaces as kg_interfaces
-    import okto_pulse.core.runtime_registry as runtime_registry
     from okto_pulse.community.cli import cmd_init
 
     persisted_marker = "sha256:must-not-be-printed"
@@ -156,17 +155,13 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     monkeypatch.setattr(auth, "configure_auth", lambda _provider: None)
     monkeypatch.setattr(storage, "configure_storage", lambda _provider: None)
     monkeypatch.setattr(composition, "community_storage_provider", lambda _path: None)
-    monkeypatch.setattr(database, "create_database", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli, "_configure_community_relational_runtime", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(database, "init_db", fake_init_db)
     monkeypatch.setattr(database, "close_db", fake_close_db)
     monkeypatch.setattr(database, "get_session_factory", lambda: lambda: _FakeSession())
     monkeypatch.setattr(community_seed, "seed_community_defaults", fake_seed)
-    monkeypatch.setattr(
-        sqlite_adapter, "install_community_sqlite_pragmas", lambda *_args: None
-    )
-    monkeypatch.setattr(
-        runtime_registry, "register_sqlite_pragma_installer", lambda *_args: None
-    )
     monkeypatch.setattr(
         lifecycle, "register_community_relational_schema_lifecycle", lambda: None
     )

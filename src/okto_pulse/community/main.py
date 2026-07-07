@@ -280,11 +280,9 @@ def _ensure_data_dir(settings: CommunitySettings) -> None:
         pass
 
 
-# R01B REPLAN-IMP2 (TR5): the former _configure_sqlite_pragmas helper (a partial
-# WAL + foreign_keys connect listener) was removed. SQLite hardening is now owned
-# by the single edition installer install_community_sqlite_pragmas (the UNION:
-# WAL + busy_timeout=30000 + synchronous=NORMAL + foreign_keys=ON), registered on
-# the core runtime seam before create_database builds the engine.
+# The former _configure_sqlite_pragmas helper (a partial WAL + foreign_keys
+# connect listener) was removed. SQLite hardening is now owned by the Community
+# SQLAlchemy adapter as the single local-first runtime owner.
 
 
 # Paths que nunca recebem o fallback SPA (API, docs, MCP e assets estáticos).
@@ -600,23 +598,15 @@ def create_community_app():
                 )
         await close_db()
 
-    # R01B REPLAN-IMP2 (TR5): register the Community UNION SQLite PRAGMA installer
-    # as the SINGLE owner of the effective connect listener BEFORE create_app calls
-    # create_database. The core resolves THIS installer (WAL + busy_timeout=30000 +
-    # synchronous=NORMAL + foreign_keys=ON) and attaches exactly ONE connect
-    # listener; the old partial listeners (this module's _configure_sqlite_pragmas
-    # and the core inline one) are gone. Registered before the engine is built, so
-    # it is in effect before the first connection.
     from okto_pulse.community.adapters.sqlalchemy_database import (
-        install_community_sqlite_pragmas,
+        configure_community_database,
     )
     from okto_pulse.community.adapters.coordination import (
         register_community_coordination_providers,
     )
-    from okto_pulse.core.runtime_registry import register_sqlite_pragma_installer
 
     register_community_coordination_providers()
-    register_sqlite_pragma_installer(install_community_sqlite_pragmas)
+    configure_community_database(settings.database_url, echo=settings.debug)
 
     # R01C REPLAN-IMP4 (FR3/FR5): register the Community relational SCHEMA-LIFECYCLE
     # orchestrator on the core seam BEFORE the lifespan runs init_db, so the core
@@ -624,8 +614,8 @@ def create_community_app():
     # migrator (R16-B) + bootstrapper (R16-C) instead of running init_db's inline
     # body. Register-before-remove (TR4): the core inline fallback stays until the
     # final R01C physical removal, gated by r01c_lifecycle_removal_readiness. The
-    # R01B engine/session/pool/PRAGMA ownership is untouched (the orchestrator runs
-    # against the live engine resolved by create_database, which still owns it).
+    # The orchestrator runs against the live engine injected by the Community
+    # SQLAlchemy adapter above.
     from okto_pulse.community.adapters.relational_schema_lifecycle import (
         register_community_relational_schema_lifecycle,
     )
@@ -660,8 +650,8 @@ def create_community_app():
         scheduler_control=scheduler_control,
         # R01B REPLAN-IMP1/IMP2: the Community relational UnitOfWorkFactory is the
         # composition-owned provider (bound to the SAME live session factory). IMP2
-        # (FR3) re-points the REST + MCP consumers to it; the core ``create_database``
-        # stays live this phase (DEC dec_ba1450dd).
+        # (FR3) re-points the REST + MCP consumers to it. Engine/session ownership
+        # is Community-owned through configure_community_database above.
         uow_factory=_community_uow_factory,
     )
 
@@ -674,10 +664,8 @@ def create_community_app():
 
     register_unit_of_work_factory(_community_uow_factory)
 
-    # R01B REPLAN-IMP2 (TR5): SQLite PRAGMAs are now installed by the single
-    # edition-owned installer registered above (resolved inside create_database),
-    # so there is no longer a second _configure_sqlite_pragmas(get_engine()) call
-    # here — that partial WAL+foreign_keys listener was folded into the UNION.
+    # SQLite PRAGMAs are installed by the Community engine adapter. There is no
+    # second partial listener in this module and no core fallback listener.
 
     # Bootstrap the KG provider registry via the Community composition root.
     # (R05-D/R-P2-02) The Community composition registers event_bus, audit_repo

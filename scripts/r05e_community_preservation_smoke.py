@@ -96,7 +96,11 @@ def run_preservation_smoke() -> dict[str, object]:
         _reg.reset_registry_for_tests()
 
         async def _init_db() -> None:
-            _db.create_database(f"sqlite+aiosqlite:///{tmp / 'r05e_imp2.db'}")
+            from okto_pulse.community.adapters.sqlalchemy_database import (
+                configure_community_database,
+            )
+
+            configure_community_database(f"sqlite+aiosqlite:///{tmp / 'r05e_imp2.db'}")
             await _db.init_db()
 
         asyncio.run(_init_db())

@@ -1,16 +1,14 @@
-"""R01B REPLAN-IMP1 (AC1) — Community engine/session/PRAGMA/pool parity.
+"""Community engine/session/PRAGMA/pool parity.
 
-Proves the Community-owned relational adapters mirror the core
-``okto_pulse.core.infra.database`` configuration EXACTLY:
+Proves the Community-owned relational adapter owns the local-first SQLAlchemy
+runtime:
 
-  - pool sizing per dialect (parity oracle vs a core engine built side-by-side);
+  - pool sizing per dialect;
   - session factory kwargs (``class_=AsyncSession`` + ``expire_on_commit=False``);
-  - the SINGLE-OWNER SQLite PRAGMA union — WAL + busy_timeout=30000 +
+  - the SQLite PRAGMA union — WAL + busy_timeout=30000 +
     synchronous=NORMAL + foreign_keys=ON — proven against a REAL connection;
-  - pool observability listeners installed (status snapshot).
-
-Additive/DORMANT: these builders never replace the core module globals; the
-fixtures that touch ``create_database`` save/restore them.
+  - pool observability listeners installed (status snapshot);
+  - configure_community_database injects the live runtime into the core facade.
 """
 
 from __future__ import annotations
@@ -20,35 +18,23 @@ import asyncio
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Importing the core app registers every ORM model on Base.metadata (parity
-# oracle uses create_database which the import keeps consistent).
 import okto_pulse.core.app as _core_app  # noqa: F401
 from okto_pulse.community.adapters.sqlalchemy_database import (
     build_community_engine,
     build_community_session_factory,
     community_pool_status,
+    configure_community_database,
     install_community_pool_observability,
     install_community_sqlite_pragmas,
 )
 
 
 def test_ac1_sqlite_pool_config_matches_core(tmp_path):
-    """The Community sqlite engine carries the EXACT core pool config (a parity
-    oracle against a core engine + a literal anchor for the documented kwargs)."""
-    import okto_pulse.core.infra.database as _db
-
+    """The Community sqlite engine carries the documented local-first pool config."""
     ce = build_community_engine(f"sqlite+aiosqlite:///{tmp_path / 'community.db'}")
-    saved_e, saved_f = _db._engine, _db._session_factory
     try:
-        _db.create_database(f"sqlite+aiosqlite:///{tmp_path / 'core.db'}")
-        core_e = _db.get_engine()
-
-        assert ce.echo is False and core_e.echo is False
-        # parity vs core (catches future core drift)
-        assert ce.pool.size() == core_e.pool.size() == 20
-        for priv in ("_max_overflow", "_timeout", "_recycle", "_pre_ping"):
-            assert getattr(ce.pool, priv) == getattr(core_e.pool, priv), priv
-        # literal anchor — the documented sqlite kwargs are preserved verbatim
+        assert ce.echo is False
+        assert ce.pool.size() == 20
         assert ce.pool._max_overflow == 30
         assert ce.pool._timeout == 10
         assert ce.pool._recycle == 1800
@@ -56,11 +42,11 @@ def test_ac1_sqlite_pool_config_matches_core(tmp_path):
 
         async def _cleanup() -> None:
             await ce.dispose()
-            await core_e.dispose()
 
         asyncio.run(_cleanup())
-    finally:
-        _db._engine, _db._session_factory = saved_e, saved_f
+    except Exception:
+        asyncio.run(ce.dispose())
+        raise
 
 
 def test_ac1_postgresql_pool_config():
@@ -149,3 +135,19 @@ def test_ac1_pool_observability_installed(tmp_path):
     status = asyncio.run(cycle())
     assert isinstance(status, str)
     assert "Pool size" in status
+
+
+def test_configure_community_database_injects_core_runtime(tmp_path):
+    import okto_pulse.core.infra.database as _db
+
+    saved_e, saved_f = _db._engine, _db._session_factory
+    try:
+        runtime = configure_community_database(
+            f"sqlite+aiosqlite:///{tmp_path / 'configured.db'}"
+        )
+        assert _db.get_engine() is runtime.engine
+        assert _db.get_session_factory() is runtime.session_factory
+        assert runtime.engine.pool.size() == 20
+    finally:
+        asyncio.run(_db.get_engine().dispose())
+        _db._engine, _db._session_factory = saved_e, saved_f
