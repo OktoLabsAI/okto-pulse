@@ -36,6 +36,9 @@ import pytest
 import okto_pulse.community as _community_pkg
 import okto_pulse.core.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
+from okto_pulse.community.adapters.relational_schema_lifecycle import (
+    register_community_relational_schema_lifecycle,
+)
 from okto_pulse.community.adapters.data_dependency_audit import (
     GATED_04_RELATIONAL_STATUS,
     audit_data_provider_ownership,
@@ -90,6 +93,7 @@ def _isolated_db_kg(tmp_path):
 
     async def _setup():
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'r05d.db'}")
+        register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
 
     asyncio.run(_setup())

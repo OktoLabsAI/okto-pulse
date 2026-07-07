@@ -18,8 +18,10 @@ served and passes the closed forbidden-term scan.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+from okto_pulse.core.ports.mcp_instructions import StaticFileMcpInstructionProvider
 from okto_pulse.core.ports.mcp_resources import (
     RESOURCE_KIND_OPERATIONAL,
     McpResourceSpec,
@@ -32,6 +34,7 @@ COMMUNITY_RESOURCE_EDITION = "community"
 #: the pre-split originals — they MAY name the concrete backend; they are
 #: ``kind=operational`` and exempt from the common forbidden-term scan).
 _OPERATIONAL_DIR = Path(__file__).resolve().parent.parent / "resources" / "operational"
+_LEGACY_AGENT_PROMPT_PATH = Path("/app/prompts/agent_system_prompt.md")
 
 #: R11-B same-URI OVERLAY table: (uri, operational-relative-path, capability).
 _COMMUNITY_OVERLAY_TABLE: tuple[tuple[str, str, str], ...] = (
@@ -79,21 +82,75 @@ def build_community_resource_catalog() -> StaticMcpResourceCatalog:
     )
 
 
+def _community_agent_prompt_path(prompt_path: str | Path | None = None) -> Path:
+    if prompt_path is not None:
+        return Path(prompt_path)
+    configured = os.environ.get("OKTO_PULSE_AGENT_INSTRUCTIONS_PATH")
+    return Path(configured) if configured else _LEGACY_AGENT_PROMPT_PATH
+
+
+def build_community_instruction_provider(
+    prompt_path: str | Path | None = None,
+) -> StaticFileMcpInstructionProvider:
+    """Build the Community-owned MCP instruction provider.
+
+    The legacy container prompt path is preserved here, in the edition adapter,
+    so the core server no longer knows deployment-owned filesystem paths.
+    """
+    path = _community_agent_prompt_path(prompt_path)
+    return StaticFileMcpInstructionProvider(
+        provider_id=COMMUNITY_RESOURCE_EDITION,
+        base_dir=path.parent,
+        relative_path=path.name,
+    )
+
+
+def register_community_instruction_provider(
+    prompt_path: str | Path | None = None,
+    *,
+    freeze: bool = True,
+) -> None:
+    """Register the Community MCP instruction provider via the core contract."""
+    from okto_pulse.core.mcp import (
+        freeze_instruction_providers,
+        has_instruction_provider,
+        register_instruction_provider,
+    )
+
+    if has_instruction_provider(COMMUNITY_RESOURCE_EDITION):
+        if freeze:
+            freeze_instruction_providers()
+        return
+
+    register_instruction_provider(build_community_instruction_provider(prompt_path))
+    if freeze:
+        freeze_instruction_providers()
+
+
 def register_and_freeze_community_resource_catalog() -> None:
     """Composition-root hook (R11-A IMP4): inject the Community operational
     catalog into the core effective catalog, then FREEZE it (after all providers
     are registered). Idempotent-safe: a second freeze is a no-op, but a late
     register AFTER the freeze raises (fail-closed)."""
-    from okto_pulse.core.mcp import freeze_resource_catalog, register_resource_catalog
+    from okto_pulse.core.mcp import (
+        freeze_instruction_providers,
+        freeze_resource_catalog,
+        register_resource_catalog,
+    )
+
+    register_community_instruction_provider(freeze=False)
 
     catalog = build_community_resource_catalog()
     if catalog.specs():
         register_resource_catalog(catalog)
+    freeze_instruction_providers()
     freeze_resource_catalog()
 
 
 __all__ = [
     "COMMUNITY_RESOURCE_EDITION",
+    "build_community_instruction_provider",
     "build_community_resource_catalog",
     "register_and_freeze_community_resource_catalog",
+    "register_community_instruction_provider",
 ]

@@ -13,6 +13,9 @@ from sqlalchemy import select
 # builds the full schema used by the Community relational adapters.
 import okto_pulse.core.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
+from okto_pulse.community.adapters.relational_schema_lifecycle import (
+    register_community_relational_schema_lifecycle,
+)
 from okto_pulse.core.kg.interfaces import registry as _reg
 from okto_pulse.core.kg.interfaces.audit_dtos import (
     ConsolidationAuditData,
@@ -45,6 +48,7 @@ def _community_registry_with_temp_db(tmp_path):
 
     async def setup() -> None:
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'p2_02.db'}")
+        register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
 
     asyncio.run(setup())

@@ -32,6 +32,9 @@ from okto_pulse.core.api.attachments import router as attachments_router
 from okto_pulse.core.infra.auth import require_user
 from okto_pulse.core.infra.database import get_db, get_session_factory
 from okto_pulse.core.infra.storage import configure_storage
+from okto_pulse.community.adapters.relational_schema_lifecycle import (
+    register_community_relational_schema_lifecycle,
+)
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
 
 USER = "r02-imp1-user"
@@ -63,6 +66,7 @@ def env(tmp_path):
 
     async def setup() -> None:
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'r02_imp1.db'}")
+        register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
 
     asyncio.run(setup())

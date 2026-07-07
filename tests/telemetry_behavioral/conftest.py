@@ -25,6 +25,9 @@ def _register_community_telemetry_providers():
     from okto_pulse.community.adapters.telemetry_port import (
         register_community_telemetry_port,
     )
+    from okto_pulse.community.adapters.telemetry_effect_config import (
+        register_community_telemetry_effect_config_provider,
+    )
     from okto_pulse.community.adapters.telemetry_sender import (
         register_community_telemetry_sender,
     )
@@ -52,7 +55,11 @@ def _register_community_telemetry_providers():
     from okto_pulse.core.telemetry.telemetry_port_registry import (
         reset_telemetry_port_factory_for_tests,
     )
+    from okto_pulse.core.telemetry.effect_config_registry import (
+        reset_telemetry_effect_config_provider_for_tests,
+    )
 
+    register_community_telemetry_effect_config_provider()
     register_community_telemetry_state_carrier()
     register_community_telemetry_event_store()
     register_community_product_aggregator()
@@ -68,3 +75,4 @@ def _register_community_telemetry_providers():
         reset_telemetry_sender_factory_for_tests()
         reset_telemetry_state_carrier_for_tests()
         reset_telemetry_port_factory_for_tests()
+        reset_telemetry_effect_config_provider_for_tests()

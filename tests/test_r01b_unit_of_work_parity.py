@@ -21,6 +21,9 @@ from sqlalchemy import select
 # Registers every ORM model on Base.metadata so init_db builds the full schema.
 import okto_pulse.core.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
+from okto_pulse.community.adapters.relational_schema_lifecycle import (
+    register_community_relational_schema_lifecycle,
+)
 from okto_pulse.core.models.db import Board
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     build_community_unit_of_work_factory,
@@ -45,6 +48,7 @@ def _temp_session_factory(tmp_path):
 
     async def setup() -> None:
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'r01b_uow.db'}")
+        register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
 
     asyncio.run(setup())

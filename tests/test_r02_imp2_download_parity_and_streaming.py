@@ -31,6 +31,9 @@ from starlette.responses import FileResponse
 import okto_pulse.core.app as _core_app  # noqa: F401  (registers ORM models)
 import okto_pulse.core.infra.database as _db_mod
 import okto_pulse.core.infra.storage as _storage_mod
+from okto_pulse.community.adapters.relational_schema_lifecycle import (
+    register_community_relational_schema_lifecycle,
+)
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
 from okto_pulse.core.api.attachments import router as attachments_router
 from okto_pulse.core.infra.auth import require_user
@@ -66,6 +69,7 @@ def env(tmp_path):
 
     async def setup() -> None:
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'r02_imp2.db'}")
+        register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
 
     asyncio.run(setup())

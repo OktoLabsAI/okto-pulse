@@ -42,6 +42,7 @@ from okto_pulse.core.telemetry.sender_registry import (
     reset_telemetry_sender_factory_for_tests,
 )
 from okto_pulse.core.telemetry.service import TelemetryService
+from okto_pulse.core.telemetry.settings import resolve_telemetry_config
 
 FIXED_NOW = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -49,13 +50,28 @@ FIXED_NOW = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
 @pytest.fixture(autouse=True)
 def _isolate_factory():
     from okto_pulse.core.telemetry.event_store_registry import reset_telemetry_event_store_factory_for_tests
+    from okto_pulse.core.telemetry.effect_config_registry import reset_telemetry_effect_config_provider_for_tests
+    from okto_pulse.core.telemetry.telemetry_state_registry import reset_telemetry_state_carrier_for_tests
+    from okto_pulse.community.adapters.telemetry_effect_config import (
+        register_community_telemetry_effect_config_provider,
+    )
+    from okto_pulse.community.adapters.telemetry_state import (
+        register_community_telemetry_state_carrier,
+    )
+
     reset_telemetry_sender_factory_for_tests()
     reset_telemetry_event_store_factory_for_tests()
+    reset_telemetry_state_carrier_for_tests()
+    reset_telemetry_effect_config_provider_for_tests()
+    register_community_telemetry_effect_config_provider()
+    register_community_telemetry_state_carrier()
     try:
         yield
     finally:
         reset_telemetry_sender_factory_for_tests()
         reset_telemetry_event_store_factory_for_tests()
+        reset_telemetry_state_carrier_for_tests()
+        reset_telemetry_effect_config_provider_for_tests()
 
 
 def _iso(moment: datetime) -> str:
@@ -147,9 +163,10 @@ def test_ts_312bfd67_conformance_and_handshake_usage(tmp_path, monkeypatch, capl
     result = sender.send_pending()
 
     assert result["sent"] is True
+    resolved_beacon_url = resolve_telemetry_config(settings).beacon_url
     assert session.calls == [
-        f"{settings.metrics_beacon_url.rstrip('/')}/v1/handshake",
-        f"{settings.metrics_beacon_url.rstrip('/')}/v1/usage",
+        f"{resolved_beacon_url}/v1/handshake",
+        f"{resolved_beacon_url}/v1/usage",
     ]
     assert _state(settings)["install_token"] == "fresh-token"
     # secret-free logs.

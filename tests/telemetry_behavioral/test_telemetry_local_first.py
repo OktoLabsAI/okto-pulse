@@ -13,7 +13,10 @@ from okto_pulse.community.adapters.telemetry_sender import (
     sign_payload,
 )
 from okto_pulse.core.api import metrics as metrics_api
-from okto_pulse.core.infra.config import CoreSettings, DEFAULT_METRICS_BEACON_URL
+from okto_pulse.core.infra.config import CoreSettings
+from okto_pulse.community.adapters.telemetry_effect_config import (
+    COMMUNITY_DEFAULT_METRICS_BEACON_URL,
+)
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
 from okto_pulse.core.telemetry.service import TelemetryService
 from okto_pulse.core.telemetry.settings import resolve_telemetry_config
@@ -64,7 +67,7 @@ def test_fresh_install_resolves_off_without_network(tmp_path: Path) -> None:
     assert cfg.migration_notice is None
     assert cfg.source == "default"
     assert cfg.metrics_dir == (tmp_path / "metrics").resolve()
-    assert cfg.beacon_url == DEFAULT_METRICS_BEACON_URL
+    assert cfg.beacon_url == COMMUNITY_DEFAULT_METRICS_BEACON_URL
     assert cfg.schema_version == CURRENT_SCHEMA_VERSION
 
 

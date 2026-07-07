@@ -21,6 +21,7 @@ from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry import failure_state as fs
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
 from okto_pulse.core.telemetry.service import TelemetryService
+from okto_pulse.core.telemetry.settings import resolve_telemetry_config
 
 # R10-E PASS 1 alias: tests exercise the Community concrete class.
 TelemetryBeaconSender = CommunityTelemetryBeaconSender
@@ -90,6 +91,10 @@ def _state(settings: CoreSettings) -> dict:
     return json.loads((metrics_dir / "state.json").read_text(encoding="utf-8"))
 
 
+def _beacon_url(settings: CoreSettings) -> str:
+    return resolve_telemetry_config(settings).beacon_url
+
+
 def test_refresh_before_token_expires_calls_handshake_before_usage(tmp_path, monkeypatch, caplog):
     """ts_113b1b23 — token within the 24h margin is refreshed before POST /v1/usage."""
     caplog.set_level("INFO", logger="okto_pulse.telemetry.sender")
@@ -105,9 +110,10 @@ def test_refresh_before_token_expires_calls_handshake_before_usage(tmp_path, mon
     assert result["sent"] is True
     assert result["refresh"] == "refreshed"
     # handshake happened BEFORE usage
+    beacon_url = _beacon_url(settings)
     assert session.calls == [
-        f"{settings.metrics_beacon_url.rstrip('/')}/v1/handshake",
-        f"{settings.metrics_beacon_url.rstrip('/')}/v1/usage",
+        f"{beacon_url}/v1/handshake",
+        f"{beacon_url}/v1/usage",
     ]
     state = _state(settings)
     assert state["install_token"] == "fresh-token"
@@ -133,9 +139,10 @@ def test_refresh_failure_with_valid_token_degrades_and_publishes(tmp_path, monke
     assert result["refresh"] == "degraded"
     assert "refresh_next_retry_at" in result
     # refresh was attempted AND usage still went out with the current token
+    beacon_url = _beacon_url(settings)
     assert session.calls == [
-        f"{settings.metrics_beacon_url.rstrip('/')}/v1/handshake",
-        f"{settings.metrics_beacon_url.rstrip('/')}/v1/usage",
+        f"{beacon_url}/v1/handshake",
+        f"{beacon_url}/v1/usage",
     ]
     state = _state(settings)
     assert state["install_token"] == "valid-token"  # unchanged; degrade kept the valid token
@@ -153,7 +160,7 @@ def test_no_refresh_when_token_far_from_expiry(tmp_path, monkeypatch):
     result = TelemetryBeaconSender(settings, session=session).send_once()  # type: ignore[arg-type]
 
     assert result == {"sent": True, "batch_seq": 5}  # no refresh key when not attempted
-    assert session.calls == [f"{settings.metrics_beacon_url.rstrip('/')}/v1/usage"]  # handshake skipped
+    assert session.calls == [f"{_beacon_url(settings)}/v1/usage"]  # handshake skipped
 
 
 def test_transient_failure_records_jittered_backoff_in_failure_state(tmp_path, monkeypatch):
