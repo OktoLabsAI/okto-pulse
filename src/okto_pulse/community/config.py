@@ -29,7 +29,7 @@ class CommunitySettings(CoreSettings):
         if self.database_url == "sqlite+aiosqlite:///./dashboard.db":
             db_path = data_path / "data" / "pulse.db"
             self.database_url = f"sqlite+aiosqlite:///{db_path}"
-        if self.upload_dir == "./uploads":
+        if not self.upload_dir or self.upload_dir == "./uploads":
             self.upload_dir = str(data_path / "uploads")
         if not self.metrics_dir:
             self.metrics_dir = str(data_path / "metrics")

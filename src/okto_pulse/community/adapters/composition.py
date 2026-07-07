@@ -52,7 +52,11 @@ def build_community_embedding(*, settings: Any | None = None):
     s = settings if settings is not None else _core_settings()
     return build_community_embedding_provider(
         mode=getattr(s, "kg_embedding_mode", "stub"),
-        model_name=getattr(s, "kg_embedding_model", "all-MiniLM-L6-v2"),
+        model_name=getattr(
+            s,
+            "kg_embedding_model",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        ),
         dim=getattr(s, "kg_embedding_dim", 384),
     )
 
