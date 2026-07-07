@@ -53,12 +53,15 @@ PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = 
         (
             "Base",
             "close_db",
+            "configure_database_runtime",
             "create_database",
             "get_db",
             "get_db_session",
             "get_engine",
             "get_session_factory",
             "init_db",
+            "is_database_runtime_configured",
+            "reset_database_runtime_for_tests",
         ),
     ),
 )
@@ -150,47 +153,6 @@ COMMUNITY_CORE_REACH_IN_LEDGER: tuple[CoreReachInLedgerEntry, ...] = (
         reason="Local SQLite adapters still persist core-owned coordination rows through SQLAlchemy models.",
         removal_path="Replace direct ORM imports with repository DTOs or generated table mappings.",
         withdrawal_criterion="Community coordination adapters import no core.models.db symbols.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/data_bootstrapper.py",
-        "make_community_data_bootstrapper",
-        "okto_pulse.core.infra",
-        ("database",),
-        target="Community data-bootstrap lifecycle adapter",
-        reason=(
-            "R16-C binds the Community data-bootstrap ledger to the current "
-            "core.infra.database bootstrap callables until the lifecycle facade "
-            "is fully activated."
-        ),
-        removal_path=(
-            "Replace the database-module reach-in with a public schema/data "
-            "lifecycle binding facade or edition-owned callable registry."
-        ),
-        withdrawal_criterion=(
-            "Community data bootstrapper imports no core.infra database module "
-            "or database lifecycle symbols."
-        ),
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/data_bootstrapper.py",
-        "make_community_data_bootstrapper",
-        "okto_pulse.core.infra.database",
-        ("<dynamic:step.step_id>",),
-        category="tracked_dynamic_getattr",
-        owner="AF30-3c",
-        target="Community data-bootstrap lifecycle adapter",
-        reason=(
-            "AF30-3c owns removal of dynamic binding from Community bootstrap "
-            "steps to core.infra.database callables."
-        ),
-        removal_path=(
-            "Replace getattr(_database, step.step_id) with an edition-owned "
-            "schema/data lifecycle callable registry."
-        ),
-        withdrawal_criterion=(
-            "data_bootstrapper no longer dynamically resolves callables from "
-            "core.infra.database."
-        ),
     ),
     _ledger(
         "src/okto_pulse/community/adapters/mcp_auth.py",
@@ -293,10 +255,100 @@ COMMUNITY_CORE_REACH_IN_LEDGER: tuple[CoreReachInLedgerEntry, ...] = (
         withdrawal_criterion="Community outbox adapter imports no core.models.db symbols.",
     ),
     _ledger(
+        "src/okto_pulse/community/adapters/sqlalchemy_database.py",
+        "configure_community_database",
+        "okto_pulse.core.infra.database",
+        ("configure_database_runtime",),
+        target="Community SQLAlchemy runtime adapter",
+        reason="Community owns engine/session construction and injects the runtime into the core facade.",
+        removal_path="Expose runtime injection through a public core composition facade.",
+        withdrawal_criterion="Community SQLAlchemy database adapter imports no core.infra.database symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/relational_schema_steps.py",
+        "<module>",
+        "okto_pulse.core.infra.database",
+        ("Base", "get_engine", "get_session_factory"),
+        target="Community relational schema lifecycle adapter",
+        reason="Community owns concrete schema lifecycle execution against the current core ORM Base/runtime facade.",
+        removal_path="Move Base/runtime access behind public relational lifecycle/runtime ports.",
+        withdrawal_criterion="Community schema steps import no core.infra.database symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/relational_schema_steps.py",
+        "_migrate_heal_task_validation_field_names",
+        "okto_pulse.core.models.db",
+        ("Card",),
+        target="Community relational schema lifecycle adapter",
+        reason="This migration heals persisted task-validation JSON through the current Card ORM model.",
+        removal_path="Replace direct ORM access with a schema-step data access facade.",
+        withdrawal_criterion="Community schema steps import no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/relational_schema_steps.py",
+        "_migrate_agent_permissions",
+        "okto_pulse.core.models.db",
+        ("Agent",),
+        target="Community relational schema lifecycle adapter",
+        reason="This migration converts legacy agent permission rows through the current Agent ORM model.",
+        removal_path="Replace direct ORM access with a schema-step data access facade.",
+        withdrawal_criterion="Community schema steps import no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/data_bootstrap_steps.py",
+        "<module>",
+        "okto_pulse.core.infra.database",
+        ("get_engine", "get_session_factory"),
+        target="Community data-bootstrap lifecycle adapter",
+        reason="Community owns concrete seed/reconcile SQL against the current relational runtime facade.",
+        removal_path="Move runtime access behind public data-bootstrap/runtime ports.",
+        withdrawal_criterion="Community data bootstrap steps import no core.infra.database symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/data_bootstrap_steps.py",
+        "_seed_builtin_presets",
+        "okto_pulse.core.models.db",
+        ("PermissionPreset",),
+        target="Community data-bootstrap lifecycle adapter",
+        reason="Built-in preset seed rows are persisted through the current PermissionPreset ORM model.",
+        removal_path="Replace direct ORM access with a data-bootstrap repository facade.",
+        withdrawal_criterion="Community data bootstrap steps import no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/data_bootstrap_steps.py",
+        "_reconcile_builtin_presets",
+        "okto_pulse.core.models.db",
+        ("PermissionPreset",),
+        target="Community data-bootstrap lifecycle adapter",
+        reason="Built-in preset reconcile updates current PermissionPreset ORM rows.",
+        removal_path="Replace direct ORM access with a data-bootstrap repository facade.",
+        withdrawal_criterion="Community data bootstrap steps import no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/data_bootstrap_steps.py",
+        "_reconcile_agent_permission_flags",
+        "okto_pulse.core.models.db",
+        ("Agent",),
+        target="Community data-bootstrap lifecycle adapter",
+        reason="Agent permission flag reconcile updates current Agent ORM rows.",
+        removal_path="Replace direct ORM access with a data-bootstrap repository facade.",
+        withdrawal_criterion="Community data bootstrap steps import no core.models.db symbols.",
+    ),
+    _ledger(
+        "src/okto_pulse/community/adapters/relational_effects.py",
+        "<module>",
+        "okto_pulse.core.models.db",
+        ("Board", "ConsolidationQueue", "KGTickRun"),
+        target="Community SQLAlchemy relational effects adapter",
+        reason="Community owns concrete SQLAlchemy persistence for queue/tick side effects requested by core ports.",
+        removal_path="Replace direct ORM imports with edition-owned table mappings or repository DTOs.",
+        withdrawal_criterion="Community relational effects adapter imports no core.models.db symbols.",
+    ),
+    _ledger(
         "src/okto_pulse/community/cli.py",
         "cmd_init",
         "okto_pulse.core.infra.database",
-        ("close_db", "create_database", "get_session_factory", "init_db"),
+        ("close_db", "get_session_factory", "init_db"),
         target="Community CLI database lifecycle adapter",
         reason="Local init command still drives the current SQLite-backed database lifecycle.",
         removal_path="Move CLI lifecycle calls behind a public startup/schema lifecycle facade.",
@@ -316,52 +368,11 @@ COMMUNITY_CORE_REACH_IN_LEDGER: tuple[CoreReachInLedgerEntry, ...] = (
         "src/okto_pulse/community/cli.py",
         "_generate_mcp_json",
         "okto_pulse.core.infra.database",
-        ("close_db", "create_database", "get_session_factory", "init_db"),
+        ("close_db", "get_session_factory", "init_db"),
         target="Community CLI database lifecycle adapter",
         reason="Local MCP config generation opens the current SQLite database.",
         removal_path="Move CLI lifecycle calls behind a public startup/schema lifecycle facade.",
         withdrawal_criterion="Community MCP config generation imports no core.infra.database symbols.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/relational_schema_migrator.py",
-        "make_community_relational_schema_migrator",
-        "okto_pulse.core.infra",
-        ("database",),
-        target="Community relational schema lifecycle adapter",
-        reason=(
-            "R16-B binds the Community migration ledger to the current "
-            "core.infra.database migration/create_all callables until the "
-            "lifecycle facade is fully activated."
-        ),
-        removal_path=(
-            "Replace the database-module reach-in with a public schema "
-            "lifecycle binding facade or edition-owned callable registry."
-        ),
-        withdrawal_criterion=(
-            "Community relational schema migrator imports no core.infra "
-            "database module or database lifecycle symbols."
-        ),
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/relational_schema_migrator.py",
-        "make_community_relational_schema_migrator",
-        "okto_pulse.core.infra.database",
-        ("<dynamic:step.step_id>",),
-        category="tracked_dynamic_getattr",
-        owner="AF30-3c",
-        target="Community relational schema lifecycle adapter",
-        reason=(
-            "AF30-3c owns removal of dynamic binding from Community migration "
-            "steps to core.infra.database callables."
-        ),
-        removal_path=(
-            "Replace getattr(_database, step.step_id) with an edition-owned "
-            "schema lifecycle callable registry."
-        ),
-        withdrawal_criterion=(
-            "relational_schema_migrator no longer dynamically resolves "
-            "callables from core.infra.database."
-        ),
     ),
     _ledger(
         "src/okto_pulse/community/cli.py",
@@ -377,7 +388,7 @@ COMMUNITY_CORE_REACH_IN_LEDGER: tuple[CoreReachInLedgerEntry, ...] = (
         "src/okto_pulse/community/cli.py",
         "cmd_verify_pipeline",
         "okto_pulse.core.infra.database",
-        ("close_db", "create_database", "get_session_factory", "init_db"),
+        ("close_db", "get_session_factory", "init_db"),
         target="Community CLI database lifecycle adapter",
         reason="Local KG pipeline verification opens the current SQLite database.",
         removal_path="Move CLI lifecycle calls behind a public startup/schema lifecycle facade.",
@@ -387,7 +398,7 @@ COMMUNITY_CORE_REACH_IN_LEDGER: tuple[CoreReachInLedgerEntry, ...] = (
         "src/okto_pulse/community/cli.py",
         "cmd_kg_backfill",
         "okto_pulse.core.infra.database",
-        ("close_db", "create_database", "get_session_factory", "init_db"),
+        ("close_db", "get_session_factory", "init_db"),
         target="Community CLI database lifecycle adapter",
         reason="Local KG backfill dry-run opens the current SQLite database.",
         removal_path="Move CLI lifecycle calls behind a public startup/schema lifecycle facade.",

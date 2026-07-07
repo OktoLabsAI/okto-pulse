@@ -27,7 +27,7 @@ def test_ts_33e252d6_current_private_core_reach_ins_are_ledgered() -> None:
     assert report["stale_ledger"] == []
     assert report["incomplete_ledger"] == []
     assert report["occurrence_count"] == report["ledger_count"]
-    assert report["occurrence_count"] == 30
+    assert report["occurrence_count"] == 35
 
 
 def test_ts_33e252d6_ledger_entries_have_withdrawal_criteria() -> None:
@@ -290,19 +290,7 @@ def test_af28_s2_tracked_af30_getattrs_and_broad_allowlist_fail_closed() -> None
         if entry["category"] == "tracked_dynamic_getattr"
     ]
 
-    assert [(entry["file_path"], entry["symbols"], entry["owner"]) for entry in tracked] == [
-        (
-            "src/okto_pulse/community/adapters/data_bootstrapper.py",
-            ("<dynamic:step.step_id>",),
-            "AF30-3c",
-        ),
-        (
-            "src/okto_pulse/community/adapters/relational_schema_migrator.py",
-            ("<dynamic:step.step_id>",),
-            "AF30-3c",
-        ),
-    ]
-    assert all(entry["withdrawal_criterion"] for entry in tracked)
+    assert tracked == []
 
     allowlist_report = audit_community_core_import_boundary(
         REPO_ROOT,
