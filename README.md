@@ -59,9 +59,9 @@ Current 0.3.0 surface:
 | Surface | Count |
 | --- | ---: |
 | Governance gates | 17 |
-| Core MCP tools | 259 |
+| Core MCP tools | 262 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 259 |
+| MCP tools exposed by `okto-pulse serve` | 262 |
 
 The community package mounts the full `okto-pulse-core` MCP server. That means installed community runtimes expose the complete core tool catalog while keeping the CLI, frontend and packaging layer separate from the core engine.
 The MCP count is measured from the core FastMCP registry at implementation time;
@@ -297,15 +297,21 @@ Adapter source map:
   `community/adapters/workers.py`.
 - Auth/storage/init: `community/auth.py`, `community/adapters/storage.py`,
   `community/adapters/relational_schema_migrator.py` and
-  `community/adapters/data_bootstrapper.py`.
-- Relational schema lifecycle: `community/adapters/relational_schema_lifecycle.py`.
+  `community/adapters/data_bootstrapper.py`;
+  `community/adapters/data_bootstrap_steps.py` owns the local bootstrap step
+  implementations.
+- Relational schema lifecycle: `community/adapters/relational_schema_lifecycle.py`
+  and `community/adapters/relational_schema_steps.py`.
 - Relational runtime: `community/adapters/sqlalchemy_database.py`,
-  `community/adapters/sqlalchemy_unit_of_work.py` and
-  `community/adapters/sqlalchemy_repositories.py`; the SQLite PRAGMA owner is
+  `community/adapters/sqlalchemy_unit_of_work.py`,
+  `community/adapters/sqlalchemy_repositories.py`,
+  `community/adapters/coordination.py` and
+  `community/adapters/relational_effects.py`; the SQLite PRAGMA owner is
   `install_community_sqlite_pragmas` in
   `community/adapters/sqlalchemy_database.py`.
 - KG source/rebuild ingestion: `community/adapters/board_source_reader.py` and
-  `community/adapters/board_rebuild_ingestion.py`.
+  `community/adapters/board_rebuild_ingestion.py`; content ingestion helpers
+  live in `community/adapters/content_ingestion.py`.
 - KG local schema/durability adapters: `community/adapters/global_discovery_schema.py`,
   `community/adapters/global_discovery_runtime.py` and
   `community/adapters/rebuild_audit_storage.py`.
@@ -332,8 +338,12 @@ Adapter source map:
 - Boundary/conformance evidence: `community/adapters/readiness_evidence.py`,
   `community/adapters/data_dependency_audit.py`,
   `community/adapters/kg_dependency_audit.py`,
-  `community/adapters/boundary_evidence.py` and
+  `community/adapters/boundary_evidence.py`,
+  `community/adapters/core_import_boundary.py`,
+  `community/adapters/credential_surface_gate.py` and
   `community/adapters/smoke_evidence.py`.
+- Telemetry effect defaults are supplied by
+  `community/adapters/telemetry_effect_config.py`.
 
 Maintain this source map from the live filesystem under
 `src/okto_pulse/community/adapters/**/*.py`, with `__init__.py` and private
@@ -439,6 +449,21 @@ source of ownership truth for this matrix.
 | `requests` | `temporary_exception` | Used by the local telemetry sender, but ownership remains governed by core `#10_telemetry` / `tr_03abf5ab` until the telemetry oracle is green. |
 | `chardet` | `temporary_exception` | Kept as the requests/telemetry charset companion; it is not omitted from the matrix and is not moved independently. |
 | `apscheduler` | `community_owned` | Declared directly by Community. `community/adapters/scheduler.py` owns APScheduler startup, `IntervalTrigger` mapping and shutdown behind the core `SchedulerControl` port. |
+
+AF33 capstone ownership matrix. The marked table is rendered from the core
+`CAPSTONE_OWNERSHIP_MATRIX` and must stay byte-identical to the core README
+block. The gates listed here are executable; README prose follows them.
+
+<!-- AF33-CAPSTONE-MATRIX:BEGIN -->
+| Surface | Core contract | Community/local adapter | SaaS swap target | Executable gates |
+| --- | --- | --- | --- | --- |
+| Relational runtime | repository/UoW and schema lifecycle ports; no ad-hoc dialect or engine/session factory bypass | SQLite/SQLAlchemy adapters in community.adapters.sqlalchemy_* and relational_schema_lifecycle | SQLite -> Aurora/Postgres | run_relational_residue_gate, audit_dependency_conformance, audit_community_core_import_boundary |
+| KG graph runtime | KG interfaces, policies and adapter-neutral schema compatibility helpers | LadybugDB/Kuzu adapters in community.adapters.kuzu_* and global_discovery_runtime | LadybugDB/Kuzu -> Neptune | audit_dependency_conformance, ImportBoundaryGate, audit_community_core_import_boundary |
+| Durable files and artifacts | StorageProvider, RebuildAuditArtifactStore and CognitivePendingWorkProvider contracts | filesystem storage, upload_dir, rebuild audit storage and cognitive-pending providers | filesystem -> S3 | run_rebuild_audit_storage_gate, run_core_settings_defaults_gate, run_public_config_stability_gate |
+| Telemetry effects | TelemetryPort contracts, event schema and privacy policy | local JSONL store, state files, beacon sender and product telemetry adapters | local telemetry files/API -> AWS telemetry API | run_telemetry_store_ownership_gate, run_telemetry_sender_ownership_gate, run_telemetry_product_ownership_gate |
+| Scheduler/runtime effects | JobSpec, SchedulerControl and KG daily tick policy | APScheduler-backed SingletonSchedulerControl | APScheduler local runtime -> runtime scheduler adapter | SchedulerControlSymbolGate, scheduler_signal_conformance |
+| MCP resources and versions | MCP instruction/resource/version provider ports and stable public catalog | Community resource catalog, capability descriptors and package version wiring | local catalog/version reads -> deployment provider | run_public_config_stability_gate, register_instruction_provider, register_package_version_provider |
+<!-- AF33-CAPSTONE-MATRIX:END -->
 
 ## CLI Reference
 
