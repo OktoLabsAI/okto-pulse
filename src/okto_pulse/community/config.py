@@ -4,13 +4,16 @@ import os
 from pathlib import Path
 from pydantic import model_validator
 from okto_pulse.core.infra.config import CoreSettings
+from okto_pulse.community.adapters.telemetry_effect_config import (
+    COMMUNITY_DEFAULT_METRICS_BEACON_URL,
+)
 
 class CommunitySettings(CoreSettings):
     """Settings for the community edition (local-first, single-user)."""
 
     host: str = "127.0.0.1"  # Community is local-only — bind to loopback
     data_dir: str = ""  # Default set in validator
-    metrics_beacon_url: str = "https://metrics.oktolabs.ai"
+    metrics_beacon_url: str = COMMUNITY_DEFAULT_METRICS_BEACON_URL
 
     # Community ships sentence-transformers as a mandatory dep (pyproject.toml),
     # so override the core default of "stub" — semantic KG search needs real
@@ -25,8 +28,8 @@ class CommunitySettings(CoreSettings):
             )
         data_path = Path(self.data_dir).expanduser().resolve()
         self.data_dir = str(data_path)
-        # Only override if still at default values
-        if self.database_url == "sqlite+aiosqlite:///./dashboard.db":
+        # Only override if still unset or at the legacy core default value.
+        if not self.database_url or self.database_url == "sqlite+aiosqlite:///./dashboard.db":
             db_path = data_path / "data" / "pulse.db"
             self.database_url = f"sqlite+aiosqlite:///{db_path}"
         if not self.upload_dir or self.upload_dir == "./uploads":
