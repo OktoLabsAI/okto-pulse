@@ -2,7 +2,7 @@
 
 Covers the 6 test scenarios 1:1:
 
-  ts_7aacc71a — ledger covers ALL current _migrate_* (mechanical AST gate).
+  ts_7aacc71a — ledger covers ALL current Community-owned _migrate_* steps.
   ts_5283c465 — golden replay: adapter plan vs baseline init_db schema.
   ts_7d52dffc — idempotent replay: re-run -> skipped, no drift.
   ts_7c1fc064 — fail-closed: failing step / invalid plan / absent migrator.
@@ -28,6 +28,10 @@ import pytest
 import okto_pulse.core.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
 import okto_pulse.core.ports.relational_schema_migrator as _port_mod
+import okto_pulse.community.adapters.relational_schema_steps as _steps_mod
+from okto_pulse.community.adapters.relational_schema_lifecycle import (
+    register_community_relational_schema_lifecycle,
+)
 from okto_pulse.community.adapters.relational_schema_migrator import (
     CREATE_ALL_BOUNDARY_STEP_ID,
     CommunityRelationalSchemaMigrator,
@@ -43,9 +47,10 @@ from okto_pulse.core.ports import (
     require_migrator,
 )
 
-DATABASE_PY = Path(_db_mod.__file__)
+CORE_DATABASE_PY = Path(_db_mod.__file__)
+STEPS_PY = Path(_steps_mod.__file__)
 PORT_PY = Path(_port_mod.__file__)
-CORE_PACKAGE_DIR = DATABASE_PY.parents[1]  # .../okto_pulse/core
+CORE_PACKAGE_DIR = CORE_DATABASE_PY.parents[1]  # .../okto_pulse/core
 
 _DATA_BOOTSTRAP_FUNCS = {
     "_seed_builtin_presets",
@@ -59,8 +64,8 @@ _DATA_BOOTSTRAP_FUNCS = {
 # Helpers
 # ---------------------------------------------------------------------------
 def _async_migrate_names_from_database() -> set[str]:
-    """AST scan: every ``async def _migrate_*`` in database.py."""
-    tree = ast.parse(DATABASE_PY.read_text(encoding="utf-8"))
+    """AST scan: every Community-owned ``async def _migrate_*`` step."""
+    tree = ast.parse(STEPS_PY.read_text(encoding="utf-8"))
     return {
         node.name
         for node in ast.walk(tree)
@@ -68,35 +73,9 @@ def _async_migrate_names_from_database() -> set[str]:
     }
 
 
-def _init_db_effective_order() -> list[str]:
-    """Parse init_db's body into the ordered sequence of _migrate_* calls +
-    the create_all boundary marker (data bootstrap excluded — not _migrate_*)."""
-    source = DATABASE_PY.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    init_db = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "init_db"
-    )
-    ordered: list[str] = []
-
-    class _Visitor(ast.NodeVisitor):
-        def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
-            func = node.func
-            # await _migrate_xxx()
-            if isinstance(func, ast.Name) and func.id.startswith("_migrate_"):
-                ordered.append(func.id)
-            # await conn.run_sync(Base.metadata.create_all)
-            if isinstance(func, ast.Attribute) and func.attr == "run_sync":
-                for arg in node.args:
-                    if (
-                        isinstance(arg, ast.Attribute)
-                        and arg.attr == "create_all"
-                    ):
-                        ordered.append(CREATE_ALL_BOUNDARY_STEP_ID)
-            self.generic_visit(node)
-
-    _Visitor().visit(init_db)
-    return ordered
+def _step_callable_order() -> list[str]:
+    """Concrete Community callable registration order, excluding create_all."""
+    return list(_steps_mod.SCHEMA_STEP_CALLABLES)
 
 
 async def _collect_schema(engine) -> dict[str, list[str]]:
@@ -166,20 +145,24 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         assert excluded not in ledger_migrate_ids
 
 
-def test_ts_7aacc71a_ledger_order_matches_init_db_effective_order():
+def test_ts_7aacc71a_ledger_order_matches_community_step_registry():
     ledger = build_community_migration_ledger()
-    ledger_order = [s.step_id for s in sorted(ledger, key=lambda s: s.order)]
-    assert _init_db_effective_order() == ledger_order
+    ledger_migrate_order = [
+        s.step_id
+        for s in sorted(ledger, key=lambda s: s.order)
+        if s.step_id != CREATE_ALL_BOUNDARY_STEP_ID
+    ]
+    assert _step_callable_order() == ledger_migrate_order
 
 
 def test_ts_7aacc71a_drop_spec_skills_is_the_only_destructive():
     ledger = build_community_migration_ledger()
     destructive = {s.step_id for s in ledger if s.destructive}
     assert destructive == {"_migrate_drop_spec_skills"}
-    # _migrate_agent_permissions carries the documented bootstrap-region nuance.
+    # _migrate_agent_permissions carries the documented schema-tail nuance.
     perms = next(s for s in ledger if s.step_id == "_migrate_agent_permissions")
     assert perms.phase == "post_create_all"
-    assert perms.metadata.get("runs_in_bootstrap_region") is True
+    assert perms.metadata.get("runs_at_schema_tail") is True
 
 
 # ===========================================================================
@@ -190,6 +173,7 @@ def test_ts_5283c465_golden_replay_matches_baseline(tmp_path, _isolate_engine):
     async def drive():
         # Baseline: real init_db on DB1.
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'baseline.db'}")
+        register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
         baseline_schema = await _collect_schema(_db_mod.get_engine())
         await _db_mod.get_engine().dispose()
@@ -215,6 +199,7 @@ def test_ts_5283c465_replay_over_baseline_does_not_alter_schema(
 ):
     async def drive():
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'base.db'}")
+        register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
         schema_before = await _collect_schema(_db_mod.get_engine())
         # Replay the adapter plan OVER the init_db'd baseline (same DB).
@@ -399,16 +384,11 @@ def test_ts_35ad79e3_core_does_not_import_community():
     assert offenders == [], f"core imports community: {offenders}"
 
 
-def test_ts_35ad79e3_init_db_and_create_all_intact():
-    # database.py / init_db present and not reordered (effective order == ledger).
-    assert DATABASE_PY.exists()
-    order = _init_db_effective_order()
-    assert CREATE_ALL_BOUNDARY_STEP_ID in order, "create_all boundary missing from init_db"
-    assert order[: order.index(CREATE_ALL_BOUNDARY_STEP_ID)], "no pre_create_all migrations"
-    ledger_order = [
-        s.step_id for s in sorted(build_community_migration_ledger(), key=lambda s: s.order)
-    ]
-    assert order == ledger_order  # not removed / not reordered
+def test_ts_35ad79e3_core_database_no_lifecycle_sql():
+    source = CORE_DATABASE_PY.read_text(encoding="utf-8")
+    assert "await orchestrator.initialize_schema()" in source
+    assert "Base.metadata.create_all" not in source
+    assert "async def _migrate_" not in source
 
 
 def test_ts_35ad79e3_adapter_module_is_layer_isolated():

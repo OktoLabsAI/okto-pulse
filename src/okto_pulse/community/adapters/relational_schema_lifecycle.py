@@ -6,19 +6,15 @@ R16-C ``CommunityDataBootstrapper`` (data-bootstrap region) into the single
 (``okto_pulse.core.infra.schema_lifecycle``) resolves. Registering it MOVES the
 ``init_db`` lifecycle ownership to the Community edition (FR3/FR5): once
 registered, core ``init_db`` delegates the WHOLE migrate -> create_all -> seed
-lifecycle here and its inline body never runs. Register-before-remove — the core
-inline fallback stays until the final R01C physical removal (gated by
-``relational_lifecycle_decomposition.r01c_lifecycle_removal_readiness``).
+lifecycle here. Core has no inline fallback; unregistered startup fails closed.
 
-Ordering (decision IMP4-B, equivalence-PROVEN — see
-``tests/test_r01c_imp4_schema_lifecycle_orchestrator.py``): the orchestrator runs
-the schema plan FULLY (``pre_create_all`` -> ``create_all_boundary`` ->
-``post_create_all``, including ``_migrate_agent_permissions`` at the tail of the
-schema region) and THEN the data-bootstrap plan (presets -> permissions reconcile
--> discovery intents). This is the clean ports composition. It differs from
-``init_db``'s effective order in exactly ONE position: ``_migrate_agent_permissions``
-runs BEFORE ``_seed_builtin_presets`` (``init_db`` runs it AFTER). That reorder is
-behavior-preserving and proven re-executable:
+Ordering: the orchestrator runs the schema plan FULLY
+(``pre_create_all`` -> ``create_all_boundary`` -> ``post_create_all``, including
+``_migrate_agent_permissions`` at the tail of the schema region) and THEN the
+data-bootstrap plan (presets -> permissions reconcile -> discovery intents).
+The historical adjacent reorder of ``_migrate_agent_permissions`` and
+``_seed_builtin_presets`` was proven behavior-preserving and remains encoded in
+this ports composition:
 
   * ``_migrate_agent_permissions`` writes ONLY ``agents``; ``_seed_builtin_presets``
     writes ONLY ``permission_presets`` (DISJOINT tables, no shared observable
@@ -34,8 +30,8 @@ port's structured error (``SchemaMigrationError`` / ``DataBootstrapError``) — 
 lifecycle can NEVER report a silent partial success to ``init_db``.
 
 Import-light (mirrors R16-B/R16-C): the module top pulls only the pure
-``core.ports`` contract + the sibling adapter factories; ``core.infra.database`` is
-imported lazily inside those factories, so ``core`` never imports ``community``.
+``core.ports`` contract + the sibling adapter factories; concrete SQL callables are
+imported lazily from Community step modules, so ``core`` never imports ``community``.
 """
 
 from __future__ import annotations
@@ -117,8 +113,8 @@ def make_community_relational_schema_lifecycle_orchestrator(
     target: str = "community-sqlite",
 ) -> CommunityRelationalSchemaLifecycleOrchestrator:
     """Composition factory — binds the R16-B migrator + R16-C bootstrapper (each
-    wired to the REAL ``core.infra.database`` callables) into the lifecycle
-    orchestrator. Import-light: the factories lazy-import ``core.infra.database``."""
+    wired to Community-owned concrete callables) into the lifecycle
+    orchestrator."""
     return CommunityRelationalSchemaLifecycleOrchestrator(
         migrator=make_community_relational_schema_migrator(target=target),
         bootstrapper=make_community_data_bootstrapper(target=target),

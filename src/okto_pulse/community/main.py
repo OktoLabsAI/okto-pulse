@@ -563,6 +563,9 @@ def create_community_app():
         from okto_pulse.community.adapters.telemetry_port import (
             register_community_telemetry_port,
         )
+        from okto_pulse.community.adapters.telemetry_effect_config import (
+            register_community_telemetry_effect_config_provider,
+        )
         from okto_pulse.community.adapters.telemetry_sender import (
             register_community_telemetry_sender,
         )
@@ -572,6 +575,7 @@ def create_community_app():
         from okto_pulse.community.adapters.telemetry_state import (
             register_community_telemetry_state_carrier,
         )
+        register_community_telemetry_effect_config_provider()
         register_community_telemetry_state_carrier()
         register_community_telemetry_event_store()
         register_community_product_aggregator()
@@ -607,14 +611,16 @@ def create_community_app():
 
     register_community_coordination_providers()
     configure_community_database(settings.database_url, echo=settings.debug)
+    from okto_pulse.community.adapters.relational_effects import (
+        register_community_relational_effects,
+    )
+
+    register_community_relational_effects()
 
     # R01C REPLAN-IMP4 (FR3/FR5): register the Community relational SCHEMA-LIFECYCLE
     # orchestrator on the core seam BEFORE the lifespan runs init_db, so the core
     # delegates the WHOLE migrate->create_all->seed lifecycle to the Community
-    # migrator (R16-B) + bootstrapper (R16-C) instead of running init_db's inline
-    # body. Register-before-remove (TR4): the core inline fallback stays until the
-    # final R01C physical removal, gated by r01c_lifecycle_removal_readiness. The
-    # The orchestrator runs against the live engine injected by the Community
+    # migrator (R16-B) + bootstrapper (R16-C). The orchestrator runs against the live engine injected by the Community
     # SQLAlchemy adapter above.
     from okto_pulse.community.adapters.relational_schema_lifecycle import (
         register_community_relational_schema_lifecycle,

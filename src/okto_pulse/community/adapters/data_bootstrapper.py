@@ -1,13 +1,10 @@
 """Community adapter for the ``DataBootstrapper`` port (spec R16-C).
 
 Concrete Community-edition implementation of
-``okto_pulse.core.ports.DataBootstrapper`` (R16-C). It models the DATA-bootstrap
-fatia of ``okto_pulse.core.infra.database.init_db`` — the seed / reconcile /
-discovery-intent steps that run AFTER schema migration — as an ordered,
-declarative ledger of :class:`DataBootstrapStep`, WITHOUT moving, reordering,
-removing or re-implementing any bootstrap function (register-before-remove).
-``init_db`` remains the single source of truth; this adapter only *describes*
-and *replays* the same steps.
+``okto_pulse.core.ports.DataBootstrapper`` (R16-C). It owns the DATA-bootstrap
+slice of the relational lifecycle — the seed / reconcile / discovery-intent
+steps that run AFTER schema migration — as an ordered, declarative ledger of
+:class:`DataBootstrapStep` bound to Community-owned bootstrap callables.
 
 Boundary (``br_e16ff5a1`` / R16-C ts_5a7b50e2): this ledger contains ONLY data
 bootstrap. Schema migrations (incl. ``_migrate_agent_permissions``, which runs
@@ -17,8 +14,8 @@ disjoint and cross-checked.
 
 Layering (mirrors R16-B):
   * Module top-level imports ONLY the pure ``core.ports`` contract.
-  * ``make_community_data_bootstrapper`` lazy-imports ``core.infra.database`` and
-    binds the real callables — so ``core`` never imports ``community``.
+  * ``make_community_data_bootstrapper`` lazy-imports concrete Community
+    bootstrap callables — so ``core`` never imports ``community``.
 
 Async seam (same as R16-B, documented not resolved): the bootstrap functions
 are ``async``. The port's ``execute`` is sync; this adapter implements it as a
@@ -77,7 +74,7 @@ def build_community_data_bootstrap_ledger() -> tuple[DataBootstrapStep, ...]:
     """Return the canonical, ordered ledger of :class:`DataBootstrapStep`.
 
     Declarative only — carries no SQL and binds no callable. ``order`` is the
-    1-based init_db call position (within the data-bootstrap tail);
+    1-based lifecycle call position (within the data-bootstrap tail);
     ``owner='community'``.
     """
     steps: list[DataBootstrapStep] = []
@@ -90,7 +87,7 @@ def build_community_data_bootstrap_ledger() -> tuple[DataBootstrapStep, ...]:
                 domain=domain,  # type: ignore[arg-type]
                 idempotent=True,
                 metadata={
-                    "source": "okto_pulse.core.infra.database.init_db",
+                    "source": "okto_pulse.community.adapters.data_bootstrap_steps",
                     "description": description,
                 },
             )
@@ -295,30 +292,26 @@ def make_community_data_bootstrapper(
     *,
     target: str = "community-sqlite",
 ) -> CommunityDataBootstrapper:
-    """Composition factory — binds the canonical ledger to the REAL bootstrap
-    callables from ``core.infra.database``.
+    """Bind the canonical ledger to concrete Community bootstrap callables.
 
-    ``core.infra.database`` is imported HERE (lazily), never at module top, so
-    ``core`` never imports ``community`` and the adapter module stays
-    import-light (only the pure ``core.ports`` contract).
+    Core owns pure catalog data and domain invariants; Community owns SQL
+    execution for seed/reconcile/bootstrap.
     """
-    from okto_pulse.core.infra import database as _database
+    from .data_bootstrap_steps import DATA_BOOTSTRAP_STEP_CALLABLES
 
     steps = build_community_data_bootstrap_ledger()
-    callables: dict[str, StepCallable] = {}
+    callables: dict[str, StepCallable] = dict(DATA_BOOTSTRAP_STEP_CALLABLES)
     for step in steps:
-        fn = getattr(_database, step.step_id, None)
-        if fn is None:  # pragma: no cover — guarded by the ledger gate test
+        if step.step_id not in callables:  # pragma: no cover — guarded by tests
             raise DataBootstrapError(
                 "missing_bootstrap_callable",
                 step_id=step.step_id,
                 domain=step.domain,
                 remediation=(
-                    f"core.infra.database has no {step.step_id!r}; the ledger "
-                    "drifted from init_db — reconcile R16-C with init_db."
+                    f"Community data bootstrap steps have no {step.step_id!r}; "
+                    "the ledger drifted from the concrete adapter callables."
                 ),
             )
-        callables[step.step_id] = fn
     return CommunityDataBootstrapper(
         steps=steps, callables=callables, target=target
     )

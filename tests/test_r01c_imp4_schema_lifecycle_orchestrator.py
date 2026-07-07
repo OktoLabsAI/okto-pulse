@@ -5,9 +5,7 @@ R16-B ``CommunityRelationalSchemaMigrator`` (schema region) and the R16-C
 ``CommunityDataBootstrapper`` (data-bootstrap region) and, once registered on the
 core seam, MOVES the ``init_db`` lifecycle ownership to the Community edition
 (FR3/FR5). Registering chooses the clean ports composition (decision IMP4-B):
-schema plan FULLY, then data plan. That differs from ``init_db``'s effective
-order in exactly ONE adjacent position — ``_migrate_agent_permissions`` runs
-BEFORE ``_seed_builtin_presets`` instead of after.
+schema plan FULLY, then data plan.
 
 This module is the EXECUTABLE EQUIVALENCE PROOF Codex required to accept B over
 A (msg_ca3cd133). The four conditions, 1:1 to the tests:
@@ -17,12 +15,12 @@ A (msg_ca3cd133). The four conditions, 1:1 to the tests:
   #2 _migrate_agent_permissions stays before _reconcile_agent_permission_flags
      -> ``test_migrate_agent_permissions_precedes_reconcile`` +
         ``test_composed_order_differs_from_inline_only_by_one_swap``.
-  #3 empty replay inline-vs-orchestrator -> same tables/indices/columns/seeds
-     -> ``test_empty_replay_orchestrator_matches_inline_init_db``.
+  #3 empty replay direct-vs-registered orchestrator -> same tables/indices/columns/seeds
+     -> ``test_empty_replay_registered_init_db_matches_direct_orchestrator``.
   #4 legacy replay preserves rows/data, idempotent, no rename
      -> ``test_legacy_replay_preserves_rows_migrates_and_idempotent``.
 
-Plus the wiring/fail-open/fail-closed contract of the seam itself.
+Plus the wiring/fail-closed contract of the seam itself.
 
 Tests are synchronous and drive the async lifecycle via ``asyncio.run`` inside a
 single loop per test (mirrors test_r16b/test_r16c) to avoid cross-loop aiosqlite
@@ -45,6 +43,8 @@ import pytest
 import okto_pulse.core.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
 import okto_pulse.core.infra.schema_lifecycle as _seam
+from okto_pulse.community.adapters import data_bootstrap_steps as _data_steps
+from okto_pulse.community.adapters import relational_schema_steps as _schema_steps
 from okto_pulse.community.adapters.relational_schema_lifecycle import (
     CommunityRelationalSchemaLifecycleOrchestrator,
     make_community_relational_schema_lifecycle_orchestrator,
@@ -168,8 +168,7 @@ async def _presets_state(engine) -> list[str]:
 async def _create_all_only() -> None:
     """Build the full schema via create_all (no migrations, no bootstrap) so a
     test can drive the two steps-under-test in a controlled order."""
-    async with _db_mod.get_engine().begin() as conn:
-        await conn.run_sync(_db_mod.Base.metadata.create_all)
+    await _schema_steps.create_all_boundary()
 
 
 async def _force_null_flags(agent_id: str = "a-legacy") -> None:
@@ -206,7 +205,7 @@ async def _insert_legacy_agent(api_key: str = "legacy-key") -> None:
 @pytest.fixture
 def _isolate():
     """Snapshot/restore the core engine + session-factory globals AND the
-    schema-lifecycle seam, starting each test from a fail-open (None) seam."""
+    schema-lifecycle seam, starting each test from an unregistered seam."""
     saved_engine = _db_mod._engine
     saved_factory = _db_mod._session_factory
     saved_orch = _seam.resolve_relational_schema_lifecycle_orchestrator()
@@ -223,7 +222,7 @@ def _isolate():
 
 
 # ===========================================================================
-# Wiring: seam registration + init_db delegation (FR3) + fail-open default.
+# Wiring: seam registration + init_db delegation (FR3) + fail-closed default.
 # ===========================================================================
 def test_register_helper_sets_the_core_seam(_isolate):
     orch = register_community_relational_schema_lifecycle()
@@ -233,8 +232,8 @@ def test_register_helper_sets_the_core_seam(_isolate):
 
 def test_init_db_delegates_to_registered_orchestrator(tmp_path, _isolate):
     """init_db delegates the WHOLE lifecycle to a registered orchestrator and
-    does NOT run its inline body (spied via _migrate_card_statuses)."""
-    calls = {"orchestrator": 0, "inline_migrate": 0}
+    returns without touching lifecycle SQL itself."""
+    calls = {"orchestrator": 0}
 
     async def drive():
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'deleg.db'}")
@@ -244,79 +243,56 @@ def test_init_db_delegates_to_registered_orchestrator(tmp_path, _isolate):
                 calls["orchestrator"] += 1
 
         _seam.register_relational_schema_lifecycle_orchestrator(_Spy())
-        orig = _db_mod._migrate_card_statuses
-
-        async def _tracked():
-            calls["inline_migrate"] += 1
-            return await orig()
-
-        _db_mod._migrate_card_statuses = _tracked
         try:
             await _db_mod.init_db()
         finally:
-            _db_mod._migrate_card_statuses = orig
             await _db_mod.get_engine().dispose()
 
     asyncio.run(drive())
     assert calls["orchestrator"] == 1   # delegated
-    assert calls["inline_migrate"] == 0  # inline body bypassed
 
 
-def test_init_db_runs_inline_when_no_orchestrator_registered(tmp_path, _isolate):
-    """Fail-open: with nothing registered, init_db runs its unchanged inline
-    body (register-before-remove — the core fallback is intact)."""
-    calls = {"inline_migrate": 0}
-
+def test_init_db_fails_closed_when_no_orchestrator_registered(tmp_path, _isolate):
     async def drive():
         _seam.reset_relational_schema_lifecycle_orchestrator()
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'inline.db'}")
-        orig = _db_mod._migrate_card_statuses
-
-        async def _tracked():
-            calls["inline_migrate"] += 1
-            return await orig()
-
-        _db_mod._migrate_card_statuses = _tracked
         try:
-            await _db_mod.init_db()
+            with pytest.raises(RuntimeError, match="orchestrator not registered"):
+                await _db_mod.init_db()
         finally:
-            _db_mod._migrate_card_statuses = orig
             await _db_mod.get_engine().dispose()
 
     asyncio.run(drive())
-    assert calls["inline_migrate"] == 1
 
 
 # ===========================================================================
-# Condition #3 — empty replay: inline init_db vs orchestrator produce the SAME
+# Condition #3 — empty replay: direct orchestrator vs registered init_db produce the SAME
 # tables, indices, columns and observable seeds.
 # ===========================================================================
-def test_empty_replay_orchestrator_matches_inline_init_db(tmp_path, _isolate):
+def test_empty_replay_registered_init_db_matches_direct_orchestrator(tmp_path, _isolate):
     async def drive():
-        # Baseline: real inline init_db (seam stays None) on DB-A.
-        _seam.reset_relational_schema_lifecycle_orchestrator()
-        _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'inline.db'}")
-        await _db_mod.init_db()
-        inline_schema = await _collect_schema(_db_mod.get_engine())
-        inline_seeds = await _seed_names(_db_mod.get_engine())
+        # Baseline: direct Community orchestrator on DB-A.
+        _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'direct.db'}")
+        await make_community_relational_schema_lifecycle_orchestrator().initialize_schema()
+        direct_schema = await _collect_schema(_db_mod.get_engine())
+        direct_seeds = await _seed_names(_db_mod.get_engine())
         await _db_mod.get_engine().dispose()
 
-        # Orchestrator: register + init_db delegates (exercises the wired path)
-        # on a fresh DB-B.
+        # Registered seam: init_db delegates to the same Community lifecycle.
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'orch.db'}")
         register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
         orch_schema = await _collect_schema(_db_mod.get_engine())
         orch_seeds = await _seed_names(_db_mod.get_engine())
         await _db_mod.get_engine().dispose()
-        return inline_schema, inline_seeds, orch_schema, orch_seeds
+        return direct_schema, direct_seeds, orch_schema, orch_seeds
 
-    inline_schema, inline_seeds, orch_schema, orch_seeds = asyncio.run(drive())
-    assert inline_schema  # sanity: non-empty
-    assert orch_schema == inline_schema      # same tables + columns + indices
-    assert orch_seeds == inline_seeds        # same presets + discovery intents
-    assert inline_seeds["presets"]           # sanity: seeds non-empty
-    assert inline_seeds["intents"]
+    direct_schema, direct_seeds, orch_schema, orch_seeds = asyncio.run(drive())
+    assert direct_schema  # sanity: non-empty
+    assert orch_schema == direct_schema      # same tables + columns + indices
+    assert orch_seeds == direct_seeds        # same presets + discovery intents
+    assert direct_seeds["presets"]           # sanity: seeds non-empty
+    assert direct_seeds["intents"]
 
 
 # ===========================================================================
@@ -330,7 +306,7 @@ def test_disjoint_seed_touches_only_presets_migrate_only_agents(tmp_path, _isola
         await _insert_legacy_agent()
         a_before = await _agents_state(_db_mod.get_engine())
         p_before = await _presets_state(_db_mod.get_engine())
-        await _db_mod._seed_builtin_presets()
+        await _data_steps._seed_builtin_presets()
         a_after = await _agents_state(_db_mod.get_engine())
         p_after = await _presets_state(_db_mod.get_engine())
         await _db_mod.get_engine().dispose()
@@ -341,7 +317,7 @@ def test_disjoint_seed_touches_only_presets_migrate_only_agents(tmp_path, _isola
         await _insert_legacy_agent()
         a2_before = await _agents_state(_db_mod.get_engine())
         p2_before = await _presets_state(_db_mod.get_engine())
-        await _db_mod._migrate_agent_permissions()
+        await _schema_steps._migrate_agent_permissions()
         a2_after = await _agents_state(_db_mod.get_engine())
         p2_after = await _presets_state(_db_mod.get_engine())
         await _db_mod.get_engine().dispose()
@@ -368,7 +344,12 @@ def test_commutativity_migrate_and_seed_yield_identical_state(tmp_path, _isolate
         await _create_all_only()
         await _insert_legacy_agent()
         for fn_name in order:
-            await getattr(_db_mod, fn_name)()
+            if fn_name == "_migrate_agent_permissions":
+                await _schema_steps._migrate_agent_permissions()
+            elif fn_name == "_seed_builtin_presets":
+                await _data_steps._seed_builtin_presets()
+            else:  # pragma: no cover - guard against test drift
+                raise AssertionError(fn_name)
         agents = await _agents_state(_db_mod.get_engine())
         presets = await _presets_state(_db_mod.get_engine())
         await _db_mod.get_engine().dispose()
@@ -403,30 +384,12 @@ def test_migrate_agent_permissions_precedes_reconcile():
     )
     # It is the LAST schema-region step (tail of the migrator plan).
     assert _SCHEMA_IDS[-1] == "_migrate_agent_permissions"
-    # The same invariant holds in init_db's inline order.
-    inline = _init_db_full_call_order()
-    assert (
-        inline.index("_migrate_agent_permissions")
-        < inline.index("_reconcile_agent_permission_flags")
-    )
 
 
-def test_composed_order_differs_from_inline_only_by_one_swap():
-    inline = _init_db_full_call_order()
-    # Same steps, no add/drop: the orchestrator neither absorbs nor sheds a step.
-    assert sorted(_COMPOSED_ORDER) == sorted(inline)
-    diff_positions = [
-        i for i, (c, n) in enumerate(zip(_COMPOSED_ORDER, inline)) if c != n
-    ]
-    # Exactly two positions differ, and they are an adjacent transposition of
-    # {_migrate_agent_permissions, _seed_builtin_presets}.
-    assert len(diff_positions) == 2
-    i, j = diff_positions
-    assert j == i + 1                                   # adjacent
-    assert {_COMPOSED_ORDER[i], _COMPOSED_ORDER[j]} == {
-        "_migrate_agent_permissions", "_seed_builtin_presets"
-    }
-    assert _COMPOSED_ORDER[i] == inline[j] and _COMPOSED_ORDER[j] == inline[i]
+def test_core_init_db_has_no_inline_lifecycle_order():
+    assert _init_db_full_call_order() == []
+    assert "_migrate_agent_permissions" in _COMPOSED_ORDER
+    assert "_seed_builtin_presets" in _COMPOSED_ORDER
 
 
 # ===========================================================================

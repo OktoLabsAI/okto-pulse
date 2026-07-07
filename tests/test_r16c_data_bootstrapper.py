@@ -35,6 +35,7 @@ import pytest
 # no engine (create_database is only called inside create_app()).
 import okto_pulse.core.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
+import okto_pulse.community.adapters.data_bootstrap_steps as _bootstrap_steps
 from okto_pulse.community.adapters.data_bootstrapper import (
     CommunityDataBootstrapper,
     build_community_data_bootstrap_ledger,
@@ -42,6 +43,9 @@ from okto_pulse.community.adapters.data_bootstrapper import (
 )
 from okto_pulse.community.adapters.relational_schema_migrator import (
     build_community_migration_ledger,
+)
+from okto_pulse.community.adapters.relational_schema_lifecycle import (
+    register_community_relational_schema_lifecycle,
 )
 from okto_pulse.core.ports import (
     BOOTSTRAP_DOMAINS,
@@ -153,22 +157,11 @@ def test_ts_26bd0c7a_ledger_four_domains_in_order():
     assert {s.domain for s in ledger} == set(BOOTSTRAP_DOMAINS)
 
 
-def test_ts_26bd0c7a_ledger_matches_init_db_bootstrap_order():
-    """The data-bootstrap order mirrors the tail of init_db (after the schema
-    region): seed -> reconcile presets -> reconcile permissions -> discovery."""
-    init_src = ast.get_source_segment(
-        Path(_db_mod.__file__).read_text(encoding="utf-8"),
-        next(
-            n for n in ast.walk(ast.parse(Path(_db_mod.__file__).read_text(encoding="utf-8")))
-            if isinstance(n, ast.AsyncFunctionDef) and n.name == "init_db"
-        ),
+def test_ts_26bd0c7a_ledger_matches_community_bootstrap_registry():
+    """The data-bootstrap ledger mirrors the concrete Community registry."""
+    assert list(_bootstrap_steps.DATA_BOOTSTRAP_STEP_CALLABLES) == list(
+        _DATA_BOOTSTRAP_STEP_IDS
     )
-    seen: list[str] = []
-    for line in init_src.splitlines():
-        for sid in _DATA_BOOTSTRAP_STEP_IDS:
-            if f"await {sid}(" in line:
-                seen.append(sid)
-    assert seen == list(_DATA_BOOTSTRAP_STEP_IDS)
 
 
 # ===========================================================================
@@ -179,6 +172,7 @@ def test_ts_71673acb_idempotent_replay_preserves_presets_and_flags(
 ):
     async def drive():
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'idem.db'}")
+        register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
         before = await _snapshot(_db_mod.get_engine())
 
@@ -246,6 +240,7 @@ def test_ts_71673acb_permission_flags_merge_default_and_preserve(
 
     async def drive():
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'perm.db'}")
+        register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
         async with _db_mod.get_session_factory()() as session:
             session.add(
@@ -290,6 +285,7 @@ def test_ts_71673acb_permission_flags_merge_default_and_preserve(
 def test_ts_533312dd_discovery_intents_preserved_on_rerun(tmp_path, _isolate_engine):
     async def drive():
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'di.db'}")
+        register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
         before = await _snapshot(_db_mod.get_engine())
         bootstrapper = make_community_data_bootstrapper()

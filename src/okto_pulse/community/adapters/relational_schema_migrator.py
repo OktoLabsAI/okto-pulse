@@ -1,31 +1,29 @@
 """Community adapter for the ``RelationalSchemaMigrator`` port (spec R16-B).
 
 This adapter is the Community-edition concrete implementation of the
-``okto_pulse.core.ports.RelationalSchemaMigrator`` Protocol (R16-A). It models
-the *effective* ordering of ``okto_pulse.core.infra.database.init_db`` as an
-ordered, declarative ledger of :class:`MigrationStep` — WITHOUT moving,
-reordering, removing or re-implementing any ``_migrate_*`` function
-(register-before-remove). ``init_db`` remains the single source of truth; this
-adapter only *describes* and *replays* the same steps.
+``okto_pulse.core.ports.RelationalSchemaMigrator`` Protocol (R16-A). It owns the
+ordered, declarative ledger of :class:`MigrationStep` and binds it to
+Community-owned migration callables from ``relational_schema_steps``.
 
 Layering (br/ac of R16-A + R16-B):
   * The module top-level imports ONLY the pure ``core.ports`` contract (DTOs +
     Protocol). It does NOT import SQLAlchemy, ``infra.database``, any
     ``_migrate_*`` function or the engine at import time.
   * ``make_community_relational_schema_migrator`` (the composition factory)
-    imports ``core.infra.database`` LAZILY and binds the real callables — so
-    ``core`` never imports ``community`` and the adapter stays import-light.
+    imports concrete Community step functions lazily. ``core`` never imports
+    ``community`` and the adapter module stays import-light.
 
 Ledger scope (br_e16ff5a1):
   * EXACTLY ONE ``create_all_boundary`` step (``Base.metadata.create_all``).
-  * Every ``async def _migrate_*`` in ``init_db`` is a schema step.
+  * Every Community-owned ``async def _migrate_*`` in the lifecycle ledger is a
+    schema step.
   * ``_seed_builtin_presets`` / ``_reconcile_*`` / ``_bootstrap_default_discovery_intents``
     are DATA bootstrap (``data_bootstrap_boundary``) and are deliberately
     EXCLUDED — a schema plan must never silently absorb data seeding.
   * Nuance: ``_migrate_agent_permissions`` is an ``async def _migrate_*`` that
-    executes in ``init_db`` AFTER ``_seed_builtin_presets`` (in the bootstrap
-    region) yet is a real schema migration — it is classified ``post_create_all``
-    (see its ``metadata['runs_in_bootstrap_region']``).
+    runs at the tail of the schema region. It remains classified
+    ``post_create_all`` so permission-flag schema migration precedes data
+    reconciliation.
 
 Failure semantics are fail-closed (the port's ``MigrationResult.__post_init__``
 enforces it): an invalid plan or a failing step yields a structured
@@ -65,7 +63,7 @@ StepCallable = Callable[[], "Awaitable[object] | object"]
 
 
 # ---------------------------------------------------------------------------
-# Canonical ledger — the declarative mirror of init_db's effective ordering.
+# Canonical ledger — the Community relational schema lifecycle ordering.
 #
 # Each tuple: (step_id, phase, destructive, description). ``order`` is the
 # 1-based index in this list (== the init_db call sequence). ``idempotent`` is
@@ -144,16 +142,15 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
      "Add default-config snapshot column on Board.settings."),
     ("_migrate_add_board_guideline_provenance", "post_create_all", False,
      "Add board-guideline provenance columns."),
-    # _seed_builtin_presets runs here in init_db (DATA bootstrap -> EXCLUDED).
     ("_migrate_agent_permissions", "post_create_all", False,
-     "Schema migration that runs in init_db AFTER _seed_builtin_presets; a real "
-     "_migrate_* classified as post_create_all schema (runs late in the bootstrap region)."),
-    # _reconcile_builtin_presets / _reconcile_agent_permission_flags /
-    # _bootstrap_default_discovery_intents run here (DATA bootstrap -> EXCLUDED).
+     "Schema migration classified as post_create_all so legacy agent permissions "
+     "are migrated before permission-flag data reconciliation."),
+    # Data bootstrap (_seed_builtin_presets / _reconcile_* /
+    # _bootstrap_default_discovery_intents) runs after the schema ledger.
 )
 
-#: step_ids that are real ``_migrate_*`` functions (the gate compares these to
-#: the AST scan of database.py). Excludes the create_all_boundary step.
+#: step_ids that are real Community ``_migrate_*`` functions. Excludes the
+#: create_all_boundary step.
 _MIGRATE_STEP_IDS: tuple[str, ...] = tuple(
     sid for sid, phase, _d, _desc in _LEDGER if phase != "create_all_boundary"
 )
@@ -163,16 +160,18 @@ def build_community_migration_ledger() -> tuple[MigrationStep, ...]:
     """Return the canonical, ordered ledger of :class:`MigrationStep`.
 
     Declarative only — carries no SQL and binds no callable. ``order`` is the
-    1-based init_db call position; ``owner='community'``.
+    1-based lifecycle call position; ``owner='community'``.
     """
     steps: list[MigrationStep] = []
     for order, (step_id, phase, destructive, description) in enumerate(_LEDGER, start=1):
-        metadata: dict[str, object] = {"source": "okto_pulse.core.infra.database.init_db"}
+        metadata: dict[str, object] = {
+            "source": "okto_pulse.community.adapters.relational_schema_steps"
+        }
         if step_id == "_migrate_agent_permissions":
-            metadata["runs_in_bootstrap_region"] = True
+            metadata["runs_at_schema_tail"] = True
             metadata["nuance"] = (
-                "executes after _seed_builtin_presets in init_db but is a real "
-                "schema migration (classified post_create_all)."
+                "executes at the tail of the schema ledger before data-bootstrap "
+                "permission reconciliation."
             )
         if step_id == CREATE_ALL_BOUNDARY_STEP_ID:
             metadata["is_create_all_boundary"] = True
@@ -410,45 +409,35 @@ class CommunityRelationalSchemaMigrator:
         )
 
 
-def _make_create_all_callable(database_module) -> StepCallable:
-    async def _create_all() -> None:
-        async with database_module.get_engine().begin() as conn:
-            await conn.run_sync(database_module.Base.metadata.create_all)
-
-    return _create_all
-
-
 def make_community_relational_schema_migrator(
     *,
     target: str = "community-sqlite",
 ) -> CommunityRelationalSchemaMigrator:
-    """Composition factory — binds the canonical ledger to the REAL
-    ``_migrate_*`` callables + ``create_all`` from ``core.infra.database``.
+    """Bind the canonical ledger to concrete Community schema step callables.
 
-    ``core.infra.database`` is imported HERE (lazily), never at module top, so
-    ``core`` never imports ``community`` and the adapter module stays
-    import-light (only the pure ``core.ports`` contract).
+    Concrete DDL and ``create_all`` execution live in
+    ``relational_schema_steps``. The core keeps the ORM ``Base`` but no longer
+    owns lifecycle execution.
     """
-    from okto_pulse.core.infra import database as _database
+    from .relational_schema_steps import (
+        SCHEMA_STEP_CALLABLES,
+        create_all_boundary,
+    )
 
     steps = build_community_migration_ledger()
-    callables: dict[str, StepCallable] = {}
+    callables: dict[str, StepCallable] = dict(SCHEMA_STEP_CALLABLES)
+    callables[CREATE_ALL_BOUNDARY_STEP_ID] = create_all_boundary
     for step in steps:
-        if step.step_id == CREATE_ALL_BOUNDARY_STEP_ID:
-            callables[step.step_id] = _make_create_all_callable(_database)
-            continue
-        fn = getattr(_database, step.step_id, None)
-        if fn is None:  # pragma: no cover — guarded by the ledger gate test
+        if step.step_id not in callables:  # pragma: no cover — guarded by tests
             raise SchemaMigrationError(
                 "missing_migration_callable",
                 step_id=step.step_id,
                 phase=step.phase,
                 remediation=(
-                    f"core.infra.database has no {step.step_id!r}; the ledger "
-                    "drifted from init_db — reconcile R16-B with R16-A."
+                    f"Community schema steps have no {step.step_id!r}; "
+                    "the ledger drifted from the concrete adapter callables."
                 ),
             )
-        callables[step.step_id] = fn
     return CommunityRelationalSchemaMigrator(
         steps=steps, callables=callables, target=target
     )
