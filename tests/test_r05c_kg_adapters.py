@@ -41,6 +41,7 @@ from okto_pulse.community.adapters.kg_dependency_audit import (
 )
 
 CORE_PKG = Path(okto_pulse.core.__file__).parent
+COMMUNITY_PKG = Path(_main_mod.__file__).parent
 
 
 def _module_imports(tree) -> set[str]:
@@ -164,6 +165,15 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     assert type(base.graph_store).__name__ == "CommunityKuzuGraphStore"
     assert type(base.cypher_executor).__name__ == "CommunityKuzuCypherExecutor"
     assert type(base.global_discovery_runtime).__name__ == "CommunityGlobalDiscoveryRuntime"
+
+
+def test_fcc03c_kg_runtime_closes_global_discovery_through_runtime_port():
+    source = (COMMUNITY_PKG / "adapters" / "kg_runtime.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "close_global_connection" not in source
+    assert "require_global_discovery_runtime().close()" in source
 
 
 def test_ts_f7b7374d_graph_transaction_scope_uses_community_runtime(monkeypatch):

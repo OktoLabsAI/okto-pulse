@@ -2688,9 +2688,9 @@ def close_all_connections(board_id: str | None = None) -> None:
 
     # global is released only when closing everything — per-board callers
     # (e.g. single-board DELETE) must not nuke the shared discovery handle.
-    from okto_pulse.core.kg.global_discovery.schema import close_global_connection
+    from okto_pulse.core.kg.interfaces import get_kg_registry
 
-    close_global_connection()
+    get_kg_registry().require_global_discovery_runtime().close()
 
 
 def _now_iso() -> str:
