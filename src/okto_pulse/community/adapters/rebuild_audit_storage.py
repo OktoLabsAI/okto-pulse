@@ -68,10 +68,18 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             return self._base_dir / "candidate_decisions" / key.board_id
         if key.namespace == "rebaseline_audit":
             return self._base_dir / "rebuild" / "rebaseline_audit"
+        if key.namespace == "global_discovery_reindex":
+            return self._base_dir / "rebuild" / "discovery_reindex" / key.board_id
+        if key.namespace == "contingency":
+            return self._base_dir / "contingency"
         raise ValueError(f"unsupported rebuild audit namespace: {key.namespace}")
 
     def _artifact_id(self, key: RebuildAuditKey) -> str:
-        if key.namespace in {"cognitive_pending", "generation_history"}:
+        if key.namespace in {
+            "cognitive_pending",
+            "generation_history",
+            "global_discovery_reindex",
+        }:
             if not key.kg_generation_id:
                 raise ValueError(f"{key.namespace} key requires kg_generation_id")
             return key.kg_generation_id
@@ -80,6 +88,14 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
         return key.artifact_id
 
     def _path(self, key: RebuildAuditKey) -> Path:
+        if key.namespace == "contingency":
+            if not key.artifact_id:
+                raise ValueError("contingency key requires artifact_id")
+            return (
+                self._namespace_dir(key)
+                / key.artifact_id
+                / "contingency.json"
+            )
         return self._namespace_dir(key) / f"{self._artifact_id(key)}.json"
 
     def write_json_atomic(
@@ -128,6 +144,19 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             payload = self.read_json(prefix)
             return [payload] if payload is not None else []
         rows: list[dict[str, Any]] = []
+        if prefix.namespace == "contingency":
+            for entry in sorted(directory.iterdir()):
+                if not entry.is_dir():
+                    continue
+                manifest_path = entry / "contingency.json"
+                try:
+                    with manifest_path.open("r", encoding="utf-8") as fh:
+                        payload = json.load(fh)
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    rows.append(payload)
+            return rows
         for path in sorted(directory.glob("*.json")):
             try:
                 with path.open("r", encoding="utf-8") as fh:

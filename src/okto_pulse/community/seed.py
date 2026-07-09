@@ -17,12 +17,13 @@ not trigger a re-seed on subsequent starts.
 import logging
 import os
 import secrets
+from types import SimpleNamespace
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import JSON as sa_JSON
+from sqlalchemy import bindparam, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from okto_pulse.core.models.db import Agent, AgentBoard, Board
 from okto_pulse.core.services.application_agents import credential_marker, hash_api_key
 
 logger = logging.getLogger("okto_pulse.community.seed")
@@ -38,45 +39,66 @@ async def seed_community_defaults(db: AsyncSession) -> tuple | None:
     Returns (board, agent, api_key) on first boot, None if already seeded.
     """
     # Check if already seeded
-    result = await db.execute(select(Board).limit(1))
-    if result.scalar_one_or_none() is not None:
+    result = await db.execute(sa_text("SELECT id FROM boards LIMIT 1"))
+    if result.first() is not None:
         return None  # Already seeded
 
     # Create default board
     board_id = str(uuid4())
-    board = Board(
-        id=board_id,
-        name="My Board",
-        description="Default board for the community edition",
-        owner_id="local-user",
+    board_name = "My Board"
+    await db.execute(
+        sa_text(
+            "INSERT INTO boards (id, name, description, owner_id) "
+            "VALUES (:id, :name, :description, :owner_id)"
+        ),
+        {
+            "id": board_id,
+            "name": board_name,
+            "description": "Default board for the community edition",
+            "owner_id": "local-user",
+        },
     )
-    db.add(board)
 
     # Create default agent with API key
     api_key = f"dash_{secrets.token_hex(24)}"
     api_key_hash = hash_api_key(api_key)
     agent_id = str(uuid4())
-    agent = Agent(
-        id=agent_id,
-        name="Local Agent",
-        description="Default agent for local MCP integration",
-        objective="Assist the local user with board operations",
-        api_key=credential_marker(api_key_hash),
-        api_key_hash=api_key_hash,
-        is_active=True,
-        permissions=None,  # Full access
-        created_by="local-user",
+    agent_name = "Local Agent"
+    await db.execute(
+        sa_text(
+            "INSERT INTO agents "
+            "(id, name, description, objective, api_key, api_key_hash, "
+            " is_active, permissions, created_by) "
+            "VALUES "
+            "(:id, :name, :description, :objective, :api_key, :api_key_hash, "
+            " :is_active, :permissions, :created_by)"
+        ),
+        {
+            "id": agent_id,
+            "name": agent_name,
+            "description": "Default agent for local MCP integration",
+            "objective": "Assist the local user with board operations",
+            "api_key": credential_marker(api_key_hash),
+            "api_key_hash": api_key_hash,
+            "is_active": True,
+            "permissions": None,
+            "created_by": "local-user",
+        },
     )
-    db.add(agent)
 
     # Grant agent access to the board
-    agent_board = AgentBoard(
-        id=str(uuid4()),
-        agent_id=agent_id,
-        board_id=board_id,
-        granted_by="local-user",
+    await db.execute(
+        sa_text(
+            "INSERT INTO agent_boards (id, agent_id, board_id, granted_by) "
+            "VALUES (:id, :agent_id, :board_id, :granted_by)"
+        ),
+        {
+            "id": str(uuid4()),
+            "agent_id": agent_id,
+            "board_id": board_id,
+            "granted_by": "local-user",
+        },
     )
-    db.add(agent_board)
 
     await db.commit()
 
@@ -91,7 +113,11 @@ async def seed_community_defaults(db: AsyncSession) -> tuple | None:
             extra={"event": "community.seed.demo_failed"},
         )
 
-    return board, agent, api_key
+    return (
+        SimpleNamespace(id=board_id, name=board_name),
+        SimpleNamespace(id=agent_id, name=agent_name),
+        api_key,
+    )
 
 
 async def _seed_demo_board(db: AsyncSession) -> str | None:
@@ -118,45 +144,65 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
         )
         return None
 
-    existing = await db.execute(select(Board).where(Board.name == DEMO_BOARD_NAME))
-    if existing.scalar_one_or_none() is not None:
+    existing = await db.execute(
+        sa_text("SELECT id FROM boards WHERE name = :name LIMIT 1"),
+        {"name": DEMO_BOARD_NAME},
+    )
+    if existing.first() is not None:
         return None
-
-    from okto_pulse.core.models.db import Card, Spec
 
     demo_board_id = str(uuid4())
     demo_spec_id = str(uuid4())
 
-    db.add(
-        Board(
-            id=demo_board_id,
-            name=DEMO_BOARD_NAME,
-            description="Walkthrough board with a pre-populated knowledge graph.",
-            owner_id="local-user",
-        )
+    await db.execute(
+        sa_text(
+            "INSERT INTO boards (id, name, description, owner_id) "
+            "VALUES (:id, :name, :description, :owner_id)"
+        ),
+        {
+            "id": demo_board_id,
+            "name": DEMO_BOARD_NAME,
+            "description": "Walkthrough board with a pre-populated knowledge graph.",
+            "owner_id": "local-user",
+        },
     )
-    db.add(
-        Spec(
-            id=demo_spec_id,
-            board_id=demo_board_id,
-            title=DEMO_SPEC_TITLE,
-            description="Short illustrative spec used to seed the KG on first boot.",
-            context="Demonstrates a spec → cards → consolidated KG flow.",
-            functional_requirements=[
+    spec_insert = sa_text(
+        "INSERT INTO specs "
+        "(id, board_id, title, description, context, functional_requirements, "
+        " technical_requirements, acceptance_criteria, business_rules, status, version, created_by) "
+        "VALUES "
+        "(:id, :board_id, :title, :description, :context, :functional_requirements, "
+        " :technical_requirements, :acceptance_criteria, :business_rules, :status, :version, :created_by)"
+    ).bindparams(
+        bindparam("functional_requirements", type_=sa_JSON),
+        bindparam("technical_requirements", type_=sa_JSON),
+        bindparam("acceptance_criteria", type_=sa_JSON),
+        bindparam("business_rules", type_=sa_JSON),
+    )
+    await db.execute(
+        spec_insert,
+        {
+            "id": demo_spec_id,
+            "board_id": demo_board_id,
+            "title": DEMO_SPEC_TITLE,
+            "description": "Short illustrative spec used to seed the KG on first boot.",
+            "context": "Demonstrates a spec → cards → consolidated KG flow.",
+            "functional_requirements": [
                 {"title": "FR-1", "text": "The demo board must render in the KG explorer on first open."}
             ],
-            technical_requirements=[
+            "technical_requirements": [
                 {"title": "TR-1", "text": "Seed runs with the stub embedder so no network is required."}
             ],
-            acceptance_criteria=[
+            "acceptance_criteria": [
                 {"title": "AC-1", "text": "GET /api/v1/kg/boards/{demo}/graph returns >= 3 nodes."}
             ],
-            business_rules=[
+            "business_rules": [
                 {"title": "BR-1", "rule": "Demo content is read-only in spirit — users can delete."}
             ],
-            status="done",
-            created_by="local-user",
-        )
+            "status": "done",
+            "version": 1,
+            "created_by": "local-user",
+        },
     )
     card_specs = [
         ("Demo Normal Card", "A regular task that should flow through statuses."),
@@ -164,16 +210,22 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
         ("Demo Test Card", "Shows how test-scenario cards ground acceptance criteria."),
     ]
     for idx, (title, desc) in enumerate(card_specs):
-        db.add(
-            Card(
-                id=str(uuid4()),
-                board_id=demo_board_id,
-                spec_id=demo_spec_id,
-                title=title,
-                description=desc,
-                position=idx,
-                created_by="local-user",
-            )
+        await db.execute(
+            sa_text(
+                "INSERT INTO cards "
+                "(id, board_id, spec_id, title, description, position, created_by) "
+                "VALUES "
+                "(:id, :board_id, :spec_id, :title, :description, :position, :created_by)"
+            ),
+            {
+                "id": str(uuid4()),
+                "board_id": demo_board_id,
+                "spec_id": demo_spec_id,
+                "title": title,
+                "description": desc,
+                "position": idx,
+                "created_by": "local-user",
+            },
         )
     await db.commit()
 
@@ -199,7 +251,7 @@ async def _commit_demo_graph(board_id: str, spec_id: str) -> None:
     """
     import gc
 
-    from okto_pulse.core.infra.database import get_session_factory
+    from okto_pulse.core.ports.relational_runtime import get_session_factory
     from okto_pulse.community.adapters.composition import (
         configure_community_kg_registry,
     )

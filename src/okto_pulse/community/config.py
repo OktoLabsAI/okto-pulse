@@ -4,6 +4,11 @@ import os
 from pathlib import Path
 from pydantic import model_validator
 from okto_pulse.core.infra.config import CoreSettings
+from okto_pulse.community.adapters.embedding import (
+    COMMUNITY_DEFAULT_EMBEDDING_DIM,
+    COMMUNITY_DEFAULT_EMBEDDING_MODE,
+    COMMUNITY_DEFAULT_EMBEDDING_MODEL,
+)
 from okto_pulse.community.adapters.telemetry_effect_config import (
     COMMUNITY_DEFAULT_METRICS_BEACON_URL,
 )
@@ -18,7 +23,9 @@ class CommunitySettings(CoreSettings):
     # Community ships sentence-transformers as a mandatory dep (pyproject.toml),
     # so override the core default of "stub" — semantic KG search needs real
     # embeddings out of the box. Users can still flip to "stub" via env.
-    kg_embedding_mode: str = "sentence-transformers"
+    kg_embedding_mode: str = COMMUNITY_DEFAULT_EMBEDDING_MODE
+    kg_embedding_model: str = COMMUNITY_DEFAULT_EMBEDDING_MODEL
+    kg_embedding_dim: int = COMMUNITY_DEFAULT_EMBEDDING_DIM
 
     @model_validator(mode="after")
     def _derive_paths(self) -> "CommunitySettings":

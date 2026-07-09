@@ -258,8 +258,10 @@ executable gate is
 `audit_community_core_import_boundary` in
 `okto_pulse.community.adapters.core_import_boundary`. A Community adapter may
 consume public core facades such as `okto_pulse.core.services.application_kg`,
-`okto_pulse.core.mcp`, `okto_pulse.core.ports.*` and the adapter-neutral KG
-helpers in `core.kg.board_source_store`, `core.kg.board_rebuild_adapter`,
+`okto_pulse.core.services.application_agents`,
+`okto_pulse.core.services.application_startup`, `okto_pulse.core.mcp`,
+`okto_pulse.core.ports.*` and the adapter-neutral KG helpers in
+`core.kg.board_source_store`, `core.kg.board_rebuild_adapter`,
 `core.kg.tier_power`, `core.kg.scoring`, `core.kg.session_manager` and
 `core.kg.global_discovery.schema`; direct reach-ins to ORM, database lifecycle,
 KG workers/registry, `services.main`, private MCP server symbols, private core
@@ -267,6 +269,50 @@ helper symbols or core-owned concrete DDL constants must be removed or ledgered
 with owner, reason, target public surface, removal path and withdrawal
 criterion. Stale ledger entries fail the same gate, so deleting the last
 reach-in for a dependency requires deleting its exception too.
+Community database lifecycle and session composition must use
+`okto_pulse.core.ports.relational_runtime`, not `core.infra.database`.
+
+AF42 keeps that boundary executable instead of relying on prose. The current
+release oracle is:
+
+<!-- AF42-BOUNDARY-ORACLE:BEGIN -->
+| Check | Current evidence |
+| --- | --- |
+| Historical private reach-in baseline | `32` |
+| Current governed private reach-ins | `10` |
+| Current full Community->Core import inventory | `189` |
+| Inventory classification | `public_contract=59`, `community_owned_implementation=120`, `governed_temporary_reach_in=10` |
+| Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
+| Burn-down progression | `32 -> 21 -> 10` after AF42 inventory, lifecycle/auth/MCP, then ORM/bootstrap/schema/CLI/seed work |
+| Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
+| Core release command | `python -m pytest tests/test_boundary_audit_12.py tests/test_conformance_suite_15.py -q` -> `67 passed` |
+<!-- AF42-BOUNDARY-ORACLE:END -->
+
+Permitted Community->Core imports are narrow contracts: `core.ports.*`,
+`core.application`, `core.domain`, `core.mcp`, the application facades under
+`core.services.application_*`, and adapter-neutral KG helper surfaces already
+listed above. Prohibited imports remain private implementation details:
+`core.models.db`, `core.infra.database`, `core.services.main`,
+`core.mcp.server`, `core.kg.workers.*`, `core.kg.governance`,
+`core.kg.interfaces.registry` and concrete core-owned DDL constants. A
+prohibited import may exist only as a governed temporary reach-in in
+`COMMUNITY_CORE_REACH_IN_LEDGER`, with owner, reason, target public surface,
+removal path and withdrawal criterion.
+
+The 10 remaining governed reach-ins are intentionally concentrated in
+Community-owned SQLAlchemy/KG/outbox adapters:
+
+- `community/adapters/coordination.py`
+- `community/adapters/sqlalchemy_audit_repo.py`
+- `community/adapters/sqlalchemy_repositories.py`
+- `community/adapters/sqlite_outbox_event_bus.py`
+- `community/adapters/relational_effects.py`
+- `community/adapters/kg_operational.py`
+
+Bootstrap, schema migrations, CLI and seed paths must stay off
+`core.models.db`; they use Community-owned row/SQL adapters or public facades.
+Removing any remaining reach-in must also remove its ledger entry. Adding a new
+private import without a complete ledger entry is a release-blocking failure.
 
 ### Adapters
 
@@ -305,6 +351,7 @@ Adapter source map:
 - Relational runtime: `community/adapters/sqlalchemy_database.py`,
   `community/adapters/sqlalchemy_unit_of_work.py`,
   `community/adapters/sqlalchemy_repositories.py`,
+  `community/adapters/af35_sqlalchemy_services.py`,
   `community/adapters/coordination.py` and
   `community/adapters/relational_effects.py`; the SQLite PRAGMA owner is
   `install_community_sqlite_pragmas` in
@@ -315,8 +362,9 @@ Adapter source map:
 - KG local schema/durability adapters: `community/adapters/global_discovery_schema.py`,
   `community/adapters/global_discovery_runtime.py` and
   `community/adapters/rebuild_audit_storage.py`.
-- KG outbox/audit persistence: `community/adapters/sqlite_outbox_event_bus.py`
-  and `community/adapters/sqlalchemy_audit_repo.py`.
+- KG outbox/audit persistence: `community/adapters/sqlite_outbox_event_bus.py`,
+  `community/adapters/sqlalchemy_audit_repo.py` and
+  `community/adapters/kg_operational.py`.
 - KG data and graph runtime: `community/adapters/data.py`,
   `community/adapters/memory.py`, `community/adapters/kg.py`,
   `community/adapters/kg_runtime.py`,
@@ -379,6 +427,7 @@ core.
 | `CommunityMcpAuthenticator` | `core.ports.McpAuthenticator` | MCP API-key authentication against the local relational store. |
 | `build_community_resource_catalog` | `core.ports.McpResourceCatalog` | Community operational MCP resource overlays under `community/resources/operational`. |
 | `CommunityCapabilityDescriptorSource` | `core.ports.CapabilityDescriptorSource` | Runtime capability descriptors derived from the active Community composition. |
+| `build_mcp_trace_sink_from_env` / `JsonlMcpTraceSink` | `core.ports.McpTraceSink` | Local JSONL MCP replay trace adapter, enabled only by Community runtime env. |
 | `CommunityRelationalSchemaMigrator` | `core.ports.RelationalSchemaMigrator` | Describes and executes the same relational `init_db` migration steps through the port. |
 | `CommunityDataBootstrapper` | `core.ports.DataBootstrapper` | Describes and executes local data/bootstrap steps for `okto-pulse init`. |
 | `CommunityCrossEncoderReranker` | `core.kg.interfaces.Reranker` | Optional local cross-encoder reranking factory; falls back to core token-overlap behavior when unavailable. |
@@ -431,24 +480,39 @@ Adapter ownership rules:
 The ORM models and many SQLAlchemy services still live in core while the
 repository/unit-of-work strangler expands. Treat the core
 `ARCHITECTURE.md` and adapter readiness ledger as the source of truth for
-remaining extraction work. Packaging ownership is also transitional: Community
-currently imports `requests` for the local telemetry sender while that
-dependency remains governed by the telemetry oracle. APScheduler is no longer a
-core exception: Community declares it directly and owns the local scheduler
+remaining extraction work. Packaging ownership is explicit after AF40: Community
+declares `requests` and `chardet` directly for the local telemetry sender, while
+the core gates block their reintroduction into the published `okto-pulse-core`
+manifest, lock, wheel metadata or source imports. APScheduler is also
+Community-owned: Community declares it directly and owns the local scheduler
 adapter that maps core `JobSpec` values to APScheduler runtime calls.
 
-AF-05 dependency owner matrix. This package follows the core
-`dependency_ledger.py`, `CANONICAL_TEMPORARY_EXCEPTION_TOKENS` and
-`conformance_matrix.py` classifications; the local `uv.lock` may temporarily
-show dependencies from the currently published `okto-pulse-core` and is not the
-source of ownership truth for this matrix.
+AF-05/AF40 dependency owner matrix. This package follows the core
+`dependency_ledger.py`, `CANONICAL_AF40_DEPENDENCY_TOKENS`,
+`CANONICAL_TEMPORARY_EXCEPTION_TOKENS` and `conformance_matrix.py`
+classifications; the Community manifest is the ownership source for the
+Community-owned telemetry transport pair.
 
 | Dependency | Status | Community responsibility |
 | --- | --- | --- |
 | `aiofiles` | `removed` | Not Community-owned and not declared here. The isolated smoke must prove the locally built core wheel no longer requires it instead of hand-editing this lock to hide the published-core dependency. |
-| `requests` | `temporary_exception` | Used by the local telemetry sender, but ownership remains governed by core `#10_telemetry` / `tr_03abf5ab` until the telemetry oracle is green. |
-| `chardet` | `temporary_exception` | Kept as the requests/telemetry charset companion; it is not omitted from the matrix and is not moved independently. |
+| `requests` | `community_owned` | Declared directly by Community and used by `community/adapters/telemetry_sender.py`; core manifest/lock/wheel/source reintroduction is blocked by the core gates. |
+| `chardet` | `community_owned` | Declared directly by Community with `requests` as the telemetry transport charset companion; it is not moved independently. |
+| `aiosqlite` | `temporary_exception` | Non-telemetry carry-forward for relational/local DB. Community may consume the current core package dependency through SQLAlchemy `sqlite+aiosqlite` URLs, but AF40 does not declare or move it here. |
+| `numpy` | `temporary_exception` | Non-telemetry carry-forward for KG/vector embedding transitives. Community does not claim it through telemetry; later KG/vector or embedding ownership work must provide the move/removal oracle. |
 | `apscheduler` | `community_owned` | Declared directly by Community. `community/adapters/scheduler.py` owns APScheduler startup, `IntervalTrigger` mapping and shutdown behind the core `SchedulerControl` port. |
+
+AF41 MCP runtime ownership: Community declares `uvicorn[standard]` and
+`wsproto` directly because `okto_pulse.community.main` owns the productive
+API/UI and MCP serving process. The Core package keeps ASGI composition helpers
+only; its AF41 gate blocks those server dependencies from returning to the Core
+manifest, lock or wheel metadata.
+
+AF41 provider preservation: Community continues to supply the concrete MCP
+providers through `CommunityMcpAuthenticator`, `build_community_resource_catalog`,
+`CommunityCapabilityDescriptorSource` and `build_mcp_trace_sink_from_env`.
+AF41 changes only the local serving ownership; it does not duplicate the
+instruction, resource, version, auth or trace seams already delivered.
 
 AF33 capstone ownership matrix. The marked table is rendered from the core
 `CAPSTONE_OWNERSHIP_MATRIX` and must stay byte-identical to the core README

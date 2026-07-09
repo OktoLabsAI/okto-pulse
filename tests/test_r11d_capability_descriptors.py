@@ -68,6 +68,16 @@ def test_ts_9913b93b_descriptors_derived_from_runtime_composition():
     kg_backend = next(d for d in ds if d.id == "capability:kg_backend")
     assert kg_backend.capability == "kg" and kg_backend.metadata_dict.get("backend")
     assert kg_backend.provider == "community-embedded-kg"
+    assert kg_backend.metadata_dict["config_source"] == "CommunityKGConfig"
+    assert kg_backend.metadata_dict["embedding_source"] == (
+        "Community embedding provider"
+    )
+
+    settings = next(d for d in ds if d.id == "provider:settings_provider")
+    assert settings.metadata_dict["effective_source"] == "CommunitySettings"
+    effective_fields = settings.metadata_dict["effective_setting_fields"].split(",")
+    assert "kg_embedding_model" in effective_fields
+    assert "metrics_beacon_url" in effective_fields
 
     # EXPLICIT provider-specific LOCAL STORAGE descriptor (AC2/FR2), derived from
     # the active storage_provider — present here, with provider-specific metadata.

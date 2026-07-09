@@ -50,11 +50,11 @@ def _stored_agent_credential_source(value: str | None) -> _CredentialSource | No
 
 
 def _exportable_credential_from_legacy_agent(agent) -> _ExportableAgentCredential | None:
-    plaintext = agent.api_key
+    plaintext = _field(agent, "api_key")
     if _stored_agent_credential_source(plaintext) != "governed_legacy_plaintext":
         return None
     return _ExportableAgentCredential(
-        name=agent.name,
+        name=_field(agent, "name"),
         plaintext=plaintext,
         source="governed_legacy_plaintext",
     )
@@ -66,6 +66,35 @@ def _exportable_credential_from_reveal_once(
     if not plaintext.startswith("dash_"):
         return None
     return _ExportableAgentCredential(name=name, plaintext=plaintext, source="reveal_once")
+
+
+def _field(record, name: str, default=None):
+    if isinstance(record, dict):
+        return record.get(name, default)
+    mapping = getattr(record, "_mapping", None)
+    if mapping is not None and name in mapping:
+        return mapping[name]
+    return getattr(record, name, default)
+
+
+def _json_field(record, name: str, default=None):
+    value = _field(record, name, default)
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+    return value
+
+
+def _result_records(result):
+    mappings = getattr(result, "mappings", None)
+    if callable(mappings):
+        return list(mappings().all())
+    scalars = getattr(result, "scalars", None)
+    if callable(scalars):
+        return list(scalars().all())
+    return list(result.all())
 
 
 def _package_version(package_name: str) -> str:
@@ -131,14 +160,17 @@ def cmd_init(args):
     print(f"  Uploads:  {data_path / 'uploads'}")
 
     from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.infra.database import init_db, close_db, get_session_factory
+    from okto_pulse.core.ports.relational_runtime import (
+        close_db,
+        get_session_factory,
+        init_db,
+    )
     from okto_pulse.core.infra.auth import configure_auth
     from okto_pulse.core.infra.storage import configure_storage
     from okto_pulse.community.adapters.composition import community_storage_provider
     from okto_pulse.community.auth import LocalAuthProvider
     from okto_pulse.community.seed import seed_community_defaults
-    from sqlalchemy import select
-    from okto_pulse.core.models.db import Board
+    from sqlalchemy import text as sa_text
 
     configure_settings(settings)
     configure_auth(LocalAuthProvider())
@@ -170,10 +202,12 @@ def cmd_init(args):
             else:
                 print("\n  Already initialized (seed exists).")
                 # Fetch the default board for KG bootstrap
-                board_result = await db.execute(select(Board).limit(1))
-                board_row = board_result.scalar_one_or_none()
+                board_result = await db.execute(
+                    sa_text("SELECT id FROM boards ORDER BY created_at, id LIMIT 1")
+                )
+                board_row = board_result.mappings().first()
                 if board_row:
-                    board_id = board_row.id
+                    board_id = board_row["id"]
 
         # Bootstrap Knowledge Graph (Kuzu) for the board so the graph
         # schema and vector indexes are ready before the first agent call.
@@ -213,9 +247,12 @@ def _generate_mcp_json(
 ):
     """Generate .mcp.json with specified agents (or all if agent_names is empty)."""
     import asyncio
-    from sqlalchemy import select
-    from okto_pulse.core.infra.database import init_db, get_session_factory, close_db
-    from okto_pulse.core.models.db import Agent
+    from sqlalchemy import text as sa_text
+    from okto_pulse.core.ports.relational_runtime import (
+        close_db,
+        get_session_factory,
+        init_db,
+    )
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core.infra.auth import configure_auth
     from okto_pulse.core.infra.config import configure_settings
@@ -242,9 +279,12 @@ def _generate_mcp_json(
         async with get_session_factory()() as db:
             # Fetch all active agents with API keys
             result = await db.execute(
-                select(Agent).where(Agent.api_key.isnot(None)).order_by(Agent.name)
+                sa_text(
+                    "SELECT name, api_key FROM agents "
+                    "WHERE api_key IS NOT NULL ORDER BY name"
+                )
             )
-            all_agents = result.scalars().all()
+            all_agents = _result_records(result)
             exportable_by_name: dict[str, _ExportableAgentCredential] = {}
             for agent in all_agents:
                 credential = _exportable_credential_from_legacy_agent(agent)
@@ -255,7 +295,7 @@ def _generate_mcp_json(
                 if credential is not None:
                     exportable_by_name[credential.name] = credential
             exportable_agents = list(exportable_by_name.values())
-            all_agent_names = {a.name for a in all_agents} | {
+            all_agent_names = {_field(a, "name") for a in all_agents} | {
                 name for name, _key in revealed_agents or []
             }
 
@@ -564,7 +604,7 @@ def cmd_verify_pipeline(args):
     """
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.infra.database import (
+    from okto_pulse.core.ports.relational_runtime import (
         get_session_factory,
         init_db,
         close_db,
@@ -651,14 +691,13 @@ def cmd_kg_backfill(args):
     """
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.infra.database import (
+    from okto_pulse.core.ports.relational_runtime import (
         get_session_factory,
         init_db,
         close_db,
     )
     from okto_pulse.core.services.application_kg import create_deterministic_worker
-    from okto_pulse.core.models.db import Card, Spec, Sprint
-    from sqlalchemy import select
+    from sqlalchemy import text as sa_text
 
     board_id: str = args.board_id
     apply_writes: bool = bool(getattr(args, "apply", False))
@@ -688,12 +727,41 @@ def cmd_kg_backfill(args):
         factory = get_session_factory()
         try:
             async with factory() as db:
-                specs_q = select(Spec).where(Spec.board_id == board_id)
-                sprints_q = select(Sprint).where(Sprint.board_id == board_id)
-                cards_q = select(Card).where(Card.board_id == board_id)
-                spec_rows = (await db.execute(specs_q)).scalars().all()
-                sprint_rows = (await db.execute(sprints_q)).scalars().all()
-                card_rows = (await db.execute(cards_q)).scalars().all()
+                spec_rows = _result_records(
+                    await db.execute(
+                        sa_text(
+                            "SELECT id, title, description, context, "
+                            "functional_requirements, technical_requirements, "
+                            "acceptance_criteria, test_scenarios, business_rules, "
+                            "api_contracts "
+                            "FROM specs WHERE board_id = :board_id "
+                            "ORDER BY created_at, id"
+                        ),
+                        {"board_id": board_id},
+                    )
+                )
+                sprint_rows = _result_records(
+                    await db.execute(
+                        sa_text(
+                            "SELECT id, title, description, objective, "
+                            "expected_outcome, spec_id "
+                            "FROM sprints WHERE board_id = :board_id "
+                            "ORDER BY created_at, id"
+                        ),
+                        {"board_id": board_id},
+                    )
+                )
+                card_rows = _result_records(
+                    await db.execute(
+                        sa_text(
+                            "SELECT id, title, description, card_type, "
+                            "origin_task_id, sprint_id, spec_id, priority "
+                            "FROM cards WHERE board_id = :board_id "
+                            "ORDER BY created_at, id"
+                        ),
+                        {"board_id": board_id},
+                    )
+                )
                 return {
                     "specs": [_spec_to_dict(s) for s in spec_rows],
                     "sprints": [_sprint_to_dict(s) for s in sprint_rows],
@@ -762,7 +830,7 @@ def cmd_kg_backfill(args):
 
 async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
     """Apply path: enqueue all artifacts and drain the consolidation queue."""
-    from okto_pulse.core.infra.database import (
+    from okto_pulse.core.ports.relational_runtime import (
         get_session_factory,
         init_db,
         close_db,
@@ -775,8 +843,7 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
         get_current_provider_registry,
         start_historical_consolidation,
     )
-    from okto_pulse.core.models.db import ConsolidationQueue as CQ
-    from sqlalchemy import select
+    from sqlalchemy import text as sa_text
 
     await init_db()
     factory = get_session_factory()
@@ -822,9 +889,17 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
 
         # Check for failures
         async with factory() as db:
-            failed = (await db.execute(
-                select(CQ).where(CQ.board_id == board_id, CQ.status == "failed")
-            )).scalars().all()
+            failed = _result_records(
+                await db.execute(
+                    sa_text(
+                        "SELECT artifact_type, artifact_id, last_error "
+                        "FROM consolidation_queue "
+                        "WHERE board_id = :board_id AND status = :status "
+                        "ORDER BY artifact_type, artifact_id"
+                    ),
+                    {"board_id": board_id, "status": "failed"},
+                )
+            )
         failed_count = len(failed)
 
         if emit_json:
@@ -838,9 +913,11 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
             if failed:
                 output["failures"] = [
                     {
-                        "artifact_type": f.artifact_type,
-                        "artifact_id": f.artifact_id,
-                        "error": getattr(f, "error_message", None) or getattr(f, "last_error", None) or "unknown",
+                        "artifact_type": _field(f, "artifact_type"),
+                        "artifact_id": _field(f, "artifact_id"),
+                        "error": _field(f, "error_message")
+                        or _field(f, "last_error")
+                        or "unknown",
                     }
                     for f in failed
                 ]
@@ -852,8 +929,11 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
             if failed_count:
                 print(f"  Failed:              {failed_count}")
                 for f in failed:
-                    err = getattr(f, "error_message", None) or getattr(f, "last_error", None) or "unknown"
-                    print(f"    - {f.artifact_type}/{f.artifact_id}: {err}")
+                    err = _field(f, "error_message") or _field(f, "last_error") or "unknown"
+                    print(
+                        f"    - {_field(f, 'artifact_type')}/"
+                        f"{_field(f, 'artifact_id')}: {err}"
+                    )
             else:
                 print("  All entries processed successfully")
 
@@ -863,41 +943,46 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
 
 def _spec_to_dict(s):
     return {
-        "id": s.id,
-        "title": s.title,
-        "description": s.description,
-        "context": s.context,
-        "functional_requirements": s.functional_requirements,
-        "technical_requirements": s.technical_requirements,
-        "acceptance_criteria": s.acceptance_criteria,
-        "test_scenarios": s.test_scenarios,
-        "business_rules": s.business_rules,
-        "api_contracts": s.api_contracts,
+        "id": _field(s, "id"),
+        "title": _field(s, "title"),
+        "description": _field(s, "description"),
+        "context": _field(s, "context"),
+        "functional_requirements": _json_field(s, "functional_requirements"),
+        "technical_requirements": _json_field(s, "technical_requirements"),
+        "acceptance_criteria": _json_field(s, "acceptance_criteria"),
+        "test_scenarios": _json_field(s, "test_scenarios"),
+        "business_rules": _json_field(s, "business_rules"),
+        "api_contracts": _json_field(s, "api_contracts"),
     }
 
 
 def _sprint_to_dict(s):
     return {
-        "id": s.id,
-        "title": s.title,
-        "description": s.description,
-        "objective": getattr(s, "objective", None),
-        "expected_outcome": getattr(s, "expected_outcome", None),
-        "spec_id": s.spec_id,
+        "id": _field(s, "id"),
+        "title": _field(s, "title"),
+        "description": _field(s, "description"),
+        "objective": _field(s, "objective"),
+        "expected_outcome": _field(s, "expected_outcome"),
+        "spec_id": _field(s, "spec_id"),
     }
 
 
 def _card_to_dict(c):
-    p = getattr(c, "priority", None)
+    p = _field(c, "priority")
+    card_type = _field(c, "card_type")
+    if hasattr(card_type, "value"):
+        card_type = card_type.value
     return {
-        "id": c.id,
-        "title": c.title,
-        "description": c.description,
-        "card_type": str(c.card_type) if c.card_type else "normal",
-        "origin_task_id": getattr(c, "origin_task_id", None),
-        "sprint_id": getattr(c, "sprint_id", None),
-        "spec_id": c.spec_id,
-        "priority": str(p.value) if hasattr(p, "value") and p is not None else None,
+        "id": _field(c, "id"),
+        "title": _field(c, "title"),
+        "description": _field(c, "description"),
+        "card_type": str(card_type) if card_type else "normal",
+        "origin_task_id": _field(c, "origin_task_id"),
+        "sprint_id": _field(c, "sprint_id"),
+        "spec_id": _field(c, "spec_id"),
+        "priority": str(p.value) if hasattr(p, "value") and p is not None else (
+            str(p) if p is not None else None
+        ),
     }
 
 

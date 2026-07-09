@@ -26,6 +26,13 @@ from .coordination import (
     CommunitySqlAlchemyClaimRepository,
     register_community_coordination_providers,
 )
+from .kg_operational import (
+    CommunityKGOperationalPorts,
+    CommunitySqlAlchemyKGOperationalReadModel,
+    CommunitySqlAlchemyKGWorkerAudit,
+    CommunitySqlAlchemyKGWorkerQueue,
+    register_community_kg_operational_ports,
+)
 from .rebuild_audit_storage import CommunityFileSystemRebuildAuditArtifactStore
 from .board_rebuild_ingestion import CommunityBoardRebuildIngestionAdapter
 from .board_source_reader import CommunityBoardSourceReader, resolve_pulse_db_path
@@ -98,12 +105,16 @@ __all__ = [
     "CommunityInMemoryCache",
     "CommunityInMemoryRateLimiter",
     "CommunityInMemorySessionStore",
+    "CommunityKGOperationalPorts",
     "CommunityKgComposition",
     "CommunityMCPAuthContext",
     "CommunityMcpAuthenticator",
     "CommunityRelationalSchemaLifecycleOrchestrator",
     "CommunityRelationalSchemaMigrator",
     "CommunitySentenceTransformerProvider",
+    "CommunitySqlAlchemyKGOperationalReadModel",
+    "CommunitySqlAlchemyKGWorkerAudit",
+    "CommunitySqlAlchemyKGWorkerQueue",
     "CommunityStubEmbeddingProvider",
     "CommunityTelemetryStateCarrier",
     "MCPAuthContext",
@@ -125,6 +136,7 @@ __all__ = [
     "register_community_relational_schema_lifecycle",
     "register_community_content_ingestion_resolver",
     "register_community_coordination_providers",
+    "register_community_kg_operational_ports",
     "register_community_reranker",
     "register_community_telemetry_state_carrier",
     "resolve_pulse_db_path",

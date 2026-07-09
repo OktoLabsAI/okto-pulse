@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import sys
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +12,13 @@ import okto_pulse.community.adapters.sqlalchemy_database as _db
 
 
 def test_r13_sqlalchemy_adapter_import_does_not_import_asyncpg() -> None:
-    assert "asyncpg" not in sys.modules
+    code = (
+        "import sys; "
+        "import okto_pulse.community.adapters.sqlalchemy_database; "
+        "raise SystemExit(1 if 'asyncpg' in sys.modules else 0)"
+    )
+    result = subprocess.run([sys.executable, "-c", code], check=False)
+    assert result.returncode == 0
 
 
 def test_r13_sqlite_engine_preserves_pool_kwargs_and_future(monkeypatch) -> None:

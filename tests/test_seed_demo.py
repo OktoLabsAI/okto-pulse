@@ -29,6 +29,7 @@ for mod in list(sys.modules):
 async def test_demo_graph_seed_uses_schema_supported_cognitive_edge(monkeypatch):
     from okto_pulse.community import seed as seed_mod
     from okto_pulse.core.infra import database as database_mod
+    from okto_pulse.core.services import application_kg as application_kg_mod
     import okto_pulse.core.kg.interfaces as interfaces_mod
     from okto_pulse.core.kg import primitives as primitives_mod
     from okto_pulse.core.kg.interfaces import registry as registry_mod
@@ -74,6 +75,11 @@ async def test_demo_graph_seed_uses_schema_supported_cognitive_edge(monkeypatch)
     monkeypatch.setattr(
         interfaces_mod,
         "get_kg_registry",
+        lambda: SimpleNamespace(graph_schema_manager=FakeGraphSchemaManager()),
+    )
+    monkeypatch.setattr(
+        application_kg_mod,
+        "get_current_provider_registry",
         lambda: SimpleNamespace(graph_schema_manager=FakeGraphSchemaManager()),
     )
     monkeypatch.setattr(primitives_mod, "begin_consolidation", fake_begin)

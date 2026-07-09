@@ -161,7 +161,7 @@ def configure_community_database(
     echo: bool = False,
 ) -> CommunityDatabaseRuntime:
     """Build and inject the Community relational runtime into core."""
-    from okto_pulse.core.infra.database import configure_database_runtime
+    from okto_pulse.core.ports.relational_runtime import configure_database_runtime
 
     engine = build_community_engine(url, echo=echo)
     install_community_sqlite_pragmas(engine)

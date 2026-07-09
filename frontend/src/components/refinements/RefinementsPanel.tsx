@@ -67,6 +67,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedRefinementId, setSelectedRefinementId] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('');
+  const [showWithoutDerivation, setShowWithoutDerivation] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
 
   useEffect(() => {
@@ -112,15 +113,18 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
   ];
 
   // Flatten and filter
-  const allRefinements: GroupedRefinement[] = [];
+  const statusFilteredRefinements: GroupedRefinement[] = [];
   groups.forEach(({ ideation, refinements }) => {
     for (const refinement of refinements) {
       if (!showArchived && refinement.archived) continue;
       if (!filterStatus || refinement.status === filterStatus) {
-        allRefinements.push({ refinement, ideationTitle: ideation.title });
+        statusFilteredRefinements.push({ refinement, ideationTitle: ideation.title });
       }
     }
   });
+  const allRefinements = showWithoutDerivation
+    ? statusFilteredRefinements.filter(({ refinement }) => Boolean(getRefinementPendingDerivationLabel(refinement)))
+    : statusFilteredRefinements;
 
   const { viewMode, setViewMode } = useViewMode('refinements', 'list');
   const search = useListSearch<GroupedRefinement>(allRefinements, {
@@ -166,7 +170,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Refinements</h2>
           <span className="text-sm text-gray-400">
             ({search.filtered.length}
-            {search.query ? ` of ${allRefinements.length}` : ''})
+            {search.query || showWithoutDerivation ? ` of ${statusFilteredRefinements.length}` : ''})
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -203,8 +207,20 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
           </button>
         ))}
         <button
+          onClick={() => setShowWithoutDerivation(!showWithoutDerivation)}
+          className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full transition-colors ml-2 ${
+            showWithoutDerivation
+              ? 'bg-cyan-600 text-white shadow-sm'
+              : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400'
+          }`}
+          data-testid="refinements-no-derivation-filter"
+        >
+          <GitBranch size={12} />
+          No derivation
+        </button>
+        <button
           onClick={() => setShowArchived(!showArchived)}
-          className={`text-xs px-2.5 py-1 rounded-full transition-colors ml-2 ${
+          className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
             showArchived
               ? 'bg-amber-500 text-white'
               : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400'
@@ -218,7 +234,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
         {loading ? (
           <PulseLoader size="sm" label="Loading refinements..." />
-        ) : allRefinements.length === 0 ? (
+        ) : statusFilteredRefinements.length === 0 ? (
           <div className="text-center py-12">
             <Layers size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
             <p className="text-gray-500 dark:text-gray-400 mb-2">
@@ -232,6 +248,28 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
               className="btn btn-primary text-sm"
             >
               Create your first refinement
+            </button>
+          </div>
+        ) : allRefinements.length === 0 ? (
+          <div className="text-center py-12">
+            <Layers size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
+            <p className="text-gray-500 dark:text-gray-400 mb-2">
+              No refinements without derivation
+            </p>
+            <button
+              onClick={() => setShowWithoutDerivation(false)}
+              className="btn btn-ghost text-sm"
+            >
+              Clear filter
+            </button>
+          </div>
+        ) : search.filtered.length === 0 ? (
+          <div className="text-center py-12">
+            <p className="text-gray-500 dark:text-gray-400 mb-2">
+              No results for “{search.query}”
+            </p>
+            <button onClick={search.clear} className="btn btn-ghost text-sm">
+              Clear search
             </button>
           </div>
         ) : (

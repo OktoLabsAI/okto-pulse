@@ -6,19 +6,22 @@ import type {
   RefinementStatus,
 } from '@/types';
 
-export const IDEATION_PENDING_REFINEMENT_LABEL = 'Sem refinamento';
-export const REFINEMENT_PENDING_SPEC_LABEL = 'Sem spec';
+export const IDEATION_PENDING_REFINEMENT_LABEL = 'No refinement';
+export const REFINEMENT_PENDING_SPEC_LABEL = 'No spec';
 
 interface DerivationChild {
   status?: string | null;
   archived?: boolean | null;
+  refinement_id?: string | null;
 }
 
 interface IdeationDerivationSource {
   status: IdeationStatus;
   complexity?: IdeationComplexity | null;
   active_refinement_count?: number | null;
+  active_spec_count?: number | null;
   refinements?: DerivationChild[] | null;
+  specs?: DerivationChild[] | null;
 }
 
 interface RefinementDerivationSource {
@@ -48,13 +51,30 @@ function resolveActiveCount(
   return children ? countActiveDerivations(children) : summaryCount ?? 0;
 }
 
+function countActiveDirectSpecs(children: DerivationChild[] | null | undefined): number {
+  return (children || []).filter(
+    (child) => isActiveDerivationChild(child) && child.refinement_id == null,
+  ).length;
+}
+
+function resolveActiveDirectSpecCount(
+  summaryCount: number | null | undefined,
+  children: DerivationChild[] | null | undefined,
+): number {
+  return children ? countActiveDirectSpecs(children) : summaryCount ?? 0;
+}
+
 export function getIdeationPendingDerivationLabel(
   ideation: IdeationDerivationSource,
 ): string | null {
-  const isRefinementEligible =
-    ideation.status === 'done' &&
-    (ideation.complexity === 'medium' || ideation.complexity === 'large');
-  if (!isRefinementEligible) {
+  if (ideation.status !== 'done') {
+    return null;
+  }
+  if (ideation.complexity === 'small') {
+    const activeSpecs = resolveActiveDirectSpecCount(ideation.active_spec_count, ideation.specs);
+    return activeSpecs === 0 ? REFINEMENT_PENDING_SPEC_LABEL : null;
+  }
+  if (ideation.complexity !== 'medium' && ideation.complexity !== 'large') {
     return null;
   }
   const activeRefinements = resolveActiveCount(

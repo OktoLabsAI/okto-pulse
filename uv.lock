@@ -1435,17 +1435,25 @@ version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "apscheduler" },
+    { name = "chardet" },
     { name = "ladybug" },
     { name = "okto-pulse-core" },
+    { name = "requests" },
     { name = "sentence-transformers" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "wsproto" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "apscheduler", specifier = ">=3.10.0,<4.0.0" },
+    { name = "chardet", specifier = ">=3.0.2,<6.0.0" },
     { name = "ladybug", specifier = ">=0.16.0,<0.17.0" },
     { name = "okto-pulse-core", specifier = ">=0.3.0,<1.0.0" },
+    { name = "requests", specifier = ">=2.32.0,<3.0.0" },
     { name = "sentence-transformers", specifier = ">=2.5.0,<6.0.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0,<1.0.0" },
+    { name = "wsproto", specifier = ">=1.2.0,<2.0.0" },
 ]
 
 [[package]]
@@ -1455,7 +1463,6 @@ source = { registry = "../okto_labs_pulse_core/dist" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "authlib" },
-    { name = "chardet" },
     { name = "fastapi" },
     { name = "fastmcp" },
     { name = "mcp" },
@@ -1464,10 +1471,7 @@ dependencies = [
     { name = "pydantic-core" },
     { name = "pydantic-settings" },
     { name = "python-multipart" },
-    { name = "requests" },
     { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "wsproto" },
 ]
 sdist = { path = "okto_pulse_core-0.3.0.tar.gz" }
 wheels = [

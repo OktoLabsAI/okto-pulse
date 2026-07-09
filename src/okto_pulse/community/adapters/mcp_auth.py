@@ -3,15 +3,16 @@
 ``CommunityMcpAuthenticator`` is the Community-edition concrete implementation of
 ``okto_pulse.core.ports.McpAuthenticator``. It reproduces the current MCP
 authentication behaviour by delegating to the canonical
-``AgentService.get_agent_by_key`` (SHA-256 of the key -> ``Agent.api_key_hash``
-lookup, ``is_active`` filter, ``last_used_at`` touch, ``None`` for absent/invalid
-/ inactive) and mapping the resulting ``Agent`` onto the port's canonical
+``application_agents.authenticate_agent_by_api_key`` (SHA-256 of the key ->
+``Agent.api_key_hash`` lookup, ``is_active`` filter, read-only auth with no
+``last_used_at`` touch,
+``None`` for absent/invalid/inactive) and returning the port's canonical
 ``AgentAuthSession`` DTO.
 
 R06 also moves the concrete KG ``AuthContext`` bridge here from core. The bridge
-still delegates board ACL to ``AgentService.list_boards_for_agent`` so envelopes
-and ACL semantics remain unchanged, but the concrete runtime ownership is now
-Community; core keeps only contracts and fail-closed consumers.
+still delegates board ACL to the public ``application_agents`` facade so
+envelopes and ACL semantics remain unchanged, but the concrete runtime ownership
+is now Community; core keeps only contracts and fail-closed consumers.
 
 STRICT scope (R08-A): preserves Community behaviour. It does NOT introduce a
 CredentialStore / JWT / realms-scopes / user-auth, does NOT touch
@@ -23,9 +24,9 @@ yields ``None``. The raw secret is never logged and never placed in the session
 metadata.
 
 Layering (tr_cc34376c): ``core`` never imports ``community``. The adapter imports
-``core.ports`` (the contract) at module top and lazy-imports the concrete
-``AgentService`` inside ``authenticate``; the composition factory lazy-imports the
-session factory.
+``core.ports`` (the contract) at module top and lazy-imports public core
+facades; the composition factory lazy-imports the public relational runtime
+facade.
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 from okto_pulse.core.ports import (
-    AgentAuthSession,
     AuthSession,
     McpCredential,
 )
@@ -53,7 +53,7 @@ logger = logging.getLogger("okto_pulse.community.mcp_auth")
 
 
 class CommunityMcpAuthenticator:
-    """``McpAuthenticator`` backed by ``AgentService.get_agent_by_key``.
+    """``McpAuthenticator`` backed by the public application agent facade.
 
     ``session_factory`` is an async session factory (e.g. the registered MCP
     session factory or ``get_session_factory()``); ``session_factory()`` opens an
@@ -69,12 +69,15 @@ class CommunityMcpAuthenticator:
             return None
         try:
             async with self._session_factory() as db:
-                # Lazy import keeps the adapter import-light and avoids any
-                # import cycle (core never imports community).
-                from okto_pulse.core.services.main import AgentService
+                from okto_pulse.core.services.application_agents import (
+                    authenticate_agent_by_api_key,
+                )
 
-                agent = await AgentService(db).get_agent_by_key(credential.value)
-                await db.commit()
+                session = await authenticate_agent_by_api_key(
+                    db,
+                    credential.value,
+                    credential_source=credential.source,
+                )
         except Exception:  # noqa: BLE001 — fail-closed; never leak the raw secret
             # Secret-free: log the source only, never credential.value.
             logger.warning(
@@ -87,16 +90,7 @@ class CommunityMcpAuthenticator:
             )
             return None
 
-        if agent is None:
-            return None
-        # get_agent_by_key already filters is_active=True, so a returned agent is
-        # active. metadata carries only the (secret-free) transport source.
-        return AgentAuthSession(
-            agent_id=agent.id,
-            agent_name=agent.name,
-            is_active=bool(getattr(agent, "is_active", True)),
-            metadata={"credential_source": credential.source},
-        )
+        return session
 
 
 def make_community_mcp_authenticator(
@@ -106,12 +100,12 @@ def make_community_mcp_authenticator(
     """Composition factory — binds the canonical ``McpAuthenticator`` to the
     Community async session factory.
 
-    ``core.infra.database`` is imported HERE (lazily), never at module top, so
-    ``core`` never imports ``community``. When ``session_factory`` is omitted, the
-    process-global ``get_session_factory()`` is used.
+    The public relational runtime facade is imported HERE (lazily), never at
+    module top, so ``core`` never imports ``community``. When ``session_factory``
+    is omitted, the process-global ``get_session_factory()`` is used.
     """
     if session_factory is None:
-        from okto_pulse.core.infra.database import get_session_factory
+        from okto_pulse.core.ports.relational_runtime import get_session_factory
 
         session_factory = get_session_factory()
     return CommunityMcpAuthenticator(session_factory=session_factory)
@@ -143,11 +137,11 @@ class MCPAuthContext:
             self._boards = []
             return self._boards
         async with self._get_db() as db:
-            from okto_pulse.core.services.main import AgentService
+            from okto_pulse.core.services.application_agents import (
+                list_accessible_board_ids_for_agent,
+            )
 
-            boards = await AgentService(db).list_boards_for_agent(agent.id)
-            await db.commit()
-            self._boards = [b.id for b in boards]
+            self._boards = await list_accessible_board_ids_for_agent(db, agent.id)
         return self._boards
 
     def has_admin_role(self) -> bool:

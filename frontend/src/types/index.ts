@@ -1294,8 +1294,10 @@ export interface IdeationSummary {
   scope_assessment?: { domains: number; ambiguity: number; dependencies: number } | null;
   // Unanswered Q&A count (answered_at IS NULL) — drives the "open Q&A" badge.
   open_qa_count?: number;
-  // Non-archived, non-cancelled child refinements — drives the "Sem refinamento" badge.
+  // Non-archived, non-cancelled child refinements — drives the "No refinement" badge.
   active_refinement_count?: number;
+  // Non-archived, non-cancelled direct specs — drives the "No spec" badge for small ideations.
+  active_spec_count?: number;
   board_id: string;
   title: string;
   description: string | null;

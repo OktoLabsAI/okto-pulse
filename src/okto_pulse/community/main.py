@@ -23,7 +23,11 @@ from fastapi.staticfiles import StaticFiles
 
 from okto_pulse.core.app import create_app, register_kg_daily_tick_job
 from okto_pulse.core.infra.config import get_settings
-from okto_pulse.core.infra.database import get_session_factory, init_db, close_db
+from okto_pulse.core.ports.relational_runtime import (
+    close_db,
+    get_session_factory,
+    init_db,
+)
 from okto_pulse.core.services.application_kg import get_current_provider_registry
 # NOTE: MCP server is imported lazily inside create_community_app (after
 # create_app has called configure_settings) and inside combined_lifespan
@@ -446,6 +450,11 @@ def create_community_app():
     # register the MCP session factory so the mounted sub-app finds the DB.
     async def combined_lifespan(app_instance) -> AsyncGenerator[None, None]:
         await init_db()
+        from okto_pulse.core.api.kg_events_hub import (
+            configure_kg_events_hub_session_factory,
+        )
+
+        configure_kg_events_hub_session_factory(get_session_factory())
         async with get_session_factory()() as db:
             result = await seed_community_defaults(db)
             if result:
@@ -464,7 +473,9 @@ def create_community_app():
         # timestamp). O combined_lifespan SUBSTITUI o _default_lifespan do
         # core, então o backfill precisa rodar aqui também. Idempotente.
         try:
-            from okto_pulse.core.services.main import backfill_qa_answered_at
+            from okto_pulse.core.services.application_startup import (
+                backfill_qa_answered_at,
+            )
 
             async with get_session_factory()() as _qa_db:
                 _qa_fixed = await backfill_qa_answered_at(_qa_db)
@@ -531,9 +542,15 @@ def create_community_app():
         # Lazy import preserves the settings cache trap: configure_settings
         # has already run via create_app().
         from okto_pulse.core.mcp import register_session_factory
+        from okto_pulse.community.adapters.mcp_auth import (
+            make_community_mcp_authenticator,
+        )
         register_session_factory(
             get_session_factory(),
             scheduler_control=scheduler_control,
+            mcp_authenticator=make_community_mcp_authenticator(
+                session_factory=get_session_factory()
+            ),
         )
 
         from okto_pulse.community.adapters.content_ingestion import (
@@ -600,6 +617,9 @@ def create_community_app():
                     failure.family,
                     failure.message,
                 )
+        from okto_pulse.core.api.kg_events_hub import shutdown_kg_events_hub
+
+        await shutdown_kg_events_hub()
         await close_db()
 
     from okto_pulse.community.adapters.sqlalchemy_database import (
@@ -682,9 +702,10 @@ def create_community_app():
     # R06/R08-B: the Community composition root injects the AuthContext factory
     # bound to the MCP server's current agent/db providers, so the KG query tools
     # resolve agent_id + accessible boards via the AuthContext port. Board ACL
-    # still flows through AgentService.list_boards_for_agent inside the Community
-    # adapter; api_key path untouched. The core server module is imported lazily
-    # (per first call) to avoid pulling the heavy MCP module at boot.
+    # still flows through the public application_agents facade inside the
+    # Community adapter; api_key path untouched. The core server module is
+    # imported lazily (per first call) to avoid pulling the heavy MCP module at
+    # boot.
     async def _mcp_auth_get_agent():
         from okto_pulse.core.mcp import get_authenticated_agent_for_mcp
 

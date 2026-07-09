@@ -145,6 +145,16 @@ def _print_call(node: ast.Call) -> bool:
     return isinstance(func, ast.Name) and func.id == "print"
 
 
+def _api_key_field_call(node: ast.Call) -> bool:
+    func = node.func
+    if not (isinstance(func, ast.Name) and func.id == "_field"):
+        return False
+    if len(node.args) < 2:
+        return False
+    key = node.args[1]
+    return isinstance(key, ast.Constant) and key.value == "api_key"
+
+
 def _allowlist_reason(file: str, function: str, kind: str) -> str | None:
     exact = _ALLOWLIST.get((file, function, kind))
     if exact is not None:
@@ -221,6 +231,16 @@ def run_community_credential_surface_gate(
                             symbol="api_key",
                         )
                     )
+            elif isinstance(node, ast.Call) and _api_key_field_call(node):
+                findings.append(
+                    _finding(
+                        rel=rel,
+                        parent_map=parent_map,
+                        node=node,
+                        kind="persisted_agent_api_key_read",
+                        symbol="api_key",
+                    )
+                )
             elif isinstance(node, ast.Call) and _print_call(node):
                 refs: set[str] = set()
                 for arg in node.args:

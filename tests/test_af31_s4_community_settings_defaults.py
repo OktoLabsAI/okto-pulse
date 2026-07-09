@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from okto_pulse.community.adapters.composition import build_community_embedding
+from okto_pulse.community.adapters.embedding import (
+    COMMUNITY_DEFAULT_EMBEDDING_DIM,
+    COMMUNITY_DEFAULT_EMBEDDING_MODEL,
+    COMMUNITY_DEFAULT_EMBEDDING_MODE,
+)
 from okto_pulse.community.adapters.telemetry_effect_config import (
     COMMUNITY_DEFAULT_METRICS_BEACON_URL,
 )
 from okto_pulse.community.config import CommunitySettings
-
-
-CANONICAL_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def test_af31_s4_community_derives_empty_and_legacy_upload_defaults(
@@ -24,6 +26,7 @@ def test_af31_s4_community_derives_empty_and_legacy_upload_defaults(
         "KG_BASE_DIR",
         "KG_EMBEDDING_MODE",
         "KG_EMBEDDING_MODEL",
+        "KG_EMBEDDING_DIM",
         "METRICS_BEACON_URL",
     ):
         monkeypatch.delenv(env_name, raising=False)
@@ -43,8 +46,12 @@ def test_af31_s4_community_derives_empty_and_legacy_upload_defaults(
             f"sqlite+aiosqlite:///{expected_data_dir / 'data' / 'pulse.db'}"
         )
         assert settings.metrics_beacon_url == COMMUNITY_DEFAULT_METRICS_BEACON_URL
-        assert settings.kg_embedding_mode == "sentence-transformers"
-        assert settings.kg_embedding_model == CANONICAL_EMBEDDING_MODEL
+        assert settings.kg_embedding_mode == COMMUNITY_DEFAULT_EMBEDDING_MODE
+        assert settings.kg_embedding_model == COMMUNITY_DEFAULT_EMBEDDING_MODEL
+        assert settings.kg_embedding_dim == COMMUNITY_DEFAULT_EMBEDDING_DIM
+
+    assert "kg_embedding_model" in CommunitySettings.__annotations__
+    assert "kg_embedding_dim" in CommunitySettings.__annotations__
 
 
 def test_af31_s4_composition_fallback_model_is_canonical():
@@ -54,4 +61,4 @@ def test_af31_s4_composition_fallback_model_is_canonical():
 
     provider = build_community_embedding(settings=SettingsWithoutModel())
 
-    assert provider.embedding_metadata()["model_name"] == CANONICAL_EMBEDDING_MODEL
+    assert provider.embedding_metadata()["model_name"] == COMMUNITY_DEFAULT_EMBEDDING_MODEL

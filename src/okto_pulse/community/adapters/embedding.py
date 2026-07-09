@@ -27,6 +27,10 @@ from typing import Sequence
 
 logger = logging.getLogger("okto_pulse.community.embedding")
 
+COMMUNITY_DEFAULT_EMBEDDING_MODE = "sentence-transformers"
+COMMUNITY_DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+COMMUNITY_DEFAULT_EMBEDDING_DIM = 384
+
 
 class CommunityStubEmbeddingProvider:
     """Deterministic hash-based provider (no external deps)."""
@@ -122,6 +126,9 @@ def build_community_embedding_provider(
 
 
 __all__ = [
+    "COMMUNITY_DEFAULT_EMBEDDING_DIM",
+    "COMMUNITY_DEFAULT_EMBEDDING_MODE",
+    "COMMUNITY_DEFAULT_EMBEDDING_MODEL",
     "CommunityStubEmbeddingProvider",
     "CommunitySentenceTransformerProvider",
     "build_community_embedding_provider",

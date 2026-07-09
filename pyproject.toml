@@ -27,8 +27,12 @@ classifiers = [
 ]
 dependencies = [
     "okto-pulse-core>=0.3.0,<1.0.0",
+    "uvicorn[standard]>=0.27.0,<1.0.0",
+    "wsproto>=1.2.0,<2.0.0",
     "apscheduler>=3.10.0,<4.0.0",
     "ladybug>=0.16.0,<0.17.0",
+    "requests>=2.32.0,<3.0.0",
+    "chardet>=3.0.2,<6.0.0",
     "sentence-transformers>=2.5.0,<6.0.0",
 ]
 

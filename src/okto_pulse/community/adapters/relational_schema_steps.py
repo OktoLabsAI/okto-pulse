@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from okto_pulse.core.infra.database import Base, get_engine, get_session_factory
+from okto_pulse.core.ports.relational_runtime import (
+    Base,
+    get_engine,
+    get_session_factory,
+)
 
 StepCallable = Callable[[], "Awaitable[object] | object"]
 
@@ -498,8 +502,8 @@ async def _migrate_heal_task_validation_field_names() -> None:
     """
     import json as _json
     from datetime import datetime, timezone
-    from sqlalchemy import text as sa_text
-    from sqlalchemy.orm.attributes import flag_modified as _flag_modified
+    from sqlalchemy import JSON as sa_JSON
+    from sqlalchemy import bindparam, text as sa_text
 
     async with get_session_factory()() as db:
         # Load all cards that have any validations or might need healing.
@@ -515,8 +519,6 @@ async def _migrate_heal_task_validation_field_names() -> None:
 
         if not rows:
             return
-
-        from okto_pulse.core.models.db import Card  # lazy import
 
         healed_count = 0
         for row in rows:
@@ -592,14 +594,32 @@ async def _migrate_heal_task_validation_field_names() -> None:
                 modified = True
 
             if modified:
-                card = await db.get(Card, card_id)
-                if card:
-                    card.validations = validations
-                    _flag_modified(card, "validations")
-                    if needs_conclusion:
-                        card.conclusions = conclusions
-                        _flag_modified(card, "conclusions")
-                    healed_count += 1
+                if needs_conclusion:
+                    stmt = sa_text(
+                        "UPDATE cards "
+                        "SET validations = :validations, conclusions = :conclusions "
+                        "WHERE id = :id"
+                    ).bindparams(
+                        bindparam("validations", type_=sa_JSON),
+                        bindparam("conclusions", type_=sa_JSON),
+                    )
+                    await db.execute(
+                        stmt,
+                        {
+                            "id": card_id,
+                            "validations": validations,
+                            "conclusions": conclusions,
+                        },
+                    )
+                else:
+                    stmt = sa_text(
+                        "UPDATE cards SET validations = :validations WHERE id = :id"
+                    ).bindparams(bindparam("validations", type_=sa_JSON))
+                    await db.execute(
+                        stmt,
+                        {"id": card_id, "validations": validations},
+                    )
+                healed_count += 1
 
         if healed_count > 0:
             await db.commit()
@@ -1210,25 +1230,26 @@ async def _migrate_agent_permissions() -> None:
 
     import copy
     import json as _json
-    from sqlalchemy import select as _select
-    from sqlalchemy.orm.attributes import flag_modified
+    from sqlalchemy import JSON as sa_JSON
+    from sqlalchemy import bindparam, text as sa_text
 
     async with get_session_factory()() as session:
         try:
-            from okto_pulse.core.models.db import Agent as _Agent
             from okto_pulse.core.infra.permissions import (
                 PERMISSION_REGISTRY, map_legacy_permissions
             )
 
             result = await session.execute(
-                _select(_Agent).where(_Agent.permission_flags.is_(None))
+                sa_text(
+                    "SELECT id, permissions FROM agents WHERE permission_flags IS NULL"
+                )
             )
-            agents = list(result.scalars().all())
+            agents = list(result.mappings().all())
             if not agents:
                 return
 
             for agent in agents:
-                old_perms = agent.permissions
+                old_perms = agent["permissions"]
                 if old_perms is None:
                     new_flags = copy.deepcopy(PERMISSION_REGISTRY)
                 else:
@@ -1237,9 +1258,17 @@ async def _migrate_agent_permissions() -> None:
                     else:
                         perm_list = old_perms
                     new_flags = map_legacy_permissions(perm_list)
-                agent.permission_flags = new_flags
-                flag_modified(agent, "permission_flags")
-                logger.info(f"Migrated agent {agent.id[:8]} permissions")
+                await session.execute(
+                    sa_text(
+                        "UPDATE agents SET permission_flags = :permission_flags "
+                        "WHERE id = :id"
+                    ).bindparams(bindparam("permission_flags", type_=sa_JSON)),
+                    {
+                        "id": agent["id"],
+                        "permission_flags": new_flags,
+                    },
+                )
+                logger.info(f"Migrated agent {agent['id'][:8]} permissions")
             await session.commit()
             logger.info(f"Permission migration complete: {len(agents)} agent(s)")
         except Exception as e:

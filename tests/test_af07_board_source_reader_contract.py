@@ -6,10 +6,13 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from okto_pulse.community.adapters.board_source_reader import (
     ARTIFACT_QUERIES,
     CommunityBoardSourceReader,
 )
+from okto_pulse.core.kg.interfaces.board_source_reader import SourceUnavailableError
 from okto_pulse.core.kg.board_source_store import (
     IDEATION_CONTENT_COLUMNS,
     REFINEMENT_CONTENT_COLUMNS,
@@ -18,6 +21,33 @@ from okto_pulse.core.kg.board_source_store import (
     STORY_CONTENT_COLUMNS,
     _canonical_content_hash,
 )
+from okto_pulse.core.ports.relational_runtime import (
+    configure_database_runtime,
+    reset_database_runtime_for_tests,
+)
+
+
+class _Url:
+    def __init__(self, backend: str, database: str | None) -> None:
+        self._backend = backend
+        self.database = database
+
+    def get_backend_name(self) -> str:
+        return self._backend
+
+
+class _Engine:
+    def __init__(self, backend: str, database: str | None) -> None:
+        self.url = _Url(backend, database)
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime():
+    reset_database_runtime_for_tests()
+    try:
+        yield
+    finally:
+        reset_database_runtime_for_tests()
 
 
 def test_artifact_queries_use_core_content_contract_objects() -> None:
@@ -52,6 +82,37 @@ def test_reader_keeps_adapter_derived_fields_outside_content_hash(
     assert second["working_ttl_days"] == 30
     assert first["source_artifact_status"] == "review"
     assert first["has_minimal_evidence"] is True
+
+
+def test_reader_respects_explicit_db_path_provider(tmp_path: Path) -> None:
+    db_path = _story_db(tmp_path, ttl_days=14)
+    rows = CommunityBoardSourceReader(db_path_provider=lambda: db_path).fetch("b1")
+
+    story = next(row for row in rows if row["artifact_type"] == "story")
+
+    assert story["working_ttl_days"] == 14
+    assert story["source_artifact_status"] == "review"
+
+
+def test_reader_resolves_db_path_from_public_runtime(tmp_path: Path) -> None:
+    db_path = _story_db(tmp_path, ttl_days=21)
+    configure_database_runtime(
+        engine=_Engine("sqlite", str(db_path)),
+        session_factory=lambda: object(),
+    )
+
+    rows = CommunityBoardSourceReader().fetch("b1")
+
+    story = next(row for row in rows if row["artifact_type"] == "story")
+    assert story["working_ttl_days"] == 21
+
+
+def test_reader_fails_closed_when_no_runtime_path_can_be_resolved() -> None:
+    with pytest.raises(SourceUnavailableError) as exc:
+        CommunityBoardSourceReader().fetch("b1")
+
+    assert exc.value.code == "source_unavailable"
+    assert exc.value.cause_type == "RelationalDatabasePathUnavailable"
 
 
 def _read_story(db_path: Path) -> dict[str, object]:

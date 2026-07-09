@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from okto_pulse.community.adapters.embedding import (
+    COMMUNITY_DEFAULT_EMBEDDING_DIM,
+    COMMUNITY_DEFAULT_EMBEDDING_MODEL,
     build_community_embedding_provider,
 )
 from okto_pulse.community.adapters.memory import (
@@ -52,12 +54,8 @@ def build_community_embedding(*, settings: Any | None = None):
     s = settings if settings is not None else _core_settings()
     return build_community_embedding_provider(
         mode=getattr(s, "kg_embedding_mode", "stub"),
-        model_name=getattr(
-            s,
-            "kg_embedding_model",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        ),
-        dim=getattr(s, "kg_embedding_dim", 384),
+        model_name=getattr(s, "kg_embedding_model", COMMUNITY_DEFAULT_EMBEDDING_MODEL),
+        dim=getattr(s, "kg_embedding_dim", COMMUNITY_DEFAULT_EMBEDDING_DIM),
     )
 
 
@@ -213,6 +211,9 @@ def configure_community_kg_registry(
     from okto_pulse.community.adapters.telemetry_state import (
         register_community_telemetry_state_carrier,
     )
+    from okto_pulse.community.adapters.kg_operational import (
+        register_community_kg_operational_ports,
+    )
 
     # R12: register the Community full-dict telemetry state carrier before any
     # core telemetry settings/service code resolves persisted state.
@@ -235,6 +236,9 @@ def configure_community_kg_registry(
     # so request/emitter surfaces can resolve it through the registry. Fallback
     # still present; call-site migration + fail-closed are Stage D.
     register_community_telemetry_port()
+    # AF35-S2: register Community SQLAlchemy KG operational read/worker adapters
+    # so Core KG modules resolve concrete persistence through ports.
+    register_community_kg_operational_ports()
 
     register_community_reranker()
     base = build_community_base_registry(settings=settings)

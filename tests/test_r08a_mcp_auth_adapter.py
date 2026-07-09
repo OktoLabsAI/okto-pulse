@@ -8,7 +8,7 @@ Scenarios covered here (community-target):
                 Community-owned MCPAuthContext bridge in this adapter; + no
                 SaaS-redesign symbols in the adapter (ts_178da21e parallel).
   ts_75846b3a — a valid key authenticates: SHA-256 -> api_key_hash lookup,
-                last_used_at touched, identity mapped to AgentAuthSession.
+                last_used_at left untouched, identity mapped to AgentAuthSession.
   ts_5f381019 — fail-closed: invalid key / inactive agent / absent credential ->
                 None, with no raw-secret leak.
 
@@ -121,9 +121,9 @@ def test_ts_b22ce5b0_resolved_session_is_canonical_dto(tmp_path, _isolate_engine
 
 
 # ===========================================================================
-# ts_75846b3a — valid key authenticates (hash + last_used_at).
+# ts_75846b3a — valid key authenticates without touching last_used_at.
 # ===========================================================================
-def test_ts_75846b3a_valid_key_authenticates_and_touches_last_used(
+def test_ts_75846b3a_valid_key_authenticates_without_touching_last_used(
     tmp_path, _isolate_engine
 ):
     async def drive():
@@ -145,7 +145,7 @@ def test_ts_75846b3a_valid_key_authenticates_and_touches_last_used(
     assert session.agent_id == agent_id
     assert session.agent_name == "Test Agent"
     assert session.is_active is True
-    assert before is None and after is not None  # last_used_at was touched
+    assert before is None and after is None  # read-only auth leaves last_used_at untouched
     # secret-free session: no raw key anywhere in the session.
     assert "valid-key-abc" not in repr(session)
     assert "valid-key-abc" not in str(dict(session.metadata))

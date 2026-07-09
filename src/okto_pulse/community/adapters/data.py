@@ -3,7 +3,7 @@
 The Community-edition adapters for the three core KG DATA ports:
   - EventBus        -> CommunityOutboxEventBus   (SQLite outbox)
   - AuditRepository -> CommunityAuditRepository  (SQLAlchemy)
-  - KGConfig        -> CommunityKGConfig          (CoreSettings)
+  - KGConfig        -> CommunityKGConfig          (effective settings object)
 
 R05-D moves OWNERSHIP of these three providers to the Community composition root:
 the composition INSTANTIATES these adapters and supplies them to the registry

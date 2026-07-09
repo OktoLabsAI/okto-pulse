@@ -13,7 +13,7 @@ import {
 } from '../DerivationPendingBadge';
 
 describe('derivation pending badge helpers', () => {
-  it('shows Sem refinamento only for done medium/large ideations without active refinements', () => {
+  it('shows No refinement only for done medium/large ideations without active refinements', () => {
     expect(
       getIdeationPendingDerivationLabel({
         status: 'done',
@@ -35,13 +35,6 @@ describe('derivation pending badge helpers', () => {
 
     expect(
       getIdeationPendingDerivationLabel({
-        status: 'done',
-        complexity: 'small',
-        active_refinement_count: 0,
-      }),
-    ).toBeNull();
-    expect(
-      getIdeationPendingDerivationLabel({
         status: 'review',
         complexity: 'medium',
         active_refinement_count: 0,
@@ -56,7 +49,44 @@ describe('derivation pending badge helpers', () => {
     ).toBeNull();
   });
 
-  it('shows Sem spec only for done refinements without active specs', () => {
+  it('shows No spec for done small ideations without active direct specs', () => {
+    expect(
+      getIdeationPendingDerivationLabel({
+        status: 'done',
+        complexity: 'small',
+        active_spec_count: 0,
+      }),
+    ).toBe(REFINEMENT_PENDING_SPEC_LABEL);
+
+    expect(
+      getIdeationPendingDerivationLabel({
+        status: 'done',
+        complexity: 'small',
+        specs: [
+          { status: 'cancelled', archived: false, refinement_id: null },
+          { status: 'draft', archived: true, refinement_id: null },
+        ],
+      }),
+    ).toBe(REFINEMENT_PENDING_SPEC_LABEL);
+
+    expect(
+      getIdeationPendingDerivationLabel({
+        status: 'done',
+        complexity: 'small',
+        specs: [{ status: 'draft', archived: false, refinement_id: null }],
+      }),
+    ).toBeNull();
+
+    expect(
+      getIdeationPendingDerivationLabel({
+        status: 'done',
+        complexity: 'small',
+        specs: [{ status: 'draft', archived: false, refinement_id: 'ref-1' }],
+      }),
+    ).toBe(REFINEMENT_PENDING_SPEC_LABEL);
+  });
+
+  it('shows No spec only for done refinements without active specs', () => {
     expect(
       getRefinementPendingDerivationLabel({
         status: 'done',
@@ -130,8 +160,12 @@ describe('derivation pending badge panel wiring', () => {
     );
 
     expect(ideationsPanel).toContain('getIdeationPendingDerivationLabel(ideation)');
+    expect(ideationsPanel).toContain('ideations-no-derivation-filter');
+    expect(ideationsPanel).toContain('derivationFilteredIdeations');
     expect(ideationModal).toContain('getIdeationPendingDerivationLabel(ideation)');
     expect(refinementsPanel).toContain('getRefinementPendingDerivationLabel(refinement)');
+    expect(refinementsPanel).toContain('refinements-no-derivation-filter');
+    expect(refinementsPanel).toContain('statusFilteredRefinements.filter(({ refinement }) => Boolean(getRefinementPendingDerivationLabel(refinement)))');
     expect(refinementModal).toContain('getRefinementPendingDerivationLabel(refinement)');
     expect(refinementsPanel).not.toContain('api.getRefinement(refinement.id)');
   });

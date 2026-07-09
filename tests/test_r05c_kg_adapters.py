@@ -166,6 +166,53 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     assert type(base.global_discovery_runtime).__name__ == "CommunityGlobalDiscoveryRuntime"
 
 
+def test_ts_f7b7374d_graph_transaction_scope_uses_community_runtime(monkeypatch):
+    from okto_pulse.community.adapters import kg_runtime
+    from okto_pulse.community.adapters.kuzu_graph_transaction import (
+        CommunityKuzuGraphTransaction,
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, cypher, params=None):
+            self.executed.append((cypher, params))
+            return {"ok": True}
+
+    class FakeBoardConnection:
+        def __init__(self):
+            self.db = object()
+            self.conn = FakeConn()
+            self.close_count = 0
+
+        def close(self):
+            self.close_count += 1
+
+    fake_connection = FakeBoardConnection()
+    opened = []
+
+    def fake_open_board_connection(board_id):
+        opened.append(board_id)
+        return fake_connection
+
+    monkeypatch.setattr(kg_runtime, "open_board_connection", fake_open_board_connection)
+
+    async def drive():
+        scope = await CommunityKuzuGraphTransaction().begin("board-transaction")
+        result = scope.execute("CREATE (n:Decision {id: $id})", {"id": "n1"})
+        await scope.commit()
+        await scope.commit()
+        return result
+
+    assert asyncio.run(drive()) == {"ok": True}
+    assert opened == ["board-transaction"]
+    assert fake_connection.conn.executed == [
+        ("CREATE (n:Decision {id: $id})", {"id": "n1"})
+    ]
+    assert fake_connection.close_count == 1
+
+
 # ===========================================================================
 # ts_7413e7b2 — rebuild lifecycle preserves structured errors.
 # ===========================================================================

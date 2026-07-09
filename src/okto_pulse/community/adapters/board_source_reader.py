@@ -50,16 +50,17 @@ def resolve_pulse_db_path() -> Path:
     """Return the SQLite file targeted by the configured SQLAlchemy engine."""
 
     try:
-        from okto_pulse.core.infra.database import get_engine
+        from okto_pulse.core.ports.relational_runtime import (
+            RelationalDatabasePathUnavailable,
+            resolve_sqlite_database_path,
+        )
 
-        url = str(get_engine().url)
-    except Exception:
-        return Path.home() / ".okto-pulse" / "data" / "pulse.db"
-    marker = ":///"
-    idx = url.rfind(marker)
-    if idx < 0:
-        return Path.home() / ".okto-pulse" / "data" / "pulse.db"
-    return Path(url[idx + len(marker):])
+        return resolve_sqlite_database_path()
+    except RelationalDatabasePathUnavailable as exc:
+        raise SourceUnavailableError(
+            "board source database path could not be resolved",
+            cause_type=type(exc).__name__,
+        ) from exc
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from okto_pulse.community.adapters.rebuild_audit_storage import (
@@ -96,6 +97,120 @@ def test_af16_community_generation_storage_preserves_legacy_layout(tmp_path):
         / "history"
         / f"{generation_id}.json"
     ).exists()
+
+
+def test_af38_community_reindex_and_contingency_layout(tmp_path):
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    board_id = "board-af38"
+    generation_id = "22222222-2222-4222-8222-222222222222"
+
+    reindex_key = RebuildAuditKey(
+        namespace="global_discovery_reindex",
+        board_id=board_id,
+        kg_generation_id=generation_id,
+    )
+    store.write_json_atomic(
+        reindex_key,
+        {
+            "board_id": board_id,
+            "kg_generation_id": generation_id,
+            "status": "reindex_pending",
+        },
+    )
+    assert (
+        tmp_path
+        / "rebuild"
+        / "discovery_reindex"
+        / board_id
+        / f"{generation_id}.json"
+    ).exists()
+    assert store.read_json(reindex_key)["status"] == "reindex_pending"
+
+    contingency_key = RebuildAuditKey(
+        namespace="contingency",
+        board_id=board_id,
+        artifact_id="contingency_af38",
+    )
+    store.write_json_atomic(
+        contingency_key,
+        {
+            "board_id": board_id,
+            "contingency_id": "contingency_af38",
+            "quarantine_ids": ["q_af38"],
+        },
+    )
+    assert (
+        tmp_path
+        / "contingency"
+        / "contingency_af38"
+        / "contingency.json"
+    ).exists()
+    rows = store.list_json(RebuildAuditKey(namespace="contingency", board_id=board_id))
+    assert [row["contingency_id"] for row in rows] == ["contingency_af38"]
+    assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_af38_community_reads_existing_reindex_and_contingency_artifacts(tmp_path):
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    board_id = "board-af38-history"
+    generation_id = "33333333-3333-4333-8333-333333333333"
+
+    historical_reindex = (
+        tmp_path
+        / "rebuild"
+        / "discovery_reindex"
+        / board_id
+        / f"{generation_id}.json"
+    )
+    historical_reindex.parent.mkdir(parents=True)
+    historical_reindex.write_text(
+        json.dumps(
+            {
+                "board_id": board_id,
+                "kg_generation_id": generation_id,
+                "status": "reindexed",
+                "recorded_at": "2026-07-08T09:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reindex_key = RebuildAuditKey(
+        namespace="global_discovery_reindex",
+        board_id=board_id,
+        kg_generation_id=generation_id,
+    )
+    assert store.read_json(reindex_key)["status"] == "reindexed"
+    assert store.list_json(
+        RebuildAuditKey(namespace="global_discovery_reindex", board_id=board_id)
+    )[0]["kg_generation_id"] == generation_id
+
+    historical_contingency = (
+        tmp_path
+        / "contingency"
+        / "contingency_history"
+        / "contingency.json"
+    )
+    historical_contingency.parent.mkdir(parents=True)
+    historical_contingency.write_text(
+        json.dumps(
+            {
+                "board_id": board_id,
+                "contingency_id": "contingency_history",
+                "quarantine_ids": ["q_history"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    contingency_key = RebuildAuditKey(
+        namespace="contingency",
+        board_id=board_id,
+        artifact_id="contingency_history",
+    )
+    assert store.read_json(contingency_key)["quarantine_ids"] == ["q_history"]
+    assert store.delete_json(contingency_key) is True
+    assert store.delete_json(contingency_key) is False
 
 
 def test_af16_community_rebuild_base_dir_override_lives_in_adapter(

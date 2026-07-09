@@ -2,7 +2,7 @@
  * IdeationsPanel - List of ideations for the current board
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Plus,
   Lightbulb,
@@ -92,9 +92,17 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedIdeationId, setSelectedIdeationId] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('');
+  const [showWithoutDerivation, setShowWithoutDerivation] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
 
-  const search = useListSearch<IdeationSummary>(ideations, {
+  const derivationFilteredIdeations = useMemo(
+    () => showWithoutDerivation
+      ? ideations.filter((ideation) => Boolean(getIdeationPendingDerivationLabel(ideation)))
+      : ideations,
+    [ideations, showWithoutDerivation],
+  );
+
+  const search = useListSearch<IdeationSummary>(derivationFilteredIdeations, {
     fields: ['title', 'description', 'problem_statement', 'labels'],
     urlParam: 'q_ideations',
   });
@@ -133,7 +141,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Ideations</h2>
           <span className="text-sm text-gray-400">
             ({search.filtered.length}
-            {search.query ? ` of ${ideations.length}` : ''})
+            {search.query || showWithoutDerivation ? ` of ${ideations.length}` : ''})
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -170,8 +178,20 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
           </button>
         ))}
         <button
+          onClick={() => setShowWithoutDerivation(!showWithoutDerivation)}
+          className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full transition-colors ml-2 ${
+            showWithoutDerivation
+              ? 'bg-cyan-600 text-white shadow-sm'
+              : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400'
+          }`}
+          data-testid="ideations-no-derivation-filter"
+        >
+          <GitBranch size={12} />
+          No derivation
+        </button>
+        <button
           onClick={() => setShowArchived(!showArchived)}
-          className={`text-xs px-2.5 py-1 rounded-full transition-colors ml-2 ${
+          className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
             showArchived
               ? 'bg-amber-500 text-white'
               : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400'
@@ -206,6 +226,19 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
               className="btn btn-primary text-sm"
             >
               Create your first ideation
+            </button>
+          </div>
+        ) : derivationFilteredIdeations.length === 0 ? (
+          <div className="text-center py-12">
+            <Lightbulb size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
+            <p className="text-gray-500 dark:text-gray-400 mb-2">
+              No ideations without derivation
+            </p>
+            <button
+              onClick={() => setShowWithoutDerivation(false)}
+              className="btn btn-ghost text-sm"
+            >
+              Clear filter
             </button>
           </div>
         ) : search.filtered.length === 0 ? (

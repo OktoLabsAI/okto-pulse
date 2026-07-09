@@ -40,12 +40,48 @@ _PROVIDER_CAPABILITY: dict[str, str] = {
     "mcp_session_factory": "mcp",
 }
 
+_COMMUNITY_EFFECTIVE_SETTING_FIELDS: tuple[str, ...] = (
+    "database_url",
+    "upload_dir",
+    "metrics_dir",
+    "metrics_beacon_url",
+    "kg_base_dir",
+    "kg_embedding_mode",
+    "kg_embedding_model",
+    "kg_embedding_dim",
+)
+
 
 def _active_provider_keys(composition: Any) -> tuple[str, ...]:
     """The provider keys the ACTIVE composition supplies (non-None) — duck-typed
     over ``RuntimeComposition.provider_keys`` so a test stub also works."""
     keys = composition.provider_keys()
     return tuple(keys)
+
+
+def _provider_metadata(key: str) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "provider_key": key,
+        "source": "runtime_composition",
+    }
+    if key == "settings_provider":
+        metadata.update(
+            {
+                "effective_source": "CommunitySettings",
+                "effective_setting_fields": ",".join(
+                    _COMMUNITY_EFFECTIVE_SETTING_FIELDS
+                ),
+                "ownership": "community-edition",
+            }
+        )
+    if key == "kg_registry":
+        metadata.update(
+            {
+                "config_source": "CommunityKGConfig",
+                "embedding_source": "Community embedding provider",
+            }
+        )
+    return metadata
 
 
 def _derived_provider_descriptors(composition: Any) -> tuple[CapabilityDescriptor, ...]:
@@ -58,7 +94,7 @@ def _derived_provider_descriptors(composition: Any) -> tuple[CapabilityDescripto
             provider=COMMUNITY_PROVIDER,
             edition=COMMUNITY_EDITION,
             capability=_PROVIDER_CAPABILITY.get(key, key),
-            metadata={"provider_key": key, "source": "runtime_composition"},
+            metadata=_provider_metadata(key),
         )
         for key in _active_provider_keys(composition)
     )
@@ -77,7 +113,13 @@ def _provider_specific_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider=COMMUNITY_KG_PROVIDER,
             edition=COMMUNITY_EDITION,
             capability="kg",
-            metadata={"backend": "embedded-graph-db", "storage": "per-board-graph-store"},
+            metadata={
+                "backend": "embedded-graph-db",
+                "storage": "per-board-graph-store",
+                "config_source": "CommunityKGConfig",
+                "kg_base_dir_source": "CommunitySettings",
+                "embedding_source": "Community embedding provider",
+            },
         ),
         CapabilityDescriptor(
             id="capability:mcp_resources",

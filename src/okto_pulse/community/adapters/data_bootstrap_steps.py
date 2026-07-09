@@ -3,16 +3,29 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import copy as _copy
+import json as _json
+import uuid as _uuid
 
 from okto_pulse.core.discovery_intent_catalog import DEFAULT_DISCOVERY_INTENTS
-from okto_pulse.core.infra.database import get_engine, get_session_factory
+from okto_pulse.core.ports.relational_runtime import get_engine, get_session_factory
 
 StepCallable = Callable[[], "Awaitable[object] | object"]
 
 
+def _json_value(value):
+    if isinstance(value, str):
+        try:
+            return _json.loads(value)
+        except Exception:
+            return None
+    return value
+
+
 async def _seed_builtin_presets() -> None:
     """Seed built-in permission presets if they don't exist."""
-    from sqlalchemy import text as sa_text
+    from sqlalchemy import JSON as sa_JSON
+    from sqlalchemy import bindparam, text as sa_text
 
     try:
         from okto_pulse.core.infra.permissions import get_builtin_presets
@@ -22,7 +35,6 @@ async def _seed_builtin_presets() -> None:
 
     async with get_session_factory()() as session:
         try:
-            from okto_pulse.core.models.db import PermissionPreset
             for preset_def in presets:
                 # Check if preset already exists by name + is_builtin
                 existing = await session.execute(
@@ -32,17 +44,23 @@ async def _seed_builtin_presets() -> None:
                 )
                 if existing.scalar():
                     continue
-                import uuid
-                preset = PermissionPreset(
-                    id=str(uuid.uuid4()),
-                    owner_id=None,
-                    name=preset_def["name"],
-                    description=preset_def["description"],
-                    is_builtin=True,
-                    base_preset_id=None,
-                    flags=preset_def["flags"],
+                await session.execute(
+                    sa_text(
+                        "INSERT INTO permission_presets "
+                        "(id, owner_id, name, description, is_builtin, base_preset_id, flags) "
+                        "VALUES "
+                        "(:id, :owner_id, :name, :description, :is_builtin, :base_preset_id, :flags)"
+                    ).bindparams(bindparam("flags", type_=sa_JSON)),
+                    {
+                        "id": str(_uuid.uuid4()),
+                        "owner_id": None,
+                        "name": preset_def["name"],
+                        "description": preset_def["description"],
+                        "is_builtin": True,
+                        "base_preset_id": None,
+                        "flags": preset_def["flags"],
+                    },
                 )
-                session.add(preset)
             await session.commit()
         except Exception:
             await session.rollback()
@@ -56,7 +74,6 @@ async def _reconcile_builtin_presets() -> None:
     definition, untouched for custom presets (is_builtin=False).
     """
     import logging
-    import json as _json
     logger = logging.getLogger("okto_pulse.migrations")
 
 
@@ -69,24 +86,32 @@ async def _reconcile_builtin_presets() -> None:
 
     async with get_session_factory()() as session:
         try:
-            from okto_pulse.core.models.db import PermissionPreset
-            from sqlalchemy import select, update
+            from sqlalchemy import JSON as sa_JSON
+            from sqlalchemy import bindparam, text as sa_text
             refreshed = 0
             for preset_def in presets:
-                query = select(PermissionPreset).where(
-                    PermissionPreset.name == preset_def["name"],
-                    PermissionPreset.is_builtin.is_(True),
+                result = await session.execute(
+                    sa_text(
+                        "SELECT id, flags FROM permission_presets "
+                        "WHERE name = :name AND is_builtin = :builtin"
+                    ),
+                    {"name": preset_def["name"], "builtin": True},
                 )
-                existing = (await session.execute(query)).scalar_one_or_none()
+                existing = result.mappings().first()
                 if not existing:
                     continue
                 new_flags_json = _json.dumps(preset_def["flags"], sort_keys=True)
-                old_flags_json = _json.dumps(existing.flags or {}, sort_keys=True)
+                old_flags_json = _json.dumps(
+                    _json_value(existing["flags"]) or {}, sort_keys=True
+                )
                 if new_flags_json != old_flags_json:
                     await session.execute(
-                        update(PermissionPreset)
-                        .where(PermissionPreset.id == existing.id)
-                        .values(flags=preset_def["flags"])
+                        sa_text(
+                            "UPDATE permission_presets "
+                            "SET flags = :flags, updated_at = CURRENT_TIMESTAMP "
+                            "WHERE id = :id"
+                        ).bindparams(bindparam("flags", type_=sa_JSON)),
+                        {"id": existing["id"], "flags": preset_def["flags"]},
                     )
                     refreshed += 1
             if refreshed:
@@ -105,8 +130,6 @@ async def _reconcile_agent_permission_flags() -> None:
     — the user's customisations are preserved.
     """
     import logging
-    import json as _json
-    import copy as _copy
     logger = logging.getLogger("okto_pulse.migrations")
 
 
@@ -121,24 +144,31 @@ async def _reconcile_agent_permission_flags() -> None:
 
     async with get_session_factory()() as session:
         try:
-            from okto_pulse.core.models.db import Agent as _Agent
-            from sqlalchemy import select as _select
-            from sqlalchemy.orm.attributes import flag_modified
+            from sqlalchemy import JSON as sa_JSON
+            from sqlalchemy import bindparam, text as sa_text
             result = await session.execute(
-                _select(_Agent).where(_Agent.permission_flags.is_not(None))
+                sa_text(
+                    "SELECT id, permission_flags FROM agents "
+                    "WHERE permission_flags IS NOT NULL"
+                )
             )
-            agents = list(result.scalars().all())
+            agents = list(result.mappings().all())
             updated = 0
             total_added = 0
             for agent in agents:
-                if isinstance(agent.permission_flags, str):
-                    stored_dict = _json.loads(agent.permission_flags)
-                else:
-                    stored_dict = _copy.deepcopy(agent.permission_flags or {})
+                stored_dict = _copy.deepcopy(_json_value(agent["permission_flags"]) or {})
                 merged, added = merge_missing_flags(stored_dict, PERMISSION_REGISTRY)
                 if added > 0:
-                    agent.permission_flags = merged
-                    flag_modified(agent, "permission_flags")
+                    await session.execute(
+                        sa_text(
+                            "UPDATE agents SET permission_flags = :permission_flags "
+                            "WHERE id = :id"
+                        ).bindparams(bindparam("permission_flags", type_=sa_JSON)),
+                        {
+                            "id": agent["id"],
+                            "permission_flags": merged,
+                        },
+                    )
                     updated += 1
                     total_added += added
             if updated:

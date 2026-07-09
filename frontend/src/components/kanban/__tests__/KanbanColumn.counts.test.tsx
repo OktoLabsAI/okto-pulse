@@ -1,5 +1,5 @@
 import { DndContext } from '@dnd-kit/core';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { CardSummary } from '@/types';
 import { deriveKanbanCardTypeCounts, KanbanColumn } from '../KanbanColumn';
@@ -71,5 +71,34 @@ describe('KanbanColumn card-type counters', () => {
     expect(screen.getByLabelText('2 task cards')).toBeInTheDocument();
     expect(screen.getByLabelText('1 test cards')).toBeInTheDocument();
     expect(screen.getByLabelText('1 bug cards')).toBeInTheDocument();
+  });
+
+  it('uses the per-type counters as filter toggles', () => {
+    const onToggleCardType = vi.fn();
+
+    render(
+      <DndContext>
+        <KanbanColumn
+          status="not_started"
+          cards={[card({ id: 'task-1', title: 'Task one', card_type: 'normal' })]}
+          countCards={[
+            card({ id: 'task-1', title: 'Task one', card_type: 'normal' }),
+            card({ id: 'test-1', title: 'Test one', card_type: 'test' }),
+          ]}
+          activeCardTypes={new Set(['task', 'bug'])}
+          onToggleCardType={onToggleCardType}
+          onCardClick={vi.fn()}
+          onAddCard={vi.fn()}
+          nameMap={{}}
+        />
+      </DndContext>,
+    );
+
+    const testToggle = screen.getByLabelText('1 test cards');
+    expect(testToggle).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(testToggle);
+
+    expect(onToggleCardType).toHaveBeenCalledWith('test');
   });
 });

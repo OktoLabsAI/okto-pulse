@@ -76,6 +76,7 @@ def run_preservation_smoke() -> dict[str, object]:
     from okto_pulse.core.app import create_app  # noqa: F401
     from okto_pulse.core.infra import config as _config
     from okto_pulse.core.infra import database as _db
+    from okto_pulse.core.infra import schema_lifecycle as _schema_lifecycle
     from okto_pulse.core.infra.config import CoreSettings
     from okto_pulse.core.kg.interfaces import registry as _reg
     from okto_pulse.core.mcp import server as _srv
@@ -87,6 +88,7 @@ def run_preservation_smoke() -> dict[str, object]:
     saved_engine = _db._engine
     saved_factory = _db._session_factory
     saved_reg = (_reg._registry, _reg._configured)
+    saved_schema_lifecycle = _schema_lifecycle.resolve_relational_schema_lifecycle_orchestrator()
 
     try:
         settings = CoreSettings()
@@ -99,8 +101,12 @@ def run_preservation_smoke() -> dict[str, object]:
             from okto_pulse.community.adapters.sqlalchemy_database import (
                 configure_community_database,
             )
+            from okto_pulse.community.adapters.relational_schema_lifecycle import (
+                register_community_relational_schema_lifecycle,
+            )
 
             configure_community_database(f"sqlite+aiosqlite:///{tmp / 'r05e_imp2.db'}")
+            register_community_relational_schema_lifecycle()
             await _db.init_db()
 
         asyncio.run(_init_db())
@@ -138,7 +144,11 @@ def run_preservation_smoke() -> dict[str, object]:
 
         # --- 4. serve (route inventory, no port binding) -------------------- #
         app = community_main.create_community_app()
-        routes = sorted({getattr(r, "path", None) for r in app.routes if getattr(r, "path", None)})
+        # FastAPI may keep included routers as lazy _IncludedRouter entries in
+        # app.routes; the public HTTP contract is the generated OpenAPI path set.
+        openapi_paths = set(app.openapi().get("paths", {}))
+        direct_routes = {getattr(r, "path", None) for r in app.routes if getattr(r, "path", None)}
+        routes = sorted(openapi_paths | direct_routes)
         evidence["routes"] = routes
         evidence["route_count"] = len(routes)
         evidence["has_health_route"] = "/health" in routes
@@ -180,6 +190,12 @@ def run_preservation_smoke() -> dict[str, object]:
         _db._engine = saved_engine
         _db._session_factory = saved_factory
         _reg._registry, _reg._configured = saved_reg
+        if saved_schema_lifecycle is None:
+            _schema_lifecycle.reset_relational_schema_lifecycle_orchestrator()
+        else:
+            _schema_lifecycle.register_relational_schema_lifecycle_orchestrator(
+                saved_schema_lifecycle
+            )
 
     evidence["ok"] = True
     return evidence

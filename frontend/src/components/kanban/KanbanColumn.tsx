@@ -13,18 +13,6 @@ import { STATUS_LABELS } from '@/types';
 import type { KGCognitivePendingBadgeView } from '@/services/kg-health-api';
 import { KanbanCard } from './KanbanCard';
 
-interface KanbanColumnProps {
-  status: CardStatus;
-  cards: CardSummary[];
-  onCardClick: (cardId: string) => void;
-  onAddCard: (status: CardStatus) => void;
-  nameMap: Record<string, string>;
-  /** KG-03.6 — read-only cognitive badges keyed by source_ref.
-   * Resolved at the KanbanBoard level in ONE batch HTTP request and
-   * passed down so per-card rendering needs no extra fetch. */
-  cognitiveBadges?: Record<string, KGCognitivePendingBadgeView>;
-}
-
 const columnColors: Record<CardStatus, string> = {
   not_started: 'border-t-gray-400',
   started: 'border-t-blue-500',
@@ -35,7 +23,7 @@ const columnColors: Record<CardStatus, string> = {
   cancelled: 'border-t-gray-500',
 };
 
-type KanbanCardCounterType = 'task' | 'test' | 'bug';
+export type KanbanCardFilterType = 'task' | 'test' | 'bug';
 
 interface KanbanCardTypeCounts {
   total: number;
@@ -44,7 +32,7 @@ interface KanbanCardTypeCounts {
   bug: number;
 }
 
-function normalizeKanbanCardType(cardType: CardSummary['card_type'] | { value?: string } | null | undefined): KanbanCardCounterType {
+export function normalizeKanbanCardType(cardType: CardSummary['card_type'] | { value?: string } | null | undefined): KanbanCardFilterType {
   if (!cardType) return 'task';
   if (typeof cardType === 'object') return normalizeKanbanCardType(cardType.value as CardSummary['card_type']);
   const normalized = String(cardType).replace(/^CardType\./i, '').toLowerCase();
@@ -64,9 +52,57 @@ export function deriveKanbanCardTypeCounts(cards: CardSummary[]): KanbanCardType
   );
 }
 
-export function KanbanColumn({ status, cards, onCardClick, onAddCard, nameMap, cognitiveBadges }: KanbanColumnProps) {
+const DEFAULT_ACTIVE_CARD_TYPES = new Set<KanbanCardFilterType>(['task', 'test', 'bug']);
+
+const CARD_TYPE_TOGGLES = [
+  {
+    type: 'task',
+    label: 'Task',
+    icon: ListChecks,
+    activeClass: 'bg-slate-100 text-slate-600 dark:bg-slate-800/80 dark:text-slate-300',
+  },
+  {
+    type: 'test',
+    label: 'Test',
+    icon: FlaskConical,
+    activeClass: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+  },
+  {
+    type: 'bug',
+    label: 'Bug',
+    icon: Bug,
+    activeClass: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  },
+] as const;
+
+interface KanbanColumnProps {
+  status: CardStatus;
+  cards: CardSummary[];
+  countCards?: CardSummary[];
+  activeCardTypes?: ReadonlySet<KanbanCardFilterType>;
+  onToggleCardType?: (type: KanbanCardFilterType) => void;
+  onCardClick: (cardId: string) => void;
+  onAddCard: (status: CardStatus) => void;
+  nameMap: Record<string, string>;
+  /** KG-03.6 — read-only cognitive badges keyed by source_ref.
+   * Resolved at the KanbanBoard level in ONE batch HTTP request and
+   * passed down so per-card rendering needs no extra fetch. */
+  cognitiveBadges?: Record<string, KGCognitivePendingBadgeView>;
+}
+
+export function KanbanColumn({
+  status,
+  cards,
+  countCards,
+  activeCardTypes = DEFAULT_ACTIVE_CARD_TYPES,
+  onToggleCardType,
+  onCardClick,
+  onAddCard,
+  nameMap,
+  cognitiveBadges,
+}: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
-  const counts = deriveKanbanCardTypeCounts(cards);
+  const counts = deriveKanbanCardTypeCounts(countCards ?? cards);
 
   return (
     <div
@@ -93,39 +129,31 @@ export function KanbanColumn({ status, cards, onCardClick, onAddCard, nameMap, c
               </span>
             </div>
             <div className="mt-2 grid grid-cols-3 gap-1.5 text-[10px] font-semibold">
-              <span
-                className="inline-flex min-w-0 items-center justify-between gap-1 rounded-md bg-slate-100 px-1.5 py-1 text-slate-600 dark:bg-slate-800/80 dark:text-slate-300"
-                title={`${counts.task} task cards`}
-                aria-label={`${counts.task} task cards`}
-              >
-                <span className="inline-flex min-w-0 items-center gap-1">
-                  <ListChecks size={11} className="shrink-0" />
-                  <span className="truncate">Task</span>
-                </span>
-                <span>{counts.task}</span>
-              </span>
-              <span
-                className="inline-flex min-w-0 items-center justify-between gap-1 rounded-md bg-purple-100 px-1.5 py-1 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
-                title={`${counts.test} test cards`}
-                aria-label={`${counts.test} test cards`}
-              >
-                <span className="inline-flex min-w-0 items-center gap-1">
-                  <FlaskConical size={11} className="shrink-0" />
-                  <span className="truncate">Test</span>
-                </span>
-                <span>{counts.test}</span>
-              </span>
-              <span
-                className="inline-flex min-w-0 items-center justify-between gap-1 rounded-md bg-red-100 px-1.5 py-1 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                title={`${counts.bug} bug cards`}
-                aria-label={`${counts.bug} bug cards`}
-              >
-                <span className="inline-flex min-w-0 items-center gap-1">
-                  <Bug size={11} className="shrink-0" />
-                  <span className="truncate">Bug</span>
-                </span>
-                <span>{counts.bug}</span>
-              </span>
+              {CARD_TYPE_TOGGLES.map(({ type, label, icon: Icon, activeClass }) => {
+                const active = activeCardTypes.has(type);
+                const count = counts[type];
+                return (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => onToggleCardType?.(type)}
+                    aria-pressed={active}
+                    aria-label={`${count} ${type} cards`}
+                    title={`${active ? 'Hide' : 'Show'} ${label} cards (${count})`}
+                    className={`inline-flex min-w-0 items-center justify-between gap-1 rounded-md px-1.5 py-1 transition-colors ${
+                      active
+                        ? activeClass
+                        : 'bg-gray-100 text-gray-400 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-500 dark:hover:bg-gray-700'
+                    } ${onToggleCardType ? 'cursor-pointer' : 'cursor-default'}`}
+                  >
+                    <span className="inline-flex min-w-0 items-center gap-1">
+                      <Icon size={11} className="shrink-0" />
+                      <span className="truncate">{label}</span>
+                    </span>
+                    <span>{count}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
           <button

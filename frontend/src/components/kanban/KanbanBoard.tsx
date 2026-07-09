@@ -25,13 +25,24 @@ import {
 import { CARD_STATUSES, STATUS_LABELS, type CardStatus, type CardSummary, type SpecSummary } from '@/types';
 import { useListSearch } from '@/hooks/useListSearch';
 import { SearchInput } from '@/components/shared/SearchInput';
-import { KanbanColumn } from './KanbanColumn';
+import { KanbanColumn, normalizeKanbanCardType, type KanbanCardFilterType } from './KanbanColumn';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { CardModal } from './CardModal';
 import { CreateCardModal } from './CreateCardModal';
 
 interface KanbanBoardProps {
   boardId: string;
+}
+
+const CARD_TYPE_FILTERS: KanbanCardFilterType[] = ['task', 'test', 'bug'];
+
+type CardTypeFiltersByStatus = Record<CardStatus, Set<KanbanCardFilterType>>;
+
+function createDefaultCardTypeFilters(): CardTypeFiltersByStatus {
+  return CARD_STATUSES.reduce<CardTypeFiltersByStatus>((acc, status) => {
+    acc[status] = new Set(CARD_TYPE_FILTERS);
+    return acc;
+  }, {} as CardTypeFiltersByStatus);
 }
 
 export function KanbanBoard({ boardId }: KanbanBoardProps) {
@@ -70,6 +81,9 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
   const [specFilter, setSpecFilter] = useState<Set<string>>(new Set());
   const specFilterRef = useRef(specFilter);
   specFilterRef.current = specFilter;
+  const [cardTypeFilters, setCardTypeFilters] = useState<CardTypeFiltersByStatus>(
+    createDefaultCardTypeFilters,
+  );
   const [specs, setSpecs] = useState<SpecSummary[]>([]);
   const [specSearchOpen, setSpecSearchOpen] = useState(false);
   const [specSearchQuery, setSpecSearchQuery] = useState('');
@@ -133,6 +147,17 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     });
   };
 
+  const toggleCardTypeFilter = (status: CardStatus, type: KanbanCardFilterType) => {
+    setCardTypeFilters((prev) => {
+      const next = new Set(prev[status] ?? CARD_TYPE_FILTERS);
+      if (next.has(type)) next.delete(type); else next.add(type);
+      return {
+        ...prev,
+        [status]: next,
+      };
+    });
+  };
+
   // Filter columns by spec
   const specFilteredColumns = useMemo(() => {
     if (specFilter.size === 0) return columns;
@@ -159,7 +184,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     fields: ['title', 'description', 'labels'],
     urlParam: 'q_cards',
   });
-  const filteredColumns = useMemo(() => {
+  const searchFilteredColumns = useMemo(() => {
     if (!cardSearch.query) return specFilteredColumns;
     const allowed = new Set(cardSearch.filtered.map((c) => c.id));
     const next: Record<CardStatus, CardSummary[]> = {} as any;
@@ -168,6 +193,21 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     }
     return next;
   }, [specFilteredColumns, cardSearch.query, cardSearch.filtered]);
+
+  const filteredColumns = useMemo(() => {
+    const next: Record<CardStatus, CardSummary[]> = {} as any;
+    for (const status of CARD_STATUSES) {
+      const activeTypes = cardTypeFilters[status] ?? new Set(CARD_TYPE_FILTERS);
+      if (activeTypes.size === CARD_TYPE_FILTERS.length) {
+        next[status] = searchFilteredColumns[status] || [];
+        continue;
+      }
+      next[status] = (searchFilteredColumns[status] || []).filter((c) =>
+        activeTypes.has(normalizeKanbanCardType(c.card_type)),
+      );
+    }
+    return next;
+  }, [searchFilteredColumns, cardTypeFilters]);
 
   // KG-03.6 — batch cognitive pending badges for visible task/test/bug
   // surfaces. ONE HTTP request per (board, visible card-id) change;
@@ -462,6 +502,9 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
                 key={status}
                 status={status}
                 cards={filteredColumns[status] || []}
+                countCards={searchFilteredColumns[status] || []}
+                activeCardTypes={cardTypeFilters[status]}
+                onToggleCardType={(type) => toggleCardTypeFilter(status, type)}
                 onCardClick={handleCardClick}
                 onAddCard={handleAddCard}
                 nameMap={nameMap}
