@@ -63,8 +63,11 @@ Current 0.3.0 surface:
 | Community-only MCP tools | 0 |
 | MCP tools exposed by `okto-pulse serve` | 262 |
 
-The community package mounts the full `okto-pulse-core` MCP server. That means installed community runtimes expose the complete core tool catalog while keeping the CLI, frontend and packaging layer separate from the core engine.
-The MCP count is measured from the core FastMCP registry at implementation time;
+The community package materializes the full `okto-pulse-core` command catalog in
+its FastMCP host. That means installed community runtimes expose the complete
+core tool catalog while keeping the CLI, frontend and packaging layer separate
+from the core engine. The MCP count is measured from the transport-neutral Core
+catalog at implementation time;
 Community adds operational resources and adapters, not extra community-only MCP
 tools.
 
@@ -280,8 +283,8 @@ release oracle is:
 | --- | --- |
 | Historical private reach-in baseline | `32` |
 | Current governed private reach-ins | `10` |
-| Current full Community->Core import inventory | `189` |
-| Inventory classification | `public_contract=59`, `community_owned_implementation=120`, `governed_temporary_reach_in=10` |
+| Current full Community->Core import inventory | `198` |
+| Inventory classification | `public_contract=68`, `community_owned_implementation=120`, `governed_temporary_reach_in=10` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
 | Burn-down progression | `32 -> 21 -> 10` after AF42 inventory, lifecycle/auth/MCP, then ORM/bootstrap/schema/CLI/seed work |
 | Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
@@ -373,10 +376,14 @@ Adapter source map:
   `community/adapters/kuzu_*` modules.
 - ML search helpers: `community/adapters/embedding.py` and
   `community/adapters/rerank.py`.
-- MCP/resource overlays: `community/adapters/mcp_auth.py`,
+- MCP/resource overlays and host runtime: `community/adapters/mcp_auth.py`,
+  `community/adapters/mcp_host.py`,
   `community/adapters/resources.py`,
   `community/adapters/capability_descriptors.py` and
-  `community/adapters/mcp_trace.py`.
+  `community/adapters/mcp_trace.py` / `community/adapters/mcp_trace_middleware.py`.
+- Relational application and KG event adapters:
+  `community/adapters/relational_application.py` and
+  `community/adapters/kg_events.py`.
 - Telemetry: `community/adapters/telemetry_store.py`,
   `community/adapters/telemetry_sender.py`,
   `community/adapters/telemetry_state.py`,
@@ -502,7 +509,7 @@ Community-owned telemetry transport pair.
 | `numpy` | `temporary_exception` | Non-telemetry carry-forward for KG/vector embedding transitives. Community does not claim it through telemetry; later KG/vector or embedding ownership work must provide the move/removal oracle. |
 | `apscheduler` | `community_owned` | Declared directly by Community. `community/adapters/scheduler.py` owns APScheduler startup, `IntervalTrigger` mapping and shutdown behind the core `SchedulerControl` port. |
 
-AF41 MCP runtime ownership: Community declares `uvicorn[standard]` and
+AF41 MCP runtime ownership: Community declares `fastmcp`, `uvicorn[standard]` and
 `wsproto` directly because `okto_pulse.community.main` owns the productive
 API/UI and MCP serving process. The Core package keeps ASGI composition helpers
 only; its AF41 gate blocks those server dependencies from returning to the Core

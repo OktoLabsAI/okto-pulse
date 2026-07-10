@@ -1,7 +1,7 @@
-"""Community lifespan must wire the core KG events hub.
+"""Community lifespan must wire the Core KG events port.
 
 The Community app replaces core's default lifespan, so it must replay the
-session-factory injection and shutdown hook for ``kg_events_hub``.
+Local First reader registration and shutdown hook for ``kg_events_hub``.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import ast
 from pathlib import Path
 
 
-def test_combined_lifespan_configures_and_shutdowns_kg_events_hub() -> None:
+def test_combined_lifespan_registers_and_shutdowns_kg_events_hub() -> None:
     source = (
         Path(__file__).resolve().parents[1]
         / "src"
@@ -31,5 +31,5 @@ def test_combined_lifespan_configures_and_shutdowns_kg_events_hub() -> None:
         if isinstance(call, ast.Call)
     }
 
-    assert "configure_kg_events_hub_session_factory" in calls
+    assert "register_community_kg_events_reader" in calls
     assert "shutdown_kg_events_hub" in calls

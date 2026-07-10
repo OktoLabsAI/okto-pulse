@@ -102,7 +102,8 @@ def test_community_main_injects_env_built_trace_sink() -> None:
 
     source = Path(community_main.__file__).read_text(encoding="utf-8")
     assert "build_mcp_trace_sink_from_env" in source
-    assert "build_mcp_asgi_app(trace_sink=build_mcp_trace_sink_from_env())" in source
+    assert "build_community_mcp_asgi_app(" in source
+    assert "trace_sink=build_mcp_trace_sink_from_env()" in source
 
 
 def _record(session_id: str) -> dict[str, object]:

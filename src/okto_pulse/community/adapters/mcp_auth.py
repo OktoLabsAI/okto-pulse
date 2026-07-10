@@ -38,6 +38,7 @@ from typing import Any, Callable
 from okto_pulse.core.ports import (
     AuthSession,
     McpCredential,
+    principal_from_auth_session,
 )
 
 __all__ = [
@@ -47,6 +48,7 @@ __all__ = [
     "auth_context_from_session",
     "create_mcp_auth_factory",
     "make_community_mcp_authenticator",
+    "principal_from_auth_session",
 ]
 
 logger = logging.getLogger("okto_pulse.community.mcp_auth")

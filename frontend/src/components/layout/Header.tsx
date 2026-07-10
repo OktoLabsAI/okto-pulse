@@ -5,7 +5,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { authAdapter, portalAdapter } from '@/adapters';
-import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity, HeartPulse, Trash2, AlertTriangle, Palette } from 'lucide-react';
+import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity, Trash2, AlertTriangle, Palette } from 'lucide-react';
 import { GuidelinesPanel } from '@/components/guidelines';
 import { DefaultBoardConfigPanel } from '@/components/board/DefaultBoardConfigPanel';
 import { DesignSystemPanel } from '@/components/board/DesignSystemPanel';
@@ -15,7 +15,6 @@ import { PresetListModal } from '@/components/permissions';
 import { KnowledgeGraphPage } from '@/components/knowledge';
 import { RuntimeSettingsPanel } from '@/components/layout/RuntimeSettingsPanel';
 import { MetricsSettingsPanel } from '@/components/layout/MetricsSettingsPanel';
-import { MetricsHealthPanel } from '@/components/layout/MetricsHealthPanel';
 import { useCurrentBoard } from '@/store/dashboard';
 import pulseWordmark from '@/assets/pulse-wordmark.svg';
 import pulseWordmarkLight from '@/assets/pulse-wordmark-light.svg';
@@ -56,7 +55,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const [runtimeSettingsInitialTab, setRuntimeSettingsInitialTab] =
     useState<'graphdb' | 'eventqueue' | 'decaytick'>('graphdb');
   const [showMetricsSettings, setShowMetricsSettings] = useState(false);
-  const [showMetricsHealth, setShowMetricsHealth] = useState(false);
   const [showGuidelines, setShowGuidelines] = useState(false);
   const [showDesignSystem, setShowDesignSystem] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
@@ -429,15 +427,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       Metrics
                     </button>
 
-                    <button
-                      onClick={() => { setShowMenu(false); setShowMetricsHealth(true); }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
-                      data-testid="menu-metrics-health"
-                    >
-                      <HeartPulse size={14} />
-                      Metrics Health
-                    </button>
-
                     {/* Toggle View Mode */}
                     <button
                       onClick={() => { setShowMenu(false); toggleTheme(); }}
@@ -618,12 +607,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       {showMetricsSettings && (
         <MetricsSettingsPanel
           onClose={() => setShowMetricsSettings(false)}
-        />
-      )}
-
-      {showMetricsHealth && (
-        <MetricsHealthPanel
-          onClose={() => setShowMetricsHealth(false)}
         />
       )}
 

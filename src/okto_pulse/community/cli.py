@@ -142,8 +142,41 @@ def _configure_community_relational_runtime(settings, *, echo: bool = False) -> 
     configure_community_database(settings.database_url, echo=echo)
 
 
+def _fail_fast_if_server_running(operation: str) -> None:
+    """KGD-01 C6 (S10) — serve-lock na CLI.
+
+    Entrypoints que abrem grafos de board (``init``, ``kg backfill --apply``,
+    ``kg dedup-entities``, ``verify-pipeline``) falham rápido (<5s) com erro
+    claro quando um servidor vivo possui o serve-lock do data dir: dois
+    processos sobre o mesmo ``graph.lbug`` são o produtor do "escritor
+    stale" que corrompe o WAL (KB1/H3). Takeover implícito só acontece com
+    heartbeat stale E PID comprovadamente morto (ver ``serve_lock``).
+    ``kg restore --apply`` já é coberto pelo check de serve-lock do próprio
+    adapter (C4, erro estruturado ``board_locked``).
+    """
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.serve_lock import (
+        ServeAlreadyRunningError,
+        assert_no_live_server,
+    )
+
+    try:
+        assert_no_live_server(CommunitySettings().data_dir, operation=operation)
+    except ServeAlreadyRunningError as exc:
+        print(
+            f"ERROR [serve-lock]: refusing '{operation}' while an okto-pulse "
+            f"server is running.\n{exc}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
 def cmd_init(args):
     """Initialize ~/.okto-pulse/ directory and seed the database."""
+    # KGD-01 C6 (S10): init bootstrapa o grafo do board — nunca com o
+    # servidor vivo segurando o mesmo graph.lbug.
+    _fail_fast_if_server_running("init")
+
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.community.main import _ensure_data_dir
 
@@ -411,7 +444,7 @@ def cmd_serve(args):
             print("  Press Ctrl+C to stop.\n")
 
             # Single-process, dual-port: run() spawns two uvicorn Server instances
-            # via asyncio.gather. uvicorn handles SIGINT/SIGTERM natively for both.
+            # via asyncio.gather. uvicorn signal capture is DISABLED for both; main.py handles SIGINT (asyncio.Runner) and installs SIGTERM/SIGBREAK handlers for the ordered shutdown (KGD-01).
             from okto_pulse.community.main import run
             run()
     except ServeAlreadyRunningError as exc:
@@ -623,6 +656,10 @@ def cmd_verify_pipeline(args):
     board_id: str = args.board_id
     emit_json: bool = bool(getattr(args, "json", False))
 
+    # KGD-01 C6 (S10): check_kuzu abre o grafo do board — falha rápida com
+    # servidor vivo.
+    _fail_fast_if_server_running("verify-pipeline")
+
     settings = CommunitySettings()
     configure_settings(settings)
     _configure_community_relational_runtime(settings, echo=False)
@@ -703,6 +740,11 @@ def cmd_kg_backfill(args):
     apply_writes: bool = bool(getattr(args, "apply", False))
     artifact_filter: str = getattr(args, "artifact_type", "") or ""
     emit_json: bool = bool(getattr(args, "json", False))
+
+    # KGD-01 C6 (S10): o caminho --apply abre e ESCREVE no grafo do board —
+    # falha rápida com servidor vivo. O dry-run não toca o Kùzu.
+    if apply_writes:
+        _fail_fast_if_server_running("kg backfill --apply")
 
     settings = CommunitySettings()
     configure_settings(settings)
@@ -1005,6 +1047,10 @@ def cmd_kg_dedup_entities(args):
     dry_run: bool = bool(getattr(args, "dry_run", False))
     emit_json: bool = bool(getattr(args, "json", False))
 
+    # KGD-01 C6 (S10): dedup abre o grafo do board (e escreve por default) —
+    # falha rápida com servidor vivo (o dry-run também abre para leitura).
+    _fail_fast_if_server_running("kg dedup-entities")
+
     settings = CommunitySettings()
     configure_settings(settings)
 
@@ -1015,6 +1061,110 @@ def cmd_kg_dedup_entities(args):
     else:
         print(format_report_table(report))
     sys.exit(0)
+
+
+def cmd_kg_restore(args):
+    """KGD-01 FR4 — `okto-pulse kg restore <quarantine_id> [--apply]`.
+
+    Dry-run (default) prints the auditable restore plan (files, destinations,
+    conflicts, sizes) with ZERO mutation. `--apply` performs the backup-swap:
+    the board's live files move into a NEW quarantine with manifest, the
+    snapshot is copied back and the board open is validated. The adapter
+    refuses `--apply` while a live server holds the data dir (serve-lock →
+    structured `board_locked`); mid-flight failures return `partial_restore`
+    with the operation manifest recording the exact state for rollback.
+    """
+    from okto_pulse.community.adapters.quarantine_restore import (
+        CommunityQuarantineRestore,
+    )
+    from okto_pulse.core.kg.interfaces.quarantine_restore import (
+        QuarantineRestoreError,
+    )
+
+    quarantine_id: str = args.quarantine_id
+    apply_restore: bool = bool(getattr(args, "apply", False))
+    emit_json: bool = bool(getattr(args, "json", False))
+
+    extra_lock_dirs: tuple[Path, ...] = ()
+    try:
+        from okto_pulse.community.config import CommunitySettings
+
+        data_dir = getattr(CommunitySettings(), "data_dir", None)
+        if data_dir:
+            extra_lock_dirs = (Path(data_dir).expanduser(),)
+    except Exception:
+        extra_lock_dirs = ()
+
+    service = CommunityQuarantineRestore(extra_serve_lock_dirs=extra_lock_dirs)
+
+    def _emit_restore_error(exc: QuarantineRestoreError) -> None:
+        payload = exc.to_payload()
+        if emit_json:
+            print(json.dumps(payload, indent=2, default=str))
+        else:
+            print(f"ERROR [{payload['error']}]: {payload['detail']}")
+            for key, value in (payload.get("details") or {}).items():
+                print(f"  {key}: {value}")
+        sys.exit(2)
+
+    try:
+        plan = service.plan(quarantine_id)
+    except QuarantineRestoreError as exc:
+        _emit_restore_error(exc)
+        return
+
+    if not apply_restore:
+        if emit_json:
+            print(json.dumps({
+                "plan": plan.to_payload(),
+                "applied": False,
+                "quarantine_id": plan.quarantine_id,
+                "board_id": plan.board_id,
+                "board_dir": plan.board_dir,
+                "conflicts": list(plan.conflicts),
+                "total_bytes": plan.total_bytes,
+            }, indent=2, default=str))
+        else:
+            print(f"KG quarantine restore [DRY-RUN] {plan.quarantine_id}")
+            print(f"  Board:       {plan.board_id}")
+            print(f"  Destination: {plan.board_dir}")
+            print(f"  Manifest:    {plan.manifest_format}")
+            print(f"  Total bytes: {plan.total_bytes}")
+            for entry in plan.files:
+                marker = "CONFLICT" if entry.conflict else "ok"
+                print(
+                    f"    {entry.name:<24} {entry.size_bytes:>12}B "
+                    f"-> {entry.destination_path} [{marker}]"
+                )
+            print("  No files were modified (dry-run). Use --apply to restore.")
+        sys.exit(0)
+
+    try:
+        report = service.apply(quarantine_id)
+    except QuarantineRestoreError as exc:
+        _emit_restore_error(exc)
+        return
+
+    if emit_json:
+        print(json.dumps({
+            "plan": plan.to_payload(),
+            "applied": report.applied,
+            "backup_quarantine_id": report.backup_quarantine_id,
+            "quarantine_id": report.quarantine_id,
+            "board_id": report.board_id,
+            "restored_files": list(report.restored_files),
+            "open_validated": report.open_validated,
+            "errors": list(report.errors),
+        }, indent=2, default=str))
+    else:
+        print(f"KG quarantine restore [APPLIED] {report.quarantine_id}")
+        print(f"  Board:                {report.board_id}")
+        print(f"  Backup quarantine:    {report.backup_quarantine_id}")
+        print(f"  Restored files:       {', '.join(report.restored_files)}")
+        print(f"  Open validated:       {report.open_validated}")
+        for err in report.errors:
+            print(f"  WARNING: {err}")
+    sys.exit(0 if report.open_validated else 3)
 
 
 def cmd_reset(args):
@@ -1202,6 +1352,27 @@ def main():
         help="Emit machine-readable JSON instead of table",
     )
     sub_dedup.set_defaults(func=cmd_kg_dedup_entities)
+
+    # KGD-01 FR4 — quarantine restore (dry-run by default; --apply mutates)
+    sub_restore = kg_subparsers.add_parser(
+        "restore",
+        help="Restore a KG quarantine snapshot to its board (dry-run by default)",
+    )
+    sub_restore.add_argument(
+        "quarantine_id",
+        help="Quarantine ID (directory name under <kg_base>/quarantine/)",
+    )
+    sub_restore.add_argument(
+        "--apply", action="store_true",
+        help="Apply the restore: backup-swap live board files into a new "
+             "quarantine, copy the snapshot back and validate the open "
+             "(default: dry-run plan only; refused while a server is running)",
+    )
+    sub_restore.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON instead of table",
+    )
+    sub_restore.set_defaults(func=cmd_kg_restore)
 
     args = parser.parse_args(raw_argv)
     if metrics_legacy_local_only:

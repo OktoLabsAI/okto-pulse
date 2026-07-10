@@ -32,10 +32,13 @@ from okto_pulse.community.adapters.kuzu_graph_store import (
 from okto_pulse.community.adapters.kuzu_graph_transaction import (
     CommunityKuzuGraphTransaction,
 )
+from okto_pulse.community.adapters.kg_wal_recovery import (
+    CommunityGraphRecovery,
+)
 
 
 def build_community_graph_providers() -> dict[str, Any]:
-    """Build the six Community graph providers as a registry-slot dict."""
+    """Build the Community graph providers as a registry-slot dict."""
     return {
         "graph_store": CommunityKuzuGraphStore(),
         "cypher_executor": CommunityKuzuCypherExecutor(),
@@ -45,6 +48,10 @@ def build_community_graph_providers() -> dict[str, Any]:
         "graph_path_resolver": CommunityKuzuGraphPathResolver(),
         "graph_runtime_store": CommunityKuzuGraphRuntimeStore(),
         "global_discovery_runtime": CommunityGlobalDiscoveryRuntime(),
+        # KGD-01 FR3/BR2 — wal-only recovery port (degrau 2 da escada).
+        # Slot opcional no registry (read-time fail-closed via
+        # require_graph_recovery), mesmo contrato do quarantine_restore.
+        "graph_recovery": CommunityGraphRecovery(),
     }
 
 
@@ -57,5 +64,6 @@ __all__ = [
     "CommunityKuzuGraphPathResolver",
     "CommunityKuzuGraphRuntimeStore",
     "CommunityGlobalDiscoveryRuntime",
+    "CommunityGraphRecovery",
     "build_community_graph_providers",
 ]

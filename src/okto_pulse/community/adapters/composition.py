@@ -147,6 +147,17 @@ def _apply_rebuild_audit_storage(base: Any) -> None:
     )
 
 
+def _apply_quarantine_restore(base: Any) -> None:
+    """(KGD-01 FR4) Fill the quarantine-restore port slot with the Community
+    filesystem adapter. Lazy-imported; the adapter itself only touches
+    Ladybug inside ``apply`` (open validation), never at import time."""
+    from okto_pulse.community.adapters.quarantine_restore import (
+        CommunityQuarantineRestore,
+    )
+
+    base.quarantine_restore = CommunityQuarantineRestore()
+
+
 def build_community_kg_composition(
     *,
     upload_dir: str,
@@ -162,6 +173,7 @@ def build_community_kg_composition(
     _apply_source_reader(base)
     _apply_rebuild_ingestion(base)
     _apply_rebuild_audit_storage(base)
+    _apply_quarantine_restore(base)
     if include_graph:
         _apply_graph_providers(base)
     register_community_reranker()
@@ -245,6 +257,7 @@ def configure_community_kg_registry(
     _apply_source_reader(base)
     _apply_rebuild_ingestion(base)
     _apply_rebuild_audit_storage(base)
+    _apply_quarantine_restore(base)
     if include_graph:
         _apply_graph_providers(base)
     # R05-D/R-P2-02: supply event_bus / audit_repo / config from the Community

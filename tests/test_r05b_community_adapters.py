@@ -392,7 +392,7 @@ def test_ts_2b099962_deferred_adapters_not_physically_moved():
         # Core-owned helpers/ports still stay; concrete ML providers moved out.
         "infra/storage.py",
         "kg/embedding.py",
-        "kg/providers/embedded/memory_cache.py",
+        "kg/providers/testing/memory.py",
     ):
         assert (CORE_PKG / rel).exists(), f"core adapter unexpectedly moved/removed: {rel}"
 

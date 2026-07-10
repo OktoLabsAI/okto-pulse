@@ -93,9 +93,14 @@ async def _start_cleanup_worker() -> Any:
 
 
 async def _start_consolidation_worker(session_factory: Any) -> Any:
-    from okto_pulse.core.services.application_kg import create_consolidation_worker
+    # O worker iniciado DEVE ser o singleton de get_consolidation_worker():
+    # queue_health (worker_mode), kg_health (dlq drain stats), o process_now do
+    # dead_letter_reprocess e signal_consolidation_worker() leem o singleton —
+    # uma instância avulsa deixa worker_mode="stopped" permanente e transforma
+    # o wake signal dos enqueue sites em no-op (fila só anda no heartbeat).
+    from okto_pulse.core.kg.workers.consolidation import get_consolidation_worker
 
-    worker = create_consolidation_worker(session_factory)
+    worker = get_consolidation_worker(session_factory)
     await worker.start()
     return worker
 

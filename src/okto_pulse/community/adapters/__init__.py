@@ -59,11 +59,28 @@ from .mcp_auth import (
     auth_context_from_session,
     create_mcp_auth_factory,
     make_community_mcp_authenticator,
+    principal_from_auth_session,
+)
+from .mcp_host import (
+    CommunityApiKeySessionMiddleware,
+    CommunityMcpHostProvider,
+    build_community_mcp_asgi_app,
+    register_community_mcp_host,
 )
 from .memory import (
     CommunityInMemoryCache,
     CommunityInMemoryRateLimiter,
     CommunityInMemorySessionStore,
+)
+from .relational_application import (
+    CommunityAgentAuthenticationGateway,
+    CommunityAmendmentRevisionApiBackend,
+    CommunityPermissionPresetGateway,
+    CommunityRelationalApplicationAdapter,
+)
+from .kg_events import (
+    CommunityKGEventsReader,
+    register_community_kg_events_reader,
 )
 from .relational_schema_lifecycle import (
     CommunityRelationalSchemaLifecycleOrchestrator,
@@ -94,6 +111,8 @@ __all__ = [
     "CommunityBoardSourceReader",
     "CommunityBoardRebuildIngestionAdapter",
     "CommunityDataBootstrapper",
+    "CommunityAgentAuthenticationGateway",
+    "CommunityAmendmentRevisionApiBackend",
     "CommunityBoundaryCheckResult",
     "CommunityContentIngestionResolver",
     "CommunityLocalLeaseProvider",
@@ -105,10 +124,15 @@ __all__ = [
     "CommunityInMemoryCache",
     "CommunityInMemoryRateLimiter",
     "CommunityInMemorySessionStore",
+    "CommunityKGEventsReader",
     "CommunityKGOperationalPorts",
     "CommunityKgComposition",
     "CommunityMCPAuthContext",
+    "CommunityApiKeySessionMiddleware",
+    "CommunityMcpHostProvider",
     "CommunityMcpAuthenticator",
+    "CommunityPermissionPresetGateway",
+    "CommunityRelationalApplicationAdapter",
     "CommunityRelationalSchemaLifecycleOrchestrator",
     "CommunityRelationalSchemaMigrator",
     "CommunitySentenceTransformerProvider",
@@ -123,6 +147,7 @@ __all__ = [
     "build_community_data_bootstrap_ledger",
     "build_community_boundary_evidence",
     "build_community_runtime_smoke_evidence",
+    "build_community_mcp_asgi_app",
     "build_community_kg_composition",
     "build_community_migration_ledger",
     "build_community_telemetry_state_carrier",
@@ -131,11 +156,14 @@ __all__ = [
     "create_mcp_auth_factory",
     "make_community_data_bootstrapper",
     "make_community_mcp_authenticator",
+    "register_community_mcp_host",
+    "principal_from_auth_session",
     "make_community_relational_schema_lifecycle_orchestrator",
     "make_community_relational_schema_migrator",
     "register_community_relational_schema_lifecycle",
     "register_community_content_ingestion_resolver",
     "register_community_coordination_providers",
+    "register_community_kg_events_reader",
     "register_community_kg_operational_ports",
     "register_community_reranker",
     "register_community_telemetry_state_carrier",

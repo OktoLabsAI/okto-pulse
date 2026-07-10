@@ -51,9 +51,8 @@ async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
     monkeypatch,
 ) -> None:
     import okto_pulse.community.adapters.mcp_trace as trace_mod
+    import okto_pulse.community.adapters.mcp_host as host_mod
     from okto_pulse.community import main as main_mod
-    import okto_pulse.core.mcp as core_mcp
-    from okto_pulse.core.mcp import server as core_mcp_server
 
     configs: list[FakeConfig] = []
     servers: list[FakeServer] = []
@@ -84,12 +83,10 @@ async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
     def fake_trace_sink_from_env():
         return trace_sink
 
-    def fake_build_mcp_asgi_app(*, trace_sink=None):
+    def fake_build_mcp_asgi_app(*, catalog, trace_sink=None):
+        assert catalog is not None
         trace_args.append(trace_sink)
         return "mcp-asgi-app"
-
-    def forbidden_run_mcp_server():
-        raise AssertionError("Community serving must not call core run_mcp_server")
 
     async def fake_heartbeat_loop() -> None:
         await asyncio.Event().wait()
@@ -101,8 +98,7 @@ async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
     monkeypatch.setattr(main_mod, "_lock_heartbeat_loop", fake_heartbeat_loop)
     monkeypatch.setattr(main_mod, "_log_ready_servers", lambda _api, _mcp: None)
     monkeypatch.setattr(trace_mod, "build_mcp_trace_sink_from_env", fake_trace_sink_from_env)
-    monkeypatch.setattr(core_mcp, "build_mcp_asgi_app", fake_build_mcp_asgi_app)
-    monkeypatch.setattr(core_mcp_server, "run_mcp_server", forbidden_run_mcp_server)
+    monkeypatch.setattr(host_mod, "build_community_mcp_asgi_app", fake_build_mcp_asgi_app)
     monkeypatch.setenv("MCP_HOST", "0.0.0.0")
 
     await main_mod._serve_dual(api_port=8210, mcp_port=8211)

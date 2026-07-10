@@ -24,7 +24,17 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from okto_pulse.core.models.db import Board, Ideation, Spec
+from okto_pulse.core.models.db import (
+    Agent,
+    AgentBoard,
+    Board,
+    Card,
+    ConsolidationQueue,
+    GlobalUpdateOutbox,
+    Ideation,
+    PermissionPreset,
+    Spec,
+)
 
 
 class CommunityBoardRepository:
@@ -72,7 +82,16 @@ class CommunitySpecRepository:
 
 
 __all__ = [
+    "Agent",
+    "AgentBoard",
+    "Board",
+    "Card",
+    "ConsolidationQueue",
     "CommunityBoardRepository",
     "CommunityIdeationRepository",
     "CommunitySpecRepository",
+    "Ideation",
+    "GlobalUpdateOutbox",
+    "PermissionPreset",
+    "Spec",
 ]

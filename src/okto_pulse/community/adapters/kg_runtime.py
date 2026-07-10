@@ -59,34 +59,87 @@ _board_db_cache_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# Close guard — coordenação leitor-escritor por board (spec 3d89c192, FR-5)
+# Close guard — coordenação leitor-escritor por board (spec 3d89c192, FR-5;
+# KGD-01 C6: contrato FAIL-CLOSED)
 # ---------------------------------------------------------------------------
 #
 # `close_board_db_cache` fecha o kuzu.Database compartilhado; uma
 # kuzu.Connection viva sobre ele em outra thread é use-after-close em handle
-# C++ (UB: crash/corrupção silenciosa). Este guard registra leitores
-# (BoardConnection.__init__/close) e faz o close legítimo aguardar o dreno.
-# Fail-open nas duas direções para nunca deadlockar: leitor novo espera o
-# close por até _READER_ENTER_TIMEOUT_S e prossegue; o close espera o dreno
-# por até _CLOSE_DRAIN_TIMEOUT_S e prossegue com warning estruturado
-# (kg.close_guard.timeout) — o comportamento antigo é o piso, nunca o teto.
+# C++ (UB: crash/corrupção silenciosa — KGD-01 KB1/H3: o "escritor stale"
+# que zera páginas interiores do WAL). Este guard registra TODO leitor
+# (BoardConnection e conexões cruas via `registered_raw_connection`) e faz o
+# close legítimo aguardar o dreno.
+#
+# KGD-01 C6 — fail-closed nas duas direções (o fail-open antigo era o
+# produtor provável do escritor stale):
+#   * close: se o dreno não completa, o Database NÃO é fechado — o caller
+#     adia (log `kg.close_guard.deferred`). Só o caminho de shutdown pode
+#     forçar (`force_after_drain_timeout=True` →
+#     `kg.close_guard.forced_on_shutdown`).
+#   * leitor novo: se a janela closing não termina dentro do timeout, a
+#     entrada FALHA com `BoardCloseInProgressError` — falhar a operação é
+#     estritamente melhor que entregar um handle prestes a ser fechado.
+#   * janelas closing() são mutuamente exclusivas por board (lock serial).
+#   * o CHECKPOINT roda DENTRO da janela exclusiva como "dono da janela"
+#     (owner_enter/owner_exit): registrado, mas fora do dreno.
 
 _CLOSE_DRAIN_TIMEOUT_S = 5.0
 _READER_ENTER_TIMEOUT_S = 10.0
+# Dreno maior do shutdown (KGD-01 C6): o teardown roda APÓS a parada dos
+# workers, então um leitor que não sai nesse budget é vazado por definição —
+# o shutdown então força o close com registro explícito.
+_SHUTDOWN_CLOSE_DRAIN_TIMEOUT_S = 15.0
+
+
+class BoardCloseInProgressError(RuntimeError):
+    """KGD-01 C6: entrada de leitor recusada — janela de close ativa.
+
+    Levantada por ``_BoardCloseGuard.reader_enter`` quando a janela closing
+    do board não terminou dentro de ``_READER_ENTER_TIMEOUT_S``. Callers de
+    :class:`BoardConnection` devem PROPAGAR: falhar a operação é melhor que
+    o fail-open antigo (entrar mesmo assim e arriscar use-after-close em
+    handle C++)."""
+
+    def __init__(self, board_id: str, timeout_s: float) -> None:
+        self.board_id = board_id
+        self.timeout_s = timeout_s
+        super().__init__(
+            f"board {board_id}: close do graph em andamento — entrada de "
+            f"leitor recusada após {timeout_s:.1f}s (fail-closed, KGD-01 C6; "
+            "re-tente a operação)"
+        )
 
 
 class _BoardCloseGuard:
-    __slots__ = ("_cond", "_readers", "_closing")
+    __slots__ = (
+        "board_id",
+        "_cond",
+        "_readers",
+        "_owner_readers",
+        "_closing",
+        "_close_serial_lock",
+    )
 
-    def __init__(self) -> None:
+    def __init__(self, board_id: str = "") -> None:
+        self.board_id = board_id
         self._cond = threading.Condition()
         self._readers = 0
+        self._owner_readers = 0
         self._closing = False
+        # KGD-01 C6 (item 3): serializa janelas closing() por board — duas
+        # janelas simultâneas não podem mais se sobrepor.
+        self._close_serial_lock = threading.Lock()
 
     def reader_enter(self) -> None:
-        """Registra um leitor; bloqueia (bounded) enquanto um close drena."""
+        """Registra um leitor; FAIL-CLOSED (KGD-01 C6): bloqueia (bounded)
+        enquanto um close drena e levanta :class:`BoardCloseInProgressError`
+        se a janela closing continuar ativa após o timeout (lookup do módulo
+        em runtime para os testes encurtarem via monkeypatch)."""
+        timeout = _READER_ENTER_TIMEOUT_S
         with self._cond:
-            self._cond.wait_for(lambda: not self._closing, _READER_ENTER_TIMEOUT_S)
+            ok = self._cond.wait_for(lambda: not self._closing, timeout)
+            if not ok:
+                raise BoardCloseInProgressError(self.board_id, timeout)
             self._readers += 1
 
     def reader_exit(self) -> None:
@@ -94,28 +147,62 @@ class _BoardCloseGuard:
             self._readers = max(0, self._readers - 1)
             self._cond.notify_all()
 
+    def owner_enter(self) -> None:
+        """Registro do "dono da janela" (KGD-01 C6, item 4): o CHECKPOINT
+        roda DENTRO da janela exclusiva de closing — registrá-lo como reader
+        normal deadlockaria (esperaria o fim da própria janela). Owners são
+        registrados, mas não contam no dreno nem são barrados pela janela."""
+        with self._cond:
+            self._owner_readers += 1
+
+    def owner_exit(self) -> None:
+        with self._cond:
+            self._owner_readers = max(0, self._owner_readers - 1)
+            self._cond.notify_all()
+
     @property
     def readers(self) -> int:
         with self._cond:
             return self._readers
 
+    @property
+    def owner_readers(self) -> int:
+        with self._cond:
+            return self._owner_readers
+
     @contextmanager
     def closing(self, timeout: float = _CLOSE_DRAIN_TIMEOUT_S):
         """Janela exclusiva de close: barra leitores novos e drena os ativos.
 
-        Yields ``(drained, stuck_readers)``; com ``drained=False`` o caller
-        prossegue em fail-open e DEVE logar o warning.
+        Yields ``(drained, stuck_readers)``. Com ``drained=False`` o caller
+        DEVE fazer fail-closed (não fechar / adiar); apenas o caminho de
+        shutdown (``force_after_drain_timeout``) pode prosseguir, com o log
+        estruturado ``kg.close_guard.forced_on_shutdown``.
+
+        KGD-01 C6 (item 3): janelas são serializadas por board. Se outra
+        closing() estiver ativa, esta espera até ``timeout`` pelo lock
+        serial; sem sucesso, yield ``(False, readers)`` sem abrir janela
+        própria (fail-closed para o caller).
         """
-        with self._cond:
-            self._closing = True
-            drained = self._cond.wait_for(lambda: self._readers == 0, timeout)
-            stuck = self._readers
-        try:
-            yield drained, stuck
-        finally:
+        acquired = self._close_serial_lock.acquire(timeout=max(0.0, timeout))
+        if not acquired:
             with self._cond:
-                self._closing = False
-                self._cond.notify_all()
+                stuck = self._readers
+            yield False, stuck
+            return
+        try:
+            with self._cond:
+                self._closing = True
+                drained = self._cond.wait_for(lambda: self._readers == 0, timeout)
+                stuck = self._readers
+            try:
+                yield drained, stuck
+            finally:
+                with self._cond:
+                    self._closing = False
+                    self._cond.notify_all()
+        finally:
+            self._close_serial_lock.release()
 
 
 _board_close_guards: dict[str, _BoardCloseGuard] = {}
@@ -129,9 +216,48 @@ def _get_close_guard(board_id: str) -> _BoardCloseGuard:
     with _board_close_guards_lock:
         guard = _board_close_guards.get(board_id)
         if guard is None:
-            guard = _BoardCloseGuard()
+            guard = _BoardCloseGuard(board_id)
             _board_close_guards[board_id] = guard
         return guard
+
+
+@contextmanager
+def registered_raw_connection(board_id: str, *, within_close_window: bool = False):
+    """Conexão ``kuzu.Connection`` crua REGISTRADA no close guard (KGD-01 C6).
+
+    Registro universal de leitores (item 4): todo uso de conexão crua neste
+    módulo (probes de bootstrap/migração, DDL, health probes, CHECKPOINT)
+    passa por aqui, para que um close legítimo nunca feche o Database sob
+    uma conexão crua não-registrada.
+
+    ``within_close_window=True`` é o caminho interno do "dono da janela"
+    (``_execute_checkpoint_unguarded`` roda DENTRO da janela exclusiva de
+    closing): registra no slot de owner do guard, que não conta no dreno nem
+    é barrado pela janela — registrá-lo como reader normal deadlockaria.
+
+    Yields ``(db, conn)``; fecha a Connection e desregistra o leitor no exit.
+    Pode propagar :class:`BoardCloseInProgressError` do ``reader_enter``.
+    """
+    guard = _get_close_guard(board_id)
+    if within_close_window:
+        guard.owner_enter()
+    else:
+        guard.reader_enter()
+    try:
+        db = _open_kuzu_db_path_cached(board_kuzu_path(board_id))
+        conn = kuzu.Connection(db)
+        try:
+            yield db, conn
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    finally:
+        if within_close_window:
+            guard.owner_exit()
+        else:
+            guard.reader_exit()
 
 
 # Cap LRU do cache de Databases abertos (campo 2026-06-10): cada
@@ -214,11 +340,12 @@ def _open_kuzu_db_path_cached(path: Path) -> Any:
 def _evict_board_db(key: str) -> bool:
     """Close and drop one cached Database (LRU eviction path).
 
-    DIFERENTE do close legítimo (``close_board_db_cache``, que precisa
-    fechar e por isso faz fail-open no timeout): a eviction é discricionária
-    e NUNCA fecha sob leitores ativos — se o dreno curto não completa, a
-    eviction é abortada e o caller tenta outra vítima. Retorna True quando
-    o Database foi de fato fechado.
+    A eviction é DISCRICIONÁRIA e NUNCA fecha sob leitores ativos — se o
+    dreno curto não completa, a eviction é abortada e o caller tenta outra
+    vítima (já era fail-closed antes do KGD-01 C6; o close legítimo
+    ``close_board_db_cache`` agora segue o mesmo contrato, com exceção do
+    caminho forçado de shutdown). Retorna True quando o Database foi de
+    fato fechado.
     """
     guard = _get_close_guard(Path(key).parent.name)
     with guard.closing(timeout=0.5) as (drained, _stuck):
@@ -260,19 +387,18 @@ _CHECKPOINT_EXCLUSIVE_DRAIN_TIMEOUT_S = 1.0
 
 
 def _execute_checkpoint_unguarded(path: Path) -> None:
-    """Executa CHECKPOINT com conexão crua — APENAS dentro de uma janela
-    exclusiva do close guard (zero leitores). Conexão crua porque um
-    BoardConnection aqui daria deadlock: reader_enter espera o fim da
-    própria janela closing que nos dá a exclusividade."""
-    db = _open_kuzu_db_path_cached(path)
-    conn = kuzu.Connection(db)
-    try:
+    """Executa CHECKPOINT com conexão crua registrada como DONO DA JANELA —
+    APENAS dentro de uma janela exclusiva do close guard (zero leitores).
+    KGD-01 C6 (item 4): a conexão passa por ``registered_raw_connection``
+    com ``within_close_window=True`` — registrá-la como reader normal daria
+    deadlock (reader_enter esperaria o fim da própria janela closing que
+    nos dá a exclusividade)."""
+    board_id = path.parent.name
+    with registered_raw_connection(board_id, within_close_window=True) as (
+        _db,
+        conn,
+    ):
         conn.execute("CHECKPOINT")
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 
 def _close_cached_db_unguarded(board_id: str) -> None:
@@ -297,16 +423,15 @@ def try_close_board_db(
 ) -> bool:
     """Close DISCRICIONÁRIO do Database do board (higiene de buffer).
 
-    Diferente do close legítimo (``close_board_db_cache``, fail-open no
-    timeout — aceitável só em shutdown/rmtree, quando o handle PRECISA
-    morrer): fechar o Database com um leitor ativo é use-after-close em
-    handle C++ → abort nativo do processo inteiro (campo 2026-06-10, 4º
-    crash: ``kg.close_guard.timeout`` fail-open disparado pela higiene
-    periódica enquanto um health scan lia o board → exit 5). Se o dreno
-    não completa, NADA é fechado e o caller adia a higiene para o próximo
-    commit. Fecha as conexões pooled primeiro (idle no pool = reader no
-    guard). Retorna True quando o Database foi liberado (ou já não estava
-    aberto).
+    Fechar o Database com um leitor ativo é use-after-close em handle C++ →
+    abort nativo do processo inteiro (campo 2026-06-10, 4º crash: o antigo
+    fail-open do close guard disparado pela higiene periódica enquanto um
+    health scan lia o board → exit 5). Se o dreno não completa, NADA é
+    fechado e o caller adia a higiene para o próximo commit. Desde o KGD-01
+    C6 o close legítimo (``close_board_db_cache``) segue o mesmo contrato
+    fail-closed (só o shutdown força, com registro explícito). Fecha as
+    conexões pooled primeiro (idle no pool = reader no guard). Retorna True
+    quando o Database foi liberado (ou já não estava aberto).
     """
     try:
         from okto_pulse.core.kg.connection_pool import close_board_connection
@@ -381,18 +506,72 @@ def _open_kuzu_db_cached(board_id: str, path: Path) -> Any:
     return _open_kuzu_db_path_cached(path)
 
 
-def close_board_db_cache(board_id: str | None = None) -> None:
+def close_board_db_cache(
+    board_id: str | None = None,
+    *,
+    force_after_drain_timeout: bool = False,
+) -> None:
     """Drop the cached Database(s) so the .kuzu dir can be rmtree'd or re-opened.
 
     ``board_id=None`` closes every cached Database (rmtree everything).
     Specific board: only that one. Idempotent — already-evicted is a no-op.
+
+    KGD-01 C6 — FAIL-CLOSED por default: se o dreno de leitores não completa
+    dentro de ``_CLOSE_DRAIN_TIMEOUT_S``, o Database daquele board NÃO é
+    fechado (log estruturado ``kg.close_guard.deferred``) e o board é pulado.
+    Fechar com leitor vivo era o produtor provável do "escritor stale" que
+    zera páginas interiores do WAL (KB1/H3) — o caminho fail-open antigo
+    (``kg.close_guard.timeout``) foi REMOVIDO do modo runtime.
+
+    ``force_after_drain_timeout=True`` é exclusivo do caminho de shutdown
+    (``kg_shutdown.close_all_graphs_on_shutdown`` roda após a parada dos
+    workers, então leitores remanescentes são vazados por definição): usa o
+    dreno maior ``_SHUTDOWN_CLOSE_DRAIN_TIMEOUT_S`` e, se ainda houver
+    leitor preso, fecha mesmo assim com o registro explícito
+    ``kg.close_guard.forced_on_shutdown``.
     """
+    # Conexões pooled IDLE são readers registrados (BoardConnection vive no
+    # pool do core com o reader_enter do __init__ ativo) — evict primeiro
+    # para que um pool ocioso não adie o close legítimo para sempre (mesmo
+    # padrão do try_close_board_db). Best-effort: pool ausente/erro não
+    # bloqueia o close (o dreno fail-closed ainda protege).
+    try:
+        from okto_pulse.core.kg.connection_pool import (
+            close_all_board_connections,
+            close_board_connection,
+        )
+    except ImportError:
+        close_all_board_connections = None  # type: ignore[assignment]
+        close_board_connection = None  # type: ignore[assignment]
+    try:
+        if board_id is None:
+            if close_all_board_connections is not None:
+                close_all_board_connections()
+        elif close_board_connection is not None:
+            close_board_connection(board_id)
+    except Exception as exc:
+        logger.warning(
+            "kg.close_guard.pool_close_failed board=%s err=%s", board_id, exc,
+            extra={
+                "event": "kg.close_guard.pool_close_failed",
+                "board_id": board_id,
+            },
+        )
+
     with _board_db_cache_lock:
         if board_id is None:
             keys = list(_board_db_cache.keys())
         else:
             target = str(board_kuzu_path(board_id))
             keys = [target] if target in _board_db_cache else []
+
+    # timeouts com lookup do módulo em runtime para que testes possam
+    # encurtá-los via monkeypatch.
+    drain_timeout = (
+        _SHUTDOWN_CLOSE_DRAIN_TIMEOUT_S
+        if force_after_drain_timeout
+        else _CLOSE_DRAIN_TIMEOUT_S
+    )
 
     closed_any = False
     for key in keys:
@@ -404,19 +583,37 @@ def close_board_db_cache(board_id: str | None = None) -> None:
         # pai identifica o board.
         guard_board_id = Path(key).parent.name
         guard = _get_close_guard(guard_board_id)
-        # timeout passado explicitamente (lookup do módulo em runtime) para
-        # que testes possam encurtá-lo via monkeypatch.
-        with guard.closing(timeout=_CLOSE_DRAIN_TIMEOUT_S) as (drained, stuck):
+        with guard.closing(timeout=drain_timeout) as (drained, stuck):
             if not drained:
+                if not force_after_drain_timeout:
+                    # KGD-01 C6: fail-closed — NÃO fecha com leitores vivos;
+                    # pula este board (o caller re-tenta/adia).
+                    logger.warning(
+                        "kg.close_guard.deferred board=%s stuck_readers=%d "
+                        "timeout_s=%.1f (fail-closed: Database NÃO fechado "
+                        "com leitores ativos — close adiado)",
+                        guard_board_id, stuck, drain_timeout,
+                        extra={
+                            "event": "kg.close_guard.deferred",
+                            "board_id": guard_board_id,
+                            "stuck_readers": stuck,
+                            "timeout_s": drain_timeout,
+                        },
+                    )
+                    continue
+                # Shutdown: workers já pararam — leitor remanescente é
+                # vazado; fechar mantém o progresso do teardown, com
+                # registro explícito para investigação do vazamento.
                 logger.warning(
-                    "kg.close_guard.timeout board=%s stuck_readers=%d timeout_s=%.1f "
-                    "(fail-open: fechando com leitores ativos — investigar leitor vazado)",
-                    guard_board_id, stuck, _CLOSE_DRAIN_TIMEOUT_S,
+                    "kg.close_guard.forced_on_shutdown board=%s "
+                    "stuck_readers=%d timeout_s=%.1f (shutdown: fechando com "
+                    "leitor vazado após o dreno — investigar leitor vazado)",
+                    guard_board_id, stuck, drain_timeout,
                     extra={
-                        "event": "kg.close_guard.timeout",
+                        "event": "kg.close_guard.forced_on_shutdown",
                         "board_id": guard_board_id,
                         "stuck_readers": stuck,
-                        "timeout_s": _CLOSE_DRAIN_TIMEOUT_S,
+                        "timeout_s": drain_timeout,
                     },
                 )
             with _board_db_cache_lock:
@@ -469,6 +666,10 @@ class BoardConnection:
         # tocar no cache de Database, para que um close legítimo em curso
         # bloqueie a entrada (bounded) e nunca entregue um handle prestes a
         # ser fechado. reader_exit acontece em close().
+        # KGD-01 C6: reader_enter é FAIL-CLOSED — se a janela closing não
+        # terminar dentro do timeout, levanta BoardCloseInProgressError em
+        # vez de entrar; callers devem propagar (falhar a operação > risco
+        # de use-after-close).
         self._close_guard = _get_close_guard(board_id)
         self._close_guard.reader_enter()
         try:
@@ -590,8 +791,11 @@ def _raise_existing_graph_open_failed(
         "Existing LadybugDB graph could not be opened during "
         f"{operation}; refusing to auto-bootstrap or purge it. "
         f"board_id={board_id} path={path}. "
-        "Use the explicit KG Health recovery flow after reviewing the "
-        "quarantine/rebuild report; the current files were preserved."
+        "Escada de recovery automática esgotada (KGD-01: salvage de WAL → "
+        "quarentena wal-only); os próximos degraus são do operador — "
+        "quarantine restore ou rebuild explícito via KG Health após revisar "
+        "o report de quarentena. Os arquivos atuais foram preservados "
+        "(main graph.lbug intocado)."
     ) from exc
 
 
@@ -794,9 +998,9 @@ def _close_reopen_probe_existing_board_graph(board_id: str) -> tuple[bool, str |
     if not try_close_board_db(board_id, drain_timeout=30.0, fast_path=False):
         return False, "close_reopen_probe_blocked_by_active_readers"
     try:
-        db = _open_kuzu_db_path_cached(path)
-        conn = kuzu.Connection(db)
-        try:
+        # KGD-01 C6 (item 4): probe registrado no close guard — o reopen de
+        # verificação também é um leitor que um close concorrente deve drenar.
+        with registered_raw_connection(board_id) as (_db, conn):
             res = conn.execute(
                 "CALL SHOW_TABLES() WHERE name = 'BoardMeta' RETURN name"
             )
@@ -821,11 +1025,6 @@ def _close_reopen_probe_existing_board_graph(board_id: str) -> tuple[bool, str |
             if not schema_version:
                 return False, "BoardMeta schema_version empty after reopen"
             return True, None
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
     finally:
@@ -1020,12 +1219,59 @@ def _ladybug_pybind_available() -> bool:
     return True
 
 
+def _wal_sidecar_path(path: Path) -> Path:
+    """WAL sidecar do main file de um grafo (graph.lbug -> graph.lbug.wal)."""
+    return path.with_name(path.name + ".wal")
+
+
+def _open_database_with_salvage_flag(
+    kuzu_module: Any,
+    path: str,
+    *,
+    buffer_pool_size: int,
+    max_db_size: int,
+    throw_on_wal_replay_failure: bool,
+    backend: str | None = None,
+) -> Any:
+    """Open ``ladybug.Database`` passando ``throw_on_wal_replay_failure`` (KGD-01 FR1).
+
+    Tolerante a versões do wrapper que não aceitam o kwarg (mesmo padrão
+    try/except ``TypeError`` do kwarg ``backend=`` no fallback pybind): quando
+    o wrapper não suporta o parâmetro e o caller pedia salvage (flag ``False``),
+    loga ``kg.wal.salvage_unsupported`` e abre sem o kwarg (comportamento
+    fail-closed antigo do wrapper, ``throw=True``).
+    """
+    kwargs: dict[str, Any] = {
+        "buffer_pool_size": buffer_pool_size,
+        "max_db_size": max_db_size,
+    }
+    if backend is not None:
+        kwargs["backend"] = backend
+    try:
+        return kuzu_module.Database(
+            path,
+            throw_on_wal_replay_failure=throw_on_wal_replay_failure,
+            **kwargs,
+        )
+    except TypeError:
+        pass
+    if not throw_on_wal_replay_failure:
+        logger.warning(
+            "kg.wal.salvage_unsupported path=%s — wrapper ladybug sem suporte a "
+            "throw_on_wal_replay_failure; abrindo sem salvage",
+            path,
+            extra={"event": "kg.wal.salvage_unsupported", "path": str(path)},
+        )
+    return kuzu_module.Database(path, **kwargs)
+
+
 def _open_ladybug_database_forced_pybind(
     kuzu_module: Any,
     path: str,
     *,
     buffer_pool_size: int,
     max_db_size: int,
+    throw_on_wal_replay_failure: bool = True,
 ) -> Any:
     """Open LadybugDB through pybind when the C-API shim is unavailable.
 
@@ -1034,29 +1280,222 @@ def _open_ladybug_database_forced_pybind(
     extension is present. The C-API shim needs an extra shared library that
     the wheel does not install on Windows. Treat that as a backend selection
     issue, not as a graph corruption signal.
+
+    KGD-01 FR1/TR2: o kwarg ``throw_on_wal_replay_failure`` é propagado também
+    neste caminho, para que TODOS os opens da fábrica única carreguem a flag.
     """
 
     previous_backend = os.environ.get("LBUG_PYTHON_BACKEND")
     os.environ["LBUG_PYTHON_BACKEND"] = "pybind"
     try:
         try:
-            return kuzu_module.Database(
+            return _open_database_with_salvage_flag(
+                kuzu_module,
                 path,
                 buffer_pool_size=buffer_pool_size,
                 max_db_size=max_db_size,
+                throw_on_wal_replay_failure=throw_on_wal_replay_failure,
                 backend="pybind",
             )
         except TypeError:
-            return kuzu_module.Database(
+            return _open_database_with_salvage_flag(
+                kuzu_module,
                 path,
                 buffer_pool_size=buffer_pool_size,
                 max_db_size=max_db_size,
+                throw_on_wal_replay_failure=throw_on_wal_replay_failure,
             )
     finally:
         if previous_backend is None:
             os.environ.pop("LBUG_PYTHON_BACKEND", None)
         else:
             os.environ["LBUG_PYTHON_BACKEND"] = previous_backend
+
+
+def _try_open_with_wal_salvage(
+    kuzu_module: Any,
+    path: Path,
+    *,
+    buffer_pool_size: int,
+    max_db_size: int,
+    original_error: BaseException,
+) -> Any | None:
+    """Retry de open com salvage de WAL após falha por corrupção (KGD-01 FR1/D1).
+
+    Estratégia determinística do spec KGD-01: o open primário é SEMPRE
+    fail-closed (``throw_on_wal_replay_failure=True``), então uma falha de
+    replay do WAL é detectada de forma inequívoca; SÓ quando o open falhou com
+    marcador de corrupção E ``kg_wal_salvage_enabled=true`` este retry reabre
+    com ``throw_on_wal_replay_failure=False`` — o engine (``dryReplay``)
+    replica o WAL até o último COMMIT válido e trunca o sufixo corrompido.
+    O caminho feliz não muda e salvage NUNCA é silencioso: sucesso emite o
+    warning estruturado ``kg.wal.salvage_applied``.
+
+    Sinal em kg_health: registrado APENAS via log estruturado. O
+    ``kg_health_service`` do core computa health sob demanda a partir de
+    fila/DLQ/probes — não há registry de sinais por board acessível deste
+    adapter sem criar acoplamento novo core<-community; decisão documentada
+    no card KGD-01-C1.
+
+    Retorna o Database aberto, ou ``None`` quando o salvage não foi possível
+    (o caller segue o caminho de erro fail-closed normal).
+    """
+    wal_path = _wal_sidecar_path(path)
+    try:
+        wal_bytes_before = wal_path.stat().st_size if wal_path.exists() else 0
+    except OSError:
+        wal_bytes_before = -1
+    db: Any | None = None
+    salvage_exc: BaseException | None = None
+    try:
+        db = _open_database_with_salvage_flag(
+            kuzu_module,
+            str(path),
+            buffer_pool_size=buffer_pool_size,
+            max_db_size=max_db_size,
+            throw_on_wal_replay_failure=False,
+        )
+    except Exception as exc:
+        salvage_exc = exc
+        if _is_ladybug_capi_shared_lib_missing(exc) and _ladybug_pybind_available():
+            try:
+                db = _open_ladybug_database_forced_pybind(
+                    kuzu_module,
+                    str(path),
+                    buffer_pool_size=buffer_pool_size,
+                    max_db_size=max_db_size,
+                    throw_on_wal_replay_failure=False,
+                )
+            except Exception as retry_exc:
+                salvage_exc = retry_exc
+    if db is None:
+        logger.warning(
+            "kg.wal.salvage_failed board=%s path=%s original_err=%s salvage_err=%s",
+            path.parent.name, path, original_error, salvage_exc,
+            extra={
+                "event": "kg.wal.salvage_failed",
+                "board_id": path.parent.name,
+                "path": str(path),
+            },
+        )
+        return None
+    try:
+        wal_bytes_after = wal_path.stat().st_size if wal_path.exists() else 0
+    except OSError:
+        wal_bytes_after = -1
+    logger.warning(
+        "kg.wal.salvage_applied board=%s path=%s wal_bytes_before=%s "
+        "wal_bytes_after=%s original_err=%s",
+        path.parent.name, path, wal_bytes_before, wal_bytes_after, original_error,
+        extra={
+            "event": "kg.wal.salvage_applied",
+            "board_id": path.parent.name,
+            "path": str(path),
+            "wal_bytes_before": wal_bytes_before,
+            "wal_bytes_after": wal_bytes_after,
+        },
+    )
+    return db
+
+
+def _try_open_with_wal_only_recovery(
+    kuzu_module: Any,
+    path: Path,
+    *,
+    buffer_pool_size: int,
+    max_db_size: int,
+    original_error: BaseException,
+) -> Any | None:
+    """Degrau 2 da escada de recovery (KGD-01 FR3/BR2): wal-only quarantine.
+
+    Roda SÓ quando o open falhou com marcador de corrupção e o salvage
+    (degrau 1) falhou ou está indisponível/desligado. Quarentena SOMENTE
+    ``graph.lbug.wal`` + sidecars (``.shadow`` / ``.wal.checkpoint``) com
+    manifest completo — o main ``graph.lbug`` NUNCA é tocado (BR2) — e
+    re-tenta o open UMA vez (fail-closed, ``throw_on_wal_replay_failure=True``:
+    o grafo reaberto é o estado do último checkpoint, sem replay de WAL).
+
+    Retorna o Database aberto, ou ``None`` quando não havia nada a
+    quarentenar, a quarentena falhou (partial-move vira fail-closed — o
+    manifest registra o estado exato) ou o reopen ainda falhou (o caller
+    segue o caminho de erro fail-closed normal, cuja mensagem aponta os
+    degraus seguintes: restore/operador).
+    """
+    from okto_pulse.community.adapters.kg_wal_recovery import wal_only_quarantine
+
+    board_id = path.parent.name
+    try:
+        result = wal_only_quarantine(
+            board_id,
+            f"open_failed_after_salvage: {original_error}",
+            graph_path=path,
+        )
+    except Exception as q_exc:
+        logger.warning(
+            "kg.recovery.wal_only_quarantine_error board=%s path=%s err=%s",
+            board_id, path, q_exc,
+            extra={
+                "event": "kg.recovery.wal_only_quarantine_error",
+                "board_id": board_id,
+                "path": str(path),
+            },
+        )
+        return None
+    if not result.ok or not result.files_moved:
+        # ok=False → partial-move fail-closed (evidência no manifest);
+        # files_moved vazio → nada a quarentenar, retry seria o mesmo open.
+        return None
+
+    reopen_exc: BaseException | None = None
+    db: Any | None = None
+    try:
+        db = _open_database_with_salvage_flag(
+            kuzu_module,
+            str(path),
+            buffer_pool_size=buffer_pool_size,
+            max_db_size=max_db_size,
+            throw_on_wal_replay_failure=True,
+        )
+    except Exception as exc:
+        reopen_exc = exc
+        if _is_ladybug_capi_shared_lib_missing(exc) and _ladybug_pybind_available():
+            try:
+                db = _open_ladybug_database_forced_pybind(
+                    kuzu_module,
+                    str(path),
+                    buffer_pool_size=buffer_pool_size,
+                    max_db_size=max_db_size,
+                )
+            except Exception as retry_exc:
+                reopen_exc = retry_exc
+    if db is None:
+        logger.warning(
+            "kg.recovery.wal_only_reopen_failed board=%s path=%s "
+            "quarantine_id=%s original_err=%s reopen_err=%s",
+            board_id, path, result.quarantine_id, original_error, reopen_exc,
+            extra={
+                "event": "kg.recovery.wal_only_reopen_failed",
+                "board_id": board_id,
+                "path": str(path),
+                "quarantine_id": result.quarantine_id,
+            },
+        )
+        return None
+    logger.warning(
+        "kg.recovery.wal_only_recovered board=%s path=%s quarantine_id=%s "
+        "files=%s original_err=%s",
+        board_id, path, result.quarantine_id,
+        list(result.files_moved), original_error,
+        extra={
+            "event": "kg.recovery.wal_only_recovered",
+            "board_id": board_id,
+            "path": str(path),
+            "quarantine_id": result.quarantine_id,
+            "files": list(result.files_moved),
+            "main_untouched": True,
+        },
+    )
+    return db
 
 
 def _open_kuzu_db(path: Path):
@@ -1073,6 +1512,12 @@ def _open_kuzu_db(path: Path):
     Raises a clear ``RuntimeError`` when the underlying Kùzu storage is
     corrupted due to a version incompatibility (SIGBUS / BusError) instead
     of letting the signal crash the process.
+
+    KGD-01 FR1/BR1: esta fábrica é o ponto ÚNICO onde
+    ``throw_on_wal_replay_failure`` é controlado (open primário fail-closed
+    com ``True``; retry de salvage com ``False`` quando
+    ``kg_wal_salvage_enabled`` estiver ativo e o open falhar com marcador de
+    corrupção — ver ``_try_open_with_wal_salvage``).
     """
     import ladybug as kuzu  # type: ignore
     from okto_pulse.core.infra.config import get_settings
@@ -1081,6 +1526,13 @@ def _open_kuzu_db(path: Path):
     s = get_settings()
     bp = s.kg_kuzu_buffer_pool_mb * 1024 * 1024
     mds = s.kg_kuzu_max_db_size_gb * 1024 * 1024 * 1024
+    # KGD-01 FR1/TR3: kg_wal_salvage_enabled (default true) controla o retry
+    # de salvage de WAL abaixo. getattr com default tolera um core antigo sem
+    # o campo (repos versionam em lockstep, mas skew de branch acontece).
+    salvage_enabled = bool(getattr(s, "kg_wal_salvage_enabled", True))
+    # KGD-01 FR3/BR2: kg_wal_only_recovery_enabled (default true) controla o
+    # degrau 2 (quarentena wal-only) quando o salvage falhou/indisponível.
+    wal_only_enabled = bool(getattr(s, "kg_wal_only_recovery_enabled", True))
     logger.debug("[KG] _open_kuzu_db buffer_pool=%dMB max_db=%dGB", s.kg_kuzu_buffer_pool_mb, s.kg_kuzu_max_db_size_gb)
 
     # Bug d0f6bab2: lock contention happens because every BoardConnection
@@ -1097,9 +1549,23 @@ def _open_kuzu_db(path: Path):
     # the lock (e.g. CLI run while server is up). 5× exponential backoff:
     # 0.2 / 0.4 / 0.8 / 1.6 / 3.2 = 6.2s cumulative.
     last_exc: BaseException | None = None
+    salvage_attempted = False
+    wal_only_attempted = False
     for attempt in range(1, 6):
         try:
-            db = kuzu.Database(str(path), buffer_pool_size=bp, max_db_size=mds)
+            # KGD-01 FR1/TR2 (estratégia determinística de D1): o open primário
+            # é SEMPRE fail-closed (throw_on_wal_replay_failure=True) para que
+            # falha de replay de WAL seja detectada; o retry com salvage
+            # (throw=False) acontece só no branch de corrupção abaixo, gated
+            # por kg_wal_salvage_enabled — o caminho feliz não muda e salvage
+            # nunca é silencioso.
+            db = _open_database_with_salvage_flag(
+                kuzu,
+                str(path),
+                buffer_pool_size=bp,
+                max_db_size=mds,
+                throw_on_wal_replay_failure=True,
+            )
             logger.debug("[KG] kuzu.Database() created successfully for path=%s", path)
             return db
         except Exception as e:
@@ -1152,6 +1618,49 @@ def _open_kuzu_db(path: Path):
                     },
                 )
                 continue
+            # KGD-01 FR1: WAL rasgado/corrompido (cauda parcial de kill duro,
+            # zeros interiores de escritor stale) com salvage habilitado —
+            # reabre UMA vez com throw_on_wal_replay_failure=False para o
+            # engine replicar até o último COMMIT válido e truncar o sufixo
+            # corrompido. Com kg_wal_salvage_enabled=false o caminho permanece
+            # fail-closed (o RuntimeError abaixo orienta o operador).
+            if (
+                salvage_enabled
+                and not salvage_attempted
+                and _is_ladybug_corruption_error(e)
+            ):
+                salvage_attempted = True
+                salvaged = _try_open_with_wal_salvage(
+                    kuzu,
+                    path,
+                    buffer_pool_size=bp,
+                    max_db_size=mds,
+                    original_error=e,
+                )
+                if salvaged is not None:
+                    return salvaged
+            # KGD-01 FR3/BR2 (degrau 2 da escada salvage → wal-only →
+            # restore/operador): o salvage falhou ou está
+            # desligado/indisponível e o open continua falhando com marcador
+            # de corrupção — quarentena SOMENTE do graph.lbug.wal + sidecars
+            # (o main graph.lbug NUNCA é tocado) e re-tenta o open UMA vez.
+            # Gated por kg_wal_only_recovery_enabled (default true); com a
+            # flag desligada o caminho permanece fail-closed.
+            if (
+                wal_only_enabled
+                and not wal_only_attempted
+                and _is_ladybug_corruption_error(e)
+            ):
+                wal_only_attempted = True
+                recovered = _try_open_with_wal_only_recovery(
+                    kuzu,
+                    path,
+                    buffer_pool_size=bp,
+                    max_db_size=mds,
+                    original_error=e,
+                )
+                if recovered is not None:
+                    return recovered
             is_lock_contention = "Could not set lock" in msg or "lock contention" in msg.lower()
             if is_lock_contention and attempt < 5:
                 sleep_s = 0.2 * (2 ** (attempt - 1))
@@ -1843,10 +2352,14 @@ def migrate_board_to_v030(board_id: str) -> dict[str, Any]:
     # Use a raw kuzu.Connection here — open_board_connection() would
     # re-enter _board_needs_v030_migration and recurse infinitely, and
     # the migration must run BEFORE the BoardConnection bootstrap path
-    # ever owns the handle.
-    import ladybug as kuzu  # type: ignore
+    # ever owns the handle. KGD-01 C6 (item 4): a conexão crua passa pelo
+    # registro do close guard (registered_raw_connection). O __enter__
+    # manual preserva a semântica antiga: falha do OPEN vira
+    # _raise_existing_graph_open_failed (fail-closed com evidência
+    # preservada), sem capturar falhas do corpo da migração.
+    raw_ctx = registered_raw_connection(board_id)
     try:
-        db = _open_kuzu_db_path_cached(path)
+        db, conn = raw_ctx.__enter__()
     except Exception as exc:
         _raise_existing_graph_open_failed(
             board_id=board_id,
@@ -1854,7 +2367,6 @@ def migrate_board_to_v030(board_id: str) -> dict[str, Any]:
             operation="schema_migration_open",
             exc=exc,
         )
-    conn = kuzu.Connection(db)
     try:
         for node_type in NODE_TYPES:
             added = _ensure_relevance_columns(conn, node_type)
@@ -1880,13 +2392,10 @@ def migrate_board_to_v030(board_id: str) -> dict[str, Any]:
                 board_id, exc,
             )
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-        # Bug d0f6bab2: db is now process-cached (_board_db_cache); do NOT
-        # close it here or concurrent BoardConnections lose the lock.
-        # Cache is dropped explicitly via close_board_db_cache().
+        # Fecha a Connection e desregistra o leitor no guard. Bug d0f6bab2:
+        # o db é process-cached (_board_db_cache); NÃO fechar aqui — o cache
+        # é dropado explicitamente via close_board_db_cache().
+        raw_ctx.__exit__(None, None, None)
         gc.collect()
 
     _MIGRATED_BOARDS.add(board_id)
@@ -1959,41 +2468,68 @@ def _board_needs_migration(board_id: str) -> bool:
     if board_id in _MIGRATED_BOARDS:
         return False
     try:
-        import ladybug as kuzu  # type: ignore
-        path = board_kuzu_path(board_id)
-        db = _open_kuzu_db_path_cached(path)
-        conn = kuzu.Connection(db)
+        # KGD-01 C6 (item 4): probe registrado no close guard.
+        with registered_raw_connection(board_id) as (_db, conn):
+            res = None
+            try:
+                res = conn.execute(
+                    "CALL show_tables() WHERE type='REL' RETURN name"
+                )
+                existing = set()
+                while res.has_next():
+                    existing.add(res.get_next()[0])
+                res.close()
+                res = None
+                expected = (
+                    {r[0] for r in REL_TYPES} | {m[0] for m in MULTI_REL_TYPES}
+                )
+                if not expected.issubset(existing):
+                    return True
+                for rel_name, pairs in MULTI_REL_TYPES:
+                    existing_pairs = _show_rel_connection_pairs(conn, rel_name)
+                    if not set(pairs).issubset(existing_pairs):
+                        return True
+            finally:
+                if res is not None:
+                    try:
+                        res.close()
+                    except Exception:
+                        pass
+        return False
+    except Exception:
+        # Probe failed — assume migration is needed; the apply itself is
+        # idempotent so a false positive only costs one extra DDL pass.
+        return True
+
+
+def _probe_first_node_type_columns(board_id: str) -> set[str]:
+    """TABLE_INFO no primeiro node type — retorna as colunas existentes.
+
+    TABLE_INFO on the first node type is representative: as migrações
+    adicionam colunas a todos os node types num único loop, então se uma
+    falta, todas faltam (boards legados foram bootstrapped em um passe).
+
+    KGD-01 C6 (item 4): a conexão crua do probe é registrada no close guard
+    via ``registered_raw_connection``. Exceções (open/query) propagam — os
+    probes chamadores mantêm seus try/except (BR6).
+    """
+    with registered_raw_connection(board_id) as (_db, conn):
         res = None
         try:
-            res = conn.execute("CALL show_tables() WHERE type='REL' RETURN name")
-            existing = set()
+            probe_node = NODE_TYPES[0]
+            res = conn.execute(f"CALL TABLE_INFO('{probe_node}') RETURN *")
+            existing_cols: set[str] = set()
             while res.has_next():
-                existing.add(res.get_next()[0])
-            res.close()
-            res = None
-            expected = {r[0] for r in REL_TYPES} | {m[0] for m in MULTI_REL_TYPES}
-            if not expected.issubset(existing):
-                return True
-            for rel_name, pairs in MULTI_REL_TYPES:
-                existing_pairs = _show_rel_connection_pairs(conn, rel_name)
-                if not set(pairs).issubset(existing_pairs):
-                    return True
+                row = res.get_next()
+                # TABLE_INFO row: [index, name, type, default, pk]
+                existing_cols.add(str(row[1]))
+            return existing_cols
         finally:
             if res is not None:
                 try:
                     res.close()
                 except Exception:
                     pass
-            try:
-                conn.close()
-            except Exception:
-                pass
-            # Bug d0f6bab2: db is now process-cached; do NOT close here.
-        return False
-    except Exception:
-        # Probe failed — assume migration is needed; the apply itself is
-        # idempotent so a false positive only costs one extra DDL pass.
-        return True
 
 
 def _board_needs_priority_boost_migration(board_id: str) -> bool:
@@ -2010,34 +2546,7 @@ def _board_needs_priority_boost_migration(board_id: str) -> bool:
     probe never loops the migration.
     """
     try:
-        import ladybug as kuzu  # type: ignore
-        path = board_kuzu_path(board_id)
-        db = _open_kuzu_db_path_cached(path)
-        conn = kuzu.Connection(db)
-        res = None
-        try:
-            # TABLE_INFO on the first node type is representative: the
-            # migration adds priority_boost to every node type in a loop,
-            # so if any one is missing, all are missing (legacy boards
-            # were bootstrapped in one pass, not incrementally).
-            probe_node = NODE_TYPES[0]
-            res = conn.execute(f"CALL TABLE_INFO('{probe_node}') RETURN *")
-            existing_cols: set[str] = set()
-            while res.has_next():
-                row = res.get_next()
-                # TABLE_INFO row: [index, name, type, default, pk]
-                existing_cols.add(str(row[1]))
-        finally:
-            if res is not None:
-                try:
-                    res.close()
-                except Exception:
-                    pass
-            try:
-                conn.close()
-            except Exception:
-                pass
-            # Bug d0f6bab2: db is now process-cached; do NOT close here.
+        existing_cols = _probe_first_node_type_columns(board_id)
         expected = {c for c, _ in PRIORITY_BOOST_COLUMNS}
         return not expected.issubset(existing_cols)
     except Exception:
@@ -2059,24 +2568,16 @@ def _board_needs_v030_migration(board_id: str) -> bool:
     if board_id in _MIGRATED_BOARDS:
         return False
     try:
-        import ladybug as kuzu  # type: ignore
         path = board_kuzu_path(board_id)
         if not path.exists():
             return False
-        db = _open_kuzu_db_path_cached(path)
-        conn = kuzu.Connection(db)
-        try:
+        # KGD-01 C6 (item 4): probe registrado no close guard.
+        with registered_raw_connection(board_id) as (_db, conn):
             for node_type in NODE_TYPES:
                 if not _node_has_relevance_columns(conn, node_type):
                     return True
                 break  # one probe is enough — all node types share _COMMON_NODE_ATTRS
             return False
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            # Bug d0f6bab2: db is now process-cached; do NOT close here.
     except Exception:
         return False
 
@@ -2094,29 +2595,7 @@ def _board_needs_human_curated_migration(board_id: str) -> bool:
     a stuck migration).
     """
     try:
-        import ladybug as kuzu  # type: ignore
-        path = board_kuzu_path(board_id)
-        db = _open_kuzu_db_path_cached(path)
-        conn = kuzu.Connection(db)
-        res = None
-        try:
-            probe_node = NODE_TYPES[0]
-            res = conn.execute(f"CALL TABLE_INFO('{probe_node}') RETURN *")
-            existing_cols: set[str] = set()
-            while res.has_next():
-                row = res.get_next()
-                existing_cols.add(str(row[1]))
-        finally:
-            if res is not None:
-                try:
-                    res.close()
-                except Exception:
-                    pass
-            try:
-                conn.close()
-            except Exception:
-                pass
-            # Bug d0f6bab2: db is now process-cached; do NOT close here.
+        existing_cols = _probe_first_node_type_columns(board_id)
         expected = {c for c, _ in HUMAN_CURATED_COLUMNS}
         return not expected.issubset(existing_cols)
     except Exception:
@@ -2131,29 +2610,7 @@ def _board_needs_last_recomputed_migration(board_id: str) -> bool:
     and human_curated probes. Returns False on probe failure (BR6).
     """
     try:
-        import ladybug as kuzu  # type: ignore
-        path = board_kuzu_path(board_id)
-        db = _open_kuzu_db_path_cached(path)
-        conn = kuzu.Connection(db)
-        res = None
-        try:
-            probe_node = NODE_TYPES[0]
-            res = conn.execute(f"CALL TABLE_INFO('{probe_node}') RETURN *")
-            existing_cols: set[str] = set()
-            while res.has_next():
-                row = res.get_next()
-                existing_cols.add(str(row[1]))
-        finally:
-            if res is not None:
-                try:
-                    res.close()
-                except Exception:
-                    pass
-            try:
-                conn.close()
-            except Exception:
-                pass
-            # Bug d0f6bab2: db is now process-cached; do NOT close here.
+        existing_cols = _probe_first_node_type_columns(board_id)
         expected = {c for c, _ in LAST_RECOMPUTED_COLUMNS}
         return not expected.issubset(existing_cols)
     except Exception:
@@ -2186,18 +2643,9 @@ def _migrate_board_schema(board_id: str) -> bool:
     isn't tangled with the migration's, then caches the board as migrated only
     after the apply succeeds."""
     try:
-        import ladybug as kuzu  # type: ignore
-        path = board_kuzu_path(board_id)
-        db = _open_kuzu_db_path_cached(path)
-        conn = kuzu.Connection(db)
-        try:
+        # KGD-01 C6 (item 4): DDL de migração registrado no close guard.
+        with registered_raw_connection(board_id) as (_db, conn):
             apply_schema_to_connection(conn)
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            # Bug d0f6bab2: db is now process-cached; do NOT close here.
         _MIGRATED_BOARDS.add(board_id)
         return True
     except Exception as exc:
@@ -2255,8 +2703,11 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
                 "duration_ms": int((time.time() - start) * 1000),
             }
 
-        db = _open_kuzu_db_path_cached(path)
-        conn = kuzu.Connection(db)
+        # KGD-01 C6 (item 4): DDL registrado no close guard (__enter__ manual
+        # para não re-indentar o corpo; o __exit__ no finally fecha a
+        # Connection e desregistra o leitor).
+        raw_ctx = registered_raw_connection(board_id)
+        _db, conn = raw_ctx.__enter__()
         try:
             load_vector_extension(conn)
             conn.execute(_board_meta_ddl())
@@ -2307,11 +2758,8 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
             except Exception as vector_exc:
                 errors.append(f"vector_indexes_failed: {vector_exc}")
         finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            # Bug d0f6bab2: db is now process-cached; do NOT close here.
+            # Bug d0f6bab2: db is process-cached; NÃO fechar o Database aqui.
+            raw_ctx.__exit__(None, None, None)
         # BR3: only cache as migrated if migration actually completed.
         # We treat "no errors" as success even if columns_added is empty
         # (idempotent no-op on already-migrated boards).
@@ -2437,8 +2885,10 @@ def bootstrap_board_graph(board_id: str) -> BoardGraphHandle:
         )
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    db = _open_kuzu_db_path_cached(path)
-    conn = kuzu.Connection(db)
+    # KGD-01 C6 (item 4): DDL de bootstrap registrado no close guard
+    # (__enter__ manual para não re-indentar o corpo).
+    raw_ctx = registered_raw_connection(board_id)
+    _db, conn = raw_ctx.__enter__()
     try:
         apply_schema_to_connection(conn)
 
@@ -2465,13 +2915,11 @@ def bootstrap_board_graph(board_id: str) -> BoardGraphHandle:
             },
         )
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
         # Bug d0f6bab2: db is now process-cached (_board_db_cache); do NOT
         # close it here or concurrent BoardConnections lose the lock.
-        # Cache is dropped explicitly via close_board_db_cache().
+        # Cache is dropped explicitly via close_board_db_cache(). O __exit__
+        # fecha só a Connection e desregistra o leitor no guard.
+        raw_ctx.__exit__(None, None, None)
 
     return BoardGraphHandle(board_id=board_id, path=path, schema_version=SCHEMA_VERSION)
 
@@ -2512,21 +2960,13 @@ def _graph_needs_bootstrap(board_id: str) -> bool:
     if not path.exists():
         return True
     try:
-        import ladybug as kuzu  # type: ignore
-        db = _open_kuzu_db_path_cached(path)
-        conn = kuzu.Connection(db)
-        try:
+        # KGD-01 C6 (item 4): probe de bootstrap registrado no close guard.
+        with registered_raw_connection(board_id) as (_db, conn):
             res = conn.execute(
                 "CALL SHOW_TABLES() WHERE name = 'BoardMeta' RETURN name"
             )
             has_meta = res.has_next()
             res.close()
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            # Bug d0f6bab2: db is now process-cached; do NOT close here.
         if has_meta:
             return False
         return True
@@ -2688,9 +3128,9 @@ def close_all_connections(board_id: str | None = None) -> None:
 
     # global is released only when closing everything — per-board callers
     # (e.g. single-board DELETE) must not nuke the shared discovery handle.
-    from okto_pulse.core.kg.interfaces import get_kg_registry
+    from okto_pulse.core.services.application_kg import get_current_provider_registry
 
-    get_kg_registry().require_global_discovery_runtime().close()
+    get_current_provider_registry().require_global_discovery_runtime().close()
 
 
 def _now_iso() -> str:

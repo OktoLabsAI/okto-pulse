@@ -14,9 +14,10 @@ import contextlib
 import logging
 import math
 import os
+import signal
 import time
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 
 import uvicorn
 from fastapi.staticfiles import StaticFiles
@@ -56,6 +57,10 @@ _METRICS_LOGGER = logging.getLogger("okto_pulse.community.metrics")
 _LOCK_LOGGER = logging.getLogger("okto_pulse.community.serve_lock")
 _DEFAULT_STARTUP_TIMEOUT_SECONDS = 120.0
 _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15.0
+# KGD-01 (TR7): budget próprio do checkpoint+close dos grafos no teardown —
+# MENOR que o force-exit de 15s do _shutdown_server_pair, para que a etapa
+# complete (ou desista logando) antes de qualquer cancel forçado.
+_GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S = 10.0
 _DEFAULT_METRICS_BEACON_INTERVAL_SECONDS = 3600.0
 _DEFAULT_METRICS_BEACON_STARTUP_DELAY_SECONDS = 60.0
 
@@ -423,6 +428,72 @@ window.OKTO_PULSE_CONFIG = {{
     app.add_middleware(SPAFallbackMiddleware, index_body=injected_index_html.encode("utf-8"))
 
 
+async def _close_graphs_on_teardown() -> None:
+    """KGD-01 (FR2/BR3/TR7): checkpoint+close de todos os board graphs abertos.
+
+    Roda em ``asyncio.to_thread`` (o close guard drena leitores — bloquear o
+    event loop impediria os próprios leitores de saírem) e é protegido contra
+    cancelamento: o force-exit de 15s do ``_shutdown_server_pair`` cancela a
+    task do servidor — e com ela o teardown do lifespan — mas esta etapa NÃO
+    pode ser abandonada com um CHECKPOINT em curso (escritor stale zera o
+    WAL). O ``asyncio.shield`` mantém a task interna viva através de cancels
+    repetidos, dentro de um budget próprio menor que o force-exit
+    (``_GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S``). Mesmo no pior caso (budget
+    estourado), a worker thread NÃO é abandonada antes do exit do processo:
+    ``asyncio.Runner``/``asyncio.run`` aguardam o default executor no close
+    do loop (``loop.shutdown_default_executor``). Nunca propaga exceção — o
+    teardown segue para o close do SQLite.
+    """
+    from okto_pulse.community.adapters.kg_shutdown import (
+        close_all_graphs_on_shutdown,
+    )
+
+    loop = asyncio.get_running_loop()
+    close_task = asyncio.ensure_future(
+        asyncio.to_thread(close_all_graphs_on_shutdown)
+    )
+    deadline = loop.time() + _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S
+    while not close_task.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            _STARTUP_LOGGER.warning(
+                "kg.shutdown.graphs_close_timeout timeout_s=%.0f — o close "
+                "continua na worker thread (aguardada no shutdown do executor)",
+                _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S,
+                extra={
+                    "event": "kg.shutdown.graphs_close_timeout",
+                    "timeout_s": _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S,
+                },
+            )
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(close_task), timeout=remaining)
+        except asyncio.CancelledError:
+            # Cancel do force-exit/runner durante o teardown: NÃO abandonar o
+            # checkpoint+close — continua aguardando dentro do budget próprio.
+            continue
+        except asyncio.TimeoutError:
+            continue  # o while reavalia o deadline e loga o timeout acima
+        except Exception as exc:  # noqa: BLE001 — teardown nunca aborta aqui
+            _STARTUP_LOGGER.warning(
+                "kg.shutdown.graphs_close_failed err=%s",
+                exc,
+                extra={"event": "kg.shutdown.graphs_close_failed"},
+            )
+            return
+    if not close_task.cancelled() and close_task.exception() is None:
+        summary = close_task.result()
+        # Linha legível no console (uvicorn.error) — o evento estruturado
+        # kg.shutdown.graphs_closed é emitido pelo próprio kg_shutdown.
+        _STARTUP_LOGGER.info(
+            "KG graphs closed on shutdown "
+            "(boards_closed=%s boards_failed=%s duration_ms=%s)",
+            summary.get("boards_closed"),
+            summary.get("boards_failed"),
+            summary.get("duration_ms"),
+        )
+
+
 def create_community_app():
     """Create the community FastAPI application with embedded frontend."""
     settings = CommunitySettings()
@@ -450,11 +521,11 @@ def create_community_app():
     # register the MCP session factory so the mounted sub-app finds the DB.
     async def combined_lifespan(app_instance) -> AsyncGenerator[None, None]:
         await init_db()
-        from okto_pulse.core.api.kg_events_hub import (
-            configure_kg_events_hub_session_factory,
+        from okto_pulse.community.adapters.kg_events import (
+            register_community_kg_events_reader,
         )
 
-        configure_kg_events_hub_session_factory(get_session_factory())
+        register_community_kg_events_reader(get_session_factory())
         async with get_session_factory()() as db:
             result = await seed_community_defaults(db)
             if result:
@@ -617,9 +688,14 @@ def create_community_app():
                     failure.family,
                     failure.message,
                 )
-        from okto_pulse.core.api.kg_events_hub import shutdown_kg_events_hub
+        from okto_pulse.core.application.kg_events_hub import shutdown_kg_events_hub
 
         await shutdown_kg_events_hub()
+        # KGD-01 (FR2/BR3/TR7): paridade com o _default_lifespan do core
+        # (shutdown_kg_then_db) — checkpoint+close de todos os board graphs
+        # DEPOIS da parada dos workers e ANTES do close do SQLite; sem isto o
+        # graph.lbug.wal fica como único portador dos commits recentes.
+        await _close_graphs_on_teardown()
         await close_db()
 
     from okto_pulse.community.adapters.sqlalchemy_database import (
@@ -628,9 +704,19 @@ def create_community_app():
     from okto_pulse.community.adapters.coordination import (
         register_community_coordination_providers,
     )
+    from okto_pulse.community.adapters.mcp_host import register_community_mcp_host
 
     register_community_coordination_providers()
+    register_community_mcp_host()
     configure_community_database(settings.database_url, echo=settings.debug)
+    from okto_pulse.community.adapters.relational_application import (
+        CommunityRelationalApplicationAdapter,
+    )
+    from okto_pulse.core.ports.relational_application import (
+        register_relational_application_adapter,
+    )
+
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
     from okto_pulse.community.adapters.relational_effects import (
         register_community_relational_effects,
     )
@@ -835,6 +921,67 @@ async def _shutdown_server_pair(
         set_shutdown_log_suppression(False)
 
 
+def _install_shutdown_signal_handlers(
+    request_shutdown: Callable[[int], None],
+) -> list[Callable[[], None]]:
+    """KGD-01 (FR2): shutdown ORDENADO também para SIGTERM/SIGBREAK.
+
+    A captura de sinais do uvicorn está desabilitada nos dois servidores
+    (dois ``Server`` no mesmo loop — o último sobrescreveria o handler); o
+    SIGINT chega pelo KeyboardInterrupt do ``asyncio.Runner``. Sem este
+    instalador, SIGTERM (POSIX) e CTRL_BREAK_EVENT (Windows) terminavam o
+    processo SEM teardown — nenhum checkpoint/close dos grafos.
+
+    POSIX: ``loop.add_signal_handler(SIGTERM, …)`` dispara o MESMO caminho
+    ordenado do Ctrl+C. Windows: ``add_signal_handler`` não é suportado —
+    usa ``signal.signal(SIGBREAK, …)`` + ``call_soon_threadsafe`` (que
+    acorda o selector bloqueado). Limitações Windows (por design do SO):
+    ``os.kill(pid, SIGTERM)`` vira TerminateProcess e NUNCA é interceptável;
+    o console-close (CTRL_CLOSE) dá ~5s de budget antes do TerminateProcess
+    do console host — o teardown de grafos precisa ser best-effort nesse
+    canal. Retorna callbacks de cleanup que restauram a disposição anterior.
+    """
+    loop = asyncio.get_running_loop()
+    cleanups: list[Callable[[], None]] = []
+    candidates: list[signal.Signals] = []
+    if hasattr(signal, "SIGTERM"):
+        candidates.append(signal.SIGTERM)
+    if hasattr(signal, "SIGBREAK"):  # Windows: entregue pelo CTRL_BREAK_EVENT
+        candidates.append(signal.SIGBREAK)
+
+    for sig in candidates:
+        try:
+            loop.add_signal_handler(sig, request_shutdown, int(sig))
+        except (NotImplementedError, RuntimeError, ValueError, OSError):
+            pass  # Windows / loop sem suporte — tenta o handler síncrono
+        else:
+            cleanups.append(
+                lambda s=sig, lp=loop: lp.remove_signal_handler(s)
+            )
+            continue
+        try:
+
+            def _sync_handler(
+                signum: int,
+                _frame: object,
+                _loop: asyncio.AbstractEventLoop = loop,
+                _cb: Callable[[int], None] = request_shutdown,
+            ) -> None:
+                # Roda na main thread entre bytecodes; call_soon_threadsafe
+                # acorda o loop mesmo bloqueado no selector.
+                _loop.call_soon_threadsafe(_cb, signum)
+
+            previous = signal.signal(sig, _sync_handler)
+        except (ValueError, OSError, RuntimeError) as exc:
+            # ex.: fora da main thread — resta o SIGINT do Runner.
+            _STARTUP_LOGGER.debug(
+                "shutdown signal handler not installed for %s: %s", sig, exc
+            )
+        else:
+            cleanups.append(lambda s=sig, p=previous: signal.signal(s, p))
+    return cleanups
+
+
 async def _serve_dual(api_port: int, mcp_port: int) -> None:
     """Run API+UI on `api_port` and MCP on `mcp_port` inside a single
     Python process via two uvicorn `Server` instances driven by
@@ -847,8 +994,9 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     lifespan, and the request-scoped MCP credential provider — so the MCP sub-app
     sees a fully-initialised runtime.
     """
+    from okto_pulse.community.adapters.mcp_host import build_community_mcp_asgi_app
     from okto_pulse.community.adapters.mcp_trace import build_mcp_trace_sink_from_env
-    from okto_pulse.core.mcp import build_mcp_asgi_app
+    from okto_pulse.core.mcp import mcp
 
     settings = CommunitySettings()
     uvicorn_log_config = build_uvicorn_log_config()
@@ -873,7 +1021,10 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     api_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
 
     mcp_config = uvicorn.Config(
-        build_mcp_asgi_app(trace_sink=build_mcp_trace_sink_from_env()),
+        build_community_mcp_asgi_app(
+            catalog=mcp,
+            trace_sink=build_mcp_trace_sink_from_env(),
+        ),
         # Read host from environment (set by Docker / compose) or fall back to
         # loopback so a stray process doesn't accidentally expose the MCP
         # server. Override via MCP_HOST=0.0.0.0 in docker-compose.yml when
@@ -894,6 +1045,19 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     heartbeat_task = asyncio.create_task(
         _lock_heartbeat_loop(), name="serve_lock_heartbeat"
     )
+
+    def _request_ordered_shutdown(signum: int) -> None:
+        # KGD-01 (FR2): mesmo caminho ordenado do Ctrl+C — pede o drain dos
+        # dois listeners; o wait(FIRST_COMPLETED) abaixo acorda e o teardown
+        # do lifespan (checkpoint+close dos grafos) roda antes do exit.
+        _STARTUP_LOGGER.info(
+            "shutdown signal received (signum=%s) — starting ordered shutdown",
+            signum,
+        )
+        api_server.should_exit = True
+        mcp_server.should_exit = True
+
+    signal_cleanups = _install_shutdown_signal_handlers(_request_ordered_shutdown)
 
     try:
         await _wait_for_server_started("API/UI", api_server, api_task)
@@ -935,6 +1099,9 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         )
         raise
     finally:
+        for _cleanup in signal_cleanups:
+            with contextlib.suppress(Exception):
+                _cleanup()
         heartbeat_task.cancel()
         try:
             await heartbeat_task
