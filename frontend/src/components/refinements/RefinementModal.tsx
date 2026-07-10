@@ -42,6 +42,7 @@ import type { EffectiveResourceItem, Refinement, RefinementStatus, RefinementQAI
 import { REFINEMENT_STATUSES, REFINEMENT_STATUS_LABELS } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { ContextSelector, buildRefinementItems, type SelectableItem } from '@/components/shared/ContextSelector';
 import {
@@ -60,7 +61,7 @@ interface RefinementModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'specs' | 'versions' | 'history';
+type ModalTab = 'details' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'specs' | 'versions' | 'history' | 'cancellation';
 
 const STATUS_ICON: Record<RefinementStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -385,7 +386,9 @@ function KnowledgeTab({ refinementId, boardId }: { refinementId: string; boardId
           </div>
           {viewingId === item.id && viewContent && (
             <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700">
-              <pre className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">{viewContent}</pre>
+              <div className="bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto max-h-64 overflow-y-auto">
+                <MarkdownContent content={viewContent} className="text-xs" />
+              </div>
             </div>
           )}
         </div>
@@ -892,6 +895,14 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
   const [nextStatuses, setNextStatuses] = useState<RefinementStatus[]>([]);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [expanded, setExpanded] = useState(false);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
+  // The Cancellation tab only exists while the refinement is cancelled.
+  useEffect(() => {
+    if (activeTab === 'cancellation' && refinement && refinement.status !== 'cancelled') {
+      setActiveTab('details');
+    }
+  }, [activeTab, refinement?.status]);
 
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
@@ -940,16 +951,29 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
     } catch { toast.error('Failed to load refinement'); } finally { setLoading(false); }
   };
 
-  const handleMove = async (status: RefinementStatus) => {
+  const performMove = async (status: RefinementStatus, cancellationReason?: string) => {
     if (!refinement) return;
     setMovingTo(status);
     try {
-      const updated = await api.moveRefinement(refinementId, { status });
+      const updated = await api.moveRefinement(refinementId, {
+        status,
+        ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
+      });
       setRefinement(updated);
       await loadAllowedTransitions(updated);
       onChanged();
       toast.success(`Refinement moved to ${REFINEMENT_STATUS_LABELS[status]}`);
     } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
+  };
+
+  const handleMove = async (status: RefinementStatus) => {
+    if (!refinement) return;
+    // ITEM 17: cancelling requires a justification — intercept with the dialog.
+    if (status === 'cancelled') {
+      setCancelDialogOpen(true);
+      return;
+    }
+    await performMove(status);
   };
 
   const [showSpecSelector, setShowSpecSelector] = useState(false);
@@ -999,6 +1023,9 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
   const unansweredQA = refinement.qa_items?.filter((q) => !q.answer).length || 0;
   const tabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean }[] = [
     { id: 'details', label: 'Details', icon: <Layers size={14} /> },
+    ...(refinement.status === 'cancelled'
+      ? [{ id: 'cancellation' as ModalTab, label: 'Cancellation', icon: <Ban size={14} /> }]
+      : []),
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: refinement.screen_mockups?.length || 0 },
     { id: 'architecture', label: 'Architecture', icon: <GitBranch size={14} />, count: refinement.architecture_designs?.length || 0 },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: refinement.qa_items?.length || 0, highlight: unansweredQA > 0 },
@@ -1243,6 +1270,14 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
           {activeTab === 'history' && <HistoryTab refinementId={refinementId} />}
           {activeTab === 'qa' && <QATab refinementId={refinementId} mentionables={mentionables} />}
 
+          {activeTab === 'cancellation' && refinement.status === 'cancelled' && (
+            <CancellationDetails
+              reason={refinement.cancellation_reason}
+              cancelledBy={refinement.cancelled_by}
+              cancelledAt={refinement.cancelled_at}
+            />
+          )}
+
           {activeTab === 'specs' && (
             <div className="space-y-2">
               {(!refinement.specs || refinement.specs.length === 0) ? (
@@ -1313,6 +1348,18 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
           onCancel={() => setShowSpecSelector(false)}
         />
       )}
+
+      {/* Cancellation justification (ITEM 17) */}
+      <CancellationReasonDialog
+        open={cancelDialogOpen}
+        entityLabel="refinement"
+        submitting={movingTo === 'cancelled'}
+        onConfirm={async (reason) => {
+          setCancelDialogOpen(false);
+          await performMove('cancelled', reason);
+        }}
+        onCancel={() => setCancelDialogOpen(false)}
+      />
     </div>
   );
 }

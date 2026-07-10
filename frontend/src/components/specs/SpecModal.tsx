@@ -83,6 +83,7 @@ import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModa
 import { SPEC_STATUSES, SPEC_STATUS_LABELS } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { RefinementModal } from '@/components/refinements/RefinementModal';
 import { EditableField } from '@/components/shared/EditableField';
@@ -97,7 +98,7 @@ interface SpecModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'irs' | 'ors' | 'trs' | 'decisions' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg';
+type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'irs' | 'ors' | 'trs' | 'decisions' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg' | 'cancellation';
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -1485,9 +1486,9 @@ function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) 
           )}
           {viewingId === item.id && viewContent && (
             <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700">
-              <pre className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">
-                {viewContent}
-              </pre>
+              <div className="bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto max-h-64 overflow-y-auto">
+                <MarkdownContent content={viewContent} className="text-xs" />
+              </div>
             </div>
           )}
         </div>
@@ -1556,6 +1557,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   const [validating, setValidating] = useState(false);
   const [sprintSuggestions, setSprintSuggestions] = useState<any[] | null>(null);
   const [linkedSprints, setLinkedSprints] = useState<any[]>([]);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
+  // The Cancellation tab only exists while the spec is cancelled.
+  useEffect(() => {
+    if (activeTab === 'cancellation' && spec && spec.status !== 'cancelled') {
+      setActiveTab('details');
+    }
+  }, [activeTab, spec?.status]);
 
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
@@ -1857,8 +1866,13 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   const requireSpecValidation = Boolean(boardSettings.require_spec_validation);
   const [showSubmitValidationModal, setShowSubmitValidationModal] = useState(false);
 
-  const handleMoveSpec = async (status: SpecStatus) => {
+  const handleMoveSpec = async (status: SpecStatus, cancellationReason?: string) => {
     if (!spec) return;
+    // ITEM 17: cancelling requires a justification — intercept with the dialog.
+    if (status === 'cancelled' && !cancellationReason) {
+      setCancelDialogOpen(true);
+      return;
+    }
     // Spec Validation Gate: when the board opts in, intercept approved→validated
     // to show the new SubmitSpecValidationModal. The modal calls the backend gate
     // which runs coverage checks and then computes outcome — on success the spec
@@ -1898,7 +1912,10 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
     }
     setMovingTo(status);
     try {
-      const updated = await api.moveSpec(specId, { status });
+      const updated = await api.moveSpec(specId, {
+        status,
+        ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
+      });
       setSpec(updated);
       await loadAllowedTransitions(updated);
       onChanged();
@@ -1940,6 +1957,9 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   const unansweredQA = spec.qa_items?.filter((q) => !q.answer).length || 0;
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
+    ...(spec.status === 'cancelled'
+      ? [{ id: 'cancellation' as ModalTab, label: 'Cancellation', icon: <Ban size={14} /> }]
+      : []),
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
@@ -2610,6 +2630,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           {activeTab === 'qa' && <QATab specId={specId} mentionables={mentionables} />}
           {activeTab === 'knowledge' && <KnowledgeTab specId={specId} boardId={spec.board_id} />}
 
+          {activeTab === 'cancellation' && spec.status === 'cancelled' && (
+            <CancellationDetails
+              reason={spec.cancellation_reason}
+              cancelledBy={spec.cancelled_by}
+              cancelledAt={spec.cancelled_at}
+            />
+          )}
+
           {activeTab === 'sprints' && (
             <SpecSprintsTab sprints={linkedSprints} api={api} />
           )}
@@ -2777,6 +2805,18 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
           }}
         />
       )}
+
+      {/* Cancellation justification (ITEM 17) */}
+      <CancellationReasonDialog
+        open={cancelDialogOpen}
+        entityLabel="spec"
+        submitting={movingTo === 'cancelled'}
+        onConfirm={async (reason) => {
+          setCancelDialogOpen(false);
+          await handleMoveSpec('cancelled' as SpecStatus, reason);
+        }}
+        onCancel={() => setCancelDialogOpen(false)}
+      />
     </div>
   );
 }

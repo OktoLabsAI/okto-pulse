@@ -953,7 +953,7 @@ export function useDashboardApi() {
       });
     },
 
-    async moveIdeation(ideationId: string, data: { status: IdeationStatus }): Promise<Ideation> {
+    async moveIdeation(ideationId: string, data: { status: IdeationStatus; cancellation_reason?: string }): Promise<Ideation> {
       return apiClient.fetchJson<Ideation>(`/ideations/${ideationId}/move`, {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1078,7 +1078,7 @@ export function useDashboardApi() {
       });
     },
 
-    async moveRefinement(refinementId: string, data: { status: RefinementStatus }): Promise<Refinement> {
+    async moveRefinement(refinementId: string, data: { status: RefinementStatus; cancellation_reason?: string }): Promise<Refinement> {
       return apiClient.fetchJson<Refinement>(`/refinements/${refinementId}/move`, {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1635,7 +1635,7 @@ export function useDashboardApi() {
       });
     },
 
-    async moveSprint(sprintId: string, data: { status: string }): Promise<any> {
+    async moveSprint(sprintId: string, data: { status: string; cancellation_reason?: string }): Promise<any> {
       return apiClient.fetchJson(`/sprints/${sprintId}/move`, {
         method: 'POST', body: JSON.stringify(data),
       });

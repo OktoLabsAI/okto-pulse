@@ -5,7 +5,7 @@
 import { useEffect, useState } from 'react';
 import {
   X, ChevronRight, ChevronUp, ChevronDown, ArrowRight, FileText, Link2, History, MessageCircleQuestion,
-  FlaskConical, Scale, RefreshCw, Maximize2, Minimize2, Download, GitBranch,
+  FlaskConical, Scale, RefreshCw, Maximize2, Minimize2, Download, GitBranch, Ban,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -14,10 +14,11 @@ import type { Sprint, SprintStatus } from '@/types';
 import { SPRINT_STATUS_LABELS, SPRINT_STATUS_COLORS } from '@/types';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 import { EditableField } from '@/components/shared/EditableField';
+import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { openLineageGraph } from '@/components/traceability';
 import { deriveSprintDisplayCounts, normalizeSprintCardType } from './sprintDisplayCounts';
 
-type SprintTab = 'details' | 'scope' | 'cards' | 'evaluations' | 'qa' | 'history';
+type SprintTab = 'details' | 'scope' | 'cards' | 'evaluations' | 'qa' | 'history' | 'cancellation';
 
 const SPRINT_ACTION_LABELS: Record<string, string> = {
   created: 'Created',
@@ -165,6 +166,14 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
   const [showAssign, setShowAssign] = useState(false);
   const [specCards, setSpecCards] = useState<any[]>([]);
   const [parentSpec, setParentSpec] = useState<any>(null);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
+  // The Cancellation tab only exists while the sprint is cancelled.
+  useEffect(() => {
+    if (activeTab === 'cancellation' && sprint && sprint.status !== 'cancelled') {
+      setActiveTab('details');
+    }
+  }, [activeTab, sprint?.status]);
 
   const loadSprint = async () => {
     try {
@@ -184,11 +193,14 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
 
   useEffect(() => { loadSprint(); }, [sprintId]);
 
-  const handleMove = async (status: SprintStatus) => {
+  const performMove = async (status: SprintStatus, cancellationReason?: string) => {
     if (!sprint) return;
     setMovingTo(status);
     try {
-      await api.moveSprint(sprintId, { status });
+      await api.moveSprint(sprintId, {
+        status,
+        ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
+      });
       toast.success(`Sprint moved to ${SPRINT_STATUS_LABELS[status]}`);
       loadSprint();
     } catch (e: any) {
@@ -196,6 +208,16 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
     } finally {
       setMovingTo(null);
     }
+  };
+
+  const handleMove = async (status: SprintStatus) => {
+    if (!sprint) return;
+    // ITEM 17: cancelling requires a justification — intercept with the dialog.
+    if (status === 'cancelled') {
+      setCancelDialogOpen(true);
+      return;
+    }
+    await performMove(status);
   };
 
   const handleSprintTextSave = async (field: 'objective' | 'expected_outcome', value: string) => {
@@ -233,6 +255,9 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
 
   const tabs: { id: SprintTab; label: string; icon: React.ReactNode; count?: number }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
+    ...(sprint.status === 'cancelled'
+      ? [{ id: 'cancellation' as SprintTab, label: 'Cancellation', icon: <Ban size={14} /> }]
+      : []),
     { id: 'scope', label: 'Scope', icon: <FlaskConical size={14} />, count: (sprint.test_scenario_ids?.length || 0) + (sprint.business_rule_ids?.length || 0) },
     { id: 'cards', label: 'Cards', icon: <Link2 size={14} />, count: displayCounts.cards },
     { id: 'evaluations', label: 'Evaluations', icon: <Scale size={14} />, count: sprint.evaluations?.length || 0 },
@@ -806,6 +831,14 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
           {activeTab === 'history' && (
             <SprintHistoryTab sprintId={sprintId} api={api} />
           )}
+
+          {activeTab === 'cancellation' && sprint.status === 'cancelled' && (
+            <CancellationDetails
+              reason={sprint.cancellation_reason}
+              cancelledBy={sprint.cancelled_by}
+              cancelledAt={sprint.cancelled_at}
+            />
+          )}
         </div>
 
         {/* Footer */}
@@ -828,6 +861,18 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
           </div>
         )}
       </div>
+
+      {/* Cancellation justification (ITEM 17) */}
+      <CancellationReasonDialog
+        open={cancelDialogOpen}
+        entityLabel="sprint"
+        submitting={movingTo === 'cancelled'}
+        onConfirm={async (reason) => {
+          setCancelDialogOpen(false);
+          await performMove('cancelled', reason);
+        }}
+        onCancel={() => setCancelDialogOpen(false)}
+      />
     </div>
   );
 }

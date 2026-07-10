@@ -142,6 +142,9 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
      "Add default-config snapshot column on Board.settings."),
     ("_migrate_add_board_guideline_provenance", "post_create_all", False,
      "Add board-guideline provenance columns."),
+    ("_migrate_add_cancellation_columns", "post_create_all", False,
+     "Add cancellation-justification columns (reason/at/by) to ideations, "
+     "refinements, specs, sprints, and cards (ITEM 17)."),
     ("_migrate_agent_permissions", "post_create_all", False,
      "Schema migration classified as post_create_all so legacy agent permissions "
      "are migrated before permission-flag data reconciliation."),

@@ -18,6 +18,8 @@ import {
 } from 'lucide-react';
 
 import { useDashboardApi } from '@/services/api';
+import { useImportExportApi } from '@/services/import-export-api';
+import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
 import type {
   BoardDesignSystemEffectiveResponse,
   DefaultBoardConfigActiveResponse,
@@ -64,6 +66,9 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
   const api = useDashboardApi();
   const apiRef = useRef(api);
   apiRef.current = api;
+  const importExportApi = useImportExportApi();
+  const importExportRef = useRef(importExportApi);
+  importExportRef.current = importExportApi;
 
   const [activeTab, setActiveTab] = useState<Tab>('global');
   const [globals, setGlobals] = useState<DesignSystem[]>([]);
@@ -348,6 +353,12 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <ImportExportButtons
+              kind="design_systems"
+              onExport={() => importExportRef.current.exportDesignSystems()}
+              onImport={(envelope) => importExportRef.current.importDesignSystems(envelope)}
+              onImported={() => load()}
+            />
             <button
               type="button"
               onClick={() => setShowHelp((value) => !value)}

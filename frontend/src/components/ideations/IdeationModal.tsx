@@ -60,6 +60,7 @@ import {
 } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { ContextSelector, buildIdeationItems, compileSelectedContext, type SelectableItem } from '@/components/shared/ContextSelector';
 import {
   DerivationPendingBadge,
@@ -77,7 +78,7 @@ interface IdeationModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'stories' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'refinements' | 'versions' | 'history';
+type ModalTab = 'details' | 'stories' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'refinements' | 'versions' | 'history' | 'cancellation';
 
 const STATUS_ICON: Record<IdeationStatus, React.ReactNode> = {
   draft: <Lightbulb size={14} />,
@@ -447,7 +448,9 @@ function KnowledgeTab({ ideationId, boardId }: { ideationId: string; boardId: st
           </div>
           {viewingId === item.id && viewContent && (
             <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700">
-              <pre className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">{viewContent}</pre>
+              <div className="bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto max-h-64 overflow-y-auto">
+                <MarkdownContent content={viewContent} className="text-xs" />
+              </div>
             </div>
           )}
         </div>
@@ -1008,6 +1011,14 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [expanded, setExpanded] = useState(false);
   const [derivingSpec, setDerivingSpec] = useState(false);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
+  // The Cancellation tab only exists while the ideation is cancelled.
+  useEffect(() => {
+    if (activeTab === 'cancellation' && ideation && ideation.status !== 'cancelled') {
+      setActiveTab('details');
+    }
+  }, [activeTab, ideation?.status]);
 
   // Evaluate form
   const [showEvalForm, setShowEvalForm] = useState(false);
@@ -1059,16 +1070,29 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
     } catch { toast.error('Failed to load ideation'); } finally { setLoading(false); }
   };
 
-  const handleMove = async (status: IdeationStatus) => {
+  const performMove = async (status: IdeationStatus, cancellationReason?: string) => {
     if (!ideation) return;
     setMovingTo(status);
     try {
-      const updated = await api.moveIdeation(ideationId, { status });
+      const updated = await api.moveIdeation(ideationId, {
+        status,
+        ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
+      });
       setIdeation(updated);
       await loadAllowedTransitions(updated);
       onChanged();
       toast.success(`Ideation moved to ${IDEATION_STATUS_LABELS[status]}`);
     } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
+  };
+
+  const handleMove = async (status: IdeationStatus) => {
+    if (!ideation) return;
+    // ITEM 17: cancelling requires a justification — intercept with the dialog.
+    if (status === 'cancelled') {
+      setCancelDialogOpen(true);
+      return;
+    }
+    await performMove(status);
   };
 
   // Persist the per-ideation Max ambiguity gate skip via the dedicated endpoint
@@ -1169,6 +1193,9 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
   const unansweredQA = ideation.qa_items?.filter((q) => !q.answer).length || 0;
   const tabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
+    ...(ideation.status === 'cancelled'
+      ? [{ id: 'cancellation' as ModalTab, label: 'Cancellation', icon: <Ban size={14} /> }]
+      : []),
     { id: 'stories', label: 'Stories', icon: <BookOpen size={14} />, count: ideation.stories?.length || 0 },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: ideation.screen_mockups?.length || 0 },
     { id: 'architecture', label: 'Architecture', icon: <GitBranch size={14} />, count: ideation.architecture_designs?.length || 0 },
@@ -1476,6 +1503,14 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
           {activeTab === 'versions' && <VersionsTab ideationId={ideationId} />}
           {activeTab === 'history' && <HistoryTab ideationId={ideationId} />}
 
+          {activeTab === 'cancellation' && ideation.status === 'cancelled' && (
+            <CancellationDetails
+              reason={ideation.cancellation_reason}
+              cancelledBy={ideation.cancelled_by}
+              cancelledAt={ideation.cancelled_at}
+            />
+          )}
+
           {activeTab === 'stories' && (
             <div className="space-y-3">
               {(!ideation.stories || ideation.stories.length === 0) && (
@@ -1669,6 +1704,18 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
           onCancel={() => setSelectorTarget(null)}
         />
       )}
+
+      {/* Cancellation justification (ITEM 17) */}
+      <CancellationReasonDialog
+        open={cancelDialogOpen}
+        entityLabel="ideation"
+        submitting={movingTo === 'cancelled'}
+        onConfirm={async (reason) => {
+          setCancelDialogOpen(false);
+          await performMove('cancelled', reason);
+        }}
+        onCancel={() => setCancelDialogOpen(false)}
+      />
     </div>
   );
 }

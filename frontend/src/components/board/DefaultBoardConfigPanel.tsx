@@ -11,7 +11,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, GitCompare, ListChecks, Palette, Plus, RotateCcw } from 'lucide-react';
 
 import { BoardSettingsForm, normalizeDesignSystemGateMode } from '@/components/board/BoardSettingsForm';
+import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
 import { useDashboardApi } from '@/services/api';
+import { useImportExportApi } from '@/services/import-export-api';
 import type {
   BoardSettings,
   CreateDefaultBoardConfigVersionRequest,
@@ -173,6 +175,9 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
   apiRef.current = api;
+  const importExportApi = useImportExportApi();
+  const importExportRef = useRef(importExportApi);
+  importExportRef.current = importExportApi;
   // Latest-draft ref so Save always reads the most recent edit, even if it is clicked
   // in the same tick as the last change (before the handler closure is re-attached).
   const draftRef = useRef<BoardSettings | null>(null);
@@ -353,6 +358,12 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <ImportExportButtons
+            kind="board_config"
+            onExport={() => importExportRef.current.exportBoardConfig()}
+            onImport={(envelope) => importExportRef.current.importBoardConfig(envelope)}
+            onImported={() => load()}
+          />
           {isDirty && (
             <span data-testid="dbc-template-dirty" className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
               Unsaved changes

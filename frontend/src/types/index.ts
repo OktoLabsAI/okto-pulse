@@ -356,6 +356,10 @@ export interface Sprint {
   version: number;
   labels: string[] | null;
   archived: boolean;
+  // Cancellation justification (set only while status === 'cancelled')
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -1226,6 +1230,10 @@ export interface Spec {
   validation_threshold?: number;
   archived?: boolean;
   pre_archive_status?: string | null;
+  // Cancellation justification (set only while status === 'cancelled')
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
   status: SpecStatus;
   version: number;
   assignee_id: string | null;
@@ -1281,6 +1289,10 @@ export interface Ideation {
   pre_archive_status?: string | null;
   // Per-ideation opt-out of the board Max ambiguity gate (spec 2485780b).
   skip_ambiguity_gate?: boolean;
+  // Cancellation justification (set only while status === 'cancelled')
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
   refinements: RefinementSummary[];
   stories: StorySummary[];
   specs: SpecSummary[];
@@ -1336,6 +1348,10 @@ export interface Refinement {
   labels: string[] | null;
   archived?: boolean;
   pre_archive_status?: string | null;
+  // Cancellation justification (set only while status === 'cancelled')
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
   specs: SpecSummary[];
   qa_items: RefinementQAItem[];
   knowledge_bases: RefinementKnowledgeSummary[];
@@ -1378,6 +1394,10 @@ export interface Card {
   linked_test_task_ids?: string[] | null;
   skip_task_requirement_link_gate?: boolean;
   validations?: ValidationEntry[] | null;
+  // Cancellation justification (set only while status === 'cancelled')
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
 }
 
 // Validation entry (from backend validation lifecycle)
@@ -1681,6 +1701,8 @@ export interface MoveCardRequest {
   completeness_justification?: string;
   drift?: number;
   drift_justification?: string;
+  /** Required when status === 'cancelled'; ignored otherwise. */
+  cancellation_reason?: string;
 }
 
 export type BugWorkflowRemediationPath =
@@ -2069,6 +2091,8 @@ export interface UpdateSpecRequest {
 
 export interface MoveSpecRequest {
   status: SpecStatus;
+  /** Required when status === 'cancelled'; ignored otherwise. */
+  cancellation_reason?: string;
 }
 
 // Story request types

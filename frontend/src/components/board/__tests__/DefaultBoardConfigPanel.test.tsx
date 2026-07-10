@@ -16,6 +16,24 @@ const apiMock = vi.hoisted(() => ({
   updateDefaultGuidelineRefs: vi.fn(),
 }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
+// The Export/Import buttons pull the import-export service through the API
+// context; stub the hook so this panel test does not need an ApiProvider.
+vi.mock('@/services/import-export-api', () => ({
+  useImportExportApi: () => ({
+    exportGuidelines: vi.fn(),
+    importGuidelines: vi.fn(),
+    exportDesignSystems: vi.fn(),
+    exportDesignSystem: vi.fn(),
+    importDesignSystems: vi.fn(),
+    exportPresets: vi.fn(),
+    importPresets: vi.fn(),
+    exportBoardConfig: vi.fn(),
+    importBoardConfig: vi.fn(),
+  }),
+  importExportFilename: (kind: string) => `${kind}-00000000.json`,
+  downloadJsonFile: vi.fn(),
+}));
+
 
 import { DefaultBoardConfigPanel } from '../DefaultBoardConfigPanel';
 

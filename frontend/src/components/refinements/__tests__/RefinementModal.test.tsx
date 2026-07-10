@@ -7,6 +7,8 @@ import type { Refinement } from '@/types';
 const apiMock = vi.hoisted(() => ({
   getRefinement: vi.fn(),
   getRefinementKnowledge: vi.fn(),
+  listRefinementKnowledge: vi.fn(),
+  getEffectiveResources: vi.fn(),
   getArchitectureDesign: vi.fn(),
   listRefinementSnapshots: vi.fn(),
   listRefinementHistory: vi.fn(),
@@ -59,10 +61,6 @@ vi.mock('@/components/ideations/IdeationModal', () => ({
 
 vi.mock('@/components/shared/MentionInput', () => ({
   MentionInput: () => <div />,
-}));
-
-vi.mock('@/components/shared/MarkdownContent', () => ({
-  MarkdownContent: ({ content }: { content: string }) => <div>{content}</div>,
 }));
 
 vi.mock('@/components/shared/ContextSelector', () => ({
@@ -247,5 +245,65 @@ describe('RefinementModal Markdown export', () => {
     expect(screen.getByRole('button', { name: /Draft/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Approved/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Cancelled/ })).toBeNull();
+  });
+});
+
+describe('RefinementModal Knowledge tab markdown rendering', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.getRefinement.mockResolvedValue({
+      ...baseRefinement,
+      knowledge_bases: [{ id: 'kb-1', title: 'API Notes' }] as any,
+    });
+    apiMock.listRefinementSnapshots.mockResolvedValue([]);
+    apiMock.listRefinementHistory.mockResolvedValue([]);
+    apiMock.listRefinementQA.mockResolvedValue([]);
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'refinement',
+      entity_id: 'refinement-1',
+      current_status: 'review',
+      source: 'programmatic_backend_transition_authority',
+      allowed_transitions: [],
+    });
+    apiMock.getArchitectureDesign.mockResolvedValue(null);
+    apiMock.listRefinementKnowledge.mockResolvedValue([
+      {
+        id: 'kb-1',
+        title: 'API Notes',
+        description: null,
+        mime_type: 'text/markdown',
+        created_at: '2026-05-06T10:00:00Z',
+      },
+    ]);
+    apiMock.getEffectiveResources.mockResolvedValue({ resources: { knowledge_base: [] } });
+    apiMock.getRefinementKnowledge.mockResolvedValue({
+      id: 'kb-1',
+      content: '# KB Heading\n\nThis is **bold** markdown',
+    });
+  });
+
+  it('renders knowledge base content as markdown elements, not plain text', async () => {
+    render(
+      <RefinementModal refinementId="refinement-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />,
+    );
+
+    await screen.findByText('My Refinement');
+
+    fireEvent.click(screen.getByText('Knowledge'));
+
+    // Knowledge list loads, then expanding an item fetches its content.
+    const kbTitle = await screen.findByText('API Notes');
+    fireEvent.click(kbTitle);
+
+    await waitFor(() =>
+      expect(apiMock.getRefinementKnowledge).toHaveBeenCalledWith('refinement-1', 'kb-1'),
+    );
+
+    // Markdown becomes real elements: heading + <strong>, no raw text dump.
+    expect(await screen.findByRole('heading', { name: 'KB Heading' })).toBeInTheDocument();
+    const bold = screen.getByText('bold');
+    expect(bold.tagName).toBe('STRONG');
+    expect(screen.queryByText('This is **bold** markdown')).toBeNull();
   });
 });

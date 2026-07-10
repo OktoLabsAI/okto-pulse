@@ -1223,6 +1223,45 @@ async def _migrate_add_board_guideline_provenance() -> None:
                 except Exception:
                     pass
 
+async def _migrate_add_cancellation_columns() -> None:
+    """Add cancellation-justification columns to the 5 lifecycle tables (ITEM 17).
+
+    ``cancellation_reason`` / ``cancelled_at`` / ``cancelled_by`` are required
+    when an ideation/refinement/spec/sprint/card moves to 'cancelled' and are
+    cleared on reopen. All nullable — existing rows read as NULL (legacy-safe).
+    Idempotent: ADD COLUMN IF NOT EXISTS on Postgres; try/except on SQLite
+    (which lacks IF NOT EXISTS for ADD COLUMN).
+    """
+    from sqlalchemy import text as sa_text
+
+    dialect = get_engine().dialect.name
+    tables = ["ideations", "refinements", "specs", "sprints", "cards"]
+    columns = [
+        ("cancellation_reason", "TEXT"),
+        ("cancelled_at", "TIMESTAMP WITH TIME ZONE" if dialect == "postgresql" else "TIMESTAMP"),
+        ("cancelled_by", "VARCHAR(255)"),
+    ]
+    async with get_engine().begin() as conn:
+        for table in tables:
+            if dialect == "postgresql":
+                table_check = await conn.execute(sa_text(
+                    f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')"
+                ))
+                if not table_check.scalar():
+                    continue
+                for col_name, col_type in columns:
+                    await conn.execute(sa_text(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+                    ))
+            else:
+                for col_name, col_type in columns:
+                    try:
+                        await conn.execute(sa_text(
+                            f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
+                        ))
+                    except Exception:
+                        pass
+
 async def _migrate_agent_permissions() -> None:
     """Migrate agents from legacy flat permissions to granular permission_flags."""
     import logging
@@ -1310,5 +1349,6 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_drop_spec_skills": _migrate_drop_spec_skills,
     "_migrate_add_default_config_snapshot": _migrate_add_default_config_snapshot,
     "_migrate_add_board_guideline_provenance": _migrate_add_board_guideline_provenance,
+    "_migrate_add_cancellation_columns": _migrate_add_cancellation_columns,
     "_migrate_agent_permissions": _migrate_agent_permissions,
 }

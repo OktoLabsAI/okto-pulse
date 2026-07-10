@@ -18,6 +18,7 @@ import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEV
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { ActivityLogList } from '@/components/shared/ActivityLogList';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
@@ -61,7 +62,8 @@ type CardModalTab =
   | 'validations'
   | 'qa'
   | 'comments'
-  | 'activity';
+  | 'activity'
+  | 'cancellation';
 
 const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
   'test_file_path',
@@ -284,6 +286,7 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
+  const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [conclusionTargetStatus, setConclusionTargetStatus] = useState<CardStatus>('done');
   const [conclusionDraft, setConclusionDraft] = useState('');
   const [conclusionCompleteness, setConclusionCompleteness] = useState(100);
@@ -464,7 +467,11 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
     if (activeTab === 'evidence' && card?.card_type !== 'test') {
       setActiveTab('details');
     }
-  }, [activeTab, card?.card_type]);
+    // The Cancellation tab only exists while the card is cancelled.
+    if (activeTab === 'cancellation' && card && card.status !== 'cancelled') {
+      setActiveTab('details');
+    }
+  }, [activeTab, card?.card_type, card?.status]);
 
   // Auto-refresh every 10s while modal is open
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -488,8 +495,14 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
     onClose?.();
   };
 
-  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }) => {
+  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string) => {
     if (!card) return;
+
+    // ITEM 17: cancelling requires a justification — intercept with the dialog.
+    if (status === 'cancelled' && !cancellationReason) {
+      setShowCancelDialog(true);
+      return;
+    }
 
     // Intercept Validation/Done — require executor report
     if (requiresExecutionReport(status) && !conclusion) {
@@ -507,6 +520,7 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
         completeness_justification: metrics?.completeness_justification,
         drift: metrics?.drift,
         drift_justification: metrics?.drift_justification,
+        ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
       });
       updateCardInColumn({
         id: updated.id,
@@ -780,12 +794,14 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
           <>
             {/* Tabs */}
             <div className="flex border-b border-gray-200 dark:border-gray-700 px-6">
-              {(card.card_type === 'bug'
-                ? ['details', 'tests', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
-                : card.card_type === 'test'
-                  ? ['details', 'evidence', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
-                  : ['details', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
-              ).map((tab) => (
+              {([
+                ...(card.card_type === 'bug'
+                  ? ['details', 'tests', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity']
+                  : card.card_type === 'test'
+                    ? ['details', 'evidence', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity']
+                    : ['details', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity']),
+                ...(card.status === 'cancelled' ? ['cancellation'] : []),
+              ] as CardModalTab[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -842,6 +858,7 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                   {tab === 'qa' && `Q&A (${card.qa_items.length})`}
                   {tab === 'comments' && `Comments (${card.comments.length})`}
                   {tab === 'activity' && 'Activity'}
+                  {tab === 'cancellation' && 'Cancellation'}
                 </button>
               ))}
             </div>
@@ -1534,6 +1551,16 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               {activeTab === 'activity' && (
                 <ActivityTab cardId={card.id} api={api} />
               )}
+
+              {/* Cancellation Tab (ITEM 17) — only while status === cancelled */}
+              {activeTab === 'cancellation' && card.status === 'cancelled' && (
+                <CancellationDetails
+                  reason={card.cancellation_reason}
+                  cancelledBy={card.cancelled_by}
+                  cancelledAt={card.cancelled_at}
+                  resolveActorName={(id) => resolveActorName(id, boardMembers)}
+                />
+              )}
             </div>
           </>
         ) : null}
@@ -1646,6 +1673,20 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
           onChanged={() => { if (selectedCardId) loadCard(selectedCardId); }}
         />
       )}
+
+      {/* Cancellation justification (ITEM 17). stopPropagation keeps clicks
+          inside the dialog from bubbling to the overlay's close handler. */}
+      <div onClick={(e) => e.stopPropagation()}>
+        <CancellationReasonDialog
+          open={showCancelDialog}
+          entityLabel="card"
+          onConfirm={(reason) => {
+            setShowCancelDialog(false);
+            handleStatusChange('cancelled', undefined, undefined, reason);
+          }}
+          onCancel={() => setShowCancelDialog(false)}
+        />
+      </div>
     </div>
   );
 }

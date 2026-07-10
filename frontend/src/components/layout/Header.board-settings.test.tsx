@@ -56,6 +56,25 @@ vi.mock('react-hot-toast', () => ({
   },
 }));
 
+// DefaultBoardConfigPanel's Export/Import buttons pull the import-export
+// service through the API context; stub the hook so this Header test does
+// not need an ApiProvider.
+vi.mock('@/services/import-export-api', () => ({
+  useImportExportApi: () => ({
+    exportGuidelines: vi.fn(),
+    importGuidelines: vi.fn(),
+    exportDesignSystems: vi.fn(),
+    exportDesignSystem: vi.fn(),
+    importDesignSystems: vi.fn(),
+    exportPresets: vi.fn(),
+    importPresets: vi.fn(),
+    exportBoardConfig: vi.fn(),
+    importBoardConfig: vi.fn(),
+  }),
+  importExportFilename: (kind: string) => `${kind}-00000000.json`,
+  downloadJsonFile: vi.fn(),
+}));
+
 const baseSettings: BoardSettings = {
   max_scenarios_per_card: 3,
   skip_test_coverage_global: false,

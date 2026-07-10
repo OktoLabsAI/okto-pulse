@@ -29,6 +29,7 @@ import { KanbanColumn, normalizeKanbanCardType, type KanbanCardFilterType } from
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { CardModal } from './CardModal';
 import { CreateCardModal } from './CreateCardModal';
+import { CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 
 interface KanbanBoardProps {
   boardId: string;
@@ -72,6 +73,8 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
   const [createCardStatus, setCreateCardStatus] = useState<CardStatus | null>(null);
   // Execution report modal for Validation/Done moves
   const [conclusionPending, setConclusionPending] = useState<{ cardId: string; targetStatus: CardStatus; targetPosition: number } | null>(null);
+  // Cancellation justification modal for drops on the Cancelled column (ITEM 17)
+  const [cancelPending, setCancelPending] = useState<{ cardId: string; targetPosition: number } | null>(null);
   const [conclusionText, setConclusionText] = useState('');
   const [conclusionCompleteness, setConclusionCompleteness] = useState(100);
   const [conclusionCompletenessJustification, setConclusionCompletenessJustification] = useState('');
@@ -298,6 +301,12 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
 
     const card = Object.values(columns).flat().find((c) => c.id === cardId);
 
+    // ITEM 17: cancelling requires a justification — intercept the drop.
+    if (targetStatus === 'cancelled' && fromStatus !== 'cancelled') {
+      setCancelPending({ cardId, targetPosition });
+      return;
+    }
+
     // Require the executor's report before a reviewer sees the card in Validation.
     if (requiresExecutionReport(card, targetStatus, fromStatus)) {
       setConclusionPending({ cardId, targetStatus, targetPosition });
@@ -348,6 +357,28 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
       toast.success(`Card moved to ${STATUS_LABELS[targetStatus]}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : `Failed to move card to ${STATUS_LABELS[targetStatus]}`);
+    }
+    if (currentBoard) {
+      const freshColumns = await api.getBoardColumns(currentBoard.id, showArchived);
+      setColumns(freshColumns);
+    }
+  };
+
+  const handleCancelSubmit = async (reason: string) => {
+    if (!cancelPending) return;
+    const { cardId, targetPosition } = cancelPending;
+    setCancelPending(null);
+
+    optimisticMoveCard(cardId, 'cancelled', targetPosition);
+    try {
+      await api.moveCard(cardId, {
+        status: 'cancelled',
+        position: targetPosition,
+        cancellation_reason: reason,
+      });
+      toast.success(`Card moved to ${STATUS_LABELS.cancelled}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to cancel card');
     }
     if (currentBoard) {
       const freshColumns = await api.getBoardColumns(currentBoard.id, showArchived);
@@ -534,6 +565,14 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
           onClose={() => setCreateCardStatus(null)}
         />
       )}
+
+      {/* Cancellation justification modal (ITEM 17) — drop on the Cancelled column */}
+      <CancellationReasonDialog
+        open={!!cancelPending}
+        entityLabel="card"
+        onConfirm={handleCancelSubmit}
+        onCancel={() => setCancelPending(null)}
+      />
 
       {/* Execution report modal — shown when moving execution work to Validation/Done */}
       {conclusionPending && (
