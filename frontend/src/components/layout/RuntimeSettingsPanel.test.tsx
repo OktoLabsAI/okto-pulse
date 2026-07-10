@@ -137,11 +137,92 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
     expect(maxDbSlider.type).toBe('range');
 
     fireEvent.change(maxDbSlider, { target: { value: '3' } }); // 16 GB
+    // KG-01.5: mudar max DB size (grupo storage) agora exige preencher o
+    // migration plan antes do Save — contrato do KGConfigChangeGuard.
+    await waitFor(() => screen.getByTestId('input-migration-plan-ref'));
+    fireEvent.change(screen.getByTestId('input-migration-plan-ref'), {
+      target: { value: 'teste: resize aprovado' },
+    });
     fireEvent.click(screen.getByTestId('save-runtime-settings'));
 
     await waitFor(() => expect(putSpy).toHaveBeenCalled());
     const lastCallPayload = putSpy.mock.calls[0][0];
     expect(lastCallPayload.kg_kuzu_max_db_size_gb).toBe(16);
+  });
+});
+
+// ----------------------------------------------------------------------
+// KG-01.5 — migration plan obrigatório para mudanças do grupo storage
+// ----------------------------------------------------------------------
+
+describe('KG-01.5 — migration_plan_ref para mudanças de storage', () => {
+  test('campo não aparece sem mudança de storage; aparece ao mudar max DB size e bloqueia Save até preencher', async () => {
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+    await waitFor(() => screen.getByTestId('input-max-db-size-gb'));
+
+    // Sem mudança de storage: campo ausente, Save habilitado.
+    expect(screen.queryByTestId('migration-plan-field')).not.toBeInTheDocument();
+    expect(screen.getByTestId('save-runtime-settings')).not.toBeDisabled();
+
+    // Mudar max DB size (slider idx 3 = 16 GB, valor carregado = 2 GB).
+    fireEvent.change(screen.getByTestId('input-max-db-size-gb'), { target: { value: '3' } });
+
+    // Campo aparece e Save fica disabled até o plano ser preenchido.
+    await waitFor(() => screen.getByTestId('migration-plan-field'));
+    expect(screen.getByTestId('save-runtime-settings')).toBeDisabled();
+
+    fireEvent.change(screen.getByTestId('input-migration-plan-ref'), {
+      target: { value: 'plano: crescimento do board X' },
+    });
+    expect(screen.getByTestId('save-runtime-settings')).not.toBeDisabled();
+  });
+
+  test('PUT inclui migration_plan_ref quando storage mudou', async () => {
+    const putSpy = vi.mocked(runtimeApi.putRuntimeSettings);
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+    await waitFor(() => screen.getByTestId('input-max-db-size-gb'));
+
+    fireEvent.change(screen.getByTestId('input-max-db-size-gb'), { target: { value: '2' } }); // 8 GB
+    await waitFor(() => screen.getByTestId('input-migration-plan-ref'));
+    fireEvent.change(screen.getByTestId('input-migration-plan-ref'), {
+      target: { value: '  plano aprovado 2026-07-10  ' },
+    });
+    fireEvent.click(screen.getByTestId('save-runtime-settings'));
+
+    await waitFor(() => expect(putSpy).toHaveBeenCalled());
+    const payload = putSpy.mock.calls[0][0];
+    expect(payload.kg_kuzu_max_db_size_gb).toBe(8);
+    // trim aplicado antes do envio
+    expect(payload.migration_plan_ref).toBe('plano aprovado 2026-07-10');
+  });
+
+  test('mudanças fora do grupo storage NÃO exibem o campo nem enviam migration_plan_ref', async () => {
+    const putSpy = vi.mocked(runtimeApi.putRuntimeSettings);
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+
+    fireEvent.change(screen.getByTestId('input-buffer-pool-mb'), { target: { value: '256' } });
+    expect(screen.queryByTestId('migration-plan-field')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('save-runtime-settings'));
+    await waitFor(() => expect(putSpy).toHaveBeenCalled());
+    expect(putSpy.mock.calls[0][0].migration_plan_ref).toBeUndefined();
+  });
+
+  test('Reset limpa o plano e re-esconde o campo', async () => {
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+    await waitFor(() => screen.getByTestId('input-max-db-size-gb'));
+
+    fireEvent.change(screen.getByTestId('input-max-db-size-gb'), { target: { value: '3' } });
+    await waitFor(() => screen.getByTestId('migration-plan-field'));
+    fireEvent.change(screen.getByTestId('input-migration-plan-ref'), {
+      target: { value: 'rascunho' },
+    });
+
+    fireEvent.click(screen.getByText('Reset'));
+    await waitFor(() =>
+      expect(screen.queryByTestId('migration-plan-field')).not.toBeInTheDocument(),
+    );
   });
 });
 

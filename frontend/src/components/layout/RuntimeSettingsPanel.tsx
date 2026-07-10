@@ -22,7 +22,9 @@ import toast from 'react-hot-toast';
 import {
   getRuntimeSettings,
   putRuntimeSettings,
+  MIGRATION_PLAN_KEYS,
   type RuntimeSettings,
+  type RuntimeSettingsPatch,
 } from '@/services/runtime-settings-api';
 import {
   getQueueHealth,
@@ -108,6 +110,11 @@ export function RuntimeSettingsPanel({
   // key (graph database startup-time). Event Queue mutations never set this.
   const [restartRequired, setRestartRequired] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab);
+  // KG-01.5 (KGConfigChangeGuard): mudar um setting do grupo storage
+  // (kg_kuzu_max_db_size_gb) exige um migration_plan_ref no PUT — sem ele o
+  // backend responde 400 migration_plan_required. O campo só aparece quando
+  // um setting guarded diverge do valor carregado.
+  const [migrationPlanRef, setMigrationPlanRef] = useState('');
   // Spec ed17b1fe (Wave 2 NC 1ede3471) — DLQ Inspector modal state.
   const [showDeadLetter, setShowDeadLetter] = useState(false);
   const currentBoard = useDashboardStore((s) => s.currentBoard);
@@ -195,9 +202,22 @@ export function RuntimeSettingsPanel({
     }));
   };
 
+  const migrationPlanRequired = useMemo(() => {
+    if (!values) return false;
+    return MIGRATION_PLAN_KEYS.some((key) => draft[key] !== values[key]);
+  }, [draft, values]);
+  const migrationPlanMissing =
+    migrationPlanRequired && migrationPlanRef.trim() === '';
+
+  const buildPatch = (): RuntimeSettingsPatch =>
+    migrationPlanRequired
+      ? { ...draft, migration_plan_ref: migrationPlanRef.trim() }
+      : { ...draft };
+
   const onReset = () => {
     if (!values) return;
     setDraft(snapshotDraft(values));
+    setMigrationPlanRef('');
   };
 
   // Bug fix (Playwright E2E reproduzido):
@@ -212,13 +232,14 @@ export function RuntimeSettingsPanel({
   const inFlightRef = useRef(false);
 
   const onSave = async () => {
-    if (outOfRange || inFlightRef.current) return;
+    if (outOfRange || migrationPlanMissing || inFlightRef.current) return;
     inFlightRef.current = true;
     setSaving(true);
     try {
-      const resp = await putRuntimeSettings(draft);
+      const resp = await putRuntimeSettings(buildPatch());
       setValues(resp);
       setRestartRequired(resp.restart_required);
+      setMigrationPlanRef('');
       if (resp.restart_required) {
         toast.success('Settings saved — restart required for Graph DB changes');
       } else {
@@ -239,16 +260,17 @@ export function RuntimeSettingsPanel({
   const onSaveAndRunNow = async () => {
     // tickInProgress vem do polling KG health (5s) e cobre cross-mount/
     // cross-tab. inFlightRef cobre clique-rápido na mesma sessão.
-    if (outOfRange || inFlightRef.current || tickInProgress) return;
+    if (outOfRange || migrationPlanMissing || inFlightRef.current || tickInProgress) return;
     inFlightRef.current = true;
     setSaving(true);
     // Cooldown lock — mantém o guard por 3s além do fetch para cobrir o
     // gap entre o 202 do tick e o próximo poll do health (5s).
     setTimeout(() => { inFlightRef.current = false; }, 3000);
     try {
-      const resp = await putRuntimeSettings(draft);
+      const resp = await putRuntimeSettings(buildPatch());
       setValues(resp);
       setRestartRequired(resp.restart_required);
+      setMigrationPlanRef('');
       try {
         await triggerKGTick();
         toast.success('Settings saved. Tick started.');
@@ -340,6 +362,9 @@ export function RuntimeSettingsPanel({
             draft={draft}
             onChange={onInputChange}
             budgetMb={budgetMb}
+            migrationPlanRequired={migrationPlanRequired}
+            migrationPlanRef={migrationPlanRef}
+            onMigrationPlanRefChange={setMigrationPlanRef}
           />
         ) : activeTab === 'eventqueue' ? (
           <EventQueueTab
@@ -362,16 +387,21 @@ export function RuntimeSettingsPanel({
           </button>
           <button
             onClick={onSave}
-            disabled={loading || saving || outOfRange}
+            disabled={loading || saving || outOfRange || migrationPlanMissing}
             className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
             data-testid="save-runtime-settings"
+            title={
+              migrationPlanMissing
+                ? 'Changing the max DB size requires a migration plan (Graph DB tab)'
+                : undefined
+            }
           >
             {saving ? 'Saving…' : 'Save'}
           </button>
           {activeTab === 'decaytick' && (
             <button
               onClick={onSaveAndRunNow}
-              disabled={loading || saving || outOfRange || tickInProgress}
+              disabled={loading || saving || outOfRange || migrationPlanMissing || tickInProgress}
               className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 inline-flex items-center gap-1"
               data-testid="save-and-run-now"
               title={tickInProgress && !saving ? 'Tick is already running globally (cron, MCP or another tab)' : undefined}
@@ -521,9 +551,19 @@ interface GraphDBTabProps {
   draft: DraftState;
   onChange: (key: keyof DraftState, raw: string) => void;
   budgetMb: number;
+  migrationPlanRequired: boolean;
+  migrationPlanRef: string;
+  onMigrationPlanRefChange: (raw: string) => void;
 }
 
-function GraphDBTab({ draft, onChange, budgetMb }: GraphDBTabProps) {
+function GraphDBTab({
+  draft,
+  onChange,
+  budgetMb,
+  migrationPlanRequired,
+  migrationPlanRef,
+  onMigrationPlanRefChange,
+}: GraphDBTabProps) {
   return (
     <div className="px-6 py-5 space-y-4">
       <SettingField
@@ -541,6 +581,31 @@ function GraphDBTab({ draft, onChange, budgetMb }: GraphDBTabProps) {
         onChange={(v) => onChange('kg_kuzu_max_db_size_gb', v)}
         testId="input-max-db-size-gb"
       />
+      {migrationPlanRequired && (
+        <div
+          className="px-3 py-2.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-lg space-y-1.5"
+          data-testid="migration-plan-field"
+        >
+          <label className="text-xs font-medium text-amber-900 dark:text-amber-200 block">
+            Migration plan (required)
+          </label>
+          <p className="text-[10px] text-amber-800/80 dark:text-amber-300/80">
+            Changing the max database size is a storage-group change guarded
+            by KGConfigChangeGuard: describe or reference the migration plan
+            (ticket, doc or a short justification). Sent as
+            migration_plan_ref and recorded in the audit log.
+          </p>
+          <input
+            type="text"
+            maxLength={256}
+            value={migrationPlanRef}
+            onChange={(e) => onMigrationPlanRefChange(e.target.value)}
+            placeholder="e.g. board X growth plan — approved 2026-07-10"
+            data-testid="input-migration-plan-ref"
+            className="w-full text-xs px-2 py-1 border rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border-amber-300 dark:border-amber-700 placeholder:text-gray-400"
+          />
+        </div>
+      )}
       <SettingField
         label="Connection pool cap (simultaneous boards)"
         description="Boards kept alive in the LRU cache."

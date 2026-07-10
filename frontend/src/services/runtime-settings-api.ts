@@ -29,7 +29,23 @@ export interface RuntimeSettings {
 
 export type RuntimeSettingsPatch = Partial<
   Omit<RuntimeSettings, 'restart_required'>
->;
+> & {
+  /**
+   * KG-01.5 (KGConfigChangeGuard): obrigatório quando um setting do grupo
+   * storage/wal/index muda — sem ele o backend responde 400
+   * kg_config_change_blocked reason=migration_plan_required.
+   */
+  migration_plan_ref?: string;
+};
+
+/**
+ * Keys governadas pelo KGConfigChangeGuard que exigem migration_plan_ref
+ * para mutar (grupos storage/wal/index do guard). Hoje só o max DB size é
+ * exposto nesta UI; wal/index entram aqui se um dia ganharem campo.
+ */
+export const MIGRATION_PLAN_KEYS = [
+  'kg_kuzu_max_db_size_gb',
+] as const satisfies ReadonlyArray<keyof RuntimeSettings>;
 
 /**
  * Keys that gate the amber "Restart required" banner. Mudar qualquer um
