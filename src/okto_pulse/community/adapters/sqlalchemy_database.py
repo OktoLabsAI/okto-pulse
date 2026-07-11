@@ -4,9 +4,9 @@ This module is the local-first relational adapter for the Community edition. It
 owns engine construction, session-factory construction, SQLite hardening and
 pool observability, then injects the resulting runtime into the core facade.
 
-Pool config is preserved EXACTLY (deadlock fix report 2026-04-29 / bug d0f6bab2):
-postgresql ``pool_size=10/max_overflow=20/pool_pre_ping=True``; sqlite
-``pool_size=20/max_overflow=30/pool_timeout=10/pool_recycle=1800/pool_pre_ping=True``.
+Pool config is preserved EXACTLY for the Local First SQLite runtime (deadlock
+fix report 2026-04-29 / bug d0f6bab2): ``pool_size=20/max_overflow=30/
+pool_timeout=10/pool_recycle=1800/pool_pre_ping=True``.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from okto_pulse.core.domain.realm import RealmScope
 
 logger = logging.getLogger(__name__)
 
@@ -34,28 +35,17 @@ class CommunityDatabaseRuntime:
 
 def build_community_engine(url: str, *, echo: bool = False) -> AsyncEngine:
     """Create the async engine with Community local-first pool configuration."""
+    if not url.startswith("sqlite"):
+        raise ValueError("community_database_requires_sqlite")
     engine_kwargs: dict = {
         "echo": echo,
         "future": True,
+        "pool_size": 20,
+        "max_overflow": 30,
+        "pool_timeout": 10,
+        "pool_recycle": 1800,
+        "pool_pre_ping": True,
     }
-    if url.startswith("postgresql"):
-        engine_kwargs.update(
-            {
-                "pool_size": 10,
-                "max_overflow": 20,
-                "pool_pre_ping": True,
-            }
-        )
-    elif url.startswith("sqlite"):
-        engine_kwargs.update(
-            {
-                "pool_size": 20,
-                "max_overflow": 30,
-                "pool_timeout": 10,
-                "pool_recycle": 1800,
-                "pool_pre_ping": True,
-            }
-        )
 
     return create_async_engine(url, **engine_kwargs)
 
@@ -72,6 +62,7 @@ def build_community_session_factory(
         engine,
         class_=AsyncSession,
         expire_on_commit=False,
+        info={"realm_scope": RealmScope.local()},
     )
 
 

@@ -7,7 +7,6 @@ from pathlib import Path
 from okto_pulse.community.adapters.core_import_boundary import (
     AF42_PRIVATE_REACH_IN_BASELINE,
     COMMUNITY_CORE_REACH_IN_LEDGER,
-    CORE_IMPORT_COMMUNITY_IMPLEMENTATION,
     CORE_IMPORT_GOVERNED_REACH_IN,
     CORE_IMPORT_PUBLIC_CONTRACT,
     CORE_IMPORT_UNGOVERNED_REACH_IN,
@@ -23,7 +22,7 @@ from okto_pulse.community.adapters.core_import_boundary import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-AF42_EXPECTED_CURRENT_PRIVATE_REACH_INS = 10
+AF42_EXPECTED_CURRENT_PRIVATE_REACH_INS = 0
 
 
 def _ledger_entry(
@@ -64,9 +63,11 @@ def test_ts_33e252d6_current_private_core_reach_ins_are_ledgered() -> None:
     assert report["private_reach_in_baseline"] == AF42_PRIVATE_REACH_IN_BASELINE
     assert report["occurrence_count"] == report["ledger_count"]
     assert report["occurrence_count"] == AF42_EXPECTED_CURRENT_PRIVATE_REACH_INS
-    assert report["occurrence_count"] < AF42_PRIVATE_REACH_IN_BASELINE
+    assert report["occurrence_count"] == AF42_PRIVATE_REACH_IN_BASELINE
     assert report["inventory_count"] >= report["occurrence_count"]
-    assert report["inventory_by_classification"][CORE_IMPORT_GOVERNED_REACH_IN] == (
+    assert report["inventory_by_classification"].get(
+        CORE_IMPORT_GOVERNED_REACH_IN, 0
+    ) == (
         report["occurrence_count"]
     )
     assert all(entry["cluster"] for entry in report["ledgered"])
@@ -75,7 +76,6 @@ def test_ts_33e252d6_current_private_core_reach_ins_are_ledgered() -> None:
     } <= {
         CORE_IMPORT_PUBLIC_CONTRACT,
         CORE_IMPORT_GOVERNED_REACH_IN,
-        CORE_IMPORT_COMMUNITY_IMPLEMENTATION,
         CORE_IMPORT_UNGOVERNED_REACH_IN,
     }
 
@@ -106,16 +106,15 @@ def test_af42_full_inventory_classifies_every_core_import(tmp_path: Path) -> Non
     assert report["ok"] is True, report
     assert report["inventory_count"] == 3
     assert report["inventory_by_classification"] == {
-        CORE_IMPORT_COMMUNITY_IMPLEMENTATION: 1,
         CORE_IMPORT_GOVERNED_REACH_IN: 1,
-        CORE_IMPORT_PUBLIC_CONTRACT: 1,
+        CORE_IMPORT_PUBLIC_CONTRACT: 2,
     }
     assert by_module[
         ("okto_pulse.core.ports.runtime_workers", ("RuntimeWorkerRegistry",))
     ] == CORE_IMPORT_PUBLIC_CONTRACT
     assert by_module[
         ("okto_pulse.core.infra.config", ("CoreSettings",))
-    ] == CORE_IMPORT_COMMUNITY_IMPLEMENTATION
+    ] == CORE_IMPORT_PUBLIC_CONTRACT
     assert by_module[
         ("okto_pulse.core.models.db", ("Card",))
     ] == CORE_IMPORT_GOVERNED_REACH_IN
@@ -194,7 +193,7 @@ def test_af42_stale_or_incomplete_ledger_blocks_validation(tmp_path: Path) -> No
 
 
 def test_ts_33e252d6_ledger_entries_have_withdrawal_criteria() -> None:
-    assert COMMUNITY_CORE_REACH_IN_LEDGER
+    assert COMMUNITY_CORE_REACH_IN_LEDGER == ()
     for entry in COMMUNITY_CORE_REACH_IN_LEDGER:
         assert entry.file_path.startswith("src/okto_pulse/community/")
         assert entry.scope
@@ -522,4 +521,5 @@ def test_ts_7cc90963_core_infra_database_reexport_guard_matches_core() -> None:
         "okto_pulse.core.infra"
     ]
 
-    assert set(guarded_reexports) == database_reexports
+    assert database_reexports == set()
+    assert set(guarded_reexports).isdisjoint(database_reexports)

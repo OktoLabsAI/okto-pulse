@@ -9,14 +9,18 @@ from pathlib import Path
 import pytest
 
 # Registers every ORM model on Base.metadata so init_db builds the full schema.
-import okto_pulse.core.app as _core_app  # noqa: F401
+import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
-from okto_pulse.community.adapters.af35_sqlalchemy_services import (
-    CommunityAppSetting,
-    CommunityResourceGateService,
-    community_build_traceability_report,
-    community_get_runtime_settings,
-    community_put_runtime_settings,
+from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import (
+    ResourceGateService as CommunityResourceGateService,
+)
+from okto_pulse.community.adapters.sqlalchemy_runtime_settings_service import (
+    AppSetting as CommunityAppSetting,
+    get_runtime_settings as community_get_runtime_settings,
+    put_runtime_settings as community_put_runtime_settings,
+)
+from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import (
+    build_traceability_report as community_build_traceability_report,
 )
 from okto_pulse.community.adapters.core_import_boundary import (
     audit_community_core_import_boundary,
@@ -24,7 +28,7 @@ from okto_pulse.community.adapters.core_import_boundary import (
 from okto_pulse.community.adapters.relational_schema_lifecycle import (
     register_community_relational_schema_lifecycle,
 )
-from okto_pulse.core.models.db import Board, Spec
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Spec
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,9 +38,6 @@ def _temp_session_factory(tmp_path):
     import okto_pulse.core.infra.config as _config
     from okto_pulse.core.infra.config import CoreSettings
 
-    saved_settings = _config._settings_instance
-    saved_engine = _db_mod._engine
-    saved_factory = _db_mod._session_factory
     saved_data = os.environ.get("DATA_DIR")
     saved_kg = os.environ.get("KG_BASE_DIR")
 
@@ -57,9 +58,6 @@ def _temp_session_factory(tmp_path):
             asyncio.run(_db_mod.close_db())
         except Exception:
             pass
-        _config._settings_instance = saved_settings
-        _db_mod._engine = saved_engine
-        _db_mod._session_factory = saved_factory
         for key, val in (("DATA_DIR", saved_data), ("KG_BASE_DIR", saved_kg)):
             if val is None:
                 os.environ.pop(key, None)

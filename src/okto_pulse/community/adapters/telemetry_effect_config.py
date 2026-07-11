@@ -28,11 +28,18 @@ class CommunityTelemetryEffectConfigProvider:
         )
         return (Path(data_dir).expanduser().resolve() / "metrics").resolve()
 
+    def state_ref(self, settings: Any) -> str:
+        """Interpret the Core state reference as this edition's metrics path."""
+        return str(self.metrics_dir(settings))
+
     def beacon_url(self, settings: Any) -> str:
         return (
-            (getattr(settings, "metrics_beacon_url", "") or "").strip()
-            or COMMUNITY_DEFAULT_METRICS_BEACON_URL
-        )
+            getattr(settings, "metrics_beacon_url", "") or ""
+        ).strip() or COMMUNITY_DEFAULT_METRICS_BEACON_URL
+
+    def delivery_target(self, settings: Any) -> str:
+        """Expose the edition delivery target through the neutral Core port."""
+        return self.beacon_url(settings).rstrip("/")
 
 
 def build_community_telemetry_effect_config_provider() -> TelemetryEffectConfigProvider:

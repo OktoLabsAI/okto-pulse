@@ -35,23 +35,30 @@ from okto_pulse.community.adapters.telemetry_sender import (
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.ports.telemetry import TelemetrySink
 from okto_pulse.core.telemetry import failure_state as fs
-from okto_pulse.core.telemetry import sender_registry as registry
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
 from okto_pulse.core.telemetry.sender_registry import (
     get_telemetry_sender,
     reset_telemetry_sender_factory_for_tests,
 )
-from okto_pulse.core.telemetry.service import TelemetryService
-from okto_pulse.core.telemetry.settings import resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 
 FIXED_NOW = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(autouse=True)
 def _isolate_factory():
-    from okto_pulse.core.telemetry.event_store_registry import reset_telemetry_event_store_factory_for_tests
-    from okto_pulse.core.telemetry.effect_config_registry import reset_telemetry_effect_config_provider_for_tests
-    from okto_pulse.core.telemetry.telemetry_state_registry import reset_telemetry_state_carrier_for_tests
+    from okto_pulse.core.telemetry.event_store_registry import (
+        reset_telemetry_event_store_factory_for_tests,
+    )
+    from okto_pulse.core.telemetry.effect_config_registry import (
+        reset_telemetry_effect_config_provider_for_tests,
+    )
+    from okto_pulse.core.telemetry.telemetry_state_registry import (
+        reset_telemetry_state_carrier_for_tests,
+    )
     from okto_pulse.community.adapters.telemetry_effect_config import (
         register_community_telemetry_effect_config_provider,
     )
@@ -92,7 +99,12 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, *, handshake: FakeResponse | None = None, usage: FakeResponse | None = None):
+    def __init__(
+        self,
+        *,
+        handshake: FakeResponse | None = None,
+        usage: FakeResponse | None = None,
+    ):
         self._handshake = handshake
         self._usage = usage
         self.calls: list[str] = []
@@ -108,10 +120,21 @@ class FakeSession:
         raise AssertionError(f"unexpected url {url}")
 
 
-def _prepare(tmp_path: Path, monkeypatch, sub: str, *, install_token: str, expires_in_hours: float) -> CoreSettings:
+def _prepare(
+    tmp_path: Path,
+    monkeypatch,
+    sub: str,
+    *,
+    install_token: str,
+    expires_in_hours: float,
+) -> CoreSettings:
     import okto_pulse.community.adapters.telemetry_sender as _community_sender_mod
-    from okto_pulse.community.adapters.telemetry_store import register_community_telemetry_event_store
-    from okto_pulse.core.telemetry.event_store_registry import reset_telemetry_event_store_factory_for_tests
+    from okto_pulse.community.adapters.telemetry_store import (
+        register_community_telemetry_event_store,
+    )
+    from okto_pulse.core.telemetry.event_store_registry import (
+        reset_telemetry_event_store_factory_for_tests,
+    )
 
     # R10-E Pass 2: core sender module is now a stub (no _utcnow). Only patch the
     # community sender module's time helpers so tests are deterministic.
@@ -124,16 +147,22 @@ def _prepare(tmp_path: Path, monkeypatch, sub: str, *, install_token: str, expir
     reset_telemetry_event_store_factory_for_tests()
     register_community_telemetry_event_store()
 
-    settings = CoreSettings(metrics_dir=str(tmp_path / sub / "metrics"), metrics_mode="")
+    settings = CoreSettings(
+        metrics_dir=str(tmp_path / sub / "metrics"), metrics_mode=""
+    )
     service = TelemetryService(settings)
     service.update_settings(
-        mode="anonymous_beacon", source="cli",
-        policy_version="2026-05-11", schema_version=CURRENT_SCHEMA_VERSION,
+        mode="anonymous_beacon",
+        source="cli",
+        policy_version="2026-05-11",
+        schema_version=CURRENT_SCHEMA_VERSION,
     )
     state_path = tmp_path / sub / "metrics" / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["install_token"] = install_token
-    state["install_token_expires_at"] = _iso(FIXED_NOW + timedelta(hours=expires_in_hours))
+    state["install_token_expires_at"] = _iso(
+        FIXED_NOW + timedelta(hours=expires_in_hours)
+    )
     state["next_batch_seq"] = 5
     state_path.write_text(json.dumps(state), encoding="utf-8")
     service.record_event("cli", {"command": "serve"})
@@ -141,7 +170,9 @@ def _prepare(tmp_path: Path, monkeypatch, sub: str, *, install_token: str, expir
 
 
 def _state(settings: CoreSettings) -> dict:
-    return json.loads((Path(settings.metrics_dir) / "state.json").read_text(encoding="utf-8"))
+    return json.loads(
+        (Path(settings.metrics_dir) / "state.json").read_text(encoding="utf-8")
+    )
 
 
 # ===========================================================================
@@ -149,14 +180,22 @@ def _state(settings: CoreSettings) -> dict:
 # ===========================================================================
 def test_ts_312bfd67_conformance_and_handshake_usage(tmp_path, monkeypatch, caplog):
     caplog.set_level("INFO", logger="okto_pulse.telemetry.sender")
-    settings = _prepare(tmp_path, monkeypatch, "c", install_token="old-token", expires_in_hours=1)
+    settings = _prepare(
+        tmp_path, monkeypatch, "c", install_token="old-token", expires_in_hours=1
+    )
     sender = build_community_telemetry_sender(settings)
     assert isinstance(sender, CommunityTelemetryBeaconSender)
     assert isinstance(sender, TelemetrySink)
 
     session = FakeSession(
-        handshake=FakeResponse(200, {"install_token": "fresh-token", "token_ttl_seconds": 2592000,
-                                     "accepted_schema_version": CURRENT_SCHEMA_VERSION}),
+        handshake=FakeResponse(
+            200,
+            {
+                "install_token": "fresh-token",
+                "token_ttl_seconds": 2592000,
+                "accepted_schema_version": CURRENT_SCHEMA_VERSION,
+            },
+        ),
         usage=FakeResponse(200, {}),
     )
     sender = CommunityTelemetryBeaconSender(settings, session=session)  # type: ignore[arg-type]
@@ -170,14 +209,21 @@ def test_ts_312bfd67_conformance_and_handshake_usage(tmp_path, monkeypatch, capl
     ]
     assert _state(settings)["install_token"] == "fresh-token"
     # secret-free logs.
-    blob = "\n".join(r.getMessage() + json.dumps(r.__dict__, default=str) for r in caplog.records)
+    blob = "\n".join(
+        r.getMessage() + json.dumps(r.__dict__, default=str) for r in caplog.records
+    )
     assert "fresh-token" not in blob and "old-token" not in blob
 
 
 def test_transport_methods_standalone_conformance(tmp_path, monkeypatch):
     """R10-E Pass 2: TelemetryBeaconSender removed from core. All transport methods
     are defined directly on CommunityTelemetryBeaconSender (standalone, no inheritance)."""
-    for method_name in ("send_once", "handshake", "hourly_batch", "publish_product_snapshot"):
+    for method_name in (
+        "send_once",
+        "handshake",
+        "hourly_batch",
+        "publish_product_snapshot",
+    ):
         method = getattr(CommunityTelemetryBeaconSender, method_name, None)
         assert method is not None, f"missing {method_name}"
         # Defined directly on Community — owned, not inherited from some core class.
@@ -205,23 +251,32 @@ def test_ts_b2a15459_reason_code_matrix_preserved(tmp_path, monkeypatch):
     CommunityTelemetryBeaconSender standalone (core base removed)."""
     import requests as _requests
 
-    from okto_pulse.community.adapters.telemetry_sender import CommunityTelemetryBeaconSender
+    from okto_pulse.community.adapters.telemetry_sender import (
+        CommunityTelemetryBeaconSender,
+    )
 
     def settings_ready(sub):
-        return _prepare(tmp_path, monkeypatch, sub, install_token="tok", expires_in_hours=72)
+        return _prepare(
+            tmp_path, monkeypatch, sub, install_token="tok", expires_in_hours=72
+        )
 
     def state_of(settings):
         return _state(settings)
 
     # disabled: no beacon mode configured.
     from okto_pulse.core.infra.config import CoreSettings as _CS
-    _s_disabled = _CS(metrics_dir=str(tmp_path / "disabled" / "metrics"), metrics_mode="")
+
+    _s_disabled = _CS(
+        metrics_dir=str(tmp_path / "disabled" / "metrics"), metrics_mode=""
+    )
     result = CommunityTelemetryBeaconSender(_s_disabled).send_pending()
     assert result == {"sent": False, "reason": "not_enabled"}
 
     # empty: all events confirmed, nothing pending.
     _s_empty = settings_ready("empty")
-    CommunityTelemetryBeaconSender(_s_empty, session=FakeSession(usage=FakeResponse(200, {}))).send_pending()
+    CommunityTelemetryBeaconSender(
+        _s_empty, session=FakeSession(usage=FakeResponse(200, {}))
+    ).send_pending()
     result = CommunityTelemetryBeaconSender(_s_empty).send_pending()
     assert result == {"sent": False, "reason": "empty"}
 
@@ -269,7 +324,8 @@ def test_ts_b2a15459_reason_code_matrix_preserved(tmp_path, monkeypatch):
     # INVALID_SIGNATURE (fatal).
     _s_is = settings_ready("invalid_sig")
     result = CommunityTelemetryBeaconSender(
-        _s_is, session=FakeSession(usage=FakeResponse(401, {"code": "INVALID_SIGNATURE"}))
+        _s_is,
+        session=FakeSession(usage=FakeResponse(401, {"code": "INVALID_SIGNATURE"})),
     ).send_pending()
     assert result == {"sent": False, "reason": "invalid_signature"}
     _fstate_is = fs.read_failure_state(state_of(_s_is))
@@ -281,7 +337,9 @@ def test_ts_b2a15459_reason_code_matrix_preserved(tmp_path, monkeypatch):
     _s_dup = settings_ready("duplicate")
     result = CommunityTelemetryBeaconSender(
         _s_dup,
-        session=FakeSession(usage=FakeResponse(409, {"code": "DUPLICATE_NONCE_OR_BATCH_SEQ"})),
+        session=FakeSession(
+            usage=FakeResponse(409, {"code": "DUPLICATE_NONCE_OR_BATCH_SEQ"})
+        ),
     ).send_pending()
     assert result["reason"] == "duplicate"
     assert fs.read_failure_state(state_of(_s_dup)).status == fs.STATUS_OK
@@ -306,16 +364,27 @@ def test_ts_b2a15459_reason_code_matrix_preserved(tmp_path, monkeypatch):
 # ===========================================================================
 def test_ts_60f2c35c_unknown_install_rehandshake_events_not_lost(tmp_path, monkeypatch):
     """UNKNOWN_INSTALL → rehandshake (bounded); events not lost."""
+
     def session():
         return FakeSession(
-            handshake=FakeResponse(200, {"install_token": "rehand", "token_ttl_seconds": 2592000,
-                                         "accepted_schema_version": CURRENT_SCHEMA_VERSION}),
+            handshake=FakeResponse(
+                200,
+                {
+                    "install_token": "rehand",
+                    "token_ttl_seconds": 2592000,
+                    "accepted_schema_version": CURRENT_SCHEMA_VERSION,
+                },
+            ),
             usage=FakeResponse(401, {"code": "UNKNOWN_INSTALL"}),
         )
 
-    comm_settings = _prepare(tmp_path, monkeypatch, "uki_comm", install_token="tok", expires_in_hours=72)
+    comm_settings = _prepare(
+        tmp_path, monkeypatch, "uki_comm", install_token="tok", expires_in_hours=72
+    )
 
-    comm_result = CommunityTelemetryBeaconSender(comm_settings, session=session()).send_pending()
+    comm_result = CommunityTelemetryBeaconSender(
+        comm_settings, session=session()
+    ).send_pending()
     assert comm_result["sent"] is False
     assert comm_result["reason"] in ("rehandshake_failed", "unknown_install_unresolved")
     # events not lost: the local store still holds the pending event after a
@@ -338,6 +407,7 @@ def test_ts_6f6c03ba_loop_resolves_registered_sender(tmp_path, monkeypatch):
 
     # the beacon loop resolves via the registry (not a concrete import).
     import okto_pulse.community.main as main_mod
+
     loop_src = inspect.getsource(main_mod._metrics_beacon_loop)
     assert "get_telemetry_sender" in loop_src
     assert ".send_pending" in loop_src
@@ -355,13 +425,14 @@ def test_ts_ac2738c0_product_snapshot_via_registries_no_bypass(tmp_path, monkeyp
     )
 
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
-    settings = CoreSettings(metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon")
+    settings = CoreSettings(
+        metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon"
+    )
 
     calls = {"n": 0}
 
     class _Agg:
-        def __init__(self, settings, metrics_dir):
-            ...
+        def __init__(self, settings, metrics_dir): ...
 
         def aggregate(self) -> ProductState:
             calls["n"] += 1
@@ -390,26 +461,29 @@ def test_ts_ac2738c0_product_snapshot_via_registries_no_bypass(tmp_path, monkeyp
 def test_composed_root_registers_sender(tmp_path, monkeypatch):
     import okto_pulse.core.infra.config as _config
     import okto_pulse.core.kg.interfaces.registry as _reg
-    from okto_pulse.community.adapters.composition import configure_community_kg_registry
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("KG_BASE_DIR", str(tmp_path / "boards"))
-    saved_settings = _config._settings_instance
-    saved_reg = (_reg._registry, _reg._configured)
     _config.configure_settings(CoreSettings())
     _reg.reset_registry_for_tests()
     try:
         reset_telemetry_sender_factory_for_tests()
-        assert registry._telemetry_sender_factory is None
+        with pytest.raises(RuntimeError, match="No TelemetrySink factory registered"):
+            get_telemetry_sender(CoreSettings())
         configure_community_kg_registry(None)
         resolved = get_telemetry_sender(CoreSettings(metrics_dir=str(tmp_path / "m")))
         # R10-E: bind at assertion time (robust to sys.modules purges; isinstance stays strict).
-        from okto_pulse.community.adapters.telemetry_sender import CommunityTelemetryBeaconSender
+        from okto_pulse.community.adapters.telemetry_sender import (
+            CommunityTelemetryBeaconSender,
+        )
+
         assert isinstance(resolved, CommunityTelemetryBeaconSender)
     finally:
         reset_telemetry_sender_factory_for_tests()
-        _config._settings_instance = saved_settings
-        _reg._registry, _reg._configured = saved_reg
+        _reg.reset_registry_for_tests()
 
 
 # ===========================================================================
@@ -444,11 +518,20 @@ def test_guard_no_false_move_claims_in_sender_files():
     assert offenders == {}, offenders
     community_text = Path(_c.__file__).read_text(encoding="utf-8")
     # Post-absorb: Community OWNS (not stays-as-shim).
-    assert "Community edition OWNS" in community_text, "expected Community ownership framing"
+    assert "Community edition OWNS" in community_text, (
+        "expected Community ownership framing"
+    )
     # R10-E Pass 2: the core concrete is REMOVED — no "still a shim / pending Pass 2"
     # framing may survive (the anti-claim guard rejects the stale-shim vocabulary).
-    for _stale in ("STAYS in core", "shim is still", "shim remains", "remains until PASS 2",
-                   "stays as shim", "pending R10-E", "is non-destructive"):
+    for _stale in (
+        "STAYS in core",
+        "shim is still",
+        "shim remains",
+        "remains until PASS 2",
+        "stays as shim",
+        "pending R10-E",
+        "is non-destructive",
+    ):
         assert _stale.lower() not in community_text.lower(), (
             f"stale shim claim must not be present: {_stale!r}"
         )

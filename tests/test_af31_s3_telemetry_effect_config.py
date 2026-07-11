@@ -9,13 +9,15 @@ from okto_pulse.community.adapters.telemetry_effect_config import (
     build_community_telemetry_effect_config_provider,
     register_community_telemetry_effect_config_provider,
 )
-from okto_pulse.community.adapters import telemetry_effect_config as effect_config_adapter
+from okto_pulse.community.adapters import (
+    telemetry_effect_config as effect_config_adapter,
+)
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry.effect_config_registry import (
     reset_telemetry_effect_config_provider_for_tests,
 )
-from okto_pulse.core.telemetry.settings import resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 
 
 class _Settings:
@@ -33,7 +35,10 @@ def test_community_effect_config_supplies_local_metrics_and_beacon(
         metrics_beacon_url="",
     )
 
-    assert provider.metrics_dir(settings) == (tmp_path / "pulse-home" / "metrics").resolve()
+    assert (
+        provider.metrics_dir(settings)
+        == (tmp_path / "pulse-home" / "metrics").resolve()
+    )
     assert provider.beacon_url(settings) == COMMUNITY_DEFAULT_METRICS_BEACON_URL
 
 
@@ -44,30 +49,36 @@ def test_community_effect_config_metrics_dir_precedence(
     provider = build_community_telemetry_effect_config_provider()
 
     explicit = tmp_path / "explicit-metrics"
-    assert provider.metrics_dir(
-        _Settings(
-            metrics_dir=str(explicit),
-            data_dir=str(tmp_path / "ignored-data"),
+    assert (
+        provider.metrics_dir(
+            _Settings(
+                metrics_dir=str(explicit),
+                data_dir=str(tmp_path / "ignored-data"),
+            )
         )
-    ) == explicit.resolve()
+        == explicit.resolve()
+    )
 
     data_dir = tmp_path / "data-home"
-    assert provider.metrics_dir(
-        _Settings(metrics_dir="", data_dir=str(data_dir))
-    ) == (data_dir / "metrics").resolve()
+    assert (
+        provider.metrics_dir(_Settings(metrics_dir="", data_dir=str(data_dir)))
+        == (data_dir / "metrics").resolve()
+    )
 
     env_home = tmp_path / "env-home"
     monkeypatch.setenv("OKTO_PULSE_HOME", str(env_home))
-    assert provider.metrics_dir(_Settings(metrics_dir="", data_dir="")) == (
-        env_home / "metrics"
-    ).resolve()
+    assert (
+        provider.metrics_dir(_Settings(metrics_dir="", data_dir=""))
+        == (env_home / "metrics").resolve()
+    )
 
     monkeypatch.delenv("OKTO_PULSE_HOME", raising=False)
     user_home = tmp_path / "user-home"
     monkeypatch.setattr(effect_config_adapter.Path, "home", lambda: user_home)
-    assert provider.metrics_dir(_Settings(metrics_dir="", data_dir="")) == (
-        user_home / ".okto-pulse" / "metrics"
-    ).resolve()
+    assert (
+        provider.metrics_dir(_Settings(metrics_dir="", data_dir=""))
+        == (user_home / ".okto-pulse" / "metrics").resolve()
+    )
 
 
 def test_registered_community_effect_config_drives_core_resolution(

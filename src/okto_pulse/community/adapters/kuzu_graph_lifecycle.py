@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from okto_pulse.core.kg.interfaces.graph_lifecycle import (
     GraphHandle,
+    GraphLifecycleStepResult,
     PurgeReport,
     RebuildReport,
 )
+from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 
 
 class CommunityKuzuGraphLifecycle:
@@ -32,9 +34,9 @@ class CommunityKuzuGraphLifecycle:
         state = self._state(board_id)
         return GraphHandle(
             board_id=board_id,
-            path=state.path,
+            storage_ref=StorageRef(f"board:{board_id}", "community_local_graph"),
             opened=state.exists,
-            backend=state.backend,
+            status="opened" if state.exists else "absent",
             locked=state.locked,
             quarantined=state.quarantined,
         )
@@ -77,6 +79,28 @@ class CommunityKuzuGraphLifecycle:
             board_id=board_id,
             status="purged" if affected else "noop",
             reason=reason,
-            affected_paths=tuple(affected),
+            affected_storage_refs=tuple(
+                StorageRef(
+                    f"board:{board_id}:artifact:{index}",
+                    "community_local_graph",
+                )
+                for index, _ in enumerate(affected)
+            ),
             quarantined=bool(affected),
+        )
+
+    def apply_step(
+        self,
+        board_id: str,
+        graph_type: str,
+        step: str,
+    ) -> GraphLifecycleStepResult:
+        from okto_pulse.community.adapters.kg_runtime import (
+            apply_ladybug_lifecycle_step,
+        )
+
+        result = apply_ladybug_lifecycle_step(board_id, graph_type, step)
+        return GraphLifecycleStepResult(
+            ok=bool(getattr(result, "ok", False)),
+            detail=getattr(result, "detail", None),
         )

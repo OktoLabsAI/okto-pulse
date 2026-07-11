@@ -21,7 +21,7 @@ from okto_pulse.core.ports.kg_events import (
     get_kg_events_reader_port,
     reset_kg_events_reader_port_for_tests,
 )
-from okto_pulse.core.ports.relational_runtime import Base
+from okto_pulse.community.adapters.sqlalchemy_base import Base
 
 
 @pytest.mark.asyncio

@@ -13,13 +13,17 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from okto_pulse.community.adapters.telemetry_sender import CommunityTelemetryBeaconSender
+from okto_pulse.community.adapters.telemetry_sender import (
+    CommunityTelemetryBeaconSender,
+)
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
 import okto_pulse.community.adapters.telemetry_sender as sender_mod  # patches _utcnow
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
-from okto_pulse.core.telemetry.service import TelemetryService
-from okto_pulse.core.telemetry.settings import resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 
 # R10-E PASS 1 aliases: tests exercise the Community concrete classes.
 TelemetryBeaconSender = CommunityTelemetryBeaconSender
@@ -49,13 +53,17 @@ def test_prune_old_preserves_pending_removes_confirmed(tmp_path: Path) -> None:
     store.append_event(_event("old-confirmed", OLD))
     store.append_event(_event("old-pending", OLD, command="build"))
     store.append_event(_event("recent-pending", RECENT, command="serve"))
-    store.append_sent({"sent_at": OLD, "batch_seq": 1, "confirmed_event_ids": ["old-confirmed"]})
+    store.append_sent(
+        {"sent_at": OLD, "batch_seq": 1, "confirmed_event_ids": ["old-confirmed"]}
+    )
 
     result = store.prune_old(now=NOW)
 
     ids = {e["event_id"] for e in store.iter_events()}
     assert "old-confirmed" not in ids  # confirmed + past retention → removed
-    assert "old-pending" in ids  # pending → preserved, never silently lost (br_0cac38aa)
+    assert (
+        "old-pending" in ids
+    )  # pending → preserved, never silently lost (br_0cac38aa)
     assert "recent-pending" in ids  # within retention → untouched
     assert result["removed_confirmed_events"] == 1
     assert result["preserved_pending_events"] == 1
@@ -64,7 +72,9 @@ def test_prune_old_preserves_pending_removes_confirmed(tmp_path: Path) -> None:
     assert store.confirmed_event_ids() == set()
 
 
-def test_prune_old_never_deletes_pending_even_when_whole_file_is_old(tmp_path: Path) -> None:
+def test_prune_old_never_deletes_pending_even_when_whole_file_is_old(
+    tmp_path: Path,
+) -> None:
     store = LocalTelemetryStore(tmp_path / "metrics", retention_days=30)
     # A whole old file of UNCONFIRMED events — nothing is confirmed.
     store.append_event(_event("p1", OLD))
@@ -84,7 +94,9 @@ def test_prune_old_orphan_cleans_recent_ledger_for_pruned_event(tmp_path: Path) 
     # event is pruned, but the recent ledger file survives — its dangling
     # confirmed id must be orphan-cleaned to keep the confirmed set bounded.
     store.append_event(_event("old-confirmed", OLD))
-    store.append_sent({"sent_at": RECENT, "batch_seq": 9, "confirmed_event_ids": ["old-confirmed"]})
+    store.append_sent(
+        {"sent_at": RECENT, "batch_seq": 9, "confirmed_event_ids": ["old-confirmed"]}
+    )
 
     result = store.prune_old(now=NOW)
 
@@ -98,7 +110,9 @@ def test_prune_old_keeps_everything_within_retention(tmp_path: Path) -> None:
     store = LocalTelemetryStore(tmp_path / "metrics", retention_days=30)
     store.append_event(_event("r1", RECENT))
     store.append_event(_event("r2", RECENT, command="build"))
-    store.append_sent({"sent_at": RECENT, "batch_seq": 1, "confirmed_event_ids": ["r1"]})
+    store.append_sent(
+        {"sent_at": RECENT, "batch_seq": 1, "confirmed_event_ids": ["r1"]}
+    )
 
     result = store.prune_old(now=NOW)
 
@@ -114,7 +128,9 @@ def test_prune_old_keeps_everything_within_retention(tmp_path: Path) -> None:
 def test_send_once_runs_prune_in_publish_flow(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sender_mod, "_utcnow", lambda: NOW)
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
-    settings = CoreSettings(metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon")
+    settings = CoreSettings(
+        metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon"
+    )
     service = TelemetryService(settings)
     service.update_settings(
         mode="anonymous_beacon",
@@ -132,7 +148,9 @@ def test_send_once_runs_prune_in_publish_flow(tmp_path: Path, monkeypatch) -> No
     store = LocalTelemetryStore(metrics_dir)
     # An old CONFIRMED event past retention + a recent PENDING event to publish.
     store.append_event(_event("old-confirmed", OLD))
-    store.append_sent({"sent_at": OLD, "batch_seq": 0, "confirmed_event_ids": ["old-confirmed"]})
+    store.append_sent(
+        {"sent_at": OLD, "batch_seq": 0, "confirmed_event_ids": ["old-confirmed"]}
+    )
     store.append_event(_event("recent-pending", RECENT, command="build"))
 
     class _Accepted:
@@ -174,7 +192,9 @@ def test_r3a_h_old_sent_ledger_preserves_surviving_confirmation(tmp_path: Path) 
     # Orphan: old, confirmed, removed by the events prune.
     store.append_event(_event("orphan", OLD, command="build"))
     # ONE out-of-window sent file confirms BOTH (mixed) — the survivor's sole record.
-    store.append_sent({"sent_at": OLD, "batch_seq": 1, "confirmed_event_ids": ["survivor", "orphan"]})
+    store.append_sent(
+        {"sent_at": OLD, "batch_seq": 1, "confirmed_event_ids": ["survivor", "orphan"]}
+    )
 
     result = store.prune_old(now=NOW)
 
@@ -186,7 +206,9 @@ def test_r3a_h_old_sent_ledger_preserves_surviving_confirmation(tmp_path: Path) 
     assert result["pruned_ledger_ids"] == 1  # the orphan id IS cleaned (mixed case)
 
     # ...and the survivor never re-enters a delta as new (ac_935d1538).
-    settings = CoreSettings(metrics_dir=str(metrics_dir), metrics_mode="anonymous_beacon")
+    settings = CoreSettings(
+        metrics_dir=str(metrics_dir), metrics_mode="anonymous_beacon"
+    )
     sender = TelemetryBeaconSender(settings)
     _batch, included = sender._build_delta_batch(resolve_telemetry_config(settings))
     assert "survivor" not in {e["event_id"] for e in included}

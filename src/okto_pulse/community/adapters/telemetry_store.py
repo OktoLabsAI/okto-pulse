@@ -77,7 +77,10 @@ class CommunityLocalTelemetryStore:
     def append_snapshot(self, record: dict[str, Any]) -> Path:
         """Persist a product-telemetry SNAPSHOT locally, append-only (R3A-F)."""
         self.ensure_dirs()
-        dt = str(record.get("snapshot_at", ""))[:10] or datetime.now(timezone.utc).date().isoformat()
+        dt = (
+            str(record.get("snapshot_at", ""))[:10]
+            or datetime.now(timezone.utc).date().isoformat()
+        )
         path = self.snapshots_dir / f"snapshot-{dt}.jsonl"
         with path.open("a", encoding="utf-8", newline="\n") as f:
             f.write(canonical_json(record))
@@ -86,7 +89,10 @@ class CommunityLocalTelemetryStore:
 
     def append_event(self, event: dict[str, Any]) -> Path:
         self.ensure_dirs()
-        dt = str(event.get("occurred_at", ""))[:10] or datetime.now(timezone.utc).date().isoformat()
+        dt = (
+            str(event.get("occurred_at", ""))[:10]
+            or datetime.now(timezone.utc).date().isoformat()
+        )
         path = self.events_dir / f"events-{dt}.jsonl"
         with path.open("a", encoding="utf-8", newline="\n") as f:
             f.write(canonical_json(event))
@@ -164,7 +170,9 @@ class CommunityLocalTelemetryStore:
         by_day: Counter[str] = Counter()
         guided_help_counts: Counter[str] = Counter()
         files = 0
-        for path in self.events_dir.glob("events-*.jsonl") if self.events_dir.exists() else []:
+        for path in (
+            self.events_dir.glob("events-*.jsonl") if self.events_dir.exists() else []
+        ):
             ensure_inside(self.metrics_dir, path)
             files += 1
         for event in self.iter_events(since=since):
@@ -173,7 +181,9 @@ class CommunityLocalTelemetryStore:
             day = str(event.get("occurred_at", ""))[:10]
             if day:
                 by_day[day] += 1
-            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            payload = (
+                event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            )
             if event_type == "guided_help":
                 add_guided_help_counts(guided_help_counts, payload)
         return {
@@ -187,7 +197,9 @@ class CommunityLocalTelemetryStore:
     @staticmethod
     def _file_date(path: Path):
         try:
-            return datetime.strptime("-".join(path.stem.split("-")[-3:]), "%Y-%m-%d").date()
+            return datetime.strptime(
+                "-".join(path.stem.split("-")[-3:]), "%Y-%m-%d"
+            ).date()
         except ValueError:
             return None
 
@@ -231,7 +243,9 @@ class CommunityLocalTelemetryStore:
                 if file_date is None or file_date >= cutoff:
                     continue
                 events = self._read_jsonl(path)
-                pending = [e for e in events if str(e.get("event_id") or "") not in confirmed]
+                pending = [
+                    e for e in events if str(e.get("event_id") or "") not in confirmed
+                ]
                 removed_confirmed += len(events) - len(pending)
                 preserved_pending += len(pending)
                 if pending:
@@ -261,7 +275,11 @@ class CommunityLocalTelemetryStore:
                             record = {**record, "confirmed_event_ids": filtered}
                             changed = True
                     kept.append(record)
-                if file_date is not None and file_date < cutoff and not confirms_survivor:
+                if (
+                    file_date is not None
+                    and file_date < cutoff
+                    and not confirms_survivor
+                ):
                     path.unlink(missing_ok=True)
                     removed_sent_files += 1
                 elif changed:
@@ -284,22 +302,29 @@ class CommunityLocalTelemetryStore:
             "removed_failure_files": removed_failure_files,
         }
 
-    def export_local(self, output_path: Path | None = None) -> Path:
+    def export_events(self, destination_ref: str | None = None) -> str:
         self.ensure_dirs()
-        if output_path is None:
+        if destination_ref is None:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             output_path = self.exports_dir / f"metrics-export-{stamp}.jsonl"
+        else:
+            output_path = Path(destination_ref).expanduser()
         output_path = ensure_inside(self.metrics_dir, output_path)
         with output_path.open("w", encoding="utf-8", newline="\n") as out:
             for event in self.iter_events():
                 out.write(canonical_json(event))
                 out.write("\n")
-        return output_path
+        return str(output_path)
 
-    def purge_local(self) -> dict[str, int]:
+    def purge_events(self) -> dict[str, int]:
         self.ensure_dirs()
         removed_files = 0
-        for root in (self.events_dir, self.sent_dir, self.failures_dir, self.exports_dir):
+        for root in (
+            self.events_dir,
+            self.sent_dir,
+            self.failures_dir,
+            self.exports_dir,
+        ):
             ensure_inside(self.metrics_dir, root)
             if root.exists():
                 for path in root.glob("*"):
@@ -312,13 +337,21 @@ class CommunityLocalTelemetryStore:
                         removed_files += 1
         return {"purged_files": removed_files}
 
+    def export_local(self, output_path: Path | None = None) -> Path:
+        """Community compatibility surface for the local CLI."""
+        return Path(self.export_events(str(output_path) if output_path else None))
+
+    def purge_local(self) -> dict[str, int]:
+        """Community compatibility surface for the local CLI."""
+        return self.purge_events()
+
 
 def build_community_telemetry_event_store(
-    metrics_dir: Path, retention_days: int = 30
+    state_ref: str, retention_days: int = 30
 ) -> TelemetryEventStore:
     """Factory matching ``TelemetryEventStoreFactory`` — builds the Community
     event store for a given ``metrics_dir`` / ``retention_days``."""
-    return CommunityLocalTelemetryStore(Path(metrics_dir), retention_days)
+    return CommunityLocalTelemetryStore(Path(state_ref), retention_days)
 
 
 def register_community_telemetry_event_store() -> None:

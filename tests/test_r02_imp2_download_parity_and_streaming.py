@@ -28,17 +28,21 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import FileResponse
 
-import okto_pulse.core.app as _core_app  # noqa: F401  (registers ORM models)
+import okto_pulse.community.app as _core_app  # noqa: F401  (registers ORM models)
 import okto_pulse.core.infra.database as _db_mod
-import okto_pulse.core.infra.storage as _storage_mod
 from okto_pulse.community.adapters.relational_schema_lifecycle import (
     register_community_relational_schema_lifecycle,
 )
+from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
+    build_community_unit_of_work_factory,
+)
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
-from okto_pulse.core.api.attachments import router as attachments_router
-from okto_pulse.core.infra.auth import require_user
+from okto_pulse.community.api.attachments import router as attachments_router
+from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.infra.database import get_db, get_session_factory
 from okto_pulse.core.infra.storage import StorageProvider, configure_storage
+from okto_pulse.core.runtime_registry import register_unit_of_work_factory
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 
 USER = "r02-imp2-user"
 PREFIX = "/api/v1/attachments"
@@ -51,10 +55,6 @@ def env(tmp_path):
     import okto_pulse.core.infra.config as _config
     from okto_pulse.core.infra.config import CoreSettings
 
-    saved_settings = _config._settings_instance
-    saved_engine = _db_mod._engine
-    saved_factory = _db_mod._session_factory
-    saved_provider = _storage_mod._storage_provider
     saved_data = os.environ.get("DATA_DIR")
     saved_kg = os.environ.get("KG_BASE_DIR")
 
@@ -71,6 +71,9 @@ def env(tmp_path):
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'r02_imp2.db'}")
         register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
+        register_unit_of_work_factory(
+            build_community_unit_of_work_factory(get_session_factory())
+        )
 
     asyncio.run(setup())
 
@@ -100,10 +103,6 @@ def env(tmp_path):
             asyncio.run(_db_mod.close_db())
         except Exception:
             pass
-        _config._settings_instance = saved_settings
-        _db_mod._engine = saved_engine
-        _db_mod._session_factory = saved_factory
-        _storage_mod._storage_provider = saved_provider
         for key, val in (("DATA_DIR", saved_data), ("KG_BASE_DIR", saved_kg)):
             if val is None:
                 os.environ.pop(key, None)
@@ -114,7 +113,12 @@ def env(tmp_path):
 def _seed_board_card() -> tuple[str, str]:
     import uuid
 
-    from okto_pulse.core.models.db import Board, Card, CardStatus, Spec
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Board,
+        Card,
+        CardStatus,
+        Spec,
+    )
 
     bid = f"board-r02i2-{uuid.uuid4().hex[:8]}"
     sid = f"spec-r02i2-{uuid.uuid4().hex[:8]}"
@@ -122,7 +126,14 @@ def _seed_board_card() -> tuple[str, str]:
 
     async def _seed() -> None:
         async with get_session_factory()() as db:
-            db.add(Board(id=bid, name="r02i2", owner_id=USER))
+            db.add(
+                Board(
+                    id=bid,
+                    name="r02i2",
+                    owner_id=USER,
+                    realm_id=LOCAL_REALM_ID,
+                )
+            )
             db.add(Spec(id=sid, board_id=bid, title="r02i2-spec", created_by=USER))
             db.add(
                 Card(
@@ -141,7 +152,9 @@ def _seed_board_card() -> tuple[str, str]:
 
 
 def _upload(client, bid, cid, filename, content, mime) -> str:
-    resp = client.post(f"{PREFIX}/{bid}/{cid}", files={"file": (filename, content, mime)})
+    resp = client.post(
+        f"{PREFIX}/{bid}/{cid}", files={"file": (filename, content, mime)}
+    )
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
 
@@ -227,7 +240,11 @@ def test_binary_media_type_has_no_charset(env):
 
     real = client.get(f"{PREFIX}/{bid}/{cid}/{aid}")
     base = _baseline_client(saved, "f.pdf", "application/pdf").get("/baseline")
-    assert real.headers["content-type"] == base.headers["content-type"] == "application/pdf"
+    assert (
+        real.headers["content-type"]
+        == base.headers["content-type"]
+        == "application/pdf"
+    )
 
 
 def test_single_range_206_matches_baseline(env):
@@ -244,7 +261,11 @@ def test_single_range_206_matches_baseline(env):
 
     assert real.status_code == base.status_code == 206
     assert real.content == base.content == content[100:200]
-    assert real.headers["content-range"] == base.headers["content-range"] == f"bytes 100-199/{len(content)}"
+    assert (
+        real.headers["content-range"]
+        == base.headers["content-range"]
+        == f"bytes 100-199/{len(content)}"
+    )
     assert real.headers["content-length"] == base.headers["content-length"] == "100"
 
 
@@ -298,7 +319,11 @@ def test_overlapping_ranges_merge_to_single_206(env):
     real = client.get(f"{PREFIX}/{bid}/{cid}/{aid}", headers=headers)
     bl = base.get("/baseline", headers=headers)
     assert real.status_code == bl.status_code == 206
-    assert real.headers["content-range"] == bl.headers["content-range"] == f"bytes 0-19/{len(content)}"
+    assert (
+        real.headers["content-range"]
+        == bl.headers["content-range"]
+        == f"bytes 0-19/{len(content)}"
+    )
     assert real.content == bl.content == content[0:20]
 
 
@@ -310,7 +335,10 @@ def test_suffix_range_206(env):
     real = client.get(f"{PREFIX}/{bid}/{cid}/{aid}", headers={"Range": "bytes=-50"})
     assert real.status_code == 206
     assert real.content == content[-50:]
-    assert real.headers["content-range"] == f"bytes {len(content) - 50}-{len(content) - 1}/{len(content)}"
+    assert (
+        real.headers["content-range"]
+        == f"bytes {len(content) - 50}-{len(content) - 1}/{len(content)}"
+    )
 
 
 def test_unsatisfiable_range_416(env):
@@ -422,6 +450,7 @@ def test_large_download_does_not_block_control_route(env):
     async def scenario():
         transport = httpx.ASGITransport(app=env["app"])
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as ac:
+
             async def ping():
                 t0 = time.perf_counter()
                 r = await ac.get("/__ping__")

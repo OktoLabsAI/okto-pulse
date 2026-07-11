@@ -5,10 +5,15 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 import copy as _copy
 import json as _json
-import uuid as _uuid
 
 from okto_pulse.core.discovery_intent_catalog import DEFAULT_DISCOVERY_INTENTS
+from okto_pulse.core.ports.permission_policy import (
+    merge_permission_registry_defaults,
+)
 from okto_pulse.core.ports.relational_runtime import get_engine, get_session_factory
+from okto_pulse.community.adapters.permission_preset_reconciliation import (
+    reconcile_community_permission_presets,
+)
 
 StepCallable = Callable[[], "Awaitable[object] | object"]
 
@@ -23,103 +28,14 @@ def _json_value(value):
 
 
 async def _seed_builtin_presets() -> None:
-    """Seed built-in permission presets if they don't exist."""
-    from sqlalchemy import JSON as sa_JSON
-    from sqlalchemy import bindparam, text as sa_text
+    """Compatibility entrypoint for the unified Core reconciliation use case."""
 
-    try:
-        from okto_pulse.core.infra.permissions import get_builtin_presets
-        presets = get_builtin_presets()
-    except Exception:
-        return
-
-    async with get_session_factory()() as session:
-        try:
-            for preset_def in presets:
-                # Check if preset already exists by name + is_builtin
-                existing = await session.execute(
-                    sa_text(
-                        "SELECT id FROM permission_presets WHERE name = :name AND is_builtin = :builtin"
-                    ).bindparams(name=preset_def["name"], builtin=True)
-                )
-                if existing.scalar():
-                    continue
-                await session.execute(
-                    sa_text(
-                        "INSERT INTO permission_presets "
-                        "(id, owner_id, name, description, is_builtin, base_preset_id, flags) "
-                        "VALUES "
-                        "(:id, :owner_id, :name, :description, :is_builtin, :base_preset_id, :flags)"
-                    ).bindparams(bindparam("flags", type_=sa_JSON)),
-                    {
-                        "id": str(_uuid.uuid4()),
-                        "owner_id": None,
-                        "name": preset_def["name"],
-                        "description": preset_def["description"],
-                        "is_builtin": True,
-                        "base_preset_id": None,
-                        "flags": preset_def["flags"],
-                    },
-                )
-            await session.commit()
-        except Exception:
-            await session.rollback()
+    await reconcile_community_permission_presets()
 
 async def _reconcile_builtin_presets() -> None:
-    """Refresh built-in preset flags from code definitions on every startup.
+    """Compatibility entrypoint for the unified Core reconciliation use case."""
 
-    Built-in presets are authoritative in code (get_builtin_presets()). When
-    the registry grows (new entities or sub-flags), existing DB rows for
-    built-in presets become stale. This rewrites their flags from the current
-    definition, untouched for custom presets (is_builtin=False).
-    """
-    import logging
-    logger = logging.getLogger("okto_pulse.migrations")
-
-
-    try:
-        from okto_pulse.core.infra.permissions import get_builtin_presets
-        presets = get_builtin_presets()
-    except Exception as e:
-        logger.error(f"Built-in preset reconcile skipped (import failed): {e}")
-        return
-
-    async with get_session_factory()() as session:
-        try:
-            from sqlalchemy import JSON as sa_JSON
-            from sqlalchemy import bindparam, text as sa_text
-            refreshed = 0
-            for preset_def in presets:
-                result = await session.execute(
-                    sa_text(
-                        "SELECT id, flags FROM permission_presets "
-                        "WHERE name = :name AND is_builtin = :builtin"
-                    ),
-                    {"name": preset_def["name"], "builtin": True},
-                )
-                existing = result.mappings().first()
-                if not existing:
-                    continue
-                new_flags_json = _json.dumps(preset_def["flags"], sort_keys=True)
-                old_flags_json = _json.dumps(
-                    _json_value(existing["flags"]) or {}, sort_keys=True
-                )
-                if new_flags_json != old_flags_json:
-                    await session.execute(
-                        sa_text(
-                            "UPDATE permission_presets "
-                            "SET flags = :flags, updated_at = CURRENT_TIMESTAMP "
-                            "WHERE id = :id"
-                        ).bindparams(bindparam("flags", type_=sa_JSON)),
-                        {"id": existing["id"], "flags": preset_def["flags"]},
-                    )
-                    refreshed += 1
-            if refreshed:
-                await session.commit()
-                logger.info(f"Refreshed {refreshed} built-in preset(s) from registry")
-        except Exception as e:
-            logger.error(f"Built-in preset reconcile failed: {e}")
-            await session.rollback()
+    await reconcile_community_permission_presets()
 
 async def _reconcile_agent_permission_flags() -> None:
     """Backfill missing registry keys into agents' permission_flags on every startup.
@@ -132,15 +48,6 @@ async def _reconcile_agent_permission_flags() -> None:
     import logging
     logger = logging.getLogger("okto_pulse.migrations")
 
-
-    try:
-        from okto_pulse.core.infra.permissions import (
-            PERMISSION_REGISTRY,
-            merge_missing_flags,
-        )
-    except Exception as e:
-        logger.error(f"Agent permissions reconcile skipped (import failed): {e}")
-        return
 
     async with get_session_factory()() as session:
         try:
@@ -157,7 +64,7 @@ async def _reconcile_agent_permission_flags() -> None:
             total_added = 0
             for agent in agents:
                 stored_dict = _copy.deepcopy(_json_value(agent["permission_flags"]) or {})
-                merged, added = merge_missing_flags(stored_dict, PERMISSION_REGISTRY)
+                merged, added = merge_permission_registry_defaults(stored_dict)
                 if added > 0:
                     await session.execute(
                         sa_text(
@@ -186,18 +93,14 @@ async def _bootstrap_default_discovery_intents() -> None:
     """Upsert the core-owned Discovery intent catalog."""
     from sqlalchemy import text as sa_text
 
-    dialect = get_engine().dialect.name
     async with get_engine().begin() as conn:
         import json as _json
         for s in DEFAULT_DISCOVERY_INTENTS:
-            if dialect == "postgresql":
-                params_literal = s["params_schema"]
-            else:
-                params_literal = (
-                    _json.dumps(s["params_schema"])
-                    if s["params_schema"] is not None
-                    else None
-                )
+            params_literal = (
+                _json.dumps(s["params_schema"])
+                if s["params_schema"] is not None
+                else None
+            )
 
             row = await conn.execute(
                 sa_text(

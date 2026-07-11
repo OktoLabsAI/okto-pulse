@@ -52,11 +52,11 @@ def save_state(metrics_dir: Path, state: dict[str, Any]) -> None:
 class CommunityTelemetryStateCarrier:
     """Community-owned full-dict carrier for ``metrics_dir/state.json``."""
 
-    def load_state(self, metrics_dir: Path) -> dict[str, Any]:
-        return load_state(metrics_dir)
+    def load_state(self, state_ref: str) -> dict[str, Any]:
+        return load_state(Path(state_ref))
 
-    def save_state(self, metrics_dir: Path, state: dict[str, Any]) -> None:
-        save_state(metrics_dir, state)
+    def save_state(self, state_ref: str, state: dict[str, Any]) -> None:
+        save_state(Path(state_ref), state)
 
 
 def build_community_telemetry_state_carrier() -> TelemetryStateCarrier:

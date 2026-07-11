@@ -27,8 +27,6 @@ def _clean_settings_registry():
     import okto_pulse.core.infra.config as _config
     from okto_pulse.core.infra.config import CoreSettings
 
-    saved_settings = _config._settings_instance
-    saved_reg = (_reg._registry, _reg._configured)
     saved_data = os.environ.get("DATA_DIR")
     os.environ["DATA_DIR"] = tempfile.mkdtemp()
     _config.configure_settings(CoreSettings())
@@ -36,8 +34,7 @@ def _clean_settings_registry():
     try:
         yield
     finally:
-        _config._settings_instance = saved_settings
-        _reg._registry, _reg._configured = saved_reg
+        _reg.reset_registry_for_tests()
         if saved_data is None:
             os.environ.pop("DATA_DIR", None)
         else:
@@ -52,9 +49,7 @@ def test_ts_0fda322a_composition_registers_auth_context_factory(
     )
 
     factory = create_mcp_auth_factory(lambda: None, lambda: None)
-    configure_community_kg_registry(
-        None, auth_context_factory=factory
-    )
+    configure_community_kg_registry(None, auth_context_factory=factory)
 
     reg = _reg.get_kg_registry()
     # Pass-through: the EXACT factory the caller built (not a second factory).

@@ -1,12 +1,31 @@
-"""Community-owned runtime worker registry."""
+"""Community composition for application-scoped runtime runners."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from okto_pulse.core.application.processors import (
+    ConsolidationProcessor,
+    GlobalOutboxProcessor,
+    SessionCleanupProcessor,
+)
+from okto_pulse.core.application.domain_event_delivery import (
+    DomainEventDeliveryProcessor,
+)
 from okto_pulse.core.ports.runtime_workers import (
     RuntimeWorkerRegistry,
     RuntimeWorkerSpec,
+)
+from okto_pulse.community.adapters.worker_runners import (
+    ConsolidationRunner,
+    PollingRunner,
+    TrackedBlockingExecution,
+    UtcWorkerClock,
+    start_runner,
+    stop_runner,
+)
+from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
+    CommunitySqlAlchemyDomainEventDeliveryStore,
 )
 
 COMMUNITY_WORKER_BASELINE_FAMILIES: tuple[str, ...] = (
@@ -28,15 +47,62 @@ def build_community_worker_registry(
     session_factory: Any,
     *,
     kg_cleanup_enabled: bool = True,
+    kg_cleanup_interval_seconds: int = 60,
+    kg_queue_heartbeat_seconds: int = 30,
+    kg_queue_recovery_scan_interval_seconds: int = 60,
+    kg_queue_max_concurrent_workers: int = 1,
 ) -> RuntimeWorkerRegistry:
-    """Build the Community runtime worker registry for combined_lifespan."""
+    """Build all runners before app construction and register their lifecycle."""
 
+    clock = UtcWorkerClock()
+    blocking_execution = TrackedBlockingExecution()
+    event_processor = DomainEventDeliveryProcessor(
+        CommunitySqlAlchemyDomainEventDeliveryStore(session_factory),
+        clock=clock.now,
+    )
+    event_runner = PollingRunner(
+        event_processor,
+        name="community.event_dispatcher",
+        interval_seconds=5.0,
+        operation_name="process_batch",
+        recover=event_processor.recover_orphans,
+    )
+    cleanup_runner = PollingRunner(
+        SessionCleanupProcessor(
+            interval_seconds=kg_cleanup_interval_seconds,
+            clock=clock,
+        ),
+        name="community.kg.cleanup_runner",
+        interval_seconds=float(kg_cleanup_interval_seconds),
+        operation_name="process_once",
+        final_iteration=True,
+    )
+    consolidation_processor = ConsolidationProcessor(
+        session_factory=session_factory,
+        heartbeat_seconds=kg_queue_heartbeat_seconds,
+        clock=clock,
+        blocking_execution=blocking_execution,
+    )
+    consolidation_runner = ConsolidationRunner(
+        consolidation_processor,
+        blocking_execution=blocking_execution,
+        heartbeat_seconds=float(kg_queue_heartbeat_seconds),
+        recovery_interval_seconds=float(kg_queue_recovery_scan_interval_seconds),
+        max_concurrent_workers=kg_queue_max_concurrent_workers,
+    )
+    outbox_runner = PollingRunner(
+        GlobalOutboxProcessor(session_factory, interval_seconds=5, clock=clock),
+        name="community.kg.outbox_runner",
+        interval_seconds=5.0,
+        operation_name="process_once",
+        final_iteration=True,
+    )
     registry = RuntimeWorkerRegistry()
     registry.register(
         RuntimeWorkerSpec(
             family="event_dispatcher",
-            start=lambda: _start_event_dispatcher(session_factory),
-            stop=_stop_event_dispatcher,
+            start=lambda: start_runner(event_runner),
+            stop=stop_runner,
             stop_priority=300,
         )
     )
@@ -44,77 +110,27 @@ def build_community_worker_registry(
         registry.register(
             RuntimeWorkerSpec(
                 family="cleanup_worker",
-                start=_start_cleanup_worker,
-                stop=_stop_simple_worker,
+                start=lambda: start_runner(cleanup_runner),
+                stop=stop_runner,
                 stop_priority=100,
             )
         )
     registry.register(
         RuntimeWorkerSpec(
             family="consolidation_worker",
-            start=lambda: _start_consolidation_worker(session_factory),
-            stop=_stop_simple_worker,
+            start=lambda: start_runner(consolidation_runner),
+            stop=stop_runner,
         )
     )
     registry.register(
         RuntimeWorkerSpec(
             family="outbox_worker",
-            start=lambda: _start_outbox_worker(session_factory),
-            stop=_stop_simple_worker,
+            start=lambda: start_runner(outbox_runner),
+            stop=stop_runner,
             stop_priority=200,
         )
     )
     return registry
-
-
-async def _start_event_dispatcher(session_factory: Any) -> Any:
-    from okto_pulse.core import events as _events  # noqa: F401
-    from okto_pulse.core.events.dispatcher import EventDispatcher, set_dispatcher
-
-    dispatcher = EventDispatcher(session_factory)
-    await dispatcher.start()
-    set_dispatcher(dispatcher)
-    return dispatcher
-
-
-async def _stop_event_dispatcher(dispatcher: Any) -> None:
-    from okto_pulse.core.events.dispatcher import set_dispatcher
-
-    await dispatcher.stop(timeout=5.0)
-    set_dispatcher(None)
-
-
-async def _start_cleanup_worker() -> Any:
-    from okto_pulse.core.kg.workers.cleanup import get_cleanup_worker
-
-    worker = get_cleanup_worker()
-    await worker.start()
-    return worker
-
-
-async def _start_consolidation_worker(session_factory: Any) -> Any:
-    # O worker iniciado DEVE ser o singleton de get_consolidation_worker():
-    # queue_health (worker_mode), kg_health (dlq drain stats), o process_now do
-    # dead_letter_reprocess e signal_consolidation_worker() leem o singleton —
-    # uma instância avulsa deixa worker_mode="stopped" permanente e transforma
-    # o wake signal dos enqueue sites em no-op (fila só anda no heartbeat).
-    from okto_pulse.core.kg.workers.consolidation import get_consolidation_worker
-
-    worker = get_consolidation_worker(session_factory)
-    await worker.start()
-    return worker
-
-
-async def _start_outbox_worker(session_factory: Any) -> Any:
-    from okto_pulse.core.kg.global_discovery.outbox_worker import OutboxWorker
-
-    worker = OutboxWorker(session_factory)
-    await worker.start()
-    return worker
-
-
-async def _stop_simple_worker(worker: Any) -> None:
-    await worker.stop()
 
 
 __all__ = [

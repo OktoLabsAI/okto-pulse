@@ -17,7 +17,6 @@ from okto_pulse.community.adapters.telemetry_port import (
 )
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.ports.telemetry import TelemetryPort
-from okto_pulse.core.telemetry import telemetry_port_registry as registry
 from okto_pulse.core.telemetry.telemetry_port_registry import (
     get_telemetry_port,
     reset_telemetry_port_factory_for_tests,
@@ -44,32 +43,33 @@ def test_community_factory_builds_a_telemetry_port(tmp_path):
 
 def test_registration_wires_core_registry(tmp_path):
     reset_telemetry_port_factory_for_tests()
-    assert registry._telemetry_port_factory is None
+    with pytest.raises(RuntimeError, match="No TelemetryPort factory registered"):
+        get_telemetry_port(_settings(tmp_path))
     register_community_telemetry_port()
     resolved = get_telemetry_port(_settings(tmp_path))
     assert isinstance(resolved, TelemetryPort)
-    assert type(resolved).__name__ == "TelemetryService"
+    assert type(resolved).__name__ == "CommunityTelemetryService"
 
 
 def test_composed_root_registers_telemetry_port(tmp_path, monkeypatch):
     """The REAL composition root registers the TelemetryPort factory (additive)."""
     import okto_pulse.core.infra.config as _config
     import okto_pulse.core.kg.interfaces.registry as _reg
-    from okto_pulse.community.adapters.composition import configure_community_kg_registry
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("KG_BASE_DIR", str(tmp_path / "boards"))
-    saved_settings = _config._settings_instance
-    saved_reg = (_reg._registry, _reg._configured)
     _config.configure_settings(CoreSettings())
     _reg.reset_registry_for_tests()
     try:
         reset_telemetry_port_factory_for_tests()
-        assert registry._telemetry_port_factory is None
+        with pytest.raises(RuntimeError, match="No TelemetryPort factory registered"):
+            get_telemetry_port(_settings(tmp_path))
         configure_community_kg_registry(None)
         resolved = get_telemetry_port(_settings(tmp_path))
         assert isinstance(resolved, TelemetryPort)
     finally:
         reset_telemetry_port_factory_for_tests()
-        _config._settings_instance = saved_settings
-        _reg._registry, _reg._configured = saved_reg
+        _reg.reset_registry_for_tests()

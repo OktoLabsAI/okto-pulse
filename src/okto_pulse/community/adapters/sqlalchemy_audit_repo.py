@@ -44,7 +44,7 @@ class CommunityAuditRepository:
     ) -> AuditRow | None:
         from sqlalchemy import select
 
-        from okto_pulse.core.models.db import ConsolidationAudit
+        from okto_pulse.community.adapters.sqlalchemy_models import ConsolidationAudit
 
         async with self._sf() as session:
             query = (
@@ -66,7 +66,7 @@ class CommunityAuditRepository:
     async def get_audit_by_session(self, session_id: str) -> AuditRow | None:
         from sqlalchemy import select
 
-        from okto_pulse.core.models.db import ConsolidationAudit
+        from okto_pulse.community.adapters.sqlalchemy_models import ConsolidationAudit
 
         async with self._sf() as session:
             result = (
@@ -86,7 +86,7 @@ class CommunityAuditRepository:
         node_refs: list[NodeRefData],
         outbox_event: OutboxEventData,
     ) -> None:
-        from okto_pulse.core.models.db import (
+        from okto_pulse.community.adapters.sqlalchemy_models import (
             ConsolidationAudit,
             GlobalUpdateOutbox,
             KuzuNodeRef,
@@ -116,8 +116,8 @@ class CommunityAuditRepository:
                     KuzuNodeRef(
                         session_id=ref.session_id,
                         board_id=ref.board_id,
-                        kuzu_node_id=ref.kuzu_node_id,
-                        kuzu_node_type=ref.kuzu_node_type,
+                        kuzu_node_id=ref.graph_node_id,
+                        kuzu_node_type=ref.graph_node_type,
                         operation=ref.operation,
                     )
                 )
@@ -137,7 +137,7 @@ class CommunityAuditRepository:
 
         from sqlalchemy import update
 
-        from okto_pulse.core.models.db import ConsolidationAudit
+        from okto_pulse.community.adapters.sqlalchemy_models import ConsolidationAudit
 
         async with self._sf() as session:
             await session.execute(
@@ -150,7 +150,7 @@ class CommunityAuditRepository:
     async def purge_by_board(self, board_id: str) -> int:
         from sqlalchemy import delete, func, select
 
-        from okto_pulse.core.models.db import ConsolidationAudit
+        from okto_pulse.community.adapters.sqlalchemy_models import ConsolidationAudit
 
         async with self._sf() as session:
             count_result = await session.execute(

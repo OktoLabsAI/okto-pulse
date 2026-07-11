@@ -9,8 +9,8 @@ the full R05-E refactor (much of ``okto_pulse.core`` is still uncommitted).
 
 It exercises six runtime surfaces with NO port binding and NO model download:
 
-  1. imports     — community ``cli`` / ``seed`` / ``main`` / composition + the core
-                   ``create_app`` and ``build_mcp_asgi_app`` import clean.
+  1. imports     — community ``cli`` / ``seed`` / ``main`` / composition + the
+                   Community ``create_app`` and Core ``build_mcp_asgi_app`` import clean.
   2. composition — ``configure_community_kg_registry`` wires the Community-owned
                    providers (no missing-provider error) with the STUB embedding.
   3. seed        — ``seed_community_defaults`` runs against an in-memory/temp
@@ -67,33 +67,44 @@ def run_preservation_smoke() -> dict[str, object]:
     Raises ``AssertionError`` on a real regression (a collapsed surface). Restores
     every process-global it mutates so the caller's environment is untouched.
     """
+    env_keys = (
+        "DATA_DIR",
+        "KG_BASE_DIR",
+        "KG_EMBEDDING_MODE",
+        "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE",
+    )
+    saved_env = {key: os.environ.get(key) for key in env_keys}
     tmp = _force_offline_env()
 
     # --- 1. imports --------------------------------------------------------- #
     from okto_pulse.community import cli, seed  # noqa: F401
     from okto_pulse.community import main as community_main  # noqa: F401
     from okto_pulse.community.adapters import composition as comp
-    from okto_pulse.core.app import create_app  # noqa: F401
+    from okto_pulse.community.app import create_app  # noqa: F401
     from okto_pulse.core.infra import config as _config
     from okto_pulse.core.infra import database as _db
-    from okto_pulse.core.infra import schema_lifecycle as _schema_lifecycle
     from okto_pulse.core.infra.config import CoreSettings
     from okto_pulse.core.kg.interfaces import registry as _reg
     from okto_pulse.core.mcp import server as _srv
 
     evidence: dict[str, object] = {"imports_ok": True}
 
-    # Save process-global state for restoration.
-    saved_settings = _config._settings_instance
-    saved_engine = _db._engine
-    saved_factory = _db._session_factory
-    saved_reg = (_reg._registry, _reg._configured)
-    saved_schema_lifecycle = _schema_lifecycle.resolve_relational_schema_lifecycle_orchestrator()
+    from okto_pulse.core.runtime_context import (
+        capture_runtime_values_for_tests,
+        reset_runtime_values,
+        restore_runtime_values_for_tests,
+    )
+
+    saved_runtime = capture_runtime_values_for_tests()
+    reset_runtime_values()
 
     try:
         settings = CoreSettings()
         evidence["embedding_mode"] = settings.kg_embedding_mode
-        assert settings.kg_embedding_mode == "stub", "offline smoke must run the stub embedding"
+        assert settings.kg_embedding_mode == "stub", (
+            "offline smoke must run the stub embedding"
+        )
         _config.configure_settings(settings)
         _reg.reset_registry_for_tests()
 
@@ -112,7 +123,9 @@ def run_preservation_smoke() -> dict[str, object]:
         asyncio.run(_init_db())
 
         # --- 2. composition ------------------------------------------------- #
-        comp.configure_community_kg_registry(_db.get_session_factory(), include_graph=True)
+        comp.configure_community_kg_registry(
+            _db.get_session_factory(), include_graph=True
+        )
         reg = _reg.get_kg_registry()
         provider_types = {
             "event_bus": type(reg.event_bus).__name__,
@@ -120,16 +133,22 @@ def run_preservation_smoke() -> dict[str, object]:
             "config": type(reg.config).__name__,
         }
         evidence["composition_providers"] = provider_types
-        assert reg.event_bus is not None and reg.audit_repo is not None and reg.config is not None, (
-            "Community data providers missing after composition"
-        )
+        assert (
+            reg.event_bus is not None
+            and reg.audit_repo is not None
+            and reg.config is not None
+        ), "Community data providers missing after composition"
         assert provider_types["event_bus"] == "CommunityOutboxEventBus", provider_types
-        assert provider_types["audit_repo"] == "CommunityAuditRepository", provider_types
+        assert provider_types["audit_repo"] == "CommunityAuditRepository", (
+            provider_types
+        )
         assert provider_types["config"] == "CommunityKGConfig", provider_types
         emb = getattr(reg, "embedding_provider", None)
         emb_meta = emb.embedding_metadata() if emb is not None else {}
         evidence["embedding_is_stub"] = bool(emb_meta.get("is_stub"))
-        assert evidence["embedding_is_stub"] is True, "expected the deterministic stub embedding offline"
+        assert evidence["embedding_is_stub"] is True, (
+            "expected the deterministic stub embedding offline"
+        )
 
         # --- 3. seed -------------------------------------------------------- #
         async def _seed() -> object:
@@ -138,7 +157,9 @@ def run_preservation_smoke() -> dict[str, object]:
 
         seed_result = asyncio.run(_seed())
         evidence["seed_returned"] = seed_result is not None
-        assert seed_result is not None, "seed_community_defaults returned None (board not seeded)"
+        assert seed_result is not None, (
+            "seed_community_defaults returned None (board not seeded)"
+        )
 
         asyncio.run(_db.close_db())
 
@@ -147,7 +168,9 @@ def run_preservation_smoke() -> dict[str, object]:
         # FastAPI may keep included routers as lazy _IncludedRouter entries in
         # app.routes; the public HTTP contract is the generated OpenAPI path set.
         openapi_paths = set(app.openapi().get("paths", {}))
-        direct_routes = {getattr(r, "path", None) for r in app.routes if getattr(r, "path", None)}
+        direct_routes = {
+            getattr(r, "path", None) for r in app.routes if getattr(r, "path", None)
+        }
         routes = sorted(openapi_paths | direct_routes)
         evidence["routes"] = routes
         evidence["route_count"] = len(routes)
@@ -157,7 +180,9 @@ def run_preservation_smoke() -> dict[str, object]:
         evidence["api_v1_route_count"] = len(api_routes)
         assert "/health" in routes, "the /health route disappeared"
         assert api_routes, "the /api/v1 surface disappeared"
-        assert len(routes) >= _MIN_ROUTES, f"route inventory collapsed: {len(routes)} < {_MIN_ROUTES}"
+        assert len(routes) >= _MIN_ROUTES, (
+            f"route inventory collapsed: {len(routes)} < {_MIN_ROUTES}"
+        )
 
         # --- 5. mcp (tool inventory) ---------------------------------------- #
         # build_mcp_asgi_app constructs the same MCP ASGI surface the dual-port
@@ -165,19 +190,31 @@ def run_preservation_smoke() -> dict[str, object]:
         mcp_app = _srv.build_mcp_asgi_app()
         evidence["mcp_asgi_app"] = type(mcp_app).__name__
         tools = asyncio.run(_srv.mcp.get_tools())
-        tool_names = list(tools.keys()) if hasattr(tools, "keys") else [getattr(t, "name", t) for t in tools]
+        tool_names = (
+            list(tools.keys())
+            if hasattr(tools, "keys")
+            else [getattr(t, "name", t) for t in tools]
+        )
         tool_names = sorted(str(name) for name in tool_names)
         evidence["mcp_tools"] = tool_names
         evidence["mcp_tool_count"] = len(tool_names)
-        evidence["has_create_ideation_tool"] = any("create_ideation" in str(n) for n in tool_names)
+        evidence["has_create_ideation_tool"] = any(
+            "create_ideation" in str(n) for n in tool_names
+        )
         assert len(tool_names) >= _MIN_MCP_TOOLS, (
             f"MCP tool inventory collapsed: {len(tool_names)} < {_MIN_MCP_TOOLS}"
         )
-        assert evidence["has_create_ideation_tool"], "okto_pulse_create_ideation tool missing"
+        assert evidence["has_create_ideation_tool"], (
+            "okto_pulse_create_ideation tool missing"
+        )
 
         # --- 6. cli --------------------------------------------------------- #
         cli_src = inspect.getsource(cli)
-        cli_commands = [c for c in ("init", "serve", "status", "reset", "api-key") if f'"{c}"' in cli_src]
+        cli_commands = [
+            c
+            for c in ("init", "serve", "status", "reset", "api-key")
+            if f'"{c}"' in cli_src
+        ]
         evidence["cli_commands_present"] = cli_commands
         assert {"init", "serve", "status", "reset"} <= set(cli_commands), cli_commands
 
@@ -186,16 +223,12 @@ def run_preservation_smoke() -> dict[str, object]:
             asyncio.run(_db.close_db())
         except Exception:
             pass
-        _config._settings_instance = saved_settings
-        _db._engine = saved_engine
-        _db._session_factory = saved_factory
-        _reg._registry, _reg._configured = saved_reg
-        if saved_schema_lifecycle is None:
-            _schema_lifecycle.reset_relational_schema_lifecycle_orchestrator()
-        else:
-            _schema_lifecycle.register_relational_schema_lifecycle_orchestrator(
-                saved_schema_lifecycle
-            )
+        restore_runtime_values_for_tests(saved_runtime)
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     evidence["ok"] = True
     return evidence
@@ -243,16 +276,26 @@ def main(argv: list[str] | None = None) -> int:
                 core_version=os.environ.get("R15B_CORE_VERSION", "0.3.0"),
                 community_version=os.environ.get("R15B_COMMUNITY_VERSION", "0.3.0"),
                 core_commit=os.environ.get("R15B_CORE_COMMIT", "working-tree"),
-                community_commit=os.environ.get("R15B_COMMUNITY_COMMIT", "working-tree"),
-                core_wheel_hash=os.environ.get("R15B_CORE_WHEEL_HASH", "sha256:working-tree-core"),
+                community_commit=os.environ.get(
+                    "R15B_COMMUNITY_COMMIT", "working-tree"
+                ),
+                core_wheel_hash=os.environ.get(
+                    "R15B_CORE_WHEEL_HASH", "sha256:working-tree-core"
+                ),
                 community_wheel_hash=os.environ.get(
                     "R15B_COMMUNITY_WHEEL_HASH", "sha256:working-tree-community"
                 ),
                 removed_dependencies=tuple(
-                    item for item in os.environ.get("R15B_REMOVED_DEPENDENCIES", "").split(",") if item
+                    item
+                    for item in os.environ.get("R15B_REMOVED_DEPENDENCIES", "").split(
+                        ","
+                    )
+                    if item
                 ),
                 community_adapters_registered=tuple(
-                    item for item in os.environ.get("R15B_COMMUNITY_ADAPTERS", "").split(",") if item
+                    item
+                    for item in os.environ.get("R15B_COMMUNITY_ADAPTERS", "").split(",")
+                    if item
                 ),
             )
             print(json.dumps(payload, sort_keys=True))
@@ -261,7 +304,9 @@ def main(argv: list[str] | None = None) -> int:
     except AssertionError as exc:
         print(f"{_FAILURE_SENTINEL}: {exc}", file=sys.stderr)
         return 1
-    except Exception as exc:  # environment / import error — not a preservation regression
+    except (
+        Exception
+    ) as exc:  # environment / import error — not a preservation regression
         print(f"SMOKE_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 

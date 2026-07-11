@@ -115,3 +115,12 @@ def test_ts_2a2d4e73_golden_replay_combined_lifespan_freeze():
                 ),),
             )
         )
+
+
+def test_community_catalog_registration_is_idempotent_after_freeze():
+    register_and_freeze_community_resource_catalog()
+    first = {s.uri for s in core_srv.effective_resource_catalog().specs()}
+
+    register_and_freeze_community_resource_catalog()
+
+    assert {s.uri for s in core_srv.effective_resource_catalog().specs()} == first

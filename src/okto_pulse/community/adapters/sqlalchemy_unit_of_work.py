@@ -12,10 +12,6 @@ transaction boundary (commit/rollback/close) and exposes the repository catalog
 path is reached whether the consumer enters via the factory or via
 ``async with uow:`` directly (one teardown path, no connection leak).
 
-``session`` is the transitional bridge the spec #09 use cases still delegate to
-(``session_of``); it is preserved here for byte-parity and removed when those
-flows migrate to the repositories.
-
 ``CommunityUnitOfWorkFactory`` is realm-ready: ``realm_id``/``actor`` are accepted
 and carried but NO realm filter/enforcement is applied this phase (fr_cbfcb1aa) —
 identical to the core factory.
@@ -38,9 +34,32 @@ from okto_pulse.community.adapters.sqlalchemy_repositories import (
     CommunityIdeationRepository,
     CommunitySpecRepository,
 )
+from okto_pulse.core.application.service_catalog import (
+    build_application_service_catalog,
+)
+from okto_pulse.core.ports.application_persistence import (
+    ApplicationRecord,
+    ApplicationPersistencePort,
+    register_application_persistence_port,
+)
+from okto_pulse.core.domain.realm import RealmScope, require_realm_scope
+from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
+    CommunitySqlAlchemyApplicationPersistence,
+)
 
 if TYPE_CHECKING:
     from okto_pulse.core.application.use_cases.base import ActorContext
+
+
+def _community_realm_scope(
+    realm_scope: RealmScope | None,
+    realm_id: str | None,
+) -> RealmScope:
+    if realm_scope is not None:
+        return require_realm_scope(realm_scope)
+    if realm_id:
+        return RealmScope.local() if realm_id == "local" else RealmScope.tenant(realm_id)
+    return RealmScope.local()
 
 
 class CommunityUnitOfWork:
@@ -50,23 +69,26 @@ class CommunityUnitOfWork:
         self,
         session: AsyncSession,
         *,
+        realm_scope: RealmScope | None = None,
         realm_id: str | None = None,
         actor: "ActorContext | None" = None,
+        application_persistence: ApplicationPersistencePort | None = None,
     ) -> None:
         self._session = session
         # realm-ready, NOT enforced this phase (fr_cbfcb1aa).
-        self.realm_id = realm_id
+        self.realm_scope = _community_realm_scope(realm_scope, realm_id)
+        self.realm_id = self.realm_scope.realm_id
         self.actor = actor
-        self.boards = CommunityBoardRepository(session)
-        self.ideations = CommunityIdeationRepository(session)
-        self.specs = CommunitySpecRepository(session)
-
-    @property
-    def session(self) -> AsyncSession:
-        """Transitional bridge: the spec #09 use cases still delegate to services
-        via a session (``session_of``). Removed when those flows migrate to the
-        repositories."""
-        return self._session
+        self._session.info["realm_scope"] = self.realm_scope
+        self._application_persistence = (
+            application_persistence or CommunitySqlAlchemyApplicationPersistence()
+        )
+        if application_persistence is None:
+            register_application_persistence_port(self._application_persistence)
+        self.boards = CommunityBoardRepository(session, self.realm_scope)
+        self.ideations = CommunityIdeationRepository(session, self.realm_scope)
+        self.specs = CommunitySpecRepository(session, self.realm_scope)
+        self.services = build_application_service_catalog(session)
 
     async def __aenter__(self) -> "CommunityUnitOfWork":
         return self
@@ -84,10 +106,24 @@ class CommunityUnitOfWork:
         return None
 
     async def commit(self) -> None:
-        await self._session.commit()
+        await self._application_persistence.commit(self._session)
 
     async def rollback(self) -> None:
-        await self._session.rollback()
+        await self._application_persistence.rollback(self._session)
+
+    async def synchronize(self) -> None:
+        await self._application_persistence.flush(self._session)
+
+    async def reload(
+        self, entity: object, *, fields: tuple[str, ...] = ()
+    ) -> None:
+        if isinstance(entity, ApplicationRecord):
+            await self._application_persistence.refresh(self._session, entity)
+            return
+        await self._session.refresh(
+            entity,
+            attribute_names=list(fields) if fields else None,
+        )
 
     async def close(self) -> None:
         await self._session.close()
@@ -102,18 +138,23 @@ class _CommunityUnitOfWorkContext:
         self,
         session_factory: Any,
         *,
-        realm_id: str | None,
+        realm_scope: RealmScope,
         actor: "ActorContext | None",
+        application_persistence: ApplicationPersistencePort,
     ) -> None:
         self._session_factory = session_factory
-        self._realm_id = realm_id
+        self._realm_scope = require_realm_scope(realm_scope)
         self._actor = actor
+        self._application_persistence = application_persistence
         self._uow: CommunityUnitOfWork | None = None
 
     async def __aenter__(self) -> CommunityUnitOfWork:
         session = self._session_factory()
         self._uow = CommunityUnitOfWork(
-            session, realm_id=self._realm_id, actor=self._actor
+            session,
+            realm_scope=self._realm_scope,
+            actor=self._actor,
+            application_persistence=self._application_persistence,
         )
         return self._uow
 
@@ -128,21 +169,34 @@ class CommunityUnitOfWorkFactory:
 
     def __init__(self, session_factory: Any) -> None:
         self._session_factory = session_factory
+        self._application_persistence = CommunitySqlAlchemyApplicationPersistence()
+        register_application_persistence_port(self._application_persistence)
+
+    def resolve_realm_scope(self) -> RealmScope:
+        """Community is a single local realm by product definition."""
+
+        return RealmScope.local()
 
     def __call__(
         self,
         *,
+        realm_scope: RealmScope | None = None,
         realm_id: str | None = None,
         actor: "ActorContext | None" = None,
     ) -> AbstractAsyncContextManager["CommunityUnitOfWork"]:
+        resolved_scope = _community_realm_scope(realm_scope, realm_id)
         return _CommunityUnitOfWorkContext(
-            self._session_factory, realm_id=realm_id, actor=actor
+            self._session_factory,
+            realm_scope=resolved_scope,
+            actor=actor,
+            application_persistence=self._application_persistence,
         )
 
     def wrap(
         self,
         session: AsyncSession,
         *,
+        realm_scope: RealmScope | None = None,
         realm_id: str | None = None,
         actor: "ActorContext | None" = None,
     ) -> "CommunityUnitOfWork":
@@ -152,7 +206,12 @@ class CommunityUnitOfWorkFactory:
         returned UoW is used as a plain object (the use case commits/rolls back),
         NOT entered as an ``async with`` context. Byte-for-byte the same
         request-scoped semantics the core ``SQLAlchemyUnitOfWork(db)`` had."""
-        return CommunityUnitOfWork(session, realm_id=realm_id, actor=actor)
+        return CommunityUnitOfWork(
+            session,
+            realm_scope=_community_realm_scope(realm_scope, realm_id),
+            actor=actor,
+            application_persistence=self._application_persistence,
+        )
 
 
 def build_community_unit_of_work_factory(

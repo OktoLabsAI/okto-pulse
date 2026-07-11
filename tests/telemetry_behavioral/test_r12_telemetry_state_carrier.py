@@ -4,15 +4,17 @@ import json
 from pathlib import Path
 
 from okto_pulse.community.adapters import telemetry_state as tstate
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.ports.telemetry import TelemetryStateCarrier
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
-from okto_pulse.core.telemetry.service import TelemetryService
 from okto_pulse.core.telemetry.settings import (
     LOCAL_ONLY_MIGRATION_NOTICE,
     mark_migration_notice_seen,
     record_consent,
-    resolve_telemetry_config,
 )
 from okto_pulse.core.telemetry.telemetry_state_registry import (
     load_telemetry_state,
@@ -100,7 +102,9 @@ def test_community_registration_wires_core_settings_without_truncating_state(
         assert reloaded[key] == original[key]
 
 
-def test_community_registration_is_required_for_core_state_access(tmp_path: Path) -> None:
+def test_community_registration_is_required_for_core_state_access(
+    tmp_path: Path,
+) -> None:
     reset_telemetry_state_carrier_for_tests()
     try:
         try:
@@ -113,10 +117,15 @@ def test_community_registration_is_required_for_core_state_access(tmp_path: Path
         tstate.register_community_telemetry_state_carrier()
 
     tstate.save_state(tmp_path / "metrics", {"mode": "disabled", "unknown": "kept"})
-    assert load_telemetry_state(tmp_path / "metrics") == {"mode": "disabled", "unknown": "kept"}
+    assert load_telemetry_state(tmp_path / "metrics") == {
+        "mode": "disabled",
+        "unknown": "kept",
+    }
 
 
-def test_summary_uses_full_carrier_snapshot_but_redacts_secret_keys(tmp_path: Path) -> None:
+def test_summary_uses_full_carrier_snapshot_but_redacts_secret_keys(
+    tmp_path: Path,
+) -> None:
     settings = _settings(tmp_path)
     tstate.save_state(
         tmp_path / "metrics",

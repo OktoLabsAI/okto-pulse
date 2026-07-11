@@ -19,7 +19,7 @@ def test_local_auth_adapter_satisfies_pure_core_contract() -> None:
     assert isinstance(provider, AuthenticationPort)
     assert isinstance(principal, Principal)
     assert principal.subject == "local-user"
-    assert principal.realm_id is None
+    assert principal.realm_id == "local"
     assert principal.legacy_user() == LOCAL_USER
 
 
@@ -38,11 +38,17 @@ def test_local_auth_adapter_does_not_import_fastapi() -> None:
 
 def test_mcp_session_projects_to_the_same_principal_dto() -> None:
     principal = principal_from_auth_session(
-        AgentAuthSession(agent_id="agent-01", agent_name="Automation", is_active=True)
+        AgentAuthSession(
+            agent_id="agent-01",
+            agent_name="Automation",
+            is_active=True,
+            metadata={"realm_id": "local"},
+        )
     )
 
     assert principal == Principal(
         subject="agent-01",
+        realm_id="local",
         claims={"agent_name": "Automation", "auth_channel": "mcp"},
     )
     assert principal_from_auth_session(None) is None

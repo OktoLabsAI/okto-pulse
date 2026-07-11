@@ -5,6 +5,7 @@ from okto_pulse.core.ports import (
     Credential,
     Principal,
 )
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 
 LOCAL_USER = {
     "sub": "local-user",
@@ -22,4 +23,8 @@ class LocalAuthProvider(AuthenticationPort):
 
     async def authenticate(self, credential: Credential | None) -> Principal:
         del credential
-        return Principal(subject="local-user", realm_id=None, claims=LOCAL_USER)
+        return Principal(
+            subject="local-user",
+            realm_id=LOCAL_REALM_ID,
+            claims=LOCAL_USER,
+        )

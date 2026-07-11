@@ -40,7 +40,7 @@ import pytest
 # Import the core app module so EVERY ORM model is registered on Base.metadata
 # (the production-faithful way) — create_all then builds the full schema and the
 # raw-SQL _migrate_* find their columns. It does NOT create an engine.
-import okto_pulse.core.app as _core_app  # noqa: F401
+import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
 import okto_pulse.core.infra.schema_lifecycle as _seam
 from okto_pulse.community.adapters import data_bootstrap_steps as _data_steps
@@ -54,7 +54,7 @@ from okto_pulse.community.adapters import (
     build_community_data_bootstrap_ledger,
     build_community_migration_ledger,
 )
-from okto_pulse.core.models.db import Agent, Board
+from okto_pulse.community.adapters.sqlalchemy_models import Agent, Board
 from okto_pulse.core.ports import (
     DataBootstrapError,
     DataBootstrapPlan,
@@ -70,8 +70,13 @@ DATABASE_PY = Path(_db_mod.__file__)
 
 # Composed effective order under decision B: the orchestrator runs the schema
 # plan FULLY, then the data plan.
-_SCHEMA_IDS = [s.step_id for s in sorted(build_community_migration_ledger(), key=lambda s: s.order)]
-_DATA_IDS = [s.step_id for s in sorted(build_community_data_bootstrap_ledger(), key=lambda s: s.order)]
+_SCHEMA_IDS = [
+    s.step_id for s in sorted(build_community_migration_ledger(), key=lambda s: s.order)
+]
+_DATA_IDS = [
+    s.step_id
+    for s in sorted(build_community_data_bootstrap_ledger(), key=lambda s: s.order)
+]
 _COMPOSED_ORDER = _SCHEMA_IDS + _DATA_IDS
 
 _LIFECYCLE_PREFIXES = ("_migrate_", "_seed_", "_reconcile_", "_bootstrap_")
@@ -87,7 +92,8 @@ def _init_db_full_call_order() -> list[str]:
     ``resolve_*`` / ``initialize_schema`` — match none of the prefixes)."""
     tree = ast.parse(DATABASE_PY.read_text(encoding="utf-8"))
     init_db = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.AsyncFunctionDef) and n.name == "init_db"
     )
     ordered: list[str] = []
@@ -140,12 +146,18 @@ async def _fetch(engine, sql: str) -> list[tuple]:
 
 async def _seed_names(engine) -> dict[str, list[str]]:
     """Observable seeds: built-in preset names + discovery-intent names."""
-    presets = [r[0] for r in await _fetch(
-        engine, "SELECT name FROM permission_presets ORDER BY name"
-    )]
-    intents = [r[0] for r in await _fetch(
-        engine, "SELECT name FROM discovery_intents ORDER BY name"
-    )]
+    presets = [
+        r[0]
+        for r in await _fetch(
+            engine, "SELECT name FROM permission_presets ORDER BY name"
+        )
+    ]
+    intents = [
+        r[0]
+        for r in await _fetch(
+            engine, "SELECT name FROM discovery_intents ORDER BY name"
+        )
+    ]
     return {"presets": presets, "intents": intents}
 
 
@@ -160,9 +172,12 @@ async def _agents_state(engine) -> dict[str, object]:
 
 
 async def _presets_state(engine) -> list[str]:
-    return [r[0] for r in await _fetch(
-        engine, "SELECT name FROM permission_presets ORDER BY name"
-    )]
+    return [
+        r[0]
+        for r in await _fetch(
+            engine, "SELECT name FROM permission_presets ORDER BY name"
+        )
+    ]
 
 
 async def _create_all_only() -> None:
@@ -193,32 +208,29 @@ async def _insert_legacy_agent(api_key: str = "legacy-key") -> None:
     """Insert ONE agent with a real SQL-NULL permission_flags (legacy flat
     permissions) — gives _migrate_agent_permissions real work."""
     async with _db_mod.get_session_factory()() as s:
-        s.add(Agent(
-            id="a-legacy", name="Legacy Agent", api_key=api_key,
-            api_key_hash="legacy-hash", created_by="owner-1",
-            permissions=["read", "write"], permission_flags=None,
-        ))
+        s.add(
+            Agent(
+                id="a-legacy",
+                name="Legacy Agent",
+                api_key=api_key,
+                api_key_hash="legacy-hash",
+                created_by="owner-1",
+                permissions=["read", "write"],
+                permission_flags=None,
+            )
+        )
         await s.commit()
     await _force_null_flags("a-legacy")
 
 
 @pytest.fixture
 def _isolate():
-    """Snapshot/restore the core engine + session-factory globals AND the
-    schema-lifecycle seam, starting each test from an unregistered seam."""
-    saved_engine = _db_mod._engine
-    saved_factory = _db_mod._session_factory
-    saved_orch = _seam.resolve_relational_schema_lifecycle_orchestrator()
+    """Start each test from an unregistered schema-lifecycle seam."""
     _seam.reset_relational_schema_lifecycle_orchestrator()
     try:
         yield
     finally:
-        _db_mod._engine = saved_engine
-        _db_mod._session_factory = saved_factory
-        if saved_orch is not None:
-            _seam.register_relational_schema_lifecycle_orchestrator(saved_orch)
-        else:
-            _seam.reset_relational_schema_lifecycle_orchestrator()
+        _seam.reset_relational_schema_lifecycle_orchestrator()
 
 
 # ===========================================================================
@@ -249,7 +261,7 @@ def test_init_db_delegates_to_registered_orchestrator(tmp_path, _isolate):
             await _db_mod.get_engine().dispose()
 
     asyncio.run(drive())
-    assert calls["orchestrator"] == 1   # delegated
+    assert calls["orchestrator"] == 1  # delegated
 
 
 def test_init_db_fails_closed_when_no_orchestrator_registered(tmp_path, _isolate):
@@ -269,7 +281,9 @@ def test_init_db_fails_closed_when_no_orchestrator_registered(tmp_path, _isolate
 # Condition #3 — empty replay: direct orchestrator vs registered init_db produce the SAME
 # tables, indices, columns and observable seeds.
 # ===========================================================================
-def test_empty_replay_registered_init_db_matches_direct_orchestrator(tmp_path, _isolate):
+def test_empty_replay_registered_init_db_matches_direct_orchestrator(
+    tmp_path, _isolate
+):
     async def drive():
         # Baseline: direct Community orchestrator on DB-A.
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'direct.db'}")
@@ -289,9 +303,9 @@ def test_empty_replay_registered_init_db_matches_direct_orchestrator(tmp_path, _
 
     direct_schema, direct_seeds, orch_schema, orch_seeds = asyncio.run(drive())
     assert direct_schema  # sanity: non-empty
-    assert orch_schema == direct_schema      # same tables + columns + indices
-    assert orch_seeds == direct_seeds        # same presets + discovery intents
-    assert direct_seeds["presets"]           # sanity: seeds non-empty
+    assert orch_schema == direct_schema  # same tables + columns + indices
+    assert orch_seeds == direct_seeds  # same presets + discovery intents
+    assert direct_seeds["presets"]  # sanity: seeds non-empty
     assert direct_seeds["intents"]
 
 
@@ -321,24 +335,34 @@ def test_disjoint_seed_touches_only_presets_migrate_only_agents(tmp_path, _isola
         a2_after = await _agents_state(_db_mod.get_engine())
         p2_after = await _presets_state(_db_mod.get_engine())
         await _db_mod.get_engine().dispose()
-        return (a_before, a_after, p_before, p_after,
-                a2_before, a2_after, p2_before, p2_after)
+        return (
+            a_before,
+            a_after,
+            p_before,
+            p_after,
+            a2_before,
+            a2_after,
+            p2_before,
+            p2_after,
+        )
 
-    (a_before, a_after, p_before, p_after,
-     a2_before, a2_after, p2_before, p2_after) = asyncio.run(drive())
+    (a_before, a_after, p_before, p_after, a2_before, a2_after, p2_before, p2_after) = (
+        asyncio.run(drive())
+    )
 
     # _seed_builtin_presets writes ONLY permission_presets.
-    assert a_after == a_before            # agents untouched by seed
+    assert a_after == a_before  # agents untouched by seed
     assert p_after != p_before and p_after  # presets seeded
     # _migrate_agent_permissions writes ONLY agents.
-    assert p2_after == p2_before          # presets untouched by migrate
-    assert a2_after != a2_before          # agent flags migrated
+    assert p2_after == p2_before  # presets untouched by migrate
+    assert a2_after != a2_before  # agent flags migrated
     assert a2_before["a-legacy"] is None and a2_after["a-legacy"] is not None
 
 
 def test_commutativity_migrate_and_seed_yield_identical_state(tmp_path, _isolate):
     """The swapped pair COMMUTES: [migrate, seed] and [seed, migrate] from an
     identical start produce identical final agents AND identical final presets."""
+
     async def run_order(db_name: str, order: list[str]):
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / db_name}")
         await _create_all_only()
@@ -365,8 +389,8 @@ def test_commutativity_migrate_and_seed_yield_identical_state(tmp_path, _isolate
         return mig_first, seed_first
 
     (mig_agents, mig_presets), (seed_agents, seed_presets) = asyncio.run(drive())
-    assert mig_agents == seed_agents      # agents identical regardless of order
-    assert mig_presets == seed_presets    # presets identical regardless of order
+    assert mig_agents == seed_agents  # agents identical regardless of order
+    assert mig_presets == seed_presets  # presets identical regardless of order
     # And both actually did the work (not a vacuous pass).
     assert mig_agents["a-legacy"] is not None
     assert mig_presets
@@ -378,9 +402,8 @@ def test_commutativity_migrate_and_seed_yield_identical_state(tmp_path, _isolate
 # init_db by exactly ONE adjacent swap (the proven-commuting pair).
 # ===========================================================================
 def test_migrate_agent_permissions_precedes_reconcile():
-    assert (
-        _COMPOSED_ORDER.index("_migrate_agent_permissions")
-        < _COMPOSED_ORDER.index("_reconcile_agent_permission_flags")
+    assert _COMPOSED_ORDER.index("_migrate_agent_permissions") < _COMPOSED_ORDER.index(
+        "_reconcile_agent_permission_flags"
     )
     # It is the LAST schema-region step (tail of the migrator plan).
     assert _SCHEMA_IDS[-1] == "_migrate_agent_permissions"
@@ -418,11 +441,17 @@ def test_legacy_replay_preserves_rows_migrates_and_idempotent(tmp_path, _isolate
         #    (legacy flat permissions) that predates the granular-flags migration.
         async with _db_mod.get_session_factory()() as s:
             s.add(Board(id="b-legacy", name="Legacy Board", owner_id="owner-1"))
-            s.add(Agent(
-                id="a-legacy", name="Legacy Agent", api_key="legacy-key",
-                api_key_hash="legacy-hash", created_by="owner-1",
-                permissions=["read", "write"], permission_flags=None,
-            ))
+            s.add(
+                Agent(
+                    id="a-legacy",
+                    name="Legacy Agent",
+                    api_key="legacy-key",
+                    api_key_hash="legacy-hash",
+                    created_by="owner-1",
+                    permissions=["read", "write"],
+                    permission_flags=None,
+                )
+            )
             await s.commit()
         await _force_null_flags("a-legacy")  # real SQL NULL: legacy pre-column row
         rows0 = await _rows(_db_mod.get_engine())
@@ -478,8 +507,11 @@ class _BoomMigrator:
     async def aexecute(self, plan):
         return MigrationResult.failed_result(
             MigrationStepResult(
-                step_id="post_boom", status="failed", phase="post_create_all",
-                failure_reason="schema_boom", remediation="repair the migration",
+                step_id="post_boom",
+                status="failed",
+                phase="post_create_all",
+                failure_reason="schema_boom",
+                remediation="repair the migration",
             )
         )
 
@@ -494,8 +526,11 @@ class _BoomBootstrapper:
         type(self).called = True
         return DataBootstrapResult.failed_result(
             DataBootstrapStepResult(
-                step_id="seed_boom", status="failed", owner="community",
-                domain="presets", failure_reason="bootstrap_boom",
+                step_id="seed_boom",
+                status="failed",
+                owner="community",
+                domain="presets",
+                failure_reason="bootstrap_boom",
                 remediation="repair the seed",
             )
         )
@@ -508,7 +543,8 @@ def test_orchestrator_fail_closed_on_schema_failure():
     boot = _BoomBootstrapper()
     boot.__class__.called = False
     orch = CommunityRelationalSchemaLifecycleOrchestrator(
-        migrator=_BoomMigrator(), bootstrapper=boot,
+        migrator=_BoomMigrator(),
+        bootstrapper=boot,
     )
     with pytest.raises(SchemaMigrationError) as ei:
         asyncio.run(orch.initialize_schema())
@@ -520,7 +556,8 @@ def test_orchestrator_fail_closed_on_schema_failure():
 
 def test_orchestrator_fail_closed_on_bootstrap_failure():
     orch = CommunityRelationalSchemaLifecycleOrchestrator(
-        migrator=_OkMigrator(), bootstrapper=_BoomBootstrapper(),
+        migrator=_OkMigrator(),
+        bootstrapper=_BoomBootstrapper(),
     )
     with pytest.raises(DataBootstrapError) as ei:
         asyncio.run(orch.initialize_schema())

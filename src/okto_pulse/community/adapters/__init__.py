@@ -33,7 +33,10 @@ from .kg_operational import (
     CommunitySqlAlchemyKGWorkerQueue,
     register_community_kg_operational_ports,
 )
-from .rebuild_audit_storage import CommunityFileSystemRebuildAuditArtifactStore
+from .rebuild_audit_storage import (
+    CommunityFileSystemRebuildAuditArtifactStore,
+    CommunityRebuildAuditArtifactStoreResolver,
+)
 from .board_rebuild_ingestion import CommunityBoardRebuildIngestionAdapter
 from .board_source_reader import CommunityBoardSourceReader, resolve_pulse_db_path
 from .boundary_evidence import (
@@ -120,6 +123,7 @@ __all__ = [
     "CommunityRuntimeSettingsProvider",
     "CommunitySqlAlchemyClaimRepository",
     "CommunityFileSystemRebuildAuditArtifactStore",
+    "CommunityRebuildAuditArtifactStoreResolver",
     "CommunityFileSystemStorage",
     "CommunityInMemoryCache",
     "CommunityInMemoryRateLimiter",

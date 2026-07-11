@@ -25,7 +25,7 @@ class CommunityOutboxEventBus:
         event_id = f"evt_{uuid.uuid4().hex[:16]}"
 
         try:
-            from okto_pulse.core.models.db import GlobalUpdateOutbox
+            from okto_pulse.community.adapters.sqlalchemy_models import GlobalUpdateOutbox
 
             async with self._sf() as session:
                 session.add(

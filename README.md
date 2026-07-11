@@ -282,11 +282,12 @@ release oracle is:
 | Check | Current evidence |
 | --- | --- |
 | Historical private reach-in baseline | `32` |
-| Current governed private reach-ins | `10` |
-| Current full Community->Core import inventory | `198` |
-| Inventory classification | `public_contract=68`, `community_owned_implementation=120`, `governed_temporary_reach_in=10` |
+| Current private reach-in budget | `0` |
+| Current governed private reach-ins | `0` |
+  | Current full Community->Core import inventory | `524` |
+  | Inventory classification | `public_contract=524`, `governed_temporary_reach_in=0` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
-| Burn-down progression | `32 -> 21 -> 10` after AF42 inventory, lifecycle/auth/MCP, then ORM/bootstrap/schema/CLI/seed work |
+| Burn-down progression | `32 -> 21 -> 10 -> 0` after AF42 inventory, lifecycle/auth/MCP, then complete Community ORM ownership |
 | Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
 | Core release command | `python -m pytest tests/test_boundary_audit_12.py tests/test_conformance_suite_15.py -q` -> `67 passed` |
 <!-- AF42-BOUNDARY-ORACLE:END -->
@@ -302,20 +303,13 @@ prohibited import may exist only as a governed temporary reach-in in
 `COMMUNITY_CORE_REACH_IN_LEDGER`, with owner, reason, target public surface,
 removal path and withdrawal criterion.
 
-The 10 remaining governed reach-ins are intentionally concentrated in
-Community-owned SQLAlchemy/KG/outbox adapters:
-
-- `community/adapters/coordination.py`
-- `community/adapters/sqlalchemy_audit_repo.py`
-- `community/adapters/sqlalchemy_repositories.py`
-- `community/adapters/sqlite_outbox_event_bus.py`
-- `community/adapters/relational_effects.py`
-- `community/adapters/kg_operational.py`
-
 Bootstrap, schema migrations, CLI and seed paths must stay off
 `core.models.db`; they use Community-owned row/SQL adapters or public facades.
-Removing any remaining reach-in must also remove its ledger entry. Adding a new
-private import without a complete ledger entry is a release-blocking failure.
+The F13 provenance registry additionally proves that representative relational
+and graph adapters are locally defined Community symbols implementing public
+Core ports. Its bridge ledger and terminal bridge budget are both zero; adding a
+private import, alias, reexport, dynamic import or constructor target is a
+release-blocking failure.
 
 ### Adapters
 
@@ -403,196 +397,7 @@ Adapter source map:
 Maintain this source map from the live filesystem under
 `src/okto_pulse/community/adapters/**/*.py`, with `__init__.py` and private
 helper modules prefixed with `_` excluded, and cross-check ownership against the
-core `adapter_readiness_inventory` when a seam appears there. The map describes
-local-first adapters only; application rules, gates and state transitions stay in
-core.
-
-| Adapter | Core port or seam | Component used by Community |
-| --- | --- | --- |
-| `LocalAuthProvider` | `core.infra.auth.AuthProvider` | Local API-key style user context for the single-node runtime. |
-| `CommunityFileSystemStorage` | `core.infra.storage.StorageProvider` | Filesystem-backed attachment storage under the configured upload/data directory. |
-| `CommunityInMemoryCache` | `core.kg.interfaces.CacheBackend` | Process-local KG query cache for the Community runtime. |
-| `CommunityInMemoryRateLimiter` | `core.kg.interfaces.RateLimiter` | Process-local agent rate limiting for the Community runtime. |
-| `CommunityInMemorySessionStore` | `core.kg.interfaces.SessionStore` | In-memory KG consolidation sessions for the Community runtime. |
-| `CommunityStubEmbeddingProvider` / `CommunitySentenceTransformerProvider` | `core.kg.interfaces.EmbeddingProvider` | Deterministic stub mode or local `sentence-transformers` model (`all-MiniLM-L6-v2` by default); concrete ML ownership lives in Community. |
-| `CommunityKuzuGraphStore` | `core.kg.interfaces.SemanticGraphStore` | LadybugDB/Kuzu semantic graph reads and writes. |
-| `CommunityKuzuCypherExecutor` | `core.kg.interfaces.CypherExecutor` | Safe read-only Cypher execution. |
-| `CommunityKuzuGraphTransaction` | `core.kg.interfaces.GraphTransaction` | Board-scoped graph write transactions. |
-| `CommunityKuzuGraphSchemaManager` | `core.kg.interfaces.GraphSchemaManager` | Board graph schema bootstrap, migration, inspection and validation. |
-| `CommunityKuzuGraphLifecycle` | `core.kg.interfaces.GraphLifecycle` | Board graph open, close, rebuild and purge lifecycle. |
-| `CommunityKuzuGraphPathResolver` | `core.kg.interfaces.GraphPathResolver` | Board graph path and storage-state resolution for `graph.lbug`. |
-| `CommunityKuzuGraphRuntimeStore` | `core.kg.interfaces.GraphRuntimeStore` | Local graph existence, footprint and purge operations for LadybugDB/Kuzu graph files. |
-| `CommunityBoardGraphRuntime` | `core.kg.interfaces.BoardGraphRuntime` | Compatibility adapter behind the historical `core.kg.schema` API; delegates to `community.adapters.kg_runtime`. |
-| `CommunityGlobalDiscoveryRuntime` | `core.kg.interfaces.GlobalDiscoveryRuntime` | Local global discovery graph handle, path, bootstrap, schema and purge lifecycle for `discovery.lbug`. |
-| `community.adapters.global_discovery_schema` | `core.kg.global_discovery.schema` adapter-neutral compatibility helpers | LadybugDB/Kuzu global-discovery node/relationship DDL and vector-index definitions; concrete schema layout is Community-owned. |
-| `CommunityFileSystemCognitivePendingWorkProvider` | `core.kg.interfaces.CognitivePendingWorkProvider` | Enumerates local cognitive-pending rebuild audit records from the Community data directory for core closeout policy. |
-| `CommunityFileSystemRebuildAuditArtifactStore` | `core.kg.interfaces.RebuildAuditArtifactStore` | Reads and writes local rebuild audit artifacts under the Community data directory. |
-| `apply_ladybug_lifecycle_step` | `KGProviderRegistry.safe_write_step_adapter` | LadybugDB safe-write lifecycle step implementation registered by Community. |
-| `CommunityOutboxEventBus` | `core.kg.interfaces.EventBus` | SQLite-backed KG/global-discovery outbox. |
-| `CommunityAuditRepository` | `core.kg.interfaces.AuditRepository` | SQLAlchemy-backed KG consolidation audit records and node refs. |
-| `CommunityKGConfig` | `core.kg.interfaces.KGConfig` | KG settings read from the Community/Core settings object. |
-| `CommunityMcpAuthenticator` | `core.ports.McpAuthenticator` | MCP API-key authentication against the local relational store. |
-| `build_community_resource_catalog` | `core.ports.McpResourceCatalog` | Community operational MCP resource overlays under `community/resources/operational`. |
-| `CommunityCapabilityDescriptorSource` | `core.ports.CapabilityDescriptorSource` | Runtime capability descriptors derived from the active Community composition. |
-| `build_mcp_trace_sink_from_env` / `JsonlMcpTraceSink` | `core.ports.McpTraceSink` | Local JSONL MCP replay trace adapter, enabled only by Community runtime env. |
-| `CommunityRelationalSchemaMigrator` | `core.ports.RelationalSchemaMigrator` | Describes and executes the same relational `init_db` migration steps through the port. |
-| `CommunityDataBootstrapper` | `core.ports.DataBootstrapper` | Describes and executes local data/bootstrap steps for `okto-pulse init`. |
-| `CommunityCrossEncoderReranker` | `core.kg.interfaces.Reranker` | Optional local cross-encoder reranking factory; falls back to core token-overlap behavior when unavailable. |
-| `CommunityLocalTelemetryStore` | `core.ports.TelemetryEventStore` | Local JSONL telemetry event, sent, failure, export and snapshot files. |
-| `CommunityTelemetryBeaconSender` | `core.ports.TelemetrySink` | HTTP telemetry beacon sender with local failure state, token lifecycle and watermark handling. |
-| `CommunityProductTelemetryAggregator` | `core.ports.ProductAggregationPort` | SQLite-derived product metrics aggregation over local Pulse data. |
-| `LocalPublishHealthSource`, `InstallLifecycleSource`, `AwsIngestSource`, `ReportAthenaSource` | `core.ports.PublishHealthSource` | Publish-health source descriptors; AWS/reporting sources are explicit gaps unless a deployment wires real downstream adapters. |
-| `build_community_telemetry_port` | `core.ports.TelemetryPort` | Composed telemetry facade that resolves store, sender, product and publish-health through Community-registered factories. |
-| `community.adapters.telemetry_state` | telemetry state persistence seam | Community-owned persistence for telemetry `state.json`, failure-state and watermark files used by the local sender. |
-| SPA/static mount | FastAPI app composition | Bundled React frontend from `community/frontend_dist`, served with SPA fallback. |
-
-Community runtime components:
-
-- SQLite relational database: `pulse.db` under the configured data directory,
-  with WAL, busy-timeout and foreign keys configured on startup. It also backs
-  the Community KG consolidation audit/outbox adapters.
-- LadybugDB/Kuzu board graph: per-board `graph.lbug` directories under the KG
-  base path, owned by `community.adapters.kg_runtime`.
-- Global discovery graph: `discovery.lbug` under the global graph directory.
-  The local handle lifecycle is owned by
-  `community.adapters.global_discovery_runtime` behind the core
-  `GlobalDiscoveryRuntime` port. Community also owns concrete global-discovery
-  DDL/vector-index definitions and local reopen/fsync flush behavior; core owns
-  only the graph rules, schema compatibility helpers and write/drain policy.
-- Rebuild audit and cognitive-pending artifacts: JSON files under the Community
-  rebuild audit directory, enumerated through `CognitivePendingWorkProvider` and
-  read through `RebuildAuditArtifactStore` so core does not scan filesystem
-  paths directly.
-- Upload/data filesystem: attachment storage and other local files under the
-  configured upload/data directory.
-- Metrics files: local JSONL event, sent, failure, export and snapshot files,
-  plus telemetry state, watermark and failure-state files.
-- Frontend bundle: React assets from `community/frontend_dist`, mounted by the
-  Community app with SPA fallback.
-
-Adapter ownership rules:
-
-- Community may import core port definitions; core must never import Community.
-- Concrete local technologies belong here: SQLite, LadybugDB/Kuzu, filesystem
-  storage, local `sentence-transformers`, telemetry files/HTTP transport and
-  bundled frontend assets.
-- Required KG slots are registered before use. Missing production providers are
-  treated as composition errors, not as silent core fallbacks.
-- When a new concrete dependency is needed for Community, add it behind a core
-  port or document it as adapter-readiness debt before wiring runtime code.
-- Boundary/conformance evidence adapters are not runtime providers, but they
-  live in Community because they prove Community-owned dependencies and
-  registration behavior to core gates without requiring a core import.
-
-The ORM models and many SQLAlchemy services still live in core while the
-repository/unit-of-work strangler expands. Treat the core
-`ARCHITECTURE.md` and adapter readiness ledger as the source of truth for
-remaining extraction work. Packaging ownership is explicit after AF40: Community
-declares `requests` and `chardet` directly for the local telemetry sender, while
-the core gates block their reintroduction into the published `okto-pulse-core`
-manifest, lock, wheel metadata or source imports. APScheduler is also
-Community-owned: Community declares it directly and owns the local scheduler
-adapter that maps core `JobSpec` values to APScheduler runtime calls.
-
-AF-05/AF40 dependency owner matrix. This package follows the core
-`dependency_ledger.py`, `CANONICAL_AF40_DEPENDENCY_TOKENS`,
-`CANONICAL_TEMPORARY_EXCEPTION_TOKENS` and `conformance_matrix.py`
-classifications; the Community manifest is the ownership source for the
-Community-owned telemetry transport pair.
-
-| Dependency | Status | Community responsibility |
-| --- | --- | --- |
-| `aiofiles` | `removed` | Not Community-owned and not declared here. The isolated smoke must prove the locally built core wheel no longer requires it instead of hand-editing this lock to hide the published-core dependency. |
-| `requests` | `community_owned` | Declared directly by Community and used by `community/adapters/telemetry_sender.py`; core manifest/lock/wheel/source reintroduction is blocked by the core gates. |
-| `chardet` | `community_owned` | Declared directly by Community with `requests` as the telemetry transport charset companion; it is not moved independently. |
-| `aiosqlite` | `temporary_exception` | Non-telemetry carry-forward for relational/local DB. Community may consume the current core package dependency through SQLAlchemy `sqlite+aiosqlite` URLs, but AF40 does not declare or move it here. |
-| `numpy` | `temporary_exception` | Non-telemetry carry-forward for KG/vector embedding transitives. Community does not claim it through telemetry; later KG/vector or embedding ownership work must provide the move/removal oracle. |
-| `apscheduler` | `community_owned` | Declared directly by Community. `community/adapters/scheduler.py` owns APScheduler startup, `IntervalTrigger` mapping and shutdown behind the core `SchedulerControl` port. |
-
-AF41 MCP runtime ownership: Community declares `fastmcp`, `uvicorn[standard]` and
-`wsproto` directly because `okto_pulse.community.main` owns the productive
-API/UI and MCP serving process. The Core package keeps ASGI composition helpers
-only; its AF41 gate blocks those server dependencies from returning to the Core
-manifest, lock or wheel metadata.
-
-AF41 provider preservation: Community continues to supply the concrete MCP
-providers through `CommunityMcpAuthenticator`, `build_community_resource_catalog`,
-`CommunityCapabilityDescriptorSource` and `build_mcp_trace_sink_from_env`.
-AF41 changes only the local serving ownership; it does not duplicate the
-instruction, resource, version, auth or trace seams already delivered.
-
-AF33 capstone ownership matrix. The marked table is rendered from the core
-`CAPSTONE_OWNERSHIP_MATRIX` and must stay byte-identical to the core README
-block. The gates listed here are executable; README prose follows them.
-
-<!-- AF33-CAPSTONE-MATRIX:BEGIN -->
-| Surface | Core contract | Community/local adapter | SaaS swap target | Executable gates |
-| --- | --- | --- | --- | --- |
-| Relational runtime | repository/UoW and schema lifecycle ports; no ad-hoc dialect or engine/session factory bypass | SQLite/SQLAlchemy adapters in community.adapters.sqlalchemy_* and relational_schema_lifecycle | SQLite -> Aurora/Postgres | run_relational_residue_gate, audit_dependency_conformance, audit_community_core_import_boundary |
-| KG graph runtime | KG interfaces, policies and adapter-neutral schema compatibility helpers | LadybugDB/Kuzu adapters in community.adapters.kuzu_* and global_discovery_runtime | LadybugDB/Kuzu -> Neptune | audit_dependency_conformance, ImportBoundaryGate, audit_community_core_import_boundary |
-| Durable files and artifacts | StorageProvider, RebuildAuditArtifactStore and CognitivePendingWorkProvider contracts | filesystem storage, upload_dir, rebuild audit storage and cognitive-pending providers | filesystem -> S3 | run_rebuild_audit_storage_gate, run_core_settings_defaults_gate, run_public_config_stability_gate |
-| Telemetry effects | TelemetryPort contracts, event schema and privacy policy | local JSONL store, state files, beacon sender and product telemetry adapters | local telemetry files/API -> AWS telemetry API | run_telemetry_store_ownership_gate, run_telemetry_sender_ownership_gate, run_telemetry_product_ownership_gate |
-| Scheduler/runtime effects | JobSpec, SchedulerControl and KG daily tick policy | APScheduler-backed SingletonSchedulerControl | APScheduler local runtime -> runtime scheduler adapter | SchedulerControlSymbolGate, scheduler_signal_conformance |
-| MCP resources and versions | MCP instruction/resource/version provider ports and stable public catalog | Community resource catalog, capability descriptors and package version wiring | local catalog/version reads -> deployment provider | run_public_config_stability_gate, register_instruction_provider, register_package_version_provider |
-<!-- AF33-CAPSTONE-MATRIX:END -->
-
-## CLI Reference
-
-| Command | Description |
-| --- | --- |
-| `okto-pulse init` | Initialize local data, seed the default board and generate `.mcp.json`. |
-| `okto-pulse init --agents` | Regenerate MCP agent configuration. |
-| `okto-pulse init --accept-terms` | Accept terms non-interactively. Also supported through `OKTO_PULSE_TERMS_ACCEPTED=1`. |
-| `okto-pulse serve` | Start API/UI and MCP in one Python process. |
-| `okto-pulse serve --api-port N --mcp-port M` | Override API/UI and MCP ports. |
-| `okto-pulse status` | Show service status, database path, size and board counts. |
-| `okto-pulse reset [-y]` | Delete local data and re-seed after confirmation. |
-| `okto-pulse kg dedup-entities <board_id>` | Run the idempotent KG entity deduplication migration for a board. |
-| `okto-pulse kg migrate-schema [--all-boards]` | Apply graph schema migrations manually. The runtime also auto-heals supported legacy schemas. |
-
-## Run with Docker
-
-### Published image
-
-```bash
-docker run -d --name okto-pulse \
-  -e HOST=0.0.0.0 \
-  -e MCP_HOST=0.0.0.0 \
-  -p 8100:8100 \
-  -p 8101:8101 \
-  -v okto-pulse-data:/data \
-  ghcr.io/oktolabsai/okto-pulse:latest
-```
-
-Then open `http://localhost:8100` and retrieve the bootstrap API key:
-
-```bash
-docker exec okto-pulse okto-pulse api-key
-```
-
-### Compose
-
-Use the production compose file when you want a PyPI-based image:
-
-```bash
-docker compose -f docker-compose.prod.yml build
-docker compose -f docker-compose.prod.yml up -d
-```
-
-Use the local compose file when hacking on the community package together with a sibling `okto-pulse-core` checkout:
-
-```bash
-docker compose build
-docker compose up -d
-```
-
-### Environment variables
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `HOST` | `127.0.0.1` | API/UI bind host. Use `0.0.0.0` in containers. |
-| `MCP_HOST` | `127.0.0.1` | MCP bind host. Use `0.0.0.0` in containers. |
-| `DATA_DIR` | `~/.okto-pulse` | SQLite database, uploads and graph storage root. |
+core `adapter_readiness_inventory` when a …3930 tokens truncated…h storage root. |
 | `KG_BASE_DIR` | derived from `DATA_DIR` | Per-board graph database location. |
 | `HF_HOME` | `~/.cache/huggingface` | Sentence-transformers model cache. |
 | `MCP_TRACE_ENABLED` | unset | Set to `1` to record MCP calls for replay testing. |
@@ -788,6 +593,37 @@ Branch changelog for `feature/0.2.0`:
 - Rebuilds and embeds the current frontend assets in the Python package so `okto-pulse serve` ships the updated 0.2.0 UI.
 
 For a complete history, see the GitHub releases for this repository and `okto-pulse-core`.
+
+## SaaS Closure Audit
+
+The executable ownership matrix is generated by `okto-pulse-saas-closure`. Every transitional budget must remain zero; the command fails closed on import, dependency, adapter, wheel, or documentation drift.
+
+<!-- AF33-CAPSTONE-MATRIX:BEGIN -->
+| Surface | Core contract | Community/local adapter | SaaS swap target | Executable gates |
+| --- | --- | --- | --- | --- |
+| Relational runtime | repository/UoW and schema lifecycle ports; no ad-hoc dialect or engine/session factory bypass | SQLite/SQLAlchemy adapters in community.adapters.sqlalchemy_* and relational_schema_lifecycle | SQLite -> Aurora/Postgres | run_relational_residue_gate, audit_dependency_conformance, audit_community_core_import_boundary |
+| KG graph runtime | KG interfaces, policies and adapter-neutral schema compatibility helpers | LadybugDB/Kuzu adapters in community.adapters.kuzu_* and global_discovery_runtime | LadybugDB/Kuzu -> Neptune | audit_dependency_conformance, ImportBoundaryGate, audit_community_core_import_boundary |
+| Durable files and artifacts | StorageProvider, RebuildAuditArtifactStore and CognitivePendingWorkProvider contracts | filesystem storage, upload_dir, rebuild audit storage and cognitive-pending providers | filesystem -> S3 | run_rebuild_audit_storage_gate, run_core_settings_defaults_gate, run_public_config_stability_gate |
+| Telemetry effects | TelemetryPort contracts, event schema and privacy policy | local JSONL store, state files, beacon sender and product telemetry adapters | local telemetry files/API -> AWS telemetry API | run_telemetry_store_ownership_gate, run_telemetry_sender_ownership_gate, run_telemetry_product_ownership_gate |
+| Scheduler/runtime effects | JobSpec, SchedulerControl and KG daily tick policy | APScheduler-backed SingletonSchedulerControl | APScheduler local runtime -> runtime scheduler adapter | SchedulerControlSymbolGate, scheduler_signal_conformance |
+| MCP resources and versions | MCP instruction/resource/version provider ports and stable public catalog | Community resource catalog, capability descriptors and package version wiring | local catalog/version reads -> deployment provider | run_public_config_stability_gate, register_instruction_provider, register_package_version_provider |
+<!-- AF33-CAPSTONE-MATRIX:END -->
+
+<!-- F16-SAAS-CLOSURE:BEGIN -->
+| F16 executable surface | Owner | Observed | Terminal target |
+| --- | --- | ---: | ---: |
+| Core import rows | Core | 4300 | classified |
+| Community-to-Core import rows | Community | 524 | classified |
+| Direct dependency rows | Distribution owner | 20 | classified |
+| `import_boundary_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `singleton_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `dependency_temporary_exceptions` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `graph_runtime_compatibility` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `rebuild_artifact_compatibility` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `community_private_reach_ins` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `community_adapter_bridges` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `af35_relational_residue` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+<!-- F16-SAAS-CLOSURE:END -->
 
 ## License
 

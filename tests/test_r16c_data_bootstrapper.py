@@ -33,7 +33,7 @@ import pytest
 # Importing the core app registers every ORM model on Base.metadata so init_db
 # builds the full schema and the bootstrap funcs find their tables. It creates
 # no engine (create_database is only called inside create_app()).
-import okto_pulse.core.app as _core_app  # noqa: F401
+import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
 import okto_pulse.community.adapters.data_bootstrap_steps as _bootstrap_steps
 from okto_pulse.community.adapters.data_bootstrapper import (
@@ -71,21 +71,19 @@ _DATA_BOOTSTRAP_STEP_IDS = (
 
 @pytest.fixture
 def _isolate_engine():
-    saved_engine = _db_mod._engine
-    saved_factory = _db_mod._session_factory
-    try:
-        yield
-    finally:
-        _db_mod._engine = saved_engine
-        _db_mod._session_factory = saved_factory
+    yield
 
 
 async def _snapshot(engine) -> dict:
     from sqlalchemy import text
 
     async with engine.connect() as conn:
-        presets = (await conn.execute(text("SELECT count(*) FROM permission_presets"))).scalar()
-        di = (await conn.execute(text("SELECT count(*) FROM discovery_intents"))).scalar()
+        presets = (
+            await conn.execute(text("SELECT count(*) FROM permission_presets"))
+        ).scalar()
+        di = (
+            await conn.execute(text("SELECT count(*) FROM discovery_intents"))
+        ).scalar()
         row = (
             await conn.execute(
                 text(
@@ -150,7 +148,10 @@ def test_ts_26bd0c7a_ledger_four_domains_in_order():
     assert [s.step_id for s in ledger] == list(_DATA_BOOTSTRAP_STEP_IDS)
     assert [s.order for s in ledger] == [1, 2, 3, 4]
     assert [s.domain for s in ledger] == [
-        "presets", "presets", "permissions", "discovery_intents"
+        "presets",
+        "presets",
+        "permissions",
+        "discovery_intents",
     ]
     assert all(s.owner == "community" and s.idempotent for s in ledger)
     # Domains are drawn from the canonical set.
@@ -215,26 +216,25 @@ def test_ts_71673acb_permission_flags_merge_default_and_preserve(
     # (never overwrite), and stay idempotent on rerun.
     import copy
 
-    from okto_pulse.core.infra.permissions import PERMISSION_REGISTRY
-    from okto_pulse.core.models.db import Agent
+    from okto_pulse.core.ports.permission_policy import registered_permission_flags
+    from okto_pulse.community.adapters.sqlalchemy_models import Agent
 
     # Registry leaves are all True; build a partial stored tree with two edits:
     #   * an existing leaf flipped to a custom False (must be preserved);
     #   * a whole top-level subtree dropped (must be backfilled, all True).
-    partial = copy.deepcopy(PERMISSION_REGISTRY)
+    permission_registry = registered_permission_flags()
+    partial = registered_permission_flags()
     assert "board" in partial and "read" in partial["board"]
     assert "profile" in partial  # a small top-level subtree to drop
     partial["board"]["read"] = False  # custom value -> must be preserved
-    del partial["profile"]            # missing subtree -> must be backfilled True
+    del partial["profile"]  # missing subtree -> must be backfilled True
 
     async def _load_flags():
         from sqlalchemy import select
 
         async with _db_mod.get_session_factory()() as s:
             agent = (
-                await s.execute(
-                    select(Agent).where(Agent.api_key == "r16c-perm-key")
-                )
+                await s.execute(select(Agent).where(Agent.api_key == "r16c-perm-key"))
             ).scalar_one()
             return copy.deepcopy(agent.permission_flags)
 
@@ -273,7 +273,7 @@ def test_ts_71673acb_permission_flags_merge_default_and_preserve(
     # Custom False leaf preserved — NOT overwritten back to True.
     assert after1["board"]["read"] is False
     # Every registry top-level key is now present.
-    for key in PERMISSION_REGISTRY:
+    for key in permission_registry:
         assert key in after1, f"registry key {key!r} not backfilled"
     # Idempotent: a second reconcile changes nothing.
     assert after2 == after1
@@ -301,7 +301,9 @@ def test_ts_533312dd_discovery_intents_preserved_on_rerun(tmp_path, _isolate_eng
     assert tool_binding == "okto_pulse_list_test_scenarios"
     assert min_permission == "kg.query.global"
     assert bool(is_seed) is True
-    assert after["coverage"] == before["coverage"]  # tool_binding/params/min_perm/is_seed
+    assert (
+        after["coverage"] == before["coverage"]
+    )  # tool_binding/params/min_perm/is_seed
     assert after["di"] == before["di"]  # no duplicate rows on rerun
 
 
@@ -377,21 +379,24 @@ def test_ts_c2790a33_invalid_plan_raises():
     bootstrapper = make_community_data_bootstrapper()
 
     bad_domain = DataBootstrapPlan(
-        plan_id="bad", target="t",
+        plan_id="bad",
+        target="t",
         steps=(DataBootstrapStep("x", 1, "community", "not_a_domain", True),),  # type: ignore[arg-type]
     )
     with pytest.raises(DataBootstrapError):
         bootstrapper.validate_plan(bad_domain)
 
     empty_id = DataBootstrapPlan(
-        plan_id="bad", target="t",
+        plan_id="bad",
+        target="t",
         steps=(DataBootstrapStep("", 1, "community", "presets", True),),
     )
     with pytest.raises(DataBootstrapError):
         bootstrapper.validate_plan(empty_id)
 
     dup_order = DataBootstrapPlan(
-        plan_id="bad", target="t",
+        plan_id="bad",
+        target="t",
         steps=(
             DataBootstrapStep("a", 1, "community", "presets", True),
             DataBootstrapStep("b", 1, "community", "permissions", True),
@@ -412,7 +417,9 @@ def test_ts_c2790a33_absent_bootstrapper_fail_closed():
 
 def test_ts_c2790a33_execute_in_running_loop_is_fail_closed():
     async def drive():
-        bootstrapper = _det_bootstrapper({"seed_a": lambda: None, "perm_b": lambda: None})
+        bootstrapper = _det_bootstrapper(
+            {"seed_a": lambda: None, "perm_b": lambda: None}
+        )
         # Sync execute() inside a running loop is fail-closed (directs to aexecute).
         with pytest.raises(DataBootstrapError):
             bootstrapper.execute(bootstrapper.plan(target="t"))
@@ -447,18 +454,39 @@ def test_ts_5154c83c_plan_and_execute_traffic_canonical_dtos():
 
 def test_ts_5154c83c_dto_field_sets_exact():
     assert {f.name for f in dataclasses.fields(DataBootstrapStep)} == {
-        "step_id", "order", "owner", "domain", "idempotent", "metadata",
+        "step_id",
+        "order",
+        "owner",
+        "domain",
+        "idempotent",
+        "metadata",
     }
     assert {f.name for f in dataclasses.fields(DataBootstrapStepResult)} == {
-        "step_id", "status", "owner", "domain", "failure_reason", "remediation",
-        "duration_ms", "metadata",
+        "step_id",
+        "status",
+        "owner",
+        "domain",
+        "failure_reason",
+        "remediation",
+        "duration_ms",
+        "metadata",
     }
     assert {f.name for f in dataclasses.fields(DataBootstrapPlan)} == {
-        "plan_id", "target", "steps", "metadata",
+        "plan_id",
+        "target",
+        "steps",
+        "metadata",
     }
     assert {f.name for f in dataclasses.fields(DataBootstrapResult)} == {
-        "status", "applied_steps", "skipped_steps", "failed_steps", "warnings",
-        "duration_ms", "failed_step", "failure_reason", "remediation",
+        "status",
+        "applied_steps",
+        "skipped_steps",
+        "failed_steps",
+        "warnings",
+        "duration_ms",
+        "failed_step",
+        "failure_reason",
+        "remediation",
     }
 
 
@@ -473,8 +501,10 @@ def test_ts_5154c83c_adapter_defines_no_parallel_dtos():
     class_names = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
     assert class_names == {"CommunityDataBootstrapper"}
     for forbidden in {
-        "DataBootstrapStep", "DataBootstrapStepResult",
-        "DataBootstrapPlan", "DataBootstrapResult",
+        "DataBootstrapStep",
+        "DataBootstrapStepResult",
+        "DataBootstrapPlan",
+        "DataBootstrapResult",
     }:
         assert forbidden not in class_names
 

@@ -25,7 +25,7 @@ import pytest
 # (the production-faithful way), so create_all builds the full schema and the
 # raw-SQL _migrate_* find their columns. It does NOT create an engine
 # (create_database is only called inside create_app()).
-import okto_pulse.core.app as _core_app  # noqa: F401
+import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
 import okto_pulse.core.ports.relational_schema_migrator as _port_mod
 import okto_pulse.community.adapters.relational_schema_steps as _steps_mod
@@ -94,15 +94,8 @@ async def _collect_schema(engine) -> dict[str, list[str]]:
 
 @pytest.fixture
 def _isolate_engine():
-    """Snapshot/restore the core module-global engine + session factory so the
-    DB-driving tests never leak a temp engine into sibling tests."""
-    saved_engine = _db_mod._engine
-    saved_factory = _db_mod._session_factory
-    try:
-        yield
-    finally:
-        _db_mod._engine = saved_engine
-        _db_mod._session_factory = saved_factory
+    """Keep the explicit fixture name used by the DB-driving tests."""
+    yield
 
 
 def _det_migrator(callables, steps=None):
@@ -110,8 +103,18 @@ def _det_migrator(callables, steps=None):
     if steps is None:
         steps = (
             MigrationStep("pre_a", 1, "pre_create_all", "d", True, False, "community"),
-            MigrationStep(CREATE_ALL_BOUNDARY_STEP_ID, 2, "create_all_boundary", "d", True, False, "community"),
-            MigrationStep("post_b", 3, "post_create_all", "d", True, False, "community"),
+            MigrationStep(
+                CREATE_ALL_BOUNDARY_STEP_ID,
+                2,
+                "create_all_boundary",
+                "d",
+                True,
+                False,
+                "community",
+            ),
+            MigrationStep(
+                "post_b", 3, "post_create_all", "d", True, False, "community"
+            ),
         )
     return CommunityRelationalSchemaMigrator(steps=steps, callables=callables)
 
@@ -122,9 +125,7 @@ def _det_migrator(callables, steps=None):
 def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     migrate_names = _async_migrate_names_from_database()
     ledger = build_community_migration_ledger()
-    ledger_migrate_ids = {
-        s.step_id for s in ledger if s.phase != "create_all_boundary"
-    }
+    ledger_migrate_ids = {s.step_id for s in ledger if s.phase != "create_all_boundary"}
 
     # 1:1 coverage — no migration without a step, no step without a migration.
     assert ledger_migrate_ids == migrate_names, (
@@ -132,7 +133,9 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    assert len(migrate_names) == 35, f"expected 35 _migrate_*, found {len(migrate_names)}"
+    assert len(migrate_names) == 35, (
+        f"expected 35 _migrate_*, found {len(migrate_names)}"
+    )
     assert len(ledger_migrate_ids) == 35
 
     # Exactly ONE create_all_boundary step.
@@ -277,7 +280,10 @@ def test_ts_7c1fc064_failing_step_yields_partial_never_success():
     assert result.failed_step.status == "failed"
     assert "RuntimeError" in (result.failed_step.failure_reason or "")
     assert result.failed_step.remediation
-    assert {s.step_id for s in result.applied_steps} == {"pre_a", CREATE_ALL_BOUNDARY_STEP_ID}
+    assert {s.step_id for s in result.applied_steps} == {
+        "pre_a",
+        CREATE_ALL_BOUNDARY_STEP_ID,
+    }
     # MigrationResult fail-closed invariant: success + failed step is impossible.
     with pytest.raises(ValueError):
         MigrationResult(status="success", failed_steps=(result.failed_step,))
@@ -288,7 +294,11 @@ def test_ts_7c1fc064_first_step_failure_is_failed_not_partial():
         raise RuntimeError("x")
 
     migrator = _det_migrator(
-        {"pre_a": boom, CREATE_ALL_BOUNDARY_STEP_ID: lambda: None, "post_b": lambda: None}
+        {
+            "pre_a": boom,
+            CREATE_ALL_BOUNDARY_STEP_ID: lambda: None,
+            "post_b": lambda: None,
+        }
     )
     result = migrator.execute(migrator.plan(target="t"))
     assert result.status == "failed"  # nothing applied before the failure
@@ -309,7 +319,8 @@ def test_ts_7c1fc064_invalid_plan_raises_schema_migration_error():
 
     # Two create_all boundaries.
     two_boundaries = MigrationPlan(
-        plan_id="bad", target="t",
+        plan_id="bad",
+        target="t",
         steps=(
             MigrationStep("a", 1, "create_all_boundary", "d", True, False, "c"),
             MigrationStep("b", 2, "create_all_boundary", "d", True, False, "c"),
@@ -320,7 +331,8 @@ def test_ts_7c1fc064_invalid_plan_raises_schema_migration_error():
 
     # Empty step_id.
     empty_id = MigrationPlan(
-        plan_id="bad", target="t",
+        plan_id="bad",
+        target="t",
         steps=(MigrationStep("", 1, "pre_create_all", "d", True, False, "c"),),
     )
     with pytest.raises(SchemaMigrationError):
@@ -328,10 +340,19 @@ def test_ts_7c1fc064_invalid_plan_raises_schema_migration_error():
 
     # Phase out of order (post before boundary by order).
     out_of_order = MigrationPlan(
-        plan_id="bad", target="t",
+        plan_id="bad",
+        target="t",
         steps=(
             MigrationStep("p", 1, "post_create_all", "d", True, False, "c"),
-            MigrationStep(CREATE_ALL_BOUNDARY_STEP_ID, 2, "create_all_boundary", "d", True, False, "c"),
+            MigrationStep(
+                CREATE_ALL_BOUNDARY_STEP_ID,
+                2,
+                "create_all_boundary",
+                "d",
+                True,
+                False,
+                "c",
+            ),
         ),
     )
     with pytest.raises(SchemaMigrationError):
@@ -366,8 +387,12 @@ def test_ts_35ad79e3_core_ports_is_pure_no_sqlalchemy_no_community():
     for mod in imported:
         low = mod.lower()
         assert "sqlalchemy" not in low, f"core/ports imports sqlalchemy: {mod!r}"
-        assert "okto_pulse.community" not in low, f"core/ports imports community: {mod!r}"
-        assert "infra.database" not in low, f"core/ports imports infra.database: {mod!r}"
+        assert "okto_pulse.community" not in low, (
+            f"core/ports imports community: {mod!r}"
+        )
+        assert "infra.database" not in low, (
+            f"core/ports imports infra.database: {mod!r}"
+        )
 
 
 def test_ts_35ad79e3_core_does_not_import_community():
@@ -404,7 +429,9 @@ def test_ts_35ad79e3_adapter_module_is_layer_isolated():
     for mod in imported:
         low = mod.lower()
         assert "sqlalchemy" not in low, f"adapter top-level imports sqlalchemy: {mod!r}"
-        assert "infra.database" not in low, f"adapter top-level imports infra.database: {mod!r}"
+        assert "infra.database" not in low, (
+            f"adapter top-level imports infra.database: {mod!r}"
+        )
     assert any(m == "okto_pulse.core.ports" for m in imported)
 
 
@@ -424,7 +451,11 @@ def test_ts_83050921_plan_and_execute_traffic_canonical_dtos():
 
     # execute returns the canonical MigrationResult (deterministic small plan).
     det = _det_migrator(
-        {"pre_a": lambda: None, CREATE_ALL_BOUNDARY_STEP_ID: lambda: None, "post_b": lambda: None}
+        {
+            "pre_a": lambda: None,
+            CREATE_ALL_BOUNDARY_STEP_ID: lambda: None,
+            "post_b": lambda: None,
+        }
     )
     result = det.execute(det.plan(target="t"))
     assert type(result) is MigrationResult
@@ -440,15 +471,20 @@ def test_ts_83050921_adapter_defines_no_parallel_dtos():
         ).__file__
     )
     tree = ast.parse(adapter_py.read_text(encoding="utf-8"))
-    class_names = {
-        n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)
-    }
+    class_names = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
     # The adapter declares ONLY its implementation class — no parallel DTOs.
     assert class_names == {"CommunityRelationalSchemaMigrator"}
-    for forbidden in {"MigrationStep", "MigrationPlan", "MigrationResult", "MigrationStepResult"}:
+    for forbidden in {
+        "MigrationStep",
+        "MigrationPlan",
+        "MigrationResult",
+        "MigrationStepResult",
+    }:
         assert forbidden not in class_names
 
     # The DTOs it traffics are the canonical port classes (identity check).
     step = build_community_migration_ledger()[0]
     assert step.__class__ is MigrationStep
-    assert step.__class__.__module__ == "okto_pulse.core.ports.relational_schema_migrator"
+    assert (
+        step.__class__.__module__ == "okto_pulse.core.ports.relational_schema_migrator"
+    )

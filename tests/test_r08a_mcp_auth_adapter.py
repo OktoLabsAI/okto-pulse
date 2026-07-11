@@ -19,13 +19,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 from pathlib import Path
 
 import pytest
 
-# Register every ORM model on Base.metadata (production-faithful) so create_all
-# builds the agents table; creates no engine.
-import okto_pulse.core.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
 import okto_pulse.community.adapters.mcp_auth as _adapter_mod
 from okto_pulse.community.adapters.mcp_auth import (
@@ -33,25 +31,29 @@ from okto_pulse.community.adapters.mcp_auth import (
     make_community_mcp_authenticator,
 )
 from okto_pulse.core.ports import AgentAuthSession, McpAuthenticator, McpCredential
+from okto_pulse.core.ports.relational_application import (
+    register_relational_application_adapter,
+    reset_relational_application_adapter_for_tests,
+)
+from okto_pulse.community.adapters.relational_application import (
+    CommunityRelationalApplicationAdapter,
+)
 
 ADAPTER_PY = Path(_adapter_mod.__file__)
 
 
 @pytest.fixture
 def _isolate_engine():
-    saved_engine = _db_mod._engine
-    saved_factory = _db_mod._session_factory
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
     try:
         yield
     finally:
-        _db_mod._engine = saved_engine
-        _db_mod._session_factory = saved_factory
+        reset_relational_application_adapter_for_tests()
 
 
 async def _seed_agent(api_key: str, *, is_active: bool = True) -> str:
-    from okto_pulse.core.infra.database import Base
-    from okto_pulse.core.models.db import Agent
-    from okto_pulse.core.services.main import AgentService
+    from okto_pulse.community.adapters.sqlalchemy_base import Base
+    from okto_pulse.community.adapters.sqlalchemy_models import Agent
 
     async with _db_mod.get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -59,7 +61,7 @@ async def _seed_agent(api_key: str, *, is_active: bool = True) -> str:
         agent = Agent(
             name="Test Agent",
             api_key=api_key,
-            api_key_hash=AgentService.hash_api_key(api_key),
+            api_key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
             is_active=is_active,
             created_by="user-1",
         )
@@ -69,7 +71,7 @@ async def _seed_agent(api_key: str, *, is_active: bool = True) -> str:
 
 
 async def _reload_last_used(agent_id: str):
-    from okto_pulse.core.models.db import Agent
+    from okto_pulse.community.adapters.sqlalchemy_models import Agent
 
     async with _db_mod.get_session_factory()() as session:
         agent = await session.get(Agent, agent_id)
@@ -82,7 +84,9 @@ async def _reload_last_used(agent_id: str):
 def test_ts_b22ce5b0_isinstance_of_port_protocol():
     auth = make_community_mcp_authenticator(session_factory=lambda: None)
     assert isinstance(auth, McpAuthenticator)
-    assert isinstance(CommunityMcpAuthenticator(session_factory=lambda: None), McpAuthenticator)
+    assert isinstance(
+        CommunityMcpAuthenticator(session_factory=lambda: None), McpAuthenticator
+    )
 
 
 def test_ts_b22ce5b0_adapter_defines_no_parallel_dtos():
@@ -98,7 +102,7 @@ def test_ts_b22ce5b0_adapter_defines_no_parallel_dtos():
         for n in ast.walk(tree)
         if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    for token in ("credentialstore", "jwt", "realm", "oauth", "password", "bcrypt"):
+    for token in ("credentialstore", "jwt", "oauth", "password", "bcrypt"):
         assert not any(token in name for name in defined)
 
 
@@ -145,7 +149,9 @@ def test_ts_75846b3a_valid_key_authenticates_without_touching_last_used(
     assert session.agent_id == agent_id
     assert session.agent_name == "Test Agent"
     assert session.is_active is True
-    assert before is None and after is None  # read-only auth leaves last_used_at untouched
+    assert (
+        before is None and after is None
+    )  # read-only auth leaves last_used_at untouched
     # secret-free session: no raw key anywhere in the session.
     assert "valid-key-abc" not in repr(session)
     assert "valid-key-abc" not in str(dict(session.metadata))
@@ -191,9 +197,10 @@ def test_ts_5f381019_absent_or_empty_credential_returns_none():
     # None credential and empty value are fail-closed WITHOUT touching the DB
     # (session_factory would crash if called) -> proves the short-circuit.
     assert asyncio.run(auth.authenticate(None)) is None
-    assert asyncio.run(
-        auth.authenticate(McpCredential(source="query_param", value=""))
-    ) is None
+    assert (
+        asyncio.run(auth.authenticate(McpCredential(source="query_param", value="")))
+        is None
+    )
 
 
 def test_ts_5f381019_credential_repr_redacts_secret():

@@ -434,7 +434,7 @@ def try_close_board_db(
     quando o Database foi liberado (ou já não estava aberto).
     """
     try:
-        from okto_pulse.core.kg.connection_pool import close_board_connection
+        from okto_pulse.community.adapters.graph_connection_pool import close_board_connection
     except ImportError:
         close_board_connection = None  # type: ignore[assignment]
     if close_board_connection is not None:
@@ -536,7 +536,7 @@ def close_board_db_cache(
     # padrão do try_close_board_db). Best-effort: pool ausente/erro não
     # bloqueia o close (o dreno fail-closed ainda protege).
     try:
-        from okto_pulse.core.kg.connection_pool import (
+        from okto_pulse.community.adapters.graph_connection_pool import (
             close_all_board_connections,
             close_board_connection,
         )
@@ -847,13 +847,14 @@ def _board_quarantine_service():
     away from the evidence.
     """
     from okto_pulse.core.kg.quarantine import KGQuarantineService
+    from okto_pulse.community.adapters.local_storage_ref import local_storage_ref
 
     sample_path = board_kuzu_path("__scope_probe__")
     storage_root = sample_path.parent.parent  # boards/ root
     quarantine_base = storage_root.parent  # one level up: KG storage root
     return KGQuarantineService(
-        base_dir=quarantine_base,
-        scope_roots=[storage_root],
+        base_storage_ref_hint=local_storage_ref(quarantine_base),
+        scope_storage_refs=[local_storage_ref(storage_root)],
     )
 
 
@@ -886,10 +887,12 @@ def purge_board_graph_storage(board_id: str, *, reason: str = "manual") -> list[
 
     service = _board_quarantine_service()
     try:
+        from okto_pulse.community.adapters.local_storage_ref import local_storage_ref
+
         response = service.create(
             board_id=board_id,
             graph_type="board_graph",
-            affected_paths=[str(t) for t in targets],
+            affected_storage_refs=[local_storage_ref(t) for t in targets],
             reason=reason,
             correlation_ids=[],
         )
@@ -2428,10 +2431,12 @@ LEGACY_NODE_COLUMNS = _schema_contract.LEGACY_NODE_COLUMNS
 stable_rel_type_entries = _schema_contract.stable_rel_type_entries
 relationship_endpoint_pairs = _schema_contract.relationship_endpoint_pairs
 resolve_relationship_endpoint_pair = _schema_contract.resolve_relationship_endpoint_pair
-_COMMON_NODE_ATTRS = _schema_contract._COMMON_NODE_ATTRS
-_build_node_ddl = _schema_contract._build_node_ddl
-_build_rel_ddl = _schema_contract._build_rel_ddl
-_build_multi_rel_ddl = _schema_contract._build_multi_rel_ddl
+from okto_pulse.community.adapters.graph_ddl import (
+    COMMON_NODE_ATTRIBUTES as _COMMON_NODE_ATTRS,
+    build_multi_rel_ddl as _build_multi_rel_ddl,
+    build_node_ddl as _build_node_ddl,
+    build_rel_ddl as _build_rel_ddl,
+)
 vector_index_name = _schema_contract.vector_index_name
 
 
@@ -3087,7 +3092,7 @@ def close_all_connections(board_id: str | None = None) -> None:
     rmtree runs on Windows.
     """
     try:
-        from okto_pulse.core.kg.connection_pool import (  # type: ignore
+        from okto_pulse.community.adapters.graph_connection_pool import (  # type: ignore
             close_board_connection,
             close_all_board_connections,
         )

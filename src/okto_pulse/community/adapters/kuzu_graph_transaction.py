@@ -12,7 +12,32 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from okto_pulse.core.kg.interfaces.graph_transaction import GraphStatementResult
+
 logger = logging.getLogger(__name__)
+
+
+def _materialize(result: Any) -> GraphStatementResult:
+    if result is None:
+        return GraphStatementResult()
+    columns: tuple[str, ...] = ()
+    rows: list[list[Any]] = []
+    try:
+        get_columns = getattr(result, "get_column_names", None)
+        if callable(get_columns):
+            columns = tuple(str(item) for item in get_columns())
+        has_next = getattr(result, "has_next", None)
+        get_next = getattr(result, "get_next", None)
+        if callable(has_next) and callable(get_next):
+            while has_next():
+                rows.append(list(get_next()))
+        elif isinstance(result, (list, tuple)):
+            rows.extend(list(row) if isinstance(row, (list, tuple)) else [row] for row in result)
+    finally:
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
+    return GraphStatementResult.from_rows(rows, columns=columns)
 
 
 class _KuzuTransactionScope:
@@ -25,10 +50,14 @@ class _KuzuTransactionScope:
         self._conn = self._connection.conn
         self._finished = False
 
-    def execute(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
+    def execute(
+        self,
+        cypher: str,
+        params: dict[str, Any] | None = None,
+    ) -> GraphStatementResult:
         if params:
-            return self._conn.execute(cypher, params)
-        return self._conn.execute(cypher)
+            return _materialize(self._conn.execute(cypher, params))
+        return _materialize(self._conn.execute(cypher))
 
     async def commit(self) -> None:
         self._close()
@@ -63,3 +92,6 @@ class CommunityKuzuGraphTransaction:
 
     async def begin(self, board_id: str) -> _KuzuTransactionScope:
         return _KuzuTransactionScope(board_id)
+
+
+__all__ = ["CommunityKuzuGraphTransaction", "_materialize"]

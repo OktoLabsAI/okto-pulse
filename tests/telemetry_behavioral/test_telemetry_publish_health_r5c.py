@@ -16,14 +16,18 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from okto_pulse.community.adapters.telemetry_sender import CommunityTelemetryBeaconSender
+from okto_pulse.community.adapters.telemetry_sender import (
+    CommunityTelemetryBeaconSender,
+)
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry import failure_state as fs
 from okto_pulse.core.telemetry import publish_health as ph
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
-from okto_pulse.core.telemetry.service import TelemetryService
-from okto_pulse.core.telemetry.settings import resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 
 # R10-E PASS 1 aliases: tests exercise the Community concrete classes.
 TelemetryBeaconSender = CommunityTelemetryBeaconSender
@@ -47,6 +51,7 @@ def _projection(**overrides) -> dict:
 
 
 # --- ts_4c7fd83a: degraded local failure-state -> full actionable DTO ----------
+
 
 def test_ts_4c7fd83a_degraded_state_returns_actionable_dto() -> None:
     projection = _projection(
@@ -81,9 +86,11 @@ def test_ts_4c7fd83a_degraded_state_returns_actionable_dto() -> None:
 
 # --- status classification over the R5A status vocabulary ----------------------
 
+
 def test_status_mapping_healthy() -> None:
     dto = ph.resolve_publish_health(
-        _projection(status=fs.STATUS_OK, last_success_at="2026-06-15T13:00:00Z"), now=_NOW
+        _projection(status=fs.STATUS_OK, last_success_at="2026-06-15T13:00:00Z"),
+        now=_NOW,
     )
     assert dto.status == ph.HEALTHY
 
@@ -102,7 +109,8 @@ def test_status_mapping_recovering_when_recovered_on_this_success() -> None:
 
 def test_status_mapping_stale_when_last_success_old() -> None:
     dto = ph.resolve_publish_health(
-        _projection(status=fs.STATUS_OK, last_success_at="2026-06-14T00:00:00Z"), now=_NOW
+        _projection(status=fs.STATUS_OK, last_success_at="2026-06-14T00:00:00Z"),
+        now=_NOW,
     )
     assert dto.status == ph.STALE
     assert dto.freshness["is_stale"] is True
@@ -118,7 +126,11 @@ def test_status_mapping_failing_on_fatal() -> None:
 def test_status_mapping_disabled_when_publishing_off() -> None:
     # consent blocked (telemetry off) -> disabled, regardless of any stale data.
     dto = ph.resolve_publish_health(
-        _projection(status=fs.STATUS_BLOCKED, publish_enabled=False, consent_state=fs.CONSENT_BLOCKED),
+        _projection(
+            status=fs.STATUS_BLOCKED,
+            publish_enabled=False,
+            consent_state=fs.CONSENT_BLOCKED,
+        ),
         now=_NOW,
     )
     assert dto.status == ph.HEALTH_DISABLED
@@ -136,12 +148,17 @@ def test_status_mapping_unavailable_when_no_outcome_yet() -> None:
 
 # --- service: no readable source -> structured HEALTH_SOURCE_UNAVAILABLE --------
 
+
 def _settings(tmp_path: Path, monkeypatch) -> CoreSettings:
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
-    return CoreSettings(metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon")
+    return CoreSettings(
+        metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon"
+    )
 
 
-def test_service_no_source_returns_structured_error(tmp_path: Path, monkeypatch) -> None:
+def test_service_no_source_returns_structured_error(
+    tmp_path: Path, monkeypatch
+) -> None:
     service = TelemetryService(_settings(tmp_path, monkeypatch))
 
     def _raise():
@@ -160,7 +177,10 @@ def test_service_fresh_install_not_healthy(tmp_path: Path, monkeypatch) -> None:
     # so health must NOT be reported healthy.
     settings = _settings(tmp_path, monkeypatch)
     TelemetryService(settings).update_settings(
-        mode="anonymous_beacon", source="cli", policy_version="2026-05-11", schema_version=CURRENT_SCHEMA_VERSION
+        mode="anonymous_beacon",
+        source="cli",
+        policy_version="2026-05-11",
+        schema_version=CURRENT_SCHEMA_VERSION,
     )
     result = TelemetryService(settings).publish_health(now=_NOW)
     assert result["status"] != ph.HEALTHY
@@ -168,6 +188,7 @@ def test_service_fresh_install_not_healthy(tmp_path: Path, monkeypatch) -> None:
 
 
 # --- service: a real failure with a SECRET token -> public/redacted only --------
+
 
 class _Resp:
     def __init__(self, status_code: int) -> None:
@@ -191,7 +212,10 @@ class _Session:
 
 def _enable_with_token(tmp_path: Path, settings: CoreSettings) -> None:
     TelemetryService(settings).update_settings(
-        mode="anonymous_beacon", source="cli", policy_version="2026-05-11", schema_version=CURRENT_SCHEMA_VERSION
+        mode="anonymous_beacon",
+        source="cli",
+        policy_version="2026-05-11",
+        schema_version=CURRENT_SCHEMA_VERSION,
     )
     state_path = tmp_path / "metrics" / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -215,7 +239,9 @@ def _append_event(settings: CoreSettings) -> None:
     )
 
 
-def test_service_with_secret_token_responds_public_redacted_only(tmp_path: Path, monkeypatch) -> None:
+def test_service_with_secret_token_responds_public_redacted_only(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _settings(tmp_path, monkeypatch)
     _enable_with_token(tmp_path, settings)
     _append_event(settings)
@@ -232,7 +258,9 @@ def test_service_with_secret_token_responds_public_redacted_only(tmp_path: Path,
     assert result["next_retry_at"]
     assert result["redaction_applied"] is True
     # install id surfaces ONLY redacted.
-    assert result["install_id_redacted"] and result["install_id_redacted"].startswith("iid_")
+    assert result["install_id_redacted"] and result["install_id_redacted"].startswith(
+        "iid_"
+    )
     # NO secret anywhere in the response.
     blob = json.dumps(result)
     assert _SECRET_TOKEN not in blob

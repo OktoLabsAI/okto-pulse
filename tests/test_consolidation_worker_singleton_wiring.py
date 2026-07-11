@@ -1,104 +1,82 @@
-"""Regressão: o worker de consolidação iniciado pelo lifespan É o singleton.
-
-Bug corrigido em 2026-07-10 (hotfix direto, fora do fluxo do board): o
-combined_lifespan iniciava um ConsolidationWorker AVULSO via
-create_consolidation_worker(), enquanto queue_health (worker_mode),
-kg_health (dlq drain stats), o process_now do dead_letter_reprocess e
-signal_consolidation_worker() leem o singleton de get_consolidation_worker().
-Resultado: worker_mode="stopped" permanente no drilldown, métricas lidas de
-uma instância nunca iniciada e — pior — o wake signal dos enqueue sites era
-no-op, fazendo a fila andar apenas no heartbeat (30s) em vez de imediatamente.
-"""
+"""Regression coverage for app-scoped consolidation runner wiring."""
 
 from __future__ import annotations
 
-import asyncio
+from types import SimpleNamespace
 
-import pytest
-
-from okto_pulse.core.kg.workers import consolidation as consolidation_mod
-from okto_pulse.core.kg.workers.consolidation import (
-    ConsolidationWorker,
-    get_consolidation_worker,
-    reset_consolidation_worker_for_tests,
-    signal_consolidation_worker,
+from okto_pulse.core.application.runtime_workers import signal_runtime_worker
+from okto_pulse.core.composition import RuntimeComposition, runtime_composition_scope
+from okto_pulse.core.ports.runtime_workers import (
+    RuntimeWorkerRegistry,
+    RuntimeWorkerSpec,
 )
 
-from okto_pulse.community.adapters.workers import _start_consolidation_worker
+
+class _Runner:
+    def __init__(self) -> None:
+        self.signals = 0
+        self.is_running = True
+
+    def notify(self) -> None:
+        self.signals += 1
 
 
-@pytest.fixture(autouse=True)
-def _reset_singleton():
-    reset_consolidation_worker_for_tests()
-    yield
-    reset_consolidation_worker_for_tests()
-
-
-class _DummySessionFactory:
-    def __call__(self, *args, **kwargs):  # pragma: no cover - nunca invocado
-        raise AssertionError("session factory não deve ser usada neste teste")
-
-
-def test_lifespan_started_worker_is_the_singleton(monkeypatch):
-    """O worker retornado pelo start do lifespan é o mesmo objeto que
-    get_consolidation_worker() — a fonte lida por worker_mode/signal."""
-    started = []
-
-    async def _fake_start(self):
-        started.append(self)
-        self._running = True  # espelha o efeito observável de start()
-
-    monkeypatch.setattr(ConsolidationWorker, "start", _fake_start)
-
-    factory = _DummySessionFactory()
-    worker = asyncio.run(_start_consolidation_worker(factory))
-
-    assert started == [worker], "start() deve ter sido chamado no worker do lifespan"
-    singleton = get_consolidation_worker()
-    assert worker is singleton, (
-        "regressão do split-brain: o worker iniciado pelo lifespan não é o "
-        "singleton — worker_mode voltará a reportar 'stopped' e o wake signal "
-        "voltará a ser no-op"
+def _composition(registry: RuntimeWorkerRegistry) -> RuntimeComposition:
+    return RuntimeComposition(
+        settings_provider=object(),
+        auth_provider=object(),
+        storage_provider=object(),
+        session_factory=object(),
+        event_bus=object(),
+        worker_registry=registry,
     )
 
 
-def test_signal_reaches_the_started_worker(monkeypatch):
-    """signal_consolidation_worker() acorda o worker iniciado pelo lifespan."""
-    signals = []
+async def _start(runner: _Runner) -> _Runner:
+    return runner
 
-    async def _fake_start(self):
-        self._running = True
 
-    monkeypatch.setattr(ConsolidationWorker, "start", _fake_start)
+async def _stop(_runner: _Runner) -> None:
+    return None
 
-    worker = asyncio.run(_start_consolidation_worker(_DummySessionFactory()))
 
-    # is_running deve refletir o start (propriedade ou atributo interno)
-    if not getattr(worker, "is_running", False):
-        monkeypatch.setattr(
-            type(worker), "is_running", property(lambda self: True)
+def _registry(runner: _Runner) -> RuntimeWorkerRegistry:
+    registry = RuntimeWorkerRegistry(
+        (
+            RuntimeWorkerSpec(
+                family="consolidation_worker",
+                start=lambda: _start(runner),
+                stop=_stop,
+            ),
         )
-
-    monkeypatch.setattr(
-        type(worker), "signal_new_work", lambda self: signals.append(self)
     )
-
-    signal_consolidation_worker()
-
-    assert signals == [worker], (
-        "o wake signal dos enqueue sites deve alcançar o worker REAL iniciado "
-        "pelo lifespan (antes do fix ia para um singleton nunca iniciado)"
-    )
+    registry._active["consolidation_worker"] = runner
+    return registry
 
 
-def test_module_singleton_slot_is_populated_by_lifespan_start(monkeypatch):
-    """O slot _singleton do módulo é preenchido pelo start do lifespan (sem
-    criação preguiçosa posterior de uma segunda instância)."""
+def test_signal_resolves_only_the_active_app_runner() -> None:
+    runner_a = _Runner()
+    runner_b = _Runner()
+    composition_a = _composition(_registry(runner_a))
+    composition_b = _composition(_registry(runner_b))
 
-    async def _fake_start(self):
-        self._running = True
+    with runtime_composition_scope(composition_a):
+        assert signal_runtime_worker("consolidation_worker") is True
+        with runtime_composition_scope(composition_b):
+            assert signal_runtime_worker("consolidation_worker") is True
+        assert signal_runtime_worker("consolidation_worker") is True
 
-    monkeypatch.setattr(ConsolidationWorker, "start", _fake_start)
+    assert runner_a.signals == 2
+    assert runner_b.signals == 1
 
-    worker = asyncio.run(_start_consolidation_worker(_DummySessionFactory()))
-    assert consolidation_mod._singleton is worker
+
+def test_signal_outside_app_scope_is_a_noop() -> None:
+    assert signal_runtime_worker("consolidation_worker") is False
+
+
+def test_runner_state_is_not_module_global() -> None:
+    import okto_pulse.core.application.processors.consolidation as module
+
+    assert not hasattr(module, "_singleton")
+    assert not hasattr(module, "get_consolidation_worker")
+    assert not hasattr(module, "signal_consolidation_worker")

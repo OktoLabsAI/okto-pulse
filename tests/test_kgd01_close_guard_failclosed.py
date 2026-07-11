@@ -136,8 +136,7 @@ def _seed_board(board_id: str, *, rows: int = 0) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with kg_runtime.registered_raw_connection(board_id) as (_db, conn):
         conn.execute(
-            "CREATE NODE TABLE IF NOT EXISTS StressProbe("
-            "id INT64, PRIMARY KEY(id))"
+            "CREATE NODE TABLE IF NOT EXISTS StressProbe(id INT64, PRIMARY KEY(id))"
         )
         for i in range(rows):
             conn.execute(f"CREATE (:StressProbe {{id: {i}}})")
@@ -225,9 +224,7 @@ def test_s9_stress_close_guard_is_fail_closed(
                     with state_lock:
                         write_ids.append(wid)
                 else:
-                    res = bc.conn.execute(
-                        "MATCH (n:StressProbe) RETURN count(n)"
-                    )
+                    res = bc.conn.execute("MATCH (n:StressProbe) RETURN count(n)")
                     res.get_next()
                     res.close()
             except Exception as exc:  # noqa: BLE001 — conflito de escrita etc.
@@ -313,9 +310,9 @@ def test_s9_stress_close_guard_is_fail_closed(
     assert "kg.close_guard.timeout" not in events, (
         "evento fail-open kg.close_guard.timeout emitido no modo runtime"
     )
-    assert not any(
-        "fail-open" in rec.getMessage() for rec in caplog.records
-    ), "log de fail-open emitido no modo runtime"
+    assert not any("fail-open" in rec.getMessage() for rec in caplog.records), (
+        "log de fail-open emitido no modo runtime"
+    )
     # O caminho fail-closed foi de fato exercitado (leitor longo × closers).
     assert (
         "kg.close_guard.deferred" in events
@@ -458,7 +455,8 @@ def test_s9b_shutdown_force_closes_leaked_reader_with_explicit_log(
         assert "kg.close_guard.deferred" in events
         assert "kg.close_guard.forced_on_shutdown" not in events
         deferred = next(
-            r for r in caplog.records
+            r
+            for r in caplog.records
             if getattr(r, "event", None) == "kg.close_guard.deferred"
         )
         assert deferred.board_id == board
@@ -474,7 +472,8 @@ def test_s9b_shutdown_force_closes_leaked_reader_with_explicit_log(
         events = _events(caplog)
         assert "kg.close_guard.forced_on_shutdown" in events
         forced = next(
-            r for r in caplog.records
+            r
+            for r in caplog.records
             if getattr(r, "event", None) == "kg.close_guard.forced_on_shutdown"
         )
         assert forced.board_id == board
@@ -489,9 +488,7 @@ def test_s9b_shutdown_force_closes_leaked_reader_with_explicit_log(
     assert _count_probe_rows(board) == 3
 
 
-def test_s9b_close_all_graphs_on_shutdown_uses_force_path(
-    kg_env, monkeypatch, caplog
-):
+def test_s9b_close_all_graphs_on_shutdown_uses_force_path(kg_env, monkeypatch, caplog):
     """O caller real de C2 (kg_shutdown) atravessa o force path do C6."""
     from okto_pulse.community.adapters.kg_shutdown import (
         close_all_graphs_on_shutdown,
@@ -507,7 +504,7 @@ def test_s9b_close_all_graphs_on_shutdown_uses_force_path(
     guard.reader_enter()  # leitor vazado no teardown
     try:
         caplog.set_level(logging.INFO, logger=KG_LOGGER)
-        summary = close_all_graphs_on_shutdown()
+        summary = close_all_graphs_on_shutdown(runtime=kg_runtime)
         assert key not in kg_runtime._board_db_cache, (
             "shutdown não fechou o grafo com leitor vazado"
         )
@@ -582,9 +579,7 @@ def test_s10_cli_entrypoints_fail_fast_with_live_serve_lock(
 
     def forbidden_open(path):
         opened.append(str(path))
-        raise AssertionError(
-            f"Database open sob serve-lock ativo: {path}"
-        )
+        raise AssertionError(f"Database open sob serve-lock ativo: {path}")
 
     monkeypatch.setattr(kg_runtime, "_open_kuzu_db", forbidden_open)
     monkeypatch.setattr(sys, "argv", ["okto-pulse", *argv])
@@ -630,9 +625,7 @@ def test_s10_stale_heartbeat_live_pid_refuses_cli(tmp_path: Path):
     assert "serve-lock" in str(exc_info.value)
 
 
-def test_s10_fresh_heartbeat_dead_pid_still_refuses_cli(
-    tmp_path: Path, dead_pid: int
-):
+def test_s10_fresh_heartbeat_dead_pid_still_refuses_cli(tmp_path: Path, dead_pid: int):
     """Heartbeat fresco → recusa mesmo com PID morto (servidor pode ter
     morrido há segundos, com WAL/handles em estado transitório)."""
     data_dir = tmp_path / "pulse-data"
@@ -645,9 +638,7 @@ def test_s10_no_lock_file_allows_cli(tmp_path: Path):
     serve_lock.assert_no_live_server(tmp_path / "empty", operation="test")
 
 
-def test_s10_serve_lock_takeover_requires_dead_pid(
-    tmp_path: Path, dead_pid: int
-):
+def test_s10_serve_lock_takeover_requires_dead_pid(tmp_path: Path, dead_pid: int):
     """acquire(): heartbeat stale + PID morto (real) → takeover; heartbeat
     stale + PID vivo (real, o nosso) → recusa. Sem monkeypatch do check de
     PID — exercita OpenProcess/GetExitCodeProcess de verdade."""

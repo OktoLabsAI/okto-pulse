@@ -10,6 +10,7 @@ from okto_pulse.community.adapters.coordination import CommunityLocalWriteLockPo
 from okto_pulse.community.adapters.rebuild_audit_storage import (
     CommunityFileSystemRebuildAuditArtifactStore,
 )
+from okto_pulse.community.adapters.local_storage_ref import local_storage_ref
 from okto_pulse.core.kg.quarantine import (
     KGQuarantineService,
     QuarantineError,
@@ -352,14 +353,14 @@ def test_af29_s2_community_quarantine_adapter_preserves_manifest_and_scope(
     graph_file.write_text("corrupt-bytes", encoding="utf-8")
 
     service = KGQuarantineService(
-        base_dir=tmp_path / "kg-root",
-        scope_roots=[graph_root],
+        base_storage_ref_hint=local_storage_ref(tmp_path / "kg-root"),
+        scope_storage_refs=[local_storage_ref(graph_root)],
         artifact_store=store,
     )
     response = service.create(
         board_id="board-a",
         graph_type="board_graph",
-        affected_paths=[str(graph_file)],
+        affected_storage_refs=[local_storage_ref(graph_file)],
         reason="corruption detected during reopen probe",
         correlation_ids=["corr-1"],
         kg_generation_id="kg-1",
@@ -376,9 +377,7 @@ def test_af29_s2_community_quarantine_adapter_preserves_manifest_and_scope(
     assert manifest["kg_generation_id"] == "kg-1"
 
     assert service.inspect(response.quarantine_id).files_moved == 1
-    assert [m.quarantine_id for m in service.list_active()] == [
-        response.quarantine_id
-    ]
+    assert [m.quarantine_id for m in service.list_active()] == [response.quarantine_id]
 
     outside = tmp_path / "outside.lbug"
     outside.write_text("app-data", encoding="utf-8")
@@ -386,9 +385,9 @@ def test_af29_s2_community_quarantine_adapter_preserves_manifest_and_scope(
         service.create(
             board_id="board-a",
             graph_type="board_graph",
-            affected_paths=[str(outside)],
+            affected_storage_refs=[local_storage_ref(outside)],
             reason="manual purge",
             correlation_ids=[],
         )
-    assert exc_info.value.code is QuarantineErrorCode.AFFECTED_PATH_OUT_OF_SCOPE
+    assert exc_info.value.code is QuarantineErrorCode.STORAGE_REF_OUT_OF_SCOPE
     assert outside.exists()

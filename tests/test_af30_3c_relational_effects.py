@@ -11,8 +11,12 @@ from okto_pulse.community.adapters.relational_effects import (
     CommunitySqlAlchemyRelationalEffects,
     register_community_relational_effects,
 )
-from okto_pulse.core.infra.database import Base
-from okto_pulse.core.models.db import Board, ConsolidationQueue, KGTickRun
+from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.sqlalchemy_models import (
+    Board,
+    ConsolidationQueue,
+    KGTickRun,
+)
 from okto_pulse.core.ports.relational_effects import (
     ConsolidationQueueUpsert,
     KGTickRunUpsert,

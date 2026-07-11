@@ -145,14 +145,20 @@ def test_ts_6a49bf90_storage_roundtrip(tmp_path):
 def test_ts_87cf9551_embedding_capability_metadata():
     stub = CommunityStubEmbeddingProvider(dim=8)
     assert stub.embedding_metadata() == {
-        "model_name": None, "embedding_dimension": 8, "is_loaded": True, "is_stub": True
+        "model_name": None,
+        "embedding_dimension": 8,
+        "is_loaded": True,
+        "is_stub": True,
     }
     assert len(stub.encode("x")) == 8
 
     st = CommunitySentenceTransformerProvider(model_name="m", dim=384)
     # metadata describes WITHOUT loading the model.
     assert st.embedding_metadata() == {
-        "model_name": "m", "embedding_dimension": 384, "is_loaded": False, "is_stub": False
+        "model_name": "m",
+        "embedding_dimension": 384,
+        "is_loaded": False,
+        "is_stub": False,
     }
     assert st._model is None
 
@@ -169,8 +175,12 @@ def test_ts_87cf9551_preload_degrades_to_stub_keeping_event_and_dim(caplog):
         isinstance gating."""
 
         def embedding_metadata(self):
-            return {"model_name": "broken/model", "embedding_dimension": 11,
-                    "is_loaded": False, "is_stub": False}
+            return {
+                "model_name": "broken/model",
+                "embedding_dimension": 11,
+                "is_loaded": False,
+                "is_stub": False,
+            }
 
         def preload(self):
             raise OSError("model file unreadable")  # non-transient -> fail fast
@@ -180,9 +190,9 @@ def test_ts_87cf9551_preload_degrades_to_stub_keeping_event_and_dim(caplog):
 
     reset_registry_for_tests()
     try:
-        from okto_pulse.core.kg.interfaces.registry import (
-            _build_defaults,
-            configure_kg_registry,
+        from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
+        from okto_pulse.core.kg.providers.testing.registry import (
+            build_testing_kg_registry,
         )
         from okto_pulse.core.kg.providers.testing.memory_audit_repo import (
             InMemoryAuditRepository,
@@ -192,7 +202,7 @@ def test_ts_87cf9551_preload_degrades_to_stub_keeping_event_and_dim(caplog):
         )
 
         configure_kg_registry(
-            defaults_factory=_build_defaults,
+            defaults_factory=build_testing_kg_registry,
             event_bus=InMemoryEventBus(),
             audit_repo=InMemoryAuditRepository(),
         )
@@ -203,7 +213,11 @@ def test_ts_87cf9551_preload_degrades_to_stub_keeping_event_and_dim(caplog):
         swapped = get_kg_registry().embedding_provider
         assert type(swapped).__name__ == "CommunityStubEmbeddingProvider"
         assert swapped.dim == 11  # dimension preserved from the provider metadata
-        failed = [r for r in caplog.records if getattr(r, "event", None) == "kg.embedding.load_failed"]
+        failed = [
+            r
+            for r in caplog.records
+            if getattr(r, "event", None) == "kg.embedding.load_failed"
+        ]
         assert failed, "kg.embedding.load_failed not emitted"
         assert failed[0].reason == "load_failed"
         assert failed[0].fallback == "CommunityStubEmbeddingProvider"
@@ -223,9 +237,9 @@ def test_ts_87cf9551_preload_noop_for_stub_provider():
 
     reset_registry_for_tests()
     try:
-        from okto_pulse.core.kg.interfaces.registry import (
-            _build_defaults,
-            configure_kg_registry,
+        from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
+        from okto_pulse.core.kg.providers.testing.registry import (
+            build_testing_kg_registry,
         )
         from okto_pulse.core.kg.providers.testing.memory_audit_repo import (
             InMemoryAuditRepository,
@@ -235,7 +249,7 @@ def test_ts_87cf9551_preload_noop_for_stub_provider():
         )
 
         configure_kg_registry(
-            defaults_factory=_build_defaults,
+            defaults_factory=build_testing_kg_registry,
             event_bus=InMemoryEventBus(),
             audit_repo=InMemoryAuditRepository(),
         )
@@ -394,7 +408,9 @@ def test_ts_2b099962_deferred_adapters_not_physically_moved():
         "kg/embedding.py",
         "kg/providers/testing/memory.py",
     ):
-        assert (CORE_PKG / rel).exists(), f"core adapter unexpectedly moved/removed: {rel}"
+        assert (CORE_PKG / rel).exists(), (
+            f"core adapter unexpectedly moved/removed: {rel}"
+        )
 
     for rel in (
         "kg/providers/embedded/sqlite_outbox_event_bus.py",
@@ -409,7 +425,9 @@ def test_ts_2b099962_deferred_adapters_not_physically_moved():
     ):
         assert not (CORE_PKG / rel).exists(), f"moved adapter still in core: {rel}"
 
-    community_pkg = Path(__file__).resolve().parents[1] / "src" / "okto_pulse" / "community"
+    community_pkg = (
+        Path(__file__).resolve().parents[1] / "src" / "okto_pulse" / "community"
+    )
     for rel in (
         "adapters/sqlite_outbox_event_bus.py",
         "adapters/sqlalchemy_audit_repo.py",

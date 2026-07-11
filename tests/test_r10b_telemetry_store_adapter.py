@@ -25,7 +25,6 @@ from okto_pulse.community.adapters.telemetry_store import (
     register_community_telemetry_event_store,
 )
 from okto_pulse.core.ports.telemetry import TelemetryEventStore
-from okto_pulse.core.telemetry import event_store_registry as registry
 from okto_pulse.core.telemetry.event_store_registry import (
     get_telemetry_event_store,
     reset_telemetry_event_store_factory_for_tests,
@@ -45,10 +44,24 @@ def _isolate_factory():
 def _exercise(store) -> dict:
     """Drive the full EventStore surface and return an observable fingerprint."""
     occurred = datetime(2026, 6, 26, tzinfo=timezone.utc).isoformat()
-    store.append_event({"schema_version": CURRENT_SCHEMA_VERSION, "event_type": "cli",
-                        "occurred_at": occurred, "event_id": "e1", "payload": {"command": "serve"}})
-    store.append_event({"schema_version": CURRENT_SCHEMA_VERSION, "event_type": "cli",
-                        "occurred_at": occurred, "event_id": "e2", "payload": {"command": "status"}})
+    store.append_event(
+        {
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "event_type": "cli",
+            "occurred_at": occurred,
+            "event_id": "e1",
+            "payload": {"command": "serve"},
+        }
+    )
+    store.append_event(
+        {
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "event_type": "cli",
+            "occurred_at": occurred,
+            "event_id": "e2",
+            "payload": {"command": "status"},
+        }
+    )
     store.append_sent({"sent_at": occurred, "confirmed_event_ids": ["e1"]})
     store.append_snapshot({"snapshot_at": occurred, "metrics": {}})
     return {
@@ -74,7 +87,8 @@ def test_ts02_community_adapter_conformance_and_exercise(tmp_path):
 
 def test_registration_wires_core_factory_to_community_adapter(tmp_path):
     reset_telemetry_event_store_factory_for_tests()
-    assert registry._factory is None
+    with pytest.raises(RuntimeError, match="No TelemetryEventStore factory registered"):
+        get_telemetry_event_store(tmp_path / "unconfigured", 30)
     register_community_telemetry_event_store()
     resolved = get_telemetry_event_store(tmp_path / "metrics", 30)
     assert isinstance(resolved, CommunityLocalTelemetryStore)
@@ -87,18 +101,21 @@ def test_composed_community_root_never_hits_fail_closed_guard(tmp_path, monkeypa
     fail-closed RuntimeError guard (LocalTelemetryStore deleted from core)."""
     import okto_pulse.core.infra.config as _config
     import okto_pulse.core.kg.interfaces.registry as _reg
-    from okto_pulse.community.adapters.composition import configure_community_kg_registry
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
     from okto_pulse.core.infra.config import CoreSettings
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("KG_BASE_DIR", str(tmp_path / "boards"))
-    saved_settings = _config._settings_instance
-    saved_reg = (_reg._registry, _reg._configured)
     _config.configure_settings(CoreSettings())
     _reg.reset_registry_for_tests()
     try:
         reset_telemetry_event_store_factory_for_tests()
-        assert registry._factory is None  # no factory before composition
+        with pytest.raises(
+            RuntimeError, match="No TelemetryEventStore factory registered"
+        ):
+            get_telemetry_event_store(tmp_path / "unconfigured", 30)
 
         # Exercise the REAL composition root (session_factory=None -> pure path).
         configure_community_kg_registry(None)
@@ -107,10 +124,12 @@ def test_composed_community_root_never_hits_fail_closed_guard(tmp_path, monkeypa
         resolved = get_telemetry_event_store(tmp_path / "metrics", 30)
         # R10-E Pass 2: LocalTelemetryStore no longer exists in core; assert only
         # on the Community adapter type.
-        from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore as _C
+        from okto_pulse.community.adapters.telemetry_store import (
+            CommunityLocalTelemetryStore as _C,
+        )
+
         assert isinstance(resolved, _C)
         assert isinstance(resolved, TelemetryEventStore)
     finally:
         reset_telemetry_event_store_factory_for_tests()
-        _config._settings_instance = saved_settings
-        _reg._registry, _reg._configured = saved_reg
+        _reg.reset_registry_for_tests()

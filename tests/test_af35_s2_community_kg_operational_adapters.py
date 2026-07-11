@@ -17,8 +17,8 @@ from okto_pulse.community.adapters.kg_operational import (
     CommunitySqlAlchemyKGWorkerQueue,
     register_community_kg_operational_ports,
 )
-from okto_pulse.core.infra.database import Base
-from okto_pulse.core.models.db import (
+from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     CanonicalDebt,
     ConsolidationAudit,
@@ -215,7 +215,7 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
         tree = await read_model.build_pending_tree(session, board_id=board_id, depth=4)
         assert tree["total_pending"] == 1
         assert tree["tree"][0]["id"] == "spec-tree"
-        assert await read_model.kuzu_node_ref_operation_counts(
+        assert await read_model.graph_node_ref_operation_counts(
             session,
             board_id=board_id,
         ) == {"add": 1}

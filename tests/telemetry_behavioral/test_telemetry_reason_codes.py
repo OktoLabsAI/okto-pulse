@@ -16,15 +16,21 @@ from pathlib import Path
 
 import requests
 
-from okto_pulse.community.adapters.telemetry_sender import CommunityTelemetryBeaconSender
+from okto_pulse.community.adapters.telemetry_sender import (
+    CommunityTelemetryBeaconSender,
+)
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
-from okto_pulse.community.adapters import telemetry_state as tstate  # R-P2-08: Community-owned state persistence
+from okto_pulse.community.adapters import (
+    telemetry_state as tstate,
+)  # R-P2-08: Community-owned state persistence
 import okto_pulse.community.adapters.telemetry_sender as sender_mod  # patches _utcnow/_backoff_jitter
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry import failure_state as fs
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
-from okto_pulse.core.telemetry.service import TelemetryService
-from okto_pulse.core.telemetry.settings import resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 
 # R10-E PASS 1 aliases: tests exercise the Community concrete classes.
 TelemetryBeaconSender = CommunityTelemetryBeaconSender
@@ -49,7 +55,12 @@ class FakeResponse:
 
 
 class ScriptedSession:
-    def __init__(self, *, handshake: FakeResponse | None = None, usage: list[FakeResponse] | None = None):
+    def __init__(
+        self,
+        *,
+        handshake: FakeResponse | None = None,
+        usage: list[FakeResponse] | None = None,
+    ):
         self._handshake = handshake
         self._usage = list(usage or [])
         self.calls: list[str] = []
@@ -87,7 +98,9 @@ def _prepare(tmp_path: Path, monkeypatch, *, with_consent: bool = True) -> CoreS
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["install_token"] = "tok-current"
     # far from expiry so the R1-B preventive refresh never triggers here
-    state["install_token_expires_at"] = (FIXED_NOW + timedelta(hours=72)).isoformat().replace("+00:00", "Z")
+    state["install_token_expires_at"] = (
+        (FIXED_NOW + timedelta(hours=72)).isoformat().replace("+00:00", "Z")
+    )
     state["next_batch_seq"] = 5
     if not with_consent:
         # anonymous_beacon mode but NO recorded policy acknowledgement -> consent
@@ -99,14 +112,25 @@ def _prepare(tmp_path: Path, monkeypatch, *, with_consent: bool = True) -> CoreS
 
 
 def _state(settings: CoreSettings) -> dict:
-    return json.loads((Path(settings.metrics_dir) / "state.json").read_text(encoding="utf-8"))
+    return json.loads(
+        (Path(settings.metrics_dir) / "state.json").read_text(encoding="utf-8")
+    )
 
 
-def test_unknown_install_with_consent_rehandshakes_once_and_recovers(tmp_path, monkeypatch):
+def test_unknown_install_with_consent_rehandshakes_once_and_recovers(
+    tmp_path, monkeypatch
+):
     """ts_bfa70eb6 — one re-handshake + one retry recovers the publish."""
     settings = _prepare(tmp_path, monkeypatch, with_consent=True)
     session = ScriptedSession(
-        handshake=FakeResponse(200, {"install_token": "tok-new", "token_ttl_seconds": 2592000, "accepted_schema_version": CURRENT_SCHEMA_VERSION}),
+        handshake=FakeResponse(
+            200,
+            {
+                "install_token": "tok-new",
+                "token_ttl_seconds": 2592000,
+                "accepted_schema_version": CURRENT_SCHEMA_VERSION,
+            },
+        ),
         usage=[_err(401, "UNKNOWN_INSTALL"), FakeResponse(200, {"accepted": True})],
     )
     result = TelemetryBeaconSender(settings, session=session).send_once()  # type: ignore[arg-type]
@@ -121,11 +145,20 @@ def test_unknown_install_with_consent_rehandshakes_once_and_recovers(tmp_path, m
     assert state["next_batch_seq"] == 6
 
 
-def test_unknown_install_retry_still_unknown_backs_off_without_second_rehandshake(tmp_path, monkeypatch):
+def test_unknown_install_retry_still_unknown_backs_off_without_second_rehandshake(
+    tmp_path, monkeypatch
+):
     """No infinite loop: a single re-handshake, then back off if still unknown."""
     settings = _prepare(tmp_path, monkeypatch, with_consent=True)
     session = ScriptedSession(
-        handshake=FakeResponse(200, {"install_token": "tok-new", "token_ttl_seconds": 2592000, "accepted_schema_version": CURRENT_SCHEMA_VERSION}),
+        handshake=FakeResponse(
+            200,
+            {
+                "install_token": "tok-new",
+                "token_ttl_seconds": 2592000,
+                "accepted_schema_version": CURRENT_SCHEMA_VERSION,
+            },
+        ),
         usage=[_err(401, "UNKNOWN_INSTALL"), _err(401, "UNKNOWN_INSTALL")],
     )
     result = TelemetryBeaconSender(settings, session=session).send_once()  # type: ignore[arg-type]
@@ -141,7 +174,9 @@ def test_unknown_install_retry_still_unknown_backs_off_without_second_rehandshak
 def test_unknown_install_without_consent_does_not_rehandshake(tmp_path, monkeypatch):
     """ts_3a1f7d14 — no valid consent -> no /v1/handshake, actionable block."""
     settings = _prepare(tmp_path, monkeypatch, with_consent=False)
-    session = ScriptedSession(usage=[_err(401, "UNKNOWN_INSTALL")])  # no handshake scripted
+    session = ScriptedSession(
+        usage=[_err(401, "UNKNOWN_INSTALL")]
+    )  # no handshake scripted
 
     result = TelemetryBeaconSender(settings, session=session).send_once()  # type: ignore[arg-type]
 
@@ -212,7 +247,9 @@ def test_duplicate_confirms_events_idempotently_no_replay(tmp_path, monkeypatch)
     assert second_session.calls == []
 
 
-def test_regression_r3a_g_duplicate_confirms_only_original_intent(tmp_path, monkeypatch):
+def test_regression_r3a_g_duplicate_confirms_only_original_intent(
+    tmp_path, monkeypatch
+):
     """R3A-G regression (test card 6e9840f0) — exercises the data-loss edge the
     R3A-C validation surfaced: a DUPLICATE on retry must confirm ONLY the events
     of the ORIGINAL intent, never events added to the store after the original
@@ -225,14 +262,20 @@ def test_regression_r3a_g_duplicate_confirms_only_original_intent(tmp_path, monk
     """
     settings = _prepare(tmp_path, monkeypatch, with_consent=True)  # next_batch_seq=5
     metrics_dir = resolve_telemetry_config(settings).metrics_dir
-    a_id = next(iter({e["event_id"] for e in LocalTelemetryStore(metrics_dir).iter_events()}))
+    a_id = next(
+        iter({e["event_id"] for e in LocalTelemetryStore(metrics_dir).iter_events()})
+    )
 
     # (1)+(2) Durable intent for batch_seq=5 carrying ONLY {A}, as persisted
     # pre-POST; the process then crashed after the backend accepted batch_seq=5
     # but before the local confirmation/advance (A not in the ledger, seq still 5).
     state_path = Path(settings.metrics_dir) / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["in_flight_batch"] = {"batch_seq": 5, "nonce": "nonce-original", "event_ids": [a_id]}
+    state["in_flight_batch"] = {
+        "batch_seq": 5,
+        "nonce": "nonce-original",
+        "event_ids": [a_id],
+    }
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
     # (3) A new event B enters the store before the retry.
@@ -251,7 +294,9 @@ def test_regression_r3a_g_duplicate_confirms_only_original_intent(tmp_path, monk
     # (5) ONLY {A} confirmed; {B} stays pending; seq advanced to N+1.
     confirmed = LocalTelemetryStore(metrics_dir).confirmed_event_ids()
     assert a_id in confirmed
-    assert b_id not in confirmed, "data loss: B confirmed without backend ever receiving it"
+    assert b_id not in confirmed, (
+        "data loss: B confirmed without backend ever receiving it"
+    )
     assert _state(settings)["next_batch_seq"] == 6
     sender = TelemetryBeaconSender(settings)
     _batch, included = sender._build_delta_batch(resolve_telemetry_config(settings))
@@ -287,18 +332,29 @@ _SECRET_TOKEN = "tok-current"  # _prepare sets state["install_token"] to this
 
 
 def _watermark_audit(caplog):
-    return [r.__dict__ for r in caplog.records if r.__dict__.get("metric_name") == "MetricsClientWatermarkState"]
+    return [
+        r.__dict__
+        for r in caplog.records
+        if r.__dict__.get("metric_name") == "MetricsClientWatermarkState"
+    ]
 
 
 def _assert_audit_secret_free(records) -> None:
     for rec in records:
-        assert _SECRET_TOKEN not in repr(rec), "install_token value leaked into an audit log"
+        assert _SECRET_TOKEN not in repr(rec), (
+            "install_token value leaked into an audit log"
+        )
         for projection in (rec.get("watermark_state"), rec.get("publish_status")):
             assert isinstance(projection, dict)
-            assert not any(k in projection for k in ("install_token", "token_hash", "signature", "token"))
+            assert not any(
+                k in projection
+                for k in ("install_token", "token_hash", "signature", "token")
+            )
 
 
-def test_audit_send_once_2xx_emits_secret_free_advanced_state(tmp_path, monkeypatch, caplog):
+def test_audit_send_once_2xx_emits_secret_free_advanced_state(
+    tmp_path, monkeypatch, caplog
+):
     caplog.set_level("INFO", logger="okto_pulse.telemetry.sender")
     settings = _prepare(tmp_path, monkeypatch, with_consent=True)
     session = ScriptedSession(usage=[FakeResponse(202, {"accepted": True})])
@@ -307,7 +363,9 @@ def test_audit_send_once_2xx_emits_secret_free_advanced_state(tmp_path, monkeypa
 
     records = _watermark_audit(caplog)
     components = {rec["component"] for rec in records}
-    assert "send_once" in components and "prune_old" in components  # both transitions audited
+    assert (
+        "send_once" in components and "prune_old" in components
+    )  # both transitions audited
     send = [rec for rec in records if rec["component"] == "send_once"][-1]
     assert send["action"] == "advanced"
     assert send["reason_code"] == "accepted"
@@ -329,7 +387,9 @@ def test_audit_duplicate_emits_reconciled_state(tmp_path, monkeypatch, caplog):
     _assert_audit_secret_free(records)
 
 
-def test_audit_5xx_emits_preserved_state_without_advancing(tmp_path, monkeypatch, caplog):
+def test_audit_5xx_emits_preserved_state_without_advancing(
+    tmp_path, monkeypatch, caplog
+):
     caplog.set_level("INFO", logger="okto_pulse.telemetry.sender")
     settings = _prepare(tmp_path, monkeypatch, with_consent=True)
     session = ScriptedSession(usage=[FakeResponse(503, {})])

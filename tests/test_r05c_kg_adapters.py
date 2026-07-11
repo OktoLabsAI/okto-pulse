@@ -62,8 +62,6 @@ def _isolated_kg():
     from okto_pulse.core.infra.config import CoreSettings
     from okto_pulse.core.kg.interfaces import registry as _reg
 
-    saved_settings = _config._settings_instance
-    saved_engine = (_reg._registry, _reg._configured)
     saved_data = os.environ.get("DATA_DIR")
     saved_kg = os.environ.get("KG_BASE_DIR")
     tmp = tempfile.mkdtemp()
@@ -87,8 +85,7 @@ def _isolated_kg():
             asyncio.run(asyncio.to_thread(lambda: asyncio.run(lifecycle.close(None))))
         except Exception:
             pass
-        _config._settings_instance = saved_settings
-        _reg._registry, _reg._configured = saved_engine
+        _reg.reset_registry_for_tests()
         if saved_data is None:
             os.environ.pop("DATA_DIR", None)
         else:
@@ -133,7 +130,6 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     from okto_pulse.community.adapters.composition import build_community_base_registry
     from okto_pulse.community.adapters.kg import build_community_graph_providers
     from okto_pulse.core.kg.interfaces.graph_lifecycle import GraphLifecycle
-    from okto_pulse.core.kg.interfaces.graph_path_resolver import GraphPathResolver
     from okto_pulse.core.kg.interfaces.graph_runtime_store import GraphRuntimeStore
     from okto_pulse.core.kg.interfaces.graph_schema_manager import GraphSchemaManager
     from okto_pulse.core.kg.interfaces.graph_store import SemanticGraphStore
@@ -141,19 +137,23 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
 
     providers = build_community_graph_providers()
     assert set(providers) == {
-        "graph_store", "cypher_executor", "graph_transaction",
-        "graph_schema_manager", "graph_lifecycle", "graph_path_resolver",
-        "global_discovery_runtime", "graph_runtime_store",
+        "graph_store",
+        "cypher_executor",
+        "graph_transaction",
+        "graph_schema_manager",
+        "graph_lifecycle",
+        "global_discovery_runtime",
+        "graph_runtime_store",
+        "graph_recovery",
     }
     # Each satisfies its #06 port (subclass IS-A the embedded which IS-A port).
     assert isinstance(providers["graph_store"], SemanticGraphStore)
     assert isinstance(providers["graph_schema_manager"], GraphSchemaManager)
     assert isinstance(providers["graph_lifecycle"], GraphLifecycle)
-    assert isinstance(providers["graph_path_resolver"], GraphPathResolver)
     assert isinstance(providers["graph_runtime_store"], GraphRuntimeStore)
     assert isinstance(providers["graph_transaction"], GraphTransaction)
-    assert callable(providers["global_discovery_runtime"].open_connection)
-    assert callable(providers["global_discovery_runtime"].global_graph_path)
+    assert callable(providers["global_discovery_runtime"].state)
+    assert callable(providers["global_discovery_runtime"].execute)
     # They are the Community classes (registered behind the ports).
     assert type(providers["graph_store"]).__name__ == "CommunityKuzuGraphStore"
 
@@ -164,13 +164,14 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     _apply_graph_providers(base)
     assert type(base.graph_store).__name__ == "CommunityKuzuGraphStore"
     assert type(base.cypher_executor).__name__ == "CommunityKuzuCypherExecutor"
-    assert type(base.global_discovery_runtime).__name__ == "CommunityGlobalDiscoveryRuntime"
+    assert (
+        type(base.global_discovery_runtime).__name__
+        == "CommunityGlobalDiscoveryRuntime"
+    )
 
 
 def test_fcc03c_kg_runtime_closes_global_discovery_through_runtime_port():
-    source = (COMMUNITY_PKG / "adapters" / "kg_runtime.py").read_text(
-        encoding="utf-8"
-    )
+    source = (COMMUNITY_PKG / "adapters" / "kg_runtime.py").read_text(encoding="utf-8")
 
     assert "close_global_connection" not in source
     assert "require_global_discovery_runtime().close()" in source
@@ -215,7 +216,8 @@ def test_ts_f7b7374d_graph_transaction_scope_uses_community_runtime(monkeypatch)
         await scope.commit()
         return result
 
-    assert asyncio.run(drive()) == {"ok": True}
+    result = asyncio.run(drive())
+    assert result.rows == ()
     assert opened == ["board-transaction"]
     assert fake_connection.conn.executed == [
         ("CREATE (n:Decision {id: $id})", {"id": "n1"})
@@ -363,6 +365,8 @@ def test_ts_a6c30200_schema_layer_safety_invariants():
     idx_by_type = {v["node_type"]: v["index_name"] for v in info["vector_indexes"]}
     for nt in VECTOR_INDEX_TYPES:
         assert idx_by_type[nt] == vector_index_name(nt)
-        assert idx_by_type[nt].endswith("_embedding_idx") or "embedding" in idx_by_type[nt]
+        assert (
+            idx_by_type[nt].endswith("_embedding_idx") or "embedding" in idx_by_type[nt]
+        )
     # edge provenance layers are unchanged (layer-isolation safety invariant).
     assert "deterministic" in EDGE_LAYERS and "cognitive" in EDGE_LAYERS

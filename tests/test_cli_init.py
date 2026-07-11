@@ -8,6 +8,7 @@ so we only test the subparser shape here.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -36,24 +37,39 @@ for mod in list(sys.modules):
 def test_init_subparser_has_agents_flag():
     """The init subparser exposes --agents (nargs='*')."""
     result = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; sys.path.insert(0, r'{}'); "
-         "from okto_pulse.community.cli import main; main()".format(str(REPO_SRC)),
-         "init", "--help"],
-        capture_output=True, text=True, timeout=30,
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.path.insert(0, r'{}'); "
+            "from okto_pulse.community.cli import main; main()".format(str(REPO_SRC)),
+            "init",
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode == 0
     assert "--agents" in result.stdout
 
 
-def test_init_subparser_no_args_shows_help():
+def test_init_subparser_no_args_shows_help(tmp_path):
     """Running `okto-pulse init` with no subcommand prints help and exits 1."""
+    env = dict(os.environ)
+    env["DATA_DIR"] = str(tmp_path / "data")
+    env["OKTO_PULSE_HOME"] = str(tmp_path / "home")
     result = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; sys.path.insert(0, r'{}'); "
-         "from okto_pulse.community.cli import main; main()".format(str(REPO_SRC)),
-         "init"],
-        capture_output=True, text=True, timeout=30,
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.path.insert(0, r'{}'); "
+            "from okto_pulse.community.cli import main; main()".format(str(REPO_SRC)),
+            "init",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
     )
     assert result.returncode in (0, 1)
 
@@ -109,8 +125,12 @@ def _patch_mcp_export_runtime(monkeypatch, rows):
     monkeypatch.setattr(database, "create_database", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "init_db", fake_init_db)
     monkeypatch.setattr(database, "close_db", fake_close_db)
-    monkeypatch.setattr(database, "get_session_factory", lambda: lambda: _FakeSession(rows))
-    monkeypatch.setattr(lifecycle, "register_community_relational_schema_lifecycle", lambda: None)
+    monkeypatch.setattr(
+        database, "get_session_factory", lambda: lambda: _FakeSession(rows)
+    )
+    monkeypatch.setattr(
+        lifecycle, "register_community_relational_schema_lifecycle", lambda: None
+    )
 
 
 def test_af14_ts6_mcp_export_skips_deferred_markers_but_exports_revealed_and_legacy(
@@ -133,10 +153,7 @@ def test_af14_ts6_mcp_export_skips_deferred_markers_but_exports_revealed_and_leg
 
     output = capsys.readouterr().out
     config = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))
-    urls = {
-        name: server["url"]
-        for name, server in config["mcpServers"].items()
-    }
+    urls = {name: server["url"] for name, server in config["mcpServers"].items()}
 
     assert "reveal-once only: Deferred Agent" in output
     assert "deferred-agent" not in urls

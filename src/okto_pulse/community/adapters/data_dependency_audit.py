@@ -30,9 +30,9 @@ from pathlib import Path
 _SQLALCHEMY_IMPORT = re.compile(r"^\s*(?:import|from)\s+sqlalchemy\b", re.MULTILINE)
 _AIOSQLITE_IMPORT = re.compile(r"^\s*(?:import|from)\s+aiosqlite\b", re.MULTILINE)
 
-#: SQLAlchemy + aiosqlite are the gated spec #04 relational stack — documented as
-#: a temporary exception that STAYS in core, never strangled by R05-D.
-GATED_04_RELATIONAL_STATUS = "core-gated-04-temporary-exception"
+#: Compatibility export retained for callers of the audit report. The
+#: relational implementation is now physically Community-owned.
+GATED_04_RELATIONAL_STATUS = "community-owned"
 
 
 def audit_data_provider_ownership(core_pkg: Path, community_pkg: Path | None = None) -> dict:
@@ -64,6 +64,17 @@ def audit_data_provider_ownership(core_pkg: Path, community_pkg: Path | None = N
             aiosqlite_files.append(rel)
 
     community_root = community_pkg or Path(__file__).resolve().parents[1]
+    community_sqlalchemy_files = 0
+    community_aiosqlite_files = 0
+    for py in community_root.rglob("*.py"):
+        if "__pycache__" in py.parts:
+            continue
+        try:
+            text = py.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        community_sqlalchemy_files += int(bool(_SQLALCHEMY_IMPORT.search(text)))
+        community_aiosqlite_files += int(bool(_AIOSQLITE_IMPORT.search(text)))
     gate = run_data_provider_ownership_gate(
         core_pkg,
         community_root=community_root,
@@ -82,8 +93,10 @@ def audit_data_provider_ownership(core_pkg: Path, community_pkg: Path | None = N
         # Gated #04 relational stack — documented exception, NOT a violation.
         "sqlalchemy_status": GATED_04_RELATIONAL_STATUS,
         "sqlalchemy_core_files": len(sqlalchemy_files),
+        "sqlalchemy_community_files": community_sqlalchemy_files,
         "aiosqlite_status": GATED_04_RELATIONAL_STATUS,
         "aiosqlite_core_files": len(aiosqlite_files),
+        "aiosqlite_community_files": community_aiosqlite_files,
         "ok": gate.ok,
     }
 

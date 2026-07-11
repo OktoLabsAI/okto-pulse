@@ -27,7 +27,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def close_all_graphs_on_shutdown() -> dict[str, int]:
+def close_all_graphs_on_shutdown(*, runtime: Any | None = None) -> dict[str, int]:
     """Checkpoint (best-effort) e close de TODOS os board graphs abertos.
 
     Deve rodar no teardown do ``combined_lifespan`` DEPOIS que os workers de
@@ -51,10 +51,11 @@ def close_all_graphs_on_shutdown() -> dict[str, int]:
 
     # Import tardio: este módulo pode ser importado no teardown de processos
     # que nunca tocaram o KG — não pagar o custo do kg_runtime no import.
-    from okto_pulse.community.adapters import kg_runtime
+    if runtime is None:
+        from okto_pulse.community.adapters import kg_runtime as runtime
 
-    with kg_runtime._board_db_cache_lock:
-        open_dbs: list[tuple[str, Any]] = list(kg_runtime._board_db_cache.items())
+    with runtime._board_db_cache_lock:
+        open_dbs: list[tuple[str, Any]] = list(runtime._board_db_cache.items())
 
     boards_closed = 0
     boards_failed = 0
@@ -63,7 +64,7 @@ def close_all_graphs_on_shutdown() -> dict[str, int]:
         # o diretório pai identifica o board (mesma convenção do kg_runtime).
         board_id = Path(key).parent.name
         try:
-            conn = kg_runtime.kuzu.Connection(db)
+            conn = runtime.kuzu.Connection(db)
             try:
                 conn.execute("CHECKPOINT")
             finally:
@@ -93,7 +94,7 @@ def close_all_graphs_on_shutdown() -> dict[str, int]:
         # fail-closed de close_board_db_cache adiaria o close e deixaria WAL
         # residual; o force usa dreno maior e loga
         # kg.close_guard.forced_on_shutdown quando fecha com leitor preso.
-        kg_runtime.close_board_db_cache(None, force_after_drain_timeout=True)
+        runtime.close_board_db_cache(None, force_after_drain_timeout=True)
     except Exception as exc:  # noqa: BLE001 — nunca propagar para o teardown
         logger.warning(
             "kg.shutdown.graph_close_failed err=%s",

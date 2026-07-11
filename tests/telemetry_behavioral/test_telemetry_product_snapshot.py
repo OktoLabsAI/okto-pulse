@@ -15,7 +15,9 @@ import json
 import sqlite3
 from pathlib import Path
 
-from okto_pulse.community.adapters.telemetry_sender import CommunityTelemetryBeaconSender
+from okto_pulse.community.adapters.telemetry_sender import (
+    CommunityTelemetryBeaconSender,
+)
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry.era import (
     ERA_POST_FIX,
@@ -24,8 +26,10 @@ from okto_pulse.core.telemetry.era import (
     TRUST_TRUSTED_DELTA,
     classify_trust_state,
 )
-from okto_pulse.core.telemetry.service import TelemetryService
-from okto_pulse.core.telemetry.settings import resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 
 # R10-E PASS 1 alias: tests exercise the Community concrete class.
 TelemetryBeaconSender = CommunityTelemetryBeaconSender
@@ -53,7 +57,14 @@ def _settings_with_product_db(tmp_path: Path, **overrides) -> CoreSettings:
     )
     conn.execute(
         "INSERT INTO specs VALUES (?, ?, ?, ?, ?, ?)",
-        ("s1", "done", "i1", None, json.dumps([{"id": "t"}]), json.dumps([{"id": "d"}])),
+        (
+            "s1",
+            "done",
+            "i1",
+            None,
+            json.dumps([{"id": "t"}]),
+            json.dumps([{"id": "d"}]),
+        ),
     )
     conn.execute("INSERT INTO story_ideation_links VALUES (?)", ("i1",))
     conn.execute("INSERT INTO cards VALUES (?, ?)", ("done", "bug"))
@@ -70,7 +81,9 @@ def _settings_with_product_db(tmp_path: Path, **overrides) -> CoreSettings:
     return CoreSettings(**values)
 
 
-def test_product_snapshot_carries_snapshot_marker_not_delta(tmp_path: Path, monkeypatch) -> None:
+def test_product_snapshot_carries_snapshot_marker_not_delta(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
     settings = _settings_with_product_db(tmp_path)
 
@@ -83,7 +96,9 @@ def test_product_snapshot_carries_snapshot_marker_not_delta(tmp_path: Path, monk
     # A snapshot is NEVER classified as a trusted_delta (R4 must not sum it).
     assert (
         classify_trust_state(
-            era=snapshot["era"], semantics=snapshot["semantics"], schema_version=snapshot["schema_version"]
+            era=snapshot["era"],
+            semantics=snapshot["semantics"],
+            schema_version=snapshot["schema_version"],
         )
         != TRUST_TRUSTED_DELTA
     )
@@ -91,7 +106,9 @@ def test_product_snapshot_carries_snapshot_marker_not_delta(tmp_path: Path, monk
     assert any(key.startswith("product_") for key in snapshot["metrics"])
 
 
-def test_product_metrics_excluded_from_delta_with_populated_db(tmp_path: Path, monkeypatch) -> None:
+def test_product_metrics_excluded_from_delta_with_populated_db(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
     settings = _settings_with_product_db(tmp_path)
     TelemetryService(settings).record_event("cli", {"command": "serve"})
@@ -102,18 +119,26 @@ def test_product_metrics_excluded_from_delta_with_populated_db(tmp_path: Path, m
     assert batch is not None
     assert batch["semantics"] == SEMANTICS_DELTA
     # Even with a fully-populated product DB, NO product family rides the delta.
-    assert not any(key.startswith("product_") for key in batch["metrics"]), batch["metrics"]
+    assert not any(key.startswith("product_") for key in batch["metrics"]), batch[
+        "metrics"
+    ]
 
 
-def test_publish_product_snapshot_persists_and_does_not_transmit(tmp_path: Path, monkeypatch) -> None:
+def test_publish_product_snapshot_persists_and_does_not_transmit(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
     settings = _settings_with_product_db(tmp_path)
 
     class _ForbiddenSession:
         def post(self, *args, **kwargs):  # pragma: no cover - must never be reached
-            raise AssertionError("the product snapshot must NOT be transmitted (no safe endpoint)")
+            raise AssertionError(
+                "the product snapshot must NOT be transmitted (no safe endpoint)"
+            )
 
-    result = TelemetryBeaconSender(settings, session=_ForbiddenSession()).publish_product_snapshot()
+    result = TelemetryBeaconSender(
+        settings, session=_ForbiddenSession()
+    ).publish_product_snapshot()
 
     # Auditable non-send — not a fake success, not a silent drop.
     assert result["sent"] is False
@@ -129,7 +154,9 @@ def test_publish_product_snapshot_persists_and_does_not_transmit(tmp_path: Path,
     assert any(key.startswith("product_") for key in persisted["metrics"])
 
 
-def test_publish_product_snapshot_empty_without_product(tmp_path: Path, monkeypatch) -> None:
+def test_publish_product_snapshot_empty_without_product(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
     # database_url points at a NON-EXISTENT db → no product telemetry to snapshot.
     settings = CoreSettings(

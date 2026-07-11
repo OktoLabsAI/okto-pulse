@@ -25,17 +25,24 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 # Registers every ORM model on Base.metadata so init_db builds the full schema.
-import okto_pulse.core.app as _core_app  # noqa: F401
+import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
-import okto_pulse.core.infra.storage as _storage_mod
-from okto_pulse.core.api.attachments import router as attachments_router
-from okto_pulse.core.infra.auth import require_user
+from okto_pulse.community.api.attachments import router as attachments_router
+from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.infra.database import get_db, get_session_factory
-from okto_pulse.core.infra.storage import configure_storage
+from okto_pulse.core.infra.storage import (
+    configure_storage,
+    reset_storage_provider_for_tests,
+)
 from okto_pulse.community.adapters.relational_schema_lifecycle import (
     register_community_relational_schema_lifecycle,
 )
+from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
+    build_community_unit_of_work_factory,
+)
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
+from okto_pulse.core.runtime_registry import register_unit_of_work_factory
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 
 USER = "r02-imp1-user"
 PREFIX = "/api/v1/attachments"
@@ -48,10 +55,6 @@ def env(tmp_path):
     import okto_pulse.core.infra.config as _config
     from okto_pulse.core.infra.config import CoreSettings
 
-    saved_settings = _config._settings_instance
-    saved_engine = _db_mod._engine
-    saved_factory = _db_mod._session_factory
-    saved_provider = _storage_mod._storage_provider
     saved_data = os.environ.get("DATA_DIR")
     saved_kg = os.environ.get("KG_BASE_DIR")
 
@@ -68,6 +71,9 @@ def env(tmp_path):
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'r02_imp1.db'}")
         register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
+        register_unit_of_work_factory(
+            build_community_unit_of_work_factory(get_session_factory())
+        )
 
     asyncio.run(setup())
 
@@ -92,10 +98,6 @@ def env(tmp_path):
             asyncio.run(_db_mod.close_db())
         except Exception:
             pass
-        _config._settings_instance = saved_settings
-        _db_mod._engine = saved_engine
-        _db_mod._session_factory = saved_factory
-        _storage_mod._storage_provider = saved_provider
         for key, val in (("DATA_DIR", saved_data), ("KG_BASE_DIR", saved_kg)):
             if val is None:
                 os.environ.pop(key, None)
@@ -107,7 +109,12 @@ def _seed_board_card() -> tuple[str, str]:
     """Seed Board + Spec + Card (the 'every card belongs to a spec' invariant)."""
     import uuid
 
-    from okto_pulse.core.models.db import Board, Card, CardStatus, Spec
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Board,
+        Card,
+        CardStatus,
+        Spec,
+    )
 
     bid = f"board-r02-{uuid.uuid4().hex[:8]}"
     sid = f"spec-r02-{uuid.uuid4().hex[:8]}"
@@ -115,7 +122,14 @@ def _seed_board_card() -> tuple[str, str]:
 
     async def _seed() -> None:
         async with get_session_factory()() as db:
-            db.add(Board(id=bid, name="r02", owner_id=USER))
+            db.add(
+                Board(
+                    id=bid,
+                    name="r02",
+                    owner_id=USER,
+                    realm_id=LOCAL_REALM_ID,
+                )
+            )
             db.add(Spec(id=sid, board_id=bid, title="r02-spec", created_by=USER))
             db.add(
                 Card(
@@ -133,7 +147,9 @@ def _seed_board_card() -> tuple[str, str]:
     return bid, cid
 
 
-def _upload(client, bid: str, cid: str, filename: str, content: bytes, mime: str) -> str:
+def _upload(
+    client, bid: str, cid: str, filename: str, content: bytes, mime: str
+) -> str:
     resp = client.post(
         f"{PREFIX}/{bid}/{cid}",
         files={"file": (filename, content, mime)},
@@ -246,12 +262,8 @@ def test_missing_storage_provider_fails_closed_no_path_fallback(env):
     aid = _upload(client, bid, cid, "p.txt", content, "text/plain")
 
     # unregister the provider (simulate a misconfigured boot)
-    saved = _storage_mod._storage_provider
-    _storage_mod._storage_provider = None
-    try:
-        resp = client.get(f"{PREFIX}/{bid}/{cid}/{aid}")
-    finally:
-        _storage_mod._storage_provider = saved
+    reset_storage_provider_for_tests()
+    resp = client.get(f"{PREFIX}/{bid}/{cid}/{aid}")
 
     assert resp.status_code == 503
     assert resp.json()["detail"] == "Storage provider not configured"
@@ -265,7 +277,7 @@ def test_endpoint_module_holds_no_fileresponse_path_bypass():
     formal cross-endpoint gate is IMP2/AC4)."""
     import inspect
 
-    from okto_pulse.core.api import attachments as _att
+    from okto_pulse.community.api import attachments as _att
 
     src = inspect.getsource(_att)
     assert "FileResponse" not in src

@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 # Importing the core app registers every ORM model on Base.metadata so init_db
 # builds the full schema used by the Community relational adapters.
-import okto_pulse.core.app as _core_app  # noqa: F401
+import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
 from okto_pulse.community.adapters.relational_schema_lifecycle import (
     register_community_relational_schema_lifecycle,
@@ -34,10 +34,6 @@ def _community_registry_with_temp_db(tmp_path):
     )
     from okto_pulse.core.infra.config import CoreSettings
 
-    saved_settings = _config._settings_instance
-    saved_engine = _db_mod._engine
-    saved_factory = _db_mod._session_factory
-    saved_reg = (_reg._registry, _reg._configured)
     saved_data = os.environ.get("DATA_DIR")
     saved_kg = os.environ.get("KG_BASE_DIR")
 
@@ -61,10 +57,7 @@ def _community_registry_with_temp_db(tmp_path):
             asyncio.run(_db_mod.close_db())
         except Exception:
             pass
-        _config._settings_instance = saved_settings
-        _db_mod._engine = saved_engine
-        _db_mod._session_factory = saved_factory
-        _reg._registry, _reg._configured = saved_reg
+        _reg.reset_registry_for_tests()
         for key, val in (("DATA_DIR", saved_data), ("KG_BASE_DIR", saved_kg)):
             if val is None:
                 os.environ.pop(key, None)
@@ -98,7 +91,7 @@ async def _seed_board(board_id: str) -> None:
     board exists before its consolidation is audited). Board itself has no FKs,
     so this is a single leaf insert.
     """
-    from okto_pulse.core.models.db import Board
+    from okto_pulse.community.adapters.sqlalchemy_models import Board
 
     async with _db_mod.get_session_factory()() as session:
         session.add(Board(id=board_id, name=f"seed-{board_id}", owner_id="test-owner"))
@@ -108,7 +101,7 @@ async def _seed_board(board_id: str) -> None:
 def test_p2_02_outbox_publish_row_matches_normalized_contract(
     _community_registry_with_temp_db,
 ):
-    from okto_pulse.core.models.db import GlobalUpdateOutbox
+    from okto_pulse.community.adapters.sqlalchemy_models import GlobalUpdateOutbox
 
     reg = _community_registry_with_temp_db
 
@@ -161,7 +154,7 @@ def test_p2_02_outbox_publish_row_matches_normalized_contract(
 def test_p2_02_audit_commit_rows_match_normalized_contract(
     _community_registry_with_temp_db,
 ):
-    from okto_pulse.core.models.db import (
+    from okto_pulse.community.adapters.sqlalchemy_models import (
         ConsolidationAudit,
         GlobalUpdateOutbox,
         KuzuNodeRef,
@@ -190,8 +183,8 @@ def test_p2_02_audit_commit_rows_match_normalized_contract(
         NodeRefData(
             session_id="session-p2-02-audit",
             board_id="board-p2-02",
-            kuzu_node_id="decision_p2_02",
-            kuzu_node_type="Decision",
+            graph_node_id="decision_p2_02",
+            graph_node_type="Decision",
             operation="create",
         )
     ]
@@ -206,9 +199,7 @@ def test_p2_02_audit_commit_rows_match_normalized_contract(
     async def drive():
         await _seed_board("board-p2-02")
         await reg.audit_repo.commit_consolidation_records(audit, node_refs, outbox)
-        by_session = await reg.audit_repo.get_audit_by_session(
-            "session-p2-02-audit"
-        )
+        by_session = await reg.audit_repo.get_audit_by_session("session-p2-02-audit")
         latest = await reg.audit_repo.get_latest_for_artifact(
             "board-p2-02", "spec-p2-02"
         )

@@ -193,8 +193,11 @@ def quarantine_boundary_hashes(monkeypatch):
     O import em ``kg_runtime._try_open_with_wal_only_recovery`` é lazy
     (função), então o monkeypatch no módulo ``kg_wal_recovery`` é efetivo.
     """
+    import importlib
+
+    module = importlib.import_module("okto_pulse.community.adapters.kg_wal_recovery")
     captured: dict[str, tuple[str, str]] = {}
-    real = kg_wal_recovery.wal_only_quarantine
+    real = module.wal_only_quarantine
 
     def wrapper(board_id, reason, *, graph_path=None):
         assert graph_path is not None, "fluxo de open deve passar o path"
@@ -203,7 +206,7 @@ def quarantine_boundary_hashes(monkeypatch):
         captured[board_id] = (before, _sha256(graph_path))
         return result
 
-    monkeypatch.setattr(kg_wal_recovery, "wal_only_quarantine", wrapper)
+    monkeypatch.setattr(module, "wal_only_quarantine", wrapper)
     return captured
 
 
@@ -263,7 +266,8 @@ def test_s5_wal_only_quarantine_unit_never_touches_main(tmp_path, caplog):
 
     # Evento estruturado.
     rec = next(
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if getattr(r, "event", None) == "kg.recovery.wal_quarantined"
     )
     assert rec.levelno == logging.WARNING
@@ -325,7 +329,8 @@ def test_s5_wal_only_recovery_preserves_main(
         f"evento kg.recovery.wal_quarantined ausente; eventos={events}"
     )
     rec = next(
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if getattr(r, "event", None) == "kg.recovery.wal_quarantined"
     )
     assert rec.levelno == logging.WARNING
@@ -497,7 +502,8 @@ def test_s6_dynamic_all_rungs_fail_leaves_main_untouched(tmp_path, caplog):
     # O WAL foi preservado byte-idêntico na quarentena (evidência); o main
     # nunca aparece lá.
     rec = next(
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if getattr(r, "event", None) == "kg.recovery.wal_quarantined"
     )
     quarantine_dir = kg_base / "quarantine" / rec.quarantine_id
@@ -567,8 +573,14 @@ def _destructive_main_call_sites(source: str, filename: str) -> list[str]:
         for suffixed in _SIDECAR_SUFFIXED:
             stripped = stripped.replace(suffixed, "")
         # Concatenações do tipo path.name + ".wal" apontam para sidecar.
-        for concat in ('+ ".wal"', "+ '.wal'", '+ ".shadow"', "+ '.shadow'",
-                      '+ ".wal.checkpoint"', "+ '.wal.checkpoint'"):
+        for concat in (
+            '+ ".wal"',
+            "+ '.wal'",
+            '+ ".shadow"',
+            "+ '.shadow'",
+            '+ ".wal.checkpoint"',
+            "+ '.wal.checkpoint'",
+        ):
             if concat in stripped.replace("  ", " "):
                 stripped = ""
                 break
@@ -619,5 +631,5 @@ def test_s6_static_no_new_destructive_main_call_sites():
         "não-sancionado (BR2: nenhum caminho automático move/deleta o main). "
         "Se a operação é legítima (purge/restore explícito de operador), "
         "adicione o módulo a _SANCTIONED_MAIN_DESTRUCTIVE_MODULES com "
-        f"justificativa. Violações:\n" + "\n".join(violations)
+        "justificativa. Violações:\n" + "\n".join(violations)
     )

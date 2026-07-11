@@ -40,6 +40,7 @@ from okto_pulse.core.ports import (
     McpCredential,
     principal_from_auth_session,
 )
+from okto_pulse.core.domain.realm import RealmScope, require_realm_scope
 
 __all__ = [
     "CommunityMcpAuthenticator",
@@ -116,9 +117,16 @@ def make_community_mcp_authenticator(
 class MCPAuthContext:
     """Community-owned KG AuthContext bridge for MCP request identity."""
 
-    def __init__(self, get_agent: Callable, get_db: Callable):
+    def __init__(
+        self,
+        get_agent: Callable,
+        get_db: Callable,
+        *,
+        realm_scope: RealmScope | None = None,
+    ):
         self._get_agent = get_agent
         self._get_db = get_db
+        self._realm_scope = require_realm_scope(realm_scope or RealmScope.local())
         self._agent: Any = _UNSET
         self._boards: list[str] | None = None
 
@@ -146,6 +154,9 @@ class MCPAuthContext:
             self._boards = await list_accessible_board_ids_for_agent(db, agent.id)
         return self._boards
 
+    async def get_realm_scope(self) -> RealmScope:
+        return self._realm_scope
+
     def has_admin_role(self) -> bool:
         return False
 
@@ -154,11 +165,20 @@ CommunityMCPAuthContext = MCPAuthContext
 _UNSET = object()
 
 
-def create_mcp_auth_factory(get_agent: Callable, get_db: Callable) -> Callable:
+def create_mcp_auth_factory(
+    get_agent: Callable,
+    get_db: Callable,
+    *,
+    realm_scope: RealmScope | None = None,
+) -> Callable:
     """Build an auth_context_factory for the MCP server bootstrap."""
 
     def factory() -> MCPAuthContext:
-        return MCPAuthContext(get_agent, get_db)
+        return MCPAuthContext(
+            get_agent,
+            get_db,
+            realm_scope=realm_scope or RealmScope.local(),
+        )
 
     return factory
 
@@ -173,4 +193,11 @@ def auth_context_from_session(
             return None
         return SimpleNamespace(id=session.agent_id)
 
-    return MCPAuthContext(_get_agent, get_db)
+    metadata = dict(getattr(session, "metadata", {}) or {}) if session else {}
+    realm_id = str(metadata.get("realm_id") or "local")
+    realm_scope = (
+        RealmScope.local()
+        if realm_id == "local"
+        else RealmScope.tenant(realm_id)
+    )
+    return MCPAuthContext(_get_agent, get_db, realm_scope=realm_scope)

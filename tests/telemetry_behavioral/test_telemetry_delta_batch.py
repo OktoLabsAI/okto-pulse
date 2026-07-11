@@ -22,7 +22,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from okto_pulse.community.adapters.telemetry_sender import CommunityTelemetryBeaconSender
+from okto_pulse.community.adapters.telemetry_sender import (
+    CommunityTelemetryBeaconSender,
+)
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry.era import (
@@ -38,8 +40,10 @@ from okto_pulse.core.telemetry.era import (
     classify_trust_state,
 )
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
-from okto_pulse.core.telemetry.service import TelemetryService
-from okto_pulse.core.telemetry.settings import resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 
 # R10-E PASS 1 aliases: tests exercise the Community concrete classes.
 TelemetryBeaconSender = CommunityTelemetryBeaconSender
@@ -49,7 +53,10 @@ LocalTelemetryStore = CommunityLocalTelemetryStore
 def _settings(tmp_path: Path, **overrides) -> CoreSettings:
     # product_metrics is excluded from the delta batch in R3A-B, so these
     # event-stream tests are deterministic regardless of any product DB.
-    values = {"metrics_dir": str(tmp_path / "metrics"), "metrics_mode": "anonymous_beacon"}
+    values = {
+        "metrics_dir": str(tmp_path / "metrics"),
+        "metrics_mode": "anonymous_beacon",
+    }
     values.update(overrides)
     return CoreSettings(**values)
 
@@ -74,7 +81,9 @@ class _RecordingSession:
         return _Accepted()
 
 
-def _enable_with_token(tmp_path: Path, settings: CoreSettings, *, next_batch_seq: int = 1) -> None:
+def _enable_with_token(
+    tmp_path: Path, settings: CoreSettings, *, next_batch_seq: int = 1
+) -> None:
     service = TelemetryService(settings)
     service.update_settings(
         mode="anonymous_beacon",
@@ -89,7 +98,9 @@ def _enable_with_token(tmp_path: Path, settings: CoreSettings, *, next_batch_seq
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
 
-def _append_event(settings: CoreSettings, *, event_id: str, occurred_at: str, command: str) -> None:
+def _append_event(
+    settings: CoreSettings, *, event_id: str, occurred_at: str, command: str
+) -> None:
     metrics_dir = resolve_telemetry_config(settings).metrics_dir
     LocalTelemetryStore(metrics_dir).append_event(
         {
@@ -112,9 +123,13 @@ def _setup(tmp_path: Path, monkeypatch) -> CoreSettings:
 # --- marker (fr_169be135 / ir_d7bcef31 / br_8d26d92e) ----------------------
 
 
-def test_batch_carries_explicit_post_fix_delta_marker(tmp_path: Path, monkeypatch) -> None:
+def test_batch_carries_explicit_post_fix_delta_marker(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _setup(tmp_path, monkeypatch)
-    _append_event(settings, event_id="e1", occurred_at="2026-06-15T12:00:00Z", command="serve")
+    _append_event(
+        settings, event_id="e1", occurred_at="2026-06-15T12:00:00Z", command="serve"
+    )
 
     batch = TelemetryBeaconSender(settings).hourly_batch()
 
@@ -122,16 +137,27 @@ def test_batch_carries_explicit_post_fix_delta_marker(tmp_path: Path, monkeypatc
     assert batch["era"] == ERA_POST_FIX
     assert batch["semantics"] == SEMANTICS_DELTA
     # The contract's required fields are all present.
-    for field in ("schema_version", "era", "semantics", "bucket_start", "bucket_duration_seconds", "metrics"):
+    for field in (
+        "schema_version",
+        "era",
+        "semantics",
+        "bucket_start",
+        "bucket_duration_seconds",
+        "metrics",
+    ):
         assert field in batch
 
 
 # --- second send, no new events (ts_c28aa9f3 / fr_fe9b844d) -----------------
 
 
-def test_second_send_without_new_events_does_not_resend(tmp_path: Path, monkeypatch) -> None:
+def test_second_send_without_new_events_does_not_resend(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _setup(tmp_path, monkeypatch)
-    _append_event(settings, event_id="e1", occurred_at="2026-06-15T12:00:00Z", command="serve")
+    _append_event(
+        settings, event_id="e1", occurred_at="2026-06-15T12:00:00Z", command="serve"
+    )
     session = _RecordingSession()
 
     first = TelemetryBeaconSender(settings, session=session).send_once()
@@ -151,7 +177,9 @@ def test_skewed_old_new_event_included_and_confirmed_not_reentering(
 ) -> None:
     settings = _setup(tmp_path, monkeypatch)
     # A is confirmed first.
-    _append_event(settings, event_id="A", occurred_at="2026-06-15T12:00:00Z", command="serve")
+    _append_event(
+        settings, event_id="A", occurred_at="2026-06-15T12:00:00Z", command="serve"
+    )
     session = _RecordingSession()
     TelemetryBeaconSender(settings, session=session).send_once()
     assert session.bodies[0]["metrics"]["cli_counts"] == {"serve": 1}
@@ -159,7 +187,9 @@ def test_skewed_old_new_event_included_and_confirmed_not_reentering(
     # B is a brand-new event whose occurred_at is clock-skewed 5 days EARLIER than
     # A — it sorts before the watermark cursor, yet must be INCLUDED because it is
     # unconfirmed (selection is by event_id confirmation, not timestamp).
-    _append_event(settings, event_id="B", occurred_at="2026-06-10T08:00:00Z", command="build")
+    _append_event(
+        settings, event_id="B", occurred_at="2026-06-10T08:00:00Z", command="build"
+    )
     TelemetryBeaconSender(settings, session=session).send_once()
 
     assert len(session.bodies) == 2
@@ -172,13 +202,21 @@ def test_skewed_old_new_event_included_and_confirmed_not_reentering(
 # --- bucket_start by watermark, not oldest historical (ts_2ec547b9/tr_f6f84016)
 
 
-def test_bucket_start_reflects_pending_not_oldest_confirmed(tmp_path: Path, monkeypatch) -> None:
+def test_bucket_start_reflects_pending_not_oldest_confirmed(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _setup(tmp_path, monkeypatch)
-    _append_event(settings, event_id="old", occurred_at="2026-06-01T03:00:00Z", command="serve")
+    _append_event(
+        settings, event_id="old", occurred_at="2026-06-01T03:00:00Z", command="serve"
+    )
     session = _RecordingSession()
-    TelemetryBeaconSender(settings, session=session).send_once()  # confirms the old event
+    TelemetryBeaconSender(
+        settings, session=session
+    ).send_once()  # confirms the old event
 
-    _append_event(settings, event_id="new", occurred_at="2026-06-15T14:00:00Z", command="build")
+    _append_event(
+        settings, event_id="new", occurred_at="2026-06-15T14:00:00Z", command="build"
+    )
     batch = TelemetryBeaconSender(settings).hourly_batch()
 
     assert batch is not None
@@ -189,9 +227,13 @@ def test_bucket_start_reflects_pending_not_oldest_confirmed(tmp_path: Path, monk
 # --- crash-durability: confirmation survives a reload -----------------------
 
 
-def test_confirmation_survives_reload_via_sent_ledger(tmp_path: Path, monkeypatch) -> None:
+def test_confirmation_survives_reload_via_sent_ledger(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _setup(tmp_path, monkeypatch)
-    _append_event(settings, event_id="e1", occurred_at="2026-06-15T12:00:00Z", command="serve")
+    _append_event(
+        settings, event_id="e1", occurred_at="2026-06-15T12:00:00Z", command="serve"
+    )
     TelemetryBeaconSender(settings, session=_RecordingSession()).send_once()
 
     # A FRESH sender (simulating a process restart) rebuilds the confirmed set
@@ -213,21 +255,27 @@ def test_classify_trust_state_canonical_matrix() -> None:
     # Post-fix delta on the current schema is the only trusted_delta.
     assert (
         classify_trust_state(
-            era=ERA_POST_FIX, semantics=SEMANTICS_DELTA, schema_version=CURRENT_SCHEMA_VERSION
+            era=ERA_POST_FIX,
+            semantics=SEMANTICS_DELTA,
+            schema_version=CURRENT_SCHEMA_VERSION,
         )
         == TRUST_TRUSTED_DELTA
     )
     # Pre-fix is excluded so R4 never sums it with post-fix deltas (br_660cdac7).
     assert (
         classify_trust_state(
-            era=ERA_PRE_FIX, semantics=SEMANTICS_DELTA, schema_version=CURRENT_SCHEMA_VERSION
+            era=ERA_PRE_FIX,
+            semantics=SEMANTICS_DELTA,
+            schema_version=CURRENT_SCHEMA_VERSION,
         )
         == TRUST_EXCLUDED
     )
     # Valid markers but not a current-schema delta → untrusted, not trusted.
     assert (
         classify_trust_state(
-            era=ERA_POST_FIX, semantics=SEMANTICS_CUMULATIVE, schema_version=CURRENT_SCHEMA_VERSION
+            era=ERA_POST_FIX,
+            semantics=SEMANTICS_CUMULATIVE,
+            schema_version=CURRENT_SCHEMA_VERSION,
         )
         == TRUST_UNTRUSTED
     )
@@ -238,8 +286,15 @@ def test_classify_trust_state_canonical_matrix() -> None:
         == TRUST_UNTRUSTED
     )
     # Missing/invalid markers cannot be trusted.
-    assert classify_trust_state(era=None, semantics=None, schema_version=None) == TRUST_FAILED
     assert (
-        classify_trust_state(era="bogus", semantics=SEMANTICS_DELTA, schema_version=CURRENT_SCHEMA_VERSION)
+        classify_trust_state(era=None, semantics=None, schema_version=None)
+        == TRUST_FAILED
+    )
+    assert (
+        classify_trust_state(
+            era="bogus",
+            semantics=SEMANTICS_DELTA,
+            schema_version=CURRENT_SCHEMA_VERSION,
+        )
         == TRUST_FAILED
     )

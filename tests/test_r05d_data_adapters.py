@@ -34,7 +34,8 @@ import pytest
 # Importing the core app registers every ORM model on Base.metadata so init_db
 # builds the full schema (GlobalUpdateOutbox / ConsolidationAudit / KuzuNodeRef).
 import okto_pulse.community as _community_pkg
-import okto_pulse.core.app as _core_app  # noqa: F401
+import okto_pulse.community.app as _core_app  # noqa: F401
+import okto_pulse.core as _core_pkg
 import okto_pulse.core.infra.database as _db_mod
 from okto_pulse.community.adapters.relational_schema_lifecycle import (
     register_community_relational_schema_lifecycle,
@@ -52,9 +53,9 @@ from okto_pulse.core.kg.interfaces.audit_dtos import (
 from okto_pulse.core.kg.interfaces.audit_repository import AuditRepository
 from okto_pulse.core.kg.interfaces.event_bus import EventBus, KGEvent
 from okto_pulse.core.kg.interfaces.kg_config import KGConfig
-from okto_pulse.core.kg.providers.embedded.settings_config import SettingsKGConfig
+from okto_pulse.core.kg.providers.testing.settings_config import SettingsKGConfig
 
-CORE_PKG = Path(_core_app.__file__).parent
+CORE_PKG = Path(_core_pkg.__file__).parent
 COMMUNITY_PKG = Path(_community_pkg.__file__).parent
 _DATA_MODULES = {
     "CommunityOutboxEventBus": "okto_pulse.community.adapters.sqlite_outbox_event_bus",
@@ -79,10 +80,6 @@ def _isolated_db_kg(tmp_path):
     from okto_pulse.core.infra.config import CoreSettings
     from okto_pulse.core.kg.interfaces import registry as _reg
 
-    saved_settings = _config._settings_instance
-    saved_engine = _db_mod._engine
-    saved_factory = _db_mod._session_factory
-    saved_reg = (_reg._registry, _reg._configured)
     saved_data = os.environ.get("DATA_DIR")
     saved_kg = os.environ.get("KG_BASE_DIR")
 
@@ -112,10 +109,7 @@ def _isolated_db_kg(tmp_path):
             asyncio.run(_db_mod.close_db())
         except Exception:
             pass
-        _config._settings_instance = saved_settings
-        _db_mod._engine = saved_engine
-        _db_mod._session_factory = saved_factory
-        _reg._registry, _reg._configured = saved_reg
+        _reg.reset_registry_for_tests()
         for key, val in (("DATA_DIR", saved_data), ("KG_BASE_DIR", saved_kg)):
             if val is None:
                 os.environ.pop(key, None)
@@ -157,7 +151,7 @@ def test_ts1_register_before_fallback_wires_community_data_adapters(_isolated_db
 def test_ts3_outbox_publish_enqueues_and_fires_handlers(_isolated_db_kg):
     from sqlalchemy import select
 
-    from okto_pulse.core.models.db import GlobalUpdateOutbox
+    from okto_pulse.community.adapters.sqlalchemy_models import GlobalUpdateOutbox
 
     reg = _isolated_db_kg
     bus = reg.event_bus
@@ -186,9 +180,7 @@ def test_ts3_outbox_publish_enqueues_and_fires_handlers(_isolated_db_kg):
             )
         )
         async with _db_mod.get_session_factory()() as s:
-            rows = (
-                (await s.execute(select(GlobalUpdateOutbox))).scalars().all()
-            )
+            rows = (await s.execute(select(GlobalUpdateOutbox))).scalars().all()
         await bus.stop()
         return eid1, eid2, rows
 
@@ -218,7 +210,7 @@ async def _seed_board(board_id: str) -> None:
     board exists before its consolidation is audited). Board itself has no FKs,
     so this is a single leaf insert.
     """
-    from okto_pulse.core.models.db import Board
+    from okto_pulse.community.adapters.sqlalchemy_models import Board
 
     async with _db_mod.get_session_factory()() as session:
         session.add(Board(id=board_id, name=f"seed-{board_id}", owner_id="test-owner"))
@@ -250,8 +242,8 @@ def test_ts4_audit_commit_get_undone_purge_contract(_isolated_db_kg):
         NodeRefData(
             session_id="sess-1",
             board_id="board-X",
-            kuzu_node_id="node-1",
-            kuzu_node_type="Spec",
+            graph_node_id="node-1",
+            graph_node_type="Spec",
             operation="create",
         )
     ]
@@ -429,7 +421,8 @@ def test_ts7_dependency_audit_real_core_is_community_local_sqlalchemy_gated():
     # SQLAlchemy / aiosqlite are the gated #04 relational stack — PRESENT in core
     # (documented exception), NOT a violation.
     assert report["sqlalchemy_status"] == GATED_04_RELATIONAL_STATUS
-    assert report["sqlalchemy_core_files"] > 0  # ORM stays in core (not removed)
+    assert report["sqlalchemy_core_files"] == 0
+    assert report["sqlalchemy_community_files"] > 0
     assert report["aiosqlite_status"] == GATED_04_RELATIONAL_STATUS
     # R-P2-02 retired the relational fallback path entirely.
     assert report["ledgered_fallback"] == []
@@ -497,8 +490,8 @@ def test_ts7_dependency_audit_flags_new_core_data_consumer(tmp_path):
 def test_ts8_smoke_kg_healthy_through_community_data_and_graph(_isolated_db_kg):
     from sqlalchemy import select
 
-    from okto_pulse.core.kg.schema import SCHEMA_VERSION
-    from okto_pulse.core.models.db import GlobalUpdateOutbox
+    from okto_pulse.core.kg.schema_contract import SCHEMA_VERSION
+    from okto_pulse.community.adapters.sqlalchemy_models import GlobalUpdateOutbox
 
     reg = _isolated_db_kg
     board_id = "r05d-smoke-board"

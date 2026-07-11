@@ -12,14 +12,16 @@ from okto_pulse.community.adapters.telemetry_sender import (
     get_or_create_install_id,
     sign_payload,
 )
-from okto_pulse.core.api import metrics as metrics_api
+from okto_pulse.community.api import metrics as metrics_api
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.community.adapters.telemetry_effect_config import (
     COMMUNITY_DEFAULT_METRICS_BEACON_URL,
 )
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
-from okto_pulse.core.telemetry.service import TelemetryService
-from okto_pulse.core.telemetry.settings import resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 
 # R10-E PASS 1 alias: tests exercise the Community concrete class.
 TelemetryBeaconSender = CommunityTelemetryBeaconSender
@@ -35,7 +37,7 @@ def _metrics_client(tmp_path: Path, monkeypatch, **overrides) -> TestClient:
     settings = _settings(tmp_path, **overrides)
     monkeypatch.setattr(metrics_api, "get_settings", lambda: settings)
     app = FastAPI()
-    app.include_router(metrics_api.router, prefix="/api/v1")
+    app.include_router(metrics_api.router)
     app.dependency_overrides[metrics_api.require_user] = lambda: "test-user"
     return TestClient(app)
 
@@ -130,7 +132,9 @@ def test_legacy_local_only_state_normalizes_to_disabled_with_bounded_notice(
         if record.__dict__.get("metric_name") == "metrics_migration_notice_total"
     ]
     assert len(pending_notice_records) == 1
-    assert pending_notice_records[0].__dict__.get("notice_key") == "local_only_to_disabled"
+    assert (
+        pending_notice_records[0].__dict__.get("notice_key") == "local_only_to_disabled"
+    )
     assert pending_notice_records[0].__dict__.get("outcome") == "pending_returned"
     _assert_no_payload_labels(pending_notice_records[0])
 
@@ -213,7 +217,9 @@ def test_legacy_local_only_state_does_not_capture_events_after_normalization(
     caplog.set_level("INFO", logger="okto_pulse.telemetry.settings")
     caplog.set_level("INFO", logger="okto_pulse.telemetry.service")
 
-    result = TelemetryService(settings).record_event("cli", {"command": "serve", "exit_code": 0})
+    result = TelemetryService(settings).record_event(
+        "cli", {"command": "serve", "exit_code": 0}
+    )
 
     assert result == {
         "written": False,
@@ -269,7 +275,9 @@ def test_allowlist_drops_sensitive_payload_before_store(tmp_path: Path) -> None:
     assert "D:\\Projects" not in serialized
 
 
-def test_guided_help_event_is_normalized_with_categorical_payload(tmp_path: Path) -> None:
+def test_guided_help_event_is_normalized_with_categorical_payload(
+    tmp_path: Path,
+) -> None:
     settings = _settings(tmp_path, metrics_mode="anonymous_beacon")
     service = TelemetryService(settings)
 
@@ -348,7 +356,9 @@ def test_guided_help_drops_forbidden_fields_before_store(tmp_path: Path) -> None
     assert "skipped_all" not in serialized
 
 
-def test_guided_help_rejects_unknown_event_type_and_invalid_payload(tmp_path: Path) -> None:
+def test_guided_help_rejects_unknown_event_type_and_invalid_payload(
+    tmp_path: Path,
+) -> None:
     settings = _settings(tmp_path, metrics_mode="anonymous_beacon")
     service = TelemetryService(settings)
 
@@ -369,7 +379,9 @@ def test_guided_help_rejects_unknown_event_type_and_invalid_payload(tmp_path: Pa
     assert not list((tmp_path / "metrics").glob("events/*.jsonl"))
 
 
-def test_local_events_endpoint_accepts_safe_guided_help_payload(tmp_path: Path, monkeypatch) -> None:
+def test_local_events_endpoint_accepts_safe_guided_help_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _metrics_client(tmp_path, monkeypatch, metrics_mode="anonymous_beacon")
 
     response = client.post(
@@ -430,7 +442,9 @@ def test_local_events_endpoint_accepts_safe_guided_help_payload(tmp_path: Path, 
     assert "payload" not in json.dumps(summary)
 
 
-def test_local_events_endpoint_disabled_mode_does_not_write(tmp_path: Path, monkeypatch) -> None:
+def test_local_events_endpoint_disabled_mode_does_not_write(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _metrics_client(tmp_path, monkeypatch, metrics_mode="disabled")
 
     response = client.post(
@@ -473,7 +487,9 @@ def test_metrics_settings_api_disabled_persists_without_acknowledgements(
     assert body["mode"] == "disabled"
     assert body["ui_mode"] == "off"
     assert body["enabled"] is False
-    state = json.loads((tmp_path / "metrics" / "state.json").read_text(encoding="utf-8"))
+    state = json.loads(
+        (tmp_path / "metrics" / "state.json").read_text(encoding="utf-8")
+    )
     assert state["mode"] == "disabled"
     assert state["acknowledged_items"] == []
     setting_records = [
@@ -503,7 +519,9 @@ def test_metrics_settings_api_rejects_settings_ui_local_only_without_state_chang
         "policy_version": "2026-05-11",
         "schema_version": CURRENT_SCHEMA_VERSION,
     }
-    (metrics_dir / "state.json").write_text(json.dumps(original_state), encoding="utf-8")
+    (metrics_dir / "state.json").write_text(
+        json.dumps(original_state), encoding="utf-8"
+    )
     client = _metrics_client(tmp_path, monkeypatch)
     caplog.set_level("INFO", logger="okto_pulse.api.metrics")
 
@@ -576,7 +594,9 @@ def test_metrics_settings_api_anonymous_beacon_ack_required_then_saved(
     assert body["ui_mode"] == "on"
     assert body["enabled"] is True
     assert body["acknowledged_items"] == required_ack
-    state = json.loads((tmp_path / "metrics" / "state.json").read_text(encoding="utf-8"))
+    state = json.loads(
+        (tmp_path / "metrics" / "state.json").read_text(encoding="utf-8")
+    )
     assert state["mode"] == "anonymous_beacon"
     assert state["schema_version"] == CURRENT_SCHEMA_VERSION
     assert state["policy_version"] == "2026-05-11"
@@ -586,7 +606,10 @@ def test_metrics_settings_api_anonymous_beacon_ack_required_then_saved(
         for record in caplog.records
         if record.__dict__.get("metric_name") == "metrics_settings_update_total"
     ]
-    assert [record.__dict__.get("outcome") for record in setting_records] == ["rejected", "accepted"]
+    assert [record.__dict__.get("outcome") for record in setting_records] == [
+        "rejected",
+        "accepted",
+    ]
     assert setting_records[0].__dict__.get("reason") == "missing_policy_ack"
     assert setting_records[0].__dict__.get("target_mode") == "anonymous_beacon"
     assert setting_records[1].__dict__.get("reason") == "saved"
@@ -609,7 +632,9 @@ def test_migration_notice_seen_endpoint_is_idempotent_and_preserves_state(
         "schema_version": CURRENT_SCHEMA_VERSION,
         "acknowledged_items": ["schema", "privacy_policy"],
     }
-    (metrics_dir / "state.json").write_text(json.dumps(original_state), encoding="utf-8")
+    (metrics_dir / "state.json").write_text(
+        json.dumps(original_state), encoding="utf-8"
+    )
     client = _metrics_client(tmp_path, monkeypatch)
     caplog.set_level("INFO", logger="okto_pulse.telemetry.service")
 
@@ -647,7 +672,10 @@ def test_migration_notice_seen_endpoint_is_idempotent_and_preserves_state(
         "seen_acknowledged",
         "seen_idempotent",
     ]
-    assert all(record.__dict__.get("notice_key") == "local_only_to_disabled" for record in notice_records)
+    assert all(
+        record.__dict__.get("notice_key") == "local_only_to_disabled"
+        for record in notice_records
+    )
     for record in notice_records:
         _assert_no_payload_labels(record)
 
@@ -705,7 +733,9 @@ def test_local_events_endpoint_rejects_invalid_event_without_leaking_payload(
     assert not list((tmp_path / "metrics").glob("events/*.jsonl"))
 
 
-def test_guided_help_does_not_persist_server_side_progress(tmp_path: Path, monkeypatch) -> None:
+def test_guided_help_does_not_persist_server_side_progress(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _metrics_client(tmp_path, monkeypatch, metrics_mode="anonymous_beacon")
 
     response = client.post(
@@ -764,10 +794,19 @@ def test_guided_help_does_not_persist_server_side_progress(tmp_path: Path, monke
 
     api_and_models = "\n".join(
         path.read_text(encoding="utf-8")
-        for root in (Path("src/okto_pulse/core/api"), Path("src/okto_pulse/core/models"))
+        for root in (
+            Path("src/okto_pulse/core/api"),
+            Path("src/okto_pulse/core/models"),
+        )
         for path in root.rglob("*.py")
     )
-    for forbidden in ("tour_id", "step_id", "guided_help_progress", "GuidedHelpProgress", "TourProgress"):
+    for forbidden in (
+        "tour_id",
+        "step_id",
+        "guided_help_progress",
+        "GuidedHelpProgress",
+        "TourProgress",
+    ):
         assert forbidden not in api_and_models
 
 
@@ -789,7 +828,9 @@ def test_summary_export_and_purge_preserve_mode(tmp_path: Path) -> None:
     assert service.summary()["summary"]["event_count"] == 0
 
 
-def test_install_id_is_stable_and_hmac_is_canonical(tmp_path: Path, monkeypatch) -> None:
+def test_install_id_is_stable_and_hmac_is_canonical(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _settings(tmp_path)
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
 
@@ -826,7 +867,9 @@ def test_sender_does_not_call_network_before_opt_in(tmp_path: Path, caplog) -> N
         if record.__dict__.get("metric_name") == "metrics_runtime_skip_total"
     ]
     assert len(skip_records) == 2
-    assert all(record.__dict__.get("component") == "beacon_sender" for record in skip_records)
+    assert all(
+        record.__dict__.get("component") == "beacon_sender" for record in skip_records
+    )
     assert all(record.__dict__.get("reason") == "disabled" for record in skip_records)
     outcome_records = [
         record
@@ -834,8 +877,12 @@ def test_sender_does_not_call_network_before_opt_in(tmp_path: Path, caplog) -> N
         if record.__dict__.get("metric_name") == "metrics_beacon_outcome_total"
     ]
     assert len(outcome_records) == 2
-    assert all(record.__dict__.get("outcome") == "skipped" for record in outcome_records)
-    assert all(record.__dict__.get("reason") == "disabled" for record in outcome_records)
+    assert all(
+        record.__dict__.get("outcome") == "skipped" for record in outcome_records
+    )
+    assert all(
+        record.__dict__.get("reason") == "disabled" for record in outcome_records
+    )
     for record in [*skip_records, *outcome_records]:
         _assert_no_payload_labels(record)
 
@@ -872,7 +919,9 @@ def test_usage_sender_posts_compact_json_body_to_stay_below_waf_body_threshold(
     state["install_token"] = "token"
     state["next_batch_seq"] = 7
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    service.record_event("http", {"route_template": "/api/v1/specs/{spec_id}", "duration_ms": 42})
+    service.record_event(
+        "http", {"route_template": "/api/v1/specs/{spec_id}", "duration_ms": 42}
+    )
     session = RecordingSession()
 
     result = TelemetryBeaconSender(settings, session=session).send_once()  # type: ignore[arg-type]
@@ -885,8 +934,12 @@ def test_usage_sender_posts_compact_json_body_to_stay_below_waf_body_threshold(
     assert b": " not in body
     assert b", " not in body
     decoded = json.loads(body.decode("utf-8"))
-    assert decoded["metrics"]["http_route_template_counts"] == {"/api/v1/specs/{spec_id}": 1}
-    assert len(body) == len(json.dumps(decoded, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    assert decoded["metrics"]["http_route_template_counts"] == {
+        "/api/v1/specs/{spec_id}": 1
+    }
+    assert len(body) == len(
+        json.dumps(decoded, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
     assert session.kwargs["headers"]["content-type"] == "application/json"
 
 
@@ -1132,7 +1185,9 @@ def test_stale_persisted_beacon_consent_falls_back_to_disabled(tmp_path: Path) -
     assert summary["beacon_status"]["schema_status"] == "stale_consent"
 
 
-def test_metrics_settings_normalizes_legacy_local_only_and_preserves_acknowledged_items(tmp_path: Path) -> None:
+def test_metrics_settings_normalizes_legacy_local_only_and_preserves_acknowledged_items(
+    tmp_path: Path,
+) -> None:
     settings = _settings(tmp_path)
     service = TelemetryService(settings)
 
@@ -1147,10 +1202,15 @@ def test_metrics_settings_normalizes_legacy_local_only_and_preserves_acknowledge
     assert result["normalized_from"] == "local_only"
     assert result["acknowledged_items"] == ["schema", "privacy_policy"]
     assert service.summary()["mode"] == "disabled"
-    assert service.summary()["consent"]["acknowledged_items"] == ["schema", "privacy_policy"]
+    assert service.summary()["consent"]["acknowledged_items"] == [
+        "schema",
+        "privacy_policy",
+    ]
 
 
-def test_hourly_batch_excludes_product_aggregates_from_delta_batch(tmp_path: Path, monkeypatch) -> None:
+def test_hourly_batch_excludes_product_aggregates_from_delta_batch(
+    tmp_path: Path, monkeypatch
+) -> None:
     # R3A-B (codex decision ev=3804): product_metrics is a cumulative/snapshot
     # re-aggregation of the live DB and MUST NOT ride inside a semantics=delta
     # batch — doing so would make R4 sum a cumulative as a delta and inflate
@@ -1175,11 +1235,21 @@ def test_hourly_batch_excludes_product_aggregates_from_delta_batch(tmp_path: Pat
     )
     conn.execute(
         "INSERT INTO domain_events VALUES (?, ?)",
-        ("spec.created", json.dumps({"spec_id": "secret-spec-id", "source": "derived_ideation"})),
+        (
+            "spec.created",
+            json.dumps({"spec_id": "secret-spec-id", "source": "derived_ideation"}),
+        ),
     )
     conn.execute(
         "INSERT INTO specs VALUES (?, ?, ?, ?, ?, ?)",
-        ("secret-spec-id", "done", "secret-ideation-id", None, json.dumps([{"id": "test-1"}]), json.dumps([{"id": "decision-1"}])),
+        (
+            "secret-spec-id",
+            "done",
+            "secret-ideation-id",
+            None,
+            json.dumps([{"id": "test-1"}]),
+            json.dumps([{"id": "decision-1"}]),
+        ),
     )
     conn.execute("INSERT INTO story_ideation_links VALUES (?)", ("secret-ideation-id",))
     conn.execute("INSERT INTO cards VALUES (?, ?)", ("done", "bug"))
@@ -1224,7 +1294,9 @@ def test_delta_batch_is_decoupled_from_product_db(tmp_path: Path, monkeypatch) -
     def boom(self):  # pragma: no cover - must never be reached by the delta path
         raise RuntimeError("local db busy")
 
-    monkeypatch.setattr(product_mod.CommunityProductTelemetryAggregator, "aggregate", boom)
+    monkeypatch.setattr(
+        product_mod.CommunityProductTelemetryAggregator, "aggregate", boom
+    )
 
     batch = TelemetryBeaconSender(settings).hourly_batch()
 

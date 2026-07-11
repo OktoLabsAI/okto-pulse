@@ -16,19 +16,28 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
 
-from okto_pulse.community.adapters.telemetry_sender import CommunityTelemetryBeaconSender
+from okto_pulse.community.adapters.telemetry_sender import (
+    CommunityTelemetryBeaconSender,
+)
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry import failure_state as fs
 from okto_pulse.core.telemetry import publish_health as ph
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
-from okto_pulse.core.telemetry.service import TelemetryService
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
 
 # R10-E PASS 1 alias: tests exercise the Community concrete class.
 TelemetryBeaconSender = CommunityTelemetryBeaconSender
 
 _NOW = datetime(2026, 6, 15, 13, 1, 0, tzinfo=timezone.utc)
 _SECRET = "tok-supersecret-xyz"
-_FOUR = {ph.SOURCE_LOCAL, ph.SOURCE_INSTALL_LIFECYCLE, ph.SOURCE_AWS_INGEST, ph.SOURCE_REPORT_ATHENA}
+_FOUR = {
+    ph.SOURCE_LOCAL,
+    ph.SOURCE_INSTALL_LIFECYCLE,
+    ph.SOURCE_AWS_INGEST,
+    ph.SOURCE_REPORT_ATHENA,
+}
 
 
 def _projection(**overrides) -> dict:
@@ -43,6 +52,7 @@ def _projection(**overrides) -> dict:
 
 
 # --- resolver: local OK + lifecycle OK + AWS/report gap -> degraded, not healthy
+
 
 def test_local_ok_with_external_gap_is_degraded_never_healthy() -> None:
     dto = ph.resolve_publish_health(
@@ -71,6 +81,7 @@ def test_local_ok_with_external_gap_is_degraded_never_healthy() -> None:
 
 # --- derive_install_lifecycle: real, non-secret signals ------------------------
 
+
 def test_derive_lifecycle_token_present_and_valid_is_available() -> None:
     state = {
         "mode": "anonymous_beacon",
@@ -90,19 +101,28 @@ def test_derive_lifecycle_expired_token_is_expired() -> None:
         "install_token": _SECRET,
         "install_token_expires_at": "2020-01-01T00:00:00Z",
     }
-    assert ph.derive_install_lifecycle(state, now=_NOW)["availability"] == ph.SRC_EXPIRED
+    assert (
+        ph.derive_install_lifecycle(state, now=_NOW)["availability"] == ph.SRC_EXPIRED
+    )
 
 
 def test_derive_lifecycle_never_handshaked_is_unavailable() -> None:
     state = {"mode": "anonymous_beacon"}  # enabled, but no token / no handshake
-    assert ph.derive_install_lifecycle(state, now=_NOW)["availability"] == ph.SRC_UNAVAILABLE
+    assert (
+        ph.derive_install_lifecycle(state, now=_NOW)["availability"]
+        == ph.SRC_UNAVAILABLE
+    )
 
 
 def test_derive_lifecycle_disabled_is_moot_available() -> None:
-    assert ph.derive_install_lifecycle({"mode": "disabled"}, now=_NOW)["availability"] == ph.SRC_AVAILABLE
+    assert (
+        ph.derive_install_lifecycle({"mode": "disabled"}, now=_NOW)["availability"]
+        == ph.SRC_AVAILABLE
+    )
 
 
 # --- discover_external_sources: default gap + forward-compatible override -------
+
 
 def test_discover_external_sources_default_is_gap() -> None:
     aws, report = ph.discover_external_sources(SimpleNamespace())
@@ -112,7 +132,9 @@ def test_discover_external_sources_default_is_gap() -> None:
 
 def test_discover_external_sources_respects_configured_adapter() -> None:
     settings = SimpleNamespace(
-        metrics_health_external_sources={ph.SOURCE_AWS_INGEST: {"availability": ph.SRC_STALE}}
+        metrics_health_external_sources={
+            ph.SOURCE_AWS_INGEST: {"availability": ph.SRC_STALE}
+        }
     )
     aws, report = ph.discover_external_sources(settings)
     assert aws["availability"] == ph.SRC_STALE  # configured signal honored
@@ -121,14 +143,22 @@ def test_discover_external_sources_respects_configured_adapter() -> None:
 
 # --- service end-to-end: four sources, no healthy-by-proxy ---------------------
 
+
 def _settings(tmp_path: Path, monkeypatch) -> CoreSettings:
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
-    return CoreSettings(metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon")
+    return CoreSettings(
+        metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon"
+    )
 
 
-def _enable_with_token(tmp_path: Path, settings: CoreSettings, *, healthy: bool) -> None:
+def _enable_with_token(
+    tmp_path: Path, settings: CoreSettings, *, healthy: bool
+) -> None:
     TelemetryService(settings).update_settings(
-        mode="anonymous_beacon", source="cli", policy_version="2026-05-11", schema_version=CURRENT_SCHEMA_VERSION
+        mode="anonymous_beacon",
+        source="cli",
+        policy_version="2026-05-11",
+        schema_version=CURRENT_SCHEMA_VERSION,
     )
     state_path = tmp_path / "metrics" / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -145,7 +175,9 @@ def _enable_with_token(tmp_path: Path, settings: CoreSettings, *, healthy: bool)
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
 
-def test_service_healthy_local_is_not_healthy_by_proxy(tmp_path: Path, monkeypatch) -> None:
+def test_service_healthy_local_is_not_healthy_by_proxy(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _settings(tmp_path, monkeypatch)
     _enable_with_token(tmp_path, settings, healthy=True)
 
@@ -163,7 +195,9 @@ def test_service_healthy_local_is_not_healthy_by_proxy(tmp_path: Path, monkeypat
     assert by_name[ph.SOURCE_REPORT_ATHENA]["status"] != ph.HEALTHY
 
 
-def test_service_four_sources_secret_free_over_real_failure(tmp_path: Path, monkeypatch) -> None:
+def test_service_four_sources_secret_free_over_real_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _settings(tmp_path, monkeypatch)
     _enable_with_token(tmp_path, settings, healthy=False)
 
@@ -192,5 +226,7 @@ def test_service_four_sources_secret_free_over_real_failure(tmp_path: Path, monk
         assert not fs.is_secret_key(key), key
     for source in result["sources"]:
         assert _SECRET not in json.dumps(source)
-        assert source["message"] in (set(ph._REASON_MESSAGES.values()) | set(ph._STATUS_MESSAGES.values()))
+        assert source["message"] in (
+            set(ph._REASON_MESSAGES.values()) | set(ph._STATUS_MESSAGES.values())
+        )
     assert set(result) == set(ph.PUBLISH_HEALTH_FIELDS)

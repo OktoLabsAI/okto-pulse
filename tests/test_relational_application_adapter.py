@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 
-import okto_pulse.core.app as _core_app  # noqa: F401
+import okto_pulse.community.app as _core_app  # noqa: F401
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.relational_application import (
     CommunityRelationalApplicationAdapter,
 )
 from okto_pulse.community.adapters.sqlalchemy_repositories import Agent
-from okto_pulse.core.models.db import Base
+from okto_pulse.community.adapters.sqlalchemy_models import Base
 from okto_pulse.core.ports.relational_application import RelationalApplicationAdapter
 
 

@@ -3,7 +3,7 @@
 Proves the Community-owned relational adapter owns the local-first SQLAlchemy
 runtime:
 
-  - pool sizing per dialect;
+  - Local First pool sizing and fail-closed URL validation;
   - session factory kwargs (``class_=AsyncSession`` + ``expire_on_commit=False``);
   - the SQLite PRAGMA union — WAL + busy_timeout=30000 +
     synchronous=NORMAL + foreign_keys=ON — proven against a REAL connection;
@@ -18,7 +18,7 @@ import asyncio
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import okto_pulse.core.app as _core_app  # noqa: F401
+import okto_pulse.community.app as _core_app  # noqa: F401
 from okto_pulse.community.adapters.sqlalchemy_database import (
     build_community_engine,
     build_community_session_factory,
@@ -49,19 +49,9 @@ def test_ac1_sqlite_pool_config_matches_core(tmp_path):
         raise
 
 
-def test_ac1_postgresql_pool_config():
-    """The postgresql branch carries pool_size=10/max_overflow=20/pre_ping
-    (skipped if the asyncpg dbapi is not installed in this env)."""
-    try:
-        pe = build_community_engine("postgresql+asyncpg://u:p@localhost/db")
-    except Exception:  # pragma: no cover - depends on optional dbapi
-        pytest.skip("asyncpg dbapi not available")
-    try:
-        assert pe.pool.size() == 10
-        assert pe.pool._max_overflow == 20
-        assert pe.pool._pre_ping is True
-    finally:
-        asyncio.run(pe.dispose())
+def test_ac1_non_local_database_url_is_rejected_before_driver_loading():
+    with pytest.raises(ValueError, match="community_database_requires_sqlite"):
+        build_community_engine("serverdb+missingdriver://u:p@localhost/db")
 
 
 def test_ac1_session_factory_kwargs(tmp_path):
@@ -100,23 +90,10 @@ def test_ac1_sqlite_pragma_union_on_real_connection(tmp_path):
         return jm, bt, sy, fk
 
     jm, bt, sy, fk = asyncio.run(read())
-    assert str(jm).lower() == "wal"        # journal_mode=WAL
-    assert int(bt) == 30000                # busy_timeout=30000
-    assert int(sy) == 1                    # synchronous=NORMAL (1)
-    assert int(fk) == 1                    # foreign_keys=ON (1)
-
-
-def test_ac1_pragma_listener_noop_for_non_sqlite():
-    """install_community_sqlite_pragmas is a no-op for non-sqlite engines."""
-    try:
-        pe = build_community_engine("postgresql+asyncpg://u:p@localhost/db")
-    except Exception:  # pragma: no cover - depends on optional dbapi
-        pytest.skip("asyncpg dbapi not available")
-    try:
-        # Must not raise / must not register a sqlite connect listener.
-        install_community_sqlite_pragmas(pe)
-    finally:
-        asyncio.run(pe.dispose())
+    assert str(jm).lower() == "wal"  # journal_mode=WAL
+    assert int(bt) == 30000  # busy_timeout=30000
+    assert int(sy) == 1  # synchronous=NORMAL (1)
+    assert int(fk) == 1  # foreign_keys=ON (1)
 
 
 def test_ac1_pool_observability_installed(tmp_path):
@@ -140,7 +117,7 @@ def test_ac1_pool_observability_installed(tmp_path):
 def test_configure_community_database_injects_core_runtime(tmp_path):
     import okto_pulse.core.infra.database as _db
 
-    saved_e, saved_f = _db._engine, _db._session_factory
+    runtime = None
     try:
         runtime = configure_community_database(
             f"sqlite+aiosqlite:///{tmp_path / 'configured.db'}"
@@ -149,5 +126,5 @@ def test_configure_community_database_injects_core_runtime(tmp_path):
         assert _db.get_session_factory() is runtime.session_factory
         assert runtime.engine.pool.size() == 20
     finally:
-        asyncio.run(_db.get_engine().dispose())
-        _db._engine, _db._session_factory = saved_e, saved_f
+        if runtime is not None:
+            asyncio.run(runtime.engine.dispose())

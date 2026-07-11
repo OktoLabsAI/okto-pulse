@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy import func, select
 
-from okto_pulse.core.models.db import (
+from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     Card,
     CanonicalDebt,
@@ -328,7 +328,7 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
         ).all()
         return {str(status): int(count) for status, count in rows}
 
-    async def kuzu_node_ref_operation_counts(
+    async def graph_node_ref_operation_counts(
         self,
         context: Any,
         *,
@@ -465,6 +465,115 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
             )
         ).scalars().all()
         return list(rows)
+
+    async def list_dead_letter_page(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        limit: int,
+        offset: int,
+    ) -> tuple[int, Sequence[Any]]:
+        total = int(
+            await context.scalar(
+                select(func.count())
+                .select_from(ConsolidationDeadLetter)
+                .where(ConsolidationDeadLetter.board_id == board_id)
+            )
+            or 0
+        )
+        rows = (
+            await context.execute(
+                select(ConsolidationDeadLetter)
+                .where(ConsolidationDeadLetter.board_id == board_id)
+                .order_by(ConsolidationDeadLetter.id)
+                .limit(limit)
+                .offset(offset)
+            )
+        ).scalars().all()
+        return total, list(rows)
+
+    async def reprocess_dead_letter_rows(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        dead_letter_ids: Sequence[str],
+        limit: int,
+    ) -> Mapping[str, Any]:
+        query = select(ConsolidationDeadLetter).where(
+            ConsolidationDeadLetter.board_id == board_id
+        )
+        if dead_letter_ids:
+            query = query.where(
+                ConsolidationDeadLetter.id.in_(dead_letter_ids)
+            )
+        rows = list(
+            (
+                await context.execute(
+                    query.order_by(
+                        ConsolidationDeadLetter.dead_lettered_at.asc()
+                    ).limit(limit)
+                )
+            ).scalars().all()
+        )
+        requeued: list[dict[str, Any]] = []
+        already_queued: list[dict[str, Any]] = []
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            existing = (
+                await context.execute(
+                    select(ConsolidationQueue).where(
+                        ConsolidationQueue.board_id == row.board_id,
+                        ConsolidationQueue.artifact_type == row.artifact_type,
+                        ConsolidationQueue.artifact_id == row.artifact_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            target = existing
+            if target is None:
+                target = ConsolidationQueue(
+                    board_id=row.board_id,
+                    artifact_type=row.artifact_type,
+                    artifact_id=row.artifact_id,
+                    priority="high",
+                    source="dead_letter_reprocess",
+                    status="pending",
+                    triggered_at=now,
+                    triggered_by_event="dlq_reprocess",
+                    attempts=0,
+                )
+                context.add(target)
+                await context.flush()
+                bucket = requeued
+            else:
+                target.status = "pending"
+                target.attempts = 0
+                target.last_error = None
+                target.next_retry_at = None
+                target.claimed_at = None
+                target.claim_timeout_at = None
+                target.worker_id = None
+                target.claimed_by_session_id = None
+                bucket = already_queued
+            bucket.append(
+                {
+                    "dead_letter_id": row.id,
+                    "queue_id": target.id,
+                    "artifact_type": row.artifact_type,
+                    "artifact_id": row.artifact_id,
+                }
+            )
+            await context.delete(row)
+        return {
+            "success": True,
+            "requested": len(dead_letter_ids) if dead_letter_ids else None,
+            "selected": len(rows),
+            "requeued": requeued,
+            "already_queued": already_queued,
+            "requeued_count": len(requeued),
+            "already_queued_count": len(already_queued),
+        }
 
     async def retry_pending_entry(
         self,

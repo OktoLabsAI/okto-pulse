@@ -39,7 +39,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -77,6 +77,18 @@ class CommunityBoardRebuildIngestionAdapter:
     # PROGRIDE o drain continua; este teto só protege contra um worker
     # zumbi que progride para sempre sem terminar.
     drain_hard_timeout_seconds: float = 14400.0
+    artifact_store: Any | None = None
+    quarantine_restore: Any | None = None
+    salvage_pending_provider: Callable[[str], bool] | None = None
+    _rebuild_effect_cache: dict[str, Any] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    _rebuild_checkpoint_cache: dict[str, Any] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    _rebuild_run_boards: dict[str, str] = field(
+        default_factory=dict, compare=False, repr=False
+    )
 
     def _path(self) -> Path:
         if self.db_path is not None:
@@ -101,10 +113,11 @@ class CommunityBoardRebuildIngestionAdapter:
         the original files.
         """
 
+        from okto_pulse.community.adapters.kg_runtime import board_kuzu_path
         from okto_pulse.core.services.application_kg import get_current_provider_registry
 
         registry = get_current_provider_registry()
-        path = registry.graph_path_resolver.board_graph_path(board_id)
+        path = board_kuzu_path(board_id)
         targets: list[Path] = []
         if path.exists():
             targets.append(path)
@@ -116,7 +129,7 @@ class CommunityBoardRebuildIngestionAdapter:
         report = run_async_blocking(
             registry.graph_lifecycle.purge(board_id, reason=reason)
         )
-        moved = tuple(report.affected_paths)
+        moved = tuple(ref.token for ref in report.affected_storage_refs)
         still_present = [p for p in targets if p.exists()]
         if still_present:
             raise RuntimeError(
@@ -190,229 +203,184 @@ class CommunityBoardRebuildIngestionAdapter:
             conn.commit()
         return counts
 
+    def queue_depth(self, board_id: str) -> int:
+        """Return one technical queue observation for the Core state machine."""
+
+        with sqlite3.connect(str(self._path()), timeout=5.0) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM consolidation_queue "
+                "WHERE board_id=? AND status IN ('pending', 'claimed')",
+                (board_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def compensate_pending_sources(self, *, board_id: str, run_id: str) -> dict[str, int]:
+        """Fail pending rows from this rebuild while preserving active claims."""
+
+        with sqlite3.connect(str(self._path()), timeout=10.0) as conn:
+            cursor = conn.execute(
+                "UPDATE consolidation_queue SET status='failed', "
+                "last_error='rebuild_compensated', next_retry_at=NULL "
+                "WHERE board_id=? AND source=? AND status='pending'",
+                (board_id, f"rebuild:{run_id}"),
+            )
+            conn.commit()
+        return {"pending_compensated": max(0, int(cursor.rowcount or 0))}
+
     def build_step_adapter(self, source_resolver):
-        """Return a callable conforming to
-        ``KGRebuildService.rebuild_step_adapter``. Wraps
-        ``DeterministicStructuralRebuilder.as_rebuild_step_adapter`` with
-        an extra layer that enqueues the sources for async drain.
+        """Compose Local First effects behind the Core rebuild state machine."""
 
-        ``source_resolver(req) -> sequence[dict]`` is REQUIRED — it loads
-        the sources from the manifest the rebuild service just validated
-        (KG-02.2 lifecycle). The deterministic rebuilder consumes the
-        same resolved set so the structural_hash is computed over the
-        exact rows that get enqueued (no drift).
-        """
-
+        from okto_pulse.community.adapters.rebuild_effects import (
+            CommunityRebuildEffects,
+        )
+        from okto_pulse.core.application.rebuild_processor import (
+            RebuildCommand,
+            RebuildOutcomeCode,
+            RebuildPlan,
+            RebuildProcessor,
+        )
         from okto_pulse.core.kg.rebuild_deterministic import (
             DeterministicStructuralRebuilder,
         )
         from okto_pulse.core.kg.rebuild_service import RebuildStepResult
 
-        det = DeterministicStructuralRebuilder()
-        base_adapter = det.as_rebuild_step_adapter(
+        deterministic = DeterministicStructuralRebuilder().as_rebuild_step_adapter(
             source_resolver=source_resolver,
         )
 
         def _adapter(req):
-            # 1. Run the deterministic hash + counts via KG-02.5. The
-            # resolver is called inside base_adapter and ensures
-            # sources_payload is wired (fail-closed per val_ebffe9ce if
-            # missing).
-            base_result = base_adapter(req)
+            base_result = deterministic(req)
             if not base_result.ok:
                 return base_result
 
-            # 2. Resolve sources again (cheap) for the enqueue step. We
-            # could thread the resolver result through base_adapter but
-            # KG-02.5's RebuildStepResult doesn't carry raw sources; a
-            # second call keeps the layering clean.
-            sources = tuple(source_resolver(req))
-
-            # R2-IMP2: snapshot canonical cognitive knowledge (Learning/Alternative/
-            # Assumption + relevant edges) BEFORE the purge so the deterministic
-            # rebuild cannot silently drop it. Best-effort read; an unreadable graph
-            # is recorded (readable=False), never a silent skip.
-            from okto_pulse.core.kg.canonical_cognitive_preservation import (
-                snapshot_canonical_cognitive,
-            )
-            cognitive_snapshot = snapshot_canonical_cognitive(req.board_id)
-
-            try:
-                affected_files = self.prepare_board_graph_storage(
-                    board_id=req.board_id,
-                    reason=f"explicit_rebuild:{req.manifest_ref or req.operation}",
-                )
-            except Exception as exc:
-                return RebuildStepResult(
-                    ok=False,
-                    detail=f"graph_prepare_failed:{type(exc).__name__}",
-                    current_kg_generation_id=base_result.current_kg_generation_id,
-                    previous_kg_generation_id=base_result.previous_kg_generation_id,
-                    structural_hash=base_result.structural_hash,
-                    source_hash=base_result.source_hash,
-                    counts=base_result.counts,
-                    reconciliation_decisions=base_result.reconciliation_decisions,
-                    drilldown={
-                        **base_result.drilldown,
-                        "graph_prepare_error": str(exc),
-                    },
-                )
-            counts_q = self.enqueue_sources(
+            sources = tuple(dict(row) for row in source_resolver(req))
+            run_id = f"f06:{req.manifest_ref or req.candidate_kg_generation_id or req.board_id}"
+            self._rebuild_run_boards[run_id] = req.board_id
+            command = RebuildCommand(
+                run_id=run_id,
                 board_id=req.board_id,
-                run_id=req.manifest_ref or "rebuild",
-                sources=sources,
+                manifest_ref=req.manifest_ref,
+                operation=req.operation,
+                actor_id=req.actor_id,
+                reason=f"explicit_rebuild:{req.manifest_ref or req.operation}",
+                source_rows=sources,
+                previous_generation_id=req.previous_kg_generation_id,
+                candidate_generation_id=req.candidate_kg_generation_id,
+                salvage_pending=(
+                    bool(self.salvage_pending_provider(req.board_id))
+                    if self.salvage_pending_provider is not None
+                    else False
+                ),
             )
+            effects = CommunityRebuildEffects(self, artifact_store=self.artifact_store)
+            outcome = RebuildProcessor(
+                effects,
+                plan=RebuildPlan(
+                    stall_timeout_seconds=self.drain_timeout_seconds,
+                    hard_timeout_seconds=self.drain_hard_timeout_seconds,
+                    observation_wait_seconds=self.drain_poll_interval_seconds,
+                    final_grace_seconds=self.drain_final_grace_seconds,
+                    low_depth_threshold=self.drain_low_depth_threshold,
+                ),
+            ).execute(command)
 
-            # 3. Wake the worker so the queue starts draining immediately.
-            try:
-                from okto_pulse.core.services.application_kg import (
-                    signal_consolidation_worker,
-                )
-                signal_consolidation_worker()
-            except Exception as exc:  # pragma: no cover — defensive
-                logger.warning(
-                    "kg.rebuild.signal_worker_failed err=%s", exc,
-                )
-
+            by_effect = {receipt.effect: receipt for receipt in outcome.receipts}
+            quarantine = by_effect.get("quarantine")
+            enqueue = by_effect.get("enqueue")
+            restore = by_effect.get("restore")
+            affected_files = tuple(
+                dict(quarantine.details).get("affected_files", ())
+                if quarantine is not None
+                else ()
+            )
+            enqueue_counts = dict(enqueue.details) if enqueue is not None else {}
             merged_counts = {
                 **base_result.counts,
-                "enqueue_inserted": counts_q["inserted"],
-                "enqueue_reset_to_pending": counts_q["reset_to_pending"],
-                "enqueue_left_alone": counts_q["left_alone"],
-            }
-
-            # 4. A rebuild is not complete when rows are merely queued. The
-            # generation must not be promoted until the deterministic worker
-            # has drained the board backlog and the safe-write lifecycle can
-            # close/reopen-probe the materialized graph. Earlier code reported
-            # COMPLETED while the actual writes still lived behind an async
-            # worker handle, which let a corrupt/unflushed WAL surface later in
-            # the UI instead of failing the rebuild run.
-            drain = self.drain_until_idle(
-                board_id=req.board_id,
-                timeout_seconds=self.drain_timeout_seconds,
-                poll_interval_seconds=self.drain_poll_interval_seconds,
-                final_grace_seconds=self.drain_final_grace_seconds,
-                low_depth_threshold=self.drain_low_depth_threshold,
-            )
-            if not drain["idle"]:
-                return RebuildStepResult(
-                    ok=False,
-                    detail=(
-                        "queue_drain_timeout:"
-                        f"final_depth={drain['final_depth']}"
-                        f" waited_seconds={drain['waited_seconds']}"
-                        f" cause={'hard_timeout' if drain.get('hard_timed_out') else 'stalled'}"
-                    ),
-                    current_kg_generation_id=base_result.current_kg_generation_id,
-                    previous_kg_generation_id=base_result.previous_kg_generation_id,
-                    affected_files=(
-                        tuple(base_result.affected_files) + affected_files
-                    ),
-                    structural_hash=base_result.structural_hash,
-                    source_hash=base_result.source_hash,
-                    counts=merged_counts,
-                    reconciliation_decisions=base_result.reconciliation_decisions,
-                    drilldown={
-                        **base_result.drilldown,
-                        "graph_prepare": {
-                            "quarantined_files": len(affected_files),
-                        },
-                        "enqueue": counts_q,
-                        "queue_drain": drain,
-                        "ingestion_mode": "sync_wait_for_worker_drain",
-                    },
-                )
-
-            # R2-IMP2: restore canonical cognitive knowledge AFTER deterministic
-            # re-materialization. Anything unrestorable is TRACED (degraded — never
-            # a silent clean success) + a bug-derived Learning gets a traceable R7
-            # hold. A broken preservation mechanism fails the rebuild CLOSED.
-            from okto_pulse.core.kg.canonical_cognitive_preservation import (
-                STATUS_DEGRADED,
-                STATUS_INTEGRITY_ERROR,
-                STATUS_UNREADABLE,
-                preservation_summary,
-                record_cognitive_loss_fallback,
-                restore_canonical_cognitive,
-            )
-            cog_restore = restore_canonical_cognitive(req.board_id, cognitive_snapshot)
-            cog_preservation = preservation_summary(cognitive_snapshot, cog_restore)
-            if cog_preservation["status"] in (STATUS_DEGRADED, STATUS_UNREADABLE):
-                cog_preservation["fallback_holds_recorded"] = (
-                    record_cognitive_loss_fallback(req.board_id, cog_preservation)
-                )
-                logger.warning(
-                    "kg.rebuild.cognitive_preservation_degraded board=%s status=%s "
-                    "unrestorable=%d readable=%s",
-                    req.board_id, cog_preservation["status"],
-                    cog_preservation["unrestorable_count"],
-                    cog_preservation["readable"],
-                    extra={
-                        "event": "kg.rebuild.cognitive_preservation_degraded",
-                        "board_id": req.board_id,
-                        "status": cog_preservation["status"],
-                        "unrestorable_count": cog_preservation["unrestorable_count"],
-                        "readable": cog_preservation["readable"],
-                    },
-                )
-
-            # G1 (SPEC4 card 619e58e1): record the per-layer partition presence the
-            # resolved source set EXPECTS to materialize (deterministic, no graph
-            # touch). The orchestrator counts the REAL materialized layers AFTER
-            # the safe-write lifecycle and refuses to promote a rebuild that
-            # dropped an expected partition. The materialized count must NOT be
-            # taken here — opening the graph before the safe-write checkpoint/
-            # close-reopen probe would interfere with that durability gate.
-            merged_counts = {
-                **merged_counts,
+                "enqueue_inserted": int(enqueue_counts.get("inserted", 0)),
+                "enqueue_reset_to_pending": int(
+                    enqueue_counts.get("reset_to_pending", 0)
+                ),
+                "enqueue_left_alone": int(enqueue_counts.get("left_alone", 0)),
                 "expected_by_layer": expected_layers_from_sources(sources),
             }
-
-            success_drilldown = {
+            checkpoint = self._rebuild_checkpoint_cache.get(run_id)
+            queue_drain = {
+                "idle": outcome.code is RebuildOutcomeCode.COMPLETED,
+                "final_depth": (
+                    checkpoint.best_queue_depth if checkpoint is not None else None
+                ),
+                "progress_events": (
+                    checkpoint.queue_progress_events if checkpoint is not None else 0
+                ),
+                "stall_window_seconds": self.drain_timeout_seconds,
+                "hard_timeout_seconds": self.drain_hard_timeout_seconds,
+                "grace_applied": (
+                    checkpoint.queue_grace_applied if checkpoint is not None else False
+                ),
+                "grace_reason": (
+                    checkpoint.queue_grace_reason if checkpoint is not None else None
+                ),
+                "final_grace_seconds": self.drain_final_grace_seconds,
+                "low_depth_threshold": self.drain_low_depth_threshold,
+            }
+            drilldown = {
                 **base_result.drilldown,
-                "graph_prepare": {
-                    "quarantined_files": len(affected_files),
-                },
-                "enqueue": counts_q,
-                "queue_drain": drain,
-                "ingestion_mode": "sync_wait_for_worker_drain",
-                "cognitive_preservation": cog_preservation,
+                "graph_prepare": {"quarantined_files": len(affected_files)},
+                "enqueue": enqueue_counts,
+                "queue_drain": queue_drain,
+                "ingestion_mode": "core_state_machine_with_community_effects",
+                "cognitive_preservation": (
+                    dict(restore.details) if restore is not None else {}
+                ),
                 "layer_materialization": {
-                    "expected_by_layer": merged_counts["expected_by_layer"],
+                    "expected_by_layer": merged_counts["expected_by_layer"]
+                },
+                "rebuild_processor": {
+                    "state": outcome.state.value,
+                    "code": outcome.code.value,
+                    "promotion_allowed": outcome.promotion_allowed,
+                    "compensation_actions": [
+                        action.value for action in outcome.compensation_actions
+                    ],
                 },
             }
-
-            if cog_preservation["status"] == STATUS_INTEGRITY_ERROR:
-                # Fail closed: the preservation mechanism could not even produce a
-                # trace — do NOT report a possibly-lossy rebuild as success.
+            if outcome.code is not RebuildOutcomeCode.COMPLETED:
+                if outcome.code in {
+                    RebuildOutcomeCode.DRAIN_STALLED,
+                    RebuildOutcomeCode.HARD_TIMEOUT,
+                }:
+                    detail = (
+                        "queue_drain_timeout:"
+                        f"final_depth={queue_drain['final_depth']} "
+                        f"cause={outcome.code.value}"
+                    )
+                else:
+                    detail = f"{outcome.code.value}:{outcome.detail or ''}".rstrip(
+                        ":"
+                    )
                 return RebuildStepResult(
                     ok=False,
-                    detail="cognitive_preservation_integrity_error",
+                    detail=detail,
                     current_kg_generation_id=base_result.current_kg_generation_id,
                     previous_kg_generation_id=base_result.previous_kg_generation_id,
-                    affected_files=(
-                        tuple(base_result.affected_files) + affected_files
-                    ),
+                    affected_files=tuple(base_result.affected_files) + affected_files,
                     structural_hash=base_result.structural_hash,
                     source_hash=base_result.source_hash,
                     counts=merged_counts,
                     reconciliation_decisions=base_result.reconciliation_decisions,
-                    drilldown=success_drilldown,
+                    drilldown=drilldown,
                 )
 
             return RebuildStepResult(
                 ok=True,
                 current_kg_generation_id=base_result.current_kg_generation_id,
                 previous_kg_generation_id=base_result.previous_kg_generation_id,
-                affected_files=(
-                    tuple(base_result.affected_files) + affected_files
-                ),
+                affected_files=tuple(base_result.affected_files) + affected_files,
                 structural_hash=base_result.structural_hash,
                 source_hash=base_result.source_hash,
                 counts=merged_counts,
                 reconciliation_decisions=base_result.reconciliation_decisions,
-                drilldown=success_drilldown,
+                drilldown=drilldown,
             )
 
         return _adapter
@@ -427,32 +395,17 @@ class CommunityBoardRebuildIngestionAdapter:
         low_depth_threshold: int | None = None,
         hard_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Block until the board's ConsolidationQueue has no
-        pending/claimed rows, the queue STALLS, or the hard ceiling
-        fires. Returns a snapshot with the wait duration and final depth.
+        """Compatibility runner; all timeout decisions come from Core policy."""
 
-        PROGRESS-AWARE (campo 2026-06-10): ``timeout_seconds`` é a janela
-        de ESTAGNAÇÃO, não o teto total. Cada vez que a profundidade da
-        fila cai abaixo do menor valor já visto (o worker drenou pelo
-        menos uma entry), a janela renova. Um board grande drenando
-        devagar NÃO falha mais por teto fixo — antes, 520 sources a
-        ~6 entries/min estouravam os 900s, o rebuild reportava
-        queue_drain_timeout, a generation não promovia e o cognitive
-        pending nunca materializava, embora o worker completasse o grafo
-        em background minutos depois (grafo saudável, zero badges).
-        ``hard_timeout_seconds`` continua como teto absoluto de segurança
-        contra um produtor que re-enfileira para sempre.
+        from datetime import datetime, timedelta, timezone
 
-        A small final grace window avoids a false failed rebuild when
-        the queue is nearly drained at the stall deadline. The Pulse SaaS
-        E2E rebuild exposed that failure mode: the run timed out with
-        four rows still visible, then the worker finished seconds later,
-        leaving a healthy graph but no promoted generation. The grace is
-        bounded and only applies while the remaining depth is below the
-        configured threshold, so a genuinely stuck large backlog still
-        fails closed."""
+        from okto_pulse.core.application.rebuild_processor import (
+            QueueDrainDecision,
+            QueueDrainPolicy,
+            evaluate_queue_depth,
+            start_queue_drain,
+        )
 
-        start = time.monotonic()
         stall_window = max(0.5, float(timeout_seconds))
         hard_ceiling = max(
             stall_window,
@@ -462,7 +415,6 @@ class CommunityBoardRebuildIngestionAdapter:
                 else hard_timeout_seconds
             ),
         )
-        deadline = start + stall_window
         grace_seconds = max(
             0.0,
             float(
@@ -479,76 +431,52 @@ class CommunityBoardRebuildIngestionAdapter:
                 else low_depth_threshold
             ),
         )
-        grace_applied = False
-        grace_reason: str | None = None
+        policy = QueueDrainPolicy(
+            stall_timeout_seconds=stall_window,
+            hard_timeout_seconds=hard_ceiling,
+            final_grace_seconds=grace_seconds,
+            low_depth_threshold=low_depth,
+        )
+        monotonic_start = time.monotonic()
+        wall_start = datetime.now(timezone.utc)
+        tracker = start_queue_drain(policy, now=wall_start)
         final_depth = -1
-        best_depth: int | None = None
-        progress_events = 0
-        hard_timed_out = False
-        with sqlite3.connect(str(self._path()), timeout=5.0) as conn:
-            while True:
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM consolidation_queue "
-                    "WHERE board_id=? AND status IN ('pending', 'claimed')",
-                    (board_id,),
-                ).fetchone()
-                final_depth = int(row[0]) if row else 0
-                if final_depth == 0:
-                    break
-                now = time.monotonic()
-                if best_depth is None:
-                    best_depth = final_depth
-                elif final_depth < best_depth:
-                    # Progresso real: o worker drenou pelo menos uma entry
-                    # desde o último melhor — renova a janela de estagnação.
-                    # (Profundidade SUBINDO é trabalho novo chegando, não
-                    # progresso; não renova.)
-                    best_depth = final_depth
-                    progress_events += 1
-                    deadline = now + stall_window
-                if now - start >= hard_ceiling:
-                    hard_timed_out = True
-                    logger.error(
-                        "kg.rebuild.queue_drain_hard_timeout board=%s "
-                        "final_depth=%s waited_seconds=%.1f",
-                        board_id, final_depth, now - start,
-                    )
-                    break
-                if now >= deadline:
-                    if (
-                        not grace_applied
-                        and grace_seconds > 0
-                        and 0 < final_depth <= low_depth
-                    ):
-                        grace_applied = True
-                        grace_reason = "low_depth_near_timeout"
-                        deadline = now + grace_seconds
-                        logger.warning(
-                            "kg.rebuild.queue_drain_grace board=%s "
-                            "final_depth=%s stall_window_seconds=%s "
-                            "grace_seconds=%s",
-                            board_id,
-                            final_depth,
-                            stall_window,
-                            grace_seconds,
-                        )
-                        continue
-                    break
-                time.sleep(min(float(poll_interval_seconds), max(0.0, deadline - now)))
+        decision = QueueDrainDecision.CONTINUE
+
+        while decision is QueueDrainDecision.CONTINUE:
+            final_depth = self.queue_depth(board_id)
+            monotonic_now = time.monotonic()
+            wall_now = wall_start + timedelta(seconds=monotonic_now - monotonic_start)
+            evaluation = evaluate_queue_depth(
+                policy,
+                tracker,
+                depth=final_depth,
+                now=wall_now,
+            )
+            tracker = evaluation.tracker
+            decision = evaluation.decision
+            if decision is QueueDrainDecision.CONTINUE:
+                remaining = min(
+                    max(0.0, (tracker.stall_deadline - wall_now).total_seconds()),
+                    max(0.0, (tracker.hard_deadline - wall_now).total_seconds()),
+                )
+                time.sleep(min(float(poll_interval_seconds), remaining))
+
+        waited = round(time.monotonic() - monotonic_start, 2)
         return {
             "final_depth": final_depth,
-            "waited_seconds": round(time.monotonic() - start, 2),
-            "idle": final_depth == 0,
+            "waited_seconds": waited,
+            "idle": decision is QueueDrainDecision.IDLE,
             "base_timeout_seconds": stall_window,
             "stall_window_seconds": stall_window,
             "hard_timeout_seconds": hard_ceiling,
-            "hard_timed_out": hard_timed_out,
-            "progress_events": progress_events,
-            "best_depth": best_depth,
+            "hard_timed_out": decision is QueueDrainDecision.HARD_TIMEOUT,
+            "progress_events": tracker.progress_events,
+            "best_depth": tracker.best_depth,
             "final_grace_seconds": grace_seconds,
             "low_depth_threshold": low_depth,
-            "grace_applied": grace_applied,
-            "grace_reason": grace_reason,
+            "grace_applied": tracker.grace_applied,
+            "grace_reason": tracker.grace_reason,
         }
 
 

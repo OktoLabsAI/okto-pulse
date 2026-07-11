@@ -19,8 +19,12 @@ from okto_pulse.core.kg.interfaces.cognitive_pending_work import (
 )
 from okto_pulse.core.kg.interfaces.rebuild_audit_storage import (
     RebuildAuditArtifactStore,
+    RebuildAuditArtifactStoreResolver,
     RebuildAuditKey,
 )
+from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
+
+from .local_storage_ref import resolve_local_storage_ref
 
 
 def default_community_rebuild_base_dir() -> Path:
@@ -72,6 +76,8 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             return self._base_dir / "rebuild" / "discovery_reindex" / key.board_id
         if key.namespace == "contingency":
             return self._base_dir / "contingency"
+        if key.namespace == "stress_evidence":
+            return self._base_dir / "stress"
         raise ValueError(f"unsupported rebuild audit namespace: {key.namespace}")
 
     def _artifact_id(self, key: RebuildAuditKey) -> str:
@@ -91,12 +97,25 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
         if key.namespace == "contingency":
             if not key.artifact_id:
                 raise ValueError("contingency key requires artifact_id")
-            return (
-                self._namespace_dir(key)
-                / key.artifact_id
-                / "contingency.json"
-            )
+            return self._namespace_dir(key) / key.artifact_id / "contingency.json"
+        if key.namespace == "stress_evidence":
+            if not key.artifact_id:
+                raise ValueError("stress_evidence key requires artifact_id")
+            return self._namespace_dir(key) / key.artifact_id / "evidence.json"
         return self._namespace_dir(key) / f"{self._artifact_id(key)}.json"
+
+    def reference(self, key: RebuildAuditKey) -> str:
+        return str(self._path(key))
+
+    def read_json_reference(self, reference: str) -> dict[str, Any] | None:
+        try:
+            path = Path(reference).resolve(strict=False)
+            path.relative_to(self._base_dir.resolve(strict=False))
+            with path.open("r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (FileNotFoundError, OSError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def write_json_atomic(
         self,
@@ -178,19 +197,19 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             self._write_json_atomic_unlocked(key, next_payload)
             return dict(next_payload)
 
-    def quarantine_paths(
+    def quarantine_storage(
         self,
         *,
         board_id: str,
         graph_type: str,
-        affected_paths: Sequence[str],
+        affected_storage_refs: Sequence[StorageRef],
         reason: str,
         reason_bucket: str,
         correlation_ids: Sequence[str],
         kg_generation_id: str | None,
         retention_days: int,
-        scope_roots: Sequence[str],
-        base_dir_hint: str | None = None,
+        scope_storage_refs: Sequence[StorageRef],
+        base_storage_ref_hint: StorageRef | None = None,
     ) -> Mapping[str, Any]:
         from okto_pulse.core.kg.quarantine import (
             MANIFEST_FILENAME,
@@ -199,20 +218,20 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             QuarantineErrorCode,
         )
 
-        roots = [Path(root).resolve() for root in scope_roots]
+        roots = [resolve_local_storage_ref(ref) for ref in scope_storage_refs]
         resolved_paths: list[Path] = []
-        for raw in affected_paths:
-            candidate = Path(raw).resolve()
+        for ref in affected_storage_refs:
+            candidate = resolve_local_storage_ref(ref)
             if not self._is_in_scope(candidate, roots):
                 raise QuarantineError(
-                    QuarantineErrorCode.AFFECTED_PATH_OUT_OF_SCOPE,
+                    QuarantineErrorCode.STORAGE_REF_OUT_OF_SCOPE,
                     retryable=False,
-                    reason=f"path {candidate} is not under any KG storage root",
+                    reason="storage reference is outside the configured graph scope",
                 )
             resolved_paths.append(candidate)
 
         quarantine_id = f"q_{secrets.token_urlsafe(16)}"
-        quarantine_root = self._quarantine_base(base_dir_hint)
+        quarantine_root = self._quarantine_base(base_storage_ref_hint)
         quarantine_dir = quarantine_root / QUARANTINE_DIRNAME / quarantine_id
         try:
             quarantine_dir.mkdir(parents=True, exist_ok=False)
@@ -250,12 +269,14 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
                 "reason_bucket": reason_bucket,
                 "correlation_ids": list(correlation_ids),
                 "affected_paths_relative": moved_relatives,
+                "affected_storage_refs": [
+                    {"token": ref.token, "namespace": ref.namespace}
+                    for ref in affected_storage_refs
+                ],
                 "kg_generation_id": kg_generation_id,
                 "software_version": self._software_version(),
                 "quarantined_at": now.isoformat(),
-                "retention_until": (
-                    now + timedelta(days=retention_days)
-                ).isoformat(),
+                "retention_until": (now + timedelta(days=retention_days)).isoformat(),
                 "files_moved": files_moved,
             }
             manifest_path = quarantine_dir / MANIFEST_FILENAME
@@ -288,11 +309,11 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
         self,
         *,
         active_after_iso: str | None = None,
-        base_dir_hint: str | None = None,
+        base_storage_ref_hint: StorageRef | None = None,
     ) -> Sequence[Mapping[str, Any]]:
         from okto_pulse.core.kg.quarantine import MANIFEST_FILENAME, QUARANTINE_DIRNAME
 
-        root = self._quarantine_base(base_dir_hint) / QUARANTINE_DIRNAME
+        root = self._quarantine_base(base_storage_ref_hint) / QUARANTINE_DIRNAME
         if not root.exists():
             return []
         active_after = (
@@ -326,12 +347,12 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
         self,
         *,
         quarantine_id: str,
-        base_dir_hint: str | None = None,
+        base_storage_ref_hint: StorageRef | None = None,
     ) -> Mapping[str, Any] | None:
         from okto_pulse.core.kg.quarantine import MANIFEST_FILENAME, QUARANTINE_DIRNAME
 
         manifest_path = (
-            self._quarantine_base(base_dir_hint)
+            self._quarantine_base(base_storage_ref_hint)
             / QUARANTINE_DIRNAME
             / quarantine_id
             / MANIFEST_FILENAME
@@ -343,8 +364,12 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             return None
         return payload if isinstance(payload, dict) else None
 
-    def _quarantine_base(self, base_dir_hint: str | None) -> Path:
-        return Path(base_dir_hint) if base_dir_hint else self._base_dir
+    def _quarantine_base(self, base_storage_ref_hint: StorageRef | None) -> Path:
+        return (
+            resolve_local_storage_ref(base_storage_ref_hint)
+            if base_storage_ref_hint is not None
+            else self._base_dir
+        )
 
     @staticmethod
     def _is_in_scope(path: Path, scope_roots: Sequence[Path]) -> bool:
@@ -364,6 +389,19 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             return version("okto-pulse-core")
         except Exception:
             return "unknown"
+
+
+class CommunityRebuildAuditArtifactStoreResolver(RebuildAuditArtifactStoreResolver):
+    """Resolve legacy local scopes at the Community adapter boundary."""
+
+    def resolve(self, scope: object) -> RebuildAuditArtifactStore:
+        try:
+            path = Path(os.fspath(scope))
+        except TypeError as exc:
+            raise TypeError(
+                "Community rebuild artifact scope must be path-like"
+            ) from exc
+        return CommunityFileSystemRebuildAuditArtifactStore(path)
 
 
 class CommunityFileSystemCognitivePendingWorkProvider(CognitivePendingWorkProvider):
@@ -394,5 +432,6 @@ class CommunityFileSystemCognitivePendingWorkProvider(CognitivePendingWorkProvid
 __all__ = [
     "CommunityFileSystemCognitivePendingWorkProvider",
     "CommunityFileSystemRebuildAuditArtifactStore",
+    "CommunityRebuildAuditArtifactStoreResolver",
     "default_community_rebuild_base_dir",
 ]

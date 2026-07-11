@@ -38,13 +38,19 @@ import requests
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry.product_aggregator_registry import get_product_aggregator
 from okto_pulse.core.telemetry.schema import canonical_json, now_utc
-from okto_pulse.core.telemetry.settings import resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 from okto_pulse.core.telemetry import failure_state as fs
 from okto_pulse.core.telemetry import watermark as wm
-from okto_pulse.core.telemetry.era import POST_FIX_DELTA_MARKER, POST_FIX_SNAPSHOT_MARKER
+from okto_pulse.core.telemetry.era import (
+    POST_FIX_DELTA_MARKER,
+    POST_FIX_SNAPSHOT_MARKER,
+)
 from okto_pulse.core.telemetry.event_store_registry import get_telemetry_event_store
 from okto_pulse.core.ports.telemetry import TelemetryEventStore, TelemetrySink
-from okto_pulse.community.adapters._telemetry_helpers import add_guided_help_counts, parse_iso
+from okto_pulse.community.adapters._telemetry_helpers import (
+    add_guided_help_counts,
+    parse_iso,
+)
 
 # R-P2-08: telemetry STATE persistence (state.json) is Community-owned — the
 # sender NEVER imports the core's settings ``save_state`` / ``load_state``.
@@ -105,8 +111,12 @@ def get_or_create_install_id(settings: CoreSettings) -> str:
     return value
 
 
-def sign_payload(secret: str, timestamp: str, nonce: str, batch_seq: int, payload: dict[str, Any]) -> str:
-    message = f"{timestamp}.{nonce}.{batch_seq}.{canonical_json(payload)}".encode("utf-8")
+def sign_payload(
+    secret: str, timestamp: str, nonce: str, batch_seq: int, payload: dict[str, Any]
+) -> str:
+    message = f"{timestamp}.{nonce}.{batch_seq}.{canonical_json(payload)}".encode(
+        "utf-8"
+    )
     return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
@@ -190,7 +200,9 @@ class CommunityTelemetryBeaconSender:
         cfg = resolve_telemetry_config(self.settings)
         return get_telemetry_event_store(cfg.metrics_dir, cfg.retention_days)
 
-    def handshake(self, *, open_circuit_on_failure: bool = True) -> dict[str, Any] | None:
+    def handshake(
+        self, *, open_circuit_on_failure: bool = True
+    ) -> dict[str, Any] | None:
         cfg = resolve_telemetry_config(self.settings)
         if cfg.mode != "anonymous_beacon":
             _log_runtime_skip(reason="disabled")
@@ -227,7 +239,12 @@ class CommunityTelemetryBeaconSender:
             return None
         if resp.status_code == 429 or resp.status_code >= 500:
             if open_circuit_on_failure:
-                self._open_circuit(state, cfg, f"HANDSHAKE_{resp.status_code}", http_status=resp.status_code)
+                self._open_circuit(
+                    state,
+                    cfg,
+                    f"HANDSHAKE_{resp.status_code}",
+                    http_status=resp.status_code,
+                )
             _log_beacon_outcome(reason="transport_failed")
             return None
         resp.raise_for_status()
@@ -238,8 +255,12 @@ class CommunityTelemetryBeaconSender:
                 "install_token_expires_at": (
                     datetime.now(timezone.utc)
                     + timedelta(seconds=int(data.get("token_ttl_seconds", 2592000)))
-                ).isoformat().replace("+00:00", "Z"),
-                "accepted_schema_version": data.get("accepted_schema_version", cfg.schema_version),
+                )
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "accepted_schema_version": data.get(
+                    "accepted_schema_version", cfg.schema_version
+                ),
                 "last_handshake_at": now_utc(),
                 "limits": data.get("limits") or {},
             }
@@ -269,9 +290,11 @@ class CommunityTelemetryBeaconSender:
             # R10-D: obtain the product aggregator via the registered factory
             # (Community supplies the concrete sqlite3 adapter); the port returns a
             # ProductState, projected back to the bounded metrics dict.
-            product_metrics = get_product_aggregator(
-                self.settings, cfg.metrics_dir
-            ).aggregate().to_dict()
+            product_metrics = (
+                get_product_aggregator(self.settings, cfg.metrics_dir)
+                .aggregate()
+                .to_dict()
+            )
         except Exception:
             product_metrics = {}
         if not product_metrics:
@@ -363,7 +386,9 @@ class CommunityTelemetryBeaconSender:
             key = bucket.isoformat().replace("+00:00", "Z")
             bucket_starts.append(key)
             event_type = str(event.get("event_type", "unknown"))
-            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            payload = (
+                event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            )
             if event_type == "guided_help":
                 add_guided_help_counts(guided_help_counts, payload)
                 continue
@@ -380,7 +405,9 @@ class CommunityTelemetryBeaconSender:
             if "duration_ms" in payload:
                 try:
                     ms = int(payload["duration_ms"])
-                    duration_buckets["lt_100ms" if ms < 100 else "lt_1s" if ms < 1000 else "gte_1s"] += 1
+                    duration_buckets[
+                        "lt_100ms" if ms < 100 else "lt_1s" if ms < 1000 else "gte_1s"
+                    ] += 1
                 except (TypeError, ValueError):
                     pass
             if payload.get("error_class"):
@@ -441,9 +468,13 @@ class CommunityTelemetryBeaconSender:
         if lifecycle_counts:
             metrics["lifecycle_counts"] = dict(sorted(lifecycle_counts.items()))
         if pipeline_transition_counts:
-            metrics["pipeline_transition_counts"] = dict(sorted(pipeline_transition_counts.items()))
+            metrics["pipeline_transition_counts"] = dict(
+                sorted(pipeline_transition_counts.items())
+            )
         if unknown_event_type_counts:
-            metrics["unknown_event_type_counts"] = dict(sorted(unknown_event_type_counts.items()))
+            metrics["unknown_event_type_counts"] = dict(
+                sorted(unknown_event_type_counts.items())
+            )
         batch = {
             "schema_version": cfg.schema_version,
             "install_id": get_or_create_install_id(self.settings),
@@ -500,7 +531,9 @@ class CommunityTelemetryBeaconSender:
                     # current token is still valid -> degrade and publish with it,
                     # recording the refresh retry without blocking the publish path.
                     refresh_status = "degraded"
-                    refresh_next_retry_at = _iso(_utcnow() + timedelta(seconds=_backoff_delay_seconds(1)))
+                    refresh_next_retry_at = _iso(
+                        _utcnow() + timedelta(seconds=_backoff_delay_seconds(1))
+                    )
                     logger.info(
                         "metrics.token_refresh",
                         extra={
@@ -552,11 +585,20 @@ class CommunityTelemetryBeaconSender:
             _log_beacon_outcome(reason="transport_failed")
             # R3A-E: a transport failure before accept preserves the cursor.
             _log_watermark_state(
-                component="send_once", reason_code="USAGE_NETWORK", action="preserved", state=state
+                component="send_once",
+                reason_code="USAGE_NETWORK",
+                action="preserved",
+                state=state,
             )
             return {"sent": False, "reason": "network"}
         outcome = self._handle_usage_response(
-            resp, state, cfg, batch=batch, batch_seq=batch_seq, allow_rehandshake=True, included=included
+            resp,
+            state,
+            cfg,
+            batch=batch,
+            batch_seq=batch_seq,
+            allow_rehandshake=True,
+            included=included,
         )
         if outcome.get("sent") and refresh_status is not None:
             outcome["refresh"] = refresh_status
@@ -570,7 +612,9 @@ class CommunityTelemetryBeaconSender:
             action, reason_code = "duplicate_reconciled", "duplicate"
         else:
             action, reason_code = "preserved", str(outcome.get("reason") or "unknown")
-        _log_watermark_state(component="send_once", reason_code=reason_code, action=action, state=state)
+        _log_watermark_state(
+            component="send_once", reason_code=reason_code, action=action, state=state
+        )
         # R3A-D: run the retention sweep in the normal publish flow, preserving
         # pending events (fr_f3425329). Best-effort — a prune failure must never
         # block publishing. The injected clock keeps it testable. R3A-E: audit it.
@@ -596,7 +640,13 @@ class CommunityTelemetryBeaconSender:
             return None
 
     def _open_circuit(
-        self, state: dict[str, Any], cfg, code: str, *, http_status: int | None = None, status: str = fs.STATUS_DEGRADED
+        self,
+        state: dict[str, Any],
+        cfg,
+        code: str,
+        *,
+        http_status: int | None = None,
+        status: str = fs.STATUS_DEGRADED,
     ) -> None:
         # R1-B: jittered exponential backoff recorded in the R1-A failure-state
         # schema. circuit_open_until/last_failure_code stay in sync for the
@@ -605,7 +655,9 @@ class CommunityTelemetryBeaconSender:
         current = fs.read_failure_state(state)
         retry_count = current.retry_count + 1
         now = _utcnow()
-        next_retry_at = _iso(now + timedelta(seconds=_backoff_delay_seconds(retry_count)))
+        next_retry_at = _iso(
+            now + timedelta(seconds=_backoff_delay_seconds(retry_count))
+        )
         updated = fs.merge(
             current,
             status=status,
@@ -637,7 +689,10 @@ class CommunityTelemetryBeaconSender:
         # recovery when the previous state was failing, and clear the legacy
         # circuit gate.
         current = fs.read_failure_state(state)
-        was_failing = current.status in (fs.STATUS_DEGRADED, fs.STATUS_FATAL) or current.retry_count > 0
+        was_failing = (
+            current.status in (fs.STATUS_DEGRADED, fs.STATUS_FATAL)
+            or current.retry_count > 0
+        )
         updated = fs.merge(
             current,
             status=fs.STATUS_OK,
@@ -650,7 +705,9 @@ class CommunityTelemetryBeaconSender:
             install_id_redacted=self._redacted_install_id(),
         )
         state[fs.FAILURE_STATE_KEY] = updated.to_public_dict()
-        _log_failure_transition(updated, action="recovered" if was_failing else "succeeded")
+        _log_failure_transition(
+            updated, action="recovered" if was_failing else "succeeded"
+        )
         state["last_send_at"] = now_iso
         state["next_batch_seq"] = batch_seq + 1
         state.pop("circuit_open_until", None)
@@ -661,7 +718,11 @@ class CommunityTelemetryBeaconSender:
         # carries this batch — the sent record was appended before this call).
         # Selection itself uses the confirmed-id ledger, NOT this cursor.
         self._apply_watermark_advance(
-            state, cfg, included=included, updated_at=now_iso, next_batch_seq=batch_seq + 1
+            state,
+            cfg,
+            included=included,
+            updated_at=now_iso,
+            next_batch_seq=batch_seq + 1,
         )
         save_state(cfg.metrics_dir, state)
 
@@ -680,22 +741,37 @@ class CommunityTelemetryBeaconSender:
             occurred_at = str(event.get("occurred_at") or "")
             if event_id and occurred_at:
                 advanced = wm.advance(
-                    advanced, event_id=event_id, occurred_at=occurred_at, updated_at=updated_at
+                    advanced,
+                    event_id=event_id,
+                    occurred_at=occurred_at,
+                    updated_at=updated_at,
                 )
         store = self._store()
         confirmed = store.confirmed_event_ids()
         pending = sum(
-            1 for event in store.iter_events() if str(event.get("event_id") or "") not in confirmed
+            1
+            for event in store.iter_events()
+            if str(event.get("event_id") or "") not in confirmed
         )
         advanced = wm.set_counters(
             advanced,
             pending_event_count=pending,
             next_batch_seq=next_batch_seq,
-            retention_days=int(getattr(cfg, "retention_days", wm.DEFAULT_RETENTION_DAYS)),
+            retention_days=int(
+                getattr(cfg, "retention_days", wm.DEFAULT_RETENTION_DAYS)
+            ),
         )
         state.update(advanced.to_state_fields())
 
-    def _sign_and_post_usage(self, cfg, token, batch: dict[str, Any], batch_seq: int, *, nonce: str | None = None):
+    def _sign_and_post_usage(
+        self,
+        cfg,
+        token,
+        batch: dict[str, Any],
+        batch_seq: int,
+        *,
+        nonce: str | None = None,
+    ):
         timestamp = str(int(_utcnow().timestamp()))
         nonce = nonce or str(uuid.uuid4())
         signature = sign_payload(str(token), timestamp, nonce, batch_seq, batch)
@@ -707,7 +783,9 @@ class CommunityTelemetryBeaconSender:
             "x-okto-nonce": nonce,
             "x-okto-batch-seq": str(batch_seq),
         }
-        return self.session.post(f"{cfg.beacon_url}/v1/usage", data=body, headers=headers, timeout=5)
+        return self.session.post(
+            f"{cfg.beacon_url}/v1/usage", data=body, headers=headers, timeout=5
+        )
 
     @staticmethod
     def _response_code(resp) -> str | None:
@@ -742,12 +820,16 @@ class CommunityTelemetryBeaconSender:
             _log_beacon_outcome(reason="consent_stale")
             return {"sent": False, "reason": "schema_incompatible"}
         if resp.status_code in {403, 429} or resp.status_code >= 500:
-            self._open_circuit(state, cfg, f"USAGE_{resp.status_code}", http_status=resp.status_code)
+            self._open_circuit(
+                state, cfg, f"USAGE_{resp.status_code}", http_status=resp.status_code
+            )
             _log_beacon_outcome(reason="transport_failed")
             return {"sent": False, "reason": "retryable"}
         if 200 <= resp.status_code < 300:
             now_iso = now_utc()
-            confirmed_ids = [str(e["event_id"]) for e in (included or []) if e.get("event_id")]
+            confirmed_ids = [
+                str(e["event_id"]) for e in (included or []) if e.get("event_id")
+            ]
             # Durable confirmation ledger FIRST: the sent record is the source of
             # truth for selection, so a crash after this point still excludes the
             # confirmed events on reload (fr_fe9b844d, crash-durable). The
@@ -762,7 +844,11 @@ class CommunityTelemetryBeaconSender:
                 }
             )
             self._record_success(
-                state, cfg, batch_seq=batch_seq, included=included or [], now_iso=now_iso
+                state,
+                cfg,
+                batch_seq=batch_seq,
+                included=included or [],
+                now_iso=now_iso,
             )
             _log_beacon_outcome(reason="sent", outcome="sent")
             return {"sent": True, "batch_seq": batch_seq}
@@ -779,7 +865,9 @@ class CommunityTelemetryBeaconSender:
             )
         if resp.status_code == 401 and code == "INVALID_SIGNATURE":
             # Integrity/auth failure: actionable/fatal, never a blind re-handshake loop.
-            self._open_circuit(state, cfg, "INVALID_SIGNATURE", http_status=401, status=fs.STATUS_FATAL)
+            self._open_circuit(
+                state, cfg, "INVALID_SIGNATURE", http_status=401, status=fs.STATUS_FATAL
+            )
             _log_beacon_outcome(reason="fatal")
             return {"sent": False, "reason": "invalid_signature"}
         if resp.status_code == 401 and code == "TOKEN_EXPIRED":
@@ -790,7 +878,9 @@ class CommunityTelemetryBeaconSender:
             # through to raise_for_status -> an unhandled exception in send_once.
             state.pop("install_token", None)
             state.pop("install_token_expires_at", None)
-            self._open_circuit(state, cfg, "TOKEN_EXPIRED", http_status=401, status=fs.STATUS_DEGRADED)
+            self._open_circuit(
+                state, cfg, "TOKEN_EXPIRED", http_status=401, status=fs.STATUS_DEGRADED
+            )
             _log_beacon_outcome(reason="token_expired")
             return {"sent": False, "reason": "token_expired"}
         if resp.status_code == 409 and code == "DUPLICATE_NONCE_OR_BATCH_SEQ":
@@ -803,7 +893,9 @@ class CommunityTelemetryBeaconSender:
             # lost / left pending. br_7bced648: the watermark only ever reflects
             # backend-confirmed events, so this is not an optimistic advance.
             now_iso = now_utc()
-            confirmed_ids = [str(e["event_id"]) for e in (included or []) if e.get("event_id")]
+            confirmed_ids = [
+                str(e["event_id"]) for e in (included or []) if e.get("event_id")
+            ]
             self._store().append_sent(
                 {
                     "sent_at": now_iso,
@@ -814,7 +906,11 @@ class CommunityTelemetryBeaconSender:
                 }
             )
             self._record_duplicate(
-                state, cfg, batch_seq=batch_seq, included=included or [], now_iso=now_iso
+                state,
+                cfg,
+                batch_seq=batch_seq,
+                included=included or [],
+                now_iso=now_iso,
             )
             _log_beacon_outcome(reason="duplicate")
             return {"sent": False, "reason": "duplicate", "batch_seq": batch_seq}
@@ -857,7 +953,13 @@ class CommunityTelemetryBeaconSender:
             _log_beacon_outcome(reason="transport_failed")
             return {"sent": False, "reason": "network"}
         outcome = self._handle_usage_response(
-            retry, state, cfg, batch=batch, batch_seq=batch_seq, allow_rehandshake=False, included=included
+            retry,
+            state,
+            cfg,
+            batch=batch,
+            batch_seq=batch_seq,
+            allow_rehandshake=False,
+            included=included,
         )
         if outcome.get("sent"):
             outcome["recovered"] = "rehandshake"
@@ -873,7 +975,10 @@ class CommunityTelemetryBeaconSender:
         now_iso: str,
     ) -> None:
         current = fs.read_failure_state(state)
-        was_failing = current.status in (fs.STATUS_DEGRADED, fs.STATUS_FATAL) or current.retry_count > 0
+        was_failing = (
+            current.status in (fs.STATUS_DEGRADED, fs.STATUS_FATAL)
+            or current.retry_count > 0
+        )
         updated = fs.merge(
             current,
             status=fs.STATUS_OK,
@@ -895,7 +1000,11 @@ class CommunityTelemetryBeaconSender:
         # the pending count from the durable ledger (already appended), so the
         # window is NOT left pending (no replay) nor the cursor lost.
         self._apply_watermark_advance(
-            state, cfg, included=included, updated_at=now_iso, next_batch_seq=batch_seq + 1
+            state,
+            cfg,
+            included=included,
+            updated_at=now_iso,
+            next_batch_seq=batch_seq + 1,
         )
         save_state(cfg.metrics_dir, state)
 
@@ -903,7 +1012,9 @@ class CommunityTelemetryBeaconSender:
         current = fs.read_failure_state(state)
         now = _utcnow()
         retry_count = current.retry_count + 1
-        next_retry_at = _iso(now + timedelta(seconds=_backoff_delay_seconds(retry_count)))
+        next_retry_at = _iso(
+            now + timedelta(seconds=_backoff_delay_seconds(retry_count))
+        )
         updated = fs.merge(
             current,
             status=fs.STATUS_BLOCKED,
@@ -922,7 +1033,9 @@ class CommunityTelemetryBeaconSender:
         state["circuit_open_until"] = next_retry_at
         state["last_failure_code"] = reason_code
         save_state(cfg.metrics_dir, state)
-        self._store().append_sent({"failed_at": now_utc(), "code": reason_code}, failed=True)
+        self._store().append_sent(
+            {"failed_at": now_utc(), "code": reason_code}, failed=True
+        )
 
     def send_pending(self) -> dict[str, Any]:
         # The TelemetrySink port method — an alias of the steady-state ``send_once``
@@ -939,7 +1052,9 @@ def build_community_telemetry_sender(settings: Any) -> TelemetrySink:
 def register_community_telemetry_sender() -> None:
     """Register the Community telemetry-sender factory at the core registry
     (composition root). Idempotent."""
-    from okto_pulse.core.telemetry.sender_registry import register_telemetry_sender_factory
+    from okto_pulse.core.telemetry.sender_registry import (
+        register_telemetry_sender_factory,
+    )
 
     register_telemetry_sender_factory(build_community_telemetry_sender)
 

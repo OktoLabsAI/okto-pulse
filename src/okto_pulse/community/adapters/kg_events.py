@@ -75,7 +75,7 @@ async def cancel_safe_community_session_scope(
 
 
 class CommunityKGEventsReader:
-    """SQLite/PostgreSQL implementation of the Core KG event reader port."""
+    """SQLite implementation of the Core KG event reader port."""
 
     def __init__(self, session_factory: SessionScopeFactory) -> None:
         self._session_factory = session_factory

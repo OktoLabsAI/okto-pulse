@@ -1,14 +1,25 @@
-"""Embedded GraphPathResolver over kg.schema path helpers (spec #06).
+"""Community-local graph storage inspection.
 
-Adapter-internal: lives under kg/providers/embedded/, so the classification gate
-treats its direct kg.schema use as legitimate.
+Filesystem paths and lock-file conventions remain private to the Community
+adapter. Core consumers receive semantic ``GraphRuntimeState`` values instead.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
-from okto_pulse.core.kg.interfaces.graph_path_resolver import GraphStorageState
+
+@dataclass(frozen=True, slots=True)
+class LocalGraphStorageState:
+    board_id: str
+    path: Path
+    exists: bool
+    size_bytes: int
+    backend: str
+    locked: bool
+    quarantined: bool
+    sidecars: tuple[str, ...]
 
 
 class CommunityKuzuGraphPathResolver:
@@ -22,7 +33,7 @@ class CommunityKuzuGraphPathResolver:
     def exists(self, board_id: str) -> bool:
         return self.board_graph_path(board_id).exists()
 
-    def storage_state(self, board_id: str) -> GraphStorageState:
+    def storage_state(self, board_id: str) -> LocalGraphStorageState:
         path = self.board_graph_path(board_id)
         parent = path.parent
         exists = path.exists()
@@ -38,7 +49,7 @@ class CommunityKuzuGraphPathResolver:
         # lookup), so a board whose directory survives but whose graph file was
         # cleared is the quarantine-then-purge signature.
         quarantined = parent.exists() and not exists
-        return GraphStorageState(
+        return LocalGraphStorageState(
             board_id=board_id,
             path=path,
             exists=exists,
@@ -48,3 +59,6 @@ class CommunityKuzuGraphPathResolver:
             quarantined=quarantined,
             sidecars=sidecars,
         )
+
+
+__all__ = ["CommunityKuzuGraphPathResolver", "LocalGraphStorageState"]

@@ -1434,26 +1434,42 @@ name = "okto-pulse"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiosqlite" },
+    { name = "anyio" },
     { name = "apscheduler" },
     { name = "chardet" },
+    { name = "fastapi" },
     { name = "fastmcp" },
+    { name = "httpx" },
     { name = "ladybug" },
     { name = "okto-pulse-core" },
+    { name = "pydantic" },
+    { name = "python-multipart" },
     { name = "requests" },
     { name = "sentence-transformers" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "wsproto" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.19.0,<1.0.0" },
+    { name = "anyio", specifier = ">=4.0.0,<5.0.0" },
     { name = "apscheduler", specifier = ">=3.10.0,<4.0.0" },
     { name = "chardet", specifier = ">=3.0.2,<6.0.0" },
+    { name = "fastapi", specifier = ">=0.109.0,!=0.137.0,<1.0.0" },
     { name = "fastmcp", specifier = ">=2.0.0,<3.0.0" },
+    { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
     { name = "ladybug", specifier = ">=0.16.0,<0.17.0" },
     { name = "okto-pulse-core", specifier = ">=0.3.0,<1.0.0" },
+    { name = "pydantic", specifier = ">=2.5.0,<2.14" },
+    { name = "python-multipart", specifier = ">=0.0.6,<1.0.0" },
     { name = "requests", specifier = ">=2.32.0,<3.0.0" },
     { name = "sentence-transformers", specifier = ">=2.5.0,<6.0.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0,<3.0.0" },
+    { name = "starlette", specifier = ">=0.35.0,<1.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0,<1.0.0" },
     { name = "wsproto", specifier = ">=1.2.0,<2.0.0" },
 ]
@@ -1463,16 +1479,9 @@ name = "okto-pulse-core"
 version = "0.3.0"
 source = { registry = "../okto_labs_pulse_core/dist" }
 dependencies = [
-    { name = "aiosqlite" },
-    { name = "authlib" },
-    { name = "fastapi" },
-    { name = "mcp" },
-    { name = "numpy" },
     { name = "pydantic" },
-    { name = "pydantic-core" },
     { name = "pydantic-settings" },
-    { name = "python-multipart" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "pyyaml" },
 ]
 wheels = [
     { path = "okto_pulse_core-0.3.0-py3-none-any.whl" },
@@ -2454,15 +2463,15 @@ wheels = [
 
 [[package]]
 name = "starlette"
-version = "1.0.0"
+version = "0.52.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/81/69/17425771797c36cded50b7fe44e850315d039f28b15901ab44839e70b593/starlette-1.0.0.tar.gz", hash = "sha256:6a4beaf1f81bb472fd19ea9b918b50dc3a77a6f2e190a12954b25e6ed5eea149", size = 2655289, upload-time = "2026-03-22T18:29:46.779Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/68/79977123bb7be889ad680d79a40f339082c1978b5cfcf62c2d8d196873ac/starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933", size = 2653702, upload-time = "2026-01-18T13:34:11.062Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl", hash = "sha256:d3ec55e0bb321692d275455ddfd3df75fff145d009685eb40dc91fc66b03d38b", size = 72651, upload-time = "2026-03-22T18:29:45.111Z" },
+    { url = "https://files.pythonhosted.org/packages/81/0d/13d1d239a25cbfb19e740db83143e95c772a1fe10202dda4b76792b114dd/starlette-0.52.1-py3-none-any.whl", hash = "sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74", size = 74272, upload-time = "2026-01-18T13:34:09.188Z" },
 ]
 
 [[package]]

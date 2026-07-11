@@ -13,60 +13,38 @@ Proves the Community ``CommunityUnitOfWork`` + factory mirror the core
 from __future__ import annotations
 
 import asyncio
-import os
-
 import pytest
 from sqlalchemy import select
 
-# Registers every ORM model on Base.metadata so init_db builds the full schema.
-import okto_pulse.core.app as _core_app  # noqa: F401
-import okto_pulse.core.infra.database as _db_mod
-from okto_pulse.community.adapters.relational_schema_lifecycle import (
-    register_community_relational_schema_lifecycle,
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    build_community_engine,
+    build_community_session_factory,
 )
-from okto_pulse.core.models.db import Board
+from okto_pulse.community.adapters.sqlalchemy_models import Base, Board as BoardRow
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
+    CommunityUnitOfWork,
     build_community_unit_of_work_factory,
 )
+from okto_pulse.core.domain.entities import Board
 
 
 @pytest.fixture
 def _temp_session_factory(tmp_path):
-    """Temp SQLite DB with the full schema; restores settings/engine/factory/env."""
-    import okto_pulse.core.infra.config as _config
-    from okto_pulse.core.infra.config import CoreSettings
-
-    saved_settings = _config._settings_instance
-    saved_engine = _db_mod._engine
-    saved_factory = _db_mod._session_factory
-    saved_data = os.environ.get("DATA_DIR")
-    saved_kg = os.environ.get("KG_BASE_DIR")
-
-    os.environ["DATA_DIR"] = str(tmp_path)
-    os.environ["KG_BASE_DIR"] = str(tmp_path / "boards")
-    _config.configure_settings(CoreSettings())
+    """Temp SQLite DB built entirely by Community relational adapters."""
+    engine = build_community_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'r01b_uow.db'}"
+    )
+    session_factory = build_community_session_factory(engine)
 
     async def setup() -> None:
-        _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'r01b_uow.db'}")
-        register_community_relational_schema_lifecycle()
-        await _db_mod.init_db()
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
 
     asyncio.run(setup())
     try:
-        yield _db_mod.get_session_factory()
+        yield session_factory
     finally:
-        try:
-            asyncio.run(_db_mod.close_db())
-        except Exception:
-            pass
-        _config._settings_instance = saved_settings
-        _db_mod._engine = saved_engine
-        _db_mod._session_factory = saved_factory
-        for key, val in (("DATA_DIR", saved_data), ("KG_BASE_DIR", saved_kg)):
-            if val is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = val
+        asyncio.run(engine.dispose())
 
 
 def _board(board_id: str) -> Board:
@@ -87,7 +65,7 @@ def test_ac2_commit_persists_and_read_after_write(_temp_session_factory):
         # a FRESH session confirms the row was committed
         async with sf() as s:
             row = (
-                await s.execute(select(Board).where(Board.id == board_id))
+                await s.execute(select(BoardRow).where(BoardRow.id == board_id))
             ).scalar_one_or_none()
         return seen, row
 
@@ -111,7 +89,7 @@ def test_ac2_rollback_on_error_discards_flushed_row(_temp_session_factory):
                 raise RuntimeError("boom")
         async with sf() as s:
             row = (
-                await s.execute(select(Board).where(Board.id == board_id))
+                await s.execute(select(BoardRow).where(BoardRow.id == board_id))
             ).scalar_one_or_none()
         return row
 
@@ -129,7 +107,7 @@ def test_ac2_explicit_rollback_discards(_temp_session_factory):
             await uow.rollback()
         async with sf() as s:
             row = (
-                await s.execute(select(Board).where(Board.id == board_id))
+                await s.execute(select(BoardRow).where(BoardRow.id == board_id))
             ).scalar_one_or_none()
         return row
 
@@ -154,17 +132,20 @@ def test_ac2_unit_of_work_satisfies_ports(_temp_session_factory):
                 isinstance(uow.boards, BoardRepository),
                 isinstance(uow.ideations, IdeationRepository),
                 isinstance(uow.specs, SpecRepository),
-                uow.session is not None,
+                not hasattr(uow, "session"),
+                uow.services is not None,
                 uow.realm_id,
                 uow.actor,
             )
             await uow.rollback()
         return checks
 
-    is_uow, is_b, is_i, is_s, has_session, realm, actor = asyncio.run(drive())
-    assert is_uow and is_b and is_i and is_s and has_session
-    # realm-ready but carried-not-enforced this phase (fr_cbfcb1aa)
-    assert realm is None and actor is None
+    is_uow, is_b, is_i, is_s, no_session, has_services, realm, actor = asyncio.run(
+        drive()
+    )
+    assert is_uow and is_b and is_i and is_s and no_session and has_services
+    # Community composition binds the legacy data set to RealmScope.local().
+    assert realm == "local" and actor is None
 
 
 def test_ac2_factory_carries_realm_and_actor(_temp_session_factory):
@@ -179,3 +160,56 @@ def test_ac2_factory_carries_realm_and_actor(_temp_session_factory):
 
     realm, actor = asyncio.run(drive())
     assert realm == "realm-1" and actor == "actor-x"
+
+
+def test_f02_exactly_one_commit_on_success(_temp_session_factory):
+    async def drive():
+        async with _temp_session_factory() as session:
+            uow = CommunityUnitOfWork(session)
+            calls = {"commit": 0, "rollback": 0}
+            original_commit = uow.commit
+            original_rollback = uow.rollback
+
+            async def counted_commit():
+                calls["commit"] += 1
+                await original_commit()
+
+            async def counted_rollback():
+                calls["rollback"] += 1
+                await original_rollback()
+
+            uow.commit = counted_commit
+            uow.rollback = counted_rollback
+            async with uow:
+                await uow.boards.add(_board("f02-one-commit"))
+                await uow.commit()
+            return calls
+
+    assert asyncio.run(drive()) == {"commit": 1, "rollback": 0}
+
+
+def test_f02_exactly_one_rollback_on_failure(_temp_session_factory):
+    async def drive():
+        async with _temp_session_factory() as session:
+            uow = CommunityUnitOfWork(session)
+            calls = {"commit": 0, "rollback": 0}
+            original_commit = uow.commit
+            original_rollback = uow.rollback
+
+            async def counted_commit():
+                calls["commit"] += 1
+                await original_commit()
+
+            async def counted_rollback():
+                calls["rollback"] += 1
+                await original_rollback()
+
+            uow.commit = counted_commit
+            uow.rollback = counted_rollback
+            with pytest.raises(RuntimeError, match="modeled failure"):
+                async with uow:
+                    await uow.boards.add(_board("f02-one-rollback"))
+                    raise RuntimeError("modeled failure")
+            return calls
+
+    assert asyncio.run(drive()) == {"commit": 0, "rollback": 1}

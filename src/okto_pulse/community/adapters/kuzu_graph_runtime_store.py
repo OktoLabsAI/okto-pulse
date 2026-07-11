@@ -11,12 +11,17 @@ from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphRuntimeState,
     GraphStorageFootprint,
 )
+from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 
 
 class CommunityKuzuGraphRuntimeStore:
     """Logical graph runtime over the Community local graph storage."""
 
     _BACKEND = "community_local_graph"
+
+    @staticmethod
+    def _storage_ref(board_id: str) -> StorageRef:
+        return StorageRef(f"board:{board_id}", "community_local_graph")
 
     def _configured_max_bytes(self) -> int | None:
         try:
@@ -37,6 +42,7 @@ class CommunityKuzuGraphRuntimeStore:
         except Exception as exc:
             return GraphRuntimeState(
                 board_id=board_id,
+                storage_ref=self._storage_ref(board_id),
                 exists=False,
                 status="unavailable",
                 backend=self._BACKEND,
@@ -54,6 +60,7 @@ class CommunityKuzuGraphRuntimeStore:
             status = "absent"
         return GraphRuntimeState(
             board_id=board_id,
+            storage_ref=self._storage_ref(board_id),
             exists=state.exists,
             status=status,
             backend=self._BACKEND,
@@ -103,6 +110,7 @@ class CommunityKuzuGraphRuntimeStore:
         except Exception as exc:
             return GraphStorageFootprint(
                 board_id=board_id,
+                storage_ref=self._storage_ref(board_id),
                 status="unavailable",
                 source="file_size_proxy",
                 configured_max_bytes=max_bytes,
@@ -112,6 +120,7 @@ class CommunityKuzuGraphRuntimeStore:
         if not graph_file.exists():
             return GraphStorageFootprint(
                 board_id=board_id,
+                storage_ref=self._storage_ref(board_id),
                 status="unavailable",
                 source="file_size_proxy",
                 configured_max_bytes=max_bytes,
@@ -126,6 +135,7 @@ class CommunityKuzuGraphRuntimeStore:
         except OSError:
             return GraphStorageFootprint(
                 board_id=board_id,
+                storage_ref=self._storage_ref(board_id),
                 status="unavailable",
                 source="file_size_proxy",
                 configured_max_bytes=max_bytes,
@@ -138,6 +148,7 @@ class CommunityKuzuGraphRuntimeStore:
             pct = max(0.0, min(100.0, (total_bytes / max_bytes) * 100.0))
         return GraphStorageFootprint(
             board_id=board_id,
+            storage_ref=self._storage_ref(board_id),
             status="available",
             source="file_size_proxy",
             total_bytes=total_bytes,

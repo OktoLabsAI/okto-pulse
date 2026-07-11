@@ -3,6 +3,7 @@
 # ruff: noqa: E402
 
 import warnings
+
 warnings.filterwarnings(
     "ignore",
     message=r"urllib3.*or chardet.*doesn't match a supported version",
@@ -22,14 +23,16 @@ from typing import AsyncGenerator, Callable
 import uvicorn
 from fastapi.staticfiles import StaticFiles
 
-from okto_pulse.core.app import create_app, register_kg_daily_tick_job
+from okto_pulse.community.app import create_app, register_kg_daily_tick_job
 from okto_pulse.core.infra.config import get_settings
 from okto_pulse.core.ports.relational_runtime import (
     close_db,
+    get_engine,
     get_session_factory,
     init_db,
 )
 from okto_pulse.core.services.application_kg import get_current_provider_registry
+
 # NOTE: MCP server is imported lazily inside create_community_app (after
 # create_app has called configure_settings) and inside combined_lifespan
 # (after init_db). Module-level import would cache the default settings
@@ -44,6 +47,7 @@ from okto_pulse.community.adapters.scheduler import SingletonSchedulerControl
 from okto_pulse.community.adapters.workers import build_community_worker_registry
 from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
+from okto_pulse.community.api import metrics_router
 from okto_pulse.community.runtime import (
     build_uvicorn_log_config,
     run_async_server,
@@ -74,9 +78,8 @@ _EMBEDDING_PRELOAD_BUDGET_S = 30.0
 
 def _startup_timeout_seconds() -> float:
     """Return the readiness timeout used while uvicorn lifespans complete."""
-    raw = (
-        os.environ.get("OKTO_PULSE_STARTUP_TIMEOUT_SECONDS")
-        or os.environ.get("OKTO_PULSE_STARTUP_TIMEOUT")
+    raw = os.environ.get("OKTO_PULSE_STARTUP_TIMEOUT_SECONDS") or os.environ.get(
+        "OKTO_PULSE_STARTUP_TIMEOUT"
     )
     if not raw:
         return _DEFAULT_STARTUP_TIMEOUT_SECONDS
@@ -100,9 +103,8 @@ def _startup_timeout_seconds() -> float:
 
 def _shutdown_timeout_seconds() -> float:
     """Return the graceful shutdown timeout for open HTTP/WebSocket streams."""
-    raw = (
-        os.environ.get("OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS")
-        or os.environ.get("OKTO_PULSE_SHUTDOWN_TIMEOUT")
+    raw = os.environ.get("OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS") or os.environ.get(
+        "OKTO_PULSE_SHUTDOWN_TIMEOUT"
     )
     if not raw:
         return _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
@@ -159,7 +161,9 @@ async def _metrics_beacon_loop(settings: CommunitySettings) -> None:
         await asyncio.sleep(delay)
         delay = interval
         try:
-            result = await asyncio.to_thread(get_telemetry_sender(settings).send_pending)
+            result = await asyncio.to_thread(
+                get_telemetry_sender(settings).send_pending
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -173,13 +177,19 @@ async def _metrics_beacon_loop(settings: CommunitySettings) -> None:
             _METRICS_LOGGER.info(
                 "metrics.beacon.sent batch_seq=%s",
                 result.get("batch_seq"),
-                extra={"event": "metrics.beacon.sent", "batch_seq": result.get("batch_seq")},
+                extra={
+                    "event": "metrics.beacon.sent",
+                    "batch_seq": result.get("batch_seq"),
+                },
             )
         elif result.get("reason") not in {"not_enabled", "empty"}:
             _METRICS_LOGGER.info(
                 "metrics.beacon.skipped reason=%s",
                 result.get("reason"),
-                extra={"event": "metrics.beacon.skipped", "reason": result.get("reason")},
+                extra={
+                    "event": "metrics.beacon.skipped",
+                    "reason": result.get("reason"),
+                },
             )
 
 
@@ -208,7 +218,9 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
     provider = registry.embedding_provider
     # R05-B: capability/metadata-driven (NO isinstance against a concrete
     # provider). Only a non-stub provider that exposes preload() needs warming.
-    meta = provider.embedding_metadata() if hasattr(provider, "embedding_metadata") else {}
+    meta = (
+        provider.embedding_metadata() if hasattr(provider, "embedding_metadata") else {}
+    )
     if meta.get("is_stub", True) or not hasattr(provider, "preload"):
         # Stub mode or a provider with no preload — nothing to do.
         return
@@ -261,6 +273,7 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
         },
     )
 
+
 # Frontend dist embedded in the package (built with VITE_AUTH_MODE=local)
 FRONTEND_DIR = Path(__file__).parent / "frontend_dist"
 
@@ -296,8 +309,14 @@ def _ensure_data_dir(settings: CommunitySettings) -> None:
 
 # Paths que nunca recebem o fallback SPA (API, docs, MCP e assets estáticos).
 _SPA_PASSTHROUGH_PREFIXES = (
-    "/api/", "/health", "/docs", "/openapi.json", "/redoc", "/mcp",
-    "/config.js", "/assets",
+    "/api/",
+    "/health",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+    "/mcp",
+    "/config.js",
+    "/assets",
 )
 
 
@@ -333,19 +352,23 @@ class SPAFallbackMiddleware:
             nonlocal replaced
             if message["type"] == "http.response.start" and message["status"] == 404:
                 replaced = True
-                await send({
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [
-                        (b"content-type", b"text/html; charset=utf-8"),
-                        (b"content-length", str(len(index_body)).encode("ascii")),
-                    ],
-                })
-                await send({
-                    "type": "http.response.body",
-                    "body": index_body,
-                    "more_body": False,
-                })
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [
+                            (b"content-type", b"text/html; charset=utf-8"),
+                            (b"content-length", str(len(index_body)).encode("ascii")),
+                        ],
+                    }
+                )
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": index_body,
+                        "more_body": False,
+                    }
+                )
                 return
             if replaced:
                 # Descarta o body do 404 original — a resposta SPA já foi
@@ -382,7 +405,9 @@ def _mount_frontend(
 
     assets_dir = frontend_dir / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
+        app.mount(
+            "/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets"
+        )
 
     index_html_path = frontend_dir / "index.html"
     if not index_html_path.exists():
@@ -393,11 +418,12 @@ def _mount_frontend(
 
     # Inject config.js script tag before the closing </head> tag
     config_script_tag = '  <script src="/config.js"></script>\n'
-    if '</head>' in index_html_content:
-        injected_index_html = index_html_content.replace('</head>', config_script_tag + '</head>')
+    if "</head>" in index_html_content:
+        injected_index_html = index_html_content.replace(
+            "</head>", config_script_tag + "</head>"
+        )
     else:
         injected_index_html = index_html_content
-
 
     # Inject runtime configuration BEFORE SPA middleware.
     # PUBLIC_* env vars override the URLs the browser SPA uses — set them when
@@ -423,9 +449,12 @@ window.OKTO_PULSE_CONFIG = {{
     @app.get("/config.js")
     async def get_config():
         from fastapi.responses import Response
+
         return Response(content=config_script, media_type="application/javascript")
 
-    app.add_middleware(SPAFallbackMiddleware, index_body=injected_index_html.encode("utf-8"))
+    app.add_middleware(
+        SPAFallbackMiddleware, index_body=injected_index_html.encode("utf-8")
+    )
 
 
 async def _close_graphs_on_teardown() -> None:
@@ -449,9 +478,7 @@ async def _close_graphs_on_teardown() -> None:
     )
 
     loop = asyncio.get_running_loop()
-    close_task = asyncio.ensure_future(
-        asyncio.to_thread(close_all_graphs_on_shutdown)
-    )
+    close_task = asyncio.ensure_future(asyncio.to_thread(close_all_graphs_on_shutdown))
     deadline = loop.time() + _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S
     while not close_task.done():
         remaining = deadline - loop.time()
@@ -530,14 +557,14 @@ def create_community_app():
             result = await seed_community_defaults(db)
             if result:
                 board, agent, api_key = result
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print("  Okto Pulse Community — First Boot Setup")
-                print(f"{'='*60}")
+                print(f"{'=' * 60}")
                 print(f"  Board created: {board.name} ({board.id})")
                 print(f"  Agent created: {agent.name}")
                 print(f"  API Key: {api_key}")
                 print(f"  MCP URL: http://localhost:{mcp_port}/mcp?api_key={api_key}")
-                print(f"{'='*60}\n")
+                print(f"{'=' * 60}\n")
 
         # Self-heal: Q&A respondidas herdadas sem answered_at viravam
         # falso-abertas no badge open_qa_count (a herança não copiava o
@@ -552,11 +579,13 @@ def create_community_app():
                 _qa_fixed = await backfill_qa_answered_at(_qa_db)
             if _qa_fixed:
                 _STARTUP_LOGGER.info(
-                    "qa.answered_at.backfilled %s", _qa_fixed,
+                    "qa.answered_at.backfilled %s",
+                    _qa_fixed,
                 )
         except Exception as _qa_exc:
             _STARTUP_LOGGER.warning(
-                "qa.answered_at.backfill_failed err=%s", _qa_exc,
+                "qa.answered_at.backfill_failed err=%s",
+                _qa_exc,
             )
 
         # Self-heal AFG (investigacao 2026-06-10): materializa finding runs
@@ -572,11 +601,13 @@ def create_community_app():
                 async with get_session_factory()() as _afg_db:
                     _afg_stats = await backfill_architecture_finding_runs(_afg_db)
                 _STARTUP_LOGGER.info(
-                    "architecture.finding_backfill.completed %s", _afg_stats,
+                    "architecture.finding_backfill.completed %s",
+                    _afg_stats,
                 )
             except Exception as _afg_exc:
                 _STARTUP_LOGGER.warning(
-                    "architecture.finding_backfill.failed err=%s", _afg_exc,
+                    "architecture.finding_backfill.failed err=%s",
+                    _afg_exc,
                 )
 
         asyncio.create_task(_afg_backfill_task())
@@ -585,18 +616,15 @@ def create_community_app():
         # KG search doesn't pay the multi-second model-load cost synchronously.
         await _preload_embedding_model(settings)
 
-        from okto_pulse.core.services.settings_service import apply_persisted_settings_to_core_settings
+        from okto_pulse.community.adapters.sqlalchemy_runtime_settings_service import (
+            apply_persisted_settings_to_core_settings,
+        )
 
         await apply_persisted_settings_to_core_settings()
 
-        worker_registry = None
         metrics_beacon_task = None
 
-        kg_settings = get_settings()
-        worker_registry = build_community_worker_registry(
-            get_session_factory(),
-            kg_cleanup_enabled=getattr(kg_settings, "kg_cleanup_enabled", True),
-        )
+        worker_registry = app_instance.state.runtime_composition.worker_registry
         await worker_registry.start_all()
 
         # Core owns the KG decay job policy as JobSpec; Community owns the
@@ -606,71 +634,15 @@ def create_community_app():
             logger=_STARTUP_LOGGER,
         )
 
-        # Spec 23350275 (Fix C): the MCP sub-app shares this process, this
-        # FastAPI app, and this database. Register the session factory now
-        # — the mount happens once below in create_community_app so the
-        # routing table is finalized before uvicorn starts serving.
-        # Lazy import preserves the settings cache trap: configure_settings
-        # has already run via create_app().
-        from okto_pulse.core.mcp import register_session_factory
-        from okto_pulse.community.adapters.mcp_auth import (
-            make_community_mcp_authenticator,
-        )
-        register_session_factory(
-            get_session_factory(),
-            scheduler_control=scheduler_control,
-            mcp_authenticator=make_community_mcp_authenticator(
-                session_factory=get_session_factory()
-            ),
-        )
-
-        from okto_pulse.community.adapters.content_ingestion import (
-            register_community_content_ingestion_resolver,
-        )
-        register_community_content_ingestion_resolver()
-
-        # R11-A: inject the Community operational resource catalog (via the core
-        # contracts — core never imports community) and FREEZE the effective
-        # catalog now that ALL providers are wired. A late mutation/registration
-        # after this raises (fail-closed). URIs/content are preserved exactly.
-        from okto_pulse.community.adapters.resources import (
-            register_and_freeze_community_resource_catalog,
-        )
-        register_and_freeze_community_resource_catalog()
-
         # R10-B/R10-C/R10-D: register the Community telemetry providers BEFORE the
         # metrics beacon loop starts, so the core telemetry runtime resolves the
         # Community store / product aggregator / publish-health sources / beacon
         # sender through their ports (not the gated fallback shims).
-        from okto_pulse.community.adapters.product_telemetry import (
-            register_community_product_aggregator,
+        from okto_pulse.community.adapters.telemetry_composition import (
+            register_community_telemetry_runtime,
         )
-        from okto_pulse.community.adapters.publish_health_sources import (
-            register_community_publish_health_sources,
-        )
-        from okto_pulse.community.adapters.telemetry_port import (
-            register_community_telemetry_port,
-        )
-        from okto_pulse.community.adapters.telemetry_effect_config import (
-            register_community_telemetry_effect_config_provider,
-        )
-        from okto_pulse.community.adapters.telemetry_sender import (
-            register_community_telemetry_sender,
-        )
-        from okto_pulse.community.adapters.telemetry_store import (
-            register_community_telemetry_event_store,
-        )
-        from okto_pulse.community.adapters.telemetry_state import (
-            register_community_telemetry_state_carrier,
-        )
-        register_community_telemetry_effect_config_provider()
-        register_community_telemetry_state_carrier()
-        register_community_telemetry_event_store()
-        register_community_product_aggregator()
-        register_community_publish_health_sources()
-        register_community_telemetry_sender()
-        # R10-E (Stage A, additive): the composed TelemetryPort facade factory.
-        register_community_telemetry_port()
+
+        register_community_telemetry_runtime()
 
         metrics_beacon_task = asyncio.create_task(_metrics_beacon_loop(settings))
 
@@ -734,47 +706,50 @@ def create_community_app():
 
     register_community_relational_schema_lifecycle()
 
-    app = create_app(
-        settings=settings,
-        auth_provider=auth,
-        storage_provider=storage,
-        cors_origins=settings.cors_origins_list,
-        lifespan=combined_lifespan,
-    )
-
-    # R08/AF31: expose the composition-owned SchedulerControl so a runtime
-    # settings PUT reschedules the KG tick through the same Community adapter
-    # that owns APScheduler startup, registration and shutdown.
     from okto_pulse.community.adapters.data import CommunityOutboxEventBus
+    from okto_pulse.community.adapters.content_ingestion import (
+        CommunityContentIngestionResolver,
+    )
+    from okto_pulse.community.adapters.runtime_composition import (
+        build_community_runtime_composition,
+    )
     from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
         build_community_unit_of_work_factory,
     )
-    from okto_pulse.core.composition import RuntimeComposition
 
     _rc_session_factory = get_session_factory()
     _community_uow_factory = build_community_unit_of_work_factory(_rc_session_factory)
-    app.state.runtime_composition = RuntimeComposition(
-        settings_provider=settings,
+    _community_worker_registry = build_community_worker_registry(
+        _rc_session_factory,
+        kg_cleanup_enabled=getattr(settings, "kg_cleanup_enabled", True),
+        kg_cleanup_interval_seconds=getattr(
+            settings,
+            "kg_cleanup_interval_seconds",
+            60,
+        ),
+        kg_queue_recovery_scan_interval_seconds=getattr(
+            settings,
+            "kg_queue_recovery_scan_interval_s",
+            60,
+        ),
+        kg_queue_max_concurrent_workers=getattr(
+            settings,
+            "kg_queue_max_concurrent_workers",
+            1,
+        ),
+    )
+    runtime_composition = build_community_runtime_composition(
+        settings=settings,
         auth_provider=auth,
         storage_provider=storage,
+        relational_engine=get_engine(),
         session_factory=_rc_session_factory,
         event_bus=CommunityOutboxEventBus(_rc_session_factory),
         scheduler_control=scheduler_control,
-        # R01B REPLAN-IMP1/IMP2: the Community relational UnitOfWorkFactory is the
-        # composition-owned provider (bound to the SAME live session factory). IMP2
-        # (FR3) re-points the REST + MCP consumers to it. Engine/session ownership
-        # is Community-owned through configure_community_database above.
         uow_factory=_community_uow_factory,
+        worker_registry=_community_worker_registry,
+        content_ingestion_resolver=CommunityContentIngestionResolver(),
     )
-
-    # R01B REPLAN-IMP2 (FR3): register the SAME edition UnitOfWorkFactory on the
-    # process-level seam so the inbound MCP path (no request/app.state) and any
-    # non-request consumer resolve the edition provider WITHOUT the core
-    # constructing a concrete (TR4 / AC4 fail-closed). REST prefers app.state; both
-    # paths resolve this exact object.
-    from okto_pulse.core.runtime_registry import register_unit_of_work_factory
-
-    register_unit_of_work_factory(_community_uow_factory)
 
     # SQLite PRAGMAs are installed by the Community engine adapter. There is no
     # second partial listener in this module and no core fallback listener.
@@ -797,20 +772,60 @@ def create_community_app():
 
         return await get_authenticated_agent_for_mcp()
 
-    def _mcp_auth_get_db():
-        from okto_pulse.core.mcp import get_db_for_current_mcp_request
-
-        return get_db_for_current_mcp_request()
-
     from okto_pulse.community.adapters.mcp_auth import (
         create_mcp_auth_factory,
     )
 
-    configure_community_kg_registry(
-        get_session_factory(),
-        auth_context_factory=create_mcp_auth_factory(
-            _mcp_auth_get_agent, _mcp_auth_get_db
-        ),
+    from okto_pulse.core.composition import runtime_composition_scope
+
+    with runtime_composition_scope(runtime_composition):
+        from okto_pulse.core.runtime_registry import (
+            register_content_ingestion_resolver,
+            register_unit_of_work_factory,
+        )
+
+        register_unit_of_work_factory(_community_uow_factory)
+        register_content_ingestion_resolver(
+            runtime_composition.content_ingestion_resolver
+        )
+
+        configure_community_kg_registry(
+            _rc_session_factory,
+            settings=settings,
+            auth_context_factory=create_mcp_auth_factory(
+                _mcp_auth_get_agent,
+                _rc_session_factory,
+            ),
+        )
+
+        from okto_pulse.core.mcp import register_session_factory
+        from okto_pulse.community.adapters.mcp_auth import (
+            make_community_mcp_authenticator,
+        )
+
+        register_session_factory(
+            _rc_session_factory,
+            scheduler_control=scheduler_control,
+            mcp_authenticator=make_community_mcp_authenticator(
+                session_factory=_rc_session_factory
+            ),
+        )
+
+        from okto_pulse.community.adapters.resources import (
+            register_and_freeze_community_resource_catalog,
+        )
+
+        register_and_freeze_community_resource_catalog()
+
+    app = create_app(
+        settings=settings,
+        auth_provider=auth,
+        storage_provider=storage,
+        cors_origins=settings.cors_origins_list,
+        lifespan=combined_lifespan,
+        composition=runtime_composition,
+        strict_runtime=True,
+        edition_routers=(metrics_router,),
     )
 
     # System flags endpoint — used by the frontend to honor CLI/env terms pre-acceptance.
@@ -823,8 +838,10 @@ def create_community_app():
 
     # Mount frontend (must be AFTER API routes so /api/v1/* takes precedence)
     _mount_frontend(
-        app, FRONTEND_DIR,
-        api_port=api_port, mcp_port=mcp_port,
+        app,
+        FRONTEND_DIR,
+        api_port=api_port,
+        mcp_port=mcp_port,
         public_host=public_host,
         explicit_public_host=public_host_env is not None,
         public_api_port=public_api_port,
@@ -851,7 +868,9 @@ async def _wait_for_server_started(
     while not server.started:
         if task.done():
             await task
-            raise RuntimeError(f"{server_name} server stopped before startup completed.")
+            raise RuntimeError(
+                f"{server_name} server stopped before startup completed."
+            )
         if time.monotonic() >= deadline:
             server.should_exit = True
             raise TimeoutError(
@@ -894,7 +913,9 @@ async def _shutdown_server_pair(
     timeout_seconds: float | None = None,
 ) -> None:
     """Stop both uvicorn servers without letting open streams hang forever."""
-    timeout = _shutdown_timeout_seconds() if timeout_seconds is None else timeout_seconds
+    timeout = (
+        _shutdown_timeout_seconds() if timeout_seconds is None else timeout_seconds
+    )
     set_shutdown_log_suppression(True)
     try:
         api_server.should_exit = True
@@ -955,9 +976,7 @@ def _install_shutdown_signal_handlers(
         except (NotImplementedError, RuntimeError, ValueError, OSError):
             pass  # Windows / loop sem suporte — tenta o handler síncrono
         else:
-            cleanups.append(
-                lambda s=sig, lp=loop: lp.remove_signal_handler(s)
-            )
+            cleanups.append(lambda s=sig, lp=loop: lp.remove_signal_handler(s))
             continue
         try:
 
@@ -1167,7 +1186,9 @@ def run():
         os.environ.get("PORT", os.environ.get("OKTO_PULSE_PORT", str(settings.port)))
     )
     mcp_port = int(
-        os.environ.get("MCP_PORT", os.environ.get("OKTO_PULSE_MCP_PORT", str(settings.mcp_port)))
+        os.environ.get(
+            "MCP_PORT", os.environ.get("OKTO_PULSE_MCP_PORT", str(settings.mcp_port))
+        )
     )
     try:
         serve_lock = acquire_serve_lock(settings)

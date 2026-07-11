@@ -43,8 +43,6 @@ from okto_pulse.core.telemetry.product_aggregator_registry import (
     get_product_aggregator,
     reset_product_aggregator_factory_for_tests,
 )
-from okto_pulse.core.telemetry import product_aggregator_registry as agg_registry
-from okto_pulse.core.telemetry import publish_health_source_registry as src_registry
 from okto_pulse.core.telemetry.publish_health_source_registry import (
     get_external_source_descriptors,
     reset_external_source_provider_for_tests,
@@ -76,14 +74,17 @@ def _product_db(tmp_path: Path) -> CoreSettings:
         CREATE TABLE architecture_designs (id TEXT);
         """
     )
-    conn.execute("INSERT INTO domain_events VALUES (?, ?)",
-                 ("card.created", json.dumps({"card_type": "bug"})))
+    conn.execute(
+        "INSERT INTO domain_events VALUES (?, ?)",
+        ("card.created", json.dumps({"card_type": "bug"})),
+    )
     conn.execute("INSERT INTO cards VALUES (?, ?)", ("done", "bug"))
     conn.execute("INSERT INTO sprints VALUES (?)", ("closed",))
     conn.commit()
     conn.close()
-    return CoreSettings(metrics_dir=str(tmp_path / "metrics"),
-                        database_url=f"sqlite:///{db.as_posix()}")
+    return CoreSettings(
+        metrics_dir=str(tmp_path / "metrics"), database_url=f"sqlite:///{db.as_posix()}"
+    )
 
 
 def test_ts_6b129804_community_aggregator_conformance(tmp_path):
@@ -105,8 +106,12 @@ def test_ts_6b129804_community_aggregator_conformance(tmp_path):
 
 
 def test_descriptor_sources_conformance_and_signal(tmp_path):
-    sources = [LocalPublishHealthSource(), InstallLifecycleSource(),
-               AwsIngestSource(), ReportAthenaSource()]
+    sources = [
+        LocalPublishHealthSource(),
+        InstallLifecycleSource(),
+        AwsIngestSource(),
+        ReportAthenaSource(),
+    ]
     for src in sources:
         assert isinstance(src, PublishHealthSource)
         sig = src.signal()
@@ -127,8 +132,12 @@ def test_registration_wires_core_registries(tmp_path):
     settings = _product_db(tmp_path)
     reset_product_aggregator_factory_for_tests()
     reset_external_source_provider_for_tests()
-    assert agg_registry._product_aggregator_factory is None
-    assert src_registry._publish_health_source_provider is None
+    with pytest.raises(
+        RuntimeError, match="No ProductAggregationPort factory registered"
+    ):
+        get_product_aggregator(settings, tmp_path / "unconfigured")
+    with pytest.raises(RuntimeError, match="No publish-health ExternalSourceProvider"):
+        get_external_source_descriptors(settings)
 
     register_community_product_aggregator()
     register_community_publish_health_sources()
@@ -137,7 +146,8 @@ def test_registration_wires_core_registries(tmp_path):
     assert isinstance(resolved, CommunityProductTelemetryAggregator)
     assert isinstance(resolved.aggregate(), ProductState)
     assert get_external_source_descriptors(settings) == (
-        {"availability": ph.SRC_GAP}, {"availability": ph.SRC_GAP}
+        {"availability": ph.SRC_GAP},
+        {"availability": ph.SRC_GAP},
     )
 
 
@@ -174,11 +184,20 @@ def test_guard_no_false_move_claims_in_all_product_files():
 
     # Post-absorb: Community OWNS (not stays-as-shim).
     community_text = Path(_c.__file__).read_text(encoding="utf-8")
-    assert "Community edition OWNS" in community_text, "expected Community ownership framing"
+    assert "Community edition OWNS" in community_text, (
+        "expected Community ownership framing"
+    )
     # R10-E Pass 2: the core concrete is REMOVED — no "still a shim / pending Pass 2"
     # framing may survive (the anti-claim guard rejects the stale-shim vocabulary).
-    for _stale in ("STAYS in core", "shim is still", "shim remains", "remains until PASS 2",
-                   "stays as shim", "pending R10-E", "is non-destructive"):
+    for _stale in (
+        "STAYS in core",
+        "shim is still",
+        "shim remains",
+        "remains until PASS 2",
+        "stays as shim",
+        "pending R10-E",
+        "is non-destructive",
+    ):
         assert _stale.lower() not in community_text.lower(), (
             f"stale shim claim must not be present: {_stale!r}"
         )
@@ -201,13 +220,13 @@ def test_composed_root_wires_providers_and_invariant_holds(tmp_path, monkeypatch
     import okto_pulse.core.kg.interfaces.registry as _reg
     from datetime import datetime, timezone
 
-    from okto_pulse.community.adapters.composition import configure_community_kg_registry
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
     from okto_pulse.core.infra.config import CoreSettings as _CS
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("KG_BASE_DIR", str(tmp_path / "boards"))
-    saved_settings = _config._settings_instance
-    saved_reg = (_reg._registry, _reg._configured)
     _config.configure_settings(_CS())
     _reg.reset_registry_for_tests()
     try:
@@ -219,7 +238,10 @@ def test_composed_root_wires_providers_and_invariant_holds(tmp_path, monkeypatch
         settings = _product_db(tmp_path)
         resolved = get_product_aggregator(settings, tmp_path / "metrics")
         # R10-E: bind at assertion time (robust to sys.modules purges; isinstance stays strict).
-        from okto_pulse.community.adapters.product_telemetry import CommunityProductTelemetryAggregator
+        from okto_pulse.community.adapters.product_telemetry import (
+            CommunityProductTelemetryAggregator,
+        )
+
         assert isinstance(resolved, CommunityProductTelemetryAggregator)
         aws, report = get_external_source_descriptors(settings)
         assert aws == {"availability": ph.SRC_GAP}
@@ -227,12 +249,17 @@ def test_composed_root_wires_providers_and_invariant_holds(tmp_path, monkeypatch
         # Invariant end-to-end: healthy local + composed gap AWS -> NOT healthy.
         now = datetime(2026, 6, 26, tzinfo=timezone.utc)
         dto = ph.resolve_publish_health(
-            {"status": "ok", "publish_enabled": True, "last_success_at": now.isoformat()},
-            now=now, aws_ingest=aws, report_athena=report,
+            {
+                "status": "ok",
+                "publish_enabled": True,
+                "last_success_at": now.isoformat(),
+            },
+            now=now,
+            aws_ingest=aws,
+            report_athena=report,
         )
         assert dto.status != ph.HEALTHY
     finally:
         reset_product_aggregator_factory_for_tests()
         reset_external_source_provider_for_tests()
-        _config._settings_instance = saved_settings
-        _reg._registry, _reg._configured = saved_reg
+        _reg.reset_registry_for_tests()

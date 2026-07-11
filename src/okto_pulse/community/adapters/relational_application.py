@@ -20,11 +20,11 @@ from okto_pulse.core.domain.amendment_eligibility import (
     AmendmentRevisionStatus,
 )
 from okto_pulse.core.ports.permission_policy import (
+    PermissionPolicyPort,
     builtin_preset_name,
     flatten_permission_flags,
     get_permission_flag,
     legacy_permissions_to_flags,
-    resolve_effective_permissions,
     set_permission_flag,
 )
 from okto_pulse.core.ports.mcp_auth import AgentAuthSession
@@ -46,6 +46,9 @@ from okto_pulse.community.adapters.sqlalchemy_repositories import (
     PermissionPreset,
     Spec,
 )
+from okto_pulse.community.adapters.permission_policy import (
+    CommunityPermissionPolicyAdapter,
+)
 
 
 def _preset_view(preset: PermissionPreset) -> PermissionPresetView:
@@ -65,8 +68,13 @@ def _preset_view(preset: PermissionPreset) -> PermissionPresetView:
 class CommunityPermissionPresetGateway:
     """Local First SQLAlchemy implementation of the preset port."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        permission_policy: PermissionPolicyPort | None = None,
+    ) -> None:
         self._session = session
+        self._permission_policy = permission_policy or CommunityPermissionPolicyAdapter()
 
     async def get_effective_permissions(
         self, *, user_id: str, board_id: str
@@ -91,7 +99,7 @@ class CommunityPermissionPresetGateway:
                     preset_flags = preset_row.flags
                     preset_name = preset_row.name
 
-        permission_set = resolve_effective_permissions(
+        permission_set = self._permission_policy.resolve(
             agent_flags=agent_flags,
             preset_flags=preset_flags,
             board_overrides=None,
@@ -210,8 +218,13 @@ class CommunityPermissionPresetGateway:
 class CommunityAgentAuthenticationGateway:
     """Local First credential, ACL and permission-context queries."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        permission_policy: PermissionPolicyPort | None = None,
+    ) -> None:
         self._session = session
+        self._permission_policy = permission_policy or CommunityPermissionPolicyAdapter()
 
     async def authenticate_agent_by_api_key(
         self, api_key: str, *, credential_source: str
@@ -230,7 +243,10 @@ class CommunityAgentAuthenticationGateway:
             agent_id=agent.id,
             agent_name=agent.name,
             is_active=True,
-            metadata={"credential_source": credential_source},
+            metadata={
+                "credential_source": credential_source,
+                "realm_id": "local",
+            },
         )
 
     async def list_accessible_board_ids_for_agent(self, agent_id: str) -> list[str]:
@@ -280,7 +296,7 @@ class CommunityAgentAuthenticationGateway:
             board_overrides = (
                 agent_board.permission_overrides if agent_board is not None else None
             )
-            permissions = resolve_effective_permissions(
+            permissions = self._permission_policy.resolve(
                 agent_flags,
                 preset_flags,
                 board_overrides,
@@ -341,9 +357,6 @@ class CommunityAmendmentRevisionApiBackend:
     ) -> Any:
         return await self._store.set_status(amendment_id, new_status, actor)
 
-    async def refresh(self, entity: Any) -> None:
-        await self._session.refresh(entity)
-
     async def path_b_resolution(
         self,
         *,
@@ -379,8 +392,11 @@ class CommunityAmendmentRevisionApiBackend:
 class CommunityRelationalApplicationAdapter:
     """Factory bundle registered by the Community composition root."""
 
+    def __init__(self, permission_policy: PermissionPolicyPort | None = None) -> None:
+        self._permission_policy = permission_policy or CommunityPermissionPolicyAdapter()
+
     def permission_presets(self, session: AsyncSession) -> CommunityPermissionPresetGateway:
-        return CommunityPermissionPresetGateway(session)
+        return CommunityPermissionPresetGateway(session, self._permission_policy)
 
     def amendment_revision_backend(
         self, session: AsyncSession
@@ -390,7 +406,7 @@ class CommunityRelationalApplicationAdapter:
     def agent_authentication(
         self, session: AsyncSession
     ) -> CommunityAgentAuthenticationGateway:
-        return CommunityAgentAuthenticationGateway(session)
+        return CommunityAgentAuthenticationGateway(session, self._permission_policy)
 
 
 __all__ = [

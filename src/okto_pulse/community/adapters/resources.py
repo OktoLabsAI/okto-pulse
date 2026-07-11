@@ -19,9 +19,9 @@ served and passes the closed forbidden-term scan.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
-from okto_pulse.core.ports.mcp_instructions import StaticFileMcpInstructionProvider
 from okto_pulse.core.ports.mcp_resources import (
     RESOURCE_KIND_OPERATIONAL,
     McpResourceSpec,
@@ -29,6 +29,18 @@ from okto_pulse.core.ports.mcp_resources import (
 )
 
 COMMUNITY_RESOURCE_EDITION = "community"
+
+
+@dataclass(frozen=True)
+class CommunityFileMcpInstructionProvider:
+    """Community-owned adapter for deployment-configured prompt files."""
+
+    provider_id: str
+    path: Path
+
+    def load_instructions(self) -> str:
+        return self.path.read_text(encoding="utf-8") if self.path.is_file() else ""
+
 
 #: Where the Community operational resource bodies live (byte-exact captures of
 #: the pre-split originals — they MAY name the concrete backend; they are
@@ -41,14 +53,22 @@ _COMMUNITY_OVERLAY_TABLE: tuple[tuple[str, str, str], ...] = (
     ("okto-pulse://workflows/kg", "workflows/kg.md", "kg"),
     ("okto-pulse://reference/errors", "reference/errors.md", "errors"),
     ("okto-pulse://reference/tool-docs/kg", "reference/tool-docs/kg.md", "kg"),
-    ("okto-pulse://reference/tool-docs/decision", "reference/tool-docs/decision.md", "decision"),
+    (
+        "okto-pulse://reference/tool-docs/decision",
+        "reference/tool-docs/decision.md",
+        "decision",
+    ),
 )
 
 
 def _overlay_category(uri: str) -> str:
-    rest = uri[len("okto-pulse://"):]
+    rest = uri[len("okto-pulse://") :]
     parts = rest.split("/")
-    if parts[0] == "reference" and len(parts) >= 2 and parts[1] in ("tool-docs", "tool-families"):
+    if (
+        parts[0] == "reference"
+        and len(parts) >= 2
+        and parts[1] in ("tool-docs", "tool-families")
+    ):
         return f"reference/{parts[1]}"
     return parts[0] if parts and parts[0] else "misc"
 
@@ -65,7 +85,9 @@ def _build_overlay_specs() -> tuple[McpResourceSpec, ...]:
             capability=capability,
             same_uri_overlay=True,
             path=path,
-            base_dir=_OPERATIONAL_DIR,
+            loader=lambda path=path: (_OPERATIONAL_DIR / path).read_text(
+                encoding="utf-8"
+            ),
         )
         for uri, path, capability in _COMMUNITY_OVERLAY_TABLE
     )
@@ -77,9 +99,7 @@ def build_community_resource_catalog() -> StaticMcpResourceCatalog:
     backend-aware content scrubbed from the core common docs. The composition root
     injects this catalog and the effective catalog MERGES the overlay over the
     common base for the same URI."""
-    return StaticMcpResourceCatalog(
-        COMMUNITY_RESOURCE_EDITION, _build_overlay_specs()
-    )
+    return StaticMcpResourceCatalog(COMMUNITY_RESOURCE_EDITION, _build_overlay_specs())
 
 
 def _community_agent_prompt_path(prompt_path: str | Path | None = None) -> Path:
@@ -91,17 +111,16 @@ def _community_agent_prompt_path(prompt_path: str | Path | None = None) -> Path:
 
 def build_community_instruction_provider(
     prompt_path: str | Path | None = None,
-) -> StaticFileMcpInstructionProvider:
+) -> CommunityFileMcpInstructionProvider:
     """Build the Community-owned MCP instruction provider.
 
     The legacy container prompt path is preserved here, in the edition adapter,
     so the core server no longer knows deployment-owned filesystem paths.
     """
     path = _community_agent_prompt_path(prompt_path)
-    return StaticFileMcpInstructionProvider(
+    return CommunityFileMcpInstructionProvider(
         provider_id=COMMUNITY_RESOURCE_EDITION,
-        base_dir=path.parent,
-        relative_path=path.name,
+        path=path,
     )
 
 
@@ -133,6 +152,7 @@ def register_and_freeze_community_resource_catalog() -> None:
     are registered). Idempotent-safe: a second freeze is a no-op, but a late
     register AFTER the freeze raises (fail-closed)."""
     from okto_pulse.core.mcp import (
+        effective_resource_catalog,
         freeze_instruction_providers,
         freeze_resource_catalog,
         register_resource_catalog,
@@ -141,7 +161,9 @@ def register_and_freeze_community_resource_catalog() -> None:
     register_community_instruction_provider(freeze=False)
 
     catalog = build_community_resource_catalog()
-    if catalog.specs():
+    effective = effective_resource_catalog()
+    composed_editions = {item.edition for item in getattr(effective, "catalogs", ())}
+    if catalog.specs() and COMMUNITY_RESOURCE_EDITION not in composed_editions:
         register_resource_catalog(catalog)
     freeze_instruction_providers()
     freeze_resource_catalog()

@@ -25,39 +25,26 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
 ) -> None:
     events: list[str] = []
 
-    class _Worker:
-        def __init__(self, family: str) -> None:
-            self.family = family
+    def _family(runner) -> str:
+        if isinstance(runner, worker_adapters.ConsolidationRunner):
+            return "consolidation_worker"
+        return {
+            "community.event_dispatcher": "event_dispatcher",
+            "community.kg.cleanup_runner": "cleanup_worker",
+            "community.kg.outbox_runner": "outbox_worker",
+        }[runner.name]
 
-    async def _start(family: str) -> _Worker:
+    async def _start(runner):
+        family = _family(runner)
         events.append(f"start:{family}")
-        return _Worker(family)
+        runner.family = family
+        return runner
 
-    async def _stop(worker: _Worker) -> None:
-        events.append(f"stop:{worker.family}")
+    async def _stop(runner) -> None:
+        events.append(f"stop:{runner.family}")
 
-    monkeypatch.setattr(
-        worker_adapters,
-        "_start_event_dispatcher",
-        lambda _session_factory: _start("event_dispatcher"),
-    )
-    monkeypatch.setattr(
-        worker_adapters,
-        "_start_cleanup_worker",
-        lambda: _start("cleanup_worker"),
-    )
-    monkeypatch.setattr(
-        worker_adapters,
-        "_start_consolidation_worker",
-        lambda _session_factory: _start("consolidation_worker"),
-    )
-    monkeypatch.setattr(
-        worker_adapters,
-        "_start_outbox_worker",
-        lambda _session_factory: _start("outbox_worker"),
-    )
-    monkeypatch.setattr(worker_adapters, "_stop_event_dispatcher", _stop)
-    monkeypatch.setattr(worker_adapters, "_stop_simple_worker", _stop)
+    monkeypatch.setattr(worker_adapters, "start_runner", _start)
+    monkeypatch.setattr(worker_adapters, "stop_runner", _stop)
 
     registry = worker_adapters.build_community_worker_registry(object())
 
@@ -88,7 +75,7 @@ def test_r08c_worker_boundary_real_core_and_community_trees_pass() -> None:
 
     assert report.status == "passed", report.as_dict()
     assert {
-        "okto_pulse/core/app.py",
+        "okto_pulse/core/application/processors/consolidation.py",
         "okto_pulse/community/main.py",
     } <= set(report.evidence["scanned_files"])
     assert report.evidence["offenders"] == []

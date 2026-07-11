@@ -3,6 +3,7 @@
 # ruff: noqa: E402
 
 import warnings
+
 warnings.filterwarnings(
     "ignore",
     message=r"urllib3.*or chardet.*doesn't match a supported version",
@@ -49,7 +50,9 @@ def _stored_agent_credential_source(value: str | None) -> _CredentialSource | No
     return None
 
 
-def _exportable_credential_from_legacy_agent(agent) -> _ExportableAgentCredential | None:
+def _exportable_credential_from_legacy_agent(
+    agent,
+) -> _ExportableAgentCredential | None:
     plaintext = _field(agent, "api_key")
     if _stored_agent_credential_source(plaintext) != "governed_legacy_plaintext":
         return None
@@ -65,7 +68,9 @@ def _exportable_credential_from_reveal_once(
 ) -> _ExportableAgentCredential | None:
     if not plaintext.startswith("dash_"):
         return None
-    return _ExportableAgentCredential(name=name, plaintext=plaintext, source="reveal_once")
+    return _ExportableAgentCredential(
+        name=name, plaintext=plaintext, source="reveal_once"
+    )
 
 
 def _field(record, name: str, default=None):
@@ -246,16 +251,16 @@ def cmd_init(args):
         # schema and vector indexes are ready before the first agent call.
         if board_id:
             try:
-                # R05-C: bootstrap via the #06 KG ports instead of the direct
-                # kg.schema symbol. ensure_bootstrapped wraps the same
-                # bootstrap_board_graph for a fresh board; path/version are
-                # reconstructed from the GraphPathResolver / GraphSchemaManager
-                # ports (equivalent to the old BoardGraphHandle fields).
-                from okto_pulse.core.services.application_kg import get_current_provider_registry
+                # Schema lifecycle crosses the Core port; the CLI resolves the
+                # Community-local path only for operator-facing diagnostics.
+                from okto_pulse.community.adapters.kg_runtime import board_kuzu_path
+                from okto_pulse.core.services.application_kg import (
+                    get_current_provider_registry,
+                )
 
                 _kg_reg = get_current_provider_registry()
                 await _kg_reg.graph_schema_manager.ensure_bootstrapped(board_id)
-                _kg_path = _kg_reg.graph_path_resolver.board_graph_path(board_id)
+                _kg_path = board_kuzu_path(board_id)
                 _kg_ver = await _kg_reg.graph_schema_manager.current_version(board_id)
                 print(f"  Knowledge Graph: {_kg_path} (schema {_kg_ver})")
             except Exception as exc:
@@ -269,8 +274,12 @@ def cmd_init(args):
 
     # Handle --agents flag: generate .mcp.json with specified agents
     agents_param = getattr(args, "agents", None)
-    if agents_param is not None:  # None = not specified, [] = specified but empty (all agents)
-        _generate_mcp_json(settings.mcp_port, agents_param, revealed_agents=revealed_agents)
+    if (
+        agents_param is not None
+    ):  # None = not specified, [] = specified but empty (all agents)
+        _generate_mcp_json(
+            settings.mcp_port, agents_param, revealed_agents=revealed_agents
+        )
 
 
 def _generate_mcp_json(
@@ -334,7 +343,9 @@ def _generate_mcp_json(
 
             if not exportable_agents:
                 print("\n  ⚠ No recoverable agent API keys found.")
-                print("  Newly created keys are reveal-once; regenerate one in the UI/API if needed.")
+                print(
+                    "  Newly created keys are reveal-once; regenerate one in the UI/API if needed."
+                )
                 await close_db()
                 return None
 
@@ -346,8 +357,12 @@ def _generate_mcp_json(
                 unrecoverable = (all_agent_names & name_set) - set(exportable_by_name)
 
                 if not found_agents:
-                    print(f"\n  ⚠ No matching agents found: {', '.join(sorted(name_set))}")
-                    print(f"  Available exportable agents: {', '.join(a.name for a in exportable_agents)}")
+                    print(
+                        f"\n  ⚠ No matching agents found: {', '.join(sorted(name_set))}"
+                    )
+                    print(
+                        f"  Available exportable agents: {', '.join(a.name for a in exportable_agents)}"
+                    )
                     await close_db()
                     return None
 
@@ -382,7 +397,7 @@ def _generate_mcp_json(
     mcp_json_path = Path.cwd() / ".mcp.json"
     mcp_json_path.write_text(json.dumps(mcp_config, indent=2))
 
-    agent_list = ", ".join(f"\"{a.name}\"" for a in agents)
+    agent_list = ", ".join(f'"{a.name}"' for a in agents)
     print(f"\n  ✓ .mcp.json generated at: {mcp_json_path}")
     print(f"  Agents exported: {agent_list}")
 
@@ -400,9 +415,13 @@ def cmd_serve(args):
     mcp_port = args.mcp_port
 
     if _is_port_in_use(api_port):
-        print(f"Warning: Port {api_port} is already in use. API server may fail to start.")
+        print(
+            f"Warning: Port {api_port} is already in use. API server may fail to start."
+        )
     if _is_port_in_use(mcp_port):
-        print(f"Warning: Port {mcp_port} is already in use. MCP server may fail to start.")
+        print(
+            f"Warning: Port {mcp_port} is already in use. MCP server may fail to start."
+        )
 
     # Ports go via env so create_community_app + the MCP runner read them.
     # MUST be set BEFORE importing okto_pulse.community.main — that module
@@ -427,13 +446,22 @@ def cmd_serve(args):
             if getattr(args, "accept_terms", False):
                 os.environ["OKTO_PULSE_TERMS_ACCEPTED"] = "1"
                 from okto_pulse.community.acceptance import write_acceptance
+
                 rec = write_acceptance("cli")
-                print(f"Terms-of-Use pre-accepted via --accept-terms (version {rec['version']}).")
+                print(
+                    f"Terms-of-Use pre-accepted via --accept-terms (version {rec['version']})."
+                )
             elif (os.environ.get("OKTO_PULSE_TERMS_ACCEPTED") or "").strip() == "1":
-                from okto_pulse.community.acceptance import write_acceptance, read_acceptance
+                from okto_pulse.community.acceptance import (
+                    write_acceptance,
+                    read_acceptance,
+                )
+
                 if read_acceptance() is None:
                     rec = write_acceptance("env")
-                    print(f"Terms-of-Use pre-accepted via env (version {rec['version']}).")
+                    print(
+                        f"Terms-of-Use pre-accepted via env (version {rec['version']})."
+                    )
 
             print("Starting Okto Pulse Community...")
             if has_frontend:
@@ -446,6 +474,7 @@ def cmd_serve(args):
             # Single-process, dual-port: run() spawns two uvicorn Server instances
             # via asyncio.gather. uvicorn signal capture is DISABLED for both; main.py handles SIGINT (asyncio.Runner) and installs SIGTERM/SIGBREAK handlers for the ordered shutdown (KGD-01).
             from okto_pulse.community.main import run
+
             run()
     except ServeAlreadyRunningError as exc:
         print(str(exc), file=sys.stderr)
@@ -472,6 +501,7 @@ def cmd_status(args):
         print(f"  DB size:  {size_kb:.1f} KB")
 
         import sqlite3
+
         conn = sqlite3.connect(str(db_path))
         try:
             boards = conn.execute("SELECT COUNT(*) FROM boards").fetchone()[0]
@@ -497,25 +527,26 @@ def cmd_status(args):
 
 def cmd_metrics(args):
     """Control metrics On/Off settings and local data."""
-    from okto_pulse.community.adapters.telemetry_port import register_community_telemetry_port
-    from okto_pulse.community.adapters.telemetry_state import register_community_telemetry_state_carrier
-    from okto_pulse.community.adapters.telemetry_store import register_community_telemetry_event_store
+    from okto_pulse.community.adapters.telemetry_composition import (
+        register_community_telemetry_runtime,
+    )
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core.telemetry.telemetry_port_registry import get_telemetry_port
 
-    # R10-E Pass 2: registries are fail-closed; compose the minimum factories for
-    # the CLI before calling get_telemetry_port (idempotent — safe if already registered
-    # by the full composition root in a server context).
-    register_community_telemetry_state_carrier()
-    register_community_telemetry_event_store()
-    register_community_telemetry_port()
+    # Compose the same complete vertical used by the server. Partial registration
+    # would leave fail-closed effect configuration unresolved for state/target refs.
+    register_community_telemetry_runtime()
 
     settings = CommunitySettings()
     service = get_telemetry_port(settings)
     command = args.metrics_command
 
     if command == "status":
-        print(json.dumps(service.summary(window_days=args.window_days), indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                service.summary(window_days=args.window_days), indent=2, sort_keys=True
+            )
+        )
         return
 
     if command == "enable-beacon":
@@ -555,7 +586,9 @@ def cmd_metrics(args):
         result = service.update_settings(mode="disabled", source="cli")
         if command == "local-only":
             result["legacy_alias"] = "local-only"
-            result["message"] = "The legacy local-only command is deprecated; metrics are now Off."
+            result["message"] = (
+                "The legacy local-only command is deprecated; metrics are now Off."
+            )
         print(json.dumps(result, indent=2, sort_keys=True))
         return
 
@@ -566,7 +599,10 @@ def cmd_metrics(args):
 
     if command == "purge-local":
         if not args.yes:
-            print("CONFIRMATION_REQUIRED: pass --yes to purge local metrics files.", file=sys.stderr)
+            print(
+                "CONFIRMATION_REQUIRED: pass --yes to purge local metrics files.",
+                file=sys.stderr,
+            )
             raise SystemExit(2)
         result = service.purge_local()
         print(json.dumps(result, indent=2, sort_keys=True))
@@ -596,7 +632,10 @@ def cmd_api_key(args):
     db_path = Path(settings.data_dir) / "data" / "pulse.db"
 
     if not db_path.exists():
-        print(f"Database not found at {db_path}. Run 'okto-pulse init' first.", file=sys.stderr)
+        print(
+            f"Database not found at {db_path}. Run 'okto-pulse init' first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     conn = sqlite3.connect(str(db_path))
@@ -610,7 +649,10 @@ def cmd_api_key(args):
             "ORDER BY created_at ASC LIMIT 1"
         ).fetchone()
     except sqlite3.OperationalError as exc:
-        print(f"Database not initialised: {exc}. Run 'okto-pulse init' first.", file=sys.stderr)
+        print(
+            f"Database not initialised: {exc}. Run 'okto-pulse init' first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     finally:
         conn.close()
@@ -837,24 +879,29 @@ def cmd_kg_backfill(args):
         try:
             result = worker.process_artifact(art_type, artifact)
         except Exception as exc:
-            summary["per_artifact"].append({
-                "artifact_type": art_type, "artifact_id": artifact.get("id"),
-                "error": str(exc),
-            })
+            summary["per_artifact"].append(
+                {
+                    "artifact_type": art_type,
+                    "artifact_id": artifact.get("id"),
+                    "error": str(exc),
+                }
+            )
             continue
         summary["artifacts"][art_type] += 1
         summary["nodes_total"] += len(result.nodes)
         summary["edges_total"] += len(result.edges)
         summary["missing_link_candidates"] += len(result.missing_link_candidates)
-        summary["per_artifact"].append({
-            "artifact_type": art_type,
-            "artifact_id": artifact.get("id"),
-            "nodes": len(result.nodes),
-            "edges": len(result.edges),
-            "missing_link_candidates": len(result.missing_link_candidates),
-            "deterministic_edge_ratio": result.deterministic_edge_ratio(),
-            "content_hash": result.content_hash,
-        })
+        summary["per_artifact"].append(
+            {
+                "artifact_type": art_type,
+                "artifact_id": artifact.get("id"),
+                "nodes": len(result.nodes),
+                "edges": len(result.edges),
+                "missing_link_candidates": len(result.missing_link_candidates),
+                "deterministic_edge_ratio": result.deterministic_edge_ratio(),
+                "content_hash": result.content_hash,
+            }
+        )
 
     if emit_json:
         print(json.dumps(summary, indent=2, default=str))
@@ -881,9 +928,13 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
         configure_community_kg_registry,
     )
     from okto_pulse.core.services.application_kg import (
-        create_consolidation_worker,
         get_current_provider_registry,
         start_historical_consolidation,
+    )
+    from okto_pulse.core.application.processors import ConsolidationProcessor
+    from okto_pulse.community.adapters.worker_runners import (
+        TrackedBlockingExecution,
+        UtcWorkerClock,
     )
     from sqlalchemy import text as sa_text
 
@@ -895,7 +946,9 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
         # Bootstrap Kùzu graph schema for this board.
         # R05-C: via the #06 GraphSchemaManager port (community registry
         # configured just above) rather than the direct kg.schema symbol.
-        await get_current_provider_registry().graph_schema_manager.ensure_bootstrapped(board_id)
+        await get_current_provider_registry().graph_schema_manager.ensure_bootstrapped(
+            board_id
+        )
 
         # Enqueue all artifacts via governance
         async with factory() as db:
@@ -904,20 +957,30 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
 
         if total_queued == 0 and result.get("status") != "already_in_progress":
             if emit_json:
-                print(json.dumps({
-                    "board_id": board_id,
-                    "status": "no_artifacts",
-                    "total_queued": 0,
-                    "total_processed": 0,
-                    "failed_count": 0,
-                }))
+                print(
+                    json.dumps(
+                        {
+                            "board_id": board_id,
+                            "status": "no_artifacts",
+                            "total_queued": 0,
+                            "total_processed": 0,
+                            "failed_count": 0,
+                        }
+                    )
+                )
             else:
                 print(f"KG backfill [APPLY] for board {board_id}")
-                print("  No eligible artifacts found (need done/approved specs or closed sprints)")
+                print(
+                    "  No eligible artifacts found (need done/approved specs or closed sprints)"
+                )
             return
 
-        # Drain the queue via ConsolidationWorker
-        worker = create_consolidation_worker(factory)
+        # CLI owns execution timing; Core supplies only the processor policy.
+        worker = ConsolidationProcessor(
+            factory,
+            clock=UtcWorkerClock(),
+            blocking_execution=TrackedBlockingExecution(),
+        )
         total_processed = 0
         batch_num = 0
         while True:
@@ -947,7 +1010,9 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
         if emit_json:
             output = {
                 "board_id": board_id,
-                "status": "already_in_progress" if result.get("status") == "already_in_progress" else "completed",
+                "status": "already_in_progress"
+                if result.get("status") == "already_in_progress"
+                else "completed",
                 "total_queued": total_queued,
                 "total_processed": total_processed,
                 "failed_count": failed_count,
@@ -971,7 +1036,11 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
             if failed_count:
                 print(f"  Failed:              {failed_count}")
                 for f in failed:
-                    err = _field(f, "error_message") or _field(f, "last_error") or "unknown"
+                    err = (
+                        _field(f, "error_message")
+                        or _field(f, "last_error")
+                        or "unknown"
+                    )
                     print(
                         f"    - {_field(f, 'artifact_type')}/"
                         f"{_field(f, 'artifact_id')}: {err}"
@@ -1022,9 +1091,9 @@ def _card_to_dict(c):
         "origin_task_id": _field(c, "origin_task_id"),
         "sprint_id": _field(c, "sprint_id"),
         "spec_id": _field(c, "spec_id"),
-        "priority": str(p.value) if hasattr(p, "value") and p is not None else (
-            str(p) if p is not None else None
-        ),
+        "priority": str(p.value)
+        if hasattr(p, "value") and p is not None
+        else (str(p) if p is not None else None),
     }
 
 
@@ -1080,6 +1149,7 @@ def cmd_kg_restore(args):
     from okto_pulse.core.kg.interfaces.quarantine_restore import (
         QuarantineRestoreError,
     )
+    from okto_pulse.core.infra.config import get_settings
 
     quarantine_id: str = args.quarantine_id
     apply_restore: bool = bool(getattr(args, "apply", False))
@@ -1095,7 +1165,10 @@ def cmd_kg_restore(args):
     except Exception:
         extra_lock_dirs = ()
 
-    service = CommunityQuarantineRestore(extra_serve_lock_dirs=extra_lock_dirs)
+    service = CommunityQuarantineRestore(
+        base_dir=get_settings().kg_base_dir,
+        extra_serve_lock_dirs=extra_lock_dirs,
+    )
 
     def _emit_restore_error(exc: QuarantineRestoreError) -> None:
         payload = exc.to_payload()
@@ -1115,15 +1188,21 @@ def cmd_kg_restore(args):
 
     if not apply_restore:
         if emit_json:
-            print(json.dumps({
-                "plan": plan.to_payload(),
-                "applied": False,
-                "quarantine_id": plan.quarantine_id,
-                "board_id": plan.board_id,
-                "board_dir": plan.board_dir,
-                "conflicts": list(plan.conflicts),
-                "total_bytes": plan.total_bytes,
-            }, indent=2, default=str))
+            print(
+                json.dumps(
+                    {
+                        "plan": plan.to_payload(),
+                        "applied": False,
+                        "quarantine_id": plan.quarantine_id,
+                        "board_id": plan.board_id,
+                        "board_dir": plan.board_dir,
+                        "conflicts": list(plan.conflicts),
+                        "total_bytes": plan.total_bytes,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
         else:
             print(f"KG quarantine restore [DRY-RUN] {plan.quarantine_id}")
             print(f"  Board:       {plan.board_id}")
@@ -1146,16 +1225,22 @@ def cmd_kg_restore(args):
         return
 
     if emit_json:
-        print(json.dumps({
-            "plan": plan.to_payload(),
-            "applied": report.applied,
-            "backup_quarantine_id": report.backup_quarantine_id,
-            "quarantine_id": report.quarantine_id,
-            "board_id": report.board_id,
-            "restored_files": list(report.restored_files),
-            "open_validated": report.open_validated,
-            "errors": list(report.errors),
-        }, indent=2, default=str))
+        print(
+            json.dumps(
+                {
+                    "plan": plan.to_payload(),
+                    "applied": report.applied,
+                    "backup_quarantine_id": report.backup_quarantine_id,
+                    "quarantine_id": report.quarantine_id,
+                    "board_id": report.board_id,
+                    "restored_files": list(report.restored_files),
+                    "open_validated": report.open_validated,
+                    "errors": list(report.errors),
+                },
+                indent=2,
+                default=str,
+            )
+        )
     else:
         print(f"KG quarantine restore [APPLIED] {report.quarantine_id}")
         print(f"  Board:                {report.board_id}")
@@ -1176,7 +1261,9 @@ def cmd_reset(args):
     uploads_path = data_path / "uploads"
 
     if not args.yes:
-        confirm = input(f"This will DELETE all data in {data_path}. Are you sure? [y/N] ")
+        confirm = input(
+            f"This will DELETE all data in {data_path}. Are you sure? [y/N] "
+        )
         if confirm.lower() != "y":
             print("Aborted.")
             return
@@ -1196,7 +1283,9 @@ def cmd_reset(args):
 
 def main():
     raw_argv = list(sys.argv[1:])
-    metrics_legacy_local_only = len(raw_argv) >= 2 and raw_argv[0] == "metrics" and raw_argv[1] == "local-only"
+    metrics_legacy_local_only = (
+        len(raw_argv) >= 2 and raw_argv[0] == "metrics" and raw_argv[1] == "local-only"
+    )
     if metrics_legacy_local_only:
         raw_argv = ["metrics", "disable", *raw_argv[2:]]
 
@@ -1213,7 +1302,9 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # init
-    sub_init = subparsers.add_parser("init", help="Initialize data directory and seed database")
+    sub_init = subparsers.add_parser(
+        "init", help="Initialize data directory and seed database"
+    )
     sub_init.add_argument(
         "--agents",
         nargs="*",
@@ -1223,31 +1314,43 @@ def main():
     sub_init.set_defaults(func=cmd_init)
 
     # serve
-    sub_serve = subparsers.add_parser("serve", help="Start API + Frontend + MCP servers")
+    sub_serve = subparsers.add_parser(
+        "serve", help="Start API + Frontend + MCP servers"
+    )
     sub_serve.add_argument(
-        "--api-port", type=int, default=DEFAULT_API_PORT,
+        "--api-port",
+        type=int,
+        default=DEFAULT_API_PORT,
         help=f"API + Frontend server port (default: {DEFAULT_API_PORT})",
     )
     sub_serve.add_argument(
-        "--mcp-port", type=int, default=DEFAULT_MCP_PORT,
+        "--mcp-port",
+        type=int,
+        default=DEFAULT_MCP_PORT,
         help=f"MCP server port (default: {DEFAULT_MCP_PORT})",
     )
     sub_serve.add_argument(
         "--accept-terms",
         action="store_true",
         help="Pre-accept the Terms-of-Use & License (skips the first-run modal). "
-             "Equivalent to setting OKTO_PULSE_TERMS_ACCEPTED=1.",
+        "Equivalent to setting OKTO_PULSE_TERMS_ACCEPTED=1.",
     )
     sub_serve.set_defaults(func=cmd_serve)
 
     # status
-    sub_status = subparsers.add_parser("status", help="Show service status and DB metrics")
+    sub_status = subparsers.add_parser(
+        "status", help="Show service status and DB metrics"
+    )
     sub_status.add_argument(
-        "--api-port", type=int, default=DEFAULT_API_PORT,
+        "--api-port",
+        type=int,
+        default=DEFAULT_API_PORT,
         help=f"API server port (default: {DEFAULT_API_PORT})",
     )
     sub_status.add_argument(
-        "--mcp-port", type=int, default=DEFAULT_MCP_PORT,
+        "--mcp-port",
+        type=int,
+        default=DEFAULT_MCP_PORT,
         help=f"MCP server port (default: {DEFAULT_MCP_PORT})",
     )
     sub_status.set_defaults(func=cmd_status)
@@ -1257,18 +1360,24 @@ def main():
         "metrics",
         help="Control metrics On/Off, export, and purge",
     )
-    metrics_sub = sub_metrics.add_subparsers(dest="metrics_command", help="Metrics commands")
+    metrics_sub = sub_metrics.add_subparsers(
+        dest="metrics_command", help="Metrics commands"
+    )
 
     metrics_status = metrics_sub.add_parser("status", help="Show metrics status")
     metrics_status.add_argument("--window-days", type=int, default=30)
     metrics_status.set_defaults(func=cmd_metrics)
 
-    metrics_enable = metrics_sub.add_parser("enable-beacon", help="Turn metrics On with anonymous hourly aggregates")
+    metrics_enable = metrics_sub.add_parser(
+        "enable-beacon", help="Turn metrics On with anonymous hourly aggregates"
+    )
     metrics_enable.add_argument("--policy-version", required=True)
     from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
 
     metrics_enable.add_argument("--schema-version", default=CURRENT_SCHEMA_VERSION)
-    metrics_enable.add_argument("--yes", action="store_true", help="Confirm opt-in prerequisites")
+    metrics_enable.add_argument(
+        "--yes", action="store_true", help="Confirm opt-in prerequisites"
+    )
     metrics_enable.set_defaults(func=cmd_metrics)
 
     metrics_disable = metrics_sub.add_parser("disable", help="Turn metrics Off")
@@ -1278,7 +1387,9 @@ def main():
     metrics_export.add_argument("--output")
     metrics_export.set_defaults(func=cmd_metrics)
 
-    metrics_purge = metrics_sub.add_parser("purge-local", help="Purge local metrics files")
+    metrics_purge = metrics_sub.add_parser(
+        "purge-local", help="Purge local metrics files"
+    )
     metrics_purge.add_argument("--yes", action="store_true", help="Confirm local purge")
     metrics_purge.set_defaults(func=cmd_metrics)
 
@@ -1291,7 +1402,9 @@ def main():
 
     # reset
     sub_reset = subparsers.add_parser("reset", help="Delete all data and re-seed")
-    sub_reset.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
+    sub_reset.add_argument(
+        "-y", "--yes", action="store_true", help="Skip confirmation prompt"
+    )
     sub_reset.set_defaults(func=cmd_reset)
 
     # verify-pipeline
@@ -1323,16 +1436,19 @@ def main():
     )
     sub_backfill.add_argument("board_id", help="Target board UUID")
     sub_backfill.add_argument(
-        "--apply", action="store_true",
+        "--apply",
+        action="store_true",
         help="Apply writes to Kùzu (default: dry-run diff only)",
     )
     sub_backfill.add_argument(
-        "--artifact-type", default="",
+        "--artifact-type",
+        default="",
         choices=("", "spec", "sprint", "card"),
         help="Limit to one artifact type (default: all)",
     )
     sub_backfill.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="Emit machine-readable JSON instead of table",
     )
     sub_backfill.set_defaults(func=cmd_kg_backfill)
@@ -1344,11 +1460,13 @@ def main():
     )
     sub_dedup.add_argument("board_id", help="Target board UUID")
     sub_dedup.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Report duplicates without modifying the graph",
     )
     sub_dedup.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="Emit machine-readable JSON instead of table",
     )
     sub_dedup.set_defaults(func=cmd_kg_dedup_entities)
@@ -1363,13 +1481,15 @@ def main():
         help="Quarantine ID (directory name under <kg_base>/quarantine/)",
     )
     sub_restore.add_argument(
-        "--apply", action="store_true",
+        "--apply",
+        action="store_true",
         help="Apply the restore: backup-swap live board files into a new "
-             "quarantine, copy the snapshot back and validate the open "
-             "(default: dry-run plan only; refused while a server is running)",
+        "quarantine, copy the snapshot back and validate the open "
+        "(default: dry-run plan only; refused while a server is running)",
     )
     sub_restore.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="Emit machine-readable JSON instead of table",
     )
     sub_restore.set_defaults(func=cmd_kg_restore)

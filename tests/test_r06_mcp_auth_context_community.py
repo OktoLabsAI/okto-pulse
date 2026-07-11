@@ -32,17 +32,18 @@ def test_community_mcp_auth_context_resolves_agent_and_acl(monkeypatch) -> None:
     calls: list[str] = []
     db = _FakeDb()
 
-    class _FakeAgentService:
-        def __init__(self, session):
-            self.session = session
+    async def _list_accessible_board_ids_for_agent(session, agent_id: str):
+        assert session is db
+        calls.append(agent_id)
+        return ["B1", "B2"]
 
-        async def list_boards_for_agent(self, agent_id: str):
-            calls.append(agent_id)
-            return [SimpleNamespace(id="B1"), SimpleNamespace(id="B2")]
+    import okto_pulse.core.services.application_agents as application_agents
 
-    import okto_pulse.core.services.main as services_main
-
-    monkeypatch.setattr(services_main, "AgentService", _FakeAgentService)
+    monkeypatch.setattr(
+        application_agents,
+        "list_accessible_board_ids_for_agent",
+        _list_accessible_board_ids_for_agent,
+    )
 
     async def get_agent():
         return SimpleNamespace(id="A1")
@@ -53,14 +54,22 @@ def test_community_mcp_auth_context_resolves_agent_and_acl(monkeypatch) -> None:
     async def drive():
         first = await ctx.get_accessible_boards()
         second = await ctx.get_accessible_boards()
-        return await ctx.get_agent_id(), first, second, ctx.has_admin_role()
+        return (
+            await ctx.get_agent_id(),
+            first,
+            second,
+            ctx.has_admin_role(),
+            await ctx.get_realm_scope(),
+        )
 
-    agent_id, first, second, admin = asyncio.run(drive())
+    agent_id, first, second, admin, realm_scope = asyncio.run(drive())
     assert agent_id == "A1"
     assert first == second == ["B1", "B2"]
     assert admin is False
+    assert realm_scope.realm_id == "local"
+    assert realm_scope.is_local is True
     assert calls == ["A1"]
-    assert db.commits == 1
+    assert db.commits == 0
 
 
 def test_auth_context_from_session_fails_closed_for_absent_or_inactive() -> None:

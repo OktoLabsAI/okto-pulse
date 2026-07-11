@@ -27,7 +27,6 @@ def test_readme_documents_implemented_terms_and_metric_guarantees() -> None:
 def test_af42_boundary_oracle_matches_executable_report() -> None:
     from okto_pulse.community.adapters.core_import_boundary import (
         AF42_PRIVATE_REACH_IN_BASELINE,
-        CORE_IMPORT_COMMUNITY_IMPLEMENTATION,
         CORE_IMPORT_GOVERNED_REACH_IN,
         CORE_IMPORT_PUBLIC_CONTRACT,
         audit_community_core_import_boundary,
@@ -39,14 +38,14 @@ def test_af42_boundary_oracle_matches_executable_report() -> None:
 
     assert "<!-- AF42-BOUNDARY-ORACLE:BEGIN -->" in readme
     assert "<!-- AF42-BOUNDARY-ORACLE:END -->" in readme
-    assert f"| Historical private reach-in baseline | `{AF42_PRIVATE_REACH_IN_BASELINE}` |" in readme
+    assert "| Historical private reach-in baseline | `32` |" in readme
+    assert f"| Current private reach-in budget | `{AF42_PRIVATE_REACH_IN_BASELINE}` |" in readme
     assert f"| Current governed private reach-ins | `{report['occurrence_count']}` |" in readme
     assert f"| Current full Community->Core import inventory | `{report['inventory_count']}` |" in readme
     assert (
         "| Inventory classification | "
         f"`public_contract={classes[CORE_IMPORT_PUBLIC_CONTRACT]}`, "
-        f"`community_owned_implementation={classes[CORE_IMPORT_COMMUNITY_IMPLEMENTATION]}`, "
-        f"`governed_temporary_reach_in={classes[CORE_IMPORT_GOVERNED_REACH_IN]}` |"
+        f"`governed_temporary_reach_in={classes.get(CORE_IMPORT_GOVERNED_REACH_IN, 0)}` |"
     ) in readme
     assert (
         "| Boundary violations | `0` violations, `0` stale ledger entries, "

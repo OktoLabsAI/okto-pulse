@@ -12,7 +12,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from okto_pulse.community.adapters.telemetry_sender import CommunityTelemetryBeaconSender
+from okto_pulse.community.adapters.telemetry_sender import (
+    CommunityTelemetryBeaconSender,
+)
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry.emitters import (
@@ -23,8 +25,10 @@ from okto_pulse.core.telemetry.emitters import (
     emit_pipeline_transition_event,
 )
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
-from okto_pulse.core.telemetry.service import TelemetryService
-from okto_pulse.core.telemetry.settings import resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
 
 # R10-E PASS 1 aliases: tests exercise the Community concrete classes.
 TelemetryBeaconSender = CommunityTelemetryBeaconSender
@@ -33,7 +37,9 @@ LocalTelemetryStore = CommunityLocalTelemetryStore
 
 def _settings(tmp_path: Path, monkeypatch) -> CoreSettings:
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
-    return CoreSettings(metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon")
+    return CoreSettings(
+        metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon"
+    )
 
 
 def _metrics(settings: CoreSettings) -> dict:
@@ -44,6 +50,7 @@ def _metrics(settings: CoreSettings) -> dict:
 
 # --- emit -> aggregate, one per maintained type (bounded label) ---------------
 
+
 def test_emit_cli_reaches_cli_counts(tmp_path: Path, monkeypatch) -> None:
     settings = _settings(tmp_path, monkeypatch)
     emit_cli_event(command="serve", exit_code=0, duration_ms=12, settings=settings)
@@ -52,14 +59,22 @@ def test_emit_cli_reaches_cli_counts(tmp_path: Path, monkeypatch) -> None:
 
 def test_emit_mcp_reaches_mcp_tool_counts(tmp_path: Path, monkeypatch) -> None:
     settings = _settings(tmp_path, monkeypatch)
-    emit_mcp_event(tool_name="create_card", status="success", duration_ms=5, settings=settings)
-    assert _metrics(settings)["mcp_tool_counts"] == {"create_card": 1}  # keyed by tool name
+    emit_mcp_event(
+        tool_name="create_card", status="success", duration_ms=5, settings=settings
+    )
+    assert _metrics(settings)["mcp_tool_counts"] == {
+        "create_card": 1
+    }  # keyed by tool name
 
 
 def test_emit_kg_reaches_kg_operation_counts(tmp_path: Path, monkeypatch) -> None:
     settings = _settings(tmp_path, monkeypatch)
-    emit_kg_event(operation="consolidate", status="success", node_type="Card", settings=settings)
-    assert _metrics(settings)["kg_operation_counts"] == {"consolidate": 1}  # keyed by operation
+    emit_kg_event(
+        operation="consolidate", status="success", node_type="Card", settings=settings
+    )
+    assert _metrics(settings)["kg_operation_counts"] == {
+        "consolidate": 1
+    }  # keyed by operation
 
 
 def test_emit_lifecycle_reaches_lifecycle_counts(tmp_path: Path, monkeypatch) -> None:
@@ -69,15 +84,23 @@ def test_emit_lifecycle_reaches_lifecycle_counts(tmp_path: Path, monkeypatch) ->
     assert _metrics(settings)["lifecycle_counts"] == {"created": 1}
 
 
-def test_emit_pipeline_transition_reaches_pipeline_transition_counts(tmp_path: Path, monkeypatch) -> None:
+def test_emit_pipeline_transition_reaches_pipeline_transition_counts(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _settings(tmp_path, monkeypatch)
     emit_pipeline_transition_event(
-        phase="refinement", from_status="ideation", to_status="refinement", settings=settings
+        phase="refinement",
+        from_status="ideation",
+        to_status="refinement",
+        settings=settings,
     )
-    assert _metrics(settings)["pipeline_transition_counts"] == {"refinement": 1}  # keyed by phase
+    assert _metrics(settings)["pipeline_transition_counts"] == {
+        "refinement": 1
+    }  # keyed by phase
 
 
 # --- privacy: bounded keys never carry secret / PII / ids / args / payload ----
+
 
 def test_aggregate_keys_carry_no_secret_pii_or_ids(tmp_path: Path, monkeypatch) -> None:
     settings = _settings(tmp_path, monkeypatch)
@@ -95,7 +118,9 @@ def test_aggregate_keys_carry_no_secret_pii_or_ids(tmp_path: Path, monkeypatch) 
         },
     )
     # a kg op whose operation VALUE tries to smuggle a path is rejected outright.
-    service.record_event("kg", {"operation": "/home/user/secret.db", "node_type": "Card"})
+    service.record_event(
+        "kg", {"operation": "/home/user/secret.db", "node_type": "Card"}
+    )
     metrics = _metrics(settings)
     blob = json.dumps(metrics)
     for leak in (
@@ -117,7 +142,9 @@ def test_aggregate_keys_carry_no_secret_pii_or_ids(tmp_path: Path, monkeypatch) 
     assert metrics.get("kg_operation_counts", {}) in ({}, {"unknown": 1})
 
 
-def test_unknown_event_type_is_not_silently_dropped(tmp_path: Path, monkeypatch) -> None:
+def test_unknown_event_type_is_not_silently_dropped(
+    tmp_path: Path, monkeypatch
+) -> None:
     # A legacy/unknown event_type cannot go through record_event (the closed schema
     # rejects an unsupported type), so inject it directly into the local store as a
     # stale event would appear after a schema change. It must NOT vanish from the

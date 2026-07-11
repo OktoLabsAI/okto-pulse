@@ -14,7 +14,7 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy import select
 
-from okto_pulse.core.models.db import (
+from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationQueue,
     DomainEventHandlerExecution,
     DomainEventRow,

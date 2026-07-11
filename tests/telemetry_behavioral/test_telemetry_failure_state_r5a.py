@@ -20,8 +20,11 @@ from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetr
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry import failure_state as fs
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
-from okto_pulse.core.telemetry.service import TelemetryService
-from okto_pulse.core.telemetry.settings import load_state, resolve_telemetry_config
+from okto_pulse.community.adapters.telemetry_port import (
+    CommunityTelemetryService as TelemetryService,
+)
+from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
+from okto_pulse.core.telemetry.settings import load_state
 
 # R10-E PASS 1 aliases: tests exercise the Community concrete classes.
 TelemetryBeaconSender = CommunityTelemetryBeaconSender
@@ -40,7 +43,9 @@ class _Resp:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            raise AssertionError(f"unhandled status {self.status_code} reached raise_for_status")
+            raise AssertionError(
+                f"unhandled status {self.status_code} reached raise_for_status"
+            )
 
 
 class _Session:
@@ -53,17 +58,24 @@ class _Session:
 
 def _settings(tmp_path: Path, monkeypatch) -> CoreSettings:
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
-    return CoreSettings(metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon")
+    return CoreSettings(
+        metrics_dir=str(tmp_path / "metrics"), metrics_mode="anonymous_beacon"
+    )
 
 
 def _enable_with_token(tmp_path: Path, settings: CoreSettings) -> None:
     TelemetryService(settings).update_settings(
-        mode="anonymous_beacon", source="cli", policy_version="2026-05-11", schema_version=CURRENT_SCHEMA_VERSION
+        mode="anonymous_beacon",
+        source="cli",
+        policy_version="2026-05-11",
+        schema_version=CURRENT_SCHEMA_VERSION,
     )
     state_path = tmp_path / "metrics" / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["install_token"] = _SECRET_TOKEN
-    state["install_token_expires_at"] = "2027-01-01T00:00:00Z"  # far future: skip refresh
+    state["install_token_expires_at"] = (
+        "2027-01-01T00:00:00Z"  # far future: skip refresh
+    )
     state["next_batch_seq"] = 1
     state["policy_version"] = "2026-05-11"
     state_path.write_text(json.dumps(state), encoding="utf-8")
@@ -95,7 +107,10 @@ def _failure_block(settings: CoreSettings) -> dict:
 
 # --- ts_1ec2207f: a failure persists the failure-state WITHOUT a secret --------
 
-def test_failure_persists_failure_state_without_secret(tmp_path: Path, monkeypatch) -> None:
+
+def test_failure_persists_failure_state_without_secret(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _settings(tmp_path, monkeypatch)
     _enable_with_token(tmp_path, settings)
     _append_event(settings)
@@ -120,29 +135,40 @@ def test_failure_persists_failure_state_without_secret(tmp_path: Path, monkeypat
     assert set(block) <= set(fs.PUBLIC_FAILURE_STATE_FIELDS)
 
 
-def test_failure_records_redacted_install_id_not_raw(tmp_path: Path, monkeypatch) -> None:
+def test_failure_records_redacted_install_id_not_raw(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _settings(tmp_path, monkeypatch)
     _enable_with_token(tmp_path, settings)
     _append_event(settings)
     TelemetryBeaconSender(settings, session=_Session(_Resp(503))).send_once()
 
     block = _failure_block(settings)
-    raw_install_id = get_or_create_install_id(settings)  # the raw id lives in its own file
+    raw_install_id = get_or_create_install_id(
+        settings
+    )  # the raw id lives in its own file
     redacted = block["install_id_redacted"]
     assert redacted and redacted.startswith("iid_")
     assert redacted != raw_install_id  # never the raw id
-    assert raw_install_id not in json.dumps(block)  # raw id never in the persisted block
+    assert raw_install_id not in json.dumps(
+        block
+    )  # raw id never in the persisted block
     assert redacted == fs.redact_install_id(raw_install_id)  # deterministic
 
 
 # --- TOKEN_EXPIRED is covered (no unhandled exception) ------------------------
 
-def test_token_expired_is_recoverable_not_unhandled(tmp_path: Path, monkeypatch) -> None:
+
+def test_token_expired_is_recoverable_not_unhandled(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = _settings(tmp_path, monkeypatch)
     _enable_with_token(tmp_path, settings)
     _append_event(settings)
 
-    out = TelemetryBeaconSender(settings, session=_Session(_Resp(401, "TOKEN_EXPIRED"))).send_once()
+    out = TelemetryBeaconSender(
+        settings, session=_Session(_Resp(401, "TOKEN_EXPIRED"))
+    ).send_once()
     assert out == {"sent": False, "reason": "token_expired"}
 
     block = _failure_block(settings)
@@ -155,8 +181,12 @@ def test_token_expired_is_recoverable_not_unhandled(tmp_path: Path, monkeypatch)
 
 # --- ts_35cbf75d: legacy state migrates failure-state with safe defaults -------
 
+
 def test_legacy_state_migrates_failure_state_with_safe_defaults() -> None:
-    legacy = {"mode": "anonymous_beacon", "last_send_at": "2026-06-10T00:00:00Z"}  # no failure_state block
+    legacy = {
+        "mode": "anonymous_beacon",
+        "last_send_at": "2026-06-10T00:00:00Z",
+    }  # no failure_state block
     state = fs.read_failure_state(legacy)
     assert state.status == fs.STATUS_UNKNOWN
     assert state.last_success_at == "2026-06-10T00:00:00Z"  # seeded from legacy field
@@ -166,7 +196,9 @@ def test_legacy_state_migrates_failure_state_with_safe_defaults() -> None:
     assert state.retry_count == 0 and state.reason_code is None
 
 
-def test_failure_state_transition_log_explains_last_send_without_secret(tmp_path: Path, monkeypatch, caplog) -> None:
+def test_failure_state_transition_log_explains_last_send_without_secret(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
     # ts_4d061c7c: the local structured log explains the last send outcome
     # (status / reason_code / when to retry), secret-free.
     caplog.set_level("INFO", logger="okto_pulse.telemetry.sender")
@@ -179,7 +211,8 @@ def test_failure_state_transition_log_explains_last_send_without_secret(tmp_path
     transitions = [
         record.__dict__
         for record in caplog.records
-        if record.__dict__.get("metric_name") == "metrics_failure_state_transition_total"
+        if record.__dict__.get("metric_name")
+        == "metrics_failure_state_transition_total"
     ]
     assert transitions, "no metrics.failure_state_transition log emitted"
     rec = transitions[-1]

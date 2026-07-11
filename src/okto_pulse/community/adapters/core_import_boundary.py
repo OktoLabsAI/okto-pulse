@@ -13,23 +13,17 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-
-PUBLIC_CORE_IMPORT_ALLOWLIST: tuple[str, ...] = (
-    "okto_pulse.core.ports",
-    "okto_pulse.core.kg.interfaces",
-    "okto_pulse.core.kg.board_source_store",
-    "okto_pulse.core.kg.tier_power",
-    "okto_pulse.core.kg.global_discovery.schema",
-    "okto_pulse.core.kg.schema_contract",
-    "okto_pulse.core.application",
-    "okto_pulse.core.domain",
-    "okto_pulse.core.mcp",
+from okto_pulse.community.adapters.adapter_provenance import (
+    PUBLIC_CORE_CONTRACT_SURFACES,
 )
+
+PUBLIC_CORE_IMPORT_ALLOWLIST: tuple[str, ...] = PUBLIC_CORE_CONTRACT_SURFACES
 
 
 PRIVATE_CORE_IMPORT_PREFIXES: tuple[str, ...] = (
     "okto_pulse.core.infra.database",
     "okto_pulse.core.models.db",
+    "okto_pulse.core.repositories.sqlalchemy",
     "okto_pulse.core.services.main",
     "okto_pulse.core.kg.interfaces.registry",
     "okto_pulse.core.kg.workers.deterministic_worker",
@@ -70,7 +64,7 @@ PRIVATE_CORE_REEXPORT_SYMBOL_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = 
 
 PRIVATE_CORE_SERVICE_REEXPORT_MODULE = "okto_pulse.core.services"
 
-AF42_PRIVATE_REACH_IN_BASELINE = 32
+AF42_PRIVATE_REACH_IN_BASELINE = 0
 
 CORE_IMPORT_PUBLIC_CONTRACT = "public_contract"
 CORE_IMPORT_GOVERNED_REACH_IN = "governed_temporary_reach_in"
@@ -151,139 +145,7 @@ def _ledger(
     )
 
 
-COMMUNITY_CORE_REACH_IN_LEDGER: tuple[CoreReachInLedgerEntry, ...] = (
-    _ledger(
-        "src/okto_pulse/community/adapters/coordination.py",
-        "<module>",
-        "okto_pulse.core.models.db",
-        (
-            "ConsolidationQueue",
-            "DomainEventHandlerExecution",
-            "DomainEventRow",
-            "GlobalUpdateOutbox",
-        ),
-        target="Community SQLAlchemy coordination repositories",
-        reason="Local SQLite adapters still persist core-owned coordination rows through SQLAlchemy models.",
-        removal_path="Replace direct ORM imports with repository DTOs or generated table mappings.",
-        withdrawal_criterion="Community coordination adapters import no core.models.db symbols.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/sqlalchemy_audit_repo.py",
-        "CommunityAuditRepository.get_latest_for_artifact",
-        "okto_pulse.core.models.db",
-        ("ConsolidationAudit",),
-        target="Community SQLAlchemy audit repository",
-        reason="Local-first audit adapter persists current core audit rows.",
-        removal_path="Move audit persistence behind an edition-neutral repository port.",
-        withdrawal_criterion="Community audit repository imports no core.models.db symbols.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/sqlalchemy_audit_repo.py",
-        "CommunityAuditRepository.get_audit_by_session",
-        "okto_pulse.core.models.db",
-        ("ConsolidationAudit",),
-        target="Community SQLAlchemy audit repository",
-        reason="Local-first audit adapter persists current core audit rows.",
-        removal_path="Move audit persistence behind an edition-neutral repository port.",
-        withdrawal_criterion="Community audit repository imports no core.models.db symbols.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/sqlalchemy_audit_repo.py",
-        "CommunityAuditRepository.commit_consolidation_records",
-        "okto_pulse.core.models.db",
-        ("ConsolidationAudit", "GlobalUpdateOutbox", "KuzuNodeRef"),
-        target="Community SQLAlchemy audit repository",
-        reason="Local-first audit adapter persists current audit/outbox/node-ref rows.",
-        removal_path="Move audit/outbox persistence behind edition-neutral repository ports.",
-        withdrawal_criterion="Community audit repository imports no core.models.db symbols.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/sqlalchemy_audit_repo.py",
-        "CommunityAuditRepository.mark_audit_undone",
-        "okto_pulse.core.models.db",
-        ("ConsolidationAudit",),
-        target="Community SQLAlchemy audit repository",
-        reason="Local-first audit adapter updates current core audit rows.",
-        removal_path="Move audit persistence behind an edition-neutral repository port.",
-        withdrawal_criterion="Community audit repository imports no core.models.db symbols.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/sqlalchemy_audit_repo.py",
-        "CommunityAuditRepository.purge_by_board",
-        "okto_pulse.core.models.db",
-        ("ConsolidationAudit",),
-        target="Community SQLAlchemy audit repository",
-        reason="Local-first audit adapter deletes current core audit rows for board cleanup.",
-        removal_path="Move audit persistence behind an edition-neutral repository port.",
-        withdrawal_criterion="Community audit repository imports no core.models.db symbols.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/sqlalchemy_repositories.py",
-        "<module>",
-        "okto_pulse.core.models.db",
-        (
-            "Agent",
-            "AgentBoard",
-            "Board",
-            "Card",
-            "ConsolidationQueue",
-            "GlobalUpdateOutbox",
-            "Ideation",
-            "PermissionPreset",
-            "Spec",
-        ),
-        target="Community SQLAlchemy UnitOfWork repositories",
-        reason="Local repository adapters still adapt the current SQLAlchemy ORM entities.",
-        removal_path="Keep ORM confined to the Community relational adapter layer or replace with DTO mappers.",
-        withdrawal_criterion="Community repository adapters no longer import core.models.db at module top.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/sqlite_outbox_event_bus.py",
-        "CommunityOutboxEventBus.publish",
-        "okto_pulse.core.models.db",
-        ("GlobalUpdateOutbox",),
-        target="Community SQLite outbox event bus",
-        reason="Local event bus persists outbox rows into the current SQLAlchemy schema.",
-        removal_path="Move outbox persistence behind a storage-neutral event bus repository port.",
-        withdrawal_criterion="Community outbox adapter imports no core.models.db symbols.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/relational_effects.py",
-        "<module>",
-        "okto_pulse.core.models.db",
-        ("Board", "ConsolidationQueue", "KGTickRun"),
-        target="Community SQLAlchemy relational effects adapter",
-        reason="Community owns concrete SQLAlchemy persistence for queue/tick side effects requested by core ports.",
-        removal_path="Replace direct ORM imports with edition-owned table mappings or repository DTOs.",
-        withdrawal_criterion="Community relational effects adapter imports no core.models.db symbols.",
-    ),
-    _ledger(
-        "src/okto_pulse/community/adapters/kg_operational.py",
-        "<module>",
-        "okto_pulse.core.models.db",
-        (
-            "Board",
-            "Card",
-            "CanonicalDebt",
-            "ConsolidationAudit",
-            "ConsolidationDeadLetter",
-            "ConsolidationQueue",
-            "GlobalUpdateOutbox",
-            "Ideation",
-            "KuzuNodeRef",
-            "Refinement",
-            "Spec",
-            "Sprint",
-        ),
-        target="Community SQLAlchemy KG operational adapter",
-        reason=(
-            "Community owns concrete SQLAlchemy persistence for AF35-S2 KG "
-            "operational read-model, dead-letter queue and outbox/audit ports."
-        ),
-        removal_path="Replace direct ORM imports with edition-owned table mappings or repository DTOs.",
-        withdrawal_criterion="Community KG operational adapter imports no core.models.db symbols.",
-    ),
-)
+COMMUNITY_CORE_REACH_IN_LEDGER: tuple[CoreReachInLedgerEntry, ...] = ()
 
 
 class _ImportVisitor(ast.NodeVisitor):
@@ -536,7 +398,7 @@ def _classify_core_import_for_inventory(
         occurrence.module, occurrence.symbols, public_allowlist
     ):
         return CORE_IMPORT_PUBLIC_CONTRACT
-    return CORE_IMPORT_COMMUNITY_IMPLEMENTATION
+    return CORE_IMPORT_UNGOVERNED_REACH_IN
 
 
 def _invalid_public_allowlist_entries(
@@ -755,6 +617,31 @@ def audit_community_core_import_boundary(
         for occurrence in occurrences
         if occurrence.key not in ledger_by_key
     ]
+    known_private_keys = {occurrence.key for occurrence in occurrences}
+    violations.extend(
+        {
+            "file_path": entry["file_path"],
+            "scope": entry["scope"],
+            "module": entry["module"],
+            "symbols": entry["symbols"],
+            "line": entry["line"],
+            "category": "undeclared_core_surface",
+            "reason": "core_import_is_not_a_declared_public_contract",
+            "remediation_hint": (
+                "Depend on an explicit public Core contract or remove the Core "
+                "implementation reach-in."
+            ),
+        }
+        for entry in full_inventory
+        if entry["classification"] == CORE_IMPORT_UNGOVERNED_REACH_IN
+        and (
+            entry["file_path"],
+            entry["scope"],
+            entry["module"],
+            tuple(sorted(entry["symbols"])),
+        )
+        not in known_private_keys
+    )
     stale_ledger = [
         asdict(entry) for entry in ledger if entry.key not in occurrence_by_key
     ]

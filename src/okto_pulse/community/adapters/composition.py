@@ -59,7 +59,9 @@ def build_community_embedding(*, settings: Any | None = None):
     )
 
 
-def build_community_base_registry(*, embedding: Any | None = None, settings: Any | None = None):
+def build_community_base_registry(
+    *, embedding: Any | None = None, settings: Any | None = None
+):
     """Build a ``KGProviderRegistry`` whose Onda A slots (cache / rate_limiter /
     session_store / embedding) are the Community adapters. Graph, data and auth
     slots are filled by the composition root before the registry is configured."""
@@ -83,15 +85,9 @@ def _apply_graph_providers(base: Any) -> None:
     Ladybug; loaded only when the KG registry is actually configured (the same
     point the core already loaded it)."""
     from okto_pulse.community.adapters.kg import build_community_graph_providers
-    from okto_pulse.community.adapters.kg_runtime import apply_ladybug_lifecycle_step
-    from okto_pulse.community.adapters.board_graph_runtime import (
-        CommunityBoardGraphRuntime,
-    )
 
     for key, value in build_community_graph_providers().items():
         setattr(base, key, value)
-    base.safe_write_step_adapter = apply_ladybug_lifecycle_step
-    base.board_graph_runtime = CommunityBoardGraphRuntime()
 
 
 def _apply_data_providers(base: Any, session_factory: Any) -> None:
@@ -126,7 +122,9 @@ def _apply_rebuild_ingestion(base: Any) -> None:
     from okto_pulse.community.adapters.board_source_reader import resolve_pulse_db_path
 
     base.rebuild_ingestion_port = CommunityBoardRebuildIngestionAdapter(
-        db_path_provider=resolve_pulse_db_path
+        db_path_provider=resolve_pulse_db_path,
+        artifact_store=base.rebuild_audit_artifact_store,
+        quarantine_restore=getattr(base, "quarantine_restore", None),
     )
 
 
@@ -135,12 +133,16 @@ def _apply_rebuild_audit_storage(base: Any) -> None:
     from okto_pulse.community.adapters.rebuild_audit_storage import (
         CommunityFileSystemCognitivePendingWorkProvider,
         CommunityFileSystemRebuildAuditArtifactStore,
+        CommunityRebuildAuditArtifactStoreResolver,
         default_community_rebuild_base_dir,
     )
 
     base_dir = default_community_rebuild_base_dir()
     base.rebuild_audit_artifact_store = CommunityFileSystemRebuildAuditArtifactStore(
         base_dir
+    )
+    base.rebuild_audit_artifact_store_resolver = (
+        CommunityRebuildAuditArtifactStoreResolver()
     )
     base.cognitive_pending_work_provider = (
         CommunityFileSystemCognitivePendingWorkProvider(base_dir)
@@ -171,9 +173,9 @@ def build_community_kg_composition(
     embedding = build_community_embedding(settings=s)
     base = build_community_base_registry(embedding=embedding, settings=s)
     _apply_source_reader(base)
-    _apply_rebuild_ingestion(base)
     _apply_rebuild_audit_storage(base)
     _apply_quarantine_restore(base)
+    _apply_rebuild_ingestion(base)
     if include_graph:
         _apply_graph_providers(base)
     register_community_reranker()
@@ -205,49 +207,14 @@ def configure_community_kg_registry(
     tools fail closed instead of using a local relational ACL fallback."""
     from okto_pulse.core.services.application_kg import configure_provider_registry
 
-    from okto_pulse.community.adapters.product_telemetry import (
-        register_community_product_aggregator,
-    )
-    from okto_pulse.community.adapters.publish_health_sources import (
-        register_community_publish_health_sources,
-    )
-    from okto_pulse.community.adapters.telemetry_port import (
-        register_community_telemetry_port,
-    )
-    from okto_pulse.community.adapters.telemetry_sender import (
-        register_community_telemetry_sender,
-    )
-    from okto_pulse.community.adapters.telemetry_store import (
-        register_community_telemetry_event_store,
-    )
-    from okto_pulse.community.adapters.telemetry_state import (
-        register_community_telemetry_state_carrier,
+    from okto_pulse.community.adapters.telemetry_composition import (
+        register_community_telemetry_runtime,
     )
     from okto_pulse.community.adapters.kg_operational import (
         register_community_kg_operational_ports,
     )
 
-    # R12: register the Community full-dict telemetry state carrier before any
-    # core telemetry settings/service code resolves persisted state.
-    register_community_telemetry_state_carrier()
-    # R10-B: register the Community TelemetryEventStore factory at the composition
-    # root so the core telemetry runtime obtains its store through the port
-    # (instead of instantiating LocalTelemetryStore). Idempotent; covers the
-    # server, CLI, and seed entry points that all reach this composition root.
-    register_community_telemetry_event_store()
-    # R10-D: register the Community product aggregator (sqlite3, behind
-    # ProductAggregationPort) + the external publish-health source descriptors
-    # (PublishHealthSource; aws_ingest/report_athena default to an explicit GAP,
-    # never healthy), same composition root.
-    register_community_product_aggregator()
-    register_community_publish_health_sources()
-    # R10-C: register the Community telemetry beacon sender (TelemetrySink) so the
-    # metrics beacon lifecycle resolves the Community transport through the port.
-    register_community_telemetry_sender()
-    # R10-E (Stage A, additive): register the composed TelemetryPort facade factory
-    # so request/emitter surfaces can resolve it through the registry. Fallback
-    # still present; call-site migration + fail-closed are Stage D.
-    register_community_telemetry_port()
+    register_community_telemetry_runtime()
     # AF35-S2: register Community SQLAlchemy KG operational read/worker adapters
     # so Core KG modules resolve concrete persistence through ports.
     register_community_kg_operational_ports()
@@ -255,9 +222,9 @@ def configure_community_kg_registry(
     register_community_reranker()
     base = build_community_base_registry(settings=settings)
     _apply_source_reader(base)
-    _apply_rebuild_ingestion(base)
     _apply_rebuild_audit_storage(base)
     _apply_quarantine_restore(base)
+    _apply_rebuild_ingestion(base)
     if include_graph:
         _apply_graph_providers(base)
     # R05-D/R-P2-02: supply event_bus / audit_repo / config from the Community

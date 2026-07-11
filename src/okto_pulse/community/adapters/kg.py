@@ -17,9 +17,6 @@ from okto_pulse.community.adapters.kuzu_cypher_executor import (
 from okto_pulse.community.adapters.kuzu_graph_lifecycle import (
     CommunityKuzuGraphLifecycle,
 )
-from okto_pulse.community.adapters.kuzu_graph_path_resolver import (
-    CommunityKuzuGraphPathResolver,
-)
 from okto_pulse.community.adapters.kuzu_graph_runtime_store import (
     CommunityKuzuGraphRuntimeStore,
 )
@@ -45,7 +42,6 @@ def build_community_graph_providers() -> dict[str, Any]:
         "graph_transaction": CommunityKuzuGraphTransaction(),
         "graph_schema_manager": CommunityKuzuGraphSchemaManager(),
         "graph_lifecycle": CommunityKuzuGraphLifecycle(),
-        "graph_path_resolver": CommunityKuzuGraphPathResolver(),
         "graph_runtime_store": CommunityKuzuGraphRuntimeStore(),
         "global_discovery_runtime": CommunityGlobalDiscoveryRuntime(),
         # KGD-01 FR3/BR2 — wal-only recovery port (degrau 2 da escada).
@@ -61,7 +57,6 @@ __all__ = [
     "CommunityKuzuGraphTransaction",
     "CommunityKuzuGraphSchemaManager",
     "CommunityKuzuGraphLifecycle",
-    "CommunityKuzuGraphPathResolver",
     "CommunityKuzuGraphRuntimeStore",
     "CommunityGlobalDiscoveryRuntime",
     "CommunityGraphRecovery",

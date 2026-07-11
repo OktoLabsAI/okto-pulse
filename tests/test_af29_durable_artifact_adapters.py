@@ -76,12 +76,14 @@ class _GraphRuntime:
 
 def test_af29_global_discovery_runtime_flush_probe_success(tmp_path, monkeypatch):
     graph_runtime = _GraphRuntime()
-    runtime = CommunityGlobalDiscoveryRuntime(graph_runtime=graph_runtime)
     primary = tmp_path / "global" / "discovery.lbug"
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_runtime=graph_runtime,
+        graph_path_provider=lambda: primary,
+    )
     primary.parent.mkdir()
     primary.write_bytes(b"local-graph")
     (primary.parent / "discovery.lbug.wal").write_bytes(b"wal")
-    monkeypatch.setattr(runtime, "global_graph_path", lambda: primary)
     monkeypatch.setattr(runtime, "_runtime", lambda: graph_runtime)
 
     runtime.flush_after_write_batch()
@@ -97,9 +99,11 @@ def test_af29_global_discovery_runtime_flush_reports_missing_artifact(
     monkeypatch,
 ):
     graph_runtime = _GraphRuntime()
-    runtime = CommunityGlobalDiscoveryRuntime(graph_runtime=graph_runtime)
     primary = tmp_path / "global" / "discovery.lbug"
-    monkeypatch.setattr(runtime, "global_graph_path", lambda: primary)
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_runtime=graph_runtime,
+        graph_path_provider=lambda: primary,
+    )
     monkeypatch.setattr(runtime, "_runtime", lambda: graph_runtime)
 
     with pytest.raises(RuntimeError, match="global discovery file missing"):
@@ -113,11 +117,13 @@ def test_af29_global_discovery_runtime_flush_preserves_corrupt_artifact(
     monkeypatch,
 ):
     graph_runtime = _GraphRuntime(fail_open=True)
-    runtime = CommunityGlobalDiscoveryRuntime(graph_runtime=graph_runtime)
     primary = tmp_path / "global" / "discovery.lbug"
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_runtime=graph_runtime,
+        graph_path_provider=lambda: primary,
+    )
     primary.parent.mkdir()
     primary.write_bytes(b"not-a-valid-graph")
-    monkeypatch.setattr(runtime, "global_graph_path", lambda: primary)
     monkeypatch.setattr(runtime, "_runtime", lambda: graph_runtime)
 
     with pytest.raises(RuntimeError, match="Existing global discovery"):
