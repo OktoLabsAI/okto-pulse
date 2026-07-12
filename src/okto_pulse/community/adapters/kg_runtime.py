@@ -1858,6 +1858,77 @@ def _ensure_multi_rel_pairs(
     return added
 
 
+class SupersedesPairsIncompleteError(RuntimeError):
+    """Structured, fail-closed pair-conversion failure (spec MKG-D-S1 FR5,
+    stable code ``kg_supersedes_pairs_incomplete``).
+
+    ``_ensure_multi_rel_pairs`` deliberately swallows ALTER exceptions (the
+    duplicate case is benign) — this probe is what turns a REAL conversion
+    failure into an explicit error instead of an invisible no-op that only
+    breaks at supersede time.
+    """
+
+    code = "kg_supersedes_pairs_incomplete"
+
+    def __init__(self, board_hint: str, missing_pairs: list[tuple[str, str]]):
+        self.missing_pairs = missing_pairs
+        self.remediation = (
+            "The 'supersedes' rel table could not be extended to all node-"
+            "type pairs on this engine build. Run a sanctioned graph rebuild "
+            "(KGD-01 flow) to re-create the rel table with the full pair set."
+        )
+        super().__init__(
+            f"kg_supersedes_pairs_incomplete {board_hint} "
+            f"missing={missing_pairs}"
+        )
+
+
+def _probe_supersedes_pairs(conn) -> list[tuple[str, str]]:
+    """Return MISSING (from, to) pairs of the ``supersedes`` rel (spec FR5).
+
+    Primary probe reads the catalog (SHOW_CONNECTION); fallback is a
+    functional read per expected pair (a MATCH against an absent pair
+    raises on this engine). Read-only either way.
+    """
+    expected: set[tuple[str, str]] = set()
+    for rel_name, pairs in MULTI_REL_TYPES:
+        if rel_name == "supersedes":
+            expected = set(pairs)
+            break
+    if not expected:
+        return []
+    present: set[tuple[str, str]] = set()
+    try:
+        res = conn.execute("CALL SHOW_CONNECTION('supersedes') RETURN *")
+        try:
+            while res.has_next():
+                row = res.get_next()
+                labels = [value for value in row if isinstance(value, str)]
+                if len(labels) >= 2:
+                    present.add((labels[0], labels[1]))
+        finally:
+            try:
+                res.close()
+            except Exception:
+                pass
+    except Exception:
+        for from_type, to_type in expected:
+            try:
+                res = conn.execute(
+                    f"MATCH (:{from_type})-[e:supersedes]->(:{to_type}) "
+                    "RETURN count(e)"
+                )
+                res.get_next()
+                try:
+                    res.close()
+                except Exception:
+                    pass
+                present.add((from_type, to_type))
+            except Exception:
+                pass
+    return sorted(expected - present)
+
+
 def _ensure_vector_indexes(conn) -> None:
     """Create every configured vector index, tolerating already-existing ones."""
     for node_type in VECTOR_INDEX_TYPES:
@@ -1958,9 +2029,172 @@ def _board_meta_ddl() -> str:
         "CREATE NODE TABLE IF NOT EXISTS BoardMeta ("
         "board_id STRING PRIMARY KEY, "
         "schema_version STRING, "
-        "bootstrapped_at TIMESTAMP"
+        "bootstrapped_at TIMESTAMP, "
+        "embedding_model STRING, "
+        "embedding_dimension INT64"
         ")"
     )
+
+
+#: Spec MKG-D-S1 (FR1): embedding compatibility metadata on BoardMeta.
+BOARD_META_EMBEDDING_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("embedding_model", "STRING"),
+    ("embedding_dimension", "INT64"),
+)
+
+
+def _ensure_board_meta_embedding_columns(conn) -> list[str]:
+    """ALTER TABLE ADD for the MKG-D embedding columns on legacy BoardMeta.
+
+    Idempotent with retry on lock contention (same pattern as the node
+    column ensures).
+    """
+    added: list[str] = []
+    for col_name, col_type in BOARD_META_EMBEDDING_COLUMNS:
+        if _alter_add_column_with_retry(conn, "BoardMeta", col_name, col_type) == "added":
+            added.append(col_name)
+    return added
+
+
+def _effective_embedding_meta() -> dict:
+    """Best-effort effective provider metadata (never loads a model, never
+    raises). Registry unconfigured / provider absent => stub-shaped dict,
+    which the pure guard classifies as INDETERMINATE (spec D2)."""
+    try:
+        from okto_pulse.core.kg.interfaces.embedding import (
+            describe_embedding_provider,
+        )
+        from okto_pulse.core.kg.interfaces.registry import get_kg_registry
+
+        provider = getattr(get_kg_registry(), "embedding_provider", None)
+        return describe_embedding_provider(provider)
+    except Exception:
+        return {
+            "model_name": None,
+            "embedding_dimension": 0,
+            "is_stub": True,
+        }
+
+
+def _read_board_meta_embedding(conn, board_id: str) -> tuple[str | None, int | None]:
+    res = conn.execute(
+        "MATCH (m:BoardMeta {board_id: $bid}) "
+        "RETURN m.embedding_model, m.embedding_dimension LIMIT 1",
+        {"bid": board_id},
+    )
+    try:
+        if res.has_next():
+            row = res.get_next()
+            model = row[0] if row[0] else None
+            dim = int(row[1]) if row[1] is not None else None
+            return model, dim
+        return None, None
+    finally:
+        try:
+            res.close()
+        except Exception:
+            pass
+
+
+def _enforce_embedding_guard(board_id: str) -> None:
+    """Open-time embedding compatibility guard (spec MKG-D-S1 FR2/FR3).
+
+    Runs inside ``ensure_board_graph_bootstrapped`` — the one choke point
+    every opener (CLI, API, worker, MCP, search, health) passes through
+    (decision D1). ``mismatch`` refuses the open fail-closed; ``stamp``
+    persists the effective metadata; ``indeterminate`` logs and proceeds
+    without ever dirtying a valid stamp (decision D2).
+    """
+    from okto_pulse.core.kg.embedding_guard import (
+        VERDICT_INDETERMINATE,
+        VERDICT_MISMATCH,
+        VERDICT_STAMP,
+        EmbeddingIncompatibleError,
+        compare_embedding_compat,
+    )
+
+    effective = _effective_embedding_meta()
+    try:
+        with registered_raw_connection(board_id) as (_db, conn):
+            persisted_model, persisted_dim = _read_board_meta_embedding(
+                conn, board_id
+            )
+            verdict = compare_embedding_compat(
+                persisted_model,
+                persisted_dim,
+                effective.get("model_name"),
+                effective.get("embedding_dimension"),
+                effective_is_stub=bool(effective.get("is_stub")),
+            )
+            if verdict == VERDICT_STAMP:
+                conn.execute(
+                    "MATCH (m:BoardMeta {board_id: $bid}) "
+                    "SET m.embedding_model = $model, "
+                    "m.embedding_dimension = $dim",
+                    {
+                        "bid": board_id,
+                        "model": effective.get("model_name"),
+                        "dim": int(effective.get("embedding_dimension") or 0),
+                    },
+                )
+                logger.info(
+                    "kg.embedding_guard.stamped board=%s model=%s dim=%s",
+                    board_id,
+                    effective.get("model_name"),
+                    effective.get("embedding_dimension"),
+                    extra={
+                        "event": "kg.embedding_guard.stamped",
+                        "board_id": board_id,
+                    },
+                )
+    except EmbeddingIncompatibleError:
+        raise
+    except Exception as exc:
+        # Guard reads are best-effort against transient open contention —
+        # never turn a probe hiccup into an open failure (the column-based
+        # migration probes stay authoritative, spec TR3).
+        logger.warning(
+            "kg.embedding_guard.probe_failed board=%s err=%s",
+            board_id,
+            exc,
+        )
+        return
+
+    if verdict == VERDICT_MISMATCH:
+        logger.error(
+            "kg.embedding_guard.mismatch board=%s persisted=%s/%s "
+            "effective=%s/%s",
+            board_id,
+            persisted_model,
+            persisted_dim,
+            effective.get("model_name"),
+            effective.get("embedding_dimension"),
+            extra={
+                "event": "kg.embedding_guard.mismatch",
+                "board_id": board_id,
+                "persisted_model": persisted_model,
+                "persisted_dimension": persisted_dim,
+                "effective_model": effective.get("model_name"),
+                "effective_dimension": effective.get("embedding_dimension"),
+            },
+        )
+        raise EmbeddingIncompatibleError(
+            board_id=board_id,
+            persisted_model=persisted_model,
+            persisted_dimension=persisted_dim,
+            effective_model=effective.get("model_name"),
+            effective_dimension=effective.get("embedding_dimension"),
+        )
+    if verdict == VERDICT_INDETERMINATE:
+        logger.warning(
+            "kg.embedding_guard.indeterminate board=%s (provider sem "
+            "metadata válida/stub — guarda não aplicada)",
+            board_id,
+            extra={
+                "event": "kg.embedding_guard.indeterminate",
+                "board_id": board_id,
+            },
+        )
 
 
 def _is_duplicate_column_error(exc: BaseException) -> bool:
@@ -2403,6 +2637,25 @@ def migrate_board_to_v030(board_id: str) -> dict[str, Any]:
                 "SET m.schema_version = $v",
                 {"bid": board_id, "v": SCHEMA_VERSION},
             )
+            # Spec MKG-D-S1 (FR1): the migrate path also stamps the
+            # effective embedding metadata (it used to update only
+            # schema_version — risk R4: fields written on one path would
+            # evaporate on the other).
+            _ensure_board_meta_embedding_columns(conn)
+            _meta = _effective_embedding_meta()
+            if not _meta.get("is_stub") and _meta.get("model_name") and int(
+                _meta.get("embedding_dimension") or 0
+            ) > 0:
+                conn.execute(
+                    "MATCH (m:BoardMeta {board_id: $bid}) "
+                    "SET m.embedding_model = $model, "
+                    "m.embedding_dimension = $dim",
+                    {
+                        "bid": board_id,
+                        "model": _meta.get("model_name"),
+                        "dim": int(_meta.get("embedding_dimension") or 0),
+                    },
+                )
         except Exception as exc:
             logger.warning(
                 "migrate_v030.meta_update_failed board=%s err=%s",
@@ -2731,6 +2984,7 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
         try:
             load_vector_extension(conn)
             conn.execute(_board_meta_ddl())
+            _ensure_board_meta_embedding_columns(conn)
             for node_type in NODE_TYPES:
                 added_for_type: list[str] = []
                 try:
@@ -2841,6 +3095,10 @@ def apply_schema_to_connection(conn) -> None:
     """
     load_vector_extension(conn)
     conn.execute(_board_meta_ddl())
+    # Spec MKG-D-S1 (FR1): legacy BoardMeta tables gain the embedding
+    # columns via idempotent ALTER ADD (CREATE IF NOT EXISTS is a no-op on
+    # pre-existing tables).
+    _ensure_board_meta_embedding_columns(conn)
     for node_type in NODE_TYPES:
         conn.execute(_build_node_ddl(node_type))
         # v0.3.1: ensure priority_boost column exists on legacy boards. The
@@ -2869,11 +3127,36 @@ def apply_schema_to_connection(conn) -> None:
         _backfill_legacy_edge_metadata(conn, rel_name)
 
     # Multi-pair rel types (hierarchy backbone — `belongs_to`).
+    supersedes_added: list[tuple[str, str]] = []
     for rel_name, pairs in MULTI_REL_TYPES:
         conn.execute(_build_multi_rel_ddl(rel_name, pairs))
-        _ensure_multi_rel_pairs(conn, rel_name, pairs)
+        added_pairs = _ensure_multi_rel_pairs(conn, rel_name, pairs)
+        if rel_name == "supersedes" and added_pairs:
+            supersedes_added = added_pairs
         _ensure_edge_metadata_columns(conn, rel_name)
         _backfill_legacy_edge_metadata(conn, rel_name)
+    # Spec MKG-D-S1 (FR5/AC9): fail-closed probe — a failed ALTER on the
+    # supersedes conversion must never be an invisible no-op.
+    missing_pairs = _probe_supersedes_pairs(conn)
+    if missing_pairs:
+        logger.error(
+            "kg.supersedes.pairs_incomplete missing=%s",
+            missing_pairs,
+            extra={
+                "event": "kg.supersedes.pairs_incomplete",
+                "missing_pairs": [list(p) for p in missing_pairs],
+            },
+        )
+        raise SupersedesPairsIncompleteError("apply_schema", missing_pairs)
+    if supersedes_added:
+        logger.info(
+            "kg.supersedes.pairs_ensured added=%d",
+            len(supersedes_added),
+            extra={
+                "event": "kg.supersedes.pairs_ensured",
+                "added_pairs": [list(p) for p in supersedes_added],
+            },
+        )
     _ensure_vector_indexes(conn)
 
 
@@ -2927,17 +3210,29 @@ def bootstrap_board_graph(board_id: str) -> BoardGraphHandle:
 
         # Record schema version on the BoardMeta singleton. Use DELETE+CREATE
         # so a re-bootstrap updates the version if the schema has evolved.
+        # Spec MKG-D-S1 (FR1): preserve/stamp the embedding metadata across
+        # the DELETE+CREATE (risk R4 — fields must survive re-bootstrap).
+        prior_model, prior_dim = _read_board_meta_embedding(conn, board_id)
+        _meta = _effective_embedding_meta()
+        if not _meta.get("is_stub") and _meta.get("model_name") and int(
+            _meta.get("embedding_dimension") or 0
+        ) > 0 and not prior_model:
+            prior_model = _meta.get("model_name")
+            prior_dim = int(_meta.get("embedding_dimension") or 0)
         conn.execute(
             "MATCH (m:BoardMeta {board_id: $bid}) DELETE m",
             {"bid": board_id},
         )
         conn.execute(
             "CREATE (m:BoardMeta {board_id: $bid, schema_version: $v, "
-            "bootstrapped_at: timestamp($ts)})",
+            "bootstrapped_at: timestamp($ts), "
+            "embedding_model: $emodel, embedding_dimension: $edim})",
             {
                 "bid": board_id,
                 "v": SCHEMA_VERSION,
                 "ts": _now_iso(),
+                "emodel": prior_model,
+                "edim": prior_dim,
             },
         )
     finally:
@@ -3052,6 +3347,11 @@ def ensure_board_graph_bootstrapped(board_id: str) -> None:
         else:
             _MIGRATED_BOARDS.add(board_id)
             bootstrapped = True
+        # Spec MKG-D-S1 (FR2, decision D1): open-time embedding guard at the
+        # single choke point. A mismatch raises BEFORE caching, so a blocked
+        # board is re-checked (and can open again once the provider is
+        # restored) instead of being cached as bootstrapped.
+        _enforce_embedding_guard(board_id)
         if bootstrapped:
             _BOOTSTRAPPED_BOARDS.add(board_id)
 

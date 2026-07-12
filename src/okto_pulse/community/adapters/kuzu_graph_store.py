@@ -176,11 +176,14 @@ class CommunityKuzuGraphStore:
         )
 
         pool_size = max(filters.max_rows, filters.max_rows * DECAY_REORDER_POOL_MULTIPLIER)
+        from okto_pulse.core.kg.cypher_templates import superseded_filter_clause
+
         cypher = (
             f"MATCH (n:{node_type}) "
             f"WHERE n.title CONTAINS $topic "
             f"AND n.source_confidence >= $min_confidence "
             f"AND n.relevance_score >= $min_relevance "
+            f"AND {superseded_filter_clause('n')} "
             f"RETURN n.id, n.title, n.content, n.created_at, n.source_confidence, "
             f"n.relevance_score, n.superseded_by, n.query_hits, n.last_queried_at "
             f"ORDER BY n.relevance_score DESC, n.created_at DESC "
@@ -191,6 +194,7 @@ class CommunityKuzuGraphStore:
             "min_confidence": filters.min_confidence,
             "min_relevance": filters.min_relevance,
             "max_rows": pool_size,
+            "include_superseded": bool(getattr(filters, "include_superseded", False)),
         })
         if not rows:
             return rows
@@ -252,6 +256,9 @@ class CommunityKuzuGraphStore:
                 top_k=filters.max_rows,
                 min_similarity=min_similarity,
                 conn=conn,
+                include_superseded=bool(
+                    getattr(filters, "include_superseded", False)
+                ),
             )
         if not raw:
             return []
@@ -293,6 +300,9 @@ class CommunityKuzuGraphStore:
             "min_confidence": filters.min_confidence,
             "max_rows": filters.max_rows,
             "graph_layer": graph_layer,
+            "include_superseded": bool(
+                getattr(filters, "include_superseded", False)
+            ),
         })
 
     def find_by_artifact_filtered(
@@ -329,6 +339,9 @@ class CommunityKuzuGraphStore:
             "min_confidence": filters.min_confidence,
             "max_rows": filters.max_rows,
             "graph_layer": graph_layer,
+            "include_superseded": bool(
+                getattr(filters, "include_superseded", False)
+            ),
         }
         # Layer scoping clauses (spec 849d6292). The center is the explicitly
         # requested anchor and is always returned; only the EXPANDED neighbors
@@ -336,8 +349,16 @@ class CommunityKuzuGraphStore:
         # working nodes. hop2 is optional so a null hop2 (no second hop) is kept.
         # Fail-closed layer scoping (bug 07bdf670) via the single-source helper:
         # a hop with NULL/absent graph_layer is NOT treated as canonical.
-        hop1_layer = tpl.layer_filter_clause("hop1")
-        hop2_layer = f"(hop2 IS NULL OR {tpl.layer_filter_clause('hop2')})"
+        # Spec MKG-D-S1 (FR7): active-memory scoping composes with the layer
+        # scoping at the SAME in-Cypher level (single-source helpers).
+        hop1_layer = (
+            f"{tpl.layer_filter_clause('hop1')} "
+            f"AND {tpl.superseded_filter_clause('hop1')}"
+        )
+        hop2_layer = (
+            f"(hop2 IS NULL OR ({tpl.layer_filter_clause('hop2')} "
+            f"AND {tpl.superseded_filter_clause('hop2')}))"
+        )
         if rel_types:
             # Kùzu doesn't expose `label(r)` as a parameter-safe filter, so we
             # inline a whitelist check via :<type1>|:<type2> pattern syntax.
@@ -383,9 +404,15 @@ class CommunityKuzuGraphStore:
         return self._exec(board_id, cypher, params)
 
     def traverse_supersedence(
-        self, board_id: str, decision_id: str, max_depth: int = 10
+        self,
+        board_id: str,
+        decision_id: str,
+        max_depth: int = 10,
+        node_type: str = "Decision",
     ) -> list[list]:
-        return self._exec(board_id, tpl.GET_SUPERSEDENCE_CHAIN, {
+        # Spec MKG-D-S1 (FR6): label-parametrized via allowlisted template
+        # (Decision keeps the byte-identical legacy template).
+        return self._exec(board_id, tpl.supersedence_chain_template(node_type), {
             "decision_id": decision_id,
         })
 
