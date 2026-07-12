@@ -332,6 +332,15 @@ class CommunityRebuildEffects:
         )
         restored = restore_canonical_cognitive(command.board_id, snapshot)
         summary = preservation_summary(snapshot, restored)
+        # Spec MKG-A-S1 (FR5/D4, OR2): literal replay of the durable
+        # cognitive source AFTER the snapshot restore — with an unreadable
+        # snapshot this is what brings Learning/Alternative/Assumption
+        # back. Create-if-absent, so restore+replay never duplicates.
+        from okto_pulse.core.kg.canonical_cognitive_preservation import (
+            replay_durable_cognitive,
+        )
+
+        summary.update(replay_durable_cognitive(command.board_id))
         if summary["status"] in (STATUS_DEGRADED, STATUS_UNREADABLE):
             summary["fallback_holds_recorded"] = record_cognitive_loss_fallback(
                 command.board_id, summary

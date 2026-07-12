@@ -718,6 +718,20 @@ def create_community_app():
     )
 
     _rc_session_factory = get_session_factory()
+
+    # MKG-A-S1 (FR4): durable append-only source for cognitive nodes.
+    # Registered BEFORE the lifespan so the consolidation commit path can
+    # resolve it fail-closed from its first cognitive commit.
+    from okto_pulse.community.adapters.sqlalchemy_kg_cognitive_source import (
+        CommunitySqlAlchemyCognitiveSourceStore,
+    )
+    from okto_pulse.core.ports.kg_cognitive_source import (
+        register_cognitive_source_store,
+    )
+
+    register_cognitive_source_store(
+        CommunitySqlAlchemyCognitiveSourceStore(_rc_session_factory)
+    )
     _community_uow_factory = build_community_unit_of_work_factory(_rc_session_factory)
     _community_worker_registry = build_community_worker_registry(
         _rc_session_factory,

@@ -26,6 +26,7 @@ COMMON_NODE_ATTRIBUTES = """
     superseded_at TIMESTAMP,
     revocation_reason STRING,
     human_curated BOOLEAN,
+    generation INT64,
     embedding DOUBLE[384]
 """.strip()
 

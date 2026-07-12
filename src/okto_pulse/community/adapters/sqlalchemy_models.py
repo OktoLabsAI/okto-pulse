@@ -2479,3 +2479,47 @@ class KGTickRun(Base):
         Integer, nullable=False, default=0, server_default=text("0"),
     )
 
+
+
+class KGCognitiveSource(Base):
+    """Durable append-only source of truth for canonical COGNITIVE nodes
+    (Learning / Alternative / Assumption) — spec MKG-A-S1.
+
+    One immutable row per committed cognitive node generation. Written by
+    the consolidation commit BEFORE it reports success (fail-closed) and
+    replayed literally by the KG rebuild when the pre-purge graph snapshot
+    is unreadable — cognitive knowledge no longer dies with the graph
+    (incident 2026-07-10). Rows are never UPDATEd or DELETEd; idempotency
+    is enforced by UNIQUE(node_id, generation).
+
+    Created via Base.metadata.create_all on first server startup, no ledger
+    step required (new table, no ALTER/backfill).
+    """
+
+    __tablename__ = "kg_cognitive_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "node_id", "generation",
+            name="uq_kg_cognitive_sources_node_generation",
+        ),
+        Index("idx_kg_cognitive_sources_board", "board_id"),
+        Index("idx_kg_cognitive_sources_node", "node_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    node_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0"),
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    evidence_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source_session_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True,
+    )
+    committed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
