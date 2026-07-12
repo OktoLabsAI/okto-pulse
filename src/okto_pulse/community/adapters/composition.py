@@ -243,6 +243,17 @@ def configure_community_kg_registry(
     register_curation_proposal_store(
         CommunitySqlAlchemyCurationProposalStore(session_factory)
     )
+    # MKG-E-S1 (FR3): declarative subtype vocabulary.
+    from okto_pulse.community.adapters.sqlalchemy_kg_subtype_registry import (
+        CommunitySqlAlchemyNodeSubtypeRegistry,
+    )
+    from okto_pulse.core.ports.kg_subtype_registry import (
+        register_node_subtype_registry,
+    )
+
+    register_node_subtype_registry(
+        CommunitySqlAlchemyNodeSubtypeRegistry(session_factory)
+    )
     base = build_community_base_registry(settings=settings)
     _apply_source_reader(base)
     _apply_rebuild_audit_storage(base)

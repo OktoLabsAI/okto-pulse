@@ -35,6 +35,7 @@ COMMON_NODE_ATTRIBUTES = """
     source_content_hash STRING,
     attestation_count INT64,
     last_attested_at TIMESTAMP,
+    kind_of STRING,
     embedding DOUBLE[384]
 """.strip()
 

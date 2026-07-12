@@ -1,7 +1,7 @@
 """SQLAlchemy database models."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
@@ -2595,4 +2595,30 @@ class KGCurationProposal(Base):
     )
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class KGNodeSubtype(Base):
+    """Declarative subtype vocabulary (spec MKG-E-S1): kind_of under one of
+    the 11 closed physical node types. Data, not schema — declarations
+    never bump SCHEMA_VERSION (D6)."""
+
+    __tablename__ = "kg_node_subtypes"
+    __table_args__ = (
+        UniqueConstraint(
+            "node_type", "kind_of", name="uq_kg_node_subtypes_type_kind"
+        ),
+        Index("idx_kg_node_subtypes_type", "node_type"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    node_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    kind_of: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
     )

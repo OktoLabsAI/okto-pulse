@@ -1334,6 +1334,126 @@ def cmd_kg_proposals(args):
     sys.exit(0)
 
 
+def cmd_kg_export(args):
+    """MKG-E-S1 (FR6/BR4/BR5) — deterministic JSON-LD logical backup of a
+    board graph (read-only; atomic write via tmp+rename; refuses to run
+    with a live server — single writer)."""
+    import os
+    import tempfile as _tempfile
+
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        register_community_relational_schema_lifecycle,
+    )
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core.infra.database import get_session_factory, init_db
+    from okto_pulse.core.kg.graph_export import (
+        GraphExportError,
+        export_board_jsonld,
+    )
+
+    board_id: str = args.board_id
+    output: str = args.output
+    fmt: str = str(getattr(args, "format", "jsonld") or "jsonld")
+
+    if fmt != "jsonld":
+        print(f"ERRO formato nao suportado: {fmt} (apenas jsonld)")
+        sys.exit(2)
+
+    # D5/R7: export offline abre o grafo do board — single-writer guard.
+    _fail_fast_if_server_running("kg export")
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+    _configure_community_relational_runtime(settings, echo=False)
+    register_community_relational_schema_lifecycle()
+
+    async def _setup() -> None:
+        await init_db()
+        configure_community_kg_registry(get_session_factory())
+
+    asyncio.run(_setup())
+
+    try:
+        document = export_board_jsonld(board_id)
+    except GraphExportError as exc:
+        # BR4: NUNCA saída parcial — nenhum arquivo é criado na falha.
+        print(f"ERRO {exc.code}: {exc.reason}")
+        sys.exit(2)
+
+    payload = json.dumps(
+        document, sort_keys=True, indent=2, ensure_ascii=False, default=str
+    )
+    out_dir = os.path.dirname(os.path.abspath(output)) or "."
+    fd, tmp_path = _tempfile.mkstemp(dir=out_dir, suffix=".jsonld.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+        os.replace(tmp_path, output)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    print(
+        f"Export concluido: {document['nodes_exported']} nos, "
+        f"{document['edges_exported']} edges -> {output}"
+    )
+    sys.exit(0)
+
+
+def cmd_kg_subtype_declare(args):
+    """MKG-E-S1 (FR2/FR3) — declare a semantic subtype (kind_of) under one
+    of the 11 physical node types (validated by the core rules)."""
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        register_community_relational_schema_lifecycle,
+    )
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core.infra.database import get_session_factory, init_db
+    from okto_pulse.core.ports.kg_subtype_registry import (
+        SubtypeDeclaration,
+        SubtypeRegistryError,
+        require_node_subtype_registry,
+    )
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+    _configure_community_relational_runtime(settings, echo=False)
+    register_community_relational_schema_lifecycle()
+
+    async def _run():
+        await init_db()
+        configure_community_kg_registry(get_session_factory())
+        registry = require_node_subtype_registry()
+        return await registry.declare(
+            SubtypeDeclaration(
+                node_type=args.node_type,
+                kind_of=args.kind_of,
+                description=getattr(args, "description", "") or None,
+                created_by="cli:kg-subtype",
+            )
+        )
+
+    try:
+        declared = asyncio.run(_run())
+    except SubtypeRegistryError as exc:
+        print(f"ERRO {exc.failure_reason}: {exc.remediation or exc}")
+        sys.exit(2)
+    print(
+        f"Subtipo declarado: {declared.node_type}/{declared.kind_of} "
+        f"({declared.created_at})"
+    )
+    sys.exit(0)
+
+
 def cmd_kg_restore(args):
     """KGD-01 FR4 — `okto-pulse kg restore <quarantine_id> [--apply]`.
 
@@ -1728,6 +1848,40 @@ def main():
         help="Emit machine-readable JSON instead of text",
     )
     sub_unmerge.set_defaults(func=cmd_kg_unmerge)
+
+    # MKG-E-S1 (FR6) — deterministic JSON-LD logical export
+    sub_export = kg_subparsers.add_parser(
+        "export",
+        help="Export a board graph to deterministic JSON-LD (PROV-O mapping)",
+    )
+    sub_export.add_argument("board_id", help="Target board UUID")
+    sub_export.add_argument(
+        "--output", required=True, help="Destination file path"
+    )
+    sub_export.add_argument(
+        "--format", default="jsonld", help="Export format (only: jsonld)"
+    )
+    sub_export.set_defaults(func=cmd_kg_export)
+
+    # MKG-E-S1 (FR2) — declarative subtype vocabulary
+    sub_subtype = kg_subparsers.add_parser(
+        "subtype",
+        help="Manage the declarative subtype vocabulary (kind_of)",
+    )
+    subtype_sub = sub_subtype.add_subparsers(dest="subtype_command")
+    sub_subtype_declare = subtype_sub.add_parser(
+        "declare", help="Declare a kind_of under a physical node type"
+    )
+    sub_subtype_declare.add_argument(
+        "node_type", help="One of the 11 physical node types (e.g. Entity)"
+    )
+    sub_subtype_declare.add_argument(
+        "kind_of", help="Subtype name (e.g. security_control)"
+    )
+    sub_subtype_declare.add_argument(
+        "--description", default="", help="Optional description"
+    )
+    sub_subtype_declare.set_defaults(func=cmd_kg_subtype_declare)
 
     # KGD-01 FR4 — quarantine restore (dry-run by default; --apply mutates)
     sub_restore = kg_subparsers.add_parser(
