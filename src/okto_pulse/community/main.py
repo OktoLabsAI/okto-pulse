@@ -732,6 +732,18 @@ def create_community_app():
     register_cognitive_source_store(
         CommunitySqlAlchemyCognitiveSourceStore(_rc_session_factory)
     )
+
+    # MKG-C-S1 (FR1): off-graph equivalence ledger for reversible curation.
+    from okto_pulse.community.adapters.sqlalchemy_kg_equivalence_ledger import (
+        CommunitySqlAlchemyEquivalenceLedger,
+    )
+    from okto_pulse.core.ports.kg_equivalence_ledger import (
+        register_equivalence_ledger,
+    )
+
+    register_equivalence_ledger(
+        CommunitySqlAlchemyEquivalenceLedger(_rc_session_factory)
+    )
     _community_uow_factory = build_community_unit_of_work_factory(_rc_session_factory)
     _community_worker_registry = build_community_worker_registry(
         _rc_session_factory,

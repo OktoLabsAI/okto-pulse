@@ -1098,15 +1098,26 @@ def _card_to_dict(c):
 
 
 def cmd_kg_dedup_entities(args):
-    """NC-8 (spec 7f23535f) — consolidate duplicate Kuzu nodes per
-    (node_type, source_artifact_ref).
+    """NC-8 / MKG-C-S1 — consolidate duplicate Kuzu nodes per
+    (node_type, source_artifact_ref), reversible by construction.
 
-    Default writes to the graph; pass --dry-run for a no-op preview.
-    Output is a human-readable table by default; --json switches to
-    structured output for ops automation.
+    The write path requires an explicit confirmation artifact
+    (--confirm) and records the complete snapshot in the equivalence
+    ledger BEFORE tombstoning the duplicates — no edge re-point, no
+    physical delete. --hard-delete is refused by the curation policy
+    (forbidden). --dry-run remains a zero-mutation preview. Output is a
+    human-readable table by default; --json for ops automation.
     """
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        register_community_relational_schema_lifecycle,
+    )
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core.infra.database import get_session_factory, init_db
+    from okto_pulse.core.kg.curation_policy import CurationPolicyError
     from okto_pulse.core.kg.dedup_migration import (
         format_report_table,
         migrate_dedup_entities,
@@ -1115,20 +1126,211 @@ def cmd_kg_dedup_entities(args):
     board_id: str = args.board_id
     dry_run: bool = bool(getattr(args, "dry_run", False))
     emit_json: bool = bool(getattr(args, "json", False))
+    confirmed: bool = bool(getattr(args, "confirm", False))
+    hard_delete: bool = bool(getattr(args, "hard_delete", False))
+    propose: bool = bool(getattr(args, "propose", False))
+    approve_id: str = str(getattr(args, "approve", "") or "")
 
-    # KGD-01 C6 (S10): dedup abre o grafo do board (e escreve por default) —
+    # KGD-01 C6 (S10): dedup abre o grafo do board (e escreve com --confirm) —
     # falha rápida com servidor vivo (o dry-run também abre para leitura).
     _fail_fast_if_server_running("kg dedup-entities")
 
     settings = CommunitySettings()
     configure_settings(settings)
+    # MKG-C-S1 (FR1): o ledger de equivalência vive no DB relacional — o
+    # caminho de escrita precisa do runtime + registry compostos (o mesmo
+    # wiring registra o EquivalenceLedger fail-closed).
+    _configure_community_relational_runtime(settings, echo=False)
+    register_community_relational_schema_lifecycle()
 
-    report = migrate_dedup_entities(board_id, dry_run=dry_run)
+    async def _setup() -> None:
+        await init_db()
+        configure_community_kg_registry(get_session_factory())
 
-    if emit_json:
+    asyncio.run(_setup())
+
+    try:
+        if propose:
+            from okto_pulse.core.kg.dedup_migration import (
+                propose_dedup_entities,
+            )
+
+            report = propose_dedup_entities(board_id)
+        elif approve_id:
+            from okto_pulse.core.kg.dedup_migration import (
+                StaleProposalError,
+                approve_dedup_proposal,
+            )
+
+            try:
+                report = approve_dedup_proposal(board_id, approve_id)
+            except StaleProposalError as exc:
+                payload = {
+                    "error": exc.code,
+                    "proposal_id": exc.proposal_id,
+                    "expected_hash": exc.expected_hash,
+                    "current_hash": exc.current_hash,
+                    "remediation": "Estado do grafo mudou desde a proposta;"
+                    " re-execute --propose e aprove o novo plano.",
+                }
+                if emit_json:
+                    print(json.dumps(payload, indent=2))
+                else:
+                    print(f"ERRO {exc.code}: {exc}")
+                sys.exit(3)
+        else:
+            report = migrate_dedup_entities(
+                board_id,
+                dry_run=dry_run,
+                confirmed=confirmed,
+                hard_delete=hard_delete,
+            )
+    except CurationPolicyError as exc:
+        payload = {
+            "error": exc.code,
+            "operation": exc.operation,
+            "level": exc.level,
+            "remediation": exc.remediation,
+        }
+        if emit_json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(
+                f"ERRO {exc.code}: operacao {exc.operation} "
+                f"(nivel {exc.level}).\n{exc.remediation}"
+            )
+        sys.exit(2)
+
+    if emit_json or propose:
         print(json.dumps(report, indent=2, default=str))
     else:
         print(format_report_table(report))
+    sys.exit(0)
+
+
+def cmd_kg_unmerge(args):
+    """MKG-C-S1 (FR4/BR3) — logically reverse a dedup merge.
+
+    Clears the tombstones the record created and revokes the ledger
+    record (preserved for audit). Never re-points edges. Idempotent on an
+    already-revoked record.
+    """
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        register_community_relational_schema_lifecycle,
+    )
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core.infra.database import get_session_factory, init_db
+    from okto_pulse.core.kg.dedup_migration import unmerge_equivalence
+    from okto_pulse.core.ports.kg_equivalence_ledger import (
+        EquivalenceLedgerError,
+    )
+
+    board_id: str = args.board_id
+    record_id: str = args.record_id
+    emit_json: bool = bool(getattr(args, "json", False))
+
+    # KGD-01 C6 / MKG-C D6: un-merge writes to the board graph — single
+    # writer guard before anything opens.
+    _fail_fast_if_server_running("kg unmerge")
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+    _configure_community_relational_runtime(settings, echo=False)
+    register_community_relational_schema_lifecycle()
+
+    async def _setup() -> None:
+        await init_db()
+        configure_community_kg_registry(get_session_factory())
+
+    asyncio.run(_setup())
+
+    try:
+        result = unmerge_equivalence(board_id, record_id)
+    except EquivalenceLedgerError as exc:
+        payload = {
+            "error": exc.failure_reason,
+            "record_id": exc.record_id,
+            "remediation": exc.remediation,
+        }
+        if emit_json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"ERRO {exc.failure_reason}: {exc.remediation or exc}")
+        sys.exit(2)
+
+    if emit_json:
+        print(json.dumps(result, indent=2, default=str))
+    elif result.get("already_revoked"):
+        print(
+            f"AVISO: registro {record_id} ja estava revogado — no-op "
+            f"idempotente."
+        )
+    else:
+        print(
+            f"Un-merge concluido: {result['members_restored']} membro(s) "
+            f"restaurado(s) do survivor {result.get('survivor_id')} "
+            f"(registro {record_id} revogado, preservado para auditoria)."
+        )
+    sys.exit(0)
+
+
+def cmd_kg_proposals(args):
+    """MKG-C-S1 (FR7) — list pending curation proposals for a board."""
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        register_community_relational_schema_lifecycle,
+    )
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core.infra.database import get_session_factory, init_db
+    from okto_pulse.core.ports.kg_curation_proposals import (
+        require_curation_proposal_store,
+    )
+
+    board_id: str = args.board_id
+    emit_json: bool = bool(getattr(args, "json", False))
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+    _configure_community_relational_runtime(settings, echo=False)
+    register_community_relational_schema_lifecycle()
+
+    async def _run() -> tuple:
+        await init_db()
+        configure_community_kg_registry(get_session_factory())
+        store = require_curation_proposal_store()
+        return await store.pending_for_board(board_id)
+
+    proposals = asyncio.run(_run())
+    if emit_json:
+        print(json.dumps(
+            [
+                {
+                    "proposal_id": pr.proposal_id,
+                    "operation": pr.operation,
+                    "proposal_hash": pr.proposal_hash,
+                    "created_at": pr.created_at,
+                    "groups": len(dict(pr.plan).get("groups", [])),
+                }
+                for pr in proposals
+            ],
+            indent=2,
+        ))
+    elif not proposals:
+        print(f"Nenhuma proposta pendente para o board {board_id}.")
+    else:
+        for pr in proposals:
+            print(
+                f"{pr.proposal_id}  {pr.operation}  "
+                f"groups={len(dict(pr.plan).get('groups', []))}  "
+                f"hash={pr.proposal_hash[:12]}  {pr.created_at}"
+            )
     sys.exit(0)
 
 
@@ -1469,7 +1671,63 @@ def main():
         action="store_true",
         help="Emit machine-readable JSON instead of table",
     )
+    sub_dedup.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Confirmation artifact required by the curation policy "
+        "(propose_only): tombstone the duplicates and record the "
+        "equivalence ledger snapshot",
+    )
+    sub_dedup.add_argument(
+        "--hard-delete",
+        action="store_true",
+        help="Legacy physical delete + edge re-point — REFUSED by the "
+        "curation policy (forbidden); physical materialization happens "
+        "only inside the deterministic rebuild",
+    )
+    sub_dedup.add_argument(
+        "--propose",
+        action="store_true",
+        help="Persist a curation proposal (canonical plan + hash) without "
+        "mutating anything; approve later with --approve",
+    )
+    sub_dedup.add_argument(
+        "--approve",
+        default="",
+        metavar="PROPOSAL_ID",
+        help="Execute a pending proposal after re-validating its hash "
+        "against the current graph state (stale_proposal refuses)",
+    )
     sub_dedup.set_defaults(func=cmd_kg_dedup_entities)
+
+    # MKG-C-S1 (FR7) — pending curation proposals
+    sub_proposals = kg_subparsers.add_parser(
+        "proposals",
+        help="List pending curation proposals for a board",
+    )
+    sub_proposals.add_argument("board_id", help="Target board UUID")
+    sub_proposals.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON instead of text",
+    )
+    sub_proposals.set_defaults(func=cmd_kg_proposals)
+
+    # MKG-C-S1 (FR4) — logical un-merge of a dedup equivalence record
+    sub_unmerge = kg_subparsers.add_parser(
+        "unmerge",
+        help="Reverse a dedup merge: de-tombstone members and revoke the "
+        "equivalence ledger record (never re-points edges)",
+    )
+    sub_unmerge.add_argument("board_id", help="Target board UUID")
+    sub_unmerge.add_argument(
+        "record_id", help="Equivalence ledger record id (eqv_...)"
+    )
+    sub_unmerge.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of text",
+    )
+    sub_unmerge.set_defaults(func=cmd_kg_unmerge)
 
     # KGD-01 FR4 — quarantine restore (dry-run by default; --apply mutates)
     sub_restore = kg_subparsers.add_parser(

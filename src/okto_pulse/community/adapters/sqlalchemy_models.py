@@ -2523,3 +2523,76 @@ class KGCognitiveSource(Base):
     committed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
+
+
+class KGEquivalenceLedger(Base):
+    """Off-graph, append-only ledger of node-equivalence decisions
+    (merges) — spec MKG-C-S1.
+
+    One row per merge decision: ``merged_ids`` fold into ``survivor_id``.
+    ``evidence`` carries the COMPLETE pre-operation snapshot (node attrs +
+    every incident edge with every property) written BEFORE the first
+    graph write (BR1). Rows are never DELETEd; un-merge stamps
+    ``revoked_at``/``revoke_reason`` and preserves the record for audit.
+
+    Created via Base.metadata.create_all on first startup (new table, no
+    ALTER/backfill).
+    """
+
+    __tablename__ = "kg_equivalence_ledger"
+    __table_args__ = (
+        Index("idx_kg_equivalence_ledger_board", "board_id"),
+        Index("idx_kg_equivalence_ledger_survivor", "survivor_id"),
+    )
+
+    record_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: f"eqv_{uuid.uuid4().hex[:16]}"
+    )
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    node_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    survivor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    merged_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    operation: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class KGCurationProposal(Base):
+    """Persisted curation proposal (spec MKG-C-S1 FR7): canonical plan +
+    deterministic proposal_hash; approval re-validates the hash against the
+    current state before any write (same contract as the rebuild
+    preflight_hash)."""
+
+    __tablename__ = "kg_curation_proposals"
+    __table_args__ = (
+        Index("idx_kg_curation_proposals_board", "board_id"),
+    )
+
+    proposal_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True,
+        default=lambda: f"prop_{uuid.uuid4().hex[:16]}",
+    )
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    operation: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    proposal_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending",
+        server_default=text("'pending'"),
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

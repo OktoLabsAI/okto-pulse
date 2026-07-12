@@ -220,6 +220,29 @@ def configure_community_kg_registry(
     register_community_kg_operational_ports()
 
     register_community_reranker()
+    # MKG-C-S1 (FR1): off-graph equivalence ledger — registered here so BOTH
+    # the server wiring and offline CLI curation commands resolve the same
+    # fail-closed port.
+    from okto_pulse.community.adapters.sqlalchemy_kg_equivalence_ledger import (
+        CommunitySqlAlchemyEquivalenceLedger,
+    )
+    from okto_pulse.core.ports.kg_equivalence_ledger import (
+        register_equivalence_ledger,
+    )
+
+    register_equivalence_ledger(
+        CommunitySqlAlchemyEquivalenceLedger(session_factory)
+    )
+    from okto_pulse.community.adapters.sqlalchemy_kg_curation_proposals import (
+        CommunitySqlAlchemyCurationProposalStore,
+    )
+    from okto_pulse.core.ports.kg_curation_proposals import (
+        register_curation_proposal_store,
+    )
+
+    register_curation_proposal_store(
+        CommunitySqlAlchemyCurationProposalStore(session_factory)
+    )
     base = build_community_base_registry(settings=settings)
     _apply_source_reader(base)
     _apply_rebuild_audit_storage(base)
