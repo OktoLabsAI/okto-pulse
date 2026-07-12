@@ -27,6 +27,14 @@ COMMON_NODE_ATTRIBUTES = """
     revocation_reason STRING,
     human_curated BOOLEAN,
     generation INT64,
+    source_span_start INT64,
+    source_span_end INT64,
+    source_span_quote STRING,
+    extraction_model_id STRING,
+    extraction_prompt_hash STRING,
+    source_content_hash STRING,
+    attestation_count INT64,
+    last_attested_at TIMESTAMP,
     embedding DOUBLE[384]
 """.strip()
 

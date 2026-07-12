@@ -2328,6 +2328,29 @@ def _ensure_kg_layer_columns(conn, node_type: str) -> list[str]:
     return added
 
 
+def _ensure_provenance_columns(conn, node_type: str) -> list[str]:
+    """ALTER TABLE ADD for the v0.3.9 provenance columns (spec MKG-B-S1 FR1)."""
+    added: list[str] = []
+    for col_name, col_type in PROVENANCE_COLUMNS:
+        if _alter_add_column_with_retry(conn, node_type, col_name, col_type) == "added":
+            added.append(col_name)
+    return added
+
+
+def _ensure_attestation_columns(conn, node_type: str) -> list[str]:
+    """ALTER TABLE ADD for the v0.3.9 attestation columns (spec MKG-B-S1 FR2).
+
+    NEW names only — LEGACY_NODE_COLUMNS ('corroboration_count') stays
+    untouched: its PRESENCE flags a board as v0.2.0 and triggers the
+    destructive recreate path.
+    """
+    added: list[str] = []
+    for col_name, col_type in ATTESTATION_COLUMNS:
+        if _alter_add_column_with_retry(conn, node_type, col_name, col_type) == "added":
+            added.append(col_name)
+    return added
+
+
 def _ensure_generation_columns(conn, node_type: str) -> list[str]:
     """ALTER TABLE ADD for the v0.3.8 generation column (spec MKG-A-S1 FR3).
 
@@ -2695,6 +2718,8 @@ HUMAN_CURATED_COLUMNS = _schema_contract.HUMAN_CURATED_COLUMNS
 LAST_RECOMPUTED_COLUMNS = _schema_contract.LAST_RECOMPUTED_COLUMNS
 KG_LAYER_COLUMNS = _schema_contract.KG_LAYER_COLUMNS
 GENERATION_COLUMNS = _schema_contract.GENERATION_COLUMNS
+PROVENANCE_COLUMNS = _schema_contract.PROVENANCE_COLUMNS
+ATTESTATION_COLUMNS = _schema_contract.ATTESTATION_COLUMNS
 LEGACY_NODE_COLUMNS = _schema_contract.LEGACY_NODE_COLUMNS
 stable_rel_type_entries = _schema_contract.stable_rel_type_entries
 relationship_endpoint_pairs = _schema_contract.relationship_endpoint_pairs
@@ -3004,6 +3029,12 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
                     added_for_type.extend(
                         _ensure_generation_columns(conn, node_type)
                     )
+                    added_for_type.extend(
+                        _ensure_provenance_columns(conn, node_type)
+                    )
+                    added_for_type.extend(
+                        _ensure_attestation_columns(conn, node_type)
+                    )
                     _backfill_kg_layer_defaults(conn, node_type)
                 except Exception as nt_exc:
                     errors.append(
@@ -3117,6 +3148,11 @@ def apply_schema_to_connection(conn) -> None:
         # v0.3.8 (spec MKG-A-S1): supersedence generation for deterministic
         # node identity. NULL on legacy rows reads as 0 in core primitives.
         _ensure_generation_columns(conn, node_type)
+        # v0.3.9 (spec MKG-B-S1): atomic provenance + graded attestation.
+        # NULL on legacy rows: provenance stays NULL; attestation_count
+        # reads as 1 in the scoring boost.
+        _ensure_provenance_columns(conn, node_type)
+        _ensure_attestation_columns(conn, node_type)
         _backfill_kg_layer_defaults(conn, node_type)
     for rel_name, from_type, to_type in REL_TYPES:
         conn.execute(_build_rel_ddl(rel_name, from_type, to_type))

@@ -185,7 +185,8 @@ class CommunityKuzuGraphStore:
             f"AND n.relevance_score >= $min_relevance "
             f"AND {superseded_filter_clause('n')} "
             f"RETURN n.id, n.title, n.content, n.created_at, n.source_confidence, "
-            f"n.relevance_score, n.superseded_by, n.query_hits, n.last_queried_at "
+            f"n.relevance_score, n.superseded_by, n.query_hits, n.last_queried_at, "
+            f"n.attestation_count "
             f"ORDER BY n.relevance_score DESC, n.created_at DESC "
             f"LIMIT $max_rows"
         )
@@ -212,6 +213,9 @@ class CommunityKuzuGraphStore:
                 "superseded_by": r[6],
                 "query_hits": r[7] or 0,
                 "last_queried_at": r[8],
+                # Spec MKG-B-S1 (FR6): feeds the attestation factor of the
+                # on-read reorder; NULL (legacy rows) is the neutral 1.
+                "attestation_count": r[9],
             }
             for r in rows
         ]

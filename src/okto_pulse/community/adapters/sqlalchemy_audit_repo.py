@@ -80,6 +80,36 @@ class CommunityAuditRepository:
                 return None
             return self._to_audit_row(result)
 
+    async def get_node_refs_by_session(self, session_id: str) -> list[NodeRefData]:
+        """Spec MKG-B-S1 (FR5/TR4): node back-refs of a committed session,
+        consumed by the core's count-only re-attestation."""
+        from sqlalchemy import select
+
+        from okto_pulse.community.adapters.sqlalchemy_models import KuzuNodeRef
+
+        async with self._sf() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(KuzuNodeRef).where(
+                            KuzuNodeRef.session_id == session_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                NodeRefData(
+                    session_id=r.session_id,
+                    board_id=r.board_id,
+                    graph_node_id=r.kuzu_node_id,
+                    graph_node_type=r.kuzu_node_type,
+                    operation=r.operation,
+                )
+                for r in rows
+            ]
+
     async def commit_consolidation_records(
         self,
         audit: ConsolidationAuditData,
