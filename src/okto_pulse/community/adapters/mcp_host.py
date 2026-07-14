@@ -6,6 +6,7 @@ HTTP transport, request credential middleware and optional replay tracing.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastmcp import FastMCP
@@ -13,6 +14,10 @@ from fastmcp.server.dependencies import get_http_request
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from okto_pulse.core.composition import (
+    RuntimeComposition,
+    runtime_composition_scope,
+)
 from okto_pulse.core.ports import (
     MCP_CREDENTIAL_SCOPE_KEY,
     mcp_credential_from_sources,
@@ -49,6 +54,29 @@ class CommunityApiKeySessionMiddleware:
             if credential is not None:
                 scope[MCP_CREDENTIAL_SCOPE_KEY] = credential
         await self.app(scope, receive, send)
+
+
+class CommunityMcpRuntimeCompositionMiddleware:
+    """Bind the app-owned runtime registry to every MCP transport task."""
+
+    def __init__(self, app: ASGIApp, composition: RuntimeComposition) -> None:
+        self.app = app
+        self.composition = composition
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        task = asyncio.current_task()
+        previous_name = task.get_name() if task is not None else None
+        if task is not None and scope.get("type") == "http":
+            task.set_name(
+                f"community.mcp.{scope.get('method', 'UNKNOWN')}:"
+                f"{scope.get('path', '')[:180]}"
+            )
+        try:
+            with runtime_composition_scope(self.composition):
+                await self.app(scope, receive, send)
+        finally:
+            if task is not None and previous_name is not None:
+                task.set_name(previous_name)
 
 
 class CommunityMcpHostProvider:
@@ -122,15 +150,24 @@ def register_community_mcp_host() -> CommunityMcpHostProvider:
     return _provider
 
 
-def build_community_mcp_asgi_app(*, catalog: Any, trace_sink: Any | None = None) -> ASGIApp:
-    """Build the Community MCP listener without exposing a Core host factory."""
+def build_community_mcp_asgi_app(
+    *,
+    catalog: Any,
+    trace_sink: Any | None = None,
+    composition: RuntimeComposition | None = None,
+) -> ASGIApp:
+    """Build the Community MCP listener with its app-owned runtime context."""
 
-    return _provider.build_asgi_app(catalog, trace_sink=trace_sink)
+    app = _provider.build_asgi_app(catalog, trace_sink=trace_sink)
+    if composition is not None:
+        return CommunityMcpRuntimeCompositionMiddleware(app, composition)
+    return app
 
 
 __all__ = [
     "CommunityApiKeySessionMiddleware",
     "CommunityMcpHostProvider",
+    "CommunityMcpRuntimeCompositionMiddleware",
     "build_community_mcp_asgi_app",
     "register_community_mcp_host",
 ]

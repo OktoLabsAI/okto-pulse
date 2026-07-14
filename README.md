@@ -60,9 +60,9 @@ Current 0.3.0 surface:
 | Surface | Count |
 | --- | ---: |
 | Governance gates | 17 |
-| Core MCP tools | 262 |
+| Core MCP tools | 265 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 262 |
+| MCP tools exposed by `okto-pulse serve` | 265 |
 
 The community package materializes the full `okto-pulse-core` command catalog in
 its FastMCP host. That means installed community runtimes expose the complete
@@ -269,10 +269,36 @@ contracts and pure backend ports. Community owns the local runtime composition:
 CLI, frontend bundle, local auth, storage, SQLite/LadybugDB wiring, telemetry
 adapters and operational MCP resource overlays.
 
-This does not mean every concrete backend has already been removed from core.
-Core's `adapter_readiness_inventory` remains the executable ledger for embedded
-technical adapters. Community registers the local adapters listed below and
-hosts the concrete runtime components used by the single-node distribution.
+Community declares `fastmcp`, `uvicorn[standard]` and
+`wsproto` directly. `CommunityMcpAuthenticator`,
+`build_community_resource_catalog`, `CommunityCapabilityDescriptorSource`,
+`build_mcp_trace_sink_from_env` and `JsonlMcpTraceSink` implement the local MCP
+host concerns, including the public `okto_pulse.core.ports.McpTraceSink`
+contract. Core supplies commands and contracts without owning the listener,
+authentication backend, resource overlay or JSONL trace transport.
+
+Core's architecture inventories and boundary gates are executable evidence that
+concrete runtime adapters remain Community-owned. Community registers the local
+adapters listed below and hosts the runtime components used by the single-node
+distribution.
+
+### AF-05/AF40 dependency owner matrix
+
+The source of truth is Core's `dependency_ledger.py`,
+`CANONICAL_AF40_DEPENDENCY_TOKENS`,
+`CANONICAL_TEMPORARY_EXCEPTION_TOKENS` and `conformance_matrix.py`.
+F14 dependency ownership keeps implementation dependencies out of the
+published `okto-pulse-core` package and assigns local runtime dependencies to
+Community.
+
+| Dependency | Status | Community ownership |
+| --- | --- | --- |
+| `aiofiles` | `removed` | No runtime consumer; blocked from Core and Community manifests. |
+| `requests` | `community_owned` | Telemetry HTTP adapter. |
+| `chardet` | `community_owned` | Telemetry transport companion. |
+| `aiosqlite` | `community_owned` | Local SQLite relational adapter. |
+| `numpy` | `community_owned` | Local embedding and rerank stack. |
+| `apscheduler` | `community_owned` | Local scheduler adapter. |
 
 AF-11 did not move application logic from core into Community. The import-boundary
 cleanup removed direct application-use-case imports of KG internals, transport
@@ -287,14 +313,14 @@ frontend bundle.
 | KG rules and orchestration | Application/KG rules exposed through `core.services.application_kg` and existing core KG contracts | Local graph/runtime adapters registered through the Community KG registry |
 | REST/MCP payload contracts | DTO/schema compatibility exposed through `core.services.application_schemas` | Consume the packaged REST/MCP surface; no community-only MCP tools were added |
 | Permission and transition policy | Authorization and gate policy exposed through `core.services.permission_policy` | Provide local auth/runtime context through Community adapters |
-| Mutable persistence marking | Current SQLAlchemy mutation seam hidden behind `core.services.persistence_mutation` until the UoW strangler completes | Provide the local SQLite engine/session composition used by the Community runtime |
+| Mutable persistence marking | Mutation intent exposed through `ApplicationPersistencePort`; no SQLAlchemy mutation helper remains in Core | Own SQLAlchemy mutable-column tracking, flush mechanics and local SQLite composition |
 | Boundary evidence | `ImportBoundaryGate` and conformance tests prove the application-layer imports stay at zero | Boundary/conformance evidence adapters prove Community-owned adapter registration without core importing Community |
 
-The AF-11 done criterion is limited to
-`ImportBoundaryGate(mode="bootstrap").observed_value == 0` for blocking
-application-layer violations. Inbound/outbound/legacy baseline debt remains
-outside that criterion and continues to be tracked by the core architecture
-ledger.
+The AF-11 application-layer criterion remains
+`ImportBoundaryGate(mode="bootstrap").observed_value == 0`. The final
+decontamination gates additionally require the active relational, ORM,
+singleton and private-reach-in budgets to remain zero; historical ledgers are
+evidence only and cannot authorize new coupling.
 
 AF-20 adds a stricter baseline policy that Community must respect when packaging
 or registering local-first adapters. Core owns `IMPORT_BOUNDARY_BASELINE_LEDGER`,
@@ -337,8 +363,8 @@ release oracle is:
 | Historical private reach-in baseline | `32` |
 | Current private reach-in budget | `0` |
 | Current governed private reach-ins | `0` |
-  | Current full Community->Core import inventory | `524` |
-  | Inventory classification | `public_contract=524`, `governed_temporary_reach_in=0` |
+| Current full Community->Core import inventory | `548` |
+| Inventory classification | `public_contract=548`, `governed_temporary_reach_in=0` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
 | Burn-down progression | `32 -> 21 -> 10 -> 0` after AF42 inventory, lifecycle/auth/MCP, then complete Community ORM ownership |
 | Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
@@ -388,7 +414,8 @@ Registration flow:
 Adapter source map:
 
 - Runtime composition: `community/main.py` and
-  `community/adapters/composition.py`.
+  `community/adapters/composition.py`; supporting provider wiring lives in
+  `community/adapters/runtime_composition.py`.
 - Scheduler and workers: `community/adapters/scheduler.py` and
   `community/adapters/workers.py`.
 - Auth/storage/init: `community/auth.py`, `community/adapters/storage.py`,
@@ -406,6 +433,8 @@ Adapter source map:
   `community/adapters/relational_effects.py`; the SQLite PRAGMA owner is
   `install_community_sqlite_pragmas` in
   `community/adapters/sqlalchemy_database.py`.
+- Relational mappings and persistence implementations:
+  `community/adapters/sqlalchemy_*`.
 - KG source/rebuild ingestion: `community/adapters/board_source_reader.py` and
   `community/adapters/board_rebuild_ingestion.py`; content ingestion helpers
   live in `community/adapters/content_ingestion.py`.
@@ -419,10 +448,12 @@ Adapter source map:
   `community/adapters/memory.py`, `community/adapters/kg.py`,
   `community/adapters/kg_runtime.py`,
   `community/adapters/board_graph_runtime.py`,
-  `community/adapters/global_discovery_runtime.py` and the
-  `community/adapters/kuzu_*` modules.
+  `community/adapters/global_discovery_runtime.py`,
+  `community/adapters/graph_*`, `community/adapters/kg_*` and
+  `community/adapters/kuzu_*`.
 - ML search helpers: `community/adapters/embedding.py` and
-  `community/adapters/rerank.py`.
+  `community/adapters/rerank.py`; orchestration lives in
+  `community/adapters/hybrid_search.py`.
 - MCP/resource overlays and host runtime: `community/adapters/mcp_auth.py`,
   `community/adapters/mcp_host.py`,
   `community/adapters/resources.py`,
@@ -436,7 +467,8 @@ Adapter source map:
   `community/adapters/telemetry_state.py`,
   `community/adapters/telemetry_port.py`,
   `community/adapters/product_telemetry.py` and
-  `community/adapters/publish_health_sources.py`.
+  `community/adapters/publish_health_sources.py` and the grouped
+  `community/adapters/telemetry_*` implementations.
 - Boundary/conformance evidence: `community/adapters/readiness_evidence.py`,
   `community/adapters/data_dependency_audit.py`,
   `community/adapters/kg_dependency_audit.py`,
@@ -446,6 +478,15 @@ Adapter source map:
   `community/adapters/smoke_evidence.py`.
 - Telemetry effect defaults are supplied by
   `community/adapters/telemetry_effect_config.py`.
+- Permission adapters: `community/adapters/permission_*`.
+- Ownership and local lifecycle support:
+  `community/adapters/adapter_provenance.py`,
+  `community/adapters/local_storage_ref.py`,
+  `community/adapters/quarantine_restore.py`,
+  `community/adapters/realm_migration.py`,
+  `community/adapters/rebuild_effects.py`,
+  `community/adapters/sqlite_only_boundary.py` and
+  `community/adapters/worker_runners.py`.
 
 Maintain this source map from the live filesystem under
 `src/okto_pulse/community/adapters/**/*.py`, with `__init__.py` and private
@@ -665,8 +706,8 @@ The executable ownership matrix is generated by `okto-pulse-saas-closure`. Every
 <!-- F16-SAAS-CLOSURE:BEGIN -->
 | F16 executable surface | Owner | Observed | Terminal target |
 | --- | --- | ---: | ---: |
-| Core import rows | Core | 4300 | classified |
-| Community-to-Core import rows | Community | 524 | classified |
+| Core import rows | Core | 4418 | classified |
+| Community-to-Core import rows | Community | 548 | classified |
 | Direct dependency rows | Distribution owner | 20 | classified |
 | `import_boundary_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
 | `singleton_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |

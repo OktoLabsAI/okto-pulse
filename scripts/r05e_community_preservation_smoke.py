@@ -82,9 +82,9 @@ def run_preservation_smoke() -> dict[str, object]:
     from okto_pulse.community import main as community_main  # noqa: F401
     from okto_pulse.community.adapters import composition as comp
     from okto_pulse.community.app import create_app  # noqa: F401
+    from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core.infra import config as _config
     from okto_pulse.core.infra import database as _db
-    from okto_pulse.core.infra.config import CoreSettings
     from okto_pulse.core.kg.interfaces import registry as _reg
     from okto_pulse.core.mcp import server as _srv
 
@@ -100,7 +100,7 @@ def run_preservation_smoke() -> dict[str, object]:
     reset_runtime_values()
 
     try:
-        settings = CoreSettings()
+        settings = CommunitySettings(data_dir=str(tmp), kg_embedding_mode="stub")
         evidence["embedding_mode"] = settings.kg_embedding_mode
         assert settings.kg_embedding_mode == "stub", (
             "offline smoke must run the stub embedding"

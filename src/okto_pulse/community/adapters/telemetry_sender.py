@@ -35,7 +35,7 @@ from typing import Any
 
 import requests
 
-from okto_pulse.core.infra.config import CoreSettings
+from okto_pulse.community.config import CommunitySettings
 from okto_pulse.core.telemetry.product_aggregator_registry import get_product_aggregator
 from okto_pulse.core.telemetry.schema import canonical_json, now_utc
 from okto_pulse.community.adapters.telemetry_runtime import resolve_telemetry_config
@@ -87,7 +87,7 @@ def _backoff_delay_seconds(retry_count: int) -> float:
     return min(_BACKOFF_CAP_SECONDS, base * (1.0 + _backoff_jitter()))
 
 
-def install_id_path(settings: CoreSettings) -> Path:
+def install_id_path(settings: CommunitySettings) -> Path:
     override = os.environ.get("OKTO_PULSE_INSTALL_ID_PATH")
     if override:
         return Path(override).expanduser().resolve()
@@ -97,7 +97,7 @@ def install_id_path(settings: CoreSettings) -> Path:
     return resolve_telemetry_config(settings).metrics_dir / "install_id"
 
 
-def get_or_create_install_id(settings: CoreSettings) -> str:
+def get_or_create_install_id(settings: CommunitySettings) -> str:
     path = install_id_path(settings)
     try:
         existing = path.read_text(encoding="utf-8").strip()
@@ -189,7 +189,11 @@ def _log_watermark_state(
 
 
 class CommunityTelemetryBeaconSender:
-    def __init__(self, settings: CoreSettings, session: requests.Session | None = None):
+    def __init__(
+        self,
+        settings: CommunitySettings,
+        session: requests.Session | None = None,
+    ):
         self.settings = settings
         self.session = session or requests.Session()
 

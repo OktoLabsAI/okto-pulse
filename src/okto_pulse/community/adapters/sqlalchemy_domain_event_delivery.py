@@ -16,6 +16,11 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     DomainEventRow,
 )
 from okto_pulse.core.ports.coordination import ClaimRepository
+from okto_pulse.core.kg.board_source_store import (
+    CARD_CONTENT_COLUMNS,
+    SPEC_CONTENT_COLUMNS_V2,
+    canonical_content_hash,
+)
 from okto_pulse.core.ports.domain_event_delivery import (
     CardBoostFacts,
     CognitiveCardFacts,
@@ -35,14 +40,16 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
         session_factory: Callable[[], Any],
         *,
         claim_repository: ClaimRepository | None = None,
+        session_scope_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._session_scope_factory = session_scope_factory or session_factory
         self._claim_repository = (
             claim_repository or CommunitySqlAlchemyClaimRepository()
         )
 
     async def recover_orphans(self) -> int:
-        async with self._session_factory() as session:
+        async with self._session_scope_factory() as session:
             result = await session.execute(
                 update(DomainEventHandlerExecution)
                 .where(DomainEventHandlerExecution.status == "processing")
@@ -54,7 +61,7 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
     async def claim_ready(
         self, *, limit: int, now: datetime
     ) -> list[tuple[str, str]]:
-        async with self._session_factory() as session:
+        async with self._session_scope_factory() as session:
             rows = await self._claim_repository.claim_domain_event_executions(
                 session,
                 limit=limit,
@@ -65,7 +72,7 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
     async def begin_attempt(
         self, execution_id: str
     ) -> DomainEventExecution | None:
-        async with self._session_factory() as session:
+        async with self._session_scope_factory() as session:
             execution = await session.get(
                 DomainEventHandlerExecution,
                 execution_id,
@@ -83,7 +90,7 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
             )
 
     async def load_event(self, event_id: str) -> StoredDomainEvent | None:
-        async with self._session_factory() as session:
+        async with self._session_scope_factory() as session:
             row = await session.get(DomainEventRow, event_id)
             if row is None:
                 return None
@@ -109,7 +116,7 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
         *,
         processed_at: datetime,
     ) -> None:
-        async with self._session_factory() as session:
+        async with self._session_scope_factory() as session:
             execution = await session.get(
                 DomainEventHandlerExecution,
                 execution_id,
@@ -124,7 +131,7 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
     async def mark_event_missing(
         self, execution_id: str, *, processed_at: datetime
     ) -> None:
-        async with self._session_factory() as session:
+        async with self._session_scope_factory() as session:
             execution = await session.get(
                 DomainEventHandlerExecution,
                 execution_id,
@@ -141,7 +148,7 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
         execution_id: str,
         failure: DomainEventFailure,
     ) -> None:
-        async with self._session_factory() as session:
+        async with self._session_scope_factory() as session:
             execution = await session.get(
                 DomainEventHandlerExecution,
                 execution_id,
@@ -214,6 +221,7 @@ class CommunitySqlAlchemyDomainEventFactReader:
             card_type=_enum_value(card.card_type),
             title=getattr(card, "title", None),
             action_plan=card.action_plan,
+            content_hash=_content_hash(card, CARD_CONTENT_COLUMNS),
         )
 
     async def load_board_settings(
@@ -228,11 +236,23 @@ class CommunitySqlAlchemyDomainEventFactReader:
         spec = await context.get(Spec, spec_id)
         if spec is None:
             return None
-        return CognitiveSpecFacts(spec_id=spec.id, context=spec.context)
+        return CognitiveSpecFacts(
+            spec_id=spec.id,
+            context=spec.context,
+            content_hash=_content_hash(spec, SPEC_CONTENT_COLUMNS_V2),
+        )
 
 
 def _enum_value(value: Any) -> str | None:
     return value.value if hasattr(value, "value") else value
+
+
+def _content_hash(record: Any, columns: tuple[str, ...]) -> str:
+    row = {
+        column: _enum_value(getattr(record, column, None))
+        for column in columns
+    }
+    return canonical_content_hash(row, columns)
 
 
 def _settings_dict(value: Any) -> dict[str, object] | None:

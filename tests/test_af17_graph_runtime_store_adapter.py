@@ -25,7 +25,7 @@ def test_af17_community_graph_runtime_store_footprint_uses_file_backing(
 
     assert footprint.board_id == "board-1"
     assert footprint.status == "available"
-    assert footprint.source == "file_size_proxy"
+    assert footprint.source == "runtime_capability"
     assert footprint.primary_bytes == 20
     assert footprint.sidecar_bytes == 5
     assert footprint.total_bytes == 25
@@ -47,6 +47,30 @@ def test_af17_community_graph_runtime_store_footprint_reports_absent(
 
     assert footprint.status == "unavailable"
     assert footprint.unavailable_reason == "graph_absent"
+
+
+def test_af17_community_graph_runtime_store_footprint_handles_stat_error(
+    tmp_path, monkeypatch
+) -> None:
+    class StatFailingPath:
+        def exists(self) -> bool:
+            return True
+
+        def stat(self):
+            raise OSError("denied")
+
+    from okto_pulse.community.adapters import kg_runtime
+
+    monkeypatch.setattr(
+        kg_runtime,
+        "board_kuzu_path",
+        lambda board_id: StatFailingPath(),
+    )
+
+    footprint = CommunityKuzuGraphRuntimeStore().footprint("board-1")
+
+    assert footprint.status == "unavailable"
+    assert footprint.unavailable_reason == "stat_failed"
 
 
 def test_af17_community_graph_runtime_store_purge_delegates_to_local_runtime(

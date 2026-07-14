@@ -23,6 +23,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 import okto_pulse.core.infra.database as _db_mod
 import okto_pulse.community.adapters.mcp_auth as _adapter_mod
@@ -60,8 +61,11 @@ async def _seed_agent(api_key: str, *, is_active: bool = True) -> str:
     async with _db_mod.get_session_factory()() as session:
         agent = Agent(
             name="Test Agent",
+            description="Profile description",
+            objective="Profile objective",
             api_key=api_key,
             api_key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+            permissions=["board.read"],
             is_active=is_active,
             created_by="user-1",
         )
@@ -149,6 +153,11 @@ def test_ts_75846b3a_valid_key_authenticates_without_touching_last_used(
     assert session.agent_id == agent_id
     assert session.agent_name == "Test Agent"
     assert session.is_active is True
+    assert session.description == "Profile description"
+    assert session.objective == "Profile objective"
+    assert session.permissions == ["board.read"]
+    assert session.created_at is not None
+    assert session.last_used_at is None
     assert (
         before is None and after is None
     )  # read-only auth leaves last_used_at untouched
@@ -207,3 +216,56 @@ def test_ts_5f381019_credential_repr_redacts_secret():
     cred = McpCredential(source="query_param", value="top-secret-value")
     assert "top-secret-value" not in repr(cred)
     assert "redacted" in repr(cred)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_mcp_auth_checkout_is_returned_after_client_cancellation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        configure_community_database,
+    )
+    import okto_pulse.core.services.application_agents as application_agents
+
+    runtime = configure_community_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'mcp-auth-cancel.db'}"
+    )
+    entered = asyncio.Event()
+
+    async def slow_auth(db, *_args, **_kwargs):
+        await db.execute(text("SELECT 1"))
+        entered.set()
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(
+        application_agents,
+        "authenticate_agent_by_api_key",
+        slow_auth,
+    )
+    auth = CommunityMcpAuthenticator(
+        session_factory=runtime.session_factory,
+        session_scope_factory=lambda: runtime.cancel_safe_session_scope(
+            runtime.session_factory
+        ),
+    )
+
+    try:
+        task = asyncio.create_task(
+            auth.authenticate(McpCredential(source="query_param", value="secret")),
+            name="test.cancelled-mcp-auth",
+        )
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert runtime.engine.sync_engine.pool.checkedout() == 1
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        for _ in range(100):
+            if runtime.engine.sync_engine.pool.checkedout() == 0:
+                break
+            await asyncio.sleep(0.05)
+        assert runtime.engine.sync_engine.pool.checkedout() == 0
+    finally:
+        await runtime.close()

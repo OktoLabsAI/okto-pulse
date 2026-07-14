@@ -64,11 +64,11 @@ def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
 
 builtins.__import__ = guarded_import
 
-from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import ResourceGateService
+from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
 from okto_pulse.community.adapters.sqlalchemy_runtime_settings_service import AppSetting
 from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import build_traceability_report
 
-assert ResourceGateService.__module__.startswith("okto_pulse.community.")
+assert CommunitySqlAlchemyResourceGateAdapter.__module__.startswith("okto_pulse.community.")
 assert AppSetting.__module__.startswith("okto_pulse.community.")
 assert build_traceability_report.__module__.startswith("okto_pulse.community.")
 print("f13-private-core-isolation-ok")

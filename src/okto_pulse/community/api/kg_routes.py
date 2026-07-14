@@ -48,6 +48,7 @@ from okto_pulse.core.kg.cursor_codec import decode_cursor, encode_cursor
 from okto_pulse.community.api.auth_deps import get_current_user, get_realm_id, require_user
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.application.use_cases.kg_routes_crud import (
     BoostNodeCommand,
@@ -108,7 +109,11 @@ def _kg_actor(
     board_id: str | None = None,
 ) -> ActorContext:
     return RESTAdapterContract.actor_from_principal(
-        Principal(user_id, realm_id=realm_id, claims=user or {}),
+        Principal(
+            user_id,
+            realm_id=realm_id or LOCAL_REALM_ID,
+            claims=user or {},
+        ),
         board_id=board_id,
     )
 
@@ -155,6 +160,23 @@ async def require_kg_board_actor(
     realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> ActorContext:
+    return await _resolve_kg_board_actor(
+        board_id=board_id,
+        user_id=user_id,
+        user=user,
+        realm_id=realm_id,
+        uow=uow,
+    )
+
+
+async def _resolve_kg_board_actor(
+    *,
+    board_id: str,
+    user_id: str,
+    user: dict[str, Any] | None,
+    realm_id: str | None,
+    uow: PulseUnitOfWork,
+) -> ActorContext:
     actor = _kg_actor(
         user_id=user_id,
         user=user,
@@ -163,6 +185,24 @@ async def require_kg_board_actor(
     )
     await _ensure_board_access(board_id=board_id, actor=actor, uow=uow)
     return actor
+
+
+async def require_kg_stream_board_actor(
+    board_id: str,
+    user_id: str = Depends(require_user),
+    user: dict[str, Any] | None = Depends(get_current_user),
+    realm_id: str | None = Depends(get_realm_id),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work, scope="function"),
+) -> ActorContext:
+    """Authorize an SSE subscription without retaining its UoW for the stream."""
+
+    return await _resolve_kg_board_actor(
+        board_id=board_id,
+        user_id=user_id,
+        user=user,
+        realm_id=realm_id,
+        uow=uow,
+    )
 
 
 async def require_kg_admin_board_actor(
@@ -211,16 +251,18 @@ def _problem(status: int, title: str, detail: str, error_type: str = "") -> JSON
 
 
 def _handle_kg_error(e: KGToolError) -> JSONResponse:
+    public_code = "kuzu_error" if e.code == "graph_error" else e.code
     code_map = {
         "not_found": 404,
         "permission_denied": 403,
         "invalid_param": 400,
         "kuzu_error": 500,
+        "graph_error": 500,
         "schema_drift": 409,
         "empty_result": 404,
     }
     status = code_map.get(e.code, 500)
-    return _problem(status, e.code, e.message, e.code)
+    return _problem(status, public_code, e.message, public_code)
 
 
 # ---------------------------------------------------------------------------
@@ -734,8 +776,7 @@ async def get_kg_metrics(
                 )
             except Exception:
                 continue
-            while result.has_next():
-                row = result.get_next()
+            for row in result.rows:
                 layer = (row[0] or "unknown")
                 rule_id = (row[1] or "")
                 edge_count_by_layer[layer] = edge_count_by_layer.get(layer, 0) + 1
@@ -749,8 +790,8 @@ async def get_kg_metrics(
                 result = scope.execute(
                     f"MATCH (n:{nt}) RETURN count(n) AS c"
                 )
-                if result.has_next():
-                    c = int(result.get_next()[0])
+                if result.rows:
+                    c = int(result.rows[0][0])
                     if c:
                         node_count_by_type[nt] = c
             except Exception:
@@ -1139,7 +1180,7 @@ async def list_pending_tree(
 async def stream_kg_events(
     board_id: str,
     since: str | None = Query(None, description="ISO timestamp — only emit events created after this"),
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    _actor: ActorContext = Depends(require_kg_stream_board_actor),
 ):
     """Server-Sent Events stream of `kg.session.committed` /
     `kg.board.cleared` events for the given board.

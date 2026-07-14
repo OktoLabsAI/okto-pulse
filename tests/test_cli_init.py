@@ -24,11 +24,6 @@ for p in (str(REPO_SRC), str(CORE_SRC)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-for mod in list(sys.modules):
-    if mod.startswith("okto_pulse.community"):
-        del sys.modules[mod]
-
-
 # ---------------------------------------------------------------------------
 # Argparse wiring
 # ---------------------------------------------------------------------------
@@ -105,12 +100,11 @@ class _FakeSession:
 
 
 def _patch_mcp_export_runtime(monkeypatch, rows):
+    import okto_pulse.core as core
     import okto_pulse.community.adapters.composition as composition
     import okto_pulse.community.adapters.relational_schema_lifecycle as lifecycle
-    import okto_pulse.core.infra.auth as auth
-    import okto_pulse.core.infra.config as config
-    import okto_pulse.core.infra.database as database
-    import okto_pulse.core.infra.storage as storage
+    import okto_pulse.community.adapters.sqlalchemy_database as database
+    import okto_pulse.community.cli as cli
 
     async def fake_init_db():
         return None
@@ -118,11 +112,15 @@ def _patch_mcp_export_runtime(monkeypatch, rows):
     async def fake_close_db():
         return None
 
-    monkeypatch.setattr(config, "configure_settings", lambda _settings: None)
-    monkeypatch.setattr(auth, "configure_auth", lambda _provider: None)
-    monkeypatch.setattr(storage, "configure_storage", lambda _provider: None)
+    monkeypatch.setattr(core, "configure_settings", lambda _settings: None)
+    monkeypatch.setattr(core, "configure_auth", lambda _provider: None)
+    monkeypatch.setattr(core, "configure_storage", lambda _provider: None)
     monkeypatch.setattr(composition, "community_storage_provider", lambda _path: None)
-    monkeypatch.setattr(database, "create_database", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "_configure_community_relational_runtime",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(database, "init_db", fake_init_db)
     monkeypatch.setattr(database, "close_db", fake_close_db)
     monkeypatch.setattr(

@@ -24,7 +24,10 @@ composition root registers ``build_community_unit_of_work_factory(...)`` as the
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import AbstractAsyncContextManager
+import sys
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +52,16 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
 
 if TYPE_CHECKING:
     from okto_pulse.core.application.use_cases.base import ActorContext
+
+
+_pending_uow_cleanups: set[asyncio.Task[Any]] = set()
+
+
+def _consume_uow_cleanup(task: asyncio.Future[Any]) -> None:
+    if task.cancelled():
+        return
+    with contextlib.suppress(BaseException):
+        task.exception()
 
 
 def _community_realm_scope(
@@ -98,11 +111,21 @@ class CommunityUnitOfWork:
         # close the session. The factory context delegates here, and a direct
         # `async with uow:` reaches the same path — so neither style leaks the
         # connection (the port docstring advertises both).
+        async def teardown() -> None:
+            try:
+                if exc is not None:
+                    await self.rollback()
+            finally:
+                await self.close()
+
+        cleanup = asyncio.create_task(teardown(), name="community.uow.teardown")
+        _pending_uow_cleanups.add(cleanup)
+        cleanup.add_done_callback(_pending_uow_cleanups.discard)
         try:
-            if exc is not None:
-                await self.rollback()
-        finally:
-            await self.close()
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            cleanup.add_done_callback(_consume_uow_cleanup)
+            raise
         return None
 
     async def commit(self) -> None:
@@ -147,20 +170,38 @@ class _CommunityUnitOfWorkContext:
         self._actor = actor
         self._application_persistence = application_persistence
         self._uow: CommunityUnitOfWork | None = None
+        self._checkout_owner_scope: Any | None = None
 
     async def __aenter__(self) -> CommunityUnitOfWork:
-        session = self._session_factory()
-        self._uow = CommunityUnitOfWork(
-            session,
-            realm_scope=self._realm_scope,
-            actor=self._actor,
-            application_persistence=self._application_persistence,
+        from okto_pulse.community.adapters.sqlalchemy_database import (
+            community_database_checkout_owner,
         )
-        return self._uow
+
+        owner_scope = community_database_checkout_owner("community.uow")
+        owner_scope.__enter__()
+        self._checkout_owner_scope = owner_scope
+        try:
+            session = self._session_factory()
+            self._uow = CommunityUnitOfWork(
+                session,
+                realm_scope=self._realm_scope,
+                actor=self._actor,
+                application_persistence=self._application_persistence,
+            )
+            return self._uow
+        except BaseException:
+            owner_scope.__exit__(*sys.exc_info())
+            self._checkout_owner_scope = None
+            raise
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        if self._uow is not None:
-            await self._uow.__aexit__(exc_type, exc, tb)
+        try:
+            if self._uow is not None:
+                await self._uow.__aexit__(exc_type, exc, tb)
+        finally:
+            if self._checkout_owner_scope is not None:
+                self._checkout_owner_scope.__exit__(None, None, None)
+                self._checkout_owner_scope = None
         return None
 
 

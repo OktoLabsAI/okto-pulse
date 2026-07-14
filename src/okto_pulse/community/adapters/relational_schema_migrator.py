@@ -140,6 +140,8 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
      "DROP TABLE spec_skills (Skills removal; no data preservation — destructive)."),
     ("_migrate_add_default_config_snapshot", "post_create_all", False,
      "Add default-config snapshot column on Board.settings."),
+    ("_migrate_add_agent_seen_board_id", "post_create_all", False,
+     "Add and backfill board scope on agent seen markers."),
     ("_migrate_add_board_guideline_provenance", "post_create_all", False,
      "Add board-guideline provenance columns."),
     ("_migrate_add_cancellation_columns", "post_create_all", False,

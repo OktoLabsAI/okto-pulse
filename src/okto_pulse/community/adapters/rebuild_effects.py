@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,9 @@ if TYPE_CHECKING:
     from okto_pulse.community.adapters.board_rebuild_ingestion import (
         CommunityBoardRebuildIngestionAdapter,
     )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _safe(value: object) -> object:
@@ -78,9 +82,14 @@ class CommunityRebuildEffects:
     ) -> None:
         self._owner = owner
         self._artifact_store = artifact_store or owner.artifact_store
-        self._quarantine_restore = (
-            quarantine_restore or owner.quarantine_restore
-        )
+        self._quarantine_restore = quarantine_restore or owner.quarantine_restore
+        if self._artifact_store is None:
+            from okto_pulse.core.services.application_kg import (
+                get_current_provider_registry,
+            )
+
+            registry = get_current_provider_registry()
+            self._artifact_store = registry.require_rebuild_audit_artifact_store()
 
     def _key(self, command: RebuildCommand, artifact_id: str) -> RebuildAuditKey:
         return RebuildAuditKey(
@@ -204,6 +213,20 @@ class CommunityRebuildEffects:
         )
 
         snapshot = snapshot_canonical_cognitive(command.board_id)
+        logger.info(
+            "kg.rebuild.cognitive_snapshot board=%s readable=%s nodes=%d edges=%d",
+            command.board_id,
+            snapshot.readable,
+            len(snapshot.nodes),
+            len(snapshot.edges),
+            extra={
+                "event": "kg.rebuild.cognitive_snapshot",
+                "board_id": command.board_id,
+                "readable": snapshot.readable,
+                "node_count": len(snapshot.nodes),
+                "edge_count": len(snapshot.edges),
+            },
+        )
         return self._store_receipt(
             command,
             RebuildEffectReceipt(
@@ -226,17 +249,31 @@ class CommunityRebuildEffects:
         if existing is not None:
             return existing
         try:
-            affected = self._owner.prepare_board_graph_storage(
+            report = self._owner.prepare_board_graph_storage_report(
                 board_id=command.board_id,
                 reason=f"explicit_rebuild:{command.manifest_ref or command.operation}",
             )
+            affected = tuple(ref.token for ref in report.affected_storage_refs)
             receipt = RebuildEffectReceipt(
                 effect_key,
                 "quarantine",
                 True,
-                details={"affected_files": list(affected)},
+                details={
+                    "affected_files": list(affected),
+                    "quarantine_ref": report.quarantine_ref,
+                },
             )
         except Exception as exc:
+            logger.warning(
+                "kg.rebuild.quarantine_failed board=%s error=%s",
+                command.board_id,
+                exc,
+                extra={
+                    "event": "kg.rebuild.quarantine_failed",
+                    "board_id": command.board_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
             receipt = RebuildEffectReceipt(
                 effect_key,
                 "quarantine",
@@ -432,24 +469,71 @@ class CommunityRebuildEffects:
         )
         if not affected:
             return {"ok": True, "reason": "nothing_quarantined"}
-        if self._artifact_store is None:
-            return {"ok": False, "reason": "artifact_store_unavailable"}
-        manifests = self._artifact_store.list_quarantine_manifests(
-            active_after_iso=None,
-            base_storage_ref_hint=None,
+
+        if self._quarantine_restore is None:
+            try:
+                from okto_pulse.core.services.application_kg import (
+                    get_current_provider_registry,
+                )
+
+                self._quarantine_restore = (
+                    get_current_provider_registry().require_quarantine_restore()
+                )
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "reason": f"quarantine_restore_unavailable:{type(exc).__name__}",
+                }
+        quarantine_id = str(
+            dict(quarantine_receipt.details).get("quarantine_ref") or ""
         )
-        matching = [
-            item for item in manifests if str(item.get("board_id", "")) == command.board_id
-        ]
-        if not matching:
-            return {"ok": False, "reason": "quarantine_manifest_missing"}
-        latest = matching[-1]
-        quarantine_id = str(latest.get("quarantine_id") or latest.get("id") or "")
+        if not quarantine_id and self._artifact_store is not None:
+            manifests = self._artifact_store.list_quarantine_manifests(
+                active_after_iso=None,
+                base_storage_ref_hint=None,
+            )
+            matching = [
+                item
+                for item in manifests
+                if str(item.get("board_id", "")) == command.board_id
+            ]
+            if matching:
+                latest = matching[-1]
+                quarantine_id = str(
+                    latest.get("quarantine_id") or latest.get("id") or ""
+                )
         if not quarantine_id:
             return {"ok": False, "reason": "quarantine_id_missing"}
         if self._quarantine_restore is None:
             return {"ok": False, "reason": "quarantine_restore_unavailable"}
-        report = self._quarantine_restore.apply(quarantine_id)
+        try:
+            from okto_pulse.core.kg.async_bridge import run_async_blocking
+            from okto_pulse.core.services.application_kg import (
+                get_current_provider_registry,
+            )
+
+            lifecycle = get_current_provider_registry().graph_lifecycle
+            if lifecycle is not None:
+                run_async_blocking(lifecycle.close(command.board_id))
+            report = self._quarantine_restore.apply(quarantine_id)
+        except Exception as exc:
+            logger.exception(
+                "kg.rebuild.quarantine_restore_failed board=%s quarantine_id=%s",
+                command.board_id,
+                quarantine_id,
+                extra={
+                    "event": "kg.rebuild.quarantine_restore_failed",
+                    "board_id": command.board_id,
+                    "quarantine_id": quarantine_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return {
+                "ok": False,
+                "reason": f"quarantine_restore_failed:{type(exc).__name__}",
+                "error": str(exc),
+                "quarantine_id": quarantine_id,
+            }
         return {
             "ok": bool(
                 getattr(report, "applied", False)

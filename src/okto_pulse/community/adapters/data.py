@@ -50,7 +50,7 @@ class CommunityKGConfig:
 
     def __init__(self, settings: Any | None = None) -> None:
         if settings is None:
-            from okto_pulse.core.infra.config import get_settings
+            from okto_pulse.core import get_settings
 
             settings = get_settings()
         self._settings = settings

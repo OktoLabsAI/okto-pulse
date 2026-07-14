@@ -167,7 +167,7 @@ def test_f06_every_concrete_effect_replays_without_duplicate_side_effect(
     def quarantine(self, *, board_id, reason):  # noqa: ANN001
         del self, board_id, reason
         calls["quarantine"] += 1
-        return ()
+        return SimpleNamespace(affected_storage_refs=(), quarantine_ref=None)
 
     def enqueue(self, *, board_id, run_id, sources):  # noqa: ANN001
         del self, board_id, run_id, sources
@@ -179,7 +179,7 @@ def test_f06_every_concrete_effect_replays_without_duplicate_side_effect(
     monkeypatch.setattr(application_kg, "signal_consolidation_worker", lambda: True)
     monkeypatch.setattr(
         CommunityBoardRebuildIngestionAdapter,
-        "prepare_board_graph_storage",
+        "prepare_board_graph_storage_report",
         quarantine,
     )
     monkeypatch.setattr(
@@ -236,7 +236,11 @@ def test_f06_compensation_preserves_claims_and_stops_pending_rows(
             "(id,board_id,artifact_type,artifact_id,priority,source,status,attempts,claimed_by_session_id) "
             "VALUES ('claimed','board-1','story','s2','high','rebuild:manifest-1','claimed',1,'session-1')"
         )
-    owner = CommunityBoardRebuildIngestionAdapter(db_path=db_path)
+    store = DictArtifactStore()
+    owner = CommunityBoardRebuildIngestionAdapter(
+        db_path=db_path,
+        artifact_store=store,
+    )
     command = _command()
     now = datetime.now(timezone.utc)
     owner._rebuild_checkpoint_cache[command.run_id] = RebuildCheckpoint(
@@ -292,8 +296,10 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
     monkeypatch.setattr(application_kg, "signal_consolidation_worker", lambda: True)
     monkeypatch.setattr(
         CommunityBoardRebuildIngestionAdapter,
-        "prepare_board_graph_storage",
-        lambda self, *, board_id, reason: (),
+        "prepare_board_graph_storage_report",
+        lambda self, *, board_id, reason: SimpleNamespace(
+            affected_storage_refs=(), quarantine_ref=None
+        ),
     )
     monkeypatch.setattr(
         CommunityBoardRebuildIngestionAdapter,
@@ -324,9 +330,7 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
     )
 
     assert result.ok is True
-    assert result.drilldown["ingestion_mode"] == (
-        "core_state_machine_with_community_effects"
-    )
+    assert result.drilldown["ingestion_mode"] == "community_rebuild_effects"
     assert result.drilldown["rebuild_processor"] == {
         "state": "completed",
         "code": "completed",
@@ -364,6 +368,7 @@ def test_f06_salvage_pending_blocks_before_quarantine(
     )
     adapter = CommunityBoardRebuildIngestionAdapter(
         db_path=_queue_db(tmp_path),
+        artifact_store=DictArtifactStore(),
         salvage_pending_provider=lambda _board_id: True,
         drain_timeout_seconds=0.05,
         drain_hard_timeout_seconds=0.1,

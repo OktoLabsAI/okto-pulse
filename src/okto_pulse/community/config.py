@@ -2,8 +2,9 @@
 
 import os
 from pathlib import Path
-from pydantic import model_validator
-from okto_pulse.core.infra.config import CoreSettings
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from okto_pulse.core import CoreSettings
 from okto_pulse.community.adapters.embedding import (
     COMMUNITY_DEFAULT_EMBEDDING_DIM,
     COMMUNITY_DEFAULT_EMBEDDING_MODE,
@@ -13,12 +14,42 @@ from okto_pulse.community.adapters.telemetry_effect_config import (
     COMMUNITY_DEFAULT_METRICS_BEACON_URL,
 )
 
-class CommunitySettings(CoreSettings):
+GRAPH_DB_MAX_SIZE_GB_VALUES: tuple[int, ...] = (2, 4, 8, 16, 32, 64)
+
+
+def validate_graph_db_max_size_gb(value: int) -> int:
+    if value not in GRAPH_DB_MAX_SIZE_GB_VALUES:
+        raise ValueError(
+            "kg_kuzu_max_db_size_gb must be one of "
+            "2, 4, 8, 16, 32, 64 GB (a power of 2)"
+        )
+    return value
+
+class CommunitySettings(CoreSettings, BaseSettings):
     """Settings for the community edition (local-first, single-user)."""
 
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    debug: bool = False
+    environment: str = "development"
     host: str = "127.0.0.1"  # Community is local-only — bind to loopback
+    port: int = 8100
+    database_url: str = ""
+    upload_dir: str = ""
+    max_upload_size: int = 10 * 1024 * 1024
     data_dir: str = ""  # Default set in validator
+    metrics_dir: str = ""
     metrics_beacon_url: str = COMMUNITY_DEFAULT_METRICS_BEACON_URL
+    mcp_server_name: str = "okto-pulse"
+    mcp_server_version: str = "0.3.0"
+    mcp_port: int = 8101
+    cors_origins: str = "*"
+    kg_base_dir: str = "~/.okto-pulse"
 
     # Community ships sentence-transformers as a mandatory dep (pyproject.toml),
     # so override the core default of "stub" — semantic KG search needs real
@@ -26,6 +57,34 @@ class CommunitySettings(CoreSettings):
     kg_embedding_mode: str = COMMUNITY_DEFAULT_EMBEDDING_MODE
     kg_embedding_model: str = COMMUNITY_DEFAULT_EMBEDDING_MODEL
     kg_embedding_dim: int = COMMUNITY_DEFAULT_EMBEDDING_DIM
+    kg_kuzu_buffer_pool_mb: int = Field(512, ge=128, le=512)
+    kg_kuzu_max_db_size_gb: int = Field(2, ge=2, le=64)
+    kg_connection_pool_size: int = Field(8, ge=1, le=32)
+    kg_wal_salvage_enabled: bool = True
+    kg_wal_only_recovery_enabled: bool = True
+    kg_decay_tick_batch_size: int = 200
+    kg_write_barrier_mode: str = "soft"
+    mcp_legacy_coverage: bool = Field(
+        False,
+        validation_alias="OKTO_PULSE_LEGACY_COVERAGE",
+    )
+    mcp_legacy_offset: bool = Field(
+        False,
+        validation_alias="OKTO_PULSE_LEGACY_OFFSET",
+    )
+
+    @field_validator("kg_kuzu_max_db_size_gb")
+    @classmethod
+    def _validate_graph_db_max_size_gb(cls, value: int) -> int:
+        return validate_graph_db_max_size_gb(value)
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [
+            origin.strip()
+            for origin in self.cors_origins.split(",")
+            if origin.strip()
+        ]
 
     @model_validator(mode="after")
     def _derive_paths(self) -> "CommunitySettings":
@@ -43,7 +102,7 @@ class CommunitySettings(CoreSettings):
             self.upload_dir = str(data_path / "uploads")
         if not self.metrics_dir:
             self.metrics_dir = str(data_path / "metrics")
-        default_kg_base = str(CoreSettings.model_fields["kg_base_dir"].default)
+        default_kg_base = "~/.okto-pulse"
         if not self.kg_base_dir or self.kg_base_dir == default_kg_base:
             self.kg_base_dir = str(data_path)
         else:

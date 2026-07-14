@@ -551,17 +551,18 @@ class CommunityRuntimeSettingsProvider(RuntimeSettingsProvider, ConfigValidation
     """Community runtime settings reader/validator."""
 
     async def read_runtime_settings(self, scope: str = "global") -> Mapping[str, Any]:
-        from okto_pulse.core.infra.config import get_settings
+        from okto_pulse.core import get_settings
 
         settings = get_settings()
         return settings.model_dump()
 
     def validate_runtime_settings(self, values: Mapping[str, Any]) -> None:
-        from okto_pulse.core.infra.config import CoreSettings, get_settings
+        from okto_pulse.core import get_settings
 
-        current = get_settings().model_dump()
+        configured = get_settings()
+        current = configured.model_dump()
         current.update(dict(values))
-        CoreSettings(**current)
+        type(configured)(**current)
 
 
 _lease_provider = CommunityLocalLeaseProvider()

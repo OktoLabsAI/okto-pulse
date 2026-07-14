@@ -25,9 +25,7 @@ from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work, scheduler_control_from_request
 from okto_pulse.community.api.kg_health_probe import get_kg_health
 from okto_pulse.core.application.kg_tick import (
-    dispatch_manual_tick as _dispatch_manual_tick,
     refuse_tick_if_degraded as _core_refuse_tick_if_degraded,
-    reset_last_recomputed_at as _reset_last_recomputed_at,
 )
 from okto_pulse.core.ports.coordination import (
     CoordinationProviderMissing,

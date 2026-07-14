@@ -26,8 +26,8 @@ def _composition(registry: RuntimeWorkerRegistry) -> RuntimeComposition:
         settings_provider=object(),
         auth_provider=object(),
         storage_provider=object(),
-        session_factory=object(),
         event_bus=object(),
+        uow_factory=object(),
         worker_registry=registry,
     )
 

@@ -76,7 +76,7 @@ from okto_pulse.core.ports.application_persistence import (
     register_application_persistence_port,
 )
 from okto_pulse.core.ports.relational_services import (
-    register_resource_gate_service_class,
+    register_resource_gate_adapter_factory,
     register_runtime_settings_adapter,
     register_traceability_adapter,
 )
@@ -283,7 +283,7 @@ def register_community_relational_effects() -> CommunitySqlAlchemyRelationalEffe
         CommunitySqlAlchemyRealmAccess,
     )
     from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import (
-        ResourceGateService as CommunityResourceGateService,
+        CommunitySqlAlchemyResourceGateAdapter,
     )
     from okto_pulse.community.adapters import (
         sqlalchemy_runtime_settings_service as runtime_settings_adapter,
@@ -348,7 +348,7 @@ def register_community_relational_effects() -> CommunitySqlAlchemyRelationalEffe
     register_application_persistence_port(
         CommunitySqlAlchemyApplicationPersistence()
     )
-    register_resource_gate_service_class(CommunityResourceGateService)
+    register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     register_runtime_settings_adapter(runtime_settings_adapter)
     register_traceability_adapter(traceability_adapter)
     register_realm_access_port(CommunitySqlAlchemyRealmAccess())

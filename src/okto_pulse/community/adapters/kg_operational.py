@@ -586,18 +586,140 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
         entry = await context.get(ConsolidationQueue, queue_entry_id)
         if entry is None or entry.board_id != board_id:
             return None
-        entry.status = "pending"
-        entry.next_retry_at = datetime.now(timezone.utc)
-        entry.claim_timeout_at = None
-        entry.worker_id = None
-        entry.claimed_at = None
-        entry.claimed_by_session_id = None
+
+        now = datetime.now(timezone.utc)
+
+        def _reopen(row: ConsolidationQueue, *, source: str) -> None:
+            row.status = "pending"
+            row.source = source
+            row.last_error = None
+            row.next_retry_at = now
+            row.claimed_at = None
+            row.claim_timeout_at = None
+            row.worker_id = None
+            row.claimed_by_session_id = None
+
+        _reopen(entry, source="retry_from_ui")
+        reopened = [str(entry.id)]
+
+        if recursive:
+            descendants: list[tuple[str, str]] = []
+            spec_ids: list[str] = []
+
+            if entry.artifact_type == "ideation":
+                refinement_ids = list(
+                    (
+                        await context.execute(
+                            select(Refinement.id).where(
+                                Refinement.board_id == board_id,
+                                Refinement.ideation_id == entry.artifact_id,
+                            )
+                        )
+                    ).scalars().all()
+                )
+                descendants.extend(
+                    ("refinement", refinement_id)
+                    for refinement_id in refinement_ids
+                )
+                direct_spec_ids = list(
+                    (
+                        await context.execute(
+                            select(Spec.id).where(
+                                Spec.board_id == board_id,
+                                Spec.ideation_id == entry.artifact_id,
+                            )
+                        )
+                    ).scalars().all()
+                )
+                spec_ids.extend(direct_spec_ids)
+                if refinement_ids:
+                    spec_ids.extend(
+                        (
+                            await context.execute(
+                                select(Spec.id).where(
+                                    Spec.board_id == board_id,
+                                    Spec.refinement_id.in_(refinement_ids),
+                                )
+                            )
+                        ).scalars().all()
+                    )
+            elif entry.artifact_type == "refinement":
+                spec_ids.extend(
+                    (
+                        await context.execute(
+                            select(Spec.id).where(
+                                Spec.board_id == board_id,
+                                Spec.refinement_id == entry.artifact_id,
+                            )
+                        )
+                    ).scalars().all()
+                )
+            elif entry.artifact_type == "spec":
+                spec_ids.append(str(entry.artifact_id))
+
+            spec_ids = list(dict.fromkeys(spec_ids))
+            descendants.extend(("spec", spec_id) for spec_id in spec_ids)
+
+            if spec_ids:
+                sprint_ids = list(
+                    (
+                        await context.execute(
+                            select(Sprint.id).where(
+                                Sprint.board_id == board_id,
+                                Sprint.spec_id.in_(spec_ids),
+                            )
+                        )
+                    ).scalars().all()
+                )
+                card_ids = list(
+                    (
+                        await context.execute(
+                            select(Card.id).where(
+                                Card.board_id == board_id,
+                                Card.spec_id.in_(spec_ids),
+                            )
+                        )
+                    ).scalars().all()
+                )
+                descendants.extend(
+                    ("sprint", sprint_id) for sprint_id in sprint_ids
+                )
+                descendants.extend(("card", card_id) for card_id in card_ids)
+            elif entry.artifact_type == "sprint":
+                card_ids = list(
+                    (
+                        await context.execute(
+                            select(Card.id).where(
+                                Card.board_id == board_id,
+                                Card.sprint_id == entry.artifact_id,
+                            )
+                        )
+                    ).scalars().all()
+                )
+                descendants.extend(("card", card_id) for card_id in card_ids)
+
+            for artifact_type, artifact_id in dict.fromkeys(descendants):
+                row = (
+                    await context.execute(
+                        select(ConsolidationQueue).where(
+                            ConsolidationQueue.board_id == board_id,
+                            ConsolidationQueue.artifact_type == artifact_type,
+                            ConsolidationQueue.artifact_id == artifact_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if row is None or row.id in reopened:
+                    continue
+                _reopen(row, source="retry_from_ui_recursive")
+                reopened.append(str(row.id))
+
+        await context.commit()
         return {
-            "id": entry.id,
-            "board_id": entry.board_id,
-            "artifact_type": entry.artifact_type,
-            "artifact_id": entry.artifact_id,
+            "board_id": board_id,
+            "queue_entry_id": queue_entry_id,
             "recursive": recursive,
+            "reopened_count": len(reopened),
+            "reopened_ids": reopened,
         }
 
 

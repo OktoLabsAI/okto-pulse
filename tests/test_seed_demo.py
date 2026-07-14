@@ -20,15 +20,10 @@ for p in reversed(source_paths):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-for mod in list(sys.modules):
-    if mod.startswith("okto_pulse.community"):
-        del sys.modules[mod]
-
-
 @pytest.mark.asyncio
 async def test_demo_graph_seed_uses_schema_supported_cognitive_edge(monkeypatch):
     from okto_pulse.community import seed as seed_mod
-    from okto_pulse.core.infra import database as database_mod
+    from okto_pulse.community.adapters import sqlalchemy_database as database_mod
     from okto_pulse.core.services import application_kg as application_kg_mod
     import okto_pulse.core.kg.interfaces as interfaces_mod
     from okto_pulse.core.kg import primitives as primitives_mod

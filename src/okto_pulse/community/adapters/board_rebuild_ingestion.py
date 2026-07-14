@@ -49,6 +49,7 @@ from okto_pulse.core.kg.board_rebuild_adapter import (
     expected_layers_from_sources,
     queue_artifact_type,
 )
+from okto_pulse.core.kg.interfaces.graph_lifecycle import PurgeReport
 
 from okto_pulse.community.adapters.board_source_reader import resolve_pulse_db_path
 
@@ -103,6 +104,18 @@ class CommunityBoardRebuildIngestionAdapter:
         board_id: str,
         reason: str,
     ) -> tuple[str, ...]:
+        report = self.prepare_board_graph_storage_report(
+            board_id=board_id,
+            reason=reason,
+        )
+        return tuple(ref.token for ref in report.affected_storage_refs)
+
+    def prepare_board_graph_storage_report(
+        self,
+        *,
+        board_id: str,
+        reason: str,
+    ) -> PurgeReport:
         """Quarantine existing board graph files for an explicit rebuild.
 
         The bootstrap path is fail-closed and must never purge an existing
@@ -114,9 +127,7 @@ class CommunityBoardRebuildIngestionAdapter:
         """
 
         from okto_pulse.community.adapters.kg_runtime import board_kuzu_path
-        from okto_pulse.core.services.application_kg import get_current_provider_registry
 
-        registry = get_current_provider_registry()
         path = board_kuzu_path(board_id)
         targets: list[Path] = []
         if path.exists():
@@ -124,19 +135,25 @@ class CommunityBoardRebuildIngestionAdapter:
         if path.parent.exists():
             targets.extend(sorted(path.parent.glob(path.name + ".*")))
         if not targets:
-            return ()
+            return PurgeReport(
+                board_id=board_id,
+                status="noop",
+                reason=reason,
+            )
 
+        from okto_pulse.core.services.application_kg import get_current_provider_registry
+
+        registry = get_current_provider_registry()
         report = run_async_blocking(
             registry.graph_lifecycle.purge(board_id, reason=reason)
         )
-        moved = tuple(ref.token for ref in report.affected_storage_refs)
         still_present = [p for p in targets if p.exists()]
         if still_present:
             raise RuntimeError(
                 "explicit rebuild could not quarantine existing graph files: "
                 + ", ".join(str(p) for p in still_present)
             )
-        return moved
+        return report
 
     def enqueue_sources(
         self,
@@ -328,7 +345,7 @@ class CommunityBoardRebuildIngestionAdapter:
                 "graph_prepare": {"quarantined_files": len(affected_files)},
                 "enqueue": enqueue_counts,
                 "queue_drain": queue_drain,
-                "ingestion_mode": "core_state_machine_with_community_effects",
+                "ingestion_mode": "community_rebuild_effects",
                 "cognitive_preservation": (
                     dict(restore.details) if restore is not None else {}
                 ),
@@ -354,6 +371,11 @@ class CommunityBoardRebuildIngestionAdapter:
                         f"final_depth={queue_drain['final_depth']} "
                         f"cause={outcome.code.value}"
                     )
+                elif (
+                    outcome.code is RebuildOutcomeCode.RESTORE_FAILED
+                    and outcome.detail == "integrity_error"
+                ):
+                    detail = "cognitive_preservation_integrity_error"
                 else:
                     detail = f"{outcome.code.value}:{outcome.detail or ''}".rstrip(
                         ":"

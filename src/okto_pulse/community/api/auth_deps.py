@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from okto_pulse.core.infra.auth import get_auth_provider
+from okto_pulse.core import get_auth_provider
 from okto_pulse.core.ports.authentication import (
     AuthenticationError,
     AuthorizationDenied,

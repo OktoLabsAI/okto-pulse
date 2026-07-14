@@ -9,7 +9,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationQueue,
     GlobalUpdateOutbox,
 )
-from okto_pulse.core.ports.relational_runtime import get_session_factory
+from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory
 
 
 class CommunitySqlAlchemyBoardRelationalCleanup:

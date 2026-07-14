@@ -24,6 +24,8 @@ from okto_pulse.community.adapters.sqlalchemy_repositories import (
     spec_to_row,
 )
 from okto_pulse.community.adapters.sqlalchemy_schema_contract import (
+    COMMUNITY_SCHEMA_EXTENSION_TABLES,
+    CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256,
     LEGACY_CORE_SCHEMA_SHA256,
     schema_contract_sha256,
 )
@@ -41,9 +43,20 @@ def test_community_source_has_zero_private_core_reach_ins() -> None:
     assert report["private_reach_in_baseline"] == 0
 
 
-def test_community_metadata_matches_frozen_legacy_schema_contract() -> None:
-    assert len(Base.metadata.tables) == 60
-    assert schema_contract_sha256(Base.metadata) == LEGACY_CORE_SCHEMA_SHA256
+def test_community_metadata_matches_governed_inherited_schema_contract() -> None:
+    table_names = set(Base.metadata.tables)
+    legacy_table_names = table_names - COMMUNITY_SCHEMA_EXTENSION_TABLES
+
+    assert table_names & COMMUNITY_SCHEMA_EXTENSION_TABLES == (
+        COMMUNITY_SCHEMA_EXTENSION_TABLES
+    )
+    assert len(legacy_table_names) == 60
+    assert len(table_names) == 64
+    assert schema_contract_sha256(
+        Base.metadata,
+        table_names=legacy_table_names,
+    ) == CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256
+    assert CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 != LEGACY_CORE_SCHEMA_SHA256
 
 
 def test_explicit_repository_mappers_keep_domain_free_of_orm_state() -> None:

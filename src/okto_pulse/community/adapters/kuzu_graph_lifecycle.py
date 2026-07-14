@@ -72,9 +72,14 @@ class CommunityKuzuGraphLifecycle:
         )
 
     async def purge(self, board_id: str, *, reason: str) -> PurgeReport:
-        from okto_pulse.community.adapters.kg_runtime import purge_board_graph_storage
+        from okto_pulse.community.adapters.kg_runtime import (
+            purge_board_graph_storage_with_receipt,
+        )
 
-        affected = purge_board_graph_storage(board_id, reason=reason)
+        affected, quarantine_ref = purge_board_graph_storage_with_receipt(
+            board_id,
+            reason=reason,
+        )
         return PurgeReport(
             board_id=board_id,
             status="purged" if affected else "noop",
@@ -87,6 +92,7 @@ class CommunityKuzuGraphLifecycle:
                 for index, _ in enumerate(affected)
             ),
             quarantined=bool(affected),
+            quarantine_ref=quarantine_ref,
         )
 
     def apply_step(

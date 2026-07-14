@@ -197,14 +197,14 @@ def cmd_init(args):
     print(f"  Database: {data_path / 'data' / 'pulse.db'}")
     print(f"  Uploads:  {data_path / 'uploads'}")
 
-    from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.ports.relational_runtime import (
+    from okto_pulse.core import configure_settings
+    from okto_pulse.community.adapters.sqlalchemy_database import (
         close_db,
         get_session_factory,
         init_db,
     )
-    from okto_pulse.core.infra.auth import configure_auth
-    from okto_pulse.core.infra.storage import configure_storage
+    from okto_pulse.core import configure_auth
+    from okto_pulse.core import configure_storage
     from okto_pulse.community.adapters.composition import community_storage_provider
     from okto_pulse.community.auth import LocalAuthProvider
     from okto_pulse.community.seed import seed_community_defaults
@@ -290,16 +290,16 @@ def _generate_mcp_json(
     """Generate .mcp.json with specified agents (or all if agent_names is empty)."""
     import asyncio
     from sqlalchemy import text as sa_text
-    from okto_pulse.core.ports.relational_runtime import (
+    from okto_pulse.community.adapters.sqlalchemy_database import (
         close_db,
         get_session_factory,
         init_db,
     )
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core.infra.auth import configure_auth
-    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core import configure_auth
+    from okto_pulse.core import configure_settings
     from okto_pulse.community.auth import LocalAuthProvider
-    from okto_pulse.core.infra.storage import configure_storage
+    from okto_pulse.core import configure_storage
     from okto_pulse.community.adapters.composition import community_storage_provider
 
     settings = CommunitySettings()
@@ -678,16 +678,16 @@ def cmd_verify_pipeline(args):
     or JSON (``--json``). Exit code 0 iff every layer reports ``healthy=True``.
     """
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.ports.relational_runtime import (
+    from okto_pulse.core import configure_settings
+    from okto_pulse.community.adapters.sqlalchemy_database import (
         get_session_factory,
         init_db,
         close_db,
     )
     from okto_pulse.core.kg.health import (
         check_global,
-        check_kuzu,
-        check_kuzu_node_refs,
+        check_graph,
+        check_graph_node_refs,
         check_outbox,
         check_queue,
     )
@@ -698,7 +698,7 @@ def cmd_verify_pipeline(args):
     board_id: str = args.board_id
     emit_json: bool = bool(getattr(args, "json", False))
 
-    # KGD-01 C6 (S10): check_kuzu abre o grafo do board — falha rápida com
+    # KGD-01 C6 (S10): check_graph abre o grafo do board — falha rápida com
     # servidor vivo.
     _fail_fast_if_server_running("verify-pipeline")
 
@@ -721,9 +721,9 @@ def cmd_verify_pipeline(args):
         try:
             async with factory() as db:
                 queue_h = await check_queue(db, board_id)
-                kuzu_h = check_kuzu(board_id)
-                refs_h = await check_kuzu_node_refs(
-                    db, board_id, kuzu_total=kuzu_h.counts.get("total")
+                kuzu_h = check_graph(board_id)
+                refs_h = await check_graph_node_refs(
+                    db, board_id, graph_total=kuzu_h.counts.get("total")
                 )
                 outbox_h = await check_outbox(db, board_id)
                 global_h = check_global(board_id)
@@ -769,8 +769,8 @@ def cmd_kg_backfill(args):
     mode (requires feature flag `kg_consolidation_v2` enabled on the board).
     """
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.ports.relational_runtime import (
+    from okto_pulse.core import configure_settings
+    from okto_pulse.community.adapters.sqlalchemy_database import (
         get_session_factory,
         init_db,
         close_db,
@@ -919,7 +919,7 @@ def cmd_kg_backfill(args):
 
 async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
     """Apply path: enqueue all artifacts and drain the consolidation queue."""
-    from okto_pulse.core.ports.relational_runtime import (
+    from okto_pulse.community.adapters.sqlalchemy_database import (
         get_session_factory,
         init_db,
         close_db,
@@ -1097,6 +1097,16 @@ def _card_to_dict(c):
     }
 
 
+def cmd_kg_migrate_schema(args):
+    """Apply graph schema migrations through the composed Community adapters."""
+
+    from okto_pulse.community.commands.kg_migrate_schema import run
+
+    exit_code = run(args)
+    if exit_code:
+        raise SystemExit(exit_code)
+
+
 def cmd_kg_dedup_entities(args):
     """NC-8 / MKG-C-S1 — consolidate duplicate Kuzu nodes per
     (node_type, source_artifact_ref), reversible by construction.
@@ -1115,9 +1125,9 @@ def cmd_kg_dedup_entities(args):
         register_community_relational_schema_lifecycle,
     )
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.infra.database import get_session_factory, init_db
-    from okto_pulse.core.kg.curation_policy import CurationPolicyError
+    from okto_pulse.core import configure_settings
+    from okto_pulse.core.application.kg_operations import CurationPolicyError
+    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
     from okto_pulse.core.kg.dedup_migration import (
         format_report_table,
         migrate_dedup_entities,
@@ -1222,8 +1232,8 @@ def cmd_kg_unmerge(args):
         register_community_relational_schema_lifecycle,
     )
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.infra.database import get_session_factory, init_db
+    from okto_pulse.core import configure_settings
+    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
     from okto_pulse.core.kg.dedup_migration import unmerge_equivalence
     from okto_pulse.core.ports.kg_equivalence_ledger import (
         EquivalenceLedgerError,
@@ -1287,8 +1297,8 @@ def cmd_kg_proposals(args):
         register_community_relational_schema_lifecycle,
     )
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.infra.database import get_session_factory, init_db
+    from okto_pulse.core import configure_settings
+    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
     from okto_pulse.core.ports.kg_curation_proposals import (
         require_curation_proposal_store,
     )
@@ -1348,12 +1358,12 @@ def cmd_kg_export(args):
         register_community_relational_schema_lifecycle,
     )
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.infra.database import get_session_factory, init_db
-    from okto_pulse.core.kg.graph_export import (
+    from okto_pulse.core import configure_settings
+    from okto_pulse.core.application.kg_operations import (
         GraphExportError,
         export_board_jsonld,
     )
+    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
 
     board_id: str = args.board_id
     output: str = args.output
@@ -1416,8 +1426,8 @@ def cmd_kg_subtype_declare(args):
         register_community_relational_schema_lifecycle,
     )
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.infra.database import get_session_factory, init_db
+    from okto_pulse.core import configure_settings
+    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
     from okto_pulse.core.ports.kg_subtype_registry import (
         SubtypeDeclaration,
         SubtypeRegistryError,
@@ -1471,24 +1481,24 @@ def cmd_kg_restore(args):
     from okto_pulse.core.kg.interfaces.quarantine_restore import (
         QuarantineRestoreError,
     )
-    from okto_pulse.core.infra.config import get_settings
+    from okto_pulse.core import configure_settings, get_settings
+    from okto_pulse.community.config import CommunitySettings
 
     quarantine_id: str = args.quarantine_id
     apply_restore: bool = bool(getattr(args, "apply", False))
     emit_json: bool = bool(getattr(args, "json", False))
 
-    extra_lock_dirs: tuple[Path, ...] = ()
     try:
-        from okto_pulse.community.config import CommunitySettings
+        settings = get_settings()
+    except RuntimeError:
+        settings = CommunitySettings()
+        configure_settings(settings)
 
-        data_dir = getattr(CommunitySettings(), "data_dir", None)
-        if data_dir:
-            extra_lock_dirs = (Path(data_dir).expanduser(),)
-    except Exception:
-        extra_lock_dirs = ()
+    data_dir = getattr(settings, "data_dir", None)
+    extra_lock_dirs = (Path(data_dir).expanduser(),) if data_dir else ()
 
     service = CommunityQuarantineRestore(
-        base_dir=get_settings().kg_base_dir,
+        base_dir=settings.kg_base_dir,
         extra_serve_lock_dirs=extra_lock_dirs,
     )
 
@@ -1751,6 +1761,19 @@ def main():
         help="Knowledge graph operations (Layer 1 backfill, migration, metrics)",
     )
     kg_subparsers = sub_kg.add_subparsers(dest="kg_command", help="KG sub-commands")
+
+    sub_migrate = kg_subparsers.add_parser(
+        "migrate-schema",
+        help="Apply idempotent graph schema migrations",
+    )
+    migrate_target = sub_migrate.add_mutually_exclusive_group(required=True)
+    migrate_target.add_argument("--board", dest="board_id", help="Board UUID")
+    migrate_target.add_argument(
+        "--all-boards",
+        action="store_true",
+        help="Migrate every board in the local database",
+    )
+    sub_migrate.set_defaults(func=cmd_kg_migrate_schema)
 
     sub_backfill = kg_subparsers.add_parser(
         "backfill",

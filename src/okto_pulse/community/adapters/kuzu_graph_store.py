@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from okto_pulse.core.kg.interfaces.graph_store import QueryFilters
+from okto_pulse.core.kg.interfaces.graph_store import GraphCapabilities, QueryFilters
 from okto_pulse.community.adapters.kg_runtime import (
     MULTI_REL_TYPES,
     NODE_TYPES,
@@ -26,6 +26,39 @@ from okto_pulse.community.adapters.kg_runtime import (
 from okto_pulse.core.kg import cypher_templates as tpl
 
 logger = logging.getLogger("okto_pulse.kg.kuzu_graph_store")
+
+_TEMPORAL_PROPERTIES = frozenset(
+    {"created_at", "last_attested_at", "superseded_at"}
+)
+
+
+def _property_binding(name: str, value: Any) -> str:
+    if name in _TEMPORAL_PROPERTIES and isinstance(value, str) and value:
+        return f"{name}: timestamp(${name})"
+    return f"{name}: ${name}"
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = sum(value * value for value in left) ** 0.5
+    right_norm = sum(value * value for value in right) ** 0.5
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return dot / (left_norm * right_norm)
+
+
+def _materialize_native_rows(result: Any) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+    try:
+        while result.has_next():
+            rows.append(result.get_next())
+    finally:
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
+    return rows
 
 
 class CommunityKuzuGraphStore:
@@ -48,7 +81,9 @@ class CommunityKuzuGraphStore:
         with open_board_connection(board_id) as (_db, conn):
             params = dict(attrs)
             params["id"] = node_id
-            columns = ", ".join(f"{k}: ${k}" for k in params)
+            columns = ", ".join(
+                _property_binding(key, value) for key, value in params.items()
+            )
             conn.execute(f"CREATE (n:{node_type} {{{columns}}})", params)
 
     def create_edge(
@@ -75,7 +110,9 @@ class CommunityKuzuGraphStore:
         edge_attrs.setdefault("created_by", edge_attrs.get("created_by_session_id", ""))
         edge_attrs.setdefault("fallback_reason", "")
 
-        attr_cols = ", ".join(f"{k}: ${k}" for k in edge_attrs)
+        attr_cols = ", ".join(
+            _property_binding(key, value) for key, value in edge_attrs.items()
+        )
         stmt = (
             f"MATCH (a:{from_type} {{id: $from_id}}), "
             f"(b:{to_type} {{id: $to_id}}) "
@@ -87,6 +124,92 @@ class CommunityKuzuGraphStore:
 
         with open_board_connection(board_id) as (_db, conn):
             conn.execute(stmt, params)
+
+    def update_node(
+        self,
+        board_id: str,
+        node_type: str,
+        node_id: str,
+        attrs: dict[str, Any],
+    ) -> None:
+        values = {key: value for key, value in attrs.items() if key != "id"}
+        if not values:
+            return
+        assignments = ", ".join(f"n.{key} = ${key}" for key in values)
+        self._exec(
+            board_id,
+            f"MATCH (n:{node_type} {{id: $id}}) SET {assignments}",
+            {"id": node_id, **values},
+        )
+
+    def mark_superseded(
+        self,
+        board_id: str,
+        node_type: str,
+        node_id: str,
+        *,
+        superseded_by: str,
+        superseded_at: str,
+        revocation_reason: str,
+    ) -> None:
+        self._exec(
+            board_id,
+            f"MATCH (n:{node_type} {{id: $node_id}}) "
+            "SET n.superseded_by = $superseded_by, "
+            "n.superseded_at = timestamp($superseded_at), "
+            "n.revocation_reason = $revocation_reason",
+            {
+                "node_id": node_id,
+                "superseded_by": superseded_by,
+                "superseded_at": superseded_at,
+                "revocation_reason": revocation_reason,
+            },
+        )
+
+    def edge_exists(
+        self,
+        board_id: str,
+        edge_type: str,
+        from_type: str,
+        to_type: str,
+        from_id: str,
+        to_id: str,
+    ) -> bool:
+        return bool(
+            self._exec(
+                board_id,
+                f"MATCH (a:{from_type} {{id: $from_id}})-[r:{edge_type}]->"
+                f"(b:{to_type} {{id: $to_id}}) RETURN r LIMIT 1",
+                {"from_id": from_id, "to_id": to_id},
+            )
+        )
+
+    def find_node_types(self, board_id: str, node_id: str) -> tuple[str, ...]:
+        return tuple(
+            node_type
+            for node_type in NODE_TYPES
+            if self._exec(
+                board_id,
+                f"MATCH (n:{node_type} {{id: $node_id}}) RETURN n.id LIMIT 1",
+                {"node_id": node_id},
+            )
+        )
+
+    def increment_attestation(
+        self,
+        board_id: str,
+        node_type: str,
+        node_id: str,
+        *,
+        attested_at: str,
+    ) -> None:
+        self._exec(
+            board_id,
+            f"MATCH (n:{node_type} {{id: $node_id}}) "
+            "SET n.attestation_count = coalesce(n.attestation_count, 1) + 1, "
+            "n.last_attested_at = timestamp($attested_at)",
+            {"node_id": node_id, "attested_at": attested_at},
+        )
 
     def delete_nodes_by_session(self, board_id: str, session_id: str) -> int:
         count = 0
@@ -267,7 +390,7 @@ class CommunityKuzuGraphStore:
         if not raw:
             return []
 
-        ids_in_order = [r.kuzu_node_id for r in raw]
+        ids_in_order = [r.graph_node_id for r in raw]
         attrs = self._exec(
             board_id,
             f"MATCH (n:{node_type}) WHERE n.id IN $ids "
@@ -435,37 +558,110 @@ class CommunityKuzuGraphStore:
     def vector_search(
         self, board_id: str, node_type: str, query_vec: list[float],
         top_k: int, min_similarity: float,
+        *,
+        include_superseded: bool = False,
     ) -> list[dict]:
         from okto_pulse.core.kg.graph_availability import (
             graph_unavailable_error,
             is_graph_unavailable_error,
         )
-        from okto_pulse.core.kg.search import find_similar_nodes_by_type
+        from okto_pulse.core.kg.scoring import DECAY_REORDER_POOL_MULTIPLIER
 
+        if node_type not in VECTOR_INDEX_TYPES:
+            return []
+        fetch_k = top_k if include_superseded else max(
+            top_k,
+            top_k * DECAY_REORDER_POOL_MULTIPLIER,
+        )
+        indexed_rows: list[list[Any]] = []
         try:
             with open_board_connection(board_id) as (_db, conn):
-                raw = find_similar_nodes_by_type(
-                    board_id=board_id,
-                    node_type=node_type,
-                    query_vector=query_vec,
-                    top_k=top_k,
-                    min_similarity=min_similarity,
-                    conn=conn,
+                result = conn.execute(
+                    f"CALL QUERY_VECTOR_INDEX("
+                    f"'{node_type}', '{vector_index_name(node_type)}', $vec, $k) "
+                    "RETURN node.id, node.title, node.source_artifact_ref, "
+                    "distance, node.superseded_by",
+                    {"vec": query_vec, "k": fetch_k},
                 )
+                indexed_rows = _materialize_native_rows(result)
         except Exception as exc:
             if is_graph_unavailable_error(exc):
                 raise graph_unavailable_error(board_id) from exc
-            raise
-        return [
-            {
-                "node_id": r.kuzu_node_id,
-                "node_type": r.node_type,
-                "title": r.title,
-                "source_artifact_ref": r.source_artifact_ref,
-                "similarity": r.similarity,
-            }
-            for r in raw
-        ]
+            logger.debug(
+                "kg.vector_index.query_failed board=%s type=%s err=%s",
+                board_id,
+                node_type,
+                exc,
+            )
+
+        hits: list[dict[str, Any]] = []
+        for row in indexed_rows:
+            if row[4] and not include_superseded:
+                continue
+            similarity = max(0.0, min(1.0, 1.0 - float(row[3])))
+            if similarity < min_similarity:
+                continue
+            hits.append(
+                {
+                    "node_id": row[0],
+                    "node_type": node_type,
+                    "title": row[1],
+                    "source_artifact_ref": row[2],
+                    "similarity": similarity,
+                }
+            )
+            if len(hits) >= top_k:
+                return hits
+
+        if hits:
+            return hits
+
+        logger.info(
+            "kg.vector_index.fallback board=%s type=%s",
+            board_id,
+            node_type,
+        )
+        try:
+            with open_board_connection(board_id) as (_db, conn):
+                result = conn.execute(
+                    f"MATCH (n:{node_type}) WHERE n.embedding IS NOT NULL "
+                    "RETURN n.id, n.title, n.source_artifact_ref, n.embedding, "
+                    "n.superseded_by LIMIT 500"
+                )
+                fallback_rows = _materialize_native_rows(result)
+        except Exception as exc:
+            if is_graph_unavailable_error(exc):
+                raise graph_unavailable_error(board_id) from exc
+            logger.warning(
+                "kg.vector_fallback.failed board=%s type=%s err=%s",
+                board_id,
+                node_type,
+                exc,
+            )
+            return []
+
+        for row in fallback_rows:
+            if row[4] and not include_superseded:
+                continue
+            embedding = row[3]
+            if not embedding or len(embedding) != len(query_vec):
+                continue
+            similarity = max(
+                0.0,
+                min(1.0, _cosine_similarity(query_vec, embedding)),
+            )
+            if similarity >= min_similarity:
+                hits.append(
+                    {
+                        "node_id": row[0],
+                        "node_type": node_type,
+                        "title": row[1],
+                        "source_artifact_ref": row[2],
+                        "similarity": similarity,
+                    }
+                )
+        hits.sort(key=lambda item: item["similarity"], reverse=True)
+        return hits[:top_k]
 
     def get_constraint_detail(
         self, board_id: str, constraint_id: str
@@ -524,3 +720,34 @@ class CommunityKuzuGraphStore:
             result["internal_node_types"] = [{"name": "BoardMeta", "stable": False}]
             result["internal_rel_types"] = []
         return result
+
+    def list_schema_objects(self, board_id: str) -> tuple[str, ...]:
+        with open_board_connection(board_id) as (_db, conn):
+            rows = _materialize_native_rows(
+                conn.execute("CALL SHOW_TABLES() RETURN name")
+            )
+        return tuple(sorted(str(row[0]) for row in rows if row and row[0]))
+
+    def list_node_properties(self, board_id: str, node_type: str) -> tuple[str, ...]:
+        if node_type not in NODE_TYPES:
+            return ()
+        with open_board_connection(board_id) as (_db, conn):
+            rows = _materialize_native_rows(
+                conn.execute(f"CALL TABLE_INFO('{node_type}') RETURN *")
+            )
+        properties: list[str] = []
+        for row in rows:
+            first_text = next(
+                (str(cell) for cell in row if isinstance(cell, str) and cell),
+                None,
+            )
+            if first_text is not None:
+                properties.append(first_text)
+        return tuple(properties)
+
+    def capabilities(self) -> GraphCapabilities:
+        return GraphCapabilities(
+            indexed_similarity=True,
+            schema_introspection=True,
+            mutable_indexed_attributes=False,
+        )

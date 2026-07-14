@@ -41,6 +41,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextvars import copy_context
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -49,11 +50,8 @@ import pytest
 import ladybug
 from okto_pulse.community import serve_lock
 from okto_pulse.community.adapters import kg_runtime
-from okto_pulse.core.infra.config import (
-    CoreSettings,
-    configure_settings,
-    get_settings,
-)
+from okto_pulse.community.config import CommunitySettings
+from okto_pulse.core.infra.config import configure_settings, get_settings
 
 KG_LOGGER = "okto_pulse.kg.schema"
 
@@ -72,7 +70,8 @@ def kg_env(tmp_path: Path, monkeypatch):
     base = tmp_path / "kgbase"
     base.mkdir()
     configure_settings(
-        CoreSettings(
+        CommunitySettings(
+            data_dir=str(tmp_path / "pulse"),
             kg_kuzu_buffer_pool_mb=128,
             kg_kuzu_max_db_size_gb=2,
             kg_base_dir=str(base),
@@ -271,14 +270,19 @@ def test_s9_stress_close_guard_is_fail_closed(
         finally:
             bc.close()
 
-    threads = [
-        threading.Thread(target=worker, args=(t,), daemon=True)
-        for t in range(_S9_WORKERS)
-    ]
-    threads.append(threading.Thread(target=legit_closer, daemon=True))
-    threads.append(threading.Thread(target=hygiene_closer, daemon=True))
-    threads.append(threading.Thread(target=evictor, daemon=True))
-    threads.append(threading.Thread(target=long_reader, daemon=True))
+    def runtime_thread(target, *args) -> threading.Thread:
+        context = copy_context()
+        return threading.Thread(
+            target=context.run,
+            args=(target, *args),
+            daemon=True,
+        )
+
+    threads = [runtime_thread(worker, t) for t in range(_S9_WORKERS)]
+    threads.append(runtime_thread(legit_closer))
+    threads.append(runtime_thread(hygiene_closer))
+    threads.append(runtime_thread(evictor))
+    threads.append(runtime_thread(long_reader))
     for t in threads:
         t.start()
 

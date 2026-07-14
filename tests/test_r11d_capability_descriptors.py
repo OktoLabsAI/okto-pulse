@@ -35,7 +35,7 @@ from okto_pulse.core.ports.capability_descriptor import capability_scope_violati
 def _composition(**overrides):
     base = dict(
         settings_provider="s", auth_provider="a", storage_provider="st",
-        session_factory="sf", event_bus="eb",
+        uow_factory="uow", event_bus="eb",
     )
     base.update(overrides)
     return RuntimeComposition(**base)
@@ -91,7 +91,7 @@ def test_ts_9913b93b_descriptors_derived_from_runtime_composition():
     # storage_provider -> the local-storage descriptor disappears.
     comp_no_storage = RuntimeComposition(
         settings_provider="s", auth_provider="a", storage_provider=None,
-        session_factory="sf", event_bus="eb", kg_registry="kg",
+        uow_factory="uow", event_bus="eb", kg_registry="kg",
     )
     ids_no_storage = {d.id for d in derive_capability_descriptors(comp_no_storage)}
     assert "capability:local_storage" not in ids_no_storage

@@ -85,7 +85,7 @@ def test_af42_full_inventory_classifies_every_core_import(tmp_path: Path) -> Non
     adapter.parent.mkdir(parents=True)
     adapter.write_text(
         "from okto_pulse.core.ports.runtime_workers import RuntimeWorkerRegistry\n"
-        "from okto_pulse.core.infra.config import CoreSettings\n"
+        "from okto_pulse.core import CoreSettings\n"
         "from okto_pulse.core.models.db import Card\n",
         encoding="utf-8",
     )
@@ -113,7 +113,7 @@ def test_af42_full_inventory_classifies_every_core_import(tmp_path: Path) -> Non
         ("okto_pulse.core.ports.runtime_workers", ("RuntimeWorkerRegistry",))
     ] == CORE_IMPORT_PUBLIC_CONTRACT
     assert by_module[
-        ("okto_pulse.core.infra.config", ("CoreSettings",))
+        ("okto_pulse.core", ("CoreSettings",))
     ] == CORE_IMPORT_PUBLIC_CONTRACT
     assert by_module[
         ("okto_pulse.core.models.db", ("Card",))

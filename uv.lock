@@ -1444,6 +1444,7 @@ dependencies = [
     { name = "ladybug" },
     { name = "okto-pulse-core" },
     { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "python-multipart" },
     { name = "requests" },
     { name = "sentence-transformers" },
@@ -1465,6 +1466,7 @@ requires-dist = [
     { name = "ladybug", specifier = ">=0.16.0,<0.17.0" },
     { name = "okto-pulse-core", specifier = ">=0.3.0,<1.0.0" },
     { name = "pydantic", specifier = ">=2.5.0,<2.14" },
+    { name = "pydantic-settings", specifier = ">=2.1.0,<3.0.0" },
     { name = "python-multipart", specifier = ">=0.0.6,<1.0.0" },
     { name = "requests", specifier = ">=2.32.0,<3.0.0" },
     { name = "sentence-transformers", specifier = ">=2.5.0,<6.0.0" },
@@ -1480,7 +1482,6 @@ version = "0.3.0"
 source = { registry = "../okto_labs_pulse_core/dist" }
 dependencies = [
     { name = "pydantic" },
-    { name = "pydantic-settings" },
     { name = "pyyaml" },
 ]
 wheels = [

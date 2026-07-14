@@ -83,8 +83,9 @@ async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
     def fake_trace_sink_from_env():
         return trace_sink
 
-    def fake_build_mcp_asgi_app(*, catalog, trace_sink=None):
+    def fake_build_mcp_asgi_app(*, catalog, trace_sink=None, composition=None):
         assert catalog is not None
+        assert composition is main_mod.app.state.runtime_composition
         trace_args.append(trace_sink)
         return "mcp-asgi-app"
 

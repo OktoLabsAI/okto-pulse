@@ -12,6 +12,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from okto_pulse.community.adapters.graph_error_mapping import (
+    raise_mapped_graph_error,
+)
 from okto_pulse.core.kg.interfaces.graph_transaction import GraphStatementResult
 
 logger = logging.getLogger(__name__)
@@ -55,9 +58,172 @@ class _KuzuTransactionScope:
         cypher: str,
         params: dict[str, Any] | None = None,
     ) -> GraphStatementResult:
-        if params:
-            return _materialize(self._conn.execute(cypher, params))
-        return _materialize(self._conn.execute(cypher))
+        try:
+            if params:
+                return _materialize(self._conn.execute(cypher, params))
+            return _materialize(self._conn.execute(cypher))
+        except Exception as exc:
+            raise_mapped_graph_error(exc, operation="graph_statement")
+
+    @staticmethod
+    def _property_binding(name: str, value: Any) -> str:
+        if (
+            name in {"created_at", "last_attested_at", "superseded_at"}
+            and isinstance(value, str)
+            and value
+        ):
+            return f"{name}: timestamp(${name})"
+        return f"{name}: ${name}"
+
+    def create_node(
+        self,
+        node_type: str,
+        node_id: str,
+        attrs: dict[str, Any],
+        *,
+        source_session_id: str,
+    ) -> None:
+        params = dict(attrs)
+        params.update(id=node_id, source_session_id=source_session_id)
+        columns = ", ".join(
+            self._property_binding(key, value) for key, value in params.items()
+        )
+        self.execute(f"CREATE (n:{node_type} {{{columns}}})", params)
+
+    def update_node(
+        self,
+        node_type: str,
+        node_id: str,
+        attrs: dict[str, Any],
+    ) -> None:
+        values = {key: value for key, value in attrs.items() if key != "id"}
+        if not values:
+            return
+        assignments = ", ".join(f"n.{key} = ${key}" for key in values)
+        self.execute(
+            f"MATCH (n:{node_type} {{id: $id}}) SET {assignments}",
+            {"id": node_id, **values},
+        )
+
+    def mark_superseded(
+        self,
+        node_type: str,
+        node_id: str,
+        *,
+        superseded_by: str,
+        superseded_at: str,
+        revocation_reason: str,
+    ) -> None:
+        self.execute(
+            f"MATCH (n:{node_type} {{id: $node_id}}) "
+            "SET n.superseded_by = $superseded_by, "
+            "n.superseded_at = timestamp($superseded_at), "
+            "n.revocation_reason = $revocation_reason",
+            {
+                "node_id": node_id,
+                "superseded_by": superseded_by,
+                "superseded_at": superseded_at,
+                "revocation_reason": revocation_reason,
+            },
+        )
+
+    def edge_exists(
+        self,
+        edge_type: str,
+        from_type: str,
+        to_type: str,
+        from_id: str,
+        to_id: str,
+    ) -> bool:
+        result = self.execute(
+            f"MATCH (a:{from_type} {{id: $from_id}})-[r:{edge_type}]->"
+            f"(b:{to_type} {{id: $to_id}}) RETURN r LIMIT 1",
+            {"from_id": from_id, "to_id": to_id},
+        )
+        return bool(result.rows)
+
+    def create_edge(
+        self,
+        edge_type: str,
+        from_type: str,
+        to_type: str,
+        from_id: str,
+        to_id: str,
+        attrs: dict[str, Any],
+    ) -> bool:
+        columns = ", ".join(
+            self._property_binding(key, value) for key, value in attrs.items()
+        )
+        result = self.execute(
+            f"MATCH (a:{from_type} {{id: $from_id}}), "
+            f"(b:{to_type} {{id: $to_id}}) "
+            f"CREATE (a)-[r:{edge_type} {{{columns}}}]->(b) RETURN r",
+            {"from_id": from_id, "to_id": to_id, **attrs},
+        )
+        return bool(result.rows)
+
+    def find_node_types(self, node_id: str) -> tuple[str, ...]:
+        from okto_pulse.community.adapters.kg_runtime import NODE_TYPES
+
+        found: list[str] = []
+        for node_type in NODE_TYPES:
+            result = self.execute(
+                f"MATCH (n:{node_type} {{id: $node_id}}) RETURN n.id LIMIT 1",
+                {"node_id": node_id},
+            )
+            if result.rows:
+                found.append(node_type)
+        return tuple(found)
+
+    def delete_edges_by_session(self, session_id: str) -> None:
+        from okto_pulse.community.adapters.kg_runtime import (
+            MULTI_REL_TYPES,
+            REL_TYPES,
+        )
+
+        pairs = list(REL_TYPES)
+        for rel_name, endpoint_pairs in MULTI_REL_TYPES:
+            pairs.extend(
+                (rel_name, from_type, to_type)
+                for from_type, to_type in endpoint_pairs
+            )
+        for rel_name, from_type, to_type in pairs:
+            self.execute(
+                f"MATCH (a:{from_type})-[r:{rel_name}]->(b:{to_type}) "
+                "WHERE r.created_by_session_id = $session_id DELETE r",
+                {"session_id": session_id},
+            )
+
+    def delete_nodes_by_session(
+        self,
+        session_id: str,
+        node_types: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        failed: list[str] = []
+        for node_type in node_types:
+            try:
+                self.execute(
+                    f"MATCH (n:{node_type}) "
+                    "WHERE n.source_session_id = $session_id DETACH DELETE n",
+                    {"session_id": session_id},
+                )
+            except Exception:
+                failed.append(node_type)
+        return tuple(failed)
+
+    def increment_attestation(
+        self,
+        node_type: str,
+        node_id: str,
+        *,
+        attested_at: str,
+    ) -> None:
+        self.execute(
+            f"MATCH (n:{node_type} {{id: $node_id}}) "
+            "SET n.attestation_count = coalesce(n.attestation_count, 1) + 1, "
+            "n.last_attested_at = timestamp($attested_at)",
+            {"node_id": node_id, "attested_at": attested_at},
+        )
 
     async def commit(self) -> None:
         self._close()

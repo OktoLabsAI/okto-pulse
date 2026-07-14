@@ -21,6 +21,7 @@ import ladybug as kuzu  # type: ignore
 from typing import Any
 
 from okto_pulse.core.kg import schema_contract as _schema_contract
+from okto_pulse.core.kg.interfaces.graph_errors import GraphUnavailable
 
 logger = logging.getLogger("okto_pulse.kg.schema")
 
@@ -787,7 +788,7 @@ def _raise_existing_graph_open_failed(
             "error": str(exc),
         },
     )
-    raise RuntimeError(
+    raise GraphUnavailable(
         "Existing LadybugDB graph could not be opened during "
         f"{operation}; refusing to auto-bootstrap or purge it. "
         f"board_id={board_id} path={path}. "
@@ -858,7 +859,9 @@ def _board_quarantine_service():
     )
 
 
-def purge_board_graph_storage(board_id: str, *, reason: str = "manual") -> list[str]:
+def purge_board_graph_storage_with_receipt(
+    board_id: str, *, reason: str = "manual"
+) -> tuple[list[str], str | None]:
     """Quarantine-then-clear a board's local LadybugDB graph file and sidecars.
 
     KG-01.4 (val_79e6f555 rework): purges of `graph.lbug` and sidecars
@@ -883,7 +886,7 @@ def purge_board_graph_storage(board_id: str, *, reason: str = "manual") -> list[
         targets.extend(sorted(path.parent.glob(path.name + ".*")))
 
     if not targets:
-        return []
+        return [], None
 
     service = _board_quarantine_service()
     try:
@@ -909,7 +912,7 @@ def purge_board_graph_storage(board_id: str, *, reason: str = "manual") -> list[
             },
         )
         # FR7: refuse the purge so corruption evidence survives.
-        return []
+        return [], None
 
     moved_count = response.files_moved
     removed_str = [str(t) for t in targets[:moved_count]]
@@ -939,7 +942,17 @@ def purge_board_graph_storage(board_id: str, *, reason: str = "manual") -> list[
             "files_moved": moved_count,
         },
     )
-    return removed_str
+    return removed_str, response.quarantine_id
+
+
+def purge_board_graph_storage(board_id: str, *, reason: str = "manual") -> list[str]:
+    """Compatibility facade returning only the affected local paths."""
+
+    affected, _quarantine_ref = purge_board_graph_storage_with_receipt(
+        board_id,
+        reason=reason,
+    )
+    return affected
 
 
 def _fsync_if_file(path: Path) -> None:
@@ -1523,7 +1536,7 @@ def _open_kuzu_db(path: Path):
     corrupção — ver ``_try_open_with_wal_salvage``).
     """
     import ladybug as kuzu  # type: ignore
-    from okto_pulse.core.infra.config import get_settings
+    from okto_pulse.core import get_settings
 
     logger.debug("[KG] _open_kuzu_db path=%s", path)
     s = get_settings()
@@ -2061,13 +2074,11 @@ def _effective_embedding_meta() -> dict:
     raises). Registry unconfigured / provider absent => stub-shaped dict,
     which the pure guard classifies as INDETERMINATE (spec D2)."""
     try:
-        from okto_pulse.core.kg.interfaces.embedding import (
-            describe_embedding_provider,
+        from okto_pulse.core.application.kg_runtime_access import (
+            describe_current_embedding_provider,
         )
-        from okto_pulse.core.kg.interfaces.registry import get_kg_registry
 
-        provider = getattr(get_kg_registry(), "embedding_provider", None)
-        return describe_embedding_provider(provider)
+        return describe_current_embedding_provider()
     except Exception:
         return {
             "model_name": None,
@@ -2105,7 +2116,7 @@ def _enforce_embedding_guard(board_id: str) -> None:
     persists the effective metadata; ``indeterminate`` logs and proceeds
     without ever dirtying a valid stamp (decision D2).
     """
-    from okto_pulse.core.kg.embedding_guard import (
+    from okto_pulse.core.application.embedding_compatibility import (
         VERDICT_INDETERMINATE,
         VERDICT_MISMATCH,
         VERDICT_STAMP,

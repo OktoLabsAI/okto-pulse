@@ -251,7 +251,7 @@ async def _commit_demo_graph(board_id: str, spec_id: str) -> None:
     """
     import gc
 
-    from okto_pulse.core.ports.relational_runtime import get_session_factory
+    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory
     from okto_pulse.community.adapters.composition import (
         configure_community_kg_registry,
     )

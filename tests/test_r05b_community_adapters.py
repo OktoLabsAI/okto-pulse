@@ -23,6 +23,7 @@ import ast
 import asyncio
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 # Importing community.main builds the app + wires the registry with the
 # Community adapters at import time (the e2e smoke surface).
@@ -163,12 +164,10 @@ def test_ts_87cf9551_embedding_capability_metadata():
     assert st._model is None
 
 
-def test_ts_87cf9551_preload_degrades_to_stub_keeping_event_and_dim(caplog):
-    from okto_pulse.community.main import _preload_embedding_model
-    from okto_pulse.core.kg.interfaces.registry import (
-        get_kg_registry,
-        reset_registry_for_tests,
-    )
+def test_ts_87cf9551_preload_degrades_to_stub_keeping_event_and_dim(
+    caplog, monkeypatch
+):
+    import okto_pulse.community.main as main
 
     class _FailingDuckProvider:
         """Duck-typed (NOT a core SentenceTransformerProvider) — proves no
@@ -188,79 +187,35 @@ def test_ts_87cf9551_preload_degrades_to_stub_keeping_event_and_dim(caplog):
     class _Settings:
         kg_embedding_dim = 384
 
-    reset_registry_for_tests()
-    try:
-        from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
-        from okto_pulse.core.kg.providers.testing.registry import (
-            build_testing_kg_registry,
-        )
-        from okto_pulse.core.kg.providers.testing.memory_audit_repo import (
-            InMemoryAuditRepository,
-        )
-        from okto_pulse.core.kg.providers.testing.memory_event_bus import (
-            InMemoryEventBus,
-        )
-
-        configure_kg_registry(
-            defaults_factory=build_testing_kg_registry,
-            event_bus=InMemoryEventBus(),
-            audit_repo=InMemoryAuditRepository(),
-        )
-        reg = get_kg_registry()
-        reg.embedding_provider = _FailingDuckProvider()
-        with caplog.at_level(logging.WARNING, logger="okto_pulse.community.embedding"):
-            asyncio.run(_preload_embedding_model(_Settings()))
-        swapped = get_kg_registry().embedding_provider
-        assert type(swapped).__name__ == "CommunityStubEmbeddingProvider"
-        assert swapped.dim == 11  # dimension preserved from the provider metadata
-        failed = [
-            r
-            for r in caplog.records
-            if getattr(r, "event", None) == "kg.embedding.load_failed"
-        ]
-        assert failed, "kg.embedding.load_failed not emitted"
-        assert failed[0].reason == "load_failed"
-        assert failed[0].fallback == "CommunityStubEmbeddingProvider"
-    finally:
-        reset_registry_for_tests()
+    registry = SimpleNamespace(embedding_provider=_FailingDuckProvider())
+    monkeypatch.setattr(main, "get_current_provider_registry", lambda: registry)
+    with caplog.at_level(logging.WARNING, logger="okto_pulse.community.embedding"):
+        asyncio.run(main._preload_embedding_model(_Settings()))
+    swapped = registry.embedding_provider
+    assert type(swapped).__name__ == "CommunityStubEmbeddingProvider"
+    assert swapped.dim == 11  # dimension preserved from the provider metadata
+    failed = [
+        r
+        for r in caplog.records
+        if getattr(r, "event", None) == "kg.embedding.load_failed"
+    ]
+    assert failed, "kg.embedding.load_failed not emitted"
+    assert failed[0].reason == "load_failed"
+    assert failed[0].fallback == "CommunityStubEmbeddingProvider"
 
 
-def test_ts_87cf9551_preload_noop_for_stub_provider():
-    from okto_pulse.community.main import _preload_embedding_model
-    from okto_pulse.core.kg.interfaces.registry import (
-        get_kg_registry,
-        reset_registry_for_tests,
-    )
+def test_ts_87cf9551_preload_noop_for_stub_provider(monkeypatch):
+    import okto_pulse.community.main as main
 
     class _Settings:
         kg_embedding_dim = 384
 
-    reset_registry_for_tests()
-    try:
-        from okto_pulse.core.kg.interfaces.registry import configure_kg_registry
-        from okto_pulse.core.kg.providers.testing.registry import (
-            build_testing_kg_registry,
-        )
-        from okto_pulse.core.kg.providers.testing.memory_audit_repo import (
-            InMemoryAuditRepository,
-        )
-        from okto_pulse.core.kg.providers.testing.memory_event_bus import (
-            InMemoryEventBus,
-        )
-
-        configure_kg_registry(
-            defaults_factory=build_testing_kg_registry,
-            event_bus=InMemoryEventBus(),
-            audit_repo=InMemoryAuditRepository(),
-        )
-        reg = get_kg_registry()
-        original = CommunityStubEmbeddingProvider(dim=5)
-        reg.embedding_provider = original
-        asyncio.run(_preload_embedding_model(_Settings()))
-        # stub provider -> nothing to preload -> unchanged.
-        assert get_kg_registry().embedding_provider is original
-    finally:
-        reset_registry_for_tests()
+    original = CommunityStubEmbeddingProvider(dim=5)
+    registry = SimpleNamespace(embedding_provider=original)
+    monkeypatch.setattr(main, "get_current_provider_registry", lambda: registry)
+    asyncio.run(main._preload_embedding_model(_Settings()))
+    # stub provider -> nothing to preload -> unchanged.
+    assert registry.embedding_provider is original
 
 
 # ===========================================================================

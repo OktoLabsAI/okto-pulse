@@ -6,10 +6,8 @@ Two levels of proof:
      ``app.state.runtime_composition`` exposes a real
      ``CommunityUnitOfWorkFactory`` as ``uow_factory`` — registered/observable,
      bound to the live session factory (DORMANT, not a dead object).
-  2. SEAM CONTRACT: ``uow_factory`` is an OPTIONAL owned provider; absent it is
-     ``None`` and ``require_provider`` raises ``runtime_provider_missing`` (no
-     implicit concrete fallback at the composition level). Supplied, it is
-     observable through the composition contract. Consumer re-point = IMP2 (FR3).
+  2. SEAM CONTRACT: ``uow_factory`` is a REQUIRED owned provider; ``None`` fails
+     validation and no engine/session hook exists in the Core composition.
 """
 
 from __future__ import annotations
@@ -31,35 +29,33 @@ def test_ac3_community_app_registers_community_uow_factory():
     assert composition.uow_factory is not None
     assert isinstance(composition.uow_factory, CommunityUnitOfWorkFactory)
     assert "uow_factory" in composition.provider_keys()
-    # Bound to the live session factory (DORMANT but real, not a stub).
-    assert composition.session_factory is not None
+    assert callable(composition.uow_factory)
+    assert not hasattr(composition, "session_factory")
+    assert not hasattr(composition, "relational_engine")
 
 
-def test_ac3_seam_optional_provider_no_implicit_fallback():
+def test_ac3_seam_requires_uow_without_relational_fallbacks():
     from okto_pulse.core.composition import (
-        OPTIONAL_OWNED_PROVIDERS,
+        REQUIRED_OWNED_PROVIDERS,
         RuntimeComposition,
         RuntimeProviderMissing,
+        validate_required_providers,
     )
 
-    # The seam classifies uow_factory as an OPTIONAL owned provider.
-    assert "uow_factory" in OPTIONAL_OWNED_PROVIDERS
-
-    # Absent -> None and NOT a supplied key, and require_provider fails closed
-    # (no implicit concrete substitution at the composition level).
+    assert "uow_factory" in REQUIRED_OWNED_PROVIDERS
     bare = RuntimeComposition(
         settings_provider=object(),
         auth_provider=object(),
         storage_provider=object(),
-        session_factory=object(),
         event_bus=object(),
+        uow_factory=None,
     )
     assert bare.uow_factory is None
     assert "uow_factory" not in bare.provider_keys()
     with pytest.raises(RuntimeProviderMissing):
         bare.require_provider("uow_factory")
-    # Absent uow_factory does NOT make the composition invalid (it is optional).
-    assert bare.missing_required() == []
+    with pytest.raises(RuntimeProviderMissing):
+        validate_required_providers(bare)
 
     # Supplied -> observable through the composition contract.
     sentinel = object()
@@ -67,7 +63,6 @@ def test_ac3_seam_optional_provider_no_implicit_fallback():
         settings_provider=object(),
         auth_provider=object(),
         storage_provider=object(),
-        session_factory=object(),
         event_bus=object(),
         uow_factory=sentinel,
     )

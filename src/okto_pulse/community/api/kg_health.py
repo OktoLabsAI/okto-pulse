@@ -276,7 +276,13 @@ async def get_kg_health_endpoint(
             actor=RESTAdapterContract.actor("kg-health-rest", board_id=board_id),
             uow=db,
         )
-        data = result.data
+        data = dict(result.data)
+        footprint = dict(data.get("storage_footprint_proxy") or {})
+        if "graph_primary_bytes" in footprint:
+            footprint["graph_lbug_bytes"] = footprint.pop(
+                "graph_primary_bytes"
+            )
+        data["storage_footprint_proxy"] = footprint
     except BoardNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return KGHealthResponse(**data)

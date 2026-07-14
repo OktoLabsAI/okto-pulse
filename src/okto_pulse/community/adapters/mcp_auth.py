@@ -63,15 +63,21 @@ class CommunityMcpAuthenticator:
     ``AsyncSession`` context manager.
     """
 
-    def __init__(self, *, session_factory: Callable[[], Any]) -> None:
+    def __init__(
+        self,
+        *,
+        session_factory: Callable[[], Any],
+        session_scope_factory: Callable[[], Any] | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._session_scope_factory = session_scope_factory or session_factory
 
     async def authenticate(self, credential: McpCredential | None) -> AuthSession | None:
         # Fail-closed: no credential / empty value -> unauthenticated (no raise).
         if credential is None or not getattr(credential, "value", ""):
             return None
         try:
-            async with self._session_factory() as db:
+            async with self._session_scope_factory() as db:
                 from okto_pulse.core.services.application_agents import (
                     authenticate_agent_by_api_key,
                 )
@@ -99,6 +105,7 @@ class CommunityMcpAuthenticator:
 def make_community_mcp_authenticator(
     *,
     session_factory: Callable[[], Any] | None = None,
+    session_scope_factory: Callable[[], Any] | None = None,
 ) -> CommunityMcpAuthenticator:
     """Composition factory — binds the canonical ``McpAuthenticator`` to the
     Community async session factory.
@@ -108,10 +115,13 @@ def make_community_mcp_authenticator(
     is omitted, the process-global ``get_session_factory()`` is used.
     """
     if session_factory is None:
-        from okto_pulse.core.ports.relational_runtime import get_session_factory
+        from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory
 
         session_factory = get_session_factory()
-    return CommunityMcpAuthenticator(session_factory=session_factory)
+    return CommunityMcpAuthenticator(
+        session_factory=session_factory,
+        session_scope_factory=session_scope_factory,
+    )
 
 
 class MCPAuthContext:
@@ -123,9 +133,11 @@ class MCPAuthContext:
         get_db: Callable,
         *,
         realm_scope: RealmScope | None = None,
+        session_scope_factory: Callable[[], Any] | None = None,
     ):
         self._get_agent = get_agent
         self._get_db = get_db
+        self._session_scope_factory = session_scope_factory or get_db
         self._realm_scope = require_realm_scope(realm_scope or RealmScope.local())
         self._agent: Any = _UNSET
         self._boards: list[str] | None = None
@@ -146,7 +158,7 @@ class MCPAuthContext:
         if agent is None:
             self._boards = []
             return self._boards
-        async with self._get_db() as db:
+        async with self._session_scope_factory() as db:
             from okto_pulse.core.services.application_agents import (
                 list_accessible_board_ids_for_agent,
             )
@@ -170,6 +182,7 @@ def create_mcp_auth_factory(
     get_db: Callable,
     *,
     realm_scope: RealmScope | None = None,
+    session_scope_factory: Callable[[], Any] | None = None,
 ) -> Callable:
     """Build an auth_context_factory for the MCP server bootstrap."""
 
@@ -178,13 +191,17 @@ def create_mcp_auth_factory(
             get_agent,
             get_db,
             realm_scope=realm_scope or RealmScope.local(),
+            session_scope_factory=session_scope_factory,
         )
 
     return factory
 
 
 def auth_context_from_session(
-    session: AuthSession | None, get_db: Callable
+    session: AuthSession | None,
+    get_db: Callable,
+    *,
+    session_scope_factory: Callable[[], Any] | None = None,
 ) -> MCPAuthContext:
     """Bridge a resolved auth session to the Community-owned KG AuthContext."""
 
@@ -200,4 +217,9 @@ def auth_context_from_session(
         if realm_id == "local"
         else RealmScope.tenant(realm_id)
     )
-    return MCPAuthContext(_get_agent, get_db, realm_scope=realm_scope)
+    return MCPAuthContext(
+        _get_agent,
+        get_db,
+        realm_scope=realm_scope,
+        session_scope_factory=session_scope_factory,
+    )

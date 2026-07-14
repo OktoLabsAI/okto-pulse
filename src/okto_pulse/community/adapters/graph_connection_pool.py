@@ -77,7 +77,7 @@ def _cap_from_settings() -> int:
     populates CoreSettings from the persisted table).
     """
     try:
-        from okto_pulse.core.infra.config import get_settings
+        from okto_pulse.core import get_settings
 
         return max(0, int(get_settings().kg_connection_pool_size))
     except Exception as exc:

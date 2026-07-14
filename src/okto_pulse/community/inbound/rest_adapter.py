@@ -21,6 +21,7 @@ from okto_pulse.core.application.use_cases import (
     PermissionDeniedError,
 )
 from okto_pulse.core.application.use_cases.base import actor_context_from_principal
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.application.errors import AmbiguityGateError
 from okto_pulse.core.services.resource_gate import ResourceGateError
@@ -45,7 +46,9 @@ class RESTAdapterContract:
             user_id,
             "rest",
             board_id=board_id,
-            realm_id=realm_id,
+            # Community is local-first by product definition. Other editions
+            # provide their own inbound adapter and must pass an explicit realm.
+            realm_id=realm_id or LOCAL_REALM_ID,
             permissions=permissions,
             roles=roles,
         )

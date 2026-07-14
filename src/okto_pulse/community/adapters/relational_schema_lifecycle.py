@@ -2,8 +2,8 @@
 
 Composes the R16-B ``CommunityRelationalSchemaMigrator`` (schema region) and the
 R16-C ``CommunityDataBootstrapper`` (data-bootstrap region) into the single
-``RelationalSchemaLifecycleOrchestrator`` the core schema-lifecycle seam
-(``okto_pulse.core.infra.schema_lifecycle``) resolves. Registering it MOVES the
+``RelationalSchemaLifecycleOrchestrator`` the core schema-lifecycle port
+(``okto_pulse.core.ports.schema_lifecycle``) resolves. Registering it MOVES the
 ``init_db`` lifecycle ownership to the Community edition (FR3/FR5): once
 registered, core ``init_db`` delegates the WHOLE migrate -> create_all -> seed
 lifecycle here. Core has no inline fallback; unregistered startup fails closed.
@@ -132,7 +132,7 @@ def register_community_relational_schema_lifecycle(
     Community boot path BEFORE ``init_db`` so the core delegates the lifecycle to
     the edition instead of running its inline body. Returns the registered
     orchestrator (handy for tests / diagnostics)."""
-    from okto_pulse.core.infra.schema_lifecycle import (
+    from okto_pulse.core import (
         register_relational_schema_lifecycle_orchestrator,
     )
 

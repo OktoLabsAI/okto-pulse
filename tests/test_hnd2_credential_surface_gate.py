@@ -97,17 +97,15 @@ class _FakeSession:
 def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     tmp_path, monkeypatch, capsys
 ):
+    import okto_pulse.core as core
     import okto_pulse.community.cli as cli
     import okto_pulse.community.adapters.composition as composition
     import okto_pulse.community.adapters.relational_schema_lifecycle as lifecycle
+    import okto_pulse.community.adapters.sqlalchemy_database as database
     import okto_pulse.community.config as community_config
     import okto_pulse.community.main as community_main
     import okto_pulse.community.seed as community_seed
-    import okto_pulse.core.infra.auth as auth
-    import okto_pulse.core.infra.config as config
-    import okto_pulse.core.infra.database as database
-    import okto_pulse.core.infra.storage as storage
-    import okto_pulse.core.kg.interfaces as kg_interfaces
+    import okto_pulse.core.services.application_kg as application_kg
     from okto_pulse.community.cli import cmd_init
 
     persisted_marker = "sha256:must-not-be-printed"
@@ -151,9 +149,9 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
 
     monkeypatch.setattr(community_config, "CommunitySettings", Settings)
     monkeypatch.setattr(community_main, "_ensure_data_dir", lambda settings: None)
-    monkeypatch.setattr(config, "configure_settings", lambda _settings: None)
-    monkeypatch.setattr(auth, "configure_auth", lambda _provider: None)
-    monkeypatch.setattr(storage, "configure_storage", lambda _provider: None)
+    monkeypatch.setattr(core, "configure_settings", lambda _settings: None)
+    monkeypatch.setattr(core, "configure_auth", lambda _provider: None)
+    monkeypatch.setattr(core, "configure_storage", lambda _provider: None)
     monkeypatch.setattr(composition, "community_storage_provider", lambda _path: None)
     monkeypatch.setattr(
         cli, "_configure_community_relational_runtime", lambda *_args, **_kwargs: None
@@ -165,7 +163,9 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     monkeypatch.setattr(
         lifecycle, "register_community_relational_schema_lifecycle", lambda: None
     )
-    monkeypatch.setattr(kg_interfaces, "get_kg_registry", lambda: registry)
+    monkeypatch.setattr(
+        application_kg, "get_current_provider_registry", lambda: registry
+    )
 
     cmd_init(SimpleNamespace(mcp_port=8101, agents=None))
 

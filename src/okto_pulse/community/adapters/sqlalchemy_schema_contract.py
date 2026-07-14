@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, MetaData
@@ -37,11 +38,19 @@ def _constraint_manifest(constraint: Any) -> dict[str, Any]:
     return item
 
 
-def schema_manifest(metadata: MetaData) -> dict[str, Any]:
+def schema_manifest(
+    metadata: MetaData,
+    *,
+    table_names: Iterable[str] | None = None,
+) -> dict[str, Any]:
     """Return a deterministic DDL-significant metadata representation."""
 
+    selected = set(table_names) if table_names is not None else set(metadata.tables)
+    unknown = selected.difference(metadata.tables)
+    if unknown:
+        raise ValueError(f"unknown_schema_tables:{','.join(sorted(unknown))}")
     tables: list[dict[str, Any]] = []
-    for table_name in sorted(metadata.tables):
+    for table_name in sorted(selected):
         table = metadata.tables[table_name]
         constraints = [_constraint_manifest(item) for item in table.constraints]
         constraints.sort(key=lambda item: json.dumps(item, sort_keys=True))
@@ -74,9 +83,13 @@ def schema_manifest(metadata: MetaData) -> dict[str, Any]:
     return {"tables": tables}
 
 
-def schema_contract_sha256(metadata: MetaData) -> str:
+def schema_contract_sha256(
+    metadata: MetaData,
+    *,
+    table_names: Iterable[str] | None = None,
+) -> str:
     payload = json.dumps(
-        schema_manifest(metadata),
+        schema_manifest(metadata, table_names=table_names),
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
@@ -89,8 +102,29 @@ LEGACY_CORE_SCHEMA_SHA256 = (
     "e86da78734745e3f1f2fab55a4eaefc5a60d8b6b97053d5d0914cf43609f4d74"
 )
 
+# Current inherited schema after the governed tenant-scope migration added
+# board_id to agent_seen_items. Keep the pre-extraction hash above immutable so
+# migration provenance remains independently verifiable.
+CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
+    "03330737a9fa625512dae9ef7dc7c7e97cb98400b75b6e2f7f8df8eb6921a1f3"
+)
+
+# Additive Community-owned tables introduced after the F01 extraction. They
+# are intentionally excluded when proving that the inherited 60-table Core
+# schema matches the governed Community contract.
+COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
+    {
+        "kg_cognitive_sources",
+        "kg_curation_proposals",
+        "kg_equivalence_ledger",
+        "kg_node_subtypes",
+    }
+)
+
 
 __all__ = [
+    "COMMUNITY_SCHEMA_EXTENSION_TABLES",
+    "CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256",
     "LEGACY_CORE_SCHEMA_SHA256",
     "schema_contract_sha256",
     "schema_manifest",

@@ -95,10 +95,16 @@ def test_reader_respects_explicit_db_path_provider(tmp_path: Path) -> None:
 
 
 def test_reader_resolves_db_path_from_public_runtime(tmp_path: Path) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        CommunityDatabaseRuntime,
+    )
+
     db_path = _story_db(tmp_path, ttl_days=21)
     configure_database_runtime(
-        engine=_Engine("sqlite", str(db_path)),
-        session_factory=lambda: object(),
+        runtime=CommunityDatabaseRuntime(
+            engine=_Engine("sqlite", str(db_path)),  # type: ignore[arg-type]
+            session_factory=lambda: object(),  # type: ignore[arg-type]
+        ),
     )
 
     rows = CommunityBoardSourceReader().fetch("b1")
@@ -112,7 +118,7 @@ def test_reader_fails_closed_when_no_runtime_path_can_be_resolved() -> None:
         CommunityBoardSourceReader().fetch("b1")
 
     assert exc.value.code == "source_unavailable"
-    assert exc.value.cause_type == "RelationalDatabasePathUnavailable"
+    assert exc.value.cause_type == "CommunityDatabasePathUnavailable"
 
 
 def _read_story(db_path: Path) -> dict[str, object]:

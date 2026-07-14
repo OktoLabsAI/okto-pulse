@@ -16,7 +16,9 @@ from typing import Any, Callable
 from okto_pulse.community.adapters.board_graph_runtime import (
     CommunityBoardGraphRuntime,
 )
+from okto_pulse.community.adapters.graph_error_mapping import map_graph_error
 from okto_pulse.community.adapters.kuzu_graph_transaction import _materialize
+from okto_pulse.core.kg import cypher_templates as tpl
 from okto_pulse.core.kg.interfaces.graph_lifecycle import GraphHandle
 from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphPurgeResult,
@@ -198,19 +200,219 @@ class CommunityGlobalDiscoveryRuntime:
         statement: str,
         params: dict[str, Any] | None = None,
     ) -> GraphStatementResult:
-        _db, native_scope = self._open_native()
+        native_scope = None
         try:
+            _db, native_scope = self._open_native()
             native_result = (
                 native_scope.execute(statement, params)
                 if params
                 else native_scope.execute(statement)
             )
             return _materialize(native_result)
+        except Exception as exc:
+            raise map_graph_error(exc, operation="global_graph_statement") from exc
         finally:
+            if native_scope is not None:
+                try:
+                    native_scope.close()
+                except Exception:
+                    pass
+
+    def search_decision_digests(
+        self,
+        query_vector: list[float],
+        *,
+        board_ids: tuple[str, ...],
+        graph_layer: str,
+        top_k: int,
+        min_similarity: float,
+        exhaustive: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Run indexed or exhaustive semantic search behind the graph port."""
+
+        if not board_ids or top_k <= 0:
+            return []
+
+        if not exhaustive:
             try:
-                native_scope.close()
-            except Exception:
-                pass
+                result = self.execute(
+                    "CALL QUERY_VECTOR_INDEX("
+                    "'DecisionDigest', 'digest_embedding_idx', $vec, $search_k) "
+                    "WITH node, distance "
+                    "MATCH (b:Board)-[:CONTAINS_DECISION]->(node) "
+                    "WHERE b.board_id IN $boards "
+                    f"AND {tpl.layer_filter_clause('node')} "
+                    "RETURN b.board_id, node.id, node.original_node_id, "
+                    "node.title, node.one_line_summary, node.node_type, "
+                    f"{tpl.layer_label_projection('node')}, distance "
+                    "ORDER BY distance ASC LIMIT $search_k",
+                    {
+                        "vec": query_vector,
+                        "search_k": top_k,
+                        "boards": list(board_ids),
+                        "graph_layer": graph_layer,
+                    },
+                )
+                hits: list[dict[str, Any]] = []
+                for row in result.rows:
+                    similarity = max(0.0, min(1.0, 1.0 - float(row[7])))
+                    if similarity >= min_similarity:
+                        hits.append(
+                            {
+                                "board_id": row[0],
+                                "digest_id": row[1],
+                                "id": row[2],
+                                "title": row[3],
+                                "summary": row[4],
+                                "node_type": row[5],
+                                "graph_layer": row[6],
+                                "similarity": similarity,
+                            }
+                        )
+                if hits:
+                    return hits[:top_k]
+            except Exception as exc:
+                logger.debug("global_discovery.index_search_failed err=%s", exc)
+
+        try:
+            result = self.execute(
+                "MATCH (b:Board)-[:CONTAINS_DECISION]->(d:DecisionDigest) "
+                "WHERE b.board_id IN $boards AND d.embedding IS NOT NULL "
+                f"AND {tpl.layer_filter_clause('d')} "
+                "RETURN b.board_id, d.id, d.original_node_id, d.title, "
+                "d.one_line_summary, d.node_type, "
+                f"{tpl.layer_label_projection('d')}, d.embedding LIMIT 500",
+                {"boards": list(board_ids), "graph_layer": graph_layer},
+            )
+        except Exception as exc:
+            logger.debug("global_discovery.exhaustive_search_failed err=%s", exc)
+            return []
+
+        query_norm = sum(value * value for value in query_vector) ** 0.5 or 1.0
+        scored: list[dict[str, Any]] = []
+        for row in result.rows:
+            embedding = row[7]
+            if not embedding or len(embedding) != len(query_vector):
+                continue
+            dot = sum(a * b for a, b in zip(query_vector, embedding))
+            embedding_norm = sum(value * value for value in embedding) ** 0.5 or 1.0
+            similarity = max(0.0, min(1.0, dot / (query_norm * embedding_norm)))
+            if similarity < min_similarity:
+                continue
+            scored.append(
+                {
+                    "board_id": row[0],
+                    "digest_id": row[1],
+                    "id": row[2],
+                    "title": row[3],
+                    "summary": row[4],
+                    "node_type": row[5],
+                    "graph_layer": row[6],
+                    "similarity": similarity,
+                }
+            )
+        scored.sort(key=lambda item: item["similarity"], reverse=True)
+        return scored[:top_k]
+
+    def list_schema_objects(self) -> tuple[str, ...]:
+        result = self.execute("CALL SHOW_TABLES() RETURN name")
+        return tuple(sorted(str(row[0]) for row in result.rows if row and row[0]))
+
+    def upsert_board_summary(
+        self,
+        *,
+        board_id: str,
+        name: str,
+        summary: str,
+        summary_embedding: list[float],
+        decision_delta: int,
+        synced_at: str,
+    ) -> None:
+        existing = self.execute(
+            "MATCH (b:Board {board_id: $board_id}) RETURN b.board_id",
+            {"board_id": board_id},
+        )
+        if existing.rows:
+            self.execute(
+                "MATCH (b:Board {board_id: $board_id}) "
+                "SET b.decision_count = coalesce(b.decision_count, 0) + $delta, "
+                "b.last_sync_at = timestamp($synced_at)",
+                {
+                    "board_id": board_id,
+                    "delta": decision_delta,
+                    "synced_at": synced_at,
+                },
+            )
+            return
+        self.execute(
+            "CREATE (b:Board {"
+            "board_id: $board_id, name: $name, summary: $summary, "
+            "summary_embedding: $embedding, topic_count: 0, entity_count: 0, "
+            "decision_count: $delta, last_sync_at: timestamp($synced_at)})",
+            {
+                "board_id": board_id,
+                "name": name,
+                "summary": summary,
+                "embedding": summary_embedding,
+                "delta": decision_delta,
+                "synced_at": synced_at,
+            },
+        )
+
+    def upsert_decision_digest(
+        self,
+        *,
+        digest_id: str,
+        board_id: str,
+        original_node_id: str,
+        title: str,
+        summary: str,
+        node_type: str,
+        graph_layer: str,
+        embedding: list[float],
+        created_at: str,
+    ) -> str:
+        existing = self.execute(
+            "MATCH (d:DecisionDigest {id: $digest_id}) RETURN d.id",
+            {"digest_id": digest_id},
+        )
+        values = {
+            "digest_id": digest_id,
+            "board_id": board_id,
+            "original_node_id": original_node_id,
+            "title": title,
+            "summary": summary,
+            "node_type": node_type,
+            "graph_layer": graph_layer,
+        }
+        if existing.rows:
+            self.execute(
+                "MATCH (d:DecisionDigest {id: $digest_id}) "
+                "SET d.board_id = $board_id, "
+                "d.original_node_id = $original_node_id, d.title = $title, "
+                "d.one_line_summary = $summary, d.node_type = $node_type, "
+                "d.graph_layer = $graph_layer",
+                values,
+            )
+            return "updated"
+        self.execute(
+            "CREATE (d:DecisionDigest {"
+            "id: $digest_id, board_id: $board_id, "
+            "original_node_id: $original_node_id, title: $title, "
+            "one_line_summary: $summary, node_type: $node_type, "
+            "graph_layer: $graph_layer, embedding: $embedding, "
+            "created_at: timestamp($created_at)})",
+            {**values, "embedding": embedding, "created_at": created_at},
+        )
+        return "created"
+
+    def link_board_digest(self, *, board_id: str, digest_id: str) -> None:
+        self.execute(
+            "MATCH (b:Board {board_id: $board_id}), "
+            "(d:DecisionDigest {id: $digest_id}) "
+            "MERGE (b)-[:CONTAINS_DECISION]->(d)",
+            {"board_id": board_id, "digest_id": digest_id},
+        )
 
     @staticmethod
     def _fsync_if_file(path: Path) -> None:

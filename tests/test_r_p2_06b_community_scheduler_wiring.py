@@ -24,5 +24,5 @@ def test_community_app_exposes_composition_owned_scheduler_control():
     assert isinstance(composition.scheduler_control, SingletonSchedulerControl)
     assert isinstance(composition.scheduler_control, SchedulerControl)
     # Required providers are populated (a real composition, not a stub).
-    assert composition.session_factory is not None
+    assert composition.uow_factory is not None
     assert composition.event_bus is not None

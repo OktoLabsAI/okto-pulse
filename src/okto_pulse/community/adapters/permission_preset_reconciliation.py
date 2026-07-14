@@ -22,7 +22,7 @@ from okto_pulse.core.domain.permission_presets import (
 from okto_pulse.core.ports.permission_preset_reconciliation import (
     PermissionPresetReconciliationRepository,
 )
-from okto_pulse.core.ports.relational_runtime import get_session_factory
+from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory
 
 
 FailureHook = Callable[[int, ReconciliationCommand], None]

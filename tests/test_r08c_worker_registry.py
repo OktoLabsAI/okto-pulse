@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from okto_pulse.community.adapters import workers as worker_adapters
 from okto_pulse.community.adapters.workers import (
@@ -79,3 +81,43 @@ def test_r08c_worker_boundary_real_core_and_community_trees_pass() -> None:
         "okto_pulse/community/main.py",
     } <= set(report.evidence["scanned_files"])
     assert report.evidence["offenders"] == []
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_worker_relational_scope_returns_checkout_after_hard_cancel(
+    tmp_path,
+) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        configure_community_database,
+    )
+
+    runtime = configure_community_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'worker-cancel.db'}"
+    )
+    scope_factory = worker_adapters._cancel_safe_scope_factory(
+        runtime.session_factory
+    )
+    entered = asyncio.Event()
+
+    async def victim() -> None:
+        async with scope_factory() as session:
+            await session.execute(text("SELECT 1"))
+            entered.set()
+            await asyncio.sleep(30)
+
+    try:
+        task = asyncio.create_task(victim(), name="test.cancelled-worker")
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert runtime.engine.sync_engine.pool.checkedout() == 1
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        for _ in range(100):
+            if runtime.engine.sync_engine.pool.checkedout() == 0:
+                break
+            await asyncio.sleep(0.05)
+        assert runtime.engine.sync_engine.pool.checkedout() == 0
+    finally:
+        await runtime.close()

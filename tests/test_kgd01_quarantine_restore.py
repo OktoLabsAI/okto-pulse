@@ -392,12 +392,21 @@ def test_cli_restore_dry_run_json(restore_env, monkeypatch, capsys):
     before = _disk_state(base)
 
     from okto_pulse.community import cli as community_cli
+    from okto_pulse.core import configure_settings, get_settings
+    from okto_pulse.core.infra.config import reset_settings_for_tests
+
+    original_settings = get_settings()
+    reset_settings_for_tests()
+    monkeypatch.setenv("OKTO_PULSE_HOME", str(base))
 
     monkeypatch.setattr(
         sys, "argv", ["okto-pulse", "kg", "restore", QUARANTINE_ID, "--json"]
     )
-    with pytest.raises(SystemExit) as exc_info:
-        community_cli.main()
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            community_cli.main()
+    finally:
+        configure_settings(original_settings)
     assert exc_info.value.code == 0
 
     out = capsys.readouterr().out

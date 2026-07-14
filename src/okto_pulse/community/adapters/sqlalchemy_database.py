@@ -11,9 +11,18 @@ pool_timeout=10/pool_recycle=1800/pool_pre_ping=True``.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator, Callable
+import contextlib
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 import logging
+import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+import traceback
+from typing import Any, Awaitable
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
@@ -25,12 +34,126 @@ from sqlalchemy.ext.asyncio import (
 from okto_pulse.core.domain.realm import RealmScope
 
 logger = logging.getLogger(__name__)
+_checkout_owner: ContextVar[str] = ContextVar(
+    "community_database_checkout_owner",
+    default="unattributed",
+)
+
+
+class CommunityDatabasePathUnavailable(RuntimeError):
+    """The active Community database has no local SQLite file path."""
 
 
 @dataclass(frozen=True)
 class CommunityDatabaseRuntime:
+    """Local-first implementation of Core's relational runtime port."""
+
     engine: AsyncEngine
     session_factory: async_sessionmaker[AsyncSession]
+    _pending_session_closes: set[asyncio.Task[Any]] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    async def _await_cleanup(self, awaitable: Awaitable[None]) -> None:
+        task = asyncio.ensure_future(awaitable)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.add_done_callback(_consume_cleanup_exception)
+            raise
+
+    async def _quiet_cleanup(self, awaitable: Awaitable[None]) -> None:
+        with contextlib.suppress(BaseException):
+            await self._await_cleanup(awaitable)
+
+    async def _cancel_safe_close(self, awaitable: Awaitable[None]) -> None:
+        task = asyncio.create_task(awaitable)
+        self._pending_session_closes.add(task)
+        task.add_done_callback(self._pending_session_closes.discard)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("db.session.cancel_safe_close_failed")
+
+    @asynccontextmanager
+    async def transactional_session(self) -> AsyncIterator[AsyncSession]:
+        session = self.session_factory()
+        try:
+            yield session
+            await session.commit()
+        except BaseException:
+            await self._quiet_cleanup(session.rollback())
+            raise
+        finally:
+            await self._quiet_cleanup(session.close())
+
+    @asynccontextmanager
+    async def cancel_safe_session_scope(
+        self,
+        session_factory: Callable[[], Any] | None = None,
+        *,
+        owner: str = "community.session_scope",
+    ) -> AsyncIterator[Any]:
+        with community_database_checkout_owner(owner):
+            scope = (session_factory or self.session_factory)()
+            enter = getattr(scope, "__aenter__", None)
+            exit_ = getattr(scope, "__aexit__", None)
+            if callable(enter) and callable(exit_):
+                session = await enter()
+            else:
+                session = scope
+                exit_ = None
+            exc_info: tuple[type[BaseException] | None, BaseException | None, Any] = (
+                None,
+                None,
+                None,
+            )
+            try:
+                yield session
+            except BaseException as exc:
+                exc_info = (type(exc), exc, exc.__traceback__)
+                raise
+            finally:
+                if exit_ is not None:
+                    await self._cancel_safe_close(exit_(*exc_info))
+                else:
+                    await self._cancel_safe_close(session.close())
+
+    async def close(self) -> None:
+        await self._await_cleanup(self.engine.dispose())
+
+    def pool_status(self) -> str:
+        return community_pool_status(self.engine)
+
+    def local_database_path(self) -> Path | None:
+        url = self.engine.url
+        if url.get_backend_name() != "sqlite":
+            return None
+        database = url.database
+        if not database or str(database) in {":memory:", "file::memory:"}:
+            return None
+        return Path(str(database))
+
+
+def _consume_cleanup_exception(task: asyncio.Future[None]) -> None:
+    if task.cancelled():
+        return
+    with contextlib.suppress(BaseException):
+        task.exception()
+
+
+@contextmanager
+def community_database_checkout_owner(owner: str):
+    token = _checkout_owner.set(owner)
+    try:
+        yield
+    finally:
+        _checkout_owner.reset(token)
 
 
 def build_community_engine(url: str, *, echo: bool = False) -> AsyncEngine:
@@ -94,51 +217,194 @@ def install_community_sqlite_pragmas(engine: AsyncEngine) -> None:
 
 _POOL_STALE_CHECKOUT_WARN_SECONDS = 30.0
 _POOL_STALE_WARN_INTERVAL_SECONDS = 60.0
-_community_checked_out_since: dict[int, float] = {}
-_community_last_stale_warn_at: float = 0.0
+
+
+def _current_task() -> asyncio.Task[Any] | None:
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
+def _task_diagnostic(task: asyncio.Task[Any] | None, task_name: str) -> str:
+    if task is None:
+        return f"{task_name}:unavailable"
+    state = "cancelled" if task.cancelled() else "done" if task.done() else "active"
+    frames = task.get_stack(limit=12) if not task.done() else []
+    application_frames = [
+        frame
+        for frame in frames
+        if "okto_pulse" in frame.f_code.co_filename.replace("\\", "/")
+    ]
+    selected = application_frames[-4:] or frames[-2:]
+    location = ">".join(
+        f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno}:{frame.f_code.co_name}"
+        for frame in selected
+    )
+    return f"{task_name}:{state}:{location or 'no-stack'}"
+
+
+def _checkout_diagnostic() -> str:
+    frames = traceback.extract_stack(limit=50)
+    application_frames = [
+        frame
+        for frame in frames
+        if "/okto_pulse/" in frame.filename.replace("\\", "/")
+        and Path(frame.filename).name != Path(__file__).name
+    ]
+    return ">".join(
+        f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
+        for frame in application_frames[-8:]
+    )
 
 
 def install_community_pool_observability(engine: AsyncEngine) -> None:
     """Install checkout/checkin/close listeners that warn on stale checkouts
     BEFORE pool exhaustion, mirroring the core observability hooks (TR4)."""
     sync_engine = engine.sync_engine
+    capture_checkout_sites = os.environ.get(
+        "OKTO_PULSE_DB_CHECKOUT_TRACE",
+        "",
+    ).strip().lower() in {"1", "true", "yes"}
+    checked_out: dict[
+        int,
+        tuple[float, str, asyncio.Task[Any] | None, str, str, str],
+    ] = {}
+    last_stale_warn_at = 0.0
 
     @event.listens_for(sync_engine, "checkout")
     def _on_checkout(_dbapi_conn, conn_record, _conn_proxy):  # noqa: ANN001
-        global _community_last_stale_warn_at
+        nonlocal last_stale_warn_at
         now = time.monotonic()
-        _community_checked_out_since[id(conn_record)] = now
-        stale_ages = [
-            now - ts
-            for ts in _community_checked_out_since.values()
-            if now - ts > _POOL_STALE_CHECKOUT_WARN_SECONDS
+        task = _current_task()
+        task_name = task.get_name() if task is not None else "no-async-task"
+        checkout_site = _checkout_diagnostic() if capture_checkout_sites else ""
+        owner = _checkout_owner.get()
+        record_id = id(conn_record)
+        conn_record.info["pulse_checkout_record_id"] = record_id
+        checked_out[record_id] = (
+            now,
+            task_name,
+            task,
+            checkout_site,
+            owner,
+            "",
+        )
+        stale = [
+            (
+                now - started_at,
+                task_name,
+                checkout_task,
+                checkout_site,
+                owner,
+                statement,
+            )
+            for (
+                started_at,
+                task_name,
+                checkout_task,
+                checkout_site,
+                owner,
+                statement,
+            ) in checked_out.values()
+            if now - started_at > _POOL_STALE_CHECKOUT_WARN_SECONDS
         ]
         if (
-            stale_ages
-            and now - _community_last_stale_warn_at
-            > _POOL_STALE_WARN_INTERVAL_SECONDS
+            stale
+            and now - last_stale_warn_at > _POOL_STALE_WARN_INTERVAL_SECONDS
         ):
-            _community_last_stale_warn_at = now
+            last_stale_warn_at = now
+            oldest = max(
+                age
+                for age, _task_name, _task, _site, _owner, _statement in stale
+            )
+            stale_tasks = sorted(
+                {
+                    task_name
+                    for _age, task_name, _task, _site, _owner, _statement in stale
+                }
+            )
+            task_diagnostics = sorted(
+                {
+                    _task_diagnostic(checkout_task, task_name)
+                    for (
+                        _age,
+                        task_name,
+                        checkout_task,
+                        _site,
+                        _owner,
+                        _statement,
+                    ) in stale
+                }
+            )
+            checkout_sites = sorted(
+                {
+                    site
+                    for _age, _task_name, _task, site, _owner, _statement in stale
+                    if site
+                }
+            )
+            checkout_owners = sorted(
+                {
+                    owner
+                    for _age, _task_name, _task, _site, owner, _statement in stale
+                }
+            )
+            last_statements = sorted(
+                {
+                    statement
+                    for _age, _task_name, _task, _site, _owner, statement in stale
+                    if statement
+                }
+            )
             logger.warning(
-                "db.pool.stale_checkouts count=%d oldest_s=%.0f pool=%s",
-                len(stale_ages),
-                max(stale_ages),
+                "db.pool.stale_checkouts count=%d oldest_s=%.0f tasks=%s "
+                "task_diagnostics=%s checkout_sites=%s checkout_owners=%s "
+                "last_statements=%s pool=%s",
+                len(stale),
+                oldest,
+                stale_tasks,
+                task_diagnostics,
+                checkout_sites,
+                checkout_owners,
+                last_statements,
                 sync_engine.pool.status(),
                 extra={
                     "event": "db.pool.stale_checkouts",
-                    "count": len(stale_ages),
-                    "oldest_s": round(max(stale_ages)),
+                    "count": len(stale),
+                    "oldest_s": round(oldest),
+                    "tasks": stale_tasks,
+                    "task_diagnostics": task_diagnostics,
+                    "checkout_sites": checkout_sites,
+                    "checkout_owners": checkout_owners,
+                    "last_statements": last_statements,
                     "pool_status": sync_engine.pool.status(),
                 },
             )
 
+    @event.listens_for(sync_engine, "before_cursor_execute")
+    def _on_cursor_execute(conn, _cursor, statement, _parameters, _context, _many):  # noqa: ANN001
+        record_id = conn.info.get("pulse_checkout_record_id")
+        observation = checked_out.get(record_id)
+        if observation is None:
+            return
+        normalized_statement = " ".join(str(statement).split())[:500]
+        checked_out[record_id] = (
+            observation[0],
+            observation[1],
+            observation[2],
+            observation[3],
+            _checkout_owner.get(),
+            normalized_statement,
+        )
+
     @event.listens_for(sync_engine, "checkin")
     def _on_checkin(_dbapi_conn, conn_record):  # noqa: ANN001
-        _community_checked_out_since.pop(id(conn_record), None)
+        checked_out.pop(id(conn_record), None)
 
     @event.listens_for(sync_engine, "close")
     def _on_close(_dbapi_conn, conn_record):  # noqa: ANN001
-        _community_checked_out_since.pop(id(conn_record), None)
+        checked_out.pop(id(conn_record), None)
 
 
 def community_pool_status(engine: AsyncEngine) -> str:
@@ -158,8 +424,71 @@ def configure_community_database(
     install_community_sqlite_pragmas(engine)
     install_community_pool_observability(engine)
     session_factory = build_community_session_factory(engine)
-    configure_database_runtime(engine=engine, session_factory=session_factory)
-    return CommunityDatabaseRuntime(engine=engine, session_factory=session_factory)
+    runtime = CommunityDatabaseRuntime(
+        engine=engine,
+        session_factory=session_factory,
+    )
+    configure_database_runtime(runtime=runtime)
+    return runtime
+
+
+def resolve_community_database_runtime() -> CommunityDatabaseRuntime:
+    """Resolve the active runtime and enforce Community adapter ownership."""
+
+    from okto_pulse.core.ports.relational_runtime import resolve_database_runtime
+
+    runtime = resolve_database_runtime()
+    if not isinstance(runtime, CommunityDatabaseRuntime):
+        raise RuntimeError("active relational runtime is not Community-owned")
+    return runtime
+
+
+def get_engine() -> AsyncEngine:
+    """Return the Community-owned SQLAlchemy engine."""
+
+    return resolve_community_database_runtime().engine
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the Community-owned SQLAlchemy session factory."""
+
+    return resolve_community_database_runtime().session_factory
+
+
+async def init_db() -> None:
+    """Run the composed schema lifecycle through the Core lifecycle port."""
+
+    from okto_pulse.core.ports.relational_runtime import init_db as initialize_schema
+
+    await initialize_schema()
+
+
+async def close_db() -> None:
+    """Close the Community-owned runtime."""
+
+    await resolve_community_database_runtime().close()
+
+
+def is_database_runtime_configured() -> bool:
+    from okto_pulse.core.ports.relational_runtime import (
+        is_database_runtime_configured as is_configured,
+    )
+
+    return is_configured()
+
+
+def resolve_sqlite_database_path() -> Path:
+    try:
+        path = resolve_community_database_runtime().local_database_path()
+    except RuntimeError as exc:
+        raise CommunityDatabasePathUnavailable(
+            "Community database runtime has no local SQLite path"
+        ) from exc
+    if path is None:
+        raise CommunityDatabasePathUnavailable(
+            "Community database runtime has no local SQLite path"
+        )
+    return path
 
 
 __all__ = [
@@ -169,5 +498,14 @@ __all__ = [
     "install_community_sqlite_pragmas",
     "install_community_pool_observability",
     "community_pool_status",
+    "community_database_checkout_owner",
     "CommunityDatabaseRuntime",
+    "CommunityDatabasePathUnavailable",
+    "close_db",
+    "get_engine",
+    "get_session_factory",
+    "init_db",
+    "is_database_runtime_configured",
+    "resolve_community_database_runtime",
+    "resolve_sqlite_database_path",
 ]

@@ -25,7 +25,7 @@ class CommunityKuzuGraphRuntimeStore:
 
     def _configured_max_bytes(self) -> int | None:
         try:
-            from okto_pulse.core.infra.config import get_settings
+            from okto_pulse.core import get_settings
 
             settings = get_settings()
             return int(settings.kg_kuzu_max_db_size_gb * 1024 ** 3)
@@ -112,7 +112,7 @@ class CommunityKuzuGraphRuntimeStore:
                 board_id=board_id,
                 storage_ref=self._storage_ref(board_id),
                 status="unavailable",
-                source="file_size_proxy",
+                source="runtime_capability",
                 configured_max_bytes=max_bytes,
                 unavailable_reason=type(exc).__name__,
             )
@@ -122,7 +122,7 @@ class CommunityKuzuGraphRuntimeStore:
                 board_id=board_id,
                 storage_ref=self._storage_ref(board_id),
                 status="unavailable",
-                source="file_size_proxy",
+                source="runtime_capability",
                 configured_max_bytes=max_bytes,
                 unavailable_reason="graph_absent",
             )
@@ -137,7 +137,7 @@ class CommunityKuzuGraphRuntimeStore:
                 board_id=board_id,
                 storage_ref=self._storage_ref(board_id),
                 status="unavailable",
-                source="file_size_proxy",
+                source="runtime_capability",
                 configured_max_bytes=max_bytes,
                 unavailable_reason="stat_failed",
             )
@@ -150,7 +150,7 @@ class CommunityKuzuGraphRuntimeStore:
             board_id=board_id,
             storage_ref=self._storage_ref(board_id),
             status="available",
-            source="file_size_proxy",
+            source="runtime_capability",
             total_bytes=total_bytes,
             primary_bytes=primary_bytes,
             sidecar_bytes=sidecar_bytes,

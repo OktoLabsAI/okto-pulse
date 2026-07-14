@@ -25,7 +25,7 @@ from okto_pulse.core.application.use_cases.operational_rest import (
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
-from okto_pulse.core.infra.config import validate_graph_db_max_size_gb
+from okto_pulse.community.config import validate_graph_db_max_size_gb
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.domain.runtime_settings import (
     ConfigChangeBlocked,

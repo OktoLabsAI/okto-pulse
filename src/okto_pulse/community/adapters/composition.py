@@ -205,7 +205,11 @@ def configure_community_kg_registry(
     providers. The KG query tools then resolve agent_id + accessible boards via
     the AuthContext port. When omitted, the slot stays ``None`` and KG query
     tools fail closed instead of using a local relational ACL fallback."""
-    from okto_pulse.core.services.application_kg import configure_provider_registry
+    from okto_pulse.core.services.application_kg import (
+        configure_commit_coordinator,
+        configure_provider_registry,
+        configure_write_barrier,
+    )
 
     from okto_pulse.community.adapters.telemetry_composition import (
         register_community_telemetry_runtime,
@@ -214,6 +218,11 @@ def configure_community_kg_registry(
         register_community_kg_operational_ports,
     )
 
+    effective_settings = settings if settings is not None else _core_settings()
+    configure_commit_coordinator()
+    configure_write_barrier(
+        getattr(effective_settings, "kg_write_barrier_mode", "soft")
+    )
     register_community_telemetry_runtime()
     # AF35-S2: register Community SQLAlchemy KG operational read/worker adapters
     # so Core KG modules resolve concrete persistence through ports.
@@ -254,7 +263,7 @@ def configure_community_kg_registry(
     register_node_subtype_registry(
         CommunitySqlAlchemyNodeSubtypeRegistry(session_factory)
     )
-    base = build_community_base_registry(settings=settings)
+    base = build_community_base_registry(settings=effective_settings)
     _apply_source_reader(base)
     _apply_rebuild_audit_storage(base)
     _apply_quarantine_restore(base)
@@ -268,13 +277,11 @@ def configure_community_kg_registry(
     overrides: dict[str, Any] = {}
     if auth_context_factory is not None:
         overrides["auth_context_factory"] = auth_context_factory
-    configure_provider_registry(
-        session_factory=session_factory, base_registry=base, **overrides
-    )
+    configure_provider_registry(base_registry=base, **overrides)
 
 
 def _core_settings():
-    from okto_pulse.core.infra.config import get_settings
+    from okto_pulse.core import get_settings
 
     return get_settings()
 

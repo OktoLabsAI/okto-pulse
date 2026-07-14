@@ -24,10 +24,8 @@ import uvicorn
 from fastapi.staticfiles import StaticFiles
 
 from okto_pulse.community.app import create_app, register_kg_daily_tick_job
-from okto_pulse.core.infra.config import get_settings
-from okto_pulse.core.ports.relational_runtime import (
+from okto_pulse.community.adapters.sqlalchemy_database import (
     close_db,
-    get_engine,
     get_session_factory,
     init_db,
 )
@@ -553,7 +551,7 @@ def create_community_app():
         )
 
         register_community_kg_events_reader(get_session_factory())
-        async with get_session_factory()() as db:
+        async with database_runtime.cancel_safe_session_scope() as db:
             result = await seed_community_defaults(db)
             if result:
                 board, agent, api_key = result
@@ -575,7 +573,7 @@ def create_community_app():
                 backfill_qa_answered_at,
             )
 
-            async with get_session_factory()() as _qa_db:
+            async with database_runtime.cancel_safe_session_scope() as _qa_db:
                 _qa_fixed = await backfill_qa_answered_at(_qa_db)
             if _qa_fixed:
                 _STARTUP_LOGGER.info(
@@ -598,7 +596,7 @@ def create_community_app():
                     backfill_architecture_finding_runs,
                 )
 
-                async with get_session_factory()() as _afg_db:
+                async with database_runtime.cancel_safe_session_scope() as _afg_db:
                     _afg_stats = await backfill_architecture_finding_runs(_afg_db)
                 _STARTUP_LOGGER.info(
                     "architecture.finding_backfill.completed %s",
@@ -610,7 +608,10 @@ def create_community_app():
                     _afg_exc,
                 )
 
-        asyncio.create_task(_afg_backfill_task())
+        afg_backfill_task = asyncio.create_task(
+            _afg_backfill_task(),
+            name="community.startup.architecture_backfill",
+        )
 
         # Preload the embedding model before serving requests so the first
         # KG search doesn't pay the multi-second model-load cost synchronously.
@@ -644,7 +645,10 @@ def create_community_app():
 
         register_community_telemetry_runtime()
 
-        metrics_beacon_task = asyncio.create_task(_metrics_beacon_loop(settings))
+        metrics_beacon_task = asyncio.create_task(
+            _metrics_beacon_loop(settings),
+            name="community.metrics_beacon",
+        )
 
         yield
 
@@ -652,6 +656,10 @@ def create_community_app():
             metrics_beacon_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await metrics_beacon_task
+        if not afg_backfill_task.done():
+            afg_backfill_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await afg_backfill_task
         await scheduler_control.shutdown(wait=False)
         if worker_registry is not None:
             for failure in await worker_registry.stop_all():
@@ -680,7 +688,10 @@ def create_community_app():
 
     register_community_coordination_providers()
     register_community_mcp_host()
-    configure_community_database(settings.database_url, echo=settings.debug)
+    database_runtime = configure_community_database(
+        settings.database_url,
+        echo=settings.debug,
+    )
     from okto_pulse.community.adapters.relational_application import (
         CommunityRelationalApplicationAdapter,
     )
@@ -718,6 +729,12 @@ def create_community_app():
     )
 
     _rc_session_factory = get_session_factory()
+
+    def _cancel_safe_rc_scope():
+        return database_runtime.cancel_safe_session_scope(
+            _rc_session_factory,
+            owner="mcp.auth",
+        )
 
     # MKG-A-S1 (FR4): durable append-only source for cognitive nodes.
     # Registered BEFORE the lifespan so the consolidation commit path can
@@ -768,8 +785,6 @@ def create_community_app():
         settings=settings,
         auth_provider=auth,
         storage_provider=storage,
-        relational_engine=get_engine(),
-        session_factory=_rc_session_factory,
         event_bus=CommunityOutboxEventBus(_rc_session_factory),
         scheduler_control=scheduler_control,
         uow_factory=_community_uow_factory,
@@ -821,21 +836,25 @@ def create_community_app():
             auth_context_factory=create_mcp_auth_factory(
                 _mcp_auth_get_agent,
                 _rc_session_factory,
+                session_scope_factory=_cancel_safe_rc_scope,
             ),
         )
 
-        from okto_pulse.core.mcp import register_session_factory
+        from okto_pulse.core.mcp import (
+            register_mcp_authenticator,
+            register_scheduler_control_for_mcp,
+        )
         from okto_pulse.community.adapters.mcp_auth import (
             make_community_mcp_authenticator,
         )
 
-        register_session_factory(
-            _rc_session_factory,
-            scheduler_control=scheduler_control,
-            mcp_authenticator=make_community_mcp_authenticator(
-                session_factory=_rc_session_factory
-            ),
+        register_mcp_authenticator(
+            make_community_mcp_authenticator(
+                session_factory=_rc_session_factory,
+                session_scope_factory=_cancel_safe_rc_scope,
+            )
         )
+        register_scheduler_control_for_mcp(scheduler_control)
 
         from okto_pulse.community.adapters.resources import (
             register_and_freeze_community_resource_catalog,
@@ -1035,7 +1054,7 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     Single-process is required to keep the Kùzu lock owned by exactly one
     process (the embedded DB does not support multiple writers). The two
     listeners share the same composed runtime state — including the Global
-    Discovery runtime handle, the ``_mcp_session_factory`` registered by the API
+    Discovery runtime handle and the MCP runtime ports registered by the API
     lifespan, and the request-scoped MCP credential provider — so the MCP sub-app
     sees a fully-initialised runtime.
     """
@@ -1069,6 +1088,7 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         build_community_mcp_asgi_app(
             catalog=mcp,
             trace_sink=build_mcp_trace_sink_from_env(),
+            composition=app.state.runtime_composition,
         ),
         # Read host from environment (set by Docker / compose) or fall back to
         # loopback so a stray process doesn't accidentally expose the MCP

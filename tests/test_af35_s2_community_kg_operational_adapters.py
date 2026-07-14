@@ -279,15 +279,16 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
 
         assert dlq_row.original_queue_id == "queue-dlq"
         assert retry_result == {
-            "id": "queue-retry",
             "board_id": board_id,
-            "artifact_type": "card",
-            "artifact_id": "card-2",
+            "queue_entry_id": "queue-retry",
             "recursive": True,
+            "reopened_count": 1,
+            "reopened_ids": ["queue-retry"],
         }
         assert await session.get(ConsolidationQueue, "queue-dlq") is None
         retry_row = await session.get(ConsolidationQueue, "queue-retry")
         assert retry_row is not None and retry_row.status == "pending"
+        assert retry_row.source == "retry_from_ui"
         assert (
             await session.execute(
                 select(GlobalUpdateOutbox).where(

@@ -42,7 +42,8 @@ import pytest
 # raw-SQL _migrate_* find their columns. It does NOT create an engine.
 import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
-import okto_pulse.core.infra.schema_lifecycle as _seam
+import okto_pulse.core.ports.relational_runtime as _relational_runtime_port
+import okto_pulse.core.ports.schema_lifecycle as _seam
 from okto_pulse.community.adapters import data_bootstrap_steps as _data_steps
 from okto_pulse.community.adapters import relational_schema_steps as _schema_steps
 from okto_pulse.community.adapters.relational_schema_lifecycle import (
@@ -66,7 +67,7 @@ from okto_pulse.core.ports import (
     SchemaMigrationError,
 )
 
-DATABASE_PY = Path(_db_mod.__file__)
+DATABASE_PY = Path(_relational_runtime_port.__file__)
 
 # Composed effective order under decision B: the orchestrator runs the schema
 # plan FULLY, then the data plan.

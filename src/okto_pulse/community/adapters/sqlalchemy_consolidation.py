@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
     Board,
+    CanonicalDebt,
     Card,
     ConsolidationDeadLetter,
     ConsolidationQueue,
@@ -171,6 +172,26 @@ class CommunitySqlAlchemyConsolidationPersistence:
         if row is not None:
             await context.delete(row)
             await context.flush()
+
+    async def discard_artifact_work(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        artifact_type: str,
+        artifact_id: str,
+    ) -> None:
+        """Remove operational rows made obsolete by a governed hard delete."""
+
+        for model in (ConsolidationQueue, ConsolidationDeadLetter, CanonicalDebt):
+            await context.execute(
+                delete(model).where(
+                    model.board_id == board_id,
+                    model.artifact_type == artifact_type,
+                    model.artifact_id == artifact_id,
+                )
+            )
+        await context.flush()
 
     async def board_exists(self, context: Any, *, board_id: str) -> bool:
         return await context.get(Board, board_id) is not None

@@ -10,7 +10,7 @@ from okto_pulse.core.discovery_intent_catalog import DEFAULT_DISCOVERY_INTENTS
 from okto_pulse.core.ports.permission_policy import (
     merge_permission_registry_defaults,
 )
-from okto_pulse.core.ports.relational_runtime import get_engine, get_session_factory
+from okto_pulse.community.adapters.sqlalchemy_database import get_engine, get_session_factory
 from okto_pulse.community.adapters.permission_preset_reconciliation import (
     reconcile_community_permission_presets,
 )

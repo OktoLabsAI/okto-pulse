@@ -6,7 +6,7 @@ import copy
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, event, or_, select
 from sqlalchemy.orm import selectinload
 
 from okto_pulse.community.adapters import sqlalchemy_models as models
@@ -62,6 +62,41 @@ _ENTITY_CLASSES = {
     "topic": models.Topic,
 }
 _CLASS_ENTITIES = {value: key for key, value in _ENTITY_CLASSES.items()}
+
+_DIRECT_COMMIT_RECORDS_KEY = "okto_pulse.application_persistence.direct_commit_records"
+_DIRECT_COMMIT_LISTENER_KEY = "okto_pulse.application_persistence.direct_commit_listener"
+
+
+def _synchronize_records_before_direct_commit(sync_session: Any) -> None:
+    """Preserve detached-record semantics for legacy raw-session commits."""
+
+    entries = sync_session.info.get(_DIRECT_COMMIT_RECORDS_KEY, ())
+    for record, row in tuple(entries):
+        if not record.dirty_fields:
+            continue
+        if row not in sync_session or row in sync_session.deleted:
+            continue
+        for field_name in tuple(record.dirty_fields):
+            setattr(row, field_name, copy.deepcopy(record.values[field_name]))
+        record.dirty_fields.clear()
+
+
+def _register_direct_commit_record(
+    context: Any,
+    record: ApplicationRecord,
+    row: Any,
+) -> None:
+    sync_session = context.sync_session
+    entries = sync_session.info.setdefault(_DIRECT_COMMIT_RECORDS_KEY, [])
+    if all(existing is not record for existing, _ in entries):
+        entries.append((record, row))
+    if not sync_session.info.get(_DIRECT_COMMIT_LISTENER_KEY):
+        event.listen(
+            sync_session,
+            "before_commit",
+            _synchronize_records_before_direct_commit,
+        )
+        sync_session.info[_DIRECT_COMMIT_LISTENER_KEY] = True
 
 _PARENT_SCOPE_PATHS: dict[str, tuple[str, str]] = {
     "attachment": ("card_id", "card"),
@@ -204,11 +239,21 @@ class CommunitySqlAlchemyApplicationPersistence:
             WeakKeyDictionary()
         )
 
-    def _track(self, context: Any, record: ApplicationRecord) -> ApplicationRecord:
+    def _track(
+        self,
+        context: Any,
+        record: ApplicationRecord,
+        row: Any,
+    ) -> ApplicationRecord:
         records = self._tracked.setdefault(context, [])
         if all(existing is not record for existing in records):
             records.append(record)
+        _register_direct_commit_record(context, record, row)
         return record
+
+    def _clear_tracking(self, context: Any) -> None:
+        self._tracked.pop(context, None)
+        context.sync_session.info.pop(_DIRECT_COMMIT_RECORDS_KEY, None)
 
     async def list(
         self, context: Any, query: ApplicationQuery
@@ -249,7 +294,7 @@ class CommunitySqlAlchemyApplicationPersistence:
             await context.execute(statement.execution_options(populate_existing=True))
         ).scalars().all()
         return tuple(
-            self._track(context, _record(query.entity, row, query.includes))
+            self._track(context, _record(query.entity, row, query.includes), row)
             for row in rows
         )
 
@@ -324,7 +369,7 @@ class CommunitySqlAlchemyApplicationPersistence:
         record.values.clear()
         record.values.update(fresh.values)
         record.dirty_fields.clear()
-        return self._track(context, record)
+        return self._track(context, record, row)
 
     async def delete(self, context: Any, record: ApplicationRecord) -> None:
         rows = await self.list(
@@ -343,6 +388,15 @@ class CommunitySqlAlchemyApplicationPersistence:
             existing
             for existing in self._tracked.get(context, [])
             if existing is not record
+        ]
+        entries = context.sync_session.info.get(_DIRECT_COMMIT_RECORDS_KEY, [])
+        entries[:] = [
+            (existing, tracked_row)
+            for existing, tracked_row in entries
+            if not (
+                existing.entity == record.entity
+                and existing.values.get("id") == record.values.get("id")
+            )
         ]
 
     async def flush(self, context: Any) -> None:
@@ -382,11 +436,11 @@ class CommunitySqlAlchemyApplicationPersistence:
     async def commit(self, context: Any) -> None:
         await self.flush(context)
         await context.commit()
-        self._tracked.pop(context, None)
+        self._clear_tracking(context)
 
     async def rollback(self, context: Any) -> None:
         await context.rollback()
-        self._tracked.pop(context, None)
+        self._clear_tracking(context)
 
     async def backfill_qa_answered_at(self, context: Any) -> dict[str, int]:
         from sqlalchemy import text

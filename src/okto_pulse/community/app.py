@@ -20,15 +20,15 @@ from okto_pulse.core.application.startup import (
     tick_next_run_from_last as _tick_next_run_from_last,  # noqa: F401
 )
 from okto_pulse.core.application.kg_runtime_access import resolve_graph_lifecycle
-from okto_pulse.core.infra.auth import configure_auth
-from okto_pulse.core.infra.config import CoreSettings, configure_settings
-from okto_pulse.core.ports.relational_runtime import (
+from okto_pulse.core import configure_auth
+from okto_pulse.core import configure_settings
+from okto_pulse.community.adapters.sqlalchemy_database import (
     close_db,
     get_session_factory,
     init_db,
     is_database_runtime_configured,
 )
-from okto_pulse.core.infra.storage import StorageProvider, configure_storage
+from okto_pulse.core import StorageProvider, configure_storage
 from okto_pulse.core.composition import (
     STRICT_RUNTIME_REQUIRED_PROVIDERS,
     CompositionRuntime,
@@ -38,6 +38,7 @@ from okto_pulse.core.composition import (
     validate_required_providers,
 )
 from okto_pulse.community.api import api_router
+from okto_pulse.community.config import CommunitySettings
 from okto_pulse.core.telemetry.http_policy import safe_route_template, should_count_http
 from okto_pulse.core.telemetry.telemetry_port_registry import get_telemetry_port
 from okto_pulse.core.ports.scheduler import (
@@ -62,8 +63,19 @@ class _RuntimeCompositionASGIMiddleware:
         self.composition = composition
 
     async def __call__(self, scope, receive, send) -> None:
-        with runtime_composition_scope(self.composition):
-            await self.app(scope, receive, send)
+        task = asyncio.current_task()
+        previous_name = task.get_name() if task is not None else None
+        if task is not None and scope.get("type") == "http":
+            task.set_name(
+                f"community.api.{scope.get('method', 'UNKNOWN')}:"
+                f"{scope.get('path', '')[:180]}"
+            )
+        try:
+            with runtime_composition_scope(self.composition):
+                await self.app(scope, receive, send)
+        finally:
+            if task is not None and previous_name is not None:
+                task.set_name(previous_name)
 
 
 class _TelemetryASGIMiddleware:
@@ -76,7 +88,7 @@ class _TelemetryASGIMiddleware:
     cancelamento de SSE/streaming idêntico ao do servidor puro.
     """
 
-    def __init__(self, app, settings: CoreSettings) -> None:
+    def __init__(self, app, settings: CommunitySettings) -> None:
         self.app = app
         self.settings = settings
 
@@ -195,7 +207,7 @@ async def register_kg_daily_tick_job(
     if os.getenv("KG_DAILY_TICK_DISABLED") == "1":
         return None
 
-    from okto_pulse.core.infra.config import get_settings as _get_settings
+    from okto_pulse.core import get_settings as _get_settings
 
     interval_minutes = _get_settings().kg_decay_tick_interval_minutes
     next_run_time = None
@@ -257,7 +269,7 @@ async def register_kg_daily_tick_job(
 
 
 def create_app(
-    settings: CoreSettings,
+    settings: CommunitySettings,
     auth_provider: AuthenticationPort,
     storage_provider: StorageProvider,
     *,
@@ -272,7 +284,7 @@ def create_app(
     """Create and configure the FastAPI application.
 
     Args:
-        settings: Application settings (CoreSettings or subclass)
+        settings: Materialized Community edition settings.
         auth_provider: Authentication provider implementation
         storage_provider: File storage provider implementation
         cors_origins: List of allowed CORS origins
@@ -346,7 +358,7 @@ def create_app(
         await init_db()
 
         # Apply persisted runtime settings BEFORE any module opens a Kùzu
-        # Database instance. _open_kuzu_db reads CoreSettings at call time,
+        # Database instance. The graph adapter reads configured edition settings,
         # so we just need configure_settings() to be updated by then.
         try:
             await apply_persisted_runtime_settings()
@@ -438,8 +450,10 @@ def create_app(
         # safe to run on every startup; soft-fail per board so a single
         # broken Kùzu file does not block the app from booting.
         try:
-            factory = get_session_factory()
-            await run_startup_schema_sweep(session_factory=factory, logger=logger)
+            await run_startup_schema_sweep(
+                uow_factory=composition.uow_factory,
+                logger=logger,
+            )
         except Exception as _exc:
             # Tabela ainda não existe em fresh install ou Kùzu não
             # instalado — não bloqueia boot.

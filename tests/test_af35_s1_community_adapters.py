@@ -12,8 +12,12 @@ import pytest
 import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
 from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import (
-    ResourceGateService as CommunityResourceGateService,
+    CommunitySqlAlchemyResourceGateAdapter,
 )
+from okto_pulse.core.ports.relational_services import (
+    register_resource_gate_adapter_factory,
+)
+from okto_pulse.core.services.resource_gate import ResourceGateService
 from okto_pulse.community.adapters.sqlalchemy_runtime_settings_service import (
     AppSetting as CommunityAppSetting,
     get_runtime_settings as community_get_runtime_settings,
@@ -36,14 +40,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def _temp_session_factory(tmp_path):
     import okto_pulse.core.infra.config as _config
-    from okto_pulse.core.infra.config import CoreSettings
+    from okto_pulse.community.config import CommunitySettings
 
     saved_data = os.environ.get("DATA_DIR")
     saved_kg = os.environ.get("KG_BASE_DIR")
 
     os.environ["DATA_DIR"] = str(tmp_path)
     os.environ["KG_BASE_DIR"] = str(tmp_path / "boards")
-    _config.configure_settings(CoreSettings())
+    _config.configure_settings(CommunitySettings())
 
     async def setup() -> None:
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'af35_s1.db'}")
@@ -68,6 +72,7 @@ def _temp_session_factory(tmp_path):
 def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
     _temp_session_factory,
 ):
+    register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     sf = _temp_session_factory
     board_id = "af35-s1-board"
     spec_id = "af35-s1-spec"
@@ -88,7 +93,7 @@ def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
             await db.commit()
 
         async with sf() as db:
-            resource_summary = await CommunityResourceGateService(db).get_summary(
+            resource_summary = await ResourceGateService(db).get_summary(
                 board_id,
                 "spec",
                 spec_id,

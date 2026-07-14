@@ -27,13 +27,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.sqlalchemy_models import AppSetting
-from okto_pulse.core.ports.relational_runtime import get_session_factory
-from okto_pulse.core.infra.config import (
-    CoreSettings,
+from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory
+from okto_pulse.core import (
     configure_settings,
     get_settings,
-    validate_graph_db_max_size_gb,
 )
+from okto_pulse.community.config import validate_graph_db_max_size_gb
 from okto_pulse.core.ports.runtime_settings import (
     KG_TICK_RESCHEDULE_FAILED_SIGNAL,
     RuntimeEffectResult,
@@ -47,6 +46,16 @@ from okto_pulse.core.ports.coordination import (
     get_write_lock_port,
 )
 from okto_pulse.core.domain.runtime_settings import ConfigChangeBlocked
+from okto_pulse.core.kg.config_guard import (
+    ConfigGuardError,
+    ConfigGuardErrorCode,
+    GraphSettingPolicy,
+    KGConfigChangeGuard,
+    RestartPolicy,
+    SETTING_GROUP_BUFFER,
+    SETTING_GROUP_CONNECTION_POOL,
+    SETTING_GROUP_STORAGE,
+)
 
 logger = logging.getLogger("okto_pulse.services.settings")
 
@@ -67,6 +76,21 @@ GRAPH_DB_KEYS: tuple[str, ...] = (
     "kg_connection_pool_size",
     "kg_wal_salvage_enabled",
     "kg_wal_only_recovery_enabled",
+)
+COMMUNITY_GRAPH_SETTING_POLICY = GraphSettingPolicy(
+    setting_groups={
+        "kg_kuzu_buffer_pool_mb": SETTING_GROUP_BUFFER,
+        "kg_kuzu_max_db_size_gb": SETTING_GROUP_STORAGE,
+        "kg_connection_pool_size": SETTING_GROUP_CONNECTION_POOL,
+    },
+    governed_prefixes=(
+        "kg_kuzu_",
+        "kg_ladybug_",
+        "kg_connection_",
+        "ladybug_",
+    ),
+    owner="community_local_graph_runtime",
+    public_contract="community_legacy_runtime_settings_api",
 )
 
 # Event Queue keys (spec bdcda842) — hot-reload, no restart required.
@@ -306,7 +330,7 @@ async def apply_persisted_settings_to_core_settings() -> dict[str, int]:
         elif key in legacy:
             merged[key] = legacy[key]
 
-    new_settings = CoreSettings(**merged)
+    new_settings = type(base)(**merged)
     configure_settings(new_settings)
 
     # Take the boot snapshot *after* CoreSettings was updated so restart_required
@@ -557,14 +581,6 @@ async def put_runtime_settings(
     changes, also hot-reloads the active scheduler adapter so the new interval
     takes effect immediately (no restart_required for tick keys).
     """
-    # Local imports to avoid cycles + keep KG-01.5 dependency optional
-    # for callers that only use legacy keys.
-    from okto_pulse.core.kg.config_guard import (
-        ConfigGuardError,
-        KGConfigChangeGuard,
-        RestartPolicy,
-    )
-
     # Identify the graph-runtime subset of the request — only those flow
     # through the guard. Other RUNTIME_KEYS (event queue, decay tick)
     # are hot-reloadable by contract.
@@ -587,7 +603,7 @@ async def put_runtime_settings(
                 except (TypeError, ValueError):
                     current[key] = row.value
 
-        guard = KGConfigChangeGuard()
+        guard = KGConfigChangeGuard(policy=COMMUNITY_GRAPH_SETTING_POLICY)
         try:
             decision = guard.validate(
                 board_id="_runtime",
@@ -600,8 +616,13 @@ async def put_runtime_settings(
         except ConfigGuardError as exc:
             # Map typed guard errors to ConfigChangeBlocked so the API
             # layer can return a single safe 400 shape.
+            reason = (
+                "unsupported_ladybug_setting"
+                if exc.code is ConfigGuardErrorCode.UNSUPPORTED_GRAPH_SETTING
+                else exc.code.value
+            )
             raise ConfigChangeBlocked(
-                reason=exc.code.value,
+                reason=reason,
                 setting_group="unknown",
                 audit_event="kg.config_change.unknown.blocked",
             ) from exc

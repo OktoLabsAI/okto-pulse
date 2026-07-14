@@ -10,13 +10,19 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
     build_community_session_factory,
 )
 from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
+    CommunitySqlAlchemyDomainEventFactReader,
     CommunitySqlAlchemyDomainEventDeliveryStore,
+)
+from okto_pulse.community.adapters.board_source_reader import (
+    CommunityBoardSourceReader,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     Board,
+    Card,
     DomainEventHandlerExecution,
     DomainEventRow,
+    Spec,
 )
 from okto_pulse.core.application.domain_event_delivery import (
     DomainEventDeliveryProcessor,
@@ -175,5 +181,59 @@ async def test_adapter_recovers_processing_rows_idempotently(tmp_path: Path) -> 
                 "exec-orphan",
             )
             assert execution.status == "pending"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cognitive_facts_match_rebuild_source_hashes(tmp_path: Path) -> None:
+    db_path = tmp_path / "event-cognitive-hashes.db"
+    engine, session_factory = await _runtime(db_path)
+    try:
+        async with session_factory() as session:
+            session.add(Board(id="board-hash", name="Hash", owner_id="owner-hash"))
+            session.add(
+                Spec(
+                    id="spec-hash",
+                    board_id="board-hash",
+                    title="Hash parity spec",
+                    context="Stable cognitive context",
+                    created_by="agent-hash",
+                )
+            )
+            session.add(
+                Card(
+                    id="card-hash",
+                    board_id="board-hash",
+                    spec_id="spec-hash",
+                    title="Hash parity bug",
+                    card_type="bug",
+                    action_plan="A sufficiently detailed action plan for closeout replay.",
+                    created_by="agent-hash",
+                )
+            )
+            await session.commit()
+
+        source_rows = CommunityBoardSourceReader(db_path).fetch("board-hash")
+        spec_source = next(
+            row for row in source_rows if row["source_ref"] == "spec:spec-hash"
+        )
+        bug_source = next(
+            row for row in source_rows if row["source_ref"] == "bug:card-hash"
+        )
+
+        reader = CommunitySqlAlchemyDomainEventFactReader()
+        async with session_factory() as session:
+            spec_facts = await reader.load_cognitive_spec_facts(
+                session, spec_id="spec-hash"
+            )
+            card_facts = await reader.load_cognitive_card_facts(
+                session, card_id="card-hash"
+            )
+
+        assert spec_facts is not None
+        assert card_facts is not None
+        assert spec_facts.content_hash == spec_source["content_hash"]
+        assert card_facts.content_hash == bug_source["content_hash"]
     finally:
         await engine.dispose()

@@ -43,6 +43,19 @@ COMMUNITY_WORKER_CAPABLE_FAMILIES: tuple[str, ...] = (
 )
 
 
+def _cancel_safe_scope_factory(session_factory: Any):
+    def open_scope():
+        from okto_pulse.community.adapters.sqlalchemy_database import (
+            resolve_community_database_runtime,
+        )
+
+        return resolve_community_database_runtime().cancel_safe_session_scope(
+            session_factory
+        )
+
+    return open_scope
+
+
 def build_community_worker_registry(
     session_factory: Any,
     *,
@@ -54,10 +67,14 @@ def build_community_worker_registry(
 ) -> RuntimeWorkerRegistry:
     """Build all runners before app construction and register their lifecycle."""
 
+    cancel_safe_relational_scope = _cancel_safe_scope_factory(session_factory)
     clock = UtcWorkerClock()
     blocking_execution = TrackedBlockingExecution()
     event_processor = DomainEventDeliveryProcessor(
-        CommunitySqlAlchemyDomainEventDeliveryStore(session_factory),
+        CommunitySqlAlchemyDomainEventDeliveryStore(
+            session_factory,
+            session_scope_factory=cancel_safe_relational_scope,
+        ),
         clock=clock.now,
     )
     event_runner = PollingRunner(
@@ -78,7 +95,7 @@ def build_community_worker_registry(
         final_iteration=True,
     )
     consolidation_processor = ConsolidationProcessor(
-        session_factory=session_factory,
+        relational_scope_factory=cancel_safe_relational_scope,
         heartbeat_seconds=kg_queue_heartbeat_seconds,
         clock=clock,
         blocking_execution=blocking_execution,
@@ -91,7 +108,11 @@ def build_community_worker_registry(
         max_concurrent_workers=kg_queue_max_concurrent_workers,
     )
     outbox_runner = PollingRunner(
-        GlobalOutboxProcessor(session_factory, interval_seconds=5, clock=clock),
+        GlobalOutboxProcessor(
+            cancel_safe_relational_scope,
+            interval_seconds=5,
+            clock=clock,
+        ),
         name="community.kg.outbox_runner",
         interval_seconds=5.0,
         operation_name="process_once",

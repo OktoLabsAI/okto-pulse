@@ -6,7 +6,7 @@ Covers the 6 test scenarios 1:1:
   ts_5283c465 — golden replay: adapter plan vs baseline init_db schema.
   ts_7d52dffc — idempotent replay: re-run -> skipped, no drift.
   ts_7c1fc064 — fail-closed: failing step / invalid plan / absent migrator.
-  ts_35ad79e3 — layer gate: core/ports pure, core !-> community, init_db intact.
+  ts_35ad79e3 — layer gate: core/ports pure, core !-> community, DB facade pure.
   ts_83050921 — conformance: isinstance + canonical DTOs + no parallel DTOs.
 
 Tests are synchronous; async migrations are driven via ``asyncio.run`` inside a
@@ -133,10 +133,10 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    assert len(migrate_names) == 35, (
-        f"expected 35 _migrate_*, found {len(migrate_names)}"
+    assert len(migrate_names) == 36, (
+        f"expected 36 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 35
+    assert len(ledger_migrate_ids) == 36
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]
@@ -411,7 +411,7 @@ def test_ts_35ad79e3_core_does_not_import_community():
 
 def test_ts_35ad79e3_core_database_no_lifecycle_sql():
     source = CORE_DATABASE_PY.read_text(encoding="utf-8")
-    assert "await orchestrator.initialize_schema()" in source
+    assert "okto_pulse.core.ports.relational_runtime" in source
     assert "Base.metadata.create_all" not in source
     assert "async def _migrate_" not in source
 

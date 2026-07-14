@@ -624,7 +624,7 @@ class CommunityQuarantineRestore:
         except Exception:
             raw = None
         if not raw:
-            from okto_pulse.core.infra.config import get_settings
+            from okto_pulse.core import get_settings
 
             raw = get_settings().kg_base_dir
         return Path(os.path.expanduser(str(raw))).resolve()

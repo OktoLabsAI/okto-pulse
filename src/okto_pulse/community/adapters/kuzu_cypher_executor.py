@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from okto_pulse.community.adapters.graph_error_mapping import map_graph_error
 from okto_pulse.community.adapters.kg_runtime import open_board_connection
 from okto_pulse.core.kg.tier_power import (
     MAX_TRAVERSAL_DEPTH,
@@ -42,11 +43,7 @@ class CommunityKuzuCypherExecutor:
                     if len(rows) > max_rows:
                         break
             except Exception as exc:
-                raise TierPowerError(
-                    "invalid_cypher",
-                    f"Cypher execution failed: {exc}",
-                    details={"cypher": cleaned[:200]},
-                ) from exc
+                raise map_graph_error(exc, operation="read_only_query") from exc
 
         dur = (time.monotonic() - t0) * 1000
         truncated = len(rows) > max_rows

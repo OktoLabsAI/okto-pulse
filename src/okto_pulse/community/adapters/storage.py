@@ -24,7 +24,7 @@ from pathlib import Path
 
 import anyio
 
-from okto_pulse.core.infra.storage import (
+from okto_pulse.core import (
     DEFAULT_STREAM_CHUNK_SIZE,
     StorageObjectStat,
     StorageProvider,

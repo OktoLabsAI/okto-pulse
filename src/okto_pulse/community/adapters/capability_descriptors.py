@@ -32,12 +32,11 @@ _PROVIDER_CAPABILITY: dict[str, str] = {
     "settings_provider": "settings",
     "auth_provider": "auth",
     "storage_provider": "storage",
-    "session_factory": "persistence",
+    "uow_factory": "persistence",
     "event_bus": "events",
     "kg_registry": "kg",
     "scheduler_control": "scheduler",
     "telemetry": "telemetry",
-    "mcp_session_factory": "mcp",
 }
 
 _COMMUNITY_EFFECTIVE_SETTING_FIELDS: tuple[str, ...] = (

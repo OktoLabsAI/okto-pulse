@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from okto_pulse.community.adapters.sqlalchemy_models import Base
-from okto_pulse.core.ports.relational_runtime import get_engine, get_session_factory
+from okto_pulse.community.adapters.sqlalchemy_database import get_engine, get_session_factory
 
 StepCallable = Callable[[], "Awaitable[object] | object"]
 
@@ -924,6 +924,58 @@ async def _migrate_add_default_config_snapshot() -> None:
             pass
 
 
+async def _migrate_add_agent_seen_board_id() -> None:
+    """Board-scope seen markers so tenant predicates remain fail-closed.
+
+    Legacy rows are backfilled from the referenced artifact when possible and
+    then from the agent's legacy/default board. Unresolved rows stay NULL and
+    are intentionally invisible to tenant-scoped reads.
+    """
+    from sqlalchemy import text as sa_text
+
+    async with get_engine().begin() as conn:
+        try:
+            await conn.execute(
+                sa_text("ALTER TABLE agent_seen_items ADD COLUMN board_id VARCHAR(36)")
+            )
+        except Exception:
+            pass
+
+        await conn.execute(
+            sa_text(
+                "UPDATE agent_seen_items SET board_id = COALESCE("
+                "(SELECT c.board_id FROM comments x JOIN cards c ON c.id = x.card_id "
+                " WHERE x.id = agent_seen_items.item_id LIMIT 1),"
+                "(SELECT c.board_id FROM qa_items x JOIN cards c ON c.id = x.card_id "
+                " WHERE x.id = agent_seen_items.item_id LIMIT 1),"
+                "(SELECT s.board_id FROM spec_qa_items x JOIN specs s ON s.id = x.spec_id "
+                " WHERE x.id = agent_seen_items.item_id LIMIT 1),"
+                "(SELECT i.board_id FROM ideation_qa_items x JOIN ideations i "
+                " ON i.id = x.ideation_id WHERE x.id = agent_seen_items.item_id LIMIT 1),"
+                "(SELECT r.board_id FROM refinement_qa_items x JOIN refinements r "
+                " ON r.id = x.refinement_id WHERE x.id = agent_seen_items.item_id LIMIT 1),"
+                "(SELECT s.board_id FROM sprint_qa_items x JOIN sprints s "
+                " ON s.id = x.sprint_id WHERE x.id = agent_seen_items.item_id LIMIT 1),"
+                "(SELECT c.board_id FROM cards c "
+                " WHERE c.id = agent_seen_items.item_id LIMIT 1),"
+                "(SELECT a.board_id FROM activity_logs a "
+                " WHERE a.id = agent_seen_items.item_id LIMIT 1),"
+                "(SELECT a.board_id FROM agents a "
+                " WHERE a.id = agent_seen_items.agent_id LIMIT 1),"
+                "(SELECT ab.board_id FROM agent_boards ab "
+                " WHERE ab.agent_id = agent_seen_items.agent_id "
+                " ORDER BY ab.granted_at ASC LIMIT 1)"
+                ") WHERE board_id IS NULL"
+            )
+        )
+        await conn.execute(
+            sa_text(
+                "CREATE INDEX IF NOT EXISTS ix_agent_seen_items_board_id "
+                "ON agent_seen_items (board_id)"
+            )
+        )
+
+
 async def _migrate_add_board_guideline_provenance() -> None:
     """Add template provenance columns to board_guidelines (spec 8a2fad91 / FR3).
 
@@ -1065,6 +1117,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_kg_tick_boards_failed": _migrate_add_kg_tick_boards_failed,
     "_migrate_drop_spec_skills": _migrate_drop_spec_skills,
     "_migrate_add_default_config_snapshot": _migrate_add_default_config_snapshot,
+    "_migrate_add_agent_seen_board_id": _migrate_add_agent_seen_board_id,
     "_migrate_add_board_guideline_provenance": _migrate_add_board_guideline_provenance,
     "_migrate_add_cancellation_columns": _migrate_add_cancellation_columns,
     "_migrate_agent_permissions": _migrate_agent_permissions,

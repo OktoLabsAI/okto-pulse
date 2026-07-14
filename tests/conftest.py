@@ -39,12 +39,15 @@ def _reset_relational_schema_lifecycle_seam():
     from okto_pulse.community.adapters.sqlalchemy_database import (
         configure_community_database,
     )
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.infra.config import configure_settings
 
     saved_runtime = capture_runtime_values_for_tests()
     reset_runtime_values()
     _runtime_registry.register_relational_runtime_factory(
         lambda url, echo=False: configure_community_database(url, echo=echo)
     )
+    configure_settings(CommunitySettings())
     try:
         yield
     finally:

@@ -11,11 +11,6 @@ REPO_SRC = Path(__file__).parent.parent / "src"
 if str(REPO_SRC) not in sys.path:
     sys.path.insert(0, str(REPO_SRC))
 
-for mod in list(sys.modules):
-    if mod.startswith("okto_pulse.community"):
-        del sys.modules[mod]
-
-
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows event loop behavior")
 def test_run_async_server_uses_selector_loop_on_windows():
     from okto_pulse.community.runtime import run_async_server

@@ -58,7 +58,7 @@ class KuzuVectorSeedProvider:
                 continue
             for r in rows:
                 combined.append(VectorSeed(
-                    node_id=r.kuzu_node_id,
+                    node_id=r.graph_node_id,
                     node_type=r.node_type,
                     title=r.title,
                     similarity=float(r.similarity),

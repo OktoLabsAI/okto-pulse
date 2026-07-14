@@ -243,6 +243,11 @@ class CommunityAgentAuthenticationGateway:
             agent_id=agent.id,
             agent_name=agent.name,
             is_active=True,
+            description=agent.description,
+            objective=agent.objective,
+            permissions=agent.permissions,
+            created_at=agent.created_at,
+            last_used_at=agent.last_used_at,
             metadata={
                 "credential_source": credential_source,
                 "realm_id": "local",

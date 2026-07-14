@@ -12,8 +12,8 @@ Scenario mapping (TS1, TS3-TS8 live here; TS2 lives in the core gate test):
        handlers, and start/stop lifecycle works.
   TS4 audit-replay-contract — CommunityAuditRepository commit/get/undone/purge
        preserve fields/ordering/filters (TR5) against a real SQLite DB.
-  TS5 settings-effective-values-only — CommunityKGConfig effective values equal
-       CoreSettings AND the embedded SettingsKGConfig (TR6, bit-identical).
+  TS5 settings-effective-values-only — CommunityKGConfig mirrors the composed
+       edition settings, while Core's testing provider shares policy fields only.
   TS6 boot-CLI-seed-idempotent — re-configuring is idempotent + equivalent (AC6).
   TS7 dependency-audit-SQLAlchemy — the data adapters are community-local; the
        audit reports SQLAlchemy/aiosqlite as the gated #04 exception (present in
@@ -77,7 +77,6 @@ def _isolated_db_kg(tmp_path):
     """Temp SQLite DB (full schema) + a Community-configured KG registry wired to
     it; restores settings / engine / factory / registry / env afterwards."""
     import okto_pulse.core.infra.config as _config
-    from okto_pulse.core.infra.config import CoreSettings
     from okto_pulse.core.kg.interfaces import registry as _reg
 
     saved_data = os.environ.get("DATA_DIR")
@@ -85,7 +84,9 @@ def _isolated_db_kg(tmp_path):
 
     os.environ["DATA_DIR"] = str(tmp_path)
     os.environ["KG_BASE_DIR"] = str(tmp_path / "boards")
-    _config.configure_settings(CoreSettings())
+    _config.configure_settings(
+        CommunitySettings(data_dir=str(tmp_path), kg_embedding_mode="stub")
+    )
     _reg.reset_registry_for_tests()
 
     async def _setup():
@@ -281,7 +282,7 @@ def test_ts4_audit_commit_get_undone_purge_contract(_isolated_db_kg):
 
 
 # ===========================================================================
-# TS5 — settings effective values only (TR6, bit-identical to embedded).
+# TS5 — Community physical settings plus shared Core policy values.
 # ===========================================================================
 def test_ts5_kg_config_effective_values_match(_isolated_db_kg):
     from okto_pulse.core.infra.config import get_settings
@@ -295,18 +296,26 @@ def test_ts5_kg_config_effective_values_match(_isolated_db_kg):
     assert not issubclass(CommunityKGConfig, SettingsKGConfig)
     assert isinstance(cfg, KGConfig)
 
-    for prop in (
+    physical_props = (
         "kg_base_dir",
         "kg_embedding_mode",
         "kg_embedding_model",
         "kg_embedding_dim",
+    )
+    policy_props = (
         "kg_session_ttl_seconds",
         "kg_cleanup_interval_seconds",
         "kg_cleanup_enabled",
-    ):
+    )
+    for prop in (*physical_props, *policy_props):
         community_val = getattr(cfg, prop)
         assert community_val == getattr(s, prop), prop  # effective settings value
-        assert community_val == getattr(embedded, prop), prop  # bit-identical
+
+    for prop in policy_props:
+        assert getattr(cfg, prop) == getattr(embedded, prop), prop
+
+    assert embedded.kg_base_dir == "memory://okto-pulse-tests"
+    assert cfg.kg_base_dir != embedded.kg_base_dir
 
 
 def test_r07_community_kg_config_preserves_object_reference_snapshot(tmp_path):

@@ -213,3 +213,39 @@ def test_f02_exactly_one_rollback_on_failure(_temp_session_factory):
             return calls
 
     assert asyncio.run(drive()) == {"commit": 0, "rollback": 1}
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_mcp_uow_hard_cancel_returns_connection_to_pool(tmp_path) -> None:
+    engine = build_community_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'r01b-uow-cancel.db'}"
+    )
+    factory = build_community_unit_of_work_factory(
+        build_community_session_factory(engine)
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    entered = asyncio.Event()
+
+    async def victim() -> None:
+        async with factory() as uow:
+            assert await uow.boards.get("missing-board") is None
+            entered.set()
+            await asyncio.sleep(30)
+
+    try:
+        task = asyncio.create_task(victim(), name="test.cancelled-mcp-uow")
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert engine.sync_engine.pool.checkedout() == 1
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        for _ in range(100):
+            if engine.sync_engine.pool.checkedout() == 0:
+                break
+            await asyncio.sleep(0.05)
+        assert engine.sync_engine.pool.checkedout() == 0
+    finally:
+        await engine.dispose()

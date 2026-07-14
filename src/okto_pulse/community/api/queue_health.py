@@ -64,7 +64,9 @@ async def get_kg_queue_health(
         actor=RESTAdapterContract.actor(user_id),
         uow=uow,
     )
-    return QueueHealthResponse(**result.data)
+    data = dict(result.data)
+    data["kuzu_lock_retries_5m"] = data.pop("graph_lock_retries_5m", 0)
+    return QueueHealthResponse(**data)
 
 
 @router.get("/kg/queue/drilldown")

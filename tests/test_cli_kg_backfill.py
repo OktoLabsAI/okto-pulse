@@ -21,13 +21,6 @@ for p in (str(REPO_SRC), str(CORE_SRC)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-# Purge any pre-loaded okto_pulse.community.cli so the new module below is
-# re-imported from the local path.
-for mod in list(sys.modules):
-    if mod.startswith("okto_pulse.community"):
-        del sys.modules[mod]
-
-
 def test_cli_kg_backfill_help_lists_flags():
     """Smoke test that the subparser is wired and all flags reachable."""
     result = subprocess.run(

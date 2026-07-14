@@ -21,8 +21,6 @@ def _providers(**overrides):
         "settings": object(),
         "auth_provider": object(),
         "storage_provider": object(),
-        "relational_engine": object(),
-        "session_factory": object(),
         "event_bus": object(),
         "scheduler_control": object(),
         "uow_factory": object(),
@@ -39,8 +37,7 @@ def test_builder_returns_complete_immutable_provider_identity() -> None:
 
     assert composition.settings_provider is providers["settings"]
     assert composition.auth_provider is providers["auth_provider"]
-    assert composition.relational_engine is providers["relational_engine"]
-    assert composition.session_factory is providers["session_factory"]
+    assert composition.uow_factory is providers["uow_factory"]
     assert composition.worker_registry is providers["worker_registry"]
     assert composition.content_ingestion_resolver is providers[
         "content_ingestion_resolver"

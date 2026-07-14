@@ -59,7 +59,7 @@ def _isolated_kg():
     """Configure the Community KG registry against an ISOLATED temp KG dir so
     bootstrap/query/rebuild touch a throwaway graph; restore settings+registry."""
     from okto_pulse.core.infra import config as _config
-    from okto_pulse.core.infra.config import CoreSettings
+    from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core.kg.interfaces import registry as _reg
 
     saved_data = os.environ.get("DATA_DIR")
@@ -68,7 +68,9 @@ def _isolated_kg():
     try:
         os.environ["DATA_DIR"] = tmp
         os.environ["KG_BASE_DIR"] = str(Path(tmp) / "boards")
-        _config.configure_settings(CoreSettings())
+        _config.configure_settings(
+            CommunitySettings(data_dir=tmp, kg_embedding_mode="stub")
+        )
         _reg.reset_registry_for_tests()
         from okto_pulse.community.adapters.composition import (
             configure_community_kg_registry,

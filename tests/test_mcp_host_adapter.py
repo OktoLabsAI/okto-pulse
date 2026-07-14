@@ -12,8 +12,11 @@ from okto_pulse.community.adapters import mcp_host
 from okto_pulse.community.adapters.mcp_host import (
     CommunityApiKeySessionMiddleware,
     CommunityMcpHostProvider,
+    CommunityMcpRuntimeCompositionMiddleware,
+    build_community_mcp_asgi_app,
     register_community_mcp_host,
 )
+from okto_pulse.core.composition import RuntimeComposition, current_runtime_composition
 from okto_pulse.core.mcp.catalog import CoreMcpCatalog
 from okto_pulse.core.ports import MCP_CREDENTIAL_SCOPE_KEY, McpCredential
 from okto_pulse.core.ports.mcp_host import (
@@ -21,6 +24,7 @@ from okto_pulse.core.ports.mcp_host import (
     get_mcp_host_provider,
     reset_mcp_host_provider_for_tests,
 )
+from okto_pulse.core.runtime_context import resolve_runtime_value
 
 
 def test_community_host_satisfies_the_core_port_and_builds_fastmcp_transport(
@@ -87,6 +91,61 @@ def test_community_host_registration_composes_the_core_host_port() -> None:
         assert get_mcp_host_provider() is provider
     finally:
         reset_mcp_host_provider_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_mcp_runtime_middleware_binds_composition_registry_per_request() -> None:
+    sentinel = object()
+    composition = RuntimeComposition(
+        settings_provider=object(),
+        auth_provider=object(),
+        storage_provider=object(),
+        event_bus=object(),
+        uow_factory=object(),
+    )
+    composition.runtime_values.register("mcp.authenticator", sentinel)
+    captured: dict[str, object] = {}
+
+    async def downstream(scope, receive, send):
+        captured["composition"] = current_runtime_composition()
+        captured["authenticator"] = resolve_runtime_value("mcp.authenticator")
+
+    middleware = CommunityMcpRuntimeCompositionMiddleware(downstream, composition)
+    await middleware({"type": "http"}, None, None)
+
+    assert captured == {
+        "composition": composition,
+        "authenticator": sentinel,
+    }
+    assert current_runtime_composition() is None
+
+
+def test_community_mcp_builder_wraps_transport_with_runtime_composition(
+    monkeypatch,
+) -> None:
+    composition = RuntimeComposition(
+        settings_provider=object(),
+        auth_provider=object(),
+        storage_provider=object(),
+        event_bus=object(),
+        uow_factory=object(),
+    )
+    transport = object()
+    monkeypatch.setattr(
+        mcp_host._provider,
+        "build_asgi_app",
+        lambda catalog, trace_sink=None: transport,
+    )
+
+    built = build_community_mcp_asgi_app(
+        catalog=object(),
+        trace_sink=object(),
+        composition=composition,
+    )
+
+    assert isinstance(built, CommunityMcpRuntimeCompositionMiddleware)
+    assert built.app is transport
+    assert built.composition is composition
 
 
 @pytest.mark.asyncio
