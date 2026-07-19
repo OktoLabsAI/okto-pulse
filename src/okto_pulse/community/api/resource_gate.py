@@ -7,6 +7,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
+from okto_pulse.community.api.auth_deps import get_realm_id, require_user
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases.operational_rest import (
     BoardNotFoundError,
@@ -23,7 +24,6 @@ from okto_pulse.core.application.use_cases.operational_rest import (
     UpdateResourceGateBoardSettingsUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.resource_gate import (
     ResourceGateError,
@@ -86,13 +86,18 @@ async def get_spec_resource_task_coverage(
     spec_id: str,
     board_id: str = Query(...),
     user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Validate Resource Gate Level 2 coverage for a spec."""
     try:
         result = await GetSpecResourceTaskCoverageUseCase().execute(
             ResourceGateTaskCoverageCommand(board_id, spec_id),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
             uow=db,
         )
         return result.data
@@ -108,13 +113,18 @@ async def get_resource_gate_summary(
     entity_id: str,
     board_id: str = Query(...),
     user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Return Provided/N/A/Missing Resource Gate summary for an entity."""
     try:
         result = await GetResourceGateSummaryUseCase().execute(
             ResourceGateEntityCommand(board_id, entity_type, entity_id),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
             uow=db,
         )
         return result.data
@@ -130,13 +140,18 @@ async def get_effective_resources(
     entity_id: str,
     board_id: str = Query(...),
     user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Return hydrated effective Resource Gate resources for UI rendering."""
     try:
         result = await GetEffectiveResourcesUseCase().execute(
             ResourceGateEntityCommand(board_id, entity_type, entity_id),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
             uow=db,
         )
         return result.data
@@ -153,6 +168,7 @@ async def mark_resource_not_applicable(
     data: ResourceNotApplicableRequest,
     board_id: str = Query(...),
     user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Mark one mandatory resource type as not applicable."""
@@ -166,7 +182,11 @@ async def mark_resource_not_applicable(
                 data.justification,
                 data.source_channel,
             ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
             uow=db,
         )
         return result.data
@@ -184,6 +204,7 @@ async def clear_resource_not_applicable(
     data: ClearResourceNotApplicableRequest | None = Body(default=None),
     board_id: str = Query(...),
     user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Clear the active N/A mark for a resource type."""
@@ -197,7 +218,11 @@ async def clear_resource_not_applicable(
                 resource_type,
                 payload.reason,
             ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
             uow=db,
         )
         return result.data
@@ -215,6 +240,7 @@ async def update_resource_gate_board_settings(
     board_id: str,
     data: ResourceGateBoardSettingsUpdate,
     user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Update board-level Resource Gate settings."""
@@ -224,7 +250,11 @@ async def update_resource_gate_board_settings(
                 board_id,
                 data.require_spec_resource_task_coverage,
             ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
             uow=db,
         )
         return result.data

@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import (
 from okto_pulse.core.domain.realm import RealmScope
 
 logger = logging.getLogger(__name__)
+_SESSION_CLEANUP_DRAIN_TIMEOUT_S = 5.0
 _checkout_owner: ContextVar[str] = ContextVar(
     "community_database_checkout_owner",
     default="unattributed",
@@ -76,9 +77,95 @@ class CommunityDatabaseRuntime:
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
+            # The caller must observe cancellation immediately, while the
+            # teardown remains alive long enough to finish rollback + close.
+            # Once detached, explicitly observe and log its terminal failure;
+            # otherwise asyncio reports an unstructured "Task exception was
+            # never retrieved" after the connection cleanup has left scope.
+            task.add_done_callback(_log_background_session_cleanup_failure)
             raise
         except Exception:
             logger.exception("db.session.cancel_safe_close_failed")
+
+    async def _drain_pending_session_closes(
+        self,
+        *,
+        timeout_s: float = _SESSION_CLEANUP_DRAIN_TIMEOUT_S,
+    ) -> None:
+        """Wait boundedly for detached rollback/close tasks before dispose.
+
+        Shutdown normally starts only after request/worker cancellation, so
+        detached session teardowns should be given a short opportunity to
+        return their checked-out connections. The deadline is process-wide for
+        this runtime close, including tasks that appear while an earlier batch
+        is draining. A stuck driver never blocks shutdown indefinitely.
+        """
+
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        current = asyncio.current_task()
+        while True:
+            tasks = {
+                task
+                for task in self._pending_session_closes
+                if not task.done() and task is not current
+            }
+            if not tasks:
+                return
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logger.warning(
+                    "db.session.cleanup_drain_timeout pending=%d timeout_s=%.3f",
+                    len(tasks),
+                    timeout_s,
+                    extra={
+                        "event": "db.session.cleanup_drain_timeout",
+                        "pending_count": len(tasks),
+                        "timeout_s": timeout_s,
+                    },
+                )
+                return
+            _done, pending = await asyncio.wait(tasks, timeout=remaining)
+            if pending:
+                logger.warning(
+                    "db.session.cleanup_drain_timeout pending=%d timeout_s=%.3f",
+                    len(pending),
+                    timeout_s,
+                    extra={
+                        "event": "db.session.cleanup_drain_timeout",
+                        "pending_count": len(pending),
+                        "timeout_s": timeout_s,
+                    },
+                )
+                return
+
+    async def _session_scope_teardown(
+        self,
+        session: Any,
+        exit_: Callable[..., Awaitable[None]] | None,
+        exc_info: tuple[type[BaseException] | None, BaseException | None, Any],
+    ) -> None:
+        """Rollback an active transaction and always release its session.
+
+        MCP handlers may catch a database exception inside the scope, so the
+        context manager cannot rely on ``exc_info`` alone to decide whether a
+        rollback is required.  Conversely, an explicitly committed happy path
+        has no active transaction and must not receive a redundant rollback.
+        The caller shields this complete teardown as one task so cancellation
+        cannot strand the connection between rollback and close.
+        """
+
+        try:
+            in_transaction = getattr(session, "in_transaction", None)
+            if callable(in_transaction) and in_transaction():
+                await session.rollback()
+        finally:
+            if exit_ is not None:
+                await exit_(*exc_info)
+            else:
+                await session.close()
 
     @asynccontextmanager
     async def transactional_session(self) -> AsyncIterator[AsyncSession]:
@@ -119,13 +206,24 @@ class CommunityDatabaseRuntime:
                 exc_info = (type(exc), exc, exc.__traceback__)
                 raise
             finally:
-                if exit_ is not None:
-                    await self._cancel_safe_close(exit_(*exc_info))
-                else:
-                    await self._cancel_safe_close(session.close())
+                await self._cancel_safe_close(
+                    self._session_scope_teardown(session, exit_, exc_info)
+                )
 
     async def close(self) -> None:
-        await self._await_cleanup(self.engine.dispose())
+        try:
+            from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
+                drain_pending_uow_cleanups,
+            )
+
+            await drain_pending_uow_cleanups()
+        finally:
+            try:
+                await self._drain_pending_session_closes(
+                    timeout_s=_SESSION_CLEANUP_DRAIN_TIMEOUT_S,
+                )
+            finally:
+                await self._await_cleanup(self.engine.dispose())
 
     def pool_status(self) -> str:
         return community_pool_status(self.engine)
@@ -145,6 +243,31 @@ def _consume_cleanup_exception(task: asyncio.Future[None]) -> None:
         return
     with contextlib.suppress(BaseException):
         task.exception()
+
+
+def _log_background_session_cleanup_failure(
+    task: asyncio.Future[None],
+) -> None:
+    """Consume a detached session teardown failure with structured evidence."""
+
+    if task.cancelled():
+        logger.error(
+            "db.session.background_cleanup_cancelled",
+            extra={"event": "db.session.background_cleanup_cancelled"},
+        )
+        return
+    try:
+        task.result()
+    except BaseException as exc:  # cleanup failure must never escape callback
+        logger.error(
+            "db.session.background_cleanup_failed error_type=%s",
+            type(exc).__name__,
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "event": "db.session.background_cleanup_failed",
+                "error_type": type(exc).__name__,
+            },
+        )
 
 
 @contextmanager

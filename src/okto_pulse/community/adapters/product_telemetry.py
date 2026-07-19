@@ -61,6 +61,14 @@ class CommunityProductTelemetryAggregator:
         conn.row_factory = sqlite3.Row
         try:
             metrics = self._aggregate_conn(conn)
+            # A latest-value snapshot must explicitly clear keys that disappeared
+            # from current state.  Preserve the bounded prior key vocabulary and
+            # emit a zero tombstone instead of leaving a stale non-zero gauge in
+            # the remote latest-per-key projection.
+            for family, prior_values in self._load_previous_metrics().items():
+                current = metrics.setdefault(family, {})
+                for key in prior_values:
+                    current.setdefault(key, 0)
             self._save_state(metrics)
             return ProductState.from_dict(metrics)
         finally:
@@ -161,8 +169,27 @@ class CommunityProductTelemetryAggregator:
         payload = {
             "families": sorted(metrics),
             "last_aggregate_total": sum(sum(group.values()) for group in metrics.values()),
+            "latest_values": metrics,
         }
         self.state_path.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
+
+    def _load_previous_metrics(self) -> dict[str, dict[str, int]]:
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        raw = payload.get("latest_values") if isinstance(payload, dict) else None
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(family): {
+                str(key): int(value)
+                for key, value in values.items()
+                if isinstance(key, str) and isinstance(value, int) and value >= 0
+            }
+            for family, values in raw.items()
+            if family in PRODUCT_METRIC_KEYS and isinstance(values, dict)
+        }
 
 
 def build_community_product_aggregator(settings: Any, metrics_dir: Any) -> ProductAggregationPort:

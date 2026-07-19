@@ -11,6 +11,7 @@ export interface QueueHealth {
   claimed_count: number;
   claimed_boards: string[];
   dead_letter_count: number;
+  global_outbox_dead_letter_count?: number;
   claims_per_min_1m: number;
   claims_per_min_5m: number;
   alert_threshold: number;

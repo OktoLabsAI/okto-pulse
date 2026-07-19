@@ -20,6 +20,8 @@ from okto_pulse.core.application.use_cases.card_crud import (
     LinkTestTaskToBugUseCase,
     ListCardKnowledgeCommand,
     ListCardKnowledgeUseCase,
+    RequireCardWriteAccessCommand,
+    RequireCardWriteAccessUseCase,
     UnlinkTestTaskFromBugCommand,
     UnlinkTestTaskFromBugUseCase,
 )
@@ -84,6 +86,34 @@ def _resource_gate_detail(exc: ResourceGateError) -> dict:
     }
 
 
+async def _require_card_write_access(
+    card_id: str,
+    user_id: str,
+    uow: PulseUnitOfWork,
+    *,
+    kb_id: str | None = None,
+) -> None:
+    try:
+        await RequireCardWriteAccessUseCase().execute(
+            RequireCardWriteAccessCommand(card_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+    if kb_id is None:
+        return
+    try:
+        await GetCardKnowledgeUseCase().execute(
+            GetCardKnowledgeCommand(card_id, kb_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        detail = "Card not found" if exc.entity_type == "card" else "Knowledge entry not found"
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+
 @router.get("/{card_id}", response_model=CardResponse)
 async def get_card(
     card_id: str,
@@ -119,9 +149,11 @@ async def get_bug_regression_scenario_candidates(
                 affected_task_ids=affected_task_ids,
                 candidate_scenario_ids=candidate_scenario_ids,
             ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
     except BugRegressionScenarioPreviewError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_dict())
     return result.payload
@@ -191,11 +223,14 @@ async def get_dependencies(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get cards this card depends on."""
-    result = await GetCardDependenciesUseCase().execute(
-        GetCardDependenciesCommand(card_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await GetCardDependenciesUseCase().execute(
+            GetCardDependenciesCommand(card_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
     return [
         {"id": d.id, "title": d.title, "status": d.status.value}
         for d in result.dependencies
@@ -209,11 +244,14 @@ async def get_dependents(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get cards that depend on this card."""
-    result = await GetCardDependentsUseCase().execute(
-        GetCardDependentsCommand(card_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await GetCardDependentsUseCase().execute(
+            GetCardDependentsCommand(card_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
     return [
         {"id": d.id, "title": d.title, "status": d.status.value}
         for d in result.dependents
@@ -239,6 +277,8 @@ async def add_dependency(
             status_code=status.HTTP_409_CONFLICT,
             detail="Dependência circular detectada ou auto-referência",
         )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
     return {"id": result.dependency_id, "card_id": card_id, "depends_on_id": depends_on_id}
 
 
@@ -268,11 +308,14 @@ async def get_card_activity(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get activity log for a specific card."""
-    result = await GetCardActivityUseCase().execute(
-        GetCardActivityCommand(card_id, limit=limit),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await GetCardActivityUseCase().execute(
+            GetCardActivityCommand(card_id, limit=limit),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
     return result.activity
 
 
@@ -283,11 +326,14 @@ async def get_card_seen_status(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get seen status for all items in a card (comments, QA) by agents."""
-    result = await GetCardSeenStatusUseCase().execute(
-        GetCardSeenStatusCommand(card_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await GetCardSeenStatusUseCase().execute(
+            GetCardSeenStatusCommand(card_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
     return result.data
 
 
@@ -338,8 +384,9 @@ async def unlink_test_task_from_bug(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
-    except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+    except EntityNotFoundError as exc:
+        detail = "Card not found" if exc.entity_type == "card" else "Test task not found"
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
 @router.delete("/{card_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -353,6 +400,8 @@ async def delete_card(
         await DeleteCardUseCase().execute(
             DeleteCardCommand(card_id), actor=RESTAdapterContract.actor(user_id), uow=uow
         )
+    except CardOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
 
@@ -498,6 +547,7 @@ async def create_card_knowledge(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Blocked: card Knowledge Base resources are read-only governed snapshots."""
+    await _require_card_write_access(card_id, user_id, uow)
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail=CARD_RESOURCE_READ_ONLY_MESSAGE,
@@ -533,6 +583,7 @@ async def update_card_knowledge(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Blocked: card Knowledge Base resources are read-only governed snapshots."""
+    await _require_card_write_access(card_id, user_id, uow, kb_id=kb_id)
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail=CARD_RESOURCE_READ_ONLY_MESSAGE,
@@ -547,6 +598,7 @@ async def delete_card_knowledge(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Blocked: card Knowledge Base resources are read-only governed snapshots."""
+    await _require_card_write_access(card_id, user_id, uow, kb_id=kb_id)
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail=CARD_RESOURCE_READ_ONLY_MESSAGE,

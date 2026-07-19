@@ -6,8 +6,13 @@ edition. The core consumes only the logical GraphRuntimeStore DTOs.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
+
 from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphPurgeResult,
+    GraphRuntimeObservationState,
     GraphRuntimeState,
     GraphStorageFootprint,
 )
@@ -23,52 +28,171 @@ class CommunityKuzuGraphRuntimeStore:
     def _storage_ref(board_id: str) -> StorageRef:
         return StorageRef(f"board:{board_id}", "community_local_graph")
 
+    @staticmethod
+    def materialization_observation_paths(board_id: str) -> tuple[Path, ...]:
+        """Paths whose metadata is allowed to be observed by KG health."""
+
+        from okto_pulse.community.adapters.kuzu_graph_path_resolver import (
+            CommunityKuzuGraphPathResolver,
+        )
+
+        graph_path = CommunityKuzuGraphPathResolver().board_graph_path(board_id)
+        return (
+            graph_path,
+            graph_path.with_name(f"{graph_path.name}.wal"),
+        )
+
     def _configured_max_bytes(self) -> int | None:
         try:
             from okto_pulse.core import get_settings
 
             settings = get_settings()
-            return int(settings.kg_kuzu_max_db_size_gb * 1024 ** 3)
+            return int(settings.kg_kuzu_max_db_size_gb * 1024**3)
         except Exception:
             return None
 
-    def graph_state(self, board_id: str) -> GraphRuntimeState:
+    def graph_state(
+        self,
+        board_id: str,
+        *,
+        generation: str | None = None,
+    ) -> GraphRuntimeState:
+        observed_at = datetime.now(timezone.utc)
         try:
             from okto_pulse.community.adapters.kuzu_graph_path_resolver import (
                 CommunityKuzuGraphPathResolver,
             )
 
-            state = CommunityKuzuGraphPathResolver().storage_state(board_id)
-        except Exception as exc:
-            return GraphRuntimeState(
+            graph_path = CommunityKuzuGraphPathResolver().board_graph_path(board_id)
+        except Exception:
+            return GraphRuntimeState.from_observation(
                 board_id=board_id,
                 storage_ref=self._storage_ref(board_id),
-                exists=False,
-                status="unavailable",
+                state=GraphRuntimeObservationState.PROVIDER_UNAVAILABLE,
+                generation=generation,
+                reason_code="board_graph_provider_unavailable",
+                observed_at=observed_at,
                 backend=self._BACKEND,
-                unavailable_reason=type(exc).__name__,
                 details={"source": "community_graph_runtime_store"},
             )
 
-        if state.quarantined:
-            status = "quarantined"
-        elif state.locked:
-            status = "locked"
-        elif state.exists:
-            status = "healthy"
+        try:
+            graph_path.stat()
+        except FileNotFoundError:
+            try:
+                graph_path.parent.stat()
+            except FileNotFoundError:
+                residues: tuple[str, ...] = ()
+            except OSError:
+                return GraphRuntimeState.from_observation(
+                    board_id=board_id,
+                    storage_ref=self._storage_ref(board_id),
+                    state=(GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR),
+                    generation=generation,
+                    reason_code="board_graph_parent_stat_io_error",
+                    observed_at=observed_at,
+                    backend=self._BACKEND,
+                    details={"source": "community_graph_runtime_store"},
+                )
+            else:
+                try:
+                    residues = tuple(
+                        sorted(
+                            child.name
+                            for child in graph_path.parent.iterdir()
+                            if child.name.startswith(f"{graph_path.name}.")
+                        )
+                    )
+                except OSError:
+                    return GraphRuntimeState.from_observation(
+                        board_id=board_id,
+                        storage_ref=self._storage_ref(board_id),
+                        state=(
+                            GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR
+                        ),
+                        generation=generation,
+                        reason_code="board_graph_residue_scan_io_error",
+                        observed_at=observed_at,
+                        backend=self._BACKEND,
+                        details={"source": "community_graph_runtime_store"},
+                    )
+            if residues:
+                return replace(
+                    GraphRuntimeState.from_observation(
+                        board_id=board_id,
+                        storage_ref=self._storage_ref(board_id),
+                        state=(
+                            GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR
+                        ),
+                        generation=generation,
+                        reason_code="board_graph_residue_without_primary",
+                        observed_at=observed_at,
+                        backend=self._BACKEND,
+                        quarantined=True,
+                        details={
+                            "source": "community_graph_runtime_store",
+                            "residue_count": len(residues),
+                        },
+                    ),
+                    status="quarantined",
+                )
+            return GraphRuntimeState.from_observation(
+                board_id=board_id,
+                storage_ref=self._storage_ref(board_id),
+                state=GraphRuntimeObservationState.CONFIRMED_ABSENT,
+                generation=generation,
+                reason_code="board_graph_confirmed_absent",
+                observed_at=observed_at,
+                backend=self._BACKEND,
+                details={"source": "community_graph_runtime_store"},
+            )
+        except OSError:
+            return GraphRuntimeState.from_observation(
+                board_id=board_id,
+                storage_ref=self._storage_ref(board_id),
+                state=GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
+                generation=generation,
+                reason_code="board_graph_stat_io_error",
+                observed_at=observed_at,
+                backend=self._BACKEND,
+                details={"source": "community_graph_runtime_store"},
+            )
+
+        wal_path = graph_path.with_name(f"{graph_path.name}.wal")
+        try:
+            wal_path.stat()
+        except FileNotFoundError:
+            locked = False
+        except OSError:
+            return GraphRuntimeState.from_observation(
+                board_id=board_id,
+                storage_ref=self._storage_ref(board_id),
+                state=GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
+                generation=generation,
+                reason_code="board_graph_sidecar_stat_io_error",
+                observed_at=observed_at,
+                backend=self._BACKEND,
+                details={"source": "community_graph_runtime_store"},
+            )
         else:
-            status = "absent"
-        return GraphRuntimeState(
-            board_id=board_id,
-            storage_ref=self._storage_ref(board_id),
-            exists=state.exists,
-            status=status,
-            backend=self._BACKEND,
-            schema_version=None,
-            locked=state.locked,
-            quarantined=state.quarantined,
-            unavailable_reason=None if state.exists else "graph_absent",
-            details={"source": "community_graph_runtime_store"},
+            locked = True
+        return replace(
+            GraphRuntimeState.from_observation(
+                board_id=board_id,
+                storage_ref=self._storage_ref(board_id),
+                state=GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE,
+                generation=generation,
+                reason_code=(
+                    "board_graph_metadata_present_with_wal"
+                    if locked
+                    else "board_graph_metadata_present"
+                ),
+                observed_at=observed_at,
+                backend=self._BACKEND,
+                locked=locked,
+                details={"source": "community_graph_runtime_store"},
+            ),
+            status="locked" if locked else "healthy",
         )
 
     def exists(self, board_id: str) -> bool:

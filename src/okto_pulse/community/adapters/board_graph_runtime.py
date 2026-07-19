@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class CommunityBoardGraphRuntime:
@@ -56,11 +56,19 @@ class CommunityBoardGraphRuntime:
     def apply_ladybug_lifecycle_step(self, *args: Any, **kwargs: Any) -> Any:
         return self._runtime().apply_ladybug_lifecycle_step(*args, **kwargs)
 
-    def load_vector_extension(self, conn: Any) -> None:
-        self._runtime().load_vector_extension(conn)
+    def load_vector_extension(self, conn: Any, *, install: bool = True) -> None:
+        self._runtime().load_vector_extension(conn, install=install)
 
-    def open_kuzu_db(self, path: Path) -> Any:
-        return self._runtime()._open_kuzu_db(path)
+    def open_kuzu_db(
+        self,
+        path: Path,
+        *,
+        on_corruption: Callable[[BaseException], None] | None = None,
+    ) -> Any:
+        return self._runtime()._open_kuzu_db(
+            path,
+            on_corruption=on_corruption,
+        )
 
     def new_connection(self, db: Any) -> Any:
         return self._runtime().kuzu.Connection(db)
@@ -70,4 +78,3 @@ class CommunityBoardGraphRuntime:
 
 
 __all__ = ["CommunityBoardGraphRuntime"]
-

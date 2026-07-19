@@ -53,6 +53,7 @@ async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
     import okto_pulse.community.adapters.mcp_trace as trace_mod
     import okto_pulse.community.adapters.mcp_host as host_mod
     from okto_pulse.community import main as main_mod
+    from okto_pulse.community.runtime import AccessLogQueryRedactionMiddleware
 
     configs: list[FakeConfig] = []
     servers: list[FakeServer] = []
@@ -83,9 +84,18 @@ async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
     def fake_trace_sink_from_env():
         return trace_sink
 
-    def fake_build_mcp_asgi_app(*, catalog, trace_sink=None, composition=None):
+    def fake_build_mcp_asgi_app(
+        *,
+        catalog,
+        resource_catalog,
+        projection_identity,
+        trace_sink=None,
+        composition=None,
+    ):
         assert catalog is not None
         assert composition is main_mod.app.state.runtime_composition
+        assert resource_catalog.is_frozen is True
+        assert resource_catalog.identity == projection_identity
         trace_args.append(trace_sink)
         return "mcp-asgi-app"
 
@@ -106,11 +116,13 @@ async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
 
     assert len(configs) == 2
     api_config, mcp_config = configs
-    assert api_config.app == "okto_pulse.community.main:app"
     assert api_config.kwargs["host"] == "127.0.0.42"
     assert api_config.kwargs["port"] == 8210
     assert api_config.kwargs["ws"] == "wsproto"
-    assert mcp_config.app == "mcp-asgi-app"
+    assert isinstance(api_config.app, AccessLogQueryRedactionMiddleware)
+    assert api_config.app is main_mod.app
+    assert isinstance(mcp_config.app, AccessLogQueryRedactionMiddleware)
+    assert mcp_config.app.app == "mcp-asgi-app"
     assert mcp_config.kwargs["host"] == "0.0.0.0"
     assert mcp_config.kwargs["port"] == 8211
     assert mcp_config.kwargs["ws"] == "wsproto"

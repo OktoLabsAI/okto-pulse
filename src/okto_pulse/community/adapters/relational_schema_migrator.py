@@ -114,6 +114,9 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
     (CREATE_ALL_BOUNDARY_STEP_ID, "create_all_boundary", False,
      "Base.metadata.create_all — the table-create boundary."),
     # --- post_create_all: schema ALTERs applied AFTER create_all ---
+    ("_migrate_global_discovery_recovery_control_plane", "post_create_all", False,
+     "Converge the durable Global Discovery recovery attempt, singleton slot, "
+     "and claimed-dispatch control-plane schema."),
     ("_migrate_story_ideation_single_link", "post_create_all", False,
      "Enforce single story->ideation link."),
     ("_migrate_add_card_sprint_id", "post_create_all", False,
@@ -147,6 +150,9 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
     ("_migrate_add_cancellation_columns", "post_create_all", False,
      "Add cancellation-justification columns (reason/at/by) to ideations, "
      "refinements, specs, sprints, and cards (ITEM 17)."),
+    ("_migrate_repair_known_fixture_fk_orphans", "post_create_all", True,
+     "Purge only allowlisted historical test-fixture pollution (including its "
+     "synthetic board), then require a clean SQLite foreign_key_check."),
     ("_migrate_agent_permissions", "post_create_all", False,
      "Schema migration classified as post_create_all so legacy agent permissions "
      "are migrated before permission-flag data reconciliation."),

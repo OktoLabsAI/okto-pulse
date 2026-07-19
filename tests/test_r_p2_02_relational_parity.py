@@ -71,6 +71,19 @@ def _assert_uuid_string(value: str) -> None:
     assert value.count("-") == 4
 
 
+def test_materialization_health_and_registry_share_global_runtime_instance(
+    _community_registry_with_temp_db,
+) -> None:
+    from okto_pulse.core.ports.materialization_health import (
+        get_materialization_evidence_port,
+    )
+
+    registry = _community_registry_with_temp_db
+    evidence_port = get_materialization_evidence_port()
+    assert evidence_port is not None
+    assert evidence_port._discovery_store is registry.global_discovery_runtime
+
+
 def _assert_generated_event_id(value: str) -> None:
     assert isinstance(value, str)
     assert value.startswith("evt_")

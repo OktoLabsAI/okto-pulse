@@ -27,6 +27,10 @@ class AllowedTransitionResponse(BaseModel):
     label: str
     gate: str
     blocked_reason: str | None = None
+    preconditions: list[str] = []
+    capabilities: list[str] = []
+    effects: list[str] = []
+    reason_codes: list[str] = []
 
 
 class AllowedTransitionsResponse(BaseModel):
@@ -51,7 +55,7 @@ async def get_allowed_transitions(
     realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Return lifecycle actions allowed by the backend transition authority."""
+    """Return lifecycle actions from the canonical Core SDLC registry."""
 
     try:
         result = await ListAllowedTransitionsUseCase().execute(

@@ -12,7 +12,11 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphUnavailable,
 )
 
-_LOCK_MARKERS = ("could not set lock on file", "database is locked")
+_LOCK_MARKERS = (
+    "could not set lock on file",
+    "database is locked",
+    "only one write transaction",
+)
 _CORRUPTION_MARKERS = (
     "checksum verification failed",
     "corrupted wal file",

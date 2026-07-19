@@ -1,15 +1,40 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
+from okto_pulse.community.adapters.coordination import CommunityLocalWriteLockPort
 from okto_pulse.community.adapters.global_discovery_runtime import (
     CommunityGlobalDiscoveryRuntime,
 )
 from okto_pulse.community.adapters.rebuild_audit_storage import (
     CommunityFileSystemCognitivePendingWorkProvider,
 )
+from okto_pulse.core.kg.global_discovery_writer import GlobalDiscoveryWriterLease
+from okto_pulse.core.kg.single_writer_lock import KGSingleWriterLock
+
+
+@contextmanager
+def _durable_global_writer(
+    tmp_path: Path,
+    *,
+    operation: str,
+) -> Iterator[None]:
+    lease = GlobalDiscoveryWriterLease.acquire(
+        operation=operation,
+        lock=KGSingleWriterLock(
+            base_dir=tmp_path / "locks",
+            write_lock_port=CommunityLocalWriteLockPort(),
+        ),
+    )
+    try:
+        with lease.guard():
+            yield
+    finally:
+        lease.release()
 
 
 class _Result:
@@ -54,10 +79,13 @@ class _GraphRuntime:
         self.connections: list[_Connection] = []
         self.dbs: list[_Db] = []
 
-    def open_kuzu_db(self, path: Path):
+    def open_kuzu_db(self, path: Path, *, on_corruption=None):
         self.opened_paths.append(path)
         if self.fail_open:
-            raise RuntimeError("corrupt local discovery artifact")
+            exc = RuntimeError("corrupt local discovery artifact")
+            if on_corruption is not None:
+                on_corruption(exc)
+            raise exc
         db = _Db()
         self.dbs.append(db)
         return db
@@ -67,7 +95,8 @@ class _GraphRuntime:
         self.connections.append(conn)
         return conn
 
-    def load_vector_extension(self, conn) -> None:
+    def load_vector_extension(self, conn, *, install: bool = True) -> None:
+        del conn, install
         return None
 
     def is_ladybug_corruption_error(self, exc: BaseException) -> bool:
@@ -86,7 +115,8 @@ def test_af29_global_discovery_runtime_flush_probe_success(tmp_path, monkeypatch
     (primary.parent / "discovery.lbug.wal").write_bytes(b"wal")
     monkeypatch.setattr(runtime, "_runtime", lambda: graph_runtime)
 
-    runtime.flush_after_write_batch()
+    with _durable_global_writer(tmp_path, operation="af29_flush_probe_success"):
+        runtime.flush_after_write_batch()
 
     assert graph_runtime.opened_paths == [primary]
     assert graph_runtime.connections[0].executed == ["CALL SHOW_TABLES() RETURN name"]
@@ -106,8 +136,9 @@ def test_af29_global_discovery_runtime_flush_reports_missing_artifact(
     )
     monkeypatch.setattr(runtime, "_runtime", lambda: graph_runtime)
 
-    with pytest.raises(RuntimeError, match="global discovery file missing"):
-        runtime.flush_after_write_batch()
+    with _durable_global_writer(tmp_path, operation="af29_flush_probe_missing"):
+        with pytest.raises(RuntimeError, match="global discovery file missing"):
+            runtime.flush_after_write_batch()
 
     assert graph_runtime.opened_paths == []
 
@@ -126,8 +157,9 @@ def test_af29_global_discovery_runtime_flush_preserves_corrupt_artifact(
     primary.write_bytes(b"not-a-valid-graph")
     monkeypatch.setattr(runtime, "_runtime", lambda: graph_runtime)
 
-    with pytest.raises(RuntimeError, match="Existing global discovery"):
-        runtime.flush_after_write_batch()
+    with _durable_global_writer(tmp_path, operation="af29_flush_probe_corrupt"):
+        with pytest.raises(RuntimeError, match="Existing global discovery"):
+            runtime.flush_after_write_batch()
 
     assert primary.read_bytes() == b"not-a-valid-graph"
 

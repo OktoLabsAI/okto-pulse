@@ -332,17 +332,23 @@ async def architecture_propagation_legacy_report(
     whose SOURCE is now ineligible for propagation. Bounded/idempotent; never mutates
     snapshots, findings, or SDLC status. Registered before /architecture/{design_id} so the
     static path wins route matching."""
-    result = await ArchitecturePropagationLegacyReportUseCase().execute(
-        ArchitecturePropagationLegacyReportCommand(
-            board_id,
-            limit=limit,
-            offset=offset,
-            include_clean=include_clean,
-            parent_type_filter=parent_type_filter,
-        ),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ArchitecturePropagationLegacyReportUseCase().execute(
+            ArchitecturePropagationLegacyReportCommand(
+                board_id,
+                limit=limit,
+                offset=offset,
+                include_clean=include_clean,
+                parent_type_filter=parent_type_filter,
+            ),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{exc.entity_type} not found",
+        )
     return result.report
 
 
@@ -535,6 +541,11 @@ async def get_architecture_diff(
             GetArchitectureDiffCommand(design_id, from_version, to_version),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{exc.entity_type} not found",
         )
     except ValueError as error:
         raise _http_error_from_value(error)

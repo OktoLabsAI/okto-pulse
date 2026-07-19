@@ -18,8 +18,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import ladybug as kuzu  # type: ignore
-from typing import Any
+from typing import Any, Callable
 
+from okto_pulse.community.adapters.graph_ddl import (
+    build_multi_rel_ddl as _build_multi_rel_ddl,
+    build_node_ddl as _build_node_ddl,
+    build_rel_ddl as _build_rel_ddl,
+)
 from okto_pulse.core.kg import schema_contract as _schema_contract
 from okto_pulse.core.kg.interfaces.graph_errors import GraphUnavailable
 
@@ -653,9 +658,32 @@ class BoardConnection:
     must be released — e.g. before ``rmtree`` or schema migration.
     """
 
-    def __init__(self, board_id: str) -> None:
+    def __init__(
+        self,
+        board_id: str,
+        *,
+        load_vector_extension: bool = True,
+    ) -> None:
         self._board_id = board_id
         self._closed = False
+        self._load_vector_extension = load_vector_extension
+        # Ladybug permits one process-wide writer, including extension
+        # initialization and writes to different Database instances.  Opening
+        # a connection can bootstrap schema and LOAD VECTOR, so it participates
+        # in the same Community-owned writer gate as graph transactions and
+        # Global Discovery.  The scope is logically re-entrant when a
+        # GraphTransaction already owns the lease.
+        from okto_pulse.community.adapters.ladybug_writer import (
+            ladybug_writer_scope,
+        )
+
+        with ladybug_writer_scope(
+            scope=board_id,
+            phase="connection_open",
+        ):
+            self._initialize(board_id)
+
+    def _initialize(self, board_id: str) -> None:
         # Defensive: self-heal missing or partial graphs before we open our
         # own handle. No-op on hot boards (cache hit in
         # ensure_board_graph_bootstrapped). Roda ANTES do reader_enter porque
@@ -679,12 +707,13 @@ class BoardConnection:
             self.db = _open_kuzu_db_cached(board_id, path)
             logger.debug("[KG] Kùzu database (cached) for board_id=%s", board_id)
             self.conn = kuzu.Connection(self.db)  # type: ignore[attr-defined]
-            # The VECTOR extension is connection-scoped in LadybugDB/Kuzu. The
-            # bootstrap path loads it before creating HNSW indexes, but hot boards
-            # skip bootstrap and still open fresh connections for worker commits.
-            # Without this, inserts into indexed tables such as Entity can fail
-            # with "Trying to insert into an index ... extension is not loaded".
-            load_vector_extension(self.conn)
+            if self._load_vector_extension:
+                # The VECTOR extension is connection-scoped in LadybugDB/Kuzu.
+                # Bootstrap persists INSTALL, while hot write/vector connections
+                # still need LOAD.  Plain read-only connections opt out because
+                # Ladybug 0.16 records LOAD in the WAL even though no graph data
+                # changes.
+                load_vector_extension(self.conn, install=False)
         except BaseException:
             self._close_guard.reader_exit()
             raise
@@ -1514,7 +1543,11 @@ def _try_open_with_wal_only_recovery(
     return db
 
 
-def _open_kuzu_db(path: Path):
+def _open_kuzu_db(
+    path: Path,
+    *,
+    on_corruption: Callable[[BaseException], None] | None = None,
+):
     """Single factory for every ``kuzu.Database()`` call in the core.
 
     Reads ``kg_kuzu_buffer_pool_mb`` and ``kg_kuzu_max_db_size_gb`` from
@@ -1567,6 +1600,7 @@ def _open_kuzu_db(path: Path):
     last_exc: BaseException | None = None
     salvage_attempted = False
     wal_only_attempted = False
+    corruption_notified = False
     for attempt in range(1, 6):
         try:
             # KGD-01 FR1/TR2 (estratégia determinística de D1): o open primário
@@ -1613,6 +1647,21 @@ def _open_kuzu_db(path: Path):
                     e = retry_exc
             last_exc = e
             msg = str(e)
+            if not corruption_notified and _is_ladybug_corruption_error(e):
+                corruption_notified = True
+                if on_corruption is not None:
+                    try:
+                        on_corruption(e)
+                    except Exception as observer_exc:
+                        logger.warning(
+                            "kg.db_open.corruption_observer_failed "
+                            "error_type=%s",
+                            type(observer_exc).__name__,
+                            extra={
+                                "event": "kg.db_open.corruption_observer_failed",
+                                "error_type": type(observer_exc).__name__,
+                            },
+                        )
             # Auto-recovery (campo 2026-06-10): crash no MEIO de um checkpoint
             # deixa sidecars órfãos (graph.lbug.shadow vazio +
             # graph.lbug.wal.checkpoint) que fazem o replay do Ladybug abortar
@@ -2747,29 +2796,69 @@ LEGACY_NODE_COLUMNS = _schema_contract.LEGACY_NODE_COLUMNS
 stable_rel_type_entries = _schema_contract.stable_rel_type_entries
 relationship_endpoint_pairs = _schema_contract.relationship_endpoint_pairs
 resolve_relationship_endpoint_pair = _schema_contract.resolve_relationship_endpoint_pair
-from okto_pulse.community.adapters.graph_ddl import (
-    COMMON_NODE_ATTRIBUTES as _COMMON_NODE_ATTRS,
-    build_multi_rel_ddl as _build_multi_rel_ddl,
-    build_node_ddl as _build_node_ddl,
-    build_rel_ddl as _build_rel_ddl,
-)
 vector_index_name = _schema_contract.vector_index_name
 
 
-def load_vector_extension(conn) -> None:
+def load_vector_extension(
+    conn,
+    *,
+    install: bool = True,
+    writer_timeout_s: float = 30.0,
+) -> None:
     """Ensure the Kùzu VECTOR extension is loaded on the given connection.
 
-    INSTALL is idempotent (persists in the DB file); LOAD must be called on
-    every fresh connection but is also a no-op when already loaded.
+    INSTALL is persisted in the DB file and belongs to bootstrap/migration;
+    hot connections pass ``install=False``. LOAD remains connection-local.
+    Both statements are engine writes in Ladybug 0.16, so even different DB
+    files must share the process-wide Community writer lease.
     """
-    try:
-        conn.execute("INSTALL VECTOR")
-    except Exception:
-        pass  # already installed or bundled
-    try:
-        conn.execute("LOAD VECTOR")
-    except Exception:
-        pass  # already loaded or bundled
+    from okto_pulse.community.adapters.ladybug_writer import (
+        ladybug_writer_scope,
+    )
+
+    def _execute_and_close(statement: str) -> None:
+        result = None
+        try:
+            result = conn.execute(statement)
+        finally:
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+
+    with ladybug_writer_scope(
+        scope="extension",
+        phase="vector_extension",
+        timeout_s=writer_timeout_s,
+    ):
+        if install:
+            try:
+                _execute_and_close("INSTALL VECTOR")
+            except Exception as exc:
+                logger.debug(
+                    "kg.vector_extension.skipped phase=install "
+                    "statement_kind=INSTALL error_type=%s",
+                    type(exc).__name__,
+                    extra={
+                        "event": "kg.vector_extension.skipped",
+                        "phase": "install",
+                        "statement_kind": "INSTALL",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+        try:
+            _execute_and_close("LOAD VECTOR")
+        except Exception as exc:
+            logger.debug(
+                "kg.vector_extension.skipped phase=load statement_kind=LOAD "
+                "error_type=%s",
+                type(exc).__name__,
+                extra={
+                    "event": "kg.vector_extension.skipped",
+                    "phase": "load",
+                    "statement_kind": "LOAD",
+                    "error_type": type(exc).__name__,
+                },
+            )
 
 
 # Cache of boards already migrated this process — avoids re-running the
@@ -3229,14 +3318,6 @@ def bootstrap_board_graph(board_id: str) -> BoardGraphHandle:
 
     Idempotent: re-invoking returns the same handle without re-creating tables.
     """
-    try:
-        import ladybug as kuzu  # type: ignore
-    except ImportError as exc:  # pragma: no cover — deps required for runtime
-        raise RuntimeError(
-            "kuzu is required for the knowledge graph layer — "
-            "install with `pip install kuzu`"
-        ) from exc
-
     path = board_kuzu_path(board_id)
     # Sinalização forense (2026-06-10): criar um grafo NOVO para um board é
     # normal no primeiro uso, mas quando o arquivo anterior foi removido por
@@ -3429,16 +3510,25 @@ def reset_bootstrap_cache_for_tests() -> None:
         _BOOTSTRAP_LOCKS.clear()
 
 
-def open_board_connection(board_id: str) -> BoardConnection:
+def open_board_connection(
+    board_id: str,
+    *,
+    load_vector_extension: bool = True,
+) -> BoardConnection:
     """Open a fresh Kùzu connection for a board as a :class:`BoardConnection`.
 
     Returns a :class:`BoardConnection` — use as a context manager
     (``with open_board_connection(bid) as (db, conn):``) to guarantee
     ``close()`` runs even under exceptions. The return value is also
     iterable, so legacy ``db, conn = open_board_connection(bid)`` sites
-    continue to work during the retrofit.
+    continue to work during the retrofit.  ``load_vector_extension=False`` is
+    reserved for callers that have already classified their statement as a
+    non-vector read; the default preserves write and legacy behavior.
     """
-    return BoardConnection(board_id)
+    return BoardConnection(
+        board_id,
+        load_vector_extension=load_vector_extension,
+    )
 
 
 def open_board_connection_raw(board_id: str):
@@ -3518,9 +3608,13 @@ def close_all_connections(board_id: str | None = None) -> None:
 
     # global is released only when closing everything — per-board callers
     # (e.g. single-board DELETE) must not nuke the shared discovery handle.
+    from okto_pulse.community.adapters.coordination import (
+        community_global_discovery_writer_fence,
+    )
     from okto_pulse.core.services.application_kg import get_current_provider_registry
 
-    get_current_provider_registry().require_global_discovery_runtime().close()
+    with community_global_discovery_writer_fence("close_all_global"):
+        get_current_provider_registry().require_global_discovery_runtime().close()
 
 
 def _now_iso() -> str:

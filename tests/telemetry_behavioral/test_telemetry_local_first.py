@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from okto_pulse.community.adapters.telemetry_sender import (
     CommunityTelemetryBeaconSender,
     get_or_create_install_id,
+    payload_digest,
     sign_payload,
 )
 from okto_pulse.community.api import metrics as metrics_api
@@ -894,6 +895,17 @@ def test_usage_sender_posts_compact_json_body_to_stay_below_waf_body_threshold(
     class AcceptedResponse:
         status_code = 202
 
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return {
+                "outcome": "accepted",
+                "state": "committed",
+                "payload_digest": payload_digest(self.payload),
+                "receipt": "fh-test",
+            }
+
         def raise_for_status(self):
             return None
 
@@ -903,7 +915,8 @@ def test_usage_sender_posts_compact_json_body_to_stay_below_waf_body_threshold(
 
         def post(self, *args, **kwargs):
             self.kwargs = kwargs
-            return AcceptedResponse()
+            payload = json.loads(kwargs["data"].decode("utf-8"))
+            return AcceptedResponse(payload)
 
     settings = _settings(tmp_path, metrics_mode="anonymous_beacon")
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
@@ -926,7 +939,7 @@ def test_usage_sender_posts_compact_json_body_to_stay_below_waf_body_threshold(
 
     result = TelemetryBeaconSender(settings, session=session).send_once()  # type: ignore[arg-type]
 
-    assert result == {"sent": True, "batch_seq": 7}
+    assert result["sent"] is True and result["batch_seq"] == 7
     assert session.kwargs is not None
     assert "json" not in session.kwargs
     body = session.kwargs["data"]

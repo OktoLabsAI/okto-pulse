@@ -16,9 +16,12 @@ unavailable is not zero").
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from okto_pulse.community.api.deps import get_unit_of_work, scheduler_control_from_request
+from okto_pulse.community.api.deps import (
+    get_unit_of_work,
+    scheduler_control_from_request,
+)
 from okto_pulse.core.application.use_cases.kg_health import (
     GetKgHealthCommand,
     GetKgHealthReadinessCommand,
@@ -26,11 +29,12 @@ from okto_pulse.core.application.use_cases.kg_health import (
     GetKgHealthUseCase,
 )
 from okto_pulse.core.application.use_cases.operational_rest import (
+    BoardNotFoundError as AccessBoardNotFoundError,
     CognitiveEffectivenessInventoryCommand,
     GetCognitiveEffectivenessInventoryUseCase,
 )
 from okto_pulse.core.application.errors import (
-    BoardNotFoundError,
+    BoardNotFoundError as KgBoardNotFoundError,
     CognitiveEffectivenessError,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
@@ -38,6 +42,13 @@ from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.repositories import PulseUnitOfWork
 
 router = APIRouter()
+
+
+def _board_actor(
+    user_id: str,
+    board_id: str,
+):
+    return RESTAdapterContract.actor(user_id, board_id=board_id)
 
 
 class RecentHealthEvent(BaseModel):
@@ -71,6 +82,9 @@ class HealthIssue(BaseModel):
     # None for signals whose drill-down is a non-MCP action (rebuild, orphan
     # report, telemetry).
     drill_down_tool: str | None = None
+    # Populated by the bounded-probe fail-safe issue so REST clients retain
+    # the same exact affected-probe list exposed by the service and MCP view.
+    probes: list[str] | None = None
 
 
 class DecaySchedulerDiagnostics(BaseModel):
@@ -157,6 +171,8 @@ class KGHealthResponse(BaseModel):
     failure.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     # --- KG-01 contract api_3ed9037f (required) ---
     board_id: str
     graph_state: str = "at_risk"
@@ -165,21 +181,32 @@ class KGHealthResponse(BaseModel):
     current_kg_generation_id: str | None = None
     metric_status: str = "unavailable"
     classification_reason: str = "metric.unavailable"
+    materialization_state: str = "unknown"
+    materialization_generation: str | None = None
+    probe_reason_codes: dict[str, str] = Field(
+        default_factory=lambda: {
+            "board_graph": "materialization_evidence_unavailable",
+            "board_census": "materialization_evidence_unavailable",
+            "global_discovery": "materialization_evidence_unavailable",
+        }
+    )
     correlation_id: str
     recent_events: list[RecentHealthEvent] = []
     checked_at: str
 
     # --- Legacy / dashboard fields (preserved for backward compatibility) ---
     queue_depth: int
-    oldest_pending_age_s: float
+    oldest_pending_age_s: float | None
     dead_letter_count: int
+    global_outbox_dead_letter_count: int = 0
     total_nodes: int
     default_score_count: int
     default_score_ratio: float
     avg_relevance: float
     schema_version: str
-    health_schema_version: str = "1.0"
+    health_schema_version: str = "1.1"
     graph_schema_version: str | None = None
+    source_count: int | None = None
     contradict_warn_count: int
     last_decay_tick_at: str | None = None
     last_tick_status: str | None = None
@@ -219,6 +246,7 @@ class KGHealthResponse(BaseModel):
     # scalar fields.
     decay_scheduler_diagnostics: DecaySchedulerDiagnostics
     storage_footprint_proxy: StorageFootprintProxy
+    probe_diagnostics: dict = Field(default_factory=dict)
     orphan_integrity: OrphanIntegrityProjection = Field(
         default_factory=OrphanIntegrityProjection
     )
@@ -254,7 +282,7 @@ class KGHealthResponse(BaseModel):
 async def get_kg_health_endpoint(
     request: Request,
     board_id: str = Query(..., description="Board ID (uuid)"),
-    _: str = Depends(require_user),
+    user_id: str = Depends(require_user),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> KGHealthResponse:
     """Return the live KG health snapshot for ``board_id``.
@@ -268,23 +296,22 @@ async def get_kg_health_endpoint(
     discovery storage. It is read-only.
     """
     try:
+        actor = _board_actor(user_id, board_id)
         result = await GetKgHealthUseCase().execute(
             GetKgHealthCommand(
                 board_id,
                 scheduler_control=scheduler_control_from_request(request),
             ),
-            actor=RESTAdapterContract.actor("kg-health-rest", board_id=board_id),
+            actor=actor,
             uow=db,
         )
         data = dict(result.data)
         footprint = dict(data.get("storage_footprint_proxy") or {})
         if "graph_primary_bytes" in footprint:
-            footprint["graph_lbug_bytes"] = footprint.pop(
-                "graph_primary_bytes"
-            )
+            footprint["graph_lbug_bytes"] = footprint.pop("graph_primary_bytes")
         data["storage_footprint_proxy"] = footprint
-    except BoardNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (AccessBoardNotFoundError, KgBoardNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     return KGHealthResponse(**data)
 
 
@@ -294,8 +321,9 @@ async def get_kg_health_readiness_endpoint(
     board_id: str = Query(..., description="Board ID (uuid)"),
     profile: str = Query("summary", description="summary | full"),
     artifact_ref: str | None = Query(
-        None, description="Optional type:id ref to scope non_maskable_items"),
-    _: str = Depends(require_user),
+        None, description="Optional type:id ref to scope non_maskable_items"
+    ),
+    user_id: str = Depends(require_user),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> dict:
     """RKG-05 (api_1feb6875): the canonical, NON-MASKABLE health/readiness
@@ -311,6 +339,7 @@ async def get_kg_health_readiness_endpoint(
     from okto_pulse.core.services.kg_health_readiness_service import InvalidProfileError
 
     try:
+        actor = _board_actor(user_id, board_id)
         result = await GetKgHealthReadinessUseCase().execute(
             GetKgHealthReadinessCommand(
                 board_id,
@@ -319,14 +348,14 @@ async def get_kg_health_readiness_endpoint(
                 artifact_ref=artifact_ref,
                 scheduler_control=scheduler_control_from_request(request),
             ),
-            actor=RESTAdapterContract.actor("kg-health-readiness-rest", board_id=board_id),
+            actor=actor,
             uow=db,
         )
         return result.data
     except InvalidProfileError as exc:
         raise HTTPException(status_code=400, detail="invalid_profile") from exc
-    except BoardNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (AccessBoardNotFoundError, KgBoardNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
 
 
 @router.get("/kg/cognitive-effectiveness/inventory")
@@ -336,7 +365,7 @@ async def get_cognitive_effectiveness_inventory_endpoint(
     artifact_id: str | None = Query(None, description="Optional artifact_ref filter"),
     include_candidate_logs: bool = Query(False),
     graph_layer: str = Query("canonical", description="canonical|working|all"),
-    _: str = Depends(require_user),
+    user_id: str = Depends(require_user),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> dict:
     """Read-only canonical cognitive-effectiveness inventory (RKG-01).
@@ -355,13 +384,11 @@ async def get_cognitive_effectiveness_inventory_endpoint(
                 graph_layer,
                 scheduler_control_from_request(request),
             ),
-            actor=RESTAdapterContract.actor(
-                "cognitive-effectiveness-rest", board_id=board_id
-            ),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
             uow=db,
         )
         return result.data
-    except BoardNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (AccessBoardNotFoundError, KgBoardNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     except CognitiveEffectivenessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc

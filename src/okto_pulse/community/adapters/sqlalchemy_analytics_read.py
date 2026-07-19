@@ -55,18 +55,36 @@ def _model(entity: str):
 
 def _predicate(model: Any, item: AnalyticsFilter):
     column = getattr(model, item.field)
+    value: Any = item.value
+    # Community/SQLite normalizes temporal comparisons at the adapter edge.
+    # This makes server-default ``YYYY-MM-DD HH:MM:SS`` values comparable with
+    # Python datetime binds and preserves Core's half-open interval semantics.
+    if item.field == "created_at" and item.operator in {
+        "eq",
+        "ne",
+        "gte",
+        "lte",
+        "gt",
+        "lt",
+    }:
+        column = func.julianday(column)
+        value = func.julianday(item.value)
     if item.operator == "eq":
-        return column == item.value
+        return column == value
     if item.operator == "ne":
-        return column != item.value
+        return column != value
     if item.operator == "in":
         return column.in_(tuple(item.value))
     if item.operator == "not_in":
         return column.notin_(tuple(item.value))
     if item.operator == "gte":
-        return column >= item.value
+        return column >= value
     if item.operator == "lte":
-        return column <= item.value
+        return column <= value
+    if item.operator == "gt":
+        return column > value
+    if item.operator == "lt":
+        return column < value
     if item.operator == "is_true":
         return column.is_(True)
     if item.operator == "is_false":

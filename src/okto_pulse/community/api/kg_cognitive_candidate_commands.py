@@ -50,6 +50,8 @@ from pydantic import BaseModel, Field
 
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.core.application.use_cases.board_access import load_accessible_board
 from okto_pulse.core.kg.candidate_decision_store import (
     CandidateDecisionAction,
     CandidateDecisionError,
@@ -527,6 +529,15 @@ async def submit_candidate_decision_command(
     accepted command writes an ``audit_ref`` on the candidate record and
     emits exactly one bounded counter sample.
     """
+
+    actor = RESTAdapterContract.actor(user_id, board_id=body.board_id)
+    if await load_accessible_board(
+        db,
+        body.board_id,
+        actor,
+        allowed_share_permissions={"editor", "admin"},
+    ) is None:
+        raise HTTPException(status_code=404, detail="Board not found")
 
     store = CandidateDecisionStore(
         artifact_store=require_rebuild_audit_artifact_store()

@@ -344,8 +344,9 @@ class CommunitySqlAlchemyResourceGateAdapter:
 
     def _mockup_refs(self, ref: LineageEntityRef) -> list[dict[str, Any]]:
         mockups = getattr(ref.entity, "screen_mockups", None) or []
-        return [
-            self._artifact_ref(
+        refs: list[dict[str, Any]] = []
+        for item in mockups:
+            item_ref = self._artifact_ref(
                 ref,
                 artifact_id=(item.get("id") if isinstance(item, dict) else None),
                 title=(
@@ -354,20 +355,43 @@ class CommunitySqlAlchemyResourceGateAdapter:
                     else None
                 ),
             )
-            for item in mockups
-        ]
+            if isinstance(item, dict):
+                for key in (
+                    "root_source_mockup_id",
+                    "origin_id",
+                    "source_mockup_id",
+                    "origin_ref",
+                    "source_ref",
+                    "source",
+                ):
+                    if item.get(key):
+                        item_ref[key] = item[key]
+            refs.append(item_ref)
+        return refs
 
     async def _knowledge_refs(self, ref: LineageEntityRef) -> list[dict[str, Any]]:
         entity = ref.entity
         if ref.entity_type == "card":
-            return [
-                self._artifact_ref(
+            refs: list[dict[str, Any]] = []
+            for item in (getattr(entity, "knowledge_bases", None) or []):
+                item_ref = self._artifact_ref(
                     ref,
                     artifact_id=item.get("id") if isinstance(item, dict) else None,
                     title=item.get("title") if isinstance(item, dict) else None,
                 )
-                for item in (getattr(entity, "knowledge_bases", None) or [])
-            ]
+                if isinstance(item, dict):
+                    for key in (
+                        "root_source_kb_id",
+                        "source_kb_id",
+                        "immediate_parent_kb_id",
+                        "origin_ref",
+                        "source_ref",
+                        "source",
+                    ):
+                        if item.get(key):
+                            item_ref[key] = item[key]
+                refs.append(item_ref)
+            return refs
 
         kb_model, fk_column = {
             "ideation": (IdeationKnowledgeBase, IdeationKnowledgeBase.ideation_id),
@@ -375,14 +399,36 @@ class CommunitySqlAlchemyResourceGateAdapter:
             "spec": (SpecKnowledgeBase, SpecKnowledgeBase.spec_id),
         }[ref.entity_type]
         result = await self.db.execute(
-            select(kb_model.id, kb_model.title)
+            select(
+                kb_model.id,
+                kb_model.title,
+                kb_model.source_kb_id,
+                kb_model.root_source_kb_id,
+                kb_model.immediate_parent_kb_id,
+                kb_model.source_type,
+                kb_model.source_id,
+            )
             .where(fk_column == ref.entity_id)
             .order_by(kb_model.created_at.asc())
         )
-        return [
-            self._artifact_ref(ref, artifact_id=row[0], title=row[1])
-            for row in result.all()
-        ]
+        refs = []
+        for row in result.mappings().all():
+            item_ref = self._artifact_ref(
+                ref,
+                artifact_id=row.get("id"),
+                title=row.get("title"),
+            )
+            for key in (
+                "source_kb_id",
+                "root_source_kb_id",
+                "immediate_parent_kb_id",
+                "source_type",
+                "source_id",
+            ):
+                if row.get(key):
+                    item_ref[key] = row[key]
+            refs.append(item_ref)
+        return refs
 
     async def _hydrate_effective_resource(
         self,
@@ -527,6 +573,9 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 "id",
                 "origin_id",
                 "source_id",
+                "root_source_mockup_id",
+                "root_source_kb_id",
+                "root_source_design_id",
                 "source_mockup_id",
                 "source_kb_id",
                 "source_design_id",

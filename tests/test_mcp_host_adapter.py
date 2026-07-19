@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from fastmcp import Client
 
 from okto_pulse.community.adapters import mcp_host
 from okto_pulse.community.adapters.mcp_host import (
@@ -24,7 +26,22 @@ from okto_pulse.core.ports.mcp_host import (
     get_mcp_host_provider,
     reset_mcp_host_provider_for_tests,
 )
+from okto_pulse.core.ports.mcp_resources import (
+    FrozenMcpResourceCatalog,
+    McpResourceCatalogError,
+    McpResourceSpec,
+    StaticMcpResourceCatalog,
+    freeze_mcp_resource_catalog,
+)
 from okto_pulse.core.runtime_context import resolve_runtime_value
+
+
+def _frozen_projection(
+    *specs: McpResourceSpec,
+) -> FrozenMcpResourceCatalog:
+    return freeze_mcp_resource_catalog(
+        StaticMcpResourceCatalog("test-host", tuple(specs), precedence=1)
+    )
 
 
 def test_community_host_satisfies_the_core_port_and_builds_fastmcp_transport(
@@ -49,7 +66,13 @@ def test_community_host_satisfies_the_core_port_and_builds_fastmcp_transport(
         lambda catalog, sink: installed.append(sink) or True,
     )
     provider = CommunityMcpHostProvider()
-    built = provider.build_asgi_app(_Catalog(), trace_sink="trace")
+    frozen = _frozen_projection()
+    built = provider.build_asgi_app(
+        _Catalog(),
+        trace_sink="trace",
+        resource_catalog=frozen,
+        projection_identity=frozen.identity,
+    )
 
     assert isinstance(provider, McpHostProvider)
     assert isinstance(built, CommunityApiKeySessionMiddleware)
@@ -93,6 +116,53 @@ def test_community_host_registration_composes_the_core_host_port() -> None:
         reset_mcp_host_provider_for_tests()
 
 
+def test_core_public_build_and_mount_forward_exact_frozen_projection(
+    monkeypatch,
+    active_runtime_registry,
+) -> None:
+    import okto_pulse.core.mcp.server as core_server
+    from okto_pulse.community.adapters.resources import (
+        register_and_freeze_community_resource_catalog,
+    )
+
+    provider = register_community_mcp_host()
+    transaction = register_and_freeze_community_resource_catalog(
+        active_runtime_registry
+    )
+    frozen, identity = transaction.require_frozen_projection()
+    observed: list[tuple[object, str]] = []
+    transport = object()
+
+    def _capture_build(
+        _catalog,
+        *,
+        resource_catalog,
+        projection_identity,
+        trace_sink=None,
+    ):
+        _ = trace_sink
+        observed.append((resource_catalog, projection_identity))
+        return transport
+
+    monkeypatch.setattr(provider, "build_asgi_app", _capture_build)
+
+    built = core_server.build_mcp_asgi_app()
+
+    class _MountRecorder:
+        mounted: list[tuple[str, object]] = []
+
+        def mount(self, path, mounted_app):
+            self.mounted.append((path, mounted_app))
+
+    recorder = _MountRecorder()
+    core_server.mount_mcp(recorder)
+    transaction.commit()
+
+    assert built is transport
+    assert recorder.mounted == [("/mcp", transport)]
+    assert observed == [(frozen, identity), (frozen, identity)]
+
+
 @pytest.mark.asyncio
 async def test_mcp_runtime_middleware_binds_composition_registry_per_request() -> None:
     sentinel = object()
@@ -130,15 +200,27 @@ def test_community_mcp_builder_wraps_transport_with_runtime_composition(
         event_bus=object(),
         uow_factory=object(),
     )
+    marker = object()
+    composition.runtime_values.register("test.host.materialization", marker)
     transport = object()
+
+    def _build_inside_composition(_catalog, **_kwargs):
+        assert current_runtime_composition() is composition
+        assert resolve_runtime_value("test.host.materialization") is marker
+        return transport
+
     monkeypatch.setattr(
         mcp_host._provider,
         "build_asgi_app",
-        lambda catalog, trace_sink=None: transport,
+        _build_inside_composition,
     )
+
+    frozen = _frozen_projection()
 
     built = build_community_mcp_asgi_app(
         catalog=object(),
+        resource_catalog=frozen,
+        projection_identity=frozen.identity,
         trace_sink=object(),
         composition=composition,
     )
@@ -160,15 +242,92 @@ async def test_community_host_materializes_core_tools_and_resources() -> None:
 
     @catalog.resource("okto-pulse://test/catalog", description="catalog resource")
     def catalog_resource() -> str:
-        return "resource content"
+        return "STALE command-manager content"
 
-    host = CommunityMcpHostProvider().materialize_catalog(catalog)
+    frozen = _frozen_projection(
+        McpResourceSpec(
+            uri="okto-pulse://test/catalog",
+            description="catalog resource",
+            category="test",
+            edition="test-host",
+            mime_type="text/markdown",
+            content="FROZEN projection content",
+            source_identity="test-host:catalog",
+        )
+    )
+    host = CommunityMcpHostProvider().materialize_catalog(
+        catalog,
+        resource_catalog=frozen,
+        projection_identity=frozen.identity,
+    )
     tool = await host.get_tool("catalog_echo")
 
-    assert await tool.fn(value="ok") == "ok"
+    result = await tool.fn(value="ok")
+    assert result.structured_content["outcome"] == "success"
+    assert result.structured_content["data"] == "ok"
     assert tool.description == "Echo a catalog-owned value."
     assert "value" in tool.parameters["properties"]
     assert "okto-pulse://test/catalog" in host._resource_manager._resources
+    async with Client(host) as client:
+        content = await client.read_resource("okto-pulse://test/catalog")
+    assert content[0].text == "FROZEN projection content"
+    assert host._okto_pulse_resource_projection_identity == frozen.identity
+
+
+def test_community_host_rejects_unfrozen_mismatched_or_forged_projection() -> None:
+    class _Catalog:
+        name = "test-catalog"
+        version = "1.0"
+        instructions = "test instructions"
+
+        def iter_tools(self):
+            return ()
+
+        def iter_resources(self):
+            return ()
+
+    provider = CommunityMcpHostProvider()
+    with pytest.raises(McpResourceCatalogError) as exc_info:
+        provider.materialize_catalog(_Catalog())
+    assert exc_info.value.code == "frozen_projection_required"
+
+    spec = McpResourceSpec(
+        uri="okto-pulse://test/frozen",
+        description="frozen resource",
+        category="test",
+        edition="test-host",
+        content="trusted bytes",
+    )
+    unfrozen = StaticMcpResourceCatalog("test-host", (spec,), precedence=1)
+    with pytest.raises(McpResourceCatalogError) as exc_info:
+        provider.materialize_catalog(
+            _Catalog(),
+            resource_catalog=unfrozen,  # type: ignore[arg-type]
+            projection_identity="not-frozen",
+        )
+    assert exc_info.value.code == "registry_unfrozen"
+
+    frozen = _frozen_projection(spec)
+    with pytest.raises(McpResourceCatalogError) as exc_info:
+        provider.materialize_catalog(
+            _Catalog(),
+            resource_catalog=frozen,
+            projection_identity="sha256:mismatch",
+        )
+    assert exc_info.value.code == "projection_identity_mismatch"
+
+    forged = FrozenMcpResourceCatalog(
+        (replace(frozen.specs()[0], content="forged bytes"),),
+        frozen.manifest,
+        source_catalogs=frozen.source_catalogs,
+    )
+    with pytest.raises(McpResourceCatalogError) as exc_info:
+        provider.materialize_catalog(
+            _Catalog(),
+            resource_catalog=forged,
+            projection_identity=frozen.identity,
+        )
+    assert exc_info.value.code == "projection_manifest_mismatch"
 
 
 def test_community_host_reads_fastmcp_request_context_for_the_core_port(monkeypatch) -> None:

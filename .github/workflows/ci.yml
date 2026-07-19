@@ -133,11 +133,24 @@ jobs:
           /tmp/f16-community/bin/pip check
           cd /tmp
           /tmp/f16-community/bin/python - <<'PY'
+          from pathlib import Path
+
+          import okto_pulse.community
           from okto_pulse.community.main import app
+          from okto_pulse.community.adapters.core_import_boundary import (
+              audit_community_core_import_boundary,
+          )
 
           paths = app.openapi().get("paths", {})
           assert len(paths) >= 240, len(paths)
+          installed_root = Path(okto_pulse.community.__file__).resolve().parent
+          boundary = audit_community_core_import_boundary(installed_root)
+          assert boundary["ok"], boundary
           print(f"community-wheel-openapi-paths={len(paths)}")
+          print(
+              "community-wheel-core-boundary="
+              f"{boundary['inventory_count']} imports, 0 violations"
+          )
           PY
           /tmp/f16-community/bin/okto-pulse-saas-closure \
             --core-repo "$GITHUB_WORKSPACE/okto-pulse-core" \

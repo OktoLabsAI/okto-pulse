@@ -517,10 +517,37 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
                 )
             ).scalars().all()
         )
+        from okto_pulse.core.ports.kg_operational import (
+            classify_kg_recovery_failure,
+        )
+
         requeued: list[dict[str, Any]] = []
         already_queued: list[dict[str, Any]] = []
+        recovery_by_class = {
+            "connectivity": 0,
+            "invalid_payload": 0,
+            "true_drift": 0,
+        }
         now = datetime.now(timezone.utc)
         for row in rows:
+            error_history = list(row.errors or [])
+            last_error = error_history[-1] if error_history else {}
+            classified = classify_kg_recovery_failure(
+                str(last_error.get("error_type") or "UnknownError"),
+                str(last_error.get("message") or ""),
+            )
+            recovery_class = str(
+                last_error.get("recovery_class") or classified.recovery_class
+            )
+            reason_code = str(
+                last_error.get("reason_code") or classified.reason_code
+            )
+            correlation_id = str(last_error.get("correlation_id") or "")
+            replay_safe = bool(
+                last_error.get("replay_safe", classified.replay_safe)
+            )
+            if recovery_class in recovery_by_class:
+                recovery_by_class[recovery_class] += 1
             existing = (
                 await context.execute(
                     select(ConsolidationQueue).where(
@@ -546,15 +573,22 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
                 context.add(target)
                 await context.flush()
                 bucket = requeued
+                replay_action = "created"
             else:
-                target.status = "pending"
-                target.attempts = 0
-                target.last_error = None
-                target.next_retry_at = None
-                target.claimed_at = None
-                target.claim_timeout_at = None
-                target.worker_id = None
-                target.claimed_by_session_id = None
+                if target.status not in {"pending", "claimed"}:
+                    target.status = "pending"
+                    target.attempts = 0
+                    target.last_error = None
+                    target.next_retry_at = None
+                    target.claimed_at = None
+                    target.claim_timeout_at = None
+                    target.worker_id = None
+                    target.claimed_by_session_id = None
+                    replay_action = "reopened"
+                else:
+                    # Exact artifact identity is the idempotency key. Never
+                    # steal/reset an active claim during DLQ replay.
+                    replay_action = "deduplicated"
                 bucket = already_queued
             bucket.append(
                 {
@@ -562,6 +596,11 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
                     "queue_id": target.id,
                     "artifact_type": row.artifact_type,
                     "artifact_id": row.artifact_id,
+                    "recovery_class": recovery_class,
+                    "reason_code": reason_code,
+                    "correlation_id": correlation_id,
+                    "replay_safe": replay_safe,
+                    "replay_action": replay_action,
                 }
             )
             await context.delete(row)
@@ -573,6 +612,8 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
             "already_queued": already_queued,
             "requeued_count": len(requeued),
             "already_queued_count": len(already_queued),
+            "recovery_by_class": recovery_by_class,
+            "idempotency_key": "board_id+artifact_type+artifact_id",
         }
 
     async def retry_pending_entry(
@@ -736,6 +777,24 @@ class CommunitySqlAlchemyKGWorkerAudit(KGWorkerAuditPort):
         event_type: str,
         payload: Mapping[str, Any],
     ) -> None:
+        existing = (
+            await context.execute(
+                select(GlobalUpdateOutbox).where(
+                    GlobalUpdateOutbox.event_id == event_id
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            expected = (
+                str(existing.board_id),
+                str(existing.session_id),
+                str(existing.event_type),
+                dict(existing.payload or {}),
+            )
+            supplied = (board_id, session_id, event_type, dict(payload))
+            if expected != supplied:
+                raise RuntimeError("outbox_event_idempotency_conflict")
+            return
         context.add(
             GlobalUpdateOutbox(
                 event_id=event_id,

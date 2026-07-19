@@ -254,12 +254,17 @@ async def archive_tree(
     """Archive an entity and all its descendants in cascade."""
     try:
         result = await ArchiveTreeUseCase().execute(
-            ArchiveTreeCommand(entity_type, entity_id),
+            ArchiveTreeCommand(board_id, entity_type, entity_id),
             actor=RESTAdapterContract.actor(user_id, realm_id=realm_id, board_id=board_id),
             uow=uow,
         )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{exc.entity_type.capitalize()} not found",
+        ) from exc
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     return {"success": True, "archived_count": result.counts}
 
 
@@ -275,12 +280,17 @@ async def restore_tree(
     """Restore an archived entity and all its descendants."""
     try:
         result = await RestoreTreeUseCase().execute(
-            RestoreTreeCommand(entity_type, entity_id),
+            RestoreTreeCommand(board_id, entity_type, entity_id),
             actor=RESTAdapterContract.actor(user_id, realm_id=realm_id, board_id=board_id),
             uow=uow,
         )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{exc.entity_type.capitalize()} not found",
+        ) from exc
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     return {"success": True, "restored_count": result.counts}
 
 
@@ -303,11 +313,23 @@ async def share_board(
     try:
         result = await ShareBoardUseCase().execute(
             ShareBoardCommand(board_id, data),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
             uow=uow,
         )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Board not found",
+        ) from exc
     except PermissionDeniedError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=e.message,
+        ) from e
     return result.share
 
 
@@ -342,12 +364,20 @@ async def update_board_share(
     """Update a share's permission (owner/admin only)."""
     try:
         result = await UpdateBoardShareUseCase().execute(
-            UpdateBoardShareCommand(share_id, data),
+            UpdateBoardShareCommand(board_id, share_id, data),
             actor=RESTAdapterContract.actor(user_id, realm_id=realm_id, board_id=board_id),
             uow=uow,
         )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Board or share not found",
+        ) from exc
     except PermissionDeniedError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=e.message,
+        ) from e
     return result.share
 
 
@@ -362,9 +392,17 @@ async def revoke_board_share(
     """Revoke a share (owner/admin can revoke, shared user can leave)."""
     try:
         await RevokeBoardShareUseCase().execute(
-            RevokeBoardShareCommand(share_id),
+            RevokeBoardShareCommand(board_id, share_id),
             actor=RESTAdapterContract.actor(user_id, realm_id=realm_id, board_id=board_id),
             uow=uow,
         )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Board or share not found",
+        ) from exc
     except PermissionDeniedError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=e.message,
+        ) from e

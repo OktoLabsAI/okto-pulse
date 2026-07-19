@@ -86,6 +86,18 @@ def community_external_source_descriptors(settings: Any) -> tuple[Any, Any]:
     healthy). ``settings.metrics_health_external_sources`` may override per-source
     (forward-compatible) but never masks a missing source as healthy."""
     configured = getattr(settings, "metrics_health_external_sources", None)
+    if not isinstance(configured, dict):
+        try:
+            from okto_pulse.community.adapters.telemetry_runtime import (
+                resolve_telemetry_config,
+            )
+
+            runtime_state = resolve_telemetry_config(settings).state
+            persisted = runtime_state.get("external_publish_health")
+            if isinstance(persisted, dict):
+                configured = persisted
+        except Exception:
+            configured = None
     if isinstance(configured, dict):
         aws_desc = configured.get(ph.SOURCE_AWS_INGEST, {"availability": ph.SRC_GAP})
         report_desc = configured.get(ph.SOURCE_REPORT_ATHENA, {"availability": ph.SRC_GAP})

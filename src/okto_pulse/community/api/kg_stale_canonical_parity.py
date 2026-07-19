@@ -12,13 +12,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases import (
     ListStaleCanonicalParityCommand,
     ListStaleCanonicalParityUseCase,
 )
+from okto_pulse.core.application.use_cases.base import EntityNotFoundError
+from okto_pulse.core.application.use_cases.operational_rest import BoardNotFoundError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.repositories import PulseUnitOfWork
@@ -47,9 +49,13 @@ async def list_stale_canonical_parity_endpoint(
     Spec R01A IMP4: routes through the transport-free use case via
     ``get_unit_of_work`` — no raw ``AsyncSession``/``get_db`` in the handler.
     """
-    result = await ListStaleCanonicalParityUseCase().execute(
-        ListStaleCanonicalParityCommand(board_id, limit=limit, offset=offset),
-        actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-        uow=uow,
-    )
+    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+    try:
+        result = await ListStaleCanonicalParityUseCase().execute(
+            ListStaleCanonicalParityCommand(board_id, limit=limit, offset=offset),
+            actor=actor,
+            uow=uow,
+        )
+    except (BoardNotFoundError, EntityNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     return result.data

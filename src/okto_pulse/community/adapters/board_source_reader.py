@@ -84,6 +84,10 @@ def _board_working_ttl_days(conn: sqlite3.Connection, board_id: str) -> int | No
     if row is None:
         return None
     raw = row["settings"]
+    return _working_ttl_days_from_settings(raw)
+
+
+def _working_ttl_days_from_settings(raw: object) -> int | None:
     if not raw:
         return None
     try:
@@ -107,6 +111,174 @@ def _board_working_ttl_days(conn: sqlite3.Connection, board_id: str) -> int | No
         if ttl >= 0:
             return ttl
     return None
+
+
+def read_realm_source_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    realm_id: str,
+) -> tuple[tuple[dict[str, Any], ...], dict[str, tuple[dict[str, Any], ...]]]:
+    """Capture every realm board and rebuild row without per-board SQL.
+
+    The caller owns the surrounding SQLite read transaction.  Each source
+    table is scanned exactly once through a realm-filtered join, so preparation
+    can prove one coherent census without reopening the database for each board.
+    """
+
+    normalized_realm_id = str(realm_id).strip()
+    if not normalized_realm_id:
+        raise ValueError("realm_id must be non-empty")
+    boards = connection.execute(
+        "SELECT id, name, description, settings FROM boards "
+        "WHERE realm_id = ? ORDER BY id COLLATE BINARY",
+        (normalized_realm_id,),
+    ).fetchall()
+    board_rows = tuple(
+        {
+            "board_id": str(row["id"]),
+            "board_name": str(row["name"]),
+            "board_summary": str(row["description"] or ""),
+        }
+        for row in boards
+    )
+    ttl_by_board = {
+        str(row["id"]): _working_ttl_days_from_settings(row["settings"])
+        for row in boards
+    }
+    captured: dict[str, list[dict[str, Any]]] = {
+        str(row["id"]): [] for row in boards
+    }
+
+    def realm_rows(table_name: str) -> list[sqlite3.Row]:
+        return connection.execute(
+            f'SELECT source.* FROM "{table_name}" AS source '
+            "INNER JOIN boards AS board ON board.id = source.board_id "
+            "WHERE board.realm_id = ? "
+            "ORDER BY source.board_id COLLATE BINARY, "
+            "source.created_at ASC, source.id COLLATE BINARY",
+            (normalized_realm_id,),
+        ).fetchall()
+
+    for artifact_type, table, status_col, content_cols in ARTIFACT_QUERIES:
+        for row in realm_rows(table):
+            board_id = str(row["board_id"])
+            row_id = str(row["id"])
+            version_raw = row["version"] if "version" in row.keys() else 1
+            source_version = str(version_raw if version_raw is not None else 1)
+            source_row: dict[str, Any] = {
+                "artifact_type": artifact_type,
+                "id": row_id,
+                "source_ref": f"{artifact_type}:{row_id}",
+                "source_version": source_version,
+                "content_hash": canonical_content_hash(row, content_cols),
+                "created_at": to_iso(row["created_at"]),
+                "updated_at": updated_at(row),
+                "status": row_status(row, status_col),
+                "source_artifact_status": row_status(row, status_col),
+                "has_minimal_evidence": True,
+            }
+            if artifact_type == "spec":
+                source_row["content_hash_v1"] = canonical_content_hash(
+                    row, SPEC_CONTENT_COLUMNS_V1
+                )
+                source_row["source_manifest_version"] = SPEC_SOURCE_MANIFEST_VERSION
+            working_ttl_days = ttl_by_board[board_id]
+            if working_ttl_days is not None:
+                source_row["working_ttl_days"] = working_ttl_days
+            captured[board_id].append(source_row)
+            if artifact_type == "spec":
+                captured[board_id].extend(decision_sources_from_spec(row))
+
+    for row in realm_rows("cards"):
+        board_id = str(row["board_id"])
+        row_id = str(row["id"])
+        artifact_type = card_artifact_type(row)
+        source_row = {
+            "artifact_type": artifact_type,
+            "id": row_id,
+            "source_ref": f"{artifact_type}:{row_id}",
+            "source_version": "1",
+            "content_hash": canonical_content_hash(row, CARD_CONTENT_COLUMNS),
+            "created_at": to_iso(row["created_at"]),
+            "updated_at": updated_at(row),
+            "status": row_status(row),
+            "source_artifact_status": row_status(row),
+            "has_minimal_evidence": bug_has_minimal_evidence(row),
+        }
+        working_ttl_days = ttl_by_board[board_id]
+        if working_ttl_days is not None:
+            source_row["working_ttl_days"] = working_ttl_days
+        captured[board_id].append(source_row)
+
+    for row in realm_rows("amendment_hotfix_revisions"):
+        board_id = str(row["board_id"])
+        row_id = str(row["id"])
+        lineage_raw = row["lineage_state"] if "lineage_state" in row.keys() else None
+        source_row = {
+            "artifact_type": "amendment_hotfix_revision",
+            "id": row_id,
+            "source_ref": f"amendment_hotfix_revision:{row_id}",
+            "source_version": "1",
+            "content_hash": canonical_content_hash(row, AMENDMENT_CONTENT_COLUMNS),
+            "created_at": to_iso(row["created_at"]),
+            "updated_at": updated_at(row),
+            "status": row_status(row, "status"),
+            "source_artifact_status": row_status(row, "status"),
+            "lineage_complete": str(lineage_raw or "").strip().lower() == "complete",
+        }
+        working_ttl_days = ttl_by_board[board_id]
+        if working_ttl_days is not None:
+            source_row["working_ttl_days"] = working_ttl_days
+        captured[board_id].append(source_row)
+
+    return board_rows, {
+        board_id: tuple(rows) for board_id, rows in captured.items()
+    }
+
+
+def read_realm_cognitive_source_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    realm_id: str,
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Capture durable cognitive rows for the same caller-owned transaction."""
+
+    normalized_realm_id = str(realm_id).strip()
+    if not normalized_realm_id:
+        raise ValueError("realm_id must be non-empty")
+    board_ids = tuple(
+        str(row["id"])
+        for row in connection.execute(
+            "SELECT id FROM boards WHERE realm_id = ? ORDER BY id COLLATE BINARY",
+            (normalized_realm_id,),
+        ).fetchall()
+    )
+    captured: dict[str, list[dict[str, Any]]] = {
+        board_id: [] for board_id in board_ids
+    }
+    rows = connection.execute(
+        "SELECT source.board_id, source.node_id, source.node_type, "
+        "source.generation, source.payload, source.committed_at "
+        "FROM kg_cognitive_sources AS source "
+        "INNER JOIN boards AS board ON board.id = source.board_id "
+        "WHERE board.realm_id = ? "
+        "ORDER BY source.board_id COLLATE BINARY, source.committed_at ASC, "
+        "source.node_id COLLATE BINARY, source.generation ASC",
+        (normalized_realm_id,),
+    ).fetchall()
+    for row in rows:
+        captured[str(row["board_id"])].append(
+            {
+                "node_id": str(row["node_id"]),
+                "node_type": str(row["node_type"]),
+                "generation": int(row["generation"]),
+                "payload": row["payload"],
+                "committed_at": row["committed_at"],
+            }
+        )
+    return {
+        board_id: tuple(records) for board_id, records in captured.items()
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,5 +469,7 @@ __all__ = [
     "ARTIFACT_QUERIES",
     "BoardSourceStore",
     "CommunityBoardSourceReader",
+    "read_realm_cognitive_source_snapshot",
+    "read_realm_source_snapshot",
     "resolve_pulse_db_path",
 ]

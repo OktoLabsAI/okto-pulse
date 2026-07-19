@@ -65,6 +65,11 @@ DEFAULT_TOKEN_REFRESH_MARGIN_HOURS = 24
 _BACKOFF_BASE_SECONDS = 30
 _BACKOFF_CAP_SECONDS = 3600
 _BACKOFF_JITTER_RATIO = 0.5
+PRODUCT_SNAPSHOT_VERSION = "product-metric-snapshot.v1"
+PRODUCT_ID = "okto-pulse-community"
+PRODUCT_SNAPSHOT_FAILURE_STATE_KEY = "product_snapshot_failure_state"
+PRODUCT_SNAPSHOT_CIRCUIT_KEY = "product_snapshot_circuit_open_until"
+PRODUCT_SNAPSHOT_LAST_FAILURE_CODE_KEY = "product_snapshot_last_failure_code"
 
 
 def _utcnow() -> datetime:
@@ -118,6 +123,10 @@ def sign_payload(
         "utf-8"
     )
     return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def payload_digest(payload: dict[str, Any]) -> str:
+    return f"sha256:{hashlib.sha256(canonical_json(payload).encode('utf-8')).hexdigest()}"
 
 
 def _log_runtime_skip(*, reason: str) -> None:
@@ -301,53 +310,549 @@ class CommunityTelemetryBeaconSender:
             )
         except Exception:
             product_metrics = {}
+        product_metrics = {
+            key: value
+            for key, value in product_metrics.items()
+            if key.startswith("product_") and isinstance(value, dict)
+        }
         if not product_metrics:
             return None
+        install_id = get_or_create_install_id(self.settings)
         return {
+            "snapshot_version": PRODUCT_SNAPSHOT_VERSION,
             "schema_version": cfg.schema_version,
-            "install_id": get_or_create_install_id(self.settings),
+            "install_id": install_id,
+            "tenant_id": install_id,
+            "product_id": PRODUCT_ID,
             **POST_FIX_SNAPSHOT_MARKER,
-            "snapshot_at": now_utc(),
+            "event_time": now_utc(),
             "metrics": product_metrics,
         }
 
     def publish_product_snapshot(self) -> dict[str, Any]:
-        """R3A-F: persist the product snapshot locally; do NOT transmit it.
+        """Publish a durable, versioned latest-value product snapshot.
 
-        There is no safe snapshot ingest contract today: the deployed backend
-        ``validate_usage_batch`` rejects unknown top-level fields (so a snapshot,
-        like the era/semantics markers, would be 422 UNKNOWN_FIELDS), and
-        product_metrics is forbidden inside the delta batch (it would be summed as
-        a trusted_delta). Rather than silently drop product telemetry or fake a
-        send, the client records the snapshot auditably and reports an explicit
-        ``no_snapshot_ingest_endpoint`` outcome. Real transmission stays blocked by
-        a SEPARATE consumer-side bug in okto_labs_community_metrics.
+        The snapshot has its own sequence space and endpoint; gauges/cumulative
+        values never enter the additive usage delta.  The exact payload, nonce and
+        digest are persisted before transport so an ambiguous timeout replays the
+        same immutable intent.
         """
         cfg = resolve_telemetry_config(self.settings)
         if cfg.mode != "anonymous_beacon":
             _log_runtime_skip(reason="disabled")
             return {"sent": False, "reason": "not_enabled"}
-        snapshot = self.build_product_snapshot()
+        state = dict(cfg.state)
+        product_failure = self._product_snapshot_failure_state(state)
+        if (
+            product_failure.status == fs.STATUS_FATAL
+            and product_failure.reason_code == "PRODUCT_SNAPSHOT_HTTP_404"
+        ):
+            # v0.3.0 initially classified an additive route rollout gap as
+            # permanent.  Migrate that exact legacy state once so an already
+            # affected installation can retry immediately after the backend is
+            # deployed; all genuinely fatal contract failures remain closed.
+            product_failure = fs.merge(
+                product_failure,
+                status=fs.STATUS_DEGRADED,
+                next_retry_at=None,
+            )
+            state[PRODUCT_SNAPSHOT_FAILURE_STATE_KEY] = product_failure.to_public_dict()
+            state.pop(PRODUCT_SNAPSHOT_CIRCUIT_KEY, None)
+            save_state(cfg.metrics_dir, state)
+        if product_failure.status in {fs.STATUS_FATAL, fs.STATUS_BLOCKED}:
+            return {
+                "sent": False,
+                "reason": "fatal" if product_failure.status == fs.STATUS_FATAL else "blocked",
+            }
+        circuit_until = parse_iso(str(state.get(PRODUCT_SNAPSHOT_CIRCUIT_KEY) or ""))
+        if circuit_until and circuit_until > _utcnow():
+            return {"sent": False, "reason": "circuit_open"}
+
+        seq = int(state.get("next_product_snapshot_seq") or 1)
+        intent = state.get("in_flight_product_snapshot")
+        if isinstance(intent, dict) and int(intent.get("batch_seq") or -1) == seq:
+            snapshot = intent.get("payload")
+            nonce_value = intent.get("nonce")
+            nonce = nonce_value if isinstance(nonce_value, str) else ""
+            digest = str(intent.get("payload_digest") or "")
+            artifact_ref = intent.get("artifact_ref")
+            if not isinstance(artifact_ref, str) or not artifact_ref:
+                artifact_ref = None
+            if (
+                not isinstance(snapshot, dict)
+                or not nonce
+                or payload_digest(snapshot) != digest
+            ):
+                self._record_product_snapshot_failure(
+                    state,
+                    cfg,
+                    "PRODUCT_SNAPSHOT_INVALID_INTENT",
+                    retryable=False,
+                    status=fs.STATUS_FATAL,
+                )
+                return {"sent": False, "reason": "invalid_snapshot_intent"}
+        else:
+            snapshot = self.build_product_snapshot()
+            nonce = str(uuid.uuid4())
+            digest = payload_digest(snapshot) if snapshot is not None else ""
+            artifact_ref = None
         if snapshot is None:
             return {"sent": False, "reason": "empty"}
-        path = self._store().append_snapshot(snapshot)
-        logger.info(
-            "metrics.product_snapshot",
-            extra={
-                "metric_name": "MetricsClientProductSnapshot",
-                "outcome": "persisted_local",
-                "reason_code": "no_snapshot_ingest_endpoint",
-                "era": snapshot["era"],
-                "semantics": snapshot["semantics"],
-                "family_count": len(snapshot["metrics"]),
-            },
+
+        allow_rehandshake = True
+        token = state.get("install_token")
+        if not token:
+            refreshed = self._refresh_product_snapshot_token(
+                cfg,
+                state,
+                clear_existing=False,
+            )
+            allow_rehandshake = False
+            if refreshed is None:
+                cfg = resolve_telemetry_config(self.settings)
+                state = dict(cfg.state)
+                if cfg.mode != "anonymous_beacon":
+                    self._record_product_snapshot_failure(
+                        state,
+                        cfg,
+                        "PRODUCT_SNAPSHOT_HANDSHAKE_SCHEMA_INCOMPATIBLE",
+                        retryable=False,
+                        status=fs.STATUS_BLOCKED,
+                    )
+                    return {"sent": False, "reason": "schema_incompatible"}
+                self._record_product_snapshot_failure(
+                    state,
+                    cfg,
+                    "PRODUCT_SNAPSHOT_HANDSHAKE_FAILED",
+                    retryable=True,
+                )
+                return {"sent": False, "reason": "handshake_failed"}
+            cfg, state, token = refreshed
+
+        # Persist the append-only artifact only when a NEW durable intent is
+        # created. Replays reuse the exact payload/nonce/digest/artifact_ref and
+        # never grow the local snapshot ledger with duplicate lines.
+        if not isinstance(intent, dict) or int(intent.get("batch_seq") or -1) != seq:
+            artifact_ref = str(self._store().append_snapshot(snapshot))
+            state["in_flight_product_snapshot"] = {
+                "batch_seq": seq,
+                "nonce": nonce,
+                "payload_digest": digest,
+                "payload": snapshot,
+                "artifact_ref": artifact_ref,
+            }
+            save_state(cfg.metrics_dir, state)
+
+        return self._send_product_snapshot_intent(
+            cfg=cfg,
+            state=state,
+            token=str(token),
+            snapshot=snapshot,
+            batch_seq=seq,
+            nonce=nonce,
+            digest=digest,
+            artifact_ref=artifact_ref,
+            allow_rehandshake=allow_rehandshake,
         )
-        return {
-            "sent": False,
-            "reason": "no_snapshot_ingest_endpoint",
-            "persisted": str(path),
+
+    @staticmethod
+    def _product_snapshot_failure_state(state: dict[str, Any]) -> fs.FailureState:
+        raw = state.get(PRODUCT_SNAPSHOT_FAILURE_STATE_KEY)
+        carrier: dict[str, Any] = {"mode": state.get("mode")}
+        if isinstance(raw, dict):
+            carrier[fs.FAILURE_STATE_KEY] = raw
+        return fs.read_failure_state(carrier)
+
+    def _record_product_snapshot_failure(
+        self,
+        state: dict[str, Any],
+        cfg,
+        reason_code: str,
+        *,
+        retryable: bool,
+        http_status: int | None = None,
+        status: str | None = None,
+    ) -> fs.FailureState:
+        """Persist the product stream failure without mutating usage health."""
+
+        current = self._product_snapshot_failure_state(state)
+        now = _utcnow()
+        retry_count = current.retry_count + 1
+        effective_status = status or (
+            fs.STATUS_DEGRADED if retryable else fs.STATUS_FATAL
+        )
+        next_retry_at = (
+            _iso(now + timedelta(seconds=_backoff_delay_seconds(retry_count)))
+            if retryable
+            else None
+        )
+        consent_state = fs.consent_state_from_mode(str(state.get("mode") or ""))
+        updated = fs.merge(
+            current,
+            status=effective_status,
+            reason_code=reason_code,
+            http_status=http_status,
+            last_failure_at=_iso(now),
+            next_retry_at=next_retry_at,
+            retry_count=retry_count,
+            recovered_at=None,
+            publish_enabled=consent_state == fs.CONSENT_GRANTED,
+            consent_state=consent_state,
+            install_id_redacted=self._redacted_install_id(),
+        )
+        state[PRODUCT_SNAPSHOT_FAILURE_STATE_KEY] = updated.to_public_dict()
+        state["last_product_snapshot_attempt_at"] = _iso(now)
+        state["last_product_snapshot_outcome"] = reason_code
+        if next_retry_at is None:
+            state.pop(PRODUCT_SNAPSHOT_CIRCUIT_KEY, None)
+        else:
+            state[PRODUCT_SNAPSHOT_CIRCUIT_KEY] = next_retry_at
+        state[PRODUCT_SNAPSHOT_LAST_FAILURE_CODE_KEY] = reason_code
+        save_state(cfg.metrics_dir, state)
+        try:
+            self._store().append_sent(
+                {
+                    "failed_at": _iso(now),
+                    "code": reason_code,
+                    "stream": "product_snapshot",
+                },
+                failed=True,
+            )
+        except OSError as exc:
+            logger.warning(
+                "metrics.product_snapshot.failure_audit_failed error_class=%s",
+                type(exc).__name__,
+                extra={
+                    "event": "metrics.product_snapshot.failure_audit_failed",
+                    "error_class": type(exc).__name__,
+                },
+            )
+        _log_failure_transition(
+            updated,
+            action="product_snapshot_failed"
+            if retryable
+            else "product_snapshot_fatal",
+        )
+        return updated
+
+    def _record_product_snapshot_success(
+        self,
+        state: dict[str, Any],
+        cfg,
+        *,
+        committed_at: str,
+    ) -> fs.FailureState:
+        """Recover only the product stream; usage failure-state is untouched."""
+
+        current = self._product_snapshot_failure_state(state)
+        was_failing = current.status in {
+            fs.STATUS_DEGRADED,
+            fs.STATUS_FATAL,
+            fs.STATUS_BLOCKED,
+        } or current.retry_count > 0
+        updated = fs.merge(
+            current,
+            status=fs.STATUS_OK,
+            reason_code=None,
+            http_status=None,
+            last_success_at=committed_at,
+            next_retry_at=None,
+            retry_count=0,
+            recovered_at=committed_at if was_failing else current.recovered_at,
+            publish_enabled=True,
+            consent_state=fs.CONSENT_GRANTED,
+            install_id_redacted=self._redacted_install_id(),
+        )
+        state[PRODUCT_SNAPSHOT_FAILURE_STATE_KEY] = updated.to_public_dict()
+        state["last_product_snapshot_attempt_at"] = committed_at
+        state["last_product_snapshot_outcome"] = "committed"
+        state.pop(PRODUCT_SNAPSHOT_CIRCUIT_KEY, None)
+        state.pop(PRODUCT_SNAPSHOT_LAST_FAILURE_CODE_KEY, None)
+        save_state(cfg.metrics_dir, state)
+        _log_failure_transition(
+            updated,
+            action="product_snapshot_recovered"
+            if was_failing
+            else "product_snapshot_succeeded",
+        )
+        return updated
+
+    def _refresh_product_snapshot_token(
+        self,
+        cfg,
+        state: dict[str, Any],
+        *,
+        clear_existing: bool,
+    ) -> tuple[Any, dict[str, Any], str] | None:
+        """Perform at most one consent-gated re-handshake for this call."""
+
+        if not self._rehandshake_allowed(cfg, state):
+            return None
+        if clear_existing:
+            state.pop("install_token", None)
+            state.pop("install_token_expires_at", None)
+            save_state(cfg.metrics_dir, state)
+        try:
+            refreshed = self.handshake(open_circuit_on_failure=False)
+        except (requests.RequestException, KeyError, TypeError, ValueError):
+            return None
+        refreshed_cfg = resolve_telemetry_config(self.settings)
+        refreshed_state = dict(refreshed_cfg.state)
+        token = refreshed_state.get("install_token")
+        if refreshed is None or not token:
+            return None
+        return refreshed_cfg, refreshed_state, str(token)
+
+    def _send_product_snapshot_intent(
+        self,
+        *,
+        cfg,
+        state: dict[str, Any],
+        token: str,
+        snapshot: dict[str, Any],
+        batch_seq: int,
+        nonce: str,
+        digest: str,
+        artifact_ref: str | None,
+        allow_rehandshake: bool,
+    ) -> dict[str, Any]:
+        try:
+            resp = self._sign_and_post(
+                cfg,
+                token,
+                snapshot,
+                batch_seq,
+                nonce=nonce,
+                path="/v1/product-snapshots",
+            )
+        except requests.RequestException:
+            self._record_product_snapshot_failure(
+                state,
+                cfg,
+                "PRODUCT_SNAPSHOT_NETWORK",
+                retryable=True,
+            )
+            return self._product_snapshot_result(
+                sent=False,
+                reason="network",
+                artifact_ref=artifact_ref,
+                snapshot=snapshot,
+                digest=digest,
+            )
+
+        body = self._response_json(resp)
+        status_code = int(resp.status_code)
+        response_code = str(body.get("code") or "")
+        response_digest = body.get("payload_digest")
+        self._record_external_health(state, body.get("publish_health"))
+
+        committed = (
+            200 <= status_code < 300
+            and body.get("outcome") in {"accepted", "duplicate_committed"}
+            and body.get("state") == "committed"
+            and response_digest == digest
+        )
+        if committed:
+            committed_at = now_utc()
+            state["next_product_snapshot_seq"] = batch_seq + 1
+            state.pop("in_flight_product_snapshot", None)
+            state["last_product_snapshot_receipt"] = {
+                "batch_seq": batch_seq,
+                "payload_digest": digest,
+                "receipt": body.get("receipt"),
+                "committed_at": committed_at,
+            }
+            self._record_product_snapshot_success(
+                state,
+                cfg,
+                committed_at=committed_at,
+            )
+            logger.info(
+                "metrics.product_snapshot",
+                extra={
+                    "metric_name": "MetricsClientProductSnapshot",
+                    "outcome": body["outcome"],
+                    "reason_code": body["outcome"],
+                    "era": snapshot["era"],
+                    "semantics": snapshot["semantics"],
+                    "family_count": len(snapshot["metrics"]),
+                },
+            )
+            result = self._product_snapshot_result(
+                sent=True,
+                reason=str(body["outcome"]),
+                artifact_ref=artifact_ref,
+                snapshot=snapshot,
+                digest=digest,
+            )
+            result.update(
+                {
+                    "batch_seq": batch_seq,
+                    "receipt": body.get("receipt"),
+                }
+            )
+            return result
+
+        if status_code == 401 and response_code in {
+            "UNKNOWN_INSTALL",
+            "TOKEN_EXPIRED",
+        }:
+            if allow_rehandshake:
+                refreshed = self._refresh_product_snapshot_token(
+                    cfg,
+                    state,
+                    clear_existing=response_code == "TOKEN_EXPIRED",
+                )
+                if refreshed is not None:
+                    refreshed_cfg, refreshed_state, refreshed_token = refreshed
+                    return self._send_product_snapshot_intent(
+                        cfg=refreshed_cfg,
+                        state=refreshed_state,
+                        token=refreshed_token,
+                        snapshot=snapshot,
+                        batch_seq=batch_seq,
+                        nonce=nonce,
+                        digest=digest,
+                        artifact_ref=artifact_ref,
+                        allow_rehandshake=False,
+                    )
+                # The handshake may have disabled a stale schema. Reload before
+                # persisting the product outcome so that state is never reverted
+                # by this call's pre-handshake snapshot.
+                cfg = resolve_telemetry_config(self.settings)
+                state = dict(cfg.state)
+                if cfg.mode != "anonymous_beacon":
+                    self._record_product_snapshot_failure(
+                        state,
+                        cfg,
+                        "PRODUCT_SNAPSHOT_HANDSHAKE_SCHEMA_INCOMPATIBLE",
+                        retryable=False,
+                        status=fs.STATUS_BLOCKED,
+                    )
+                    return self._product_snapshot_result(
+                        sent=False,
+                        reason="schema_incompatible",
+                        artifact_ref=artifact_ref,
+                        snapshot=snapshot,
+                        digest=digest,
+                    )
+            reason = f"PRODUCT_SNAPSHOT_{response_code}"
+            self._record_product_snapshot_failure(
+                state,
+                cfg,
+                reason,
+                retryable=True,
+                http_status=status_code,
+            )
+            return self._product_snapshot_result(
+                sent=False,
+                reason=response_code.lower(),
+                artifact_ref=artifact_ref,
+                snapshot=snapshot,
+                digest=digest,
+            )
+
+        if status_code in {410, 426}:
+            state["mode"] = "disabled"
+            state["schema_status"] = "gone" if status_code == 410 else "sunset"
+            self._record_product_snapshot_failure(
+                state,
+                cfg,
+                f"PRODUCT_SNAPSHOT_HTTP_{status_code}",
+                retryable=False,
+                http_status=status_code,
+                status=fs.STATUS_BLOCKED,
+            )
+            return self._product_snapshot_result(
+                sent=False,
+                reason="schema_incompatible",
+                artifact_ref=artifact_ref,
+                snapshot=snapshot,
+                digest=digest,
+            )
+
+        # A route can legitimately be unavailable during an additive backend
+        # rollout.  Treat 404 as recoverable so a client started before the
+        # route exists retries the same durable intent after deployment instead
+        # of pinning product publish health in FATAL forever.
+        if status_code in {403, 404, 429} or status_code >= 500:
+            self._record_product_snapshot_failure(
+                state,
+                cfg,
+                f"PRODUCT_SNAPSHOT_HTTP_{status_code}",
+                retryable=True,
+                http_status=status_code,
+            )
+            return self._product_snapshot_result(
+                sent=False,
+                reason="retryable",
+                artifact_ref=artifact_ref,
+                snapshot=snapshot,
+                digest=digest,
+            )
+
+        if (
+            200 <= status_code < 300
+            and body.get("outcome") == "duplicate_pending"
+            and body.get("state") == "pending"
+            and response_digest == digest
+        ):
+            self._record_product_snapshot_failure(
+                state,
+                cfg,
+                "PRODUCT_SNAPSHOT_PENDING",
+                retryable=True,
+                http_status=status_code,
+            )
+            return self._product_snapshot_result(
+                sent=False,
+                reason="duplicate_pending",
+                artifact_ref=artifact_ref,
+                snapshot=snapshot,
+                digest=digest,
+            )
+
+        fatal_code = (
+            f"PRODUCT_SNAPSHOT_{response_code}"
+            if response_code
+            else f"PRODUCT_SNAPSHOT_HTTP_{status_code}"
+        )
+        if 200 <= status_code < 300:
+            fatal_code = "PRODUCT_SNAPSHOT_RECEIPT_MISMATCH"
+        self._record_product_snapshot_failure(
+            state,
+            cfg,
+            fatal_code,
+            retryable=False,
+            http_status=status_code,
+            status=fs.STATUS_FATAL,
+        )
+        return self._product_snapshot_result(
+            sent=False,
+            reason=(response_code or "receipt_mismatch").lower(),
+            artifact_ref=artifact_ref,
+            snapshot=snapshot,
+            digest=digest,
+        )
+
+    @staticmethod
+    def _product_snapshot_result(
+        *,
+        sent: bool,
+        reason: str,
+        artifact_ref: str | None,
+        snapshot: dict[str, Any],
+        digest: str,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "sent": sent,
+            "reason": reason,
             "semantics": snapshot["semantics"],
+            "payload_digest": digest,
         }
+        if artifact_ref is not None:
+            result["persisted"] = artifact_ref
+        return result
 
     def _build_delta_batch(
         self, cfg, *, restrict_to: set[str] | None = None
@@ -491,6 +996,27 @@ class CommunityTelemetryBeaconSender:
         }
         return batch, included
 
+    def _refresh_pending_event_count(self, state: dict[str, Any], cfg) -> bool:
+        """Refresh the denormalized pending counter from the durable ledgers."""
+
+        store = self._store()
+        confirmed = store.confirmed_event_ids()
+        pending = sum(
+            1
+            for event in store.iter_events()
+            if str(event.get("event_id") or "") not in confirmed
+        )
+        current = wm.read_watermark(state)
+        if current.pending_event_count == pending:
+            return False
+        updated = wm.set_counters(
+            current,
+            pending_event_count=pending,
+            retention_days=int(getattr(cfg, "retention_days", current.retention_days)),
+        )
+        state.update(updated.to_state_fields())
+        return True
+
     def send_once(self) -> dict[str, Any]:
         cfg = resolve_telemetry_config(self.settings)
         if cfg.mode != "anonymous_beacon":
@@ -498,6 +1024,10 @@ class CommunityTelemetryBeaconSender:
             _log_beacon_outcome(reason="disabled")
             return {"sent": False, "reason": "not_enabled"}
         state = dict(cfg.state)
+        if self._refresh_pending_event_count(state, cfg):
+            # Persist before any early return (including an open circuit), so the
+            # public queue/debt projection never remains stuck at a prior success.
+            save_state(cfg.metrics_dir, state)
         circuit_until = parse_iso(str(state.get("circuit_open_until", "")))
         if circuit_until and circuit_until > datetime.now(timezone.utc):
             _log_beacon_outcome(reason="transport_failed")
@@ -574,17 +1104,62 @@ class CommunityTelemetryBeaconSender:
                 state.pop("in_flight_batch", None)
                 save_state(cfg.metrics_dir, state)
             return {"sent": False, "reason": "empty"}
+        digest = payload_digest(batch)
+        if isinstance(intent, dict) and intent.get("batch_seq") == batch_seq:
+            prior_digest = intent.get("payload_digest")
+            if prior_digest is not None and prior_digest != digest:
+                self._open_circuit(
+                    state,
+                    cfg,
+                    "IN_FLIGHT_DIGEST_MISMATCH",
+                    status=fs.STATUS_FATAL,
+                )
+                return {"sent": False, "reason": "in_flight_digest_mismatch"}
         # Durable intent persisted BEFORE the POST (crash-safe): a later DUPLICATE
         # confirms ONLY these event_ids, never a grown batch (R3A-G data-loss fix).
         state["in_flight_batch"] = {
             "batch_seq": batch_seq,
             "nonce": nonce,
             "event_ids": [str(e["event_id"]) for e in included if e.get("event_id")],
+            "payload_digest": digest,
         }
         save_state(cfg.metrics_dir, state)
         try:
             resp = self._sign_and_post_usage(cfg, token, batch, batch_seq, nonce=nonce)
         except requests.RequestException:
+            # The POST may have committed remotely even though its response was
+            # lost.  Reconcile the signed receipt before classifying the attempt as
+            # failed; only an exact committed digest may advance local state.
+            try:
+                status_resp = self._lookup_delivery_status(
+                    cfg,
+                    str(token),
+                    stream="usage",
+                    batch_seq=batch_seq,
+                    digest=digest,
+                )
+                status_body = self._response_json(status_resp)
+            except requests.RequestException:
+                status_resp = None
+                status_body = {}
+            if (
+                status_resp is not None
+                and 200 <= status_resp.status_code < 300
+                and status_body.get("outcome") == "duplicate_committed"
+                and status_body.get("state") == "committed"
+                and status_body.get("payload_digest") == digest
+            ):
+                reconciled = self._handle_usage_response(
+                    status_resp,
+                    state,
+                    cfg,
+                    batch=batch,
+                    batch_seq=batch_seq,
+                    allow_rehandshake=False,
+                    included=included,
+                )
+                reconciled["recovered"] = "receipt_lookup"
+                return reconciled
             self._open_circuit(state, cfg, "USAGE_NETWORK")
             _log_beacon_outcome(reason="transport_failed")
             # R3A-E: a transport failure before accept preserves the cursor.
@@ -610,10 +1185,10 @@ class CommunityTelemetryBeaconSender:
                 outcome["refresh_next_retry_at"] = refresh_next_retry_at
         # R3A-E: audit the cursor transition (advanced / duplicate-reconciled /
         # preserved-on-error) with a secret-free state signal.
-        if outcome.get("sent"):
+        if outcome.get("reason") == "duplicate_committed":
+            action, reason_code = "duplicate_reconciled", "duplicate_committed"
+        elif outcome.get("sent"):
             action, reason_code = "advanced", "accepted"
-        elif outcome.get("reason") == "duplicate":
-            action, reason_code = "duplicate_reconciled", "duplicate"
         else:
             action, reason_code = "preserved", str(outcome.get("reason") or "unknown")
         _log_watermark_state(
@@ -776,10 +1351,29 @@ class CommunityTelemetryBeaconSender:
         *,
         nonce: str | None = None,
     ):
+        return self._sign_and_post(
+            cfg,
+            token,
+            batch,
+            batch_seq,
+            nonce=nonce,
+            path="/v1/usage",
+        )
+
+    def _sign_and_post(
+        self,
+        cfg,
+        token: str,
+        payload: dict[str, Any],
+        batch_seq: int,
+        *,
+        nonce: str | None,
+        path: str,
+    ):
         timestamp = str(int(_utcnow().timestamp()))
         nonce = nonce or str(uuid.uuid4())
-        signature = sign_payload(str(token), timestamp, nonce, batch_seq, batch)
-        body = canonical_json(batch).encode("utf-8")
+        signature = sign_payload(str(token), timestamp, nonce, batch_seq, payload)
+        body = canonical_json(payload).encode("utf-8")
         headers = {
             "content-type": "application/json",
             "x-okto-signature": signature,
@@ -788,15 +1382,79 @@ class CommunityTelemetryBeaconSender:
             "x-okto-batch-seq": str(batch_seq),
         }
         return self.session.post(
-            f"{cfg.beacon_url}/v1/usage", data=body, headers=headers, timeout=5
+            f"{cfg.beacon_url}{path}", data=body, headers=headers, timeout=5
+        )
+
+    def _lookup_delivery_status(
+        self,
+        cfg,
+        token: str,
+        *,
+        stream: str,
+        batch_seq: int,
+        digest: str,
+    ):
+        payload = {
+            "schema_version": cfg.schema_version,
+            "install_id": get_or_create_install_id(self.settings),
+            "stream": stream,
+            "batch_seq": int(batch_seq),
+            "payload_digest": digest,
+        }
+        return self._sign_and_post(
+            cfg,
+            token,
+            payload,
+            batch_seq,
+            nonce=str(uuid.uuid4()),
+            path="/v1/deliveries/status",
         )
 
     @staticmethod
-    def _response_code(resp) -> str | None:
+    def _response_json(resp) -> dict[str, Any]:
         try:
-            body = resp.json()
+            value = resp.json()
         except Exception:
-            return None
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _record_external_health(
+        state: dict[str, Any], health: Any
+    ) -> None:
+        if not isinstance(health, dict):
+            return
+        watermarks = health.get("watermarks")
+        if not isinstance(watermarks, dict):
+            return
+        accepted = watermarks.get("accepted") if isinstance(watermarks.get("accepted"), dict) else {}
+        delivered = watermarks.get("delivered") if isinstance(watermarks.get("delivered"), dict) else {}
+        queryable = watermarks.get("queryable") if isinstance(watermarks.get("queryable"), dict) else {}
+        reported = watermarks.get("reported") if isinstance(watermarks.get("reported"), dict) else {}
+        pipeline_status = str(health.get("status") or "unavailable")
+        if pipeline_status == "stale":
+            aws_availability = "stale"
+            report_availability = "stale" if reported else "unavailable"
+        else:
+            aws_availability = "available" if (delivered or queryable) else "unavailable"
+            report_availability = "available" if reported else "unavailable"
+        state["external_publish_health"] = {
+            "aws_ingest": {
+                "availability": aws_availability,
+                "last_success_at": (
+                    queryable.get("at") or delivered.get("at") or accepted.get("at")
+                ),
+            },
+            "report_athena": {
+                "availability": report_availability,
+                "last_success_at": reported.get("at"),
+            },
+            "pipeline_status": pipeline_status,
+        }
+
+    @staticmethod
+    def _response_code(resp) -> str | None:
+        body = CommunityTelemetryBeaconSender._response_json(resp)
         return body.get("code") if isinstance(body, dict) else None
 
     @staticmethod
@@ -817,6 +1475,8 @@ class CommunityTelemetryBeaconSender:
         allow_rehandshake: bool,
         included: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        body = self._response_json(resp)
+        expected_digest = payload_digest(batch)
         if resp.status_code in {410, 426}:
             state["mode"] = "disabled"
             state["schema_status"] = "gone" if resp.status_code == 410 else "sunset"
@@ -830,6 +1490,30 @@ class CommunityTelemetryBeaconSender:
             _log_beacon_outcome(reason="transport_failed")
             return {"sent": False, "reason": "retryable"}
         if 200 <= resp.status_code < 300:
+            protocol_outcome = body.get("outcome")
+            committed = body.get("state") == "committed"
+            digest_matches = body.get("payload_digest") == expected_digest
+            if protocol_outcome not in {"accepted", "duplicate_committed"}:
+                self._record_external_health(state, body.get("publish_health"))
+                save_state(cfg.metrics_dir, state)
+                return {
+                    "sent": False,
+                    "reason": str(protocol_outcome or "protocol_error"),
+                    "batch_seq": batch_seq,
+                }
+            if not committed or not digest_matches:
+                self._open_circuit(
+                    state,
+                    cfg,
+                    "UNVERIFIED_DELIVERY_RECEIPT",
+                    http_status=resp.status_code,
+                    status=fs.STATUS_FATAL,
+                )
+                return {
+                    "sent": False,
+                    "reason": "receipt_mismatch",
+                    "batch_seq": batch_seq,
+                }
             now_iso = now_utc()
             confirmed_ids = [
                 str(e["event_id"]) for e in (included or []) if e.get("event_id")
@@ -844,6 +1528,8 @@ class CommunityTelemetryBeaconSender:
                     "batch_seq": batch_seq,
                     "payload": batch,
                     "response_status": resp.status_code,
+                    "payload_digest": expected_digest,
+                    "receipt": body.get("receipt"),
                     "confirmed_event_ids": confirmed_ids,
                 }
             )
@@ -854,8 +1540,16 @@ class CommunityTelemetryBeaconSender:
                 included=included or [],
                 now_iso=now_iso,
             )
+            self._record_external_health(state, body.get("publish_health"))
+            save_state(cfg.metrics_dir, state)
             _log_beacon_outcome(reason="sent", outcome="sent")
-            return {"sent": True, "batch_seq": batch_seq}
+            return {
+                "sent": True,
+                "reason": str(protocol_outcome),
+                "batch_seq": batch_seq,
+                "payload_digest": expected_digest,
+                "receipt": body.get("receipt"),
+            }
         # R1-C: classify the named /v1/usage reason codes (testable, not log parsing).
         code = self._response_code(resp)
         if resp.status_code == 401 and code == "UNKNOWN_INSTALL":
@@ -887,37 +1581,54 @@ class CommunityTelemetryBeaconSender:
             )
             _log_beacon_outcome(reason="token_expired")
             return {"sent": False, "reason": "token_expired"}
-        if resp.status_code == 409 and code == "DUPLICATE_NONCE_OR_BATCH_SEQ":
-            # R3A-C (br_4659bfcc / tr_067c08e6): a DUPLICATE_NONCE_OR_BATCH_SEQ is
-            # the backend reporting it ALREADY committed this batch. The nonce is
-            # fresh per send, so a duplicate is a batch_seq collision = a prior
-            # accept — treat it as IDEMPOTENT CONFIRMATION of this batch's events:
-            # confirm them in the durable ledger and advance the watermark just
-            # like a 2xx, so they never replay (no loop) and the cursor is not
-            # lost / left pending. br_7bced648: the watermark only ever reflects
-            # backend-confirmed events, so this is not an optimistic advance.
-            now_iso = now_utc()
-            confirmed_ids = [
-                str(e["event_id"]) for e in (included or []) if e.get("event_id")
-            ]
-            self._store().append_sent(
-                {
-                    "sent_at": now_iso,
+        if resp.status_code == 409:
+            # A bare legacy duplicate is ambiguous: it may be a pending lease or a
+            # divergent payload.  Only a structured committed receipt with the
+            # exact digest can confirm events and advance the cursor.
+            if (
+                body.get("outcome") == "duplicate_committed"
+                and body.get("state") == "committed"
+                and body.get("payload_digest") == expected_digest
+            ):
+                now_iso = now_utc()
+                confirmed_ids = [
+                    str(e["event_id"]) for e in (included or []) if e.get("event_id")
+                ]
+                self._store().append_sent(
+                    {
+                        "sent_at": now_iso,
+                        "batch_seq": batch_seq,
+                        "duplicate": True,
+                        "response_status": resp.status_code,
+                        "payload_digest": expected_digest,
+                        "receipt": body.get("receipt"),
+                        "confirmed_event_ids": confirmed_ids,
+                    }
+                )
+                self._record_duplicate(
+                    state,
+                    cfg,
+                    batch_seq=batch_seq,
+                    included=included or [],
+                    now_iso=now_iso,
+                )
+                self._record_external_health(state, body.get("publish_health"))
+                save_state(cfg.metrics_dir, state)
+                _log_beacon_outcome(reason="duplicate_committed")
+                return {
+                    "sent": True,
+                    "reason": "duplicate_committed",
                     "batch_seq": batch_seq,
-                    "duplicate": True,
-                    "response_status": resp.status_code,
-                    "confirmed_event_ids": confirmed_ids,
+                    "payload_digest": expected_digest,
+                    "receipt": body.get("receipt"),
                 }
-            )
-            self._record_duplicate(
-                state,
-                cfg,
-                batch_seq=batch_seq,
-                included=included or [],
-                now_iso=now_iso,
-            )
-            _log_beacon_outcome(reason="duplicate")
-            return {"sent": False, "reason": "duplicate", "batch_seq": batch_seq}
+            return {
+                "sent": False,
+                "reason": "conflict"
+                if body.get("outcome") == "conflict"
+                else "unverified_duplicate",
+                "batch_seq": batch_seq,
+            }
         resp.raise_for_status()
         return {"sent": False, "reason": "unhandled"}
 

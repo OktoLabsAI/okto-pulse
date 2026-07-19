@@ -104,12 +104,14 @@ def test_ts_9913b93b_descriptors_derived_from_runtime_composition():
 # ===========================================================================
 # ts_bd58a427 (TS04) — golden replay over the effective Community catalog.
 # ===========================================================================
-def test_ts_bd58a427_golden_replay_resources_read_tooldoc_payload():
+def test_ts_bd58a427_golden_replay_resources_read_tooldoc_payload(
+    active_runtime_registry,
+):
     from okto_pulse.core.mcp import payload_budget
 
     baseline_uris = {s.uri for s in srv.effective_resource_catalog().specs()}
 
-    register_and_freeze_community_resource_catalog()
+    register_and_freeze_community_resource_catalog(active_runtime_registry)
     eff = srv.effective_resource_catalog()
     specs = eff.specs()
 
@@ -131,7 +133,7 @@ def test_ts_bd58a427_golden_replay_resources_read_tooldoc_payload():
     assert len(classified) == len(specs)
     by_uri = {c["uri"]: c for c in classified}
 
-    # EVERY capability-tagged operational overlay resource is classified to a
+    # Every capability-tagged operational replacement is classified to a
     # descriptor (AC3 — no relevant resource left silently unclassified): the four
     # R11-B contaminated URIs (kg / errors / decision).
     for uri in (

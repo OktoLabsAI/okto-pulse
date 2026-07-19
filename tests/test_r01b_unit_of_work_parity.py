@@ -13,14 +13,19 @@ Proves the Community ``CommunityUnitOfWork`` + factory mirror the core
 from __future__ import annotations
 
 import asyncio
+import logging
+from typing import Any, cast
+
 import pytest
 from sqlalchemy import select
 
 from okto_pulse.community.adapters.sqlalchemy_database import (
+    CommunityDatabaseRuntime,
     build_community_engine,
     build_community_session_factory,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import Base, Board as BoardRow
+from okto_pulse.community.adapters import sqlalchemy_unit_of_work as uow_mod
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     CommunityUnitOfWork,
     build_community_unit_of_work_factory,
@@ -49,6 +54,40 @@ def _temp_session_factory(tmp_path):
 
 def _board(board_id: str) -> Board:
     return Board(id=board_id, name="R01B", owner_id="r01b-user", settings={})
+
+
+class _TeardownSession:
+    def __init__(self, *, fail_rollback: bool = False) -> None:
+        self.active = True
+        self.fail_rollback = fail_rollback
+        self.rollback_calls = 0
+        self.close_calls = 0
+        self.rollback_started = asyncio.Event()
+        self.rollback_release = asyncio.Event()
+
+    def in_transaction(self) -> bool:
+        return self.active
+
+    async def rollback(self) -> None:
+        self.rollback_calls += 1
+        self.rollback_started.set()
+        await self.rollback_release.wait()
+        self.active = False
+        if self.fail_rollback:
+            raise RuntimeError("modeled UoW rollback cleanup failure")
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+def _teardown_uow(session: _TeardownSession) -> CommunityUnitOfWork:
+    """Build only the lifecycle surface needed by cancellation regressions."""
+
+    uow = object.__new__(CommunityUnitOfWork)
+    uow._session = session
+    uow.rollback = session.rollback
+    uow.close = session.close
+    return uow
 
 
 def test_ac2_commit_persists_and_read_after_write(_temp_session_factory):
@@ -215,6 +254,43 @@ def test_f02_exactly_one_rollback_on_failure(_temp_session_factory):
     assert asyncio.run(drive()) == {"commit": 0, "rollback": 1}
 
 
+def test_f02_caught_error_still_rolls_back_active_transaction(
+    _temp_session_factory,
+):
+    async def drive():
+        async with _temp_session_factory() as session:
+            uow = CommunityUnitOfWork(session)
+            calls = {"rollback": 0}
+            original_rollback = uow.rollback
+
+            async def counted_rollback():
+                calls["rollback"] += 1
+                await original_rollback()
+
+            uow.rollback = counted_rollback
+            async with uow:
+                await uow.boards.add(_board("f02-caught-error"))
+                # Force a real transaction before the handler catches its own
+                # exception and exits the UoW with exc=None.
+                await uow.boards.get("f02-caught-error")
+                try:
+                    raise RuntimeError("caught by handler")
+                except RuntimeError:
+                    pass
+
+            async with _temp_session_factory() as check:
+                row = (
+                    await check.execute(
+                        select(BoardRow).where(BoardRow.id == "f02-caught-error")
+                    )
+                ).scalar_one_or_none()
+            return calls, row
+
+    calls, row = asyncio.run(drive())
+    assert calls == {"rollback": 1}
+    assert row is None
+
+
 @pytest.mark.asyncio(loop_scope="function")
 async def test_mcp_uow_hard_cancel_returns_connection_to_pool(tmp_path) -> None:
     engine = build_community_engine(
@@ -249,3 +325,152 @@ async def test_mcp_uow_hard_cancel_returns_connection_to_pool(tmp_path) -> None:
         assert engine.sync_engine.pool.checkedout() == 0
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_uow_second_cancel_logs_and_consumes_cleanup_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _TeardownSession(fail_rollback=True)
+    uow = _teardown_uow(session)
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    loop_errors: list[dict[str, Any]] = []
+    previous_exception_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+    caplog.set_level(logging.ERROR, logger=uow_mod.__name__)
+
+    async def victim() -> None:
+        async with uow:
+            entered.set()
+            await asyncio.sleep(30)
+
+    try:
+        task = asyncio.create_task(victim())
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        task.cancel()
+        await asyncio.wait_for(session.rollback_started.wait(), timeout=2)
+        assert not task.done()
+
+        # A second cancellation while shielded teardown is in flight detaches
+        # that teardown from the request task. Its terminal failure must still
+        # be observed and logged after the caller sees cancellation.
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        session.rollback_release.set()
+        for _ in range(100):
+            if not uow_mod._pending_uow_cleanups:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_exception_handler)
+
+    assert session.close_calls == 1
+    assert uow_mod._pending_uow_cleanups == set()
+    assert loop_errors == []
+    assert any(
+        getattr(record, "event", None) == "db.uow.background_cleanup_failed"
+        and getattr(record, "error_type", None) == "RuntimeError"
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_database_close_drains_detached_uow_before_engine_dispose() -> None:
+    class _Engine:
+        def __init__(self) -> None:
+            self.dispose_calls = 0
+
+        async def dispose(self) -> None:
+            self.dispose_calls += 1
+
+    session = _TeardownSession()
+    uow = _teardown_uow(session)
+    engine = _Engine()
+    runtime = CommunityDatabaseRuntime(
+        engine=cast(Any, engine),
+        session_factory=cast(Any, lambda: None),
+    )
+    entered = asyncio.Event()
+
+    async def victim() -> None:
+        async with uow:
+            entered.set()
+            await asyncio.sleep(30)
+
+    task = asyncio.create_task(victim())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    task.cancel()
+    await asyncio.wait_for(session.rollback_started.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    close_task = asyncio.create_task(runtime.close())
+    await asyncio.sleep(0.01)
+    assert not close_task.done()
+    assert engine.dispose_calls == 0
+
+    session.rollback_release.set()
+    await asyncio.wait_for(close_task, timeout=2)
+
+    assert session.close_calls == 1
+    assert uow_mod._pending_uow_cleanups == set()
+    assert engine.dispose_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_database_close_bounds_stuck_uow_cleanup_drain(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _Engine:
+        def __init__(self) -> None:
+            self.dispose_calls = 0
+
+        async def dispose(self) -> None:
+            self.dispose_calls += 1
+
+    session = _TeardownSession()
+    uow = _teardown_uow(session)
+    engine = _Engine()
+    runtime = CommunityDatabaseRuntime(
+        engine=cast(Any, engine),
+        session_factory=cast(Any, lambda: None),
+    )
+    entered = asyncio.Event()
+    monkeypatch.setattr(uow_mod, "_UOW_CLEANUP_DRAIN_TIMEOUT_S", 0.01)
+    caplog.set_level(logging.WARNING, logger=uow_mod.__name__)
+
+    async def victim() -> None:
+        async with uow:
+            entered.set()
+            await asyncio.sleep(30)
+
+    task = asyncio.create_task(victim())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    task.cancel()
+    await asyncio.wait_for(session.rollback_started.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(runtime.close(), timeout=1)
+
+    assert engine.dispose_calls == 1
+    assert len(uow_mod._pending_uow_cleanups) == 1
+    assert any(
+        getattr(record, "event", None) == "db.uow.cleanup_drain_timeout"
+        and getattr(record, "pending_count", None) == 1
+        for record in caplog.records
+    )
+
+    session.rollback_release.set()
+    for _ in range(100):
+        if not uow_mod._pending_uow_cleanups:
+            break
+        await asyncio.sleep(0.01)
+    assert session.close_calls == 1
+    assert uow_mod._pending_uow_cleanups == set()

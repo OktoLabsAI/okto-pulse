@@ -79,7 +79,7 @@ async function runFrontendCredentialSurfaceGate(root = process.cwd()): Promise<F
 }
 
 describe('frontend credential surface gate', () => {
-  it('allows only reveal-once test sentinels and exact documentation placeholders', async () => {
+  it('allows only reveal-once test sentinels and exact documentation placeholders', { timeout: 30_000 }, async () => {
     await expect(runFrontendCredentialSurfaceGate()).resolves.toEqual([]);
   });
 

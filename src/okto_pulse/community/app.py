@@ -24,9 +24,13 @@ from okto_pulse.core import configure_auth
 from okto_pulse.core import configure_settings
 from okto_pulse.community.adapters.sqlalchemy_database import (
     close_db,
+    get_engine,
     get_session_factory,
     init_db,
     is_database_runtime_configured,
+)
+from okto_pulse.community.adapters.sprint_origin_integrity import (
+    inspect_sprint_origin_integrity,
 )
 from okto_pulse.core import StorageProvider, configure_storage
 from okto_pulse.core.composition import (
@@ -483,8 +487,10 @@ def create_app(
                     await scheduler_control.shutdown(wait=False)
                 except Exception:
                     pass
+            worker_stop_failures = ()
             if runtime_worker_registry is not None:
-                for failure in await runtime_worker_registry.stop_all():
+                worker_stop_failures = await runtime_worker_registry.stop_all()
+                for failure in worker_stop_failures:
                     logger.warning(
                         "kg.worker.stop_failed family=%s err=%s",
                         failure.family,
@@ -495,6 +501,27 @@ def create_app(
                             "error": failure.message,
                         },
                     )
+            native_drain_incomplete = any(
+                failure.resource_close_unsafe
+                for failure in worker_stop_failures
+            )
+            if native_drain_incomplete:
+                blocked_families = sorted(
+                    failure.family
+                    for failure in worker_stop_failures
+                    if failure.resource_close_unsafe
+                )
+                logger.critical(
+                    "community.shutdown.native_drain_incomplete "
+                    "families=%s graph_close_skipped=true db_close_skipped=true",
+                    ",".join(blocked_families),
+                    extra={
+                        "event": "community.shutdown.native_drain_incomplete",
+                        "families": blocked_families,
+                        "graph_close_skipped": True,
+                        "db_close_skipped": True,
+                    },
+                )
             # Release LadybugDB handles explicitly on graceful shutdown.
             # Relying on interpreter teardown can leave WAL sidecars as the
             # only holder of recent writes; a later bootstrap probe may then
@@ -504,7 +531,8 @@ def create_app(
             # the spec #06 GraphLifecycle port off the loop; a KG-close failure
             # is logged (kg.shutdown.close_connections_failed) and never blocks
             # the DB close (close_db always runs).
-            await shutdown_kg_then_db(close_db, logger=logger)
+            if not native_drain_incomplete:
+                await shutdown_kg_then_db(close_db, logger=logger)
 
     app = FastAPI(
         title=settings.app_name,
@@ -547,7 +575,17 @@ def create_app(
     # Health check
     @app.get("/health")
     async def health_check():
-        return {"status": "healthy", "version": settings.app_version}
+        sprint_origin_finding = await inspect_sprint_origin_integrity(get_engine)
+        return {
+            # Backward-compatible liveness contract: this route remains HTTP 200
+            # and status=healthy even when an integrity diagnostic is degraded.
+            "status": "healthy",
+            "version": settings.app_version,
+            "integrity_status": sprint_origin_finding["status"],
+            "findings": {
+                "sprint_origin_integrity": sprint_origin_finding,
+            },
+        }
 
     # MockupDesignSystemGate (spec 3a006f65 / card 0192f58d): the gate runs inside the
     # service-layer entity update methods, so a bulk screen_mockups REST update that

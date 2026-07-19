@@ -112,13 +112,17 @@ export interface LineageGraphResponse {
   warnings: string[];
 }
 
-export type AllowedTransitionEntityType = 'ideation' | 'refinement' | 'spec';
+export type AllowedTransitionEntityType = 'story' | 'ideation' | 'refinement' | 'spec' | 'card' | 'sprint';
 
 export interface AllowedTransition {
   to_status: string;
   label: string;
   gate: string;
   blocked_reason?: string | null;
+  preconditions?: string[];
+  capabilities?: string[];
+  effects?: string[];
+  reason_codes?: string[];
 }
 
 export interface AllowedTransitionsResponse {
@@ -374,6 +378,8 @@ export interface SprintSummary {
   board_id: string;
   title: string;
   description: string | null;
+  objective?: string | null;
+  expected_outcome?: string | null;
   status: SprintStatus;
   lane_type: SprintLaneType;
   origin_sprint_id: string | null;
@@ -390,6 +396,9 @@ export interface SprintSummary {
   created_at: string;
   updated_at: string;
   archived: boolean;
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
 }
 
 export interface SprintQAItem {
@@ -410,6 +419,8 @@ export interface SprintQAItem {
 export interface CreateSprintRequest {
   title: string;
   description?: string;
+  objective?: string;
+  expected_outcome?: string;
   spec_id: string;
   lane_type?: SprintLaneType;
   origin_sprint_id?: string | null;
@@ -423,6 +434,8 @@ export interface CreateSprintRequest {
 
 export interface MoveSprintRequest {
   status: SprintStatus;
+  cancellation_reason?: string;
+  expected_version?: number;
 }
 
 // Ideation Status
@@ -829,6 +842,34 @@ export type EvidenceClass =
   | 'run_log'
   | 'non_replayable_justified';
 
+export interface TestEvidenceAssertionV2 {
+  name: string;
+  expected: unknown;
+  observed: unknown;
+  status: 'passed' | 'failed';
+  message?: string | null;
+}
+
+export interface TestEvidenceProvenanceV2 {
+  producer: string;
+  producer_version: string;
+  adapter: string;
+  environment: string;
+}
+
+export interface TestExecutionAttestationV2 {
+  schema_version: 2;
+  run_id: string;
+  executed_at: string;
+  scenario_id: string;
+  outcome: 'passed' | 'failed';
+  product_runtime_exercised: boolean;
+  manifest_sha256: string;
+  assertions: TestEvidenceAssertionV2[];
+  provenance: TestEvidenceProvenanceV2;
+  attestation_sha256: string;
+}
+
 export interface TestScenarioEvidence {
   // Legacy / minimal fields (NC-9).
   test_file_path?: string | null;
@@ -840,7 +881,12 @@ export interface TestScenarioEvidence {
   // evidence simply omits them.
   evidence_class?: EvidenceClass | null;
   replay_command?: string | null;
-  mcp_replay_manifest?: string | null;
+  /** @deprecated Reader-only legacy alias; it never satisfies Evidence V2. */
+  mcp_replay_manifest?: string | Record<string, unknown> | null;
+  manifest_ref?: string | null;
+  execution_attestation?: TestExecutionAttestationV2 | null;
+  /** Opaque receipt authenticated by the local installation at write time. */
+  execution_receipt?: string | null;
   manual_checklist_ref?: string | null;
   expected_output_snapshot?: string | null;
   replay_should_exist?: boolean | null;

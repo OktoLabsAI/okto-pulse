@@ -118,6 +118,11 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "kg_curation_proposals",
         "kg_equivalence_ledger",
         "kg_node_subtypes",
+        "global_discovery_recovery_attempts",
+        "global_discovery_recovery_slots",
+        "global_discovery_recovery_dispatches",
+        "global_discovery_recovery_transitions",
+        "global_discovery_source_revision",
     }
 )
 

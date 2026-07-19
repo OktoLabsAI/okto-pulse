@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from okto_pulse.community.main import SPAFallbackMiddleware
+from okto_pulse.community.main import SPAFallbackMiddleware, _mount_frontend
 
 INDEX = b"<html><body>SPA</body></html>"
 
@@ -50,6 +50,9 @@ async def test_spa_path_404_becomes_index_html():
     assert messages[0]["status"] == 200
     headers = dict(messages[0]["headers"])
     assert headers[b"content-type"] == b"text/html; charset=utf-8"
+    assert headers[b"cache-control"] == b"no-store, no-cache, must-revalidate, max-age=0"
+    assert headers[b"pragma"] == b"no-cache"
+    assert headers[b"expires"] == b"0"
     bodies = [m["body"] for m in messages if m["type"] == "http.response.body"]
     assert bodies == [INDEX]
 
@@ -105,3 +108,33 @@ async def test_api_streaming_chunks_pass_through_unbuffered():
     )
     release.set()
     await asyncio.wait_for(task, timeout=2.0)
+
+
+def test_mounted_frontend_cache_policy_is_release_safe(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    frontend = tmp_path / "frontend"
+    assets = frontend / "assets"
+    assets.mkdir(parents=True)
+    (frontend / "index.html").write_text(
+        '<html><head></head><body><script src="/assets/index-abc123.js"></script></body></html>',
+        encoding="utf-8",
+    )
+    (assets / "index-abc123.js").write_text("window.__version='0.3.0'", encoding="utf-8")
+
+    app = FastAPI()
+    _mount_frontend(app, frontend)
+    client = TestClient(app)
+
+    index = client.get("/boards/example")
+    assert index.status_code == 200
+    assert index.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+
+    config = client.get("/config.js")
+    assert config.status_code == 200
+    assert config.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+
+    asset = client.get("/assets/index-abc123.js")
+    assert asset.status_code == 200
+    assert asset.headers["cache-control"] == "public, max-age=31536000, immutable"

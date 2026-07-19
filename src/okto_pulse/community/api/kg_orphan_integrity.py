@@ -10,7 +10,10 @@ from pydantic import BaseModel, Field
 from okto_pulse.community.api.deps import get_unit_of_work, scheduler_control_from_request
 from okto_pulse.community.api.kg_health_probe import get_kg_health
 from okto_pulse.core.application.use_cases.operational_rest import (
+    BoardNotFoundError,
+    GetOrphanIntegrityReportUseCase,
     OrphanBackfillCommand,
+    OrphanIntegrityReportCommand,
     RunOrphanBackfillUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
@@ -46,17 +49,22 @@ def _graph_unavailable_error(board_id: str, exc: Exception) -> HTTPException:
     )
 
 
-def _report_payload(
+async def _report_payload(
     *,
     board_id: str,
     generation_id: str | None,
     limit: int,
+    actor: str,
+    uow: PulseUnitOfWork,
 ) -> dict[str, Any]:
-    report = OrphanNodeScanner().scan(
-        board_id=board_id,
-        generation_id=generation_id,
-        limit=limit,
+    result = await GetOrphanIntegrityReportUseCase(
+        scanner_factory=OrphanNodeScanner,
+    ).execute(
+        OrphanIntegrityReportCommand(board_id, generation_id, limit),
+        actor=RESTAdapterContract.actor(actor, board_id=board_id),
+        uow=uow,
     )
+    report = result.data
     payload = report.to_safe_dict()
     payload["backfill_summary"] = {
         "status": "not_run",
@@ -81,16 +89,21 @@ async def get_kg_orphan_integrity_report(
         le=MAX_ORPHAN_SAMPLE_LIMIT,
         description="Maximum number of safe orphan samples to return",
     ),
-    _: str = Depends(require_user),
+    user_id: str = Depends(require_user),
+    db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> dict[str, Any]:
     """Return a bounded, safe orphan-node report for a board."""
 
     try:
-        return _report_payload(
+        return await _report_payload(
             board_id=board_id,
             generation_id=generation_id,
             limit=limit,
+            actor=user_id,
+            uow=db,
         )
+    except BoardNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     except Exception as exc:
         raise _graph_unavailable_error(board_id, exc) from exc
 
@@ -120,6 +133,8 @@ async def post_kg_orphan_integrity_backfill(
             actor=RESTAdapterContract.actor(user_id, board_id=body.board_id),
             uow=db,
         )
+    except BoardNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     except Exception as exc:
         raise _graph_unavailable_error(body.board_id, exc) from exc
     if isinstance(result.data, dict) and "refused_by_health" in result.data:

@@ -275,11 +275,16 @@ async def list_ideation_snapshots(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all version snapshots for an ideation."""
-    result = await ListIdeationSnapshotsUseCase().execute(
-        ListIdeationSnapshotsCommand(ideation_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListIdeationSnapshotsUseCase().execute(
+            ListIdeationSnapshotsCommand(ideation_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     return result.snapshots
 
 
@@ -312,11 +317,16 @@ async def list_ideation_history(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get detailed change history for an ideation."""
-    result = await ListIdeationHistoryUseCase().execute(
-        ListIdeationHistoryCommand(ideation_id, limit=limit),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListIdeationHistoryUseCase().execute(
+            ListIdeationHistoryCommand(ideation_id, limit=limit),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     return result.history
 
 
@@ -330,11 +340,16 @@ async def list_ideation_knowledge(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all knowledge base items for an ideation."""
-    result = await ListIdeationKnowledgeUseCase().execute(
-        ListIdeationKnowledgeCommand(ideation_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListIdeationKnowledgeUseCase().execute(
+            ListIdeationKnowledgeCommand(ideation_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     return result.items
 
 
@@ -408,11 +423,16 @@ async def list_ideation_qa(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all Q&A items for an ideation."""
-    result = await ListIdeationQAUseCase().execute(
-        ListIdeationQACommand(ideation_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListIdeationQAUseCase().execute(
+            ListIdeationQACommand(ideation_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     return result.items
 
 
@@ -446,7 +466,7 @@ async def answer_ideation_question(
     """Answer an ideation Q&A question."""
     try:
         result = await AnswerIdeationQuestionUseCase().execute(
-            AnswerIdeationQuestionCommand(qa_id, data),
+            AnswerIdeationQuestionCommand(ideation_id, qa_id, data),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
@@ -470,7 +490,7 @@ async def delete_ideation_question(
     """Delete an ideation Q&A item."""
     try:
         await DeleteIdeationQuestionUseCase().execute(
-            DeleteIdeationQuestionCommand(qa_id),
+            DeleteIdeationQuestionCommand(ideation_id, qa_id),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    BigInteger,
     JSON,
     CheckConstraint,
     DateTime,
@@ -42,6 +43,37 @@ from okto_pulse.community.adapters.sqlalchemy_base import Base
 
 if TYPE_CHECKING:
     pass
+
+
+# The preparation snapshot consumes the SDLC source rows, relational health
+# evidence, and the materialization-generation marker represented by these
+# tables.  The schema lifecycle installs one INSERT/UPDATE/DELETE revision
+# trigger for every table in this closed census.  Keep the tuple concrete and
+# edition-owned: Core policy must never need to know Community table names.
+GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
+    "amendment_hotfix_revisions",
+    "app_settings",
+    "boards",
+    "canonical_debt",
+    "cards",
+    "consolidation_audit",
+    "consolidation_dead_letter",
+    "consolidation_queue",
+    "global_update_outbox",
+    "ideations",
+    "kg_cognitive_sources",
+    "kuzu_node_refs",
+    "refinements",
+    "specs",
+    "sprints",
+    "stories",
+)
+GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID = "_global"
+GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION = "gdsr-fence-v2"
+GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v1"
+GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX = (
+    "trg_global_discovery_source_revision"
+)
 
 
 class CardTypeType(TypeDecorator):
@@ -2633,4 +2665,306 @@ class KGNodeSubtype(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class GlobalDiscoveryRecoveryAttempt(Base):
+    """Durable fenced attempt history for Global Discovery recovery.
+
+    This is a new v0.3.0 table, so the Community schema lifecycle creates it
+    at its single ``Base.metadata.create_all`` boundary. The recovery adapter
+    deliberately owns no independent metadata or schema bootstrap path.
+    """
+
+    __tablename__ = "global_discovery_recovery_attempts"
+
+    __table_args__ = (
+        Index(
+            "uq_global_discovery_recovery_attempt_identity",
+            "attempt_id",
+            unique=True,
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    epoch: Mapped[int] = mapped_column(Integer, primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    requester_actor_ids_json: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'[]'")
+    )
+    request_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    replay_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    requester_actor_overflow_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    first_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    confirmation_fingerprint: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    manifest_ref: Mapped[str] = mapped_column(String(1024), nullable=False)
+    preflight_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    binding_reason: Mapped[str] = mapped_column(String(512), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    progress_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    phase: Mapped[str] = mapped_column(String(128), nullable=False)
+    preparation_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'queued'")
+    )
+    confirmation_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'unconfirmed'")
+    )
+    boards_total: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    boards_scanned: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    sources_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    sources_processed: Mapped[int] = mapped_column(Integer, nullable=False)
+    nodes_written: Mapped[int] = mapped_column(Integer, nullable=False)
+    edges_written: Mapped[int] = mapped_column(Integer, nullable=False)
+    outbox_events_drained: Mapped[int] = mapped_column(Integer, nullable=False)
+    errors: Mapped[int] = mapped_column(Integer, nullable=False)
+    heartbeat_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    active_elapsed_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    active_deadline_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    cumulative_active_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_budget_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("600000")
+    )
+    prepared_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    snapshot_fingerprint: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    confirmed_by_actor_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    confirmation_consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    audit_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    cancel_requested_at: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    cancel_requested_by_actor_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    cancel_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    resume_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resume_requested_by_actor_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    resume_audit_reason: Mapped[str | None] = mapped_column(
+        String(512), nullable=True
+    )
+    terminal_outcome: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    reason_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    retryable: Mapped[bool] = mapped_column(nullable=False)
+    supersedes_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    superseded_by_epoch: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    physical_journal_phase: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    physical_pointer_replaced: Mapped[bool | None] = mapped_column(nullable=True)
+    physical_rollback_performed: Mapped[bool | None] = mapped_column(nullable=True)
+    physical_evidence_ref: Mapped[str | None] = mapped_column(
+        String(1024), nullable=True
+    )
+
+
+class GlobalDiscoverySourceRevision(Base):
+    """O(1) relational freshness fence for preparation inputs.
+
+    SQLite triggers owned by the Community schema lifecycle advance the one
+    ``_global`` row inside the same transaction as every relevant mutation.
+    A check constraint makes the table structurally singleton-shaped, while
+    protective triggers make removal or re-keying of the fence fail closed.
+    """
+
+    __tablename__ = "global_discovery_source_revision"
+    __table_args__ = (
+        CheckConstraint(
+            "scope_id = '_global'",
+            name="ck_global_discovery_source_revision_global_scope",
+        ),
+        CheckConstraint(
+            "revision >= 0",
+            name="ck_global_discovery_source_revision_nonnegative",
+        ),
+        Index(
+            "uq_global_discovery_source_revision_scope",
+            "scope_id",
+            unique=True,
+        ),
+    )
+
+    scope_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    fence_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    trigger_manifest_version: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    incarnation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    mutation_nonce: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class GlobalDiscoveryRecoverySlot(Base):
+    """Database-enforced owner of the one global recovery lifecycle slot."""
+
+    __tablename__ = "global_discovery_recovery_slots"
+    __table_args__ = (
+        CheckConstraint(
+            "slot_id = '_global'",
+            name="ck_global_discovery_recovery_slot_global_scope",
+        ),
+        CheckConstraint(
+            "epoch >= 1",
+            name="ck_global_discovery_recovery_slot_epoch_positive",
+        ),
+        CheckConstraint(
+            "version >= 1",
+            name="ck_global_discovery_recovery_slot_version_positive",
+        ),
+    )
+
+    slot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    attempt_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    acquired_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class GlobalDiscoveryRecoveryDispatch(Base):
+    """Durable preparation/recovery dispatch with expiring claim fencing."""
+
+    __tablename__ = "global_discovery_recovery_dispatches"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "attempt_id",
+            "epoch",
+            "stage",
+            name="uq_global_discovery_recovery_dispatch_attempt_stage",
+        ),
+        Index(
+            "idx_global_discovery_recovery_dispatch_claim",
+            "stage",
+            "state",
+            "available_at",
+            "claim_expires_at",
+        ),
+    )
+
+    dispatch_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    attempt_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    claim_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    transition_event_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    transition_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    transition_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class GlobalDiscoveryRecoveryTransition(Base):
+    """Transactional structured event and exactly-once metric ledger."""
+
+    __tablename__ = "global_discovery_recovery_transitions"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "attempt_id",
+            "epoch",
+            "progress_seq",
+            name="uq_global_discovery_recovery_transition_progress",
+        ),
+        CheckConstraint(
+            "epoch >= 1",
+            name="ck_global_discovery_recovery_transition_epoch_positive",
+        ),
+        CheckConstraint(
+            "progress_seq >= 0",
+            name="ck_global_discovery_recovery_transition_progress_nonnegative",
+        ),
+        Index(
+            "idx_global_discovery_recovery_transition_metrics",
+            "operation",
+            "outcome",
+            "phase",
+            "reason_code",
+        ),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    attempt_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    progress_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    metric_labels: Mapped[dict] = mapped_column(JSON, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )

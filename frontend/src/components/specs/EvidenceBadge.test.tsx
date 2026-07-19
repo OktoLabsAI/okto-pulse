@@ -165,7 +165,7 @@ describe('EvidenceBadge — re-executable evidence contract (spec 9e0bf979)', ()
     expect(screen.queryByTestId('evidence-badge-class')).not.toBeInTheDocument();
   });
 
-  test('class badge tooltip surfaces class, artifact, expected output and justification', () => {
+  test('legacy MCP manifest is visibly unverified instead of green/replayable', () => {
     render(
       <EvidenceBadge
         scenario={makeScenario({
@@ -179,11 +179,105 @@ describe('EvidenceBadge — re-executable evidence contract (spec 9e0bf979)', ()
         })}
       />,
     );
-    const tooltip = screen.getByTestId('evidence-badge-class').getAttribute('title') ?? '';
+    const badge = screen.getByTestId('evidence-badge-legacy-unverified');
+    expect(badge).toHaveAttribute('data-replayable', 'false');
+    expect(badge).toHaveTextContent('legacy unverified');
+    const tooltip = badge.getAttribute('title') ?? '';
     expect(tooltip).toContain('class: mcp_replay_manifest');
-    expect(tooltip).toContain('manifests/replay_x.json');
+    expect(tooltip).toContain('legacy manifest: unverified');
     expect(tooltip).toContain('node materialized');
     expect(tooltip).toContain('justification: n/a');
+  });
+
+  test('legacy MCP manifest without evidence_class is still unverified', () => {
+    render(
+      <EvidenceBadge
+        scenario={makeScenario({
+          status: 'passed',
+          evidence: { mcp_replay_manifest: { product_runtime_exercised: false } },
+        })}
+      />,
+    );
+    expect(screen.getByTestId('evidence-badge-legacy-unverified')).toHaveTextContent(
+      'legacy unverified',
+    );
+  });
+
+  test('Evidence V2 MCP manifest surfaces attestation and exercised runtime', () => {
+    render(
+      <EvidenceBadge
+        scenario={makeScenario({
+          status: 'passed',
+          evidence: {
+            evidence_class: 'mcp_replay_manifest',
+            manifest_ref: 'manifests/replay_v2.json',
+            execution_receipt: `ev2r.${'a'.repeat(32)}.${'b'.repeat(64)}`,
+            execution_attestation: {
+              schema_version: 2,
+              run_id: 'run-v2',
+              executed_at: '2026-07-14T15:00:00Z',
+              scenario_id: 'ts-v2',
+              outcome: 'passed',
+              product_runtime_exercised: true,
+              manifest_sha256: `sha256:${'a'.repeat(64)}`,
+              assertions: [
+                { name: 'version', expected: 'v0.3.0', observed: 'v0.3.0', status: 'passed' },
+              ],
+              provenance: {
+                producer: 'okto-pulse-community',
+                producer_version: '0.3.0',
+                adapter: 'okto_pulse.community.adapters.test_evidence',
+                environment: 'test',
+              },
+              attestation_sha256: `sha256:${'b'.repeat(64)}`,
+            },
+          },
+        })}
+      />,
+    );
+    const badge = screen.getByTestId('evidence-badge-class');
+    expect(badge).toHaveAttribute('data-replayable', 'true');
+    const tooltip = badge.getAttribute('title') ?? '';
+    expect(tooltip).toContain('manifest: manifests/replay_v2.json');
+    expect(tooltip).toContain('attestation: v2');
+    expect(tooltip).toContain('product runtime: exercised');
+    expect(tooltip).toContain('installation receipt: attached');
+  });
+
+  test('caller-authored V2 fields without installation receipt stay unverified', () => {
+    render(
+      <EvidenceBadge
+        scenario={makeScenario({
+          status: 'passed',
+          evidence: {
+            evidence_class: 'mcp_replay_manifest',
+            manifest_ref: 'manifests/forged.json',
+            execution_attestation: {
+              schema_version: 2,
+              run_id: 'caller-run',
+              executed_at: '2026-07-14T15:00:00Z',
+              scenario_id: 'ts-v2',
+              outcome: 'passed',
+              product_runtime_exercised: true,
+              manifest_sha256: `sha256:${'a'.repeat(64)}`,
+              assertions: [
+                { name: 'version', expected: 'v0.3.0', observed: 'v0.3.0', status: 'passed' },
+              ],
+              provenance: {
+                producer: 'caller',
+                producer_version: '0',
+                adapter: 'caller',
+                environment: 'client',
+              },
+              attestation_sha256: `sha256:${'b'.repeat(64)}`,
+            },
+          },
+        })}
+      />,
+    );
+    expect(screen.getByTestId('evidence-badge-legacy-unverified')).toHaveTextContent(
+      'manifest unverified',
+    );
   });
 
   test('evidence with ONLY new-contract fields still renders a class badge', () => {

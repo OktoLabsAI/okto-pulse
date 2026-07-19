@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases.operational_rest import (
+    BoardNotFoundError,
     DigestLayerMismatchListCommand,
     ListDigestLayerMismatchUseCase,
 )
@@ -42,9 +43,12 @@ async def list_digest_layer_mismatch_endpoint(
     actual_layer, source_artifact_ref. Degrades to an empty list if the global or
     board graph is unreadable (never 5xx for a transient storage state).
     """
-    result = await ListDigestLayerMismatchUseCase().execute(
-        DigestLayerMismatchListCommand(board_id, limit, offset),
-        actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-        uow=db,
-    )
+    try:
+        result = await ListDigestLayerMismatchUseCase().execute(
+            DigestLayerMismatchListCommand(board_id, limit, offset),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=db,
+        )
+    except BoardNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     return result.data

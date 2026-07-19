@@ -20,10 +20,13 @@ the confirmed set from the durable ``sent/`` ledger).
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
+import okto_pulse.community.adapters.telemetry_sender as telemetry_sender_mod
 from okto_pulse.community.adapters.telemetry_sender import (
     CommunityTelemetryBeaconSender,
+    payload_digest,
 )
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
 from okto_pulse.core.infra.config import CoreSettings
@@ -64,6 +67,18 @@ def _settings(tmp_path: Path, **overrides) -> CoreSettings:
 class _Accepted:
     status_code = 202
 
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def json(self) -> dict:
+        return {
+            "accepted": True,
+            "outcome": "accepted",
+            "state": "committed",
+            "payload_digest": payload_digest(self.payload),
+            "receipt": "fh-test",
+        }
+
     def raise_for_status(self) -> None:
         return None
 
@@ -76,9 +91,9 @@ class _RecordingSession:
 
     def post(self, url, *args, **kwargs):
         body = kwargs.get("data")
-        if body is not None:
-            self.bodies.append(json.loads(body.decode("utf-8")))
-        return _Accepted()
+        payload = json.loads(body.decode("utf-8"))
+        self.bodies.append(payload)
+        return _Accepted(payload)
 
 
 def _enable_with_token(
@@ -161,7 +176,7 @@ def test_second_send_without_new_events_does_not_resend(
     session = _RecordingSession()
 
     first = TelemetryBeaconSender(settings, session=session).send_once()
-    assert first == {"sent": True, "batch_seq": 1}
+    assert first["sent"] is True and first["batch_seq"] == 1
 
     # No new events → the confirmed event must NOT be rebuilt into a delta.
     second = TelemetryBeaconSender(settings, session=session).send_once()
@@ -230,6 +245,11 @@ def test_bucket_start_reflects_pending_not_oldest_confirmed(
 def test_confirmation_survives_reload_via_sent_ledger(
     tmp_path: Path, monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        telemetry_sender_mod,
+        "_utcnow",
+        lambda: datetime(2026, 6, 15, 13, 0, tzinfo=timezone.utc),
+    )
     settings = _setup(tmp_path, monkeypatch)
     _append_event(
         settings, event_id="e1", occurred_at="2026-06-15T12:00:00Z", command="serve"

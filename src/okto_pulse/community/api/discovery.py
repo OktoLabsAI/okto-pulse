@@ -229,11 +229,14 @@ async def list_saved_searches(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Return the saved searches for a board (shared with all members)."""
-    result = await ListDiscoverySavedSearchesUseCase().execute(
-        ListDiscoverySavedSearchesCommand(board_id),
-        actor=RESTAdapterContract.actor(_user_id, board_id=board_id),
-        uow=uow,
-    )
+    try:
+        result = await ListDiscoverySavedSearchesUseCase().execute(
+            ListDiscoverySavedSearchesCommand(board_id),
+            actor=RESTAdapterContract.actor(_user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     return result.items
 
 
@@ -247,11 +250,14 @@ async def list_search_history(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Return the current user's last 50 search entries on this board."""
-    result = await ListDiscoverySearchHistoryUseCase().execute(
-        ListDiscoverySearchHistoryCommand(board_id),
-        actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-        uow=uow,
-    )
+    try:
+        result = await ListDiscoverySearchHistoryUseCase().execute(
+            ListDiscoverySearchHistoryCommand(board_id),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     return result.items
 
 
@@ -284,7 +290,8 @@ async def execute_discovery_intent(
     except CommandValidationError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except EntityNotFoundError as e:
-        raise HTTPException(status_code=404, detail="Intent not found") from e
+        detail = "Board not found" if e.entity_type == "board" else "Intent not found"
+        raise HTTPException(status_code=404, detail=detail) from e
     except DiscoverySelectorExecutionError as e:
         raise HTTPException(
             status_code=e.status_code,

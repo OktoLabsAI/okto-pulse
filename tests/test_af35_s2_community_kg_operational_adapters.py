@@ -35,6 +35,7 @@ from okto_pulse.core.ports.kg_operational import (
     get_kg_worker_queue_port,
     reset_kg_operational_ports_for_tests,
 )
+from okto_pulse.core.application.processors.dead_letter import build_attempt_entry
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -307,3 +308,91 @@ def test_af35_s2_community_kg_operational_boundary_is_ledgered() -> None:
     report = audit_community_core_import_boundary(REPO_ROOT)
     assert report["ok"] is True, report
     assert report["violations"] == []
+
+
+@pytest.mark.asyncio
+async def test_dlq_replay_classifies_and_deduplicates_active_claim(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'dlq_v2.db'}")
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    board_id = "dlq-v2-board"
+    async with factory() as session:
+        session.add(Board(id=board_id, name="DLQ V2", owner_id="agent"))
+        session.add(
+            ConsolidationQueue(
+                id="active-queue",
+                board_id=board_id,
+                artifact_type="spec",
+                artifact_id="spec-connectivity",
+                priority="high",
+                source="worker",
+                status="claimed",
+                attempts=2,
+                worker_id="worker-live",
+            )
+        )
+        session.add(
+            ConsolidationDeadLetter(
+                id="dlq-connectivity",
+                board_id=board_id,
+                artifact_type="spec",
+                artifact_id="spec-connectivity",
+                attempts=3,
+                errors=[
+                    build_attempt_entry(
+                        attempt=3,
+                        error_type="GraphUnavailable",
+                        message="connection refused",
+                    )
+                ],
+            )
+        )
+        await session.commit()
+
+    queue = CommunitySqlAlchemyKGWorkerQueue()
+    async with factory() as session:
+        first = await queue.reprocess_dead_letter_rows(
+            session,
+            board_id=board_id,
+            dead_letter_ids=["dlq-connectivity"],
+            limit=10,
+        )
+        await session.commit()
+        active = await session.get(ConsolidationQueue, "active-queue")
+        assert active.status == "claimed"
+        assert active.worker_id == "worker-live"
+        assert first["recovery_by_class"] == {
+            "connectivity": 1,
+            "invalid_payload": 0,
+            "true_drift": 0,
+        }
+        assert first["already_queued"][0]["replay_action"] == "deduplicated"
+        assert first["already_queued"][0]["reason_code"] == (
+            "kg_recovery.connectivity"
+        )
+
+    async with factory() as session:
+        replay = await queue.reprocess_dead_letter_rows(
+            session,
+            board_id=board_id,
+            dead_letter_ids=["dlq-connectivity"],
+            limit=10,
+        )
+        await session.commit()
+        count = len(
+            (
+                await session.execute(
+                    select(ConsolidationQueue).where(
+                        ConsolidationQueue.board_id == board_id,
+                        ConsolidationQueue.artifact_type == "spec",
+                        ConsolidationQueue.artifact_id == "spec-connectivity",
+                    )
+                )
+            ).scalars().all()
+        )
+        assert replay["selected"] == 0
+        assert count == 1
+
+    await engine.dispose()

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,9 +35,21 @@ def test_uvicorn_log_config_suppresses_only_ambiguous_startup_line():
 
     log_config = build_uvicorn_log_config()
     handler_filters = log_config["handlers"]["default"]["filters"]
+    access_handler_filters = log_config["handlers"]["access"]["filters"]
+    access_logger_filters = log_config["loggers"]["uvicorn.access"]["filters"]
+    materialization_logger = log_config["loggers"][
+        "okto_pulse.kg.materialization_health.observability"
+    ]
 
     assert "suppress_ambiguous_startup_complete" in handler_filters
     assert "suppress_expected_shutdown_noise" in handler_filters
+    assert "redact_sensitive_access_query" in access_handler_filters
+    assert "redact_sensitive_access_query" in access_logger_filters
+    assert materialization_logger == {
+        "handlers": ["default"],
+        "level": "INFO",
+        "propagate": False,
+    }
 
     filter_ = SuppressAmbiguousStartupComplete()
     ambiguous_record = logging_record("Application startup complete.")
@@ -41,6 +57,71 @@ def test_uvicorn_log_config_suppresses_only_ambiguous_startup_line():
 
     assert filter_.filter(ambiguous_record) is False
     assert filter_.filter(useful_record) is True
+
+
+def test_materialization_logger_is_idempotent_and_narrow_after_dual_config():
+    script = r"""
+import io
+import json
+import logging
+import logging.config
+
+from okto_pulse.community.runtime import build_uvicorn_log_config
+
+stream = io.StringIO()
+config = build_uvicorn_log_config()
+config["handlers"]["default"] = {
+    "class": "logging.StreamHandler",
+    "level": "INFO",
+    "stream": stream,
+}
+logging.config.dictConfig(config)
+logging.config.dictConfig(config)
+
+target = logging.getLogger(
+    "okto_pulse.kg.materialization_health.observability"
+)
+sibling = logging.getLogger("okto_pulse.core.kg.unrelated")
+sibling.setLevel(logging.INFO)
+target.info("h4-materialization-receipt")
+sibling.info("unrelated-core-info")
+output = stream.getvalue()
+print(json.dumps({
+    "handler_count": len(target.handlers),
+    "receipt_count": output.count("h4-materialization-receipt"),
+    "sibling_captured": "unrelated-core-info" in output,
+}))
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        value
+        for value in (str(REPO_SRC), env.get("PYTHONPATH", ""))
+        if value
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    result = json.loads(completed.stdout)
+
+    assert result == {
+        "handler_count": 1,
+        "receipt_count": 1,
+        "sibling_captured": False,
+    }
+
+
+def test_materialization_logger_key_matches_the_core_logger_object():
+    from okto_pulse.community import runtime
+    from okto_pulse.core.observability import materialization_health
+
+    assert (
+        logging.getLogger(runtime._MATERIALIZATION_HEALTH_LOGGER)
+        is materialization_health._logger
+    )
 
 
 def test_uvicorn_log_config_suppresses_expected_shutdown_noise_only_while_stopping():

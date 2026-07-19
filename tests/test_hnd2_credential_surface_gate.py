@@ -4,8 +4,6 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 REPO_SRC = Path(__file__).parent.parent / "src"
 CORE_SRC = Path(__file__).parent.parent.parent / "okto-pulse-core" / "src"
 
@@ -103,6 +101,7 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     import okto_pulse.community.adapters.relational_schema_lifecycle as lifecycle
     import okto_pulse.community.adapters.sqlalchemy_database as database
     import okto_pulse.community.config as community_config
+    import okto_pulse.community.adapters.kg_runtime as kg_runtime
     import okto_pulse.community.main as community_main
     import okto_pulse.community.seed as community_seed
     import okto_pulse.core.services.application_kg as application_kg
@@ -154,6 +153,11 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     monkeypatch.setattr(core, "configure_storage", lambda _provider: None)
     monkeypatch.setattr(composition, "community_storage_provider", lambda _path: None)
     monkeypatch.setattr(
+        composition,
+        "configure_community_kg_registry",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
         cli, "_configure_community_relational_runtime", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(database, "init_db", fake_init_db)
@@ -165,6 +169,11 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     )
     monkeypatch.setattr(
         application_kg, "get_current_provider_registry", lambda: registry
+    )
+    monkeypatch.setattr(
+        kg_runtime,
+        "board_kuzu_path",
+        lambda _board_id: tmp_path / "graph",
     )
 
     cmd_init(SimpleNamespace(mcp_port=8101, agents=None))

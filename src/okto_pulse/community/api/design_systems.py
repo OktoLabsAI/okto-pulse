@@ -122,12 +122,15 @@ async def list_design_systems(
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),
 ) -> list[dict[str, Any]]:
-    result = await ListDesignSystemsUseCase().execute(
-        DesignSystemCommand(scope=scope, board_id=board_id or ""),
-        actor=RESTAdapterContract.actor(actor, board_id=board_id),
-        uow=db,
-    )
-    return result.data
+    try:
+        result = await ListDesignSystemsUseCase().execute(
+            DesignSystemCommand(scope=scope, board_id=board_id or ""),
+            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            uow=db,
+        )
+        return result.data
+    except DesignSystemError as exc:
+        raise _err(exc)
 
 
 # NOTE: the literal /design-systems/export and /design-systems/import routes
@@ -205,14 +208,18 @@ async def import_design_systems(
 @router.get("/design-systems/{design_system_id}/export")
 async def export_design_system(
     design_system_id: str,
+    board_id: str | None = None,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),
 ) -> dict[str, Any]:
     """Export a single Design System (any scope) as a one-item envelope."""
     try:
         result = await ExportDesignSystemsUseCase().execute(
-            ExportDesignSystemsCommand(design_system_id=design_system_id),
-            actor=RESTAdapterContract.actor(actor),
+            ExportDesignSystemsCommand(
+                design_system_id=design_system_id,
+                board_id=board_id,
+            ),
+            actor=RESTAdapterContract.actor(actor, board_id=board_id),
             uow=db,
         )
         return result
@@ -223,13 +230,17 @@ async def export_design_system(
 @router.get("/design-systems/{design_system_id}")
 async def get_design_system(
     design_system_id: str,
+    board_id: str | None = None,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),
 ) -> dict[str, Any]:
     try:
         result = await GetDesignSystemUseCase().execute(
-            DesignSystemCommand(design_system_id=design_system_id),
-            actor=RESTAdapterContract.actor(actor),
+            DesignSystemCommand(
+                design_system_id=design_system_id,
+                board_id=board_id or "",
+            ),
+            actor=RESTAdapterContract.actor(actor, board_id=board_id),
             uow=db,
         )
         return result.data
@@ -241,6 +252,7 @@ async def get_design_system(
 async def update_design_system(
     design_system_id: str,
     raw: dict[str, Any] = Body(default_factory=dict),
+    board_id: str | None = None,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),
 ) -> dict[str, Any]:
@@ -255,9 +267,10 @@ async def update_design_system(
         result = await UpdateDesignSystemUseCase().execute(
             DesignSystemCommand(
                 design_system_id=design_system_id,
+                board_id=board_id or "",
                 payload=req.model_dump(exclude_unset=True),
             ),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor(actor, board_id=board_id),
             uow=db,
         )
         return result.data
@@ -268,14 +281,21 @@ async def update_design_system(
 @router.delete("/design-systems/{design_system_id}", status_code=204)
 async def delete_design_system(
     design_system_id: str,
+    board_id: str | None = None,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),
 ) -> None:
-    result = await DeleteDesignSystemUseCase().execute(
-        DesignSystemCommand(design_system_id=design_system_id),
-        actor=RESTAdapterContract.actor(actor),
-        uow=db,
-    )
+    try:
+        result = await DeleteDesignSystemUseCase().execute(
+            DesignSystemCommand(
+                design_system_id=design_system_id,
+                board_id=board_id or "",
+            ),
+            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            uow=db,
+        )
+    except DesignSystemError as exc:
+        raise _err(exc)
     if not result.data:
         raise HTTPException(
             status_code=404,
@@ -323,11 +343,14 @@ async def unlink_board_design_system(
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),
 ) -> None:
-    result = await UnlinkBoardDesignSystemUseCase().execute(
-        DesignSystemCommand(board_id=board_id),
-        actor=RESTAdapterContract.actor(actor, board_id=board_id),
-        uow=db,
-    )
+    try:
+        result = await UnlinkBoardDesignSystemUseCase().execute(
+            DesignSystemCommand(board_id=board_id),
+            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            uow=db,
+        )
+    except DesignSystemError as exc:
+        raise _err(exc)
     if not result.data:
         raise HTTPException(
             status_code=404,
@@ -345,9 +368,12 @@ async def get_board_design_system(
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),
 ) -> dict[str, Any]:
-    result = await GetBoardDesignSystemUseCase().execute(
-        DesignSystemCommand(board_id=board_id),
-        actor=RESTAdapterContract.actor(actor, board_id=board_id),
-        uow=db,
-    )
-    return result.data
+    try:
+        result = await GetBoardDesignSystemUseCase().execute(
+            DesignSystemCommand(board_id=board_id),
+            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            uow=db,
+        )
+        return result.data
+    except DesignSystemError as exc:
+        raise _err(exc)

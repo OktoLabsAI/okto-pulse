@@ -27,11 +27,41 @@ import subprocess
 import sys
 import textwrap
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
 GRAPH_FILENAME = "graph.lbug"
+
+
+@contextmanager
+def _durable_global_writer(
+    tmp_path: Path,
+    *,
+    operation: str,
+) -> Iterator[None]:
+    from okto_pulse.community.adapters.coordination import (
+        CommunityLocalWriteLockPort,
+    )
+    from okto_pulse.core.kg.global_discovery_writer import (
+        GlobalDiscoveryWriterLease,
+    )
+    from okto_pulse.core.kg.single_writer_lock import KGSingleWriterLock
+
+    lease = GlobalDiscoveryWriterLease.acquire(
+        operation=operation,
+        lock=KGSingleWriterLock(
+            base_dir=tmp_path / "locks",
+            write_lock_port=CommunityLocalWriteLockPort(),
+        ),
+    )
+    try:
+        with lease.guard():
+            yield
+    finally:
+        lease.release()
 
 
 def _wal_path(graph_path: Path) -> Path:
@@ -45,9 +75,7 @@ def _make_board_graph_dir(base: Path, board_id: str) -> Path:
 
 
 def _assert_no_quarantine(base: Path) -> None:
-    leftovers = [
-        p for p in base.rglob("*") if "quarantine" in p.name.lower()
-    ]
+    leftovers = [p for p in base.rglob("*") if "quarantine" in p.name.lower()]
     assert leftovers == [], f"quarentena inesperada no tmp: {leftovers}"
 
 
@@ -106,9 +134,7 @@ def test_s3_close_all_graphs_on_shutdown_checkpoints_and_closes(
         )
     assert len(kg_runtime._board_db_cache) == 2
 
-    with caplog.at_level(
-        logging.INFO, logger="okto_pulse.community.adapters.kg_shutdown"
-    ):
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
         summary = close_all_graphs_on_shutdown()
 
     # Contrato do evento (Architecture Design "Shutdown fecha os grafos").
@@ -154,6 +180,108 @@ def test_s3_close_all_graphs_on_shutdown_checkpoints_and_closes(
     _assert_no_quarantine(tmp_path)
 
 
+def test_s3_close_all_graphs_on_shutdown_closes_global_discovery(
+    tmp_path: Path,
+    clean_kg_db_cache,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """O Global Discovery não vive no cache de boards, mas fecha no teardown."""
+    import ladybug
+
+    from okto_pulse.community.adapters.global_discovery_runtime import (
+        CommunityGlobalDiscoveryRuntime,
+    )
+    from okto_pulse.community.adapters.kg_shutdown import (
+        close_all_graphs_on_shutdown,
+    )
+    from okto_pulse.core.services import application_kg
+
+    graph_path = tmp_path / "global" / "discovery.lbug"
+    graph_path.parent.mkdir(parents=True)
+    wal_path = graph_path.parent / f"{graph_path.name}.wal"
+
+    # Inicializa um artefato existente para que o runtime não precise passar
+    # pelo bootstrap/write barrier. O fluxo seguinte é o mesmo handle cacheado
+    # usado pelo Global Discovery no servidor.
+    db = ladybug.Database(str(graph_path))
+    conn = ladybug.Connection(db)
+    conn.execute("CREATE NODE TABLE ShutdownGlobalProbe(id INT64, PRIMARY KEY(id))")
+    conn.close()
+    db.close()
+    del conn, db
+    gc.collect()
+
+    class _NativeGraphRuntime:
+        @staticmethod
+        def open_kuzu_db(path: Path, *, on_corruption=None):
+            del on_corruption
+            return ladybug.Database(str(path))
+
+        @staticmethod
+        def new_connection(database):
+            return ladybug.Connection(database)
+
+        @staticmethod
+        def load_vector_extension(connection, *, install: bool = True) -> None:
+            # Reproduz os comandos idempotentes que explicam o WAL residual
+            # pequeno (156 bytes depois de três opens no engine atual).
+            if install:
+                connection.execute("INSTALL VECTOR")
+            connection.execute("LOAD VECTOR")
+
+        @staticmethod
+        def is_ladybug_corruption_error(exc: BaseException) -> bool:
+            return False
+
+    global_runtime = CommunityGlobalDiscoveryRuntime(
+        graph_runtime=_NativeGraphRuntime(),
+        graph_path_provider=lambda: graph_path,
+    )
+    with _durable_global_writer(tmp_path, operation="kgd01_shutdown_seed"):
+        global_runtime.execute("CREATE (:ShutdownGlobalProbe {id: 1})")
+    assert global_runtime._db is not None
+    assert wal_path.exists() and wal_path.stat().st_size > 0
+
+    class _Registry:
+        config = type("Config", (), {"kg_base_dir": str(tmp_path)})()
+
+        @staticmethod
+        def require_global_discovery_runtime():
+            return global_runtime
+
+    monkeypatch.setattr(
+        application_kg,
+        "get_current_provider_registry",
+        lambda: _Registry(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        summary = close_all_graphs_on_shutdown(runtime=clean_kg_db_cache)
+
+    assert summary["boards_closed"] == 0
+    assert summary["boards_failed"] == 0
+    assert global_runtime._db is None
+    assert (not wal_path.exists()) or wal_path.stat().st_size == 0
+    assert any(
+        getattr(record, "event", None) == "kg.shutdown.global_graph_closed"
+        for record in caplog.records
+    )
+
+    # O close do engine checkpointou o commit no main: reopen estrito não
+    # depende de replay/salvage e preserva o dado.
+    db = ladybug.Database(str(graph_path), throw_on_wal_replay_failure=True)
+    conn = ladybug.Connection(db)
+    try:
+        result = conn.execute("MATCH (n:ShutdownGlobalProbe) RETURN count(n)")
+        assert result.get_next()[0] == 1
+    finally:
+        conn.close()
+        db.close()
+    del conn, db
+    gc.collect()
+
+
 def test_s3_close_all_graphs_is_idempotent_and_safe_with_empty_cache(
     clean_kg_db_cache, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -162,9 +290,7 @@ def test_s3_close_all_graphs_is_idempotent_and_safe_with_empty_cache(
         close_all_graphs_on_shutdown,
     )
 
-    with caplog.at_level(
-        logging.INFO, logger="okto_pulse.community.adapters.kg_shutdown"
-    ):
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
         summary = close_all_graphs_on_shutdown()
     assert summary["boards_closed"] == 0
     assert summary["boards_failed"] == 0
@@ -174,6 +300,60 @@ def test_s3_close_all_graphs_is_idempotent_and_safe_with_empty_cache(
         if getattr(r, "event", None) == "kg.shutdown.graphs_closed"
     ]
     assert len(events) == 1
+
+
+def test_s3_shutdown_drains_runtime_health_jobs_before_writer_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A runtime-local daemon probe cannot reopen a graph after teardown."""
+
+    from okto_pulse.community.adapters import kg_shutdown, ladybug_writer
+    from okto_pulse.core.services import application_kg
+
+    events: list[str] = []
+
+    def drain_kg_health_probes(*, timeout_s: float) -> int:
+        assert timeout_s == kg_shutdown._HEALTH_PROBE_DRAIN_TIMEOUT_S
+        events.append("health_drained")
+        return 0
+
+    @contextmanager
+    def writer_scope(*, scope: str, phase: str):
+        assert (scope, phase) == ("shutdown", "checkpoint_close")
+        events.append("writer_enter")
+        try:
+            yield None
+        finally:
+            events.append("writer_exit")
+
+    def close_graphs(*, runtime=None):
+        del runtime
+        events.append("graphs_closed")
+        return {"boards_closed": 0, "boards_failed": 0, "duration_ms": 0}
+
+    monkeypatch.setattr(
+        application_kg,
+        "drain_kg_health_probes",
+        drain_kg_health_probes,
+    )
+    monkeypatch.setattr(ladybug_writer, "ladybug_writer_scope", writer_scope)
+    monkeypatch.setattr(
+        kg_shutdown,
+        "_close_all_graphs_with_writer_lease",
+        close_graphs,
+    )
+
+    assert kg_shutdown.close_all_graphs_on_shutdown() == {
+        "boards_closed": 0,
+        "boards_failed": 0,
+        "duration_ms": 0,
+    }
+    assert events == [
+        "health_drained",
+        "writer_enter",
+        "graphs_closed",
+        "writer_exit",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +387,23 @@ def test_s3_e2e_serve_signal_runs_ordered_graph_shutdown(tmp_path: Path) -> None
     mcp_port = _free_port()
 
     env = dict(os.environ)
+    # ``pytest`` sees the checkout through ``tests/conftest.py``, but a fresh
+    # ``python -m`` subprocess does not inherit those ``sys.path`` mutations.
+    # Pin this source-tree E2E to the current Community + Core checkouts so an
+    # older installed wheel cannot produce a false failure (or false pass).
+    community_root = Path(__file__).resolve().parents[1]
+    workspace_root = community_root.parent
+    source_paths = (
+        community_root / "src",
+        workspace_root / "okto_labs_pulse_core" / "src",
+    )
+    inherited_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [
+            *(str(path) for path in source_paths),
+            *([inherited_pythonpath] if inherited_pythonpath else []),
+        ]
+    )
     env.update(
         {
             "DATA_DIR": str(data_dir),
@@ -261,10 +458,18 @@ def test_s3_e2e_serve_signal_runs_ordered_graph_shutdown(tmp_path: Path) -> None
                 proc.wait(timeout=30)
 
     output = out_path.read_text(encoding="utf-8", errors="replace")
-    assert (
-        "kg.shutdown.graphs_closed" in output
-        or "KG graphs closed on shutdown" in output
-    ), f"teardown não alcançou o close dos grafos; log:\n{output[-4000:]}"
+    assert "kg.shutdown.global_graph_closed" in output, (
+        "teardown não publicou o recibo estruturado do global graph; "
+        f"exit={proc.returncode}; "
+        f"board_receipt={'kg.shutdown.graphs_closed' in output}; "
+        f"human_summary={'KG graphs closed on shutdown' in output}"
+    )
+    assert "kg.shutdown.graphs_closed" in output, (
+        "teardown não publicou o recibo estruturado dos board graphs; "
+        f"exit={proc.returncode}; "
+        f"global_receipt={'kg.shutdown.global_graph_closed' in output}; "
+        f"human_summary={'KG graphs closed on shutdown' in output}"
+    )
     # Nenhum board pode terminar com WAL não-vazio após shutdown limpo.
     for wal in data_dir.glob("boards/*/graph.lbug.wal"):
         assert wal.stat().st_size == 0, f"WAL residual pós-shutdown: {wal}"

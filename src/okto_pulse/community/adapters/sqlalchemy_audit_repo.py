@@ -7,6 +7,7 @@ stay ports-only for audit/outbox persistence.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Callable
 
 from okto_pulse.core.kg.interfaces.audit_dtos import (
@@ -18,8 +19,22 @@ from okto_pulse.core.kg.interfaces.audit_dtos import (
 
 
 class CommunityAuditRepository:
-    def __init__(self, session_factory: Callable):
+    def __init__(
+        self,
+        session_factory: Callable,
+        *,
+        materialization_generation_store: Any | None = None,
+    ):
         self._sf = session_factory
+        if materialization_generation_store is None:
+            from okto_pulse.community.adapters.materialization_health import (
+                CommunityMaterializationGenerationStore,
+            )
+
+            materialization_generation_store = CommunityMaterializationGenerationStore(
+                session_factory
+            )
+        self._materialization_generation_store = materialization_generation_store
 
     def _to_audit_row(self, obj: Any) -> AuditRow:
         return AuditRow(
@@ -70,12 +85,16 @@ class CommunityAuditRepository:
 
         async with self._sf() as session:
             result = (
-                await session.execute(
-                    select(ConsolidationAudit).where(
-                        ConsolidationAudit.session_id == session_id
+                (
+                    await session.execute(
+                        select(ConsolidationAudit).where(
+                            ConsolidationAudit.session_id == session_id
+                        )
                     )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if result is None:
                 return None
             return self._to_audit_row(result)
@@ -91,9 +110,7 @@ class CommunityAuditRepository:
             rows = (
                 (
                     await session.execute(
-                        select(KuzuNodeRef).where(
-                            KuzuNodeRef.session_id == session_id
-                        )
+                        select(KuzuNodeRef).where(KuzuNodeRef.session_id == session_id)
                     )
                 )
                 .scalars()
@@ -118,11 +135,19 @@ class CommunityAuditRepository:
     ) -> None:
         from okto_pulse.community.adapters.sqlalchemy_models import (
             ConsolidationAudit,
+            DomainEventRow,
             GlobalUpdateOutbox,
             KuzuNodeRef,
         )
 
         async with self._sf() as session:
+            generation_advance = (
+                await self._materialization_generation_store.advance_in_session(
+                    session,
+                    board_id=audit.board_id,
+                    correlation_id=audit.session_id,
+                )
+            )
             session.add(
                 ConsolidationAudit(
                     session_id=audit.session_id,
@@ -160,7 +185,31 @@ class CommunityAuditRepository:
                     payload=outbox_event.payload,
                 )
             )
+            session.add(
+                DomainEventRow(
+                    id=str(uuid.uuid4()),
+                    event_type="kg.materialization_generation_advanced",
+                    board_id=audit.board_id,
+                    actor_id=None,
+                    actor_type="agent",
+                    payload_json={
+                        "correlation_id": audit.session_id,
+                        "materialization_generation": (generation_advance.generation),
+                        "previous_materialization_generation": (
+                            generation_advance.previous_generation
+                        ),
+                    },
+                    occurred_at=audit.committed_at,
+                )
+            )
             await session.commit()
+            try:
+                self._materialization_generation_store.log_advanced(generation_advance)
+            except Exception:
+                # The DomainEventRow above is the durable integration fact.
+                # A secondary logging sink cannot turn a committed write into
+                # an apparent failed acknowledgement.
+                pass
 
     async def mark_audit_undone(self, session_id: str) -> None:
         from datetime import datetime, timezone

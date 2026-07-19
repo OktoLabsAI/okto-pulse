@@ -52,21 +52,21 @@ class DictArtifactStore:
 
 
 def test_f06_production_composition_injects_durable_artifact_store(
-    monkeypatch, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     from okto_pulse.community.adapters.composition import (
         _apply_rebuild_audit_storage,
         _apply_rebuild_ingestion,
     )
 
-    monkeypatch.setenv("OKTO_PULSE_REBUILD_BASE_DIR", str(tmp_path))
     registry = SimpleNamespace()
-    _apply_rebuild_audit_storage(registry)
+    _apply_rebuild_audit_storage(registry, kg_base_dir=str(tmp_path))
     _apply_rebuild_ingestion(registry)
 
     assert registry.rebuild_ingestion_port.artifact_store is (
         registry.rebuild_audit_artifact_store
     )
+    assert registry.rebuild_audit_artifact_store._base_dir == tmp_path  # noqa: SLF001
 
 
 def _queue_db(tmp_path: Path) -> Path:

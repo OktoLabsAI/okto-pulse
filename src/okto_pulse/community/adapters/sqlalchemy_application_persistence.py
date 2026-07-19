@@ -6,7 +6,7 @@ import copy
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import and_, event, or_, select
+from sqlalchemy import and_, event, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from okto_pulse.community.adapters import sqlalchemy_models as models
@@ -153,22 +153,37 @@ def _realm_predicate(entity: str, scope: RealmScope):
 
 def _predicate(model: Any, item: ApplicationFilter):
     column = getattr(model, item.field)
+    value: Any = item.value
+    # SQLite's CURRENT_TIMESTAMP stores second precision without a fractional
+    # suffix, while SQLAlchemy datetime binds include ``.000000``. Lexical
+    # comparisons therefore redeliver the cursor anchor. Community owns this
+    # concrete normalization; Core only supplies the timestamp+id contract.
+    if model is models.ActivityLog and item.field == "created_at" and item.operator in {
+        "eq",
+        "ne",
+        "gte",
+        "lte",
+        "gt",
+        "lt",
+    }:
+        column = func.julianday(column)
+        value = func.julianday(item.value)
     if item.operator == "eq":
-        return column == item.value
+        return column == value
     if item.operator == "ne":
-        return column != item.value
+        return column != value
     if item.operator == "in":
         return column.in_(tuple(item.value))
     if item.operator == "not_in":
         return column.notin_(tuple(item.value))
     if item.operator == "gte":
-        return column >= item.value
+        return column >= value
     if item.operator == "lte":
-        return column <= item.value
+        return column <= value
     if item.operator == "gt":
-        return column > item.value
+        return column > value
     if item.operator == "lt":
-        return column < item.value
+        return column < value
     if item.operator == "is_true":
         return column.is_(True)
     if item.operator == "is_false":

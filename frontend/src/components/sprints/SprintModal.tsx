@@ -10,7 +10,7 @@ import {
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { exportSprint, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
-import type { Sprint, SprintStatus } from '@/types';
+import type { AllowedTransition, Sprint, SprintStatus } from '@/types';
 import { SPRINT_STATUS_LABELS, SPRINT_STATUS_COLORS } from '@/types';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 import { EditableField } from '@/components/shared/EditableField';
@@ -167,6 +167,7 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
   const [specCards, setSpecCards] = useState<any[]>([]);
   const [parentSpec, setParentSpec] = useState<any>(null);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [allowedTransitions, setAllowedTransitions] = useState<AllowedTransition[]>([]);
 
   // The Cancellation tab only exists while the sprint is cancelled.
   useEffect(() => {
@@ -180,6 +181,13 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
       setLoading(true);
       const data = await api.getSprint(sprintId);
       setSprint(data);
+      if (typeof api.getAllowedTransitions === 'function') {
+        api.getAllowedTransitions(data.board_id, {
+          entity_type: 'sprint',
+          entity_id: data.id,
+        }).then((response) => setAllowedTransitions(response.allowed_transitions))
+          .catch(() => setAllowedTransitions([]));
+      }
       // Load parent spec for scope resolution
       if (data.spec_id) {
         api.getSpec(data.spec_id).then(setParentSpec).catch(() => setParentSpec(null));
@@ -199,6 +207,7 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
     try {
       await api.moveSprint(sprintId, {
         status,
+        expected_version: sprint.version,
         ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
       });
       toast.success(`Sprint moved to ${SPRINT_STATUS_LABELS[status]}`);
@@ -222,7 +231,10 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
 
   const handleSprintTextSave = async (field: 'objective' | 'expected_outcome', value: string) => {
     try {
-      await api.updateSprint(sprintId, { [field]: value.trim() || null });
+      await api.updateSprint(sprintId, {
+        [field]: value.trim() || null,
+        expected_version: sprint?.version,
+      });
       await loadSprint();
     } catch (e: any) {
       toast.error(e?.message || 'Failed to update sprint');
@@ -240,16 +252,21 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
     );
   }
 
-  // Next status for contextual action
-  const nextAction: Record<SprintStatus, { label: string; status: SprintStatus } | null> = {
-    draft: { label: 'Activate', status: 'active' },
-    active: { label: 'Submit for Review', status: 'review' },
-    review: { label: 'Close Sprint', status: 'closed' },
-    closed: null,
-    cancelled: null,
-  };
-
-  const action = nextAction[sprint.status];
+  // The action comes from the same Core registry enforced by the mutation.
+  const currentRank = FLOW_STATUSES.indexOf(sprint.status);
+  const forward = allowedTransitions.find((transition) => {
+    const rank = FLOW_STATUSES.indexOf(transition.to_status as SprintStatus);
+    return rank > currentRank;
+  });
+  const selectedTransition = forward || allowedTransitions.find(
+    (transition) => transition.capabilities?.includes('reopen'),
+  );
+  const action = selectedTransition
+    ? {
+        label: selectedTransition.label,
+        status: selectedTransition.to_status as SprintStatus,
+      }
+    : null;
   const currentIdx = FLOW_STATUSES.indexOf(sprint.status as any);
   const displayCounts = deriveSprintDisplayCounts(sprint.cards || []);
 

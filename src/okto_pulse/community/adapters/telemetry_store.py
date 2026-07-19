@@ -78,7 +78,7 @@ class CommunityLocalTelemetryStore:
         """Persist a product-telemetry SNAPSHOT locally, append-only (R3A-F)."""
         self.ensure_dirs()
         dt = (
-            str(record.get("snapshot_at", ""))[:10]
+            str(record.get("event_time") or record.get("snapshot_at", ""))[:10]
             or datetime.now(timezone.utc).date().isoformat()
         )
         path = self.snapshots_dir / f"snapshot-{dt}.jsonl"

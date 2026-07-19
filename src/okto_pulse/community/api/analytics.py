@@ -41,6 +41,7 @@ from okto_pulse.core.application.use_cases import (
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.services.analytics_contract import parse_analytics_datetime
 
 router = APIRouter()
 
@@ -51,22 +52,13 @@ router = APIRouter()
 
 
 def _parse_date(value: str | None, end_of_day: bool = False) -> datetime | None:
-    """Parse an ISO date string, returning None if absent or invalid.
-    When end_of_day=True, sets time to 23:59:59.999999 so the entire day is included.
+    """Compatibility name for the Core UTC half-open temporal contract.
+
+    ``end_of_day=True`` now means the exclusive start of the following UTC day;
+    analytics readers apply it with ``created_at < bound``.
     """
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        # If only a date was provided (no time component) and end_of_day requested,
-        # set to end of day so filters include cards created during that day
-        if end_of_day and "T" not in value:
-            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
-        return dt
-    except (ValueError, TypeError):
-        return None
+
+    return parse_analytics_datetime(value, end_exclusive=end_of_day)
 
 
 def _utc_datetime(value) -> datetime | None:

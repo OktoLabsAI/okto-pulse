@@ -185,11 +185,34 @@ def run_preservation_smoke() -> dict[str, object]:
         )
 
         # --- 5. mcp (tool inventory) ---------------------------------------- #
-        # build_mcp_asgi_app constructs the same MCP ASGI surface the dual-port
-        # runner serves; the tool registry is the FastMCP instance behind it.
-        mcp_app = _srv.build_mcp_asgi_app()
-        evidence["mcp_asgi_app"] = type(mcp_app).__name__
-        tools = asyncio.run(_srv.mcp.get_tools())
+        # Build the Community MCP ASGI surface from the frozen resource
+        # projection published by create_community_app's cold-start
+        # transaction. Core's build_mcp_asgi_app is fail-closed and refuses an
+        # unfrozen projection; the app-owned transaction supplies the exact
+        # frozen catalog + projection identity plus the runtime composition, and
+        # the transaction is rolled back afterwards.
+        from okto_pulse.community.adapters.mcp_host import (
+            build_community_mcp_asgi_app,
+        )
+        from okto_pulse.core.composition import runtime_composition_scope
+
+        mcp_transaction = app.state.mcp_cold_start_transaction
+        mcp_composition = app.state.runtime_composition
+        try:
+            frozen_resources, projection_identity = (
+                mcp_transaction.require_frozen_projection()
+            )
+            mcp_app = build_community_mcp_asgi_app(
+                catalog=_srv.mcp,
+                resource_catalog=frozen_resources,
+                projection_identity=projection_identity,
+                composition=mcp_composition,
+            )
+            evidence["mcp_asgi_app"] = type(mcp_app).__name__
+            with runtime_composition_scope(mcp_composition):
+                tools = asyncio.run(_srv.mcp.get_tools())
+        finally:
+            mcp_transaction.rollback()
         tool_names = (
             list(tools.keys())
             if hasattr(tools, "keys")

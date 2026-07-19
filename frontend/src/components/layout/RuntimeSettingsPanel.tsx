@@ -732,17 +732,26 @@ function LiveQueueHealthPanel({ health }: LiveQueueHealthPanelProps) {
           refresh {HEALTH_POLL_INTERVAL_MS / 1000}s · /api/v1/kg/queue/health
         </span>
       </div>
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <Metric label="Depth" value={health?.queue_depth ?? '—'} />
         <Metric
           label="Oldest pending"
           value={health ? `${health.oldest_pending_age_s.toFixed(1)}s` : '—'}
         />
         <Metric
-          label="Dead-letter"
+          label="Consolidation DLQ"
           value={health?.dead_letter_count ?? '—'}
           tone={
             health && health.dead_letter_count > 0 ? 'amber' : 'emerald'
+          }
+        />
+        <Metric
+          label="Global outbox terminal"
+          value={health?.global_outbox_dead_letter_count ?? '—'}
+          tone={
+            health && (health.global_outbox_dead_letter_count ?? 0) > 0
+              ? 'amber'
+              : 'emerald'
           }
         />
         <Metric label="Claims / min" value={health?.claims_per_min_1m ?? '—'} />

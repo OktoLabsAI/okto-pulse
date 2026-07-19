@@ -60,9 +60,9 @@ Current 0.3.0 surface:
 | Surface | Count |
 | --- | ---: |
 | Governance gates | 17 |
-| Core MCP tools | 265 |
+| Core MCP tools | 276 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 265 |
+| MCP tools exposed by `okto-pulse serve` | 276 |
 
 The community package materializes the full `okto-pulse-core` command catalog in
 its FastMCP host. That means installed community runtimes expose the complete
@@ -161,7 +161,7 @@ Estimated context cost for an agent connected to the Pulse MCP server
 | Component | Tokens |
 | --- | --- |
 | Server `instructions` (agent operating instructions) | ~2.0K |
-| `tools/list` — 265 tools (name + description + JSON schema) | ~34.5K |
+| `tools/list` — 276 tools (name + description + JSON schema) | ~34.5K |
 | **Total at connect** | **~36.5K** |
 
 With prompt caching this block is paid in full only on the first turn of a
@@ -260,6 +260,15 @@ Operational health is visible through:
 - MCP health tools
 - dead-letter and queue metrics
 - graph database runtime settings in the board settings panel
+
+`GET /health` is a liveness endpoint: it always keeps the backward-compatible
+HTTP 200 and `status: "healthy"` contract while the process can answer requests.
+Relational readiness/integrity is reported separately through
+`integrity_status` and `findings.sprint_origin_integrity`. A missing sprint
+lineage foreign key with clean data is `degraded`; an invalid lineage row or a
+probe failure is `critical`. The finding is diagnostic and read-only. Direct SQL
+repair is unsupported; use application workflows or a verified backup/restore
+procedure.
 
 ## Architecture
 
@@ -363,8 +372,8 @@ release oracle is:
 | Historical private reach-in baseline | `32` |
 | Current private reach-in budget | `0` |
 | Current governed private reach-ins | `0` |
-| Current full Community->Core import inventory | `548` |
-| Inventory classification | `public_contract=548`, `governed_temporary_reach_in=0` |
+| Current full Community->Core import inventory | `621` |
+| Inventory classification | `public_contract=621`, `governed_temporary_reach_in=0` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
 | Burn-down progression | `32 -> 21 -> 10 -> 0` after AF42 inventory, lifecycle/auth/MCP, then complete Community ORM ownership |
 | Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
@@ -430,7 +439,8 @@ Adapter source map:
   `community/adapters/sqlalchemy_repositories.py`,
   `community/adapters/af35_sqlalchemy_services.py`,
   `community/adapters/coordination.py` and
-  `community/adapters/relational_effects.py`; the SQLite PRAGMA owner is
+  `community/adapters/relational_effects.py`; read-only sprint-lineage health is
+  owned by `community/adapters/sprint_origin_integrity.py`; the SQLite PRAGMA owner is
   `install_community_sqlite_pragmas` in
   `community/adapters/sqlalchemy_database.py`.
 - Relational mappings and persistence implementations:
@@ -438,9 +448,10 @@ Adapter source map:
 - KG source/rebuild ingestion: `community/adapters/board_source_reader.py` and
   `community/adapters/board_rebuild_ingestion.py`; content ingestion helpers
   live in `community/adapters/content_ingestion.py`.
-- KG local schema/durability adapters: `community/adapters/global_discovery_schema.py`,
-  `community/adapters/global_discovery_runtime.py` and
+- KG local schema/durability adapters: `community/adapters/global_discovery_*` and
   `community/adapters/rebuild_audit_storage.py`.
+- Materialization-health adapters: `community/adapters/materialization_health.py`
+  and `community/adapters/materialization_health_observability.py`.
 - KG outbox/audit persistence: `community/adapters/sqlite_outbox_event_bus.py`,
   `community/adapters/sqlalchemy_audit_repo.py` and
   `community/adapters/kg_operational.py`.
@@ -449,16 +460,22 @@ Adapter source map:
   `community/adapters/kg_runtime.py`,
   `community/adapters/board_graph_runtime.py`,
   `community/adapters/global_discovery_runtime.py`,
+  `community/adapters/ladybug_writer.py`,
   `community/adapters/graph_*`, `community/adapters/kg_*` and
   `community/adapters/kuzu_*`.
 - ML search helpers: `community/adapters/embedding.py` and
   `community/adapters/rerank.py`; orchestration lives in
-  `community/adapters/hybrid_search.py`.
+  `community/adapters/hybrid_search.py` and
+  `community/adapters/reflective_query.py`.
 - MCP/resource overlays and host runtime: `community/adapters/mcp_auth.py`,
   `community/adapters/mcp_host.py`,
   `community/adapters/resources.py`,
   `community/adapters/capability_descriptors.py` and
   `community/adapters/mcp_trace.py` / `community/adapters/mcp_trace_middleware.py`.
+- Trusted test-evidence execution and receipt verification:
+  `community/adapters/test_evidence.py`.
+- Canonical bug cognitive-context assembly:
+  `community/adapters/bug_cognitive_context.py`.
 - Relational application and KG event adapters:
   `community/adapters/relational_application.py` and
   `community/adapters/kg_events.py`.
@@ -706,9 +723,9 @@ The executable ownership matrix is generated by `okto-pulse-saas-closure`. Every
 <!-- F16-SAAS-CLOSURE:BEGIN -->
 | F16 executable surface | Owner | Observed | Terminal target |
 | --- | --- | ---: | ---: |
-| Core import rows | Core | 4418 | classified |
-| Community-to-Core import rows | Community | 548 | classified |
-| Direct dependency rows | Distribution owner | 20 | classified |
+| Core import rows | Core | 4830 | classified |
+| Community-to-Core import rows | Community | 622 | classified |
+| Direct dependency rows | Distribution owner | 22 | classified |
 | `import_boundary_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
 | `singleton_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
 | `dependency_temporary_exceptions` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |

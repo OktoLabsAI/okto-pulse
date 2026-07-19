@@ -59,7 +59,13 @@ class CommunitySqlAlchemyDesignSystemStore:
         return _record(row)
 
     async def list_catalog(
-        self, context: Any, *, scope: str, board_id: str | None
+        self,
+        context: Any,
+        *,
+        scope: str,
+        board_id: str | None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> tuple[DesignSystemRecord, ...]:
         statement = select(DesignSystem)
         if scope == "inline":
@@ -70,9 +76,10 @@ class CommunitySqlAlchemyDesignSystemStore:
             statement = statement.where(
                 DesignSystem.scope == "global", DesignSystem.board_id.is_(None)
             )
-        rows = (
-            await context.execute(statement.order_by(DesignSystem.title))
-        ).scalars().all()
+        statement = statement.order_by(DesignSystem.title, DesignSystem.id).offset(offset)
+        if limit is not None:
+            statement = statement.limit(limit)
+        rows = (await context.execute(statement)).scalars().all()
         return tuple(_record(row) for row in rows)
 
     async def get(

@@ -17,6 +17,7 @@ import requests
 
 from okto_pulse.community.adapters.telemetry_sender import (
     CommunityTelemetryBeaconSender,
+    payload_digest,
 )
 import okto_pulse.community.adapters.telemetry_sender as sender_mod  # patches _utcnow/_backoff_jitter
 from okto_pulse.core.infra.config import CoreSettings
@@ -68,6 +69,16 @@ class FakeSession:
             return self._handshake
         if url.endswith("/v1/usage"):
             assert self._usage is not None, "unexpected usage call"
+            if 200 <= self._usage.status_code < 300 and "outcome" not in self._usage._json:
+                payload = json.loads(kwargs["data"].decode("utf-8"))
+                self._usage._json.update(
+                    {
+                        "outcome": "accepted",
+                        "state": "committed",
+                        "payload_digest": payload_digest(payload),
+                        "receipt": "fh-test",
+                    }
+                )
             return self._usage
         raise AssertionError(f"unexpected url {url}")
 
@@ -199,7 +210,8 @@ def test_no_refresh_when_token_far_from_expiry(tmp_path, monkeypatch):
 
     result = TelemetryBeaconSender(settings, session=session).send_once()  # type: ignore[arg-type]
 
-    assert result == {"sent": True, "batch_seq": 5}  # no refresh key when not attempted
+    assert result["sent"] is True and result["batch_seq"] == 5
+    assert "refresh" not in result  # no refresh key when not attempted
     assert session.calls == [f"{_beacon_url(settings)}/v1/usage"]  # handshake skipped
 
 

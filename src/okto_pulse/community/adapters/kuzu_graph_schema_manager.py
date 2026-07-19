@@ -21,7 +21,9 @@ class CommunityKuzuGraphSchemaManager:
     def _read_persisted_version(self, board_id: str) -> str | None:
         # Reads the board's persisted version via the live store. Exceptions are
         # NOT swallowed here — callers decide (validate fails closed).
-        from okto_pulse.core.services.application_kg import get_current_provider_registry
+        from okto_pulse.core.services.application_kg import (
+            get_current_provider_registry,
+        )
 
         store = get_current_provider_registry().graph_store
         if store is None:
@@ -29,14 +31,30 @@ class CommunityKuzuGraphSchemaManager:
         return store.get_schema_version(board_id)
 
     async def ensure_bootstrapped(self, board_id: str) -> None:
-        from okto_pulse.community.adapters.kg_runtime import ensure_board_graph_bootstrapped
+        from okto_pulse.community.adapters.kg_runtime import (
+            ensure_board_graph_bootstrapped,
+        )
+        from okto_pulse.community.adapters.ladybug_writer import (
+            ladybug_writer_scope,
+        )
 
-        ensure_board_graph_bootstrapped(board_id)
+        with ladybug_writer_scope(
+            scope=board_id,
+            phase="schema_bootstrap",
+        ):
+            ensure_board_graph_bootstrapped(board_id)
 
     async def migrate(self, board_id: str) -> dict[str, Any]:
         from okto_pulse.community.adapters.kg_runtime import migrate_schema_for_board
+        from okto_pulse.community.adapters.ladybug_writer import (
+            ladybug_writer_scope,
+        )
 
-        return migrate_schema_for_board(board_id)
+        with ladybug_writer_scope(
+            scope=board_id,
+            phase="schema_migrate",
+        ):
+            return migrate_schema_for_board(board_id)
 
     async def current_version(self, board_id: str) -> str:
         from okto_pulse.community.adapters.kg_runtime import SCHEMA_VERSION

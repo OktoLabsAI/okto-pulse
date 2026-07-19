@@ -33,6 +33,7 @@ def test_community_declares_every_runtime_dependency_directly() -> None:
         "aiosqlite",
         "anyio",
         "fastapi",
+        "filelock",
         "httpx",
         "python-multipart",
         "sqlalchemy",

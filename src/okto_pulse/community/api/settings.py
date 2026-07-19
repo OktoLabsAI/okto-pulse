@@ -23,10 +23,12 @@ from okto_pulse.core.application.use_cases.operational_rest import (
     PutRuntimeSettingsCommand,
     PutRuntimeSettingsUseCase,
 )
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.config import validate_graph_db_max_size_gb
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.domain.runtime_settings import (
     ConfigChangeBlocked,
 )
@@ -109,13 +111,13 @@ class RuntimeSettingsPayload(BaseModel):
 
 @router.get("/settings/runtime", response_model=RuntimeSettingsResponse)
 async def get_runtime(
-    _: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> RuntimeSettingsResponse:
     """Return the currently effective runtime settings + restart flag."""
     result = await GetRuntimeSettingsUseCase().execute(
         GetRuntimeSettingsCommand(),
-        actor=RESTAdapterContract.actor("rest-runtime-settings"),
+        actor=RESTAdapterContract.actor_from_principal(principal),
         uow=db,
     )
     data = result.data
@@ -126,7 +128,7 @@ async def get_runtime(
 async def put_runtime(
     payload: RuntimeSettingsPayload,
     request: Request,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> RuntimeSettingsResponse:
     """Persist new runtime settings. Values only take effect after restart.
@@ -149,10 +151,12 @@ async def put_runtime(
                 restart_policy,
                 scheduler_control_from_request(request),
             ),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         data = result.data
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
     except ConfigChangeBlocked as exc:
         # Safe error envelope: bounded reason + setting_group + audit_event.
         # Raw values are NEVER in the response body (TR12).

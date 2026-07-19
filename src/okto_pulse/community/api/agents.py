@@ -10,6 +10,7 @@ NOT invalidate.
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from okto_pulse.community.api.auth_deps import get_realm_id, require_user
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases import (
     ConflictError,
@@ -36,7 +37,6 @@ from okto_pulse.core.application.use_cases import (
     UpdateBoardOverridesUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models import (
     AgentBoardOverridesUpdate,
     AgentBoardResponse,
@@ -207,6 +207,7 @@ async def grant_board_access(
     agent_id: str,
     board_id: str,
     user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Grant an agent access to a board. Requires owning both the agent and the board.
@@ -215,7 +216,11 @@ async def grant_board_access(
     try:
         result = await GrantBoardAccessUseCase().execute(
             GrantBoardAccessCommand(agent_id, board_id),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
             uow=uow,
         )
     except ConflictError:
@@ -232,6 +237,7 @@ async def update_board_overrides(
     board_id: str,
     data: AgentBoardOverridesUpdate,
     user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Update permission overrides for an agent on a board (ceiling model).
@@ -244,11 +250,20 @@ async def update_board_overrides(
     try:
         result = await UpdateBoardOverridesUseCase().execute(
             UpdateBoardOverridesCommand(agent_id, board_id, data.permission_overrides),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        detail = "Agent not found" if exc.entity_type == "agent" else "Board access not found"
+        if exc.entity_type == "agent":
+            detail = "Agent not found"
+        elif exc.entity_type == "board":
+            detail = "Board not found"
+        else:
+            detail = "Board access not found"
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
     from okto_pulse.core.mcp import invalidate_agent_cache
@@ -262,17 +277,27 @@ async def revoke_board_access(
     agent_id: str,
     board_id: str,
     user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Revoke an agent's access to a board. Requires owning the agent or the board.
+    """Revoke access only when the actor owns both the agent and the board.
 
     No cache invalidation (not a proven invalidation point — ac_8e695cf2)."""
     try:
         await RevokeBoardAccessUseCase().execute(
             RevokeBoardAccessCommand(agent_id, board_id),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        detail = "Agent not found" if exc.entity_type == "agent" else "Access not found"
+        if exc.entity_type == "agent":
+            detail = "Agent not found"
+        elif exc.entity_type == "board":
+            detail = "Board not found"
+        else:
+            detail = "Access not found"
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)

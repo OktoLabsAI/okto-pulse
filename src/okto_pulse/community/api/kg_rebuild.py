@@ -37,11 +37,11 @@ from starlette.concurrency import run_in_threadpool
 from okto_pulse.community.api.deps import get_unit_of_work, scheduler_control_from_request
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.kg_health_probe import get_kg_health
+from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.application.kg_rebuild import (
-    REBUILD_REJECT_STATES as _REBUILD_REJECT_STATES,
+    REBUILD_REJECT_STATES,
     build_rebuild_step_adapter as _build_rebuild_step_adapter,
     build_source_store as _build_source_store,
-    empty_source_store as _empty_source_store,
     provider_missing_payload as _provider_missing_payload,
     refuse_rebuild_if_quarantined as _core_refuse_rebuild_if_quarantined,
 )
@@ -49,11 +49,15 @@ from okto_pulse.core.application.kg_runtime_access import (
     require_rebuild_audit_artifact_store,
     resolve_graph_lifecycle,
 )
-from okto_pulse.core.kg.rebuild_audit import require_rebuild_audit_artifact_store
+from okto_pulse.core.application.use_cases.board_access import load_accessible_board
 from okto_pulse.core.ports.scheduler import SchedulerControl
 from okto_pulse.core.repositories import PulseUnitOfWork
 
 logger = logging.getLogger("okto_pulse.api.kg_rebuild")
+
+# Legacy import surface retained for compatibility consumers.  The explicit
+# assignment keeps the bridge visible without disguising it as an unused import.
+_REBUILD_REJECT_STATES = REBUILD_REJECT_STATES
 
 router = APIRouter()
 
@@ -77,8 +81,7 @@ async def _refuse_rebuild_if_quarantined(
 # ---------------------------------------------------------------------------
 # FR10 — per-board scope helper (community: ownership + membership)
 #
-# Raises HTTPException 404 when the board does not exist.
-# Raises HTTPException 403 when the board exists but the user has no access.
+# Missing and inaccessible boards share the same non-enumerable HTTP 404.
 #
 # Uses ShareService.get_user_permission() — the single source of truth for
 # user→board access across all board-scoped endpoints (owner_id match OR
@@ -88,31 +91,26 @@ async def _refuse_rebuild_if_quarantined(
 
 
 async def _require_board_access(
-    board_id: str, user_id: str, db: PulseUnitOfWork
+    board_id: str,
+    user_id: str,
+    db: PulseUnitOfWork,
+    *,
+    write: bool = False,
 ) -> None:
-    """Verify *user_id* has ownership or membership access to *board_id*.
+    """Verify read membership, or owner/editor/admin access for writes.
 
-    Raises:
-        HTTPException(404) — board does not exist.
-        HTTPException(403) — board exists but user has no access.
+    Missing, foreign and read-only-share outcomes intentionally share the same
+    404 envelope so board existence is not enumerable.
     """
-    service = db.services.shares
-    # get_user_permission returns:
-    #   None  → board not found OR user has no access to an existing board.
-    # Distinguish the two by checking board existence explicitly.
-    #
-    # R01C IMP3 drain: the EXISTENCE probe goes through the edition-owned repository
-    # port (``resolve_unit_of_work_factory().wrap`` — the R01B FR3 seam), removing
-    # the ``core.models.db`` import. This is a pure get-by-id (404 ↔ board is None);
-    # the AUTHORIZATION decision is unchanged — it stays in
-    # ``service.get_user_permission`` below (403), exactly as before.
-    board_obj = await db.boards.get(board_id)
-    if board_obj is None:
+    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+    allowed = {"editor", "admin"} if write else None
+    if await load_accessible_board(
+        db,
+        board_id,
+        actor,
+        allowed_share_permissions=allowed,
+    ) is None:
         raise HTTPException(status_code=404, detail="Board not found")
-
-    perm = await service.get_user_permission(board_id, user_id)
-    if perm is None:
-        raise HTTPException(status_code=403, detail="Access denied: user does not have access to this board")
 
 
 class RebuildPreflightResponse(BaseModel):
@@ -163,8 +161,8 @@ async def post_rebuild_preflight(
     view is the source of truth bound to the confirmation token.
 
     FR10 — scope per-board: verifies the authenticated user has access
-    to the requested board before running the preflight.  Returns HTTP 403
-    when access is denied.
+    to the requested board before running the preflight. Missing and
+    inaccessible boards both return HTTP 404.
 
     FR8 — admission gate: refuses with HTTP 409 when the board's KG is
     ``quarantined``.  ``recovery_needed`` is deliberately ADMITTED here
@@ -183,7 +181,7 @@ async def post_rebuild_preflight(
     if not board_id:
         raise HTTPException(status_code=400, detail="board_id is required")
 
-    # FR10 — per-board scope: 404 if board missing, 403 if user has no access.
+    # FR10 — per-board scope uses one non-enumerable 404 outcome.
     await _require_board_access(board_id, user_id, db)
 
     # FR8 — rebuild-scoped admission gate: quarantined → 409, recovery_needed → pass.
@@ -299,11 +297,10 @@ async def post_rebuild_confirm(
     verifies the preflight_hash matches, then issues the single-use
     token bound to the original manifest. Mismatch → HTTP 400.
 
-    FR10 — scope per-board: returns HTTP 404 when the board does not exist,
-    HTTP 403 when the user does not have access.
+    FR10 — missing and inaccessible boards both return HTTP 404.
     """
-    # FR10 — per-board scope: 404 if board missing, 403 if user has no access.
-    await _require_board_access(body.board_id, user_id, db)
+    # FR10 — per-board scope uses one non-enumerable 404 outcome.
+    await _require_board_access(body.board_id, user_id, db, write=True)
 
     from okto_pulse.core.kg.rebuild_confirmation import (
         CANONICAL_OPERATIONS,
@@ -446,11 +443,10 @@ async def post_rebuild_run(
     can't take the lock exclusively. Returns the run audit ref and
     outcome.
 
-    FR10 — scope per-board: returns HTTP 404 when the board does not exist,
-    HTTP 403 when the user does not have access.
+    FR10 — missing and inaccessible boards both return HTTP 404.
     """
-    # FR10 — per-board scope: 404 if board missing, 403 if user has no access.
-    await _require_board_access(body.board_id, user_id, db)
+    # FR10 — per-board scope uses one non-enumerable 404 outcome.
+    await _require_board_access(body.board_id, user_id, db, write=True)
 
     from okto_pulse.core.kg.rebuild_confirmation import (
         RebuildConfirmationStore,

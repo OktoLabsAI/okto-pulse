@@ -1635,7 +1635,7 @@ export function useDashboardApi() {
       });
     },
 
-    async moveSprint(sprintId: string, data: { status: string; cancellation_reason?: string }): Promise<any> {
+    async moveSprint(sprintId: string, data: { status: string; cancellation_reason?: string; expected_version?: number }): Promise<any> {
       return apiClient.fetchJson(`/sprints/${sprintId}/move`, {
         method: 'POST', body: JSON.stringify(data),
       });

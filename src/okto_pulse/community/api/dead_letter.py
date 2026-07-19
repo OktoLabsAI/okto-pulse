@@ -2,8 +2,7 @@
 
 GET /api/v1/kg/queue/dead-letter — listing of DLQ rows for a board.
 Pagination via ``limit`` (1-200, default 50) + ``offset`` (>=0, default 0).
-Filter by board access enforced at auth layer (same pattern as queue_health
-endpoint).
+Board access is preflighted before the DLQ reader is constructed or called.
 
 DLQ reprocess is available through the MCP tool
 ``okto_pulse_kg_dead_letter_reprocess`` and the shared service
@@ -15,13 +14,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases import (
     ListDeadLetterRowsCommand,
     ListDeadLetterRowsUseCase,
+)
+from okto_pulse.core.application.use_cases.list_dead_letter_rows import (
+    DeadLetterBoardNotFoundError,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
@@ -71,9 +73,12 @@ async def get_dead_letter(
     transport-free use case. No raw ``AsyncSession``/``get_db`` in the handler's
     contract with the use case; payload/permission are unchanged.
     """
-    result = await ListDeadLetterRowsUseCase().execute(
-        ListDeadLetterRowsCommand(board_id, limit=limit, offset=offset),
-        actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-        uow=uow,
-    )
+    try:
+        result = await ListDeadLetterRowsUseCase().execute(
+            ListDeadLetterRowsCommand(board_id, limit=limit, offset=offset),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except DeadLetterBoardNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     return DeadLetterListResponse(**result.data)

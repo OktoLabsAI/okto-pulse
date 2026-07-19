@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases.operational_rest import (
+    BoardNotFoundError,
     CanonicalPartitionDetailCommand,
     CanonicalPartitionListCommand,
     GetCanonicalPartitionIntegrityDetailUseCase,
@@ -68,6 +69,8 @@ async def list_canonical_partition_integrity_endpoint(
             uow=db,
         )
         return result.data
+    except BoardNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
 
@@ -97,5 +100,7 @@ async def get_canonical_partition_integrity_detail_endpoint(
             uow=db,
         )
         return result.data
+    except BoardNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc

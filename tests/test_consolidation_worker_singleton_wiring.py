@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from okto_pulse.core.application.runtime_workers import signal_runtime_worker
 from okto_pulse.core.composition import RuntimeComposition, runtime_composition_scope
 from okto_pulse.core.ports.runtime_workers import (

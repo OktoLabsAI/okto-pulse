@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
@@ -21,6 +22,14 @@ from okto_pulse.core.ports.relational_effects import (
 from okto_pulse.core.ports.domain_event_delivery import (
     register_domain_event_fact_reader,
     register_domain_event_publisher,
+)
+from okto_pulse.core.ports.bug_cognitive_context import (
+    register_bug_cognitive_context_assembler,
+    register_canonical_bug_node_read_port,
+)
+from okto_pulse.core.ports.test_evidence import (
+    register_test_evidence_execution_issuer,
+    register_test_evidence_write_verifier,
 )
 from okto_pulse.core.ports.queue_health import register_queue_health_read_port
 from okto_pulse.core.ports.canonical_debt import register_canonical_debt_store
@@ -197,12 +206,26 @@ def _upsert_insert_for_session(session: Any):
 _relational_effects = CommunitySqlAlchemyRelationalEffects()
 
 
-def register_community_relational_effects() -> CommunitySqlAlchemyRelationalEffects:
+def register_community_relational_effects(
+    *,
+    settings: Any | None = None,
+    api_base_url: str | None = None,
+) -> CommunitySqlAlchemyRelationalEffects:
     """Register Community relational side-effect implementation in core."""
 
     from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
         CommunitySqlAlchemyDomainEventFactReader,
         CommunitySqlAlchemyDomainEventPublisher,
+    )
+    from okto_pulse.community.adapters.bug_cognitive_context import (
+        CommunityBugCognitiveContextAssembler,
+        CommunityCanonicalBugNodeReader,
+    )
+    from okto_pulse.community.adapters.test_evidence import (
+        CommunityEvidenceLedger,
+        CommunityHttpManifestExecutor,
+        CommunityTestEvidenceExecutionIssuer,
+        CommunityTestEvidenceWriteVerifier,
     )
     from okto_pulse.community.adapters.sqlalchemy_queue_health import (
         CommunitySqlAlchemyQueueHealthReader,
@@ -293,6 +316,31 @@ def register_community_relational_effects() -> CommunitySqlAlchemyRelationalEffe
     register_relational_effects_port(_relational_effects)
     register_domain_event_publisher(CommunitySqlAlchemyDomainEventPublisher())
     register_domain_event_fact_reader(CommunitySqlAlchemyDomainEventFactReader())
+    canonical_bug_reader = CommunityCanonicalBugNodeReader()
+    register_canonical_bug_node_read_port(canonical_bug_reader)
+    register_bug_cognitive_context_assembler(
+        CommunityBugCognitiveContextAssembler(canonical_bug_reader)
+    )
+    if settings is None:
+        from okto_pulse.community.config import CommunitySettings
+
+        settings = CommunitySettings()
+    evidence_ledger = CommunityEvidenceLedger(
+        evidence_root=Path(settings.data_dir) / "evidence"
+    )
+    runtime_executor = CommunityHttpManifestExecutor(
+        base_url=api_base_url or f"http://127.0.0.1:{settings.port}"
+    )
+    register_test_evidence_write_verifier(
+        CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger)
+    )
+    register_test_evidence_execution_issuer(
+        CommunityTestEvidenceExecutionIssuer(
+            ledger=evidence_ledger,
+            executor=runtime_executor,
+            environment=str(getattr(settings, "environment", "local")),
+        )
+    )
     register_queue_health_read_port(CommunitySqlAlchemyQueueHealthReader())
     register_canonical_debt_store(CommunitySqlAlchemyCanonicalDebtStore())
     register_cognitive_effectiveness_read_port(

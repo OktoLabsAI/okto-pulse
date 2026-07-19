@@ -84,18 +84,23 @@ class CommunityKGConfig:
         return self._settings.kg_cleanup_enabled
 
 
-def build_community_data_providers(session_factory: Callable) -> dict[str, Any]:
+def build_community_data_providers(
+    session_factory: Callable,
+    *,
+    settings: Any | None = None,
+) -> dict[str, Any]:
     """Build the three Community data providers as a registry-slot dict.
 
     ``event_bus`` and ``audit_repo`` take ``session_factory`` (the SAME factory
     previously used by the retired core auto-wire, preserving behaviour);
-    ``config`` reads CoreSettings. Keyed by the ``KGProviderRegistry`` slot names
-    so the composition can ``setattr`` them before the fail-closed registry
-    validation runs."""
+    ``config`` captures the same normalized edition settings snapshot used by
+    the other filesystem providers. Keyed by the ``KGProviderRegistry`` slot
+    names so the composition can ``setattr`` them before the fail-closed
+    registry validation runs."""
     return {
         "event_bus": CommunityOutboxEventBus(session_factory),
         "audit_repo": CommunityAuditRepository(session_factory),
-        "config": CommunityKGConfig(),
+        "config": CommunityKGConfig(settings),
     }
 
 

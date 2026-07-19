@@ -3,10 +3,8 @@
 product_metrics is cumulative/snapshot and was EXCLUDED from the delta batch in
 R3A-B (it would be summed as a trusted_delta and inflate R4). R3A-F gives it a
 SEPARATE client path marked ``era=post_fix``/``semantics=snapshot`` so it is not
-silently dropped. There is no safe snapshot ingest contract today (the backend
-``validate_usage_batch`` rejects unknown fields — a critical finding tracked
-separately), so the snapshot is persisted locally and the send reports an
-explicit ``no_snapshot_ingest_endpoint`` outcome — never a fake success.
+silently dropped. The snapshot is persisted locally and published through the
+separate authenticated ``/v1/product-snapshots`` latest-value contract.
 """
 
 from __future__ import annotations
@@ -17,6 +15,10 @@ from pathlib import Path
 
 from okto_pulse.community.adapters.telemetry_sender import (
     CommunityTelemetryBeaconSender,
+    payload_digest,
+)
+from okto_pulse.community.adapters.product_telemetry import (
+    CommunityProductTelemetryAggregator,
 )
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry.era import (
@@ -124,26 +126,55 @@ def test_product_metrics_excluded_from_delta_with_populated_db(
     ]
 
 
-def test_publish_product_snapshot_persists_and_does_not_transmit(
+def test_publish_product_snapshot_persists_and_transmits_separate_contract(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("OKTO_PULSE_INSTALL_ID_PATH", str(tmp_path / "install_id"))
     settings = _settings_with_product_db(tmp_path)
 
-    class _ForbiddenSession:
-        def post(self, *args, **kwargs):  # pragma: no cover - must never be reached
-            raise AssertionError(
-                "the product snapshot must NOT be transmitted (no safe endpoint)"
-            )
+    TelemetryService(settings).update_settings(
+        mode="anonymous_beacon",
+        source="cli",
+        policy_version="2026-05-11",
+        schema_version="1.1.0",
+    )
+    state_path = tmp_path / "metrics" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["install_token"] = "token"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
 
-    result = TelemetryBeaconSender(
-        settings, session=_ForbiddenSession()
-    ).publish_product_snapshot()
+    class _Response:
+        status_code = 202
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return {
+                "accepted": True,
+                "outcome": "accepted",
+                "state": "committed",
+                "payload_digest": payload_digest(self.payload),
+                "receipt": "snapshot:receipt",
+            }
+
+    class _RecordingSession:
+        def __init__(self):
+            self.urls = []
+
+        def post(self, url, *args, **kwargs):
+            self.urls.append(url)
+            payload = json.loads(kwargs["data"].decode("utf-8"))
+            return _Response(payload)
+
+    session = _RecordingSession()
+    result = TelemetryBeaconSender(settings, session=session).publish_product_snapshot()
 
     # Auditable non-send — not a fake success, not a silent drop.
-    assert result["sent"] is False
-    assert result["reason"] == "no_snapshot_ingest_endpoint"
+    assert result["sent"] is True
+    assert result["reason"] == "accepted"
     assert result["semantics"] == SEMANTICS_SNAPSHOT
+    assert session.urls == ["https://metrics.oktolabs.ai/v1/product-snapshots"]
     # The snapshot is persisted locally and recoverable.
     metrics_dir = resolve_telemetry_config(settings).metrics_dir
     files = list((metrics_dir / "snapshots").glob("snapshot-*.jsonl"))
@@ -168,3 +199,22 @@ def test_publish_product_snapshot_empty_without_product(
     result = TelemetryBeaconSender(settings).publish_product_snapshot()
 
     assert result == {"sent": False, "reason": "empty"}
+
+
+def test_snapshot_emits_zero_tombstone_for_removed_current_gauge(
+    tmp_path: Path,
+) -> None:
+    settings = _settings_with_product_db(tmp_path)
+    metrics_dir = tmp_path / "metrics"
+    aggregator = CommunityProductTelemetryAggregator(settings, metrics_dir)
+
+    first = aggregator.aggregate().to_dict()
+    assert first["product_work_item_type_counts"]["current.bug"] == 1
+
+    db_path = tmp_path / "pulse.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM cards")
+        conn.commit()
+    second = aggregator.aggregate().to_dict()
+
+    assert second["product_work_item_type_counts"]["current.bug"] == 0

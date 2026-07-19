@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, or_, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationDeadLetter,
@@ -13,6 +13,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 )
 from okto_pulse.core.ports.queue_health import (
     ActiveQueueStorageSnapshot,
+    GlobalOutboxDeadLetterRowSnapshot,
+    GlobalOutboxDeadLetterStorageSnapshot,
     QueueHealthStorageSnapshot,
 )
 
@@ -112,6 +114,64 @@ class CommunitySqlAlchemyQueueHealthReader:
             consolidation_oldest_at=oldest,
             outbox_depth=int(outbox_depth or 0),
             outbox_oldest_at=outbox_oldest,
+        )
+
+    async def global_outbox_dead_letter_snapshot(
+        self,
+        context: Any,
+        *,
+        board_id: str | None,
+        limit: int,
+        max_outbox_retries: int,
+        dead_letter_retry_sentinel: int,
+    ) -> GlobalOutboxDeadLetterStorageSnapshot:
+        filters = [
+            GlobalUpdateOutbox.processed_at.is_(None),
+            or_(
+                GlobalUpdateOutbox.retry_count >= max_outbox_retries,
+                GlobalUpdateOutbox.retry_count == dead_letter_retry_sentinel,
+            ),
+        ]
+        if board_id is not None:
+            filters.append(GlobalUpdateOutbox.board_id == board_id)
+
+        total = await context.scalar(
+            select(func.count()).select_from(GlobalUpdateOutbox).where(*filters)
+        )
+        oldest = await context.scalar(
+            select(func.min(GlobalUpdateOutbox.created_at)).where(*filters)
+        )
+        rows = []
+        if limit > 0:
+            rows = (
+                (
+                    await context.execute(
+                        select(GlobalUpdateOutbox)
+                        .where(*filters)
+                        .order_by(
+                            GlobalUpdateOutbox.created_at.asc(),
+                            GlobalUpdateOutbox.id.asc(),
+                        )
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return GlobalOutboxDeadLetterStorageSnapshot(
+            total_count=int(total or 0),
+            oldest_created_at=oldest,
+            rows=tuple(
+                GlobalOutboxDeadLetterRowSnapshot(
+                    event_id=str(row.event_id),
+                    board_id=str(row.board_id),
+                    event_type=str(row.event_type),
+                    retry_count=int(row.retry_count),
+                    created_at=row.created_at,
+                    last_error=row.last_error,
+                )
+                for row in rows
+            ),
         )
 
 

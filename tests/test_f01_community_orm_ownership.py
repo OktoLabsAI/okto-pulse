@@ -51,7 +51,7 @@ def test_community_metadata_matches_governed_inherited_schema_contract() -> None
         COMMUNITY_SCHEMA_EXTENSION_TABLES
     )
     assert len(legacy_table_names) == 60
-    assert len(table_names) == 64
+    assert len(table_names) == 69
     assert schema_contract_sha256(
         Base.metadata,
         table_names=legacy_table_names,

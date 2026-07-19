@@ -34,15 +34,53 @@ version: "1.0"
 1. okto_pulse_kg_begin_consolidation(board_id, artifact_type, artifact_id, raw_content, deterministic_candidates=[...])
    → if nothing_changed=true → STOP, abort and move on
 2. For every candidate:
-     a. okto_pulse_kg_get_similar_nodes(session_id, candidate_id, top_k=5, min_similarity=0.85)
+     a. okto_pulse_kg_add_node_candidate(session_id, candidate)
+     b. okto_pulse_kg_get_similar_nodes(session_id, candidate_id, top_k=5, min_similarity=0.85)
         → if match ≥ 0.95: plan UPDATE; if 0.85..0.95: plan SUPERSEDE; else: plan ADD
-     b. okto_pulse_kg_add_node_candidate(session_id, candidate)
 3. okto_pulse_kg_add_edge_candidate only for cognitive rels
 4. okto_pulse_kg_propose_reconciliation(session_id)
 5. okto_pulse_kg_commit_consolidation(session_id, summary_text="<1-2 sentences>", agent_overrides={...})
 6. Verify with okto_pulse_kg_health + okto_pulse_kg_query_natural + okto_pulse_kg_query_cypher
 7. On any unrecoverable error: okto_pulse_kg_abort_consolidation(session_id, reason=...)
 ```
+
+`candidate_id` is session-local: `get_similar_nodes` before
+`add_node_candidate` returns `candidate_not_found`.
+
+## Global Discovery recovery (component-scoped)
+
+Do not choose recovery from generic `overall_state`. When the board
+`graph_state` is healthy and Global Discovery reports
+`discovery_state=recovery_needed` plus `discovery_recovery_required=true`, use
+the global preflight → confirm → run trio. Board rebuild refuses this
+discovery-only case. Global preflight requires every board graph healthy and
+does not admit healthy/quarantined discovery.
+
+`run` persists integrity-bound worker inputs, creates the durable control row,
+dispatches owned background work, and returns `accepted` without waiting for
+the native candidate/cutover. Poll
+`okto_pulse_kg_global_discovery_recovery_status` for authoritative progress and
+the terminal outcome. Retrying the exact confirmation/run binding returns the
+existing run; never start a second recovery while it remains `pending` or
+`running`.
+
+### Terminal Global Discovery outbox recovery
+
+Use the global-outbox dead-letter family only after the delivery root cause is
+fixed; it is distinct from the board consolidation DLQ family:
+
+1. Page `okto_pulse_kg_global_outbox_dead_letter_list` with `limit<=100` and
+   retain the returned immutable IDs. With `classification`, an empty page may
+   still carry `next_cursor`; follow it until null.
+2. Call `okto_pulse_kg_global_outbox_dead_letter_reprocess` with 1-100 explicit,
+   unique IDs and an audit reason. Never interpret an empty selection as all.
+3. Call `okto_pulse_kg_global_outbox_dead_letter_verify` with those exact IDs.
+   Treat `still_dead_lettered`, dangling/cyclic lineage reason codes, or a busy
+   response as unresolved; queued/applied are idempotent replay outcomes.
+
+Each operation owns a dedicated relational transaction. Selection validation
+and guarded requeue are atomic; `process_now=true` wakes the outbox worker only
+after commit.
 
 ## Query Timing — MANDATORY at Every Stage
 
@@ -70,7 +108,7 @@ version: "1.0"
 | Query | Why it's required |
 |---|---|
 | `okto_pulse_kg_find_similar_decisions(board_id, topic=<refinement topic>)` | Find prior decisions the refinement may extend, supersede, or contradict |
-| `okto_pulse_kg_get_related_context(board_id, artifact_id=<formalized_node_or_artifact_id>)` | Use only when anchored to an existing formalized KG node |
+| `okto_pulse_kg_get_related_context(board_id, artifact_id="spec:<uuid>")` or `artifact_id="card:<uuid>"` | Use only when anchored to an existing formalized spec/card; the type discriminator is mandatory |
 | `okto_pulse_kg_find_contradictions(board_id, node_id=<relevant decision>)` | Detect contradictions before they reach spec |
 | `okto_pulse_kg_list_alternatives(board_id, decision_id=<anchor decision>)` | Surface "why not X" rationale |
 
@@ -78,7 +116,7 @@ version: "1.0"
 
 | Query | Why it's required |
 |---|---|
-| `okto_pulse_kg_get_related_context(board_id, artifact_id=<spec_id>)` | Final sweep of 2-hop neighbors |
+| `okto_pulse_kg_get_related_context(board_id, artifact_id="spec:<uuid>")` | Final sweep of 2-hop neighbors; a raw spec UUID is rejected |
 | `okto_pulse_kg_find_contradictions(board_id)` (board-wide) | Detects contradictions the spec itself may have introduced |
 | `okto_pulse_kg_find_similar_decisions(board_id, topic=<each major FR/BR>)` | Check every significant FR/BR for similarity |
 | `okto_pulse_kg_explain_constraint(board_id, constraint_id=<each relevant constraint>)` | Fetch origin + related constraints + prior violations |
@@ -220,15 +258,16 @@ Before creating any Decision or Constraint, run:
 
 Cognitive consolidation produces **canonical** knowledge by construction: a cognitive `okto_pulse_kg_add_node_candidate` with `graph_layer=working` is rejected (`cognitive_node_candidates_must_be_canonical`) BEFORE the session is mutated, and accepted candidates are persisted as `canonical` / `maturity_status=canonical_eligible`. Working-layer nodes are the Layer 1 deterministic worker's responsibility only (`source_maturity`), never the cognitive agent's.
 
-KG Health surfaces three **distinct** operational signals — never merged into one bucket (dec_68fd26a2). When a signal is present, its `health_issues[]` row names the correct drill-down MCP tool in `drill_down_tool`:
+KG Health surfaces four **distinct** operational signals — never merged into one bucket (dec_68fd26a2). When a signal is present, its `health_issues[]` row names the correct drill-down MCP tool in `drill_down_tool`:
 
 | Signal (`health_issues[].code`) | Domain | Drill-down tool |
 |---|---|---|
 | `cognitive_consolidation_pending` | Cognitive items awaiting agent action (pending/in_progress/failed) | `okto_pulse_kg_list_cognitive_pending_items` |
 | `dead_letter_backlog` | Consolidation rows that exhausted retries | `okto_pulse_kg_dead_letter_list` → `okto_pulse_kg_dead_letter_reprocess` after fixing the root cause |
+| `global_outbox_dead_letter_backlog` | Terminal Global Discovery outbox deliveries | `okto_pulse_kg_global_outbox_dead_letter_list` → explicit reprocess → verify after fixing the delivery root cause |
 | `canonical_debt_open` | Artifacts still outside canonical consolidation | `okto_pulse_kg_canonical_debt_list` |
 
-Each tool lists ONLY its own domain — do NOT infer one signal's backlog from another's counters, and do not reprocess the wrong queue. `okto_pulse_kg_dead_letter_list` exposes both `rows`/`id` (legacy) and the additive `items`/`dead_letter_id` + `last_error`/`error_text` (full `errors[]` history preserved). The three listings emit the bounded `kg_operational_inspection_list_total` counter (labels: `signal`=`cognitive_pending`/`dead_letter`/`canonical_debt`, `surface`, `outcome`) so the **absence** of operational drill-down is itself diagnosable.
+Each tool lists ONLY its own domain — do NOT infer one signal's backlog from another's counters, and do not reprocess the wrong queue. `okto_pulse_kg_dead_letter_list` exposes both `rows`/`id` (legacy) and the additive `items`/`dead_letter_id` + `last_error`/`error_text` (full `errors[]` history preserved). The global-outbox row always names `okto_pulse_kg_global_outbox_dead_letter_list`, never a readiness helper or the board-consolidation DLQ family. The listings emit bounded inspection counters so the **absence** of operational drill-down is itself diagnosable.
 
 ### Consolidation Hygiene Checklist
 

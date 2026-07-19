@@ -24,10 +24,61 @@ import time
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+# The Community runtime is served by Uvicorn with its default logging config,
+# which only wires the ``uvicorn.*`` logger family.  Using the module logger
+# here silently dropped the INFO-level structured shutdown receipts from the
+# installed runtime even though checkpoint/close itself succeeded.  Route the
+# lifecycle contract through Uvicorn's error logger so operators and cutover
+# automation can verify the ordered teardown from the actual process logs.
+logger = logging.getLogger("uvicorn.error")
+
+_HEALTH_PROBE_DRAIN_TIMEOUT_S = 30.0
 
 
 def close_all_graphs_on_shutdown(*, runtime: Any | None = None) -> dict[str, int]:
+    """Drain runtime-owned readers, then serialize the final graph close."""
+
+    # Health endpoints deliberately return on a short budget while their
+    # daemon probes keep reading the graph.  The pool is runtime-local (also
+    # inside the Demo seed's isolated provider scope), so drain that exact
+    # composition before acquiring the final writer lease.  Otherwise a late
+    # probe can reopen Demo after checkpoint/close and race the next board's
+    # event-loop bootstrap.  This preserves the event-loop fail-fast rule: the
+    # lifecycle waits on its teardown worker instead of weakening contention.
+    from okto_pulse.core.services.application_kg import (
+        drain_kg_health_probes,
+    )
+
+    pending_probes = drain_kg_health_probes(
+        timeout_s=_HEALTH_PROBE_DRAIN_TIMEOUT_S,
+    )
+    if pending_probes:
+        logger.error(
+            "kg.shutdown.health_probes_not_drained pending=%d timeout_s=%.1f",
+            pending_probes,
+            _HEALTH_PROBE_DRAIN_TIMEOUT_S,
+            extra={
+                "event": "kg.shutdown.health_probes_not_drained",
+                "pending": pending_probes,
+                "timeout_s": _HEALTH_PROBE_DRAIN_TIMEOUT_S,
+            },
+        )
+
+    from okto_pulse.community.adapters.ladybug_writer import (
+        ladybug_writer_scope,
+    )
+
+    with ladybug_writer_scope(
+        scope="shutdown",
+        phase="checkpoint_close",
+    ):
+        return _close_all_graphs_with_writer_lease(runtime=runtime)
+
+
+def _close_all_graphs_with_writer_lease(
+    *,
+    runtime: Any | None = None,
+) -> dict[str, int]:
     """Checkpoint (best-effort) e close de TODOS os board graphs abertos.
 
     Deve rodar no teardown do ``combined_lifespan`` DEPOIS que os workers de
@@ -42,6 +93,12 @@ def close_all_graphs_on_shutdown(*, runtime: Any | None = None) -> dict[str, int
          ainda acontece.
       2. ``close_board_db_cache(None)`` fecha todos os Databases do cache com
          o dreno do close guard (o comportamento de timeout é o do kg_runtime).
+
+    Depois dos board graphs, fecha também o handle persistente do Global
+    Discovery. Esse handle não participa do cache por board e, sem este passo,
+    ``discovery.lbug.wal`` sobrevive ao shutdown (normalmente só com comandos
+    idempotentes de ``INSTALL/LOAD VECTOR``, mas ainda denuncia um lifecycle
+    incompleto e pode preservar lock/commits no encerramento do interpretador).
 
     Retorna ``{"boards_closed": N, "boards_failed": M, "duration_ms": T}`` e
     emite o log estruturado ``kg.shutdown.graphs_closed`` com os mesmos campos.
@@ -66,7 +123,10 @@ def close_all_graphs_on_shutdown(*, runtime: Any | None = None) -> dict[str, int
         try:
             conn = runtime.kuzu.Connection(db)
             try:
-                conn.execute("CHECKPOINT")
+                result = conn.execute("CHECKPOINT")
+                close_result = getattr(result, "close", None)
+                if callable(close_result):
+                    close_result()
             finally:
                 try:
                     conn.close()
@@ -100,6 +160,39 @@ def close_all_graphs_on_shutdown(*, runtime: Any | None = None) -> dict[str, int
             "kg.shutdown.graph_close_failed err=%s",
             exc,
             extra={"event": "kg.shutdown.graph_close_failed", "error": str(exc)},
+        )
+
+    # O Global Discovery usa um Database persistente próprio, fora de
+    # ``_board_db_cache``. ``Database.close()`` executa o checkpoint final do
+    # Ladybug e remove o WAL; apenas fechar os boards deixa esse handle vivo.
+    # Resolver pelo port mantém o adapter independente da implementação
+    # concreta e torna o close idempotente quando o global nunca foi aberto.
+    try:
+        from okto_pulse.core.services.application_kg import (
+            get_current_provider_registry,
+        )
+        from okto_pulse.community.adapters.coordination import (
+            community_global_discovery_writer_fence,
+        )
+
+        global_runtime = (
+            get_current_provider_registry().require_global_discovery_runtime()
+        )
+        with community_global_discovery_writer_fence("shutdown_global_close"):
+            global_runtime.close()
+    except Exception as exc:  # noqa: BLE001 — teardown nunca propaga
+        logger.warning(
+            "kg.shutdown.global_graph_close_failed err=%s",
+            exc,
+            extra={
+                "event": "kg.shutdown.global_graph_close_failed",
+                "error": str(exc),
+            },
+        )
+    else:
+        logger.info(
+            "kg.shutdown.global_graph_closed",
+            extra={"event": "kg.shutdown.global_graph_closed"},
         )
 
     duration_ms = int((time.perf_counter() - started) * 1000)

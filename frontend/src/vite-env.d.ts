@@ -12,3 +12,4 @@ interface ImportMeta {
 
 /** Compile-time constant injected by Vite `define` — see vite.config.ts */
 declare const __AUTH_MODE__: 'clerk' | 'local';
+declare const __APP_VERSION__: string;

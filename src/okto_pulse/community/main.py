@@ -15,6 +15,7 @@ import contextlib
 import logging
 import math
 import os
+import re
 import signal
 import time
 from pathlib import Path
@@ -47,6 +48,7 @@ from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.community.api import metrics_router
 from okto_pulse.community.runtime import (
+    AccessLogQueryRedactionMiddleware,
     build_uvicorn_log_config,
     run_async_server,
     set_shutdown_log_suppression,
@@ -63,8 +65,10 @@ _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15.0
 # MENOR que o force-exit de 15s do _shutdown_server_pair, para que a etapa
 # complete (ou desista logando) antes de qualquer cancel forçado.
 _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S = 10.0
+_RECOVERY_NATIVE_DRAIN_TIMEOUT_S = 5.0
 _DEFAULT_METRICS_BEACON_INTERVAL_SECONDS = 3600.0
 _DEFAULT_METRICS_BEACON_STARTUP_DELAY_SECONDS = 60.0
+_METRICS_LOG_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 
 # Preload retry policy: 3 attempts, exponential backoff (2s, 4s, 8s), 30s total budget.
 # Only transient network errors retry. ImportError / OSError (disk full) / ValueError
@@ -149,28 +153,68 @@ def _metrics_beacon_timing() -> tuple[float, float]:
     return interval, min(startup_delay, interval)
 
 
+async def _metrics_publish_cycle(
+    settings: CommunitySettings, *, sender=None
+) -> tuple[dict, dict]:
+    """Run both publish legs independently so one cannot starve the other."""
+
+    if sender is None:
+        from okto_pulse.core.telemetry.sender_registry import get_telemetry_sender
+
+        sender = get_telemetry_sender(settings)
+
+    async def _run_leg(name: str, operation: Callable[[], dict]) -> dict:
+        try:
+            return await asyncio.to_thread(operation)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error_class = type(exc).__name__
+            if not _METRICS_LOG_LABEL.fullmatch(error_class):
+                error_class = "Exception"
+            _METRICS_LOGGER.warning(
+                "metrics.publish_leg.failed leg=%s error_class=%s",
+                name,
+                error_class,
+                extra={
+                    "event": "metrics.publish_leg.failed",
+                    "leg": name,
+                    "error_class": error_class,
+                },
+            )
+            return {
+                "sent": False,
+                "reason": "unhandled_exception",
+                "error_class": error_class,
+            }
+
+    delta = await _run_leg("usage", sender.send_pending)
+    snapshot = await _run_leg(
+        "product_snapshot",
+        sender.publish_product_snapshot,
+    )
+    return delta, snapshot
+
+
+def _safe_metrics_reason(value: object) -> str:
+    reason = str(value or "unknown")
+    return reason if _METRICS_LOG_LABEL.fullmatch(reason) else "unclassified"
+
+
 async def _metrics_beacon_loop(settings: CommunitySettings) -> None:
     interval, delay = _metrics_beacon_timing()
     # R10-C: resolve the REGISTERED telemetry sender (the Community TelemetrySink
     # adapter) through the port registry — never import the concrete core sender.
     from okto_pulse.core.telemetry.sender_registry import get_telemetry_sender
 
+    sender = get_telemetry_sender(settings)
     while True:
         await asyncio.sleep(delay)
         delay = interval
-        try:
-            result = await asyncio.to_thread(
-                get_telemetry_sender(settings).send_pending
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            _METRICS_LOGGER.warning(
-                "metrics.beacon.send_failed err=%s",
-                exc,
-                extra={"event": "metrics.beacon.send_failed", "error": str(exc)},
-            )
-            continue
+        result, snapshot_result = await _metrics_publish_cycle(
+            settings,
+            sender=sender,
+        )
         if result.get("sent"):
             _METRICS_LOGGER.info(
                 "metrics.beacon.sent batch_seq=%s",
@@ -181,12 +225,32 @@ async def _metrics_beacon_loop(settings: CommunitySettings) -> None:
                 },
             )
         elif result.get("reason") not in {"not_enabled", "empty"}:
+            reason = _safe_metrics_reason(result.get("reason"))
             _METRICS_LOGGER.info(
                 "metrics.beacon.skipped reason=%s",
-                result.get("reason"),
+                reason,
                 extra={
                     "event": "metrics.beacon.skipped",
-                    "reason": result.get("reason"),
+                    "reason": reason,
+                },
+            )
+        if snapshot_result.get("sent"):
+            _METRICS_LOGGER.info(
+                "metrics.product_snapshot.sent batch_seq=%s",
+                snapshot_result.get("batch_seq"),
+                extra={
+                    "event": "metrics.product_snapshot.sent",
+                    "batch_seq": snapshot_result.get("batch_seq"),
+                },
+            )
+        elif snapshot_result.get("reason") not in {"not_enabled", "empty"}:
+            reason = _safe_metrics_reason(snapshot_result.get("reason"))
+            _METRICS_LOGGER.info(
+                "metrics.product_snapshot.pending reason=%s",
+                reason,
+                extra={
+                    "event": "metrics.product_snapshot.pending",
+                    "reason": reason,
                 },
             )
 
@@ -317,6 +381,22 @@ _SPA_PASSTHROUGH_PREFIXES = (
     "/assets",
 )
 
+_SPA_NO_CACHE_HEADERS = (
+    (b"cache-control", b"no-store, no-cache, must-revalidate, max-age=0"),
+    (b"pragma", b"no-cache"),
+    (b"expires", b"0"),
+)
+
+
+class ImmutableFrontendStaticFiles(StaticFiles):
+    """Serve content-hashed frontend assets with an immutable cache policy."""
+
+    async def get_response(self, path, scope):  # noqa: ANN001, ANN201
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
 
 class SPAFallbackMiddleware:
     """Fallback de SPA (404 → index.html) como ASGI puro.
@@ -357,6 +437,7 @@ class SPAFallbackMiddleware:
                         "headers": [
                             (b"content-type", b"text/html; charset=utf-8"),
                             (b"content-length", str(len(index_body)).encode("ascii")),
+                            *_SPA_NO_CACHE_HEADERS,
                         ],
                     }
                 )
@@ -404,7 +485,9 @@ def _mount_frontend(
     assets_dir = frontend_dir / "assets"
     if assets_dir.exists():
         app.mount(
-            "/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets"
+            "/assets",
+            ImmutableFrontendStaticFiles(directory=str(assets_dir)),
+            name="frontend-assets",
         )
 
     index_html_path = frontend_dir / "index.html"
@@ -448,7 +531,15 @@ window.OKTO_PULSE_CONFIG = {{
     async def get_config():
         from fastapi.responses import Response
 
-        return Response(content=config_script, media_type="application/javascript")
+        return Response(
+            content=config_script,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     app.add_middleware(
         SPAFallbackMiddleware, index_body=injected_index_html.encode("utf-8")
@@ -517,6 +608,111 @@ async def _close_graphs_on_teardown() -> None:
             summary.get("boards_failed"),
             summary.get("duration_ms"),
         )
+
+
+def _compose_global_discovery_recovery_runtime(settings: CommunitySettings):
+    """Compose and publish recovery only after relational schema startup."""
+
+    from okto_pulse.community.adapters.board_source_reader import (
+        resolve_pulse_db_path,
+    )
+    from okto_pulse.community.adapters.global_discovery_recovery import (
+        CommunityPreparedRecoveryRevoker,
+        CommunityRecoverySnapshotFingerprint,
+        CommunityRelationalRecoverySnapshotFingerprint,
+    )
+    from okto_pulse.community.adapters.global_discovery_recovery_preparation import (
+        CommunityGlobalDiscoveryRecoveryPreparationOperation,
+    )
+    from okto_pulse.community.adapters.global_discovery_recovery_worker import (
+        CommunityDurableRecoveryInputProvider,
+        build_community_recovery_runtime,
+    )
+    from okto_pulse.core.ports.global_discovery_recovery_control import (
+        CognitivePendingOverlaySnapshotService,
+        register_recovery_control_plane,
+        resolve_global_discovery_recovery_runtime_dependencies,
+    )
+    from okto_pulse.core.ports.materialization_health import (
+        get_materialization_evidence_port,
+    )
+    from okto_pulse.core.runtime_registry import resolve_unit_of_work_factory
+
+    recovery, artifact_store = resolve_global_discovery_recovery_runtime_dependencies()
+    bind_snapshot_fingerprint = getattr(
+        recovery,
+        "bind_snapshot_fingerprint_provider",
+        None,
+    )
+    if not callable(bind_snapshot_fingerprint):
+        raise RuntimeError("recovery_snapshot_fingerprint_binding_unavailable")
+    database_path = Path(resolve_pulse_db_path()).resolve()
+
+    def recovery_database_path() -> Path:
+        """Return the startup-resolved path from context-free worker threads."""
+
+        return database_path
+
+    relational_fingerprint = CommunityRelationalRecoverySnapshotFingerprint(
+        db_path_provider=recovery_database_path,
+    )
+    overlay_snapshot = CognitivePendingOverlaySnapshotService(
+        artifact_store=artifact_store,
+    )
+    snapshot_fingerprint = CommunityRecoverySnapshotFingerprint(
+        relational=relational_fingerprint,
+        cognitive_overlay=overlay_snapshot,
+    )
+    bind_snapshot_fingerprint(snapshot_fingerprint)
+    input_provider = CommunityDurableRecoveryInputProvider(
+        artifact_store=artifact_store
+    )
+    prepared_revoker = CommunityPreparedRecoveryRevoker(
+        artifact_store=artifact_store,
+    )
+    preparation_operation = CommunityGlobalDiscoveryRecoveryPreparationOperation(
+        recovery=recovery,
+        artifact_store=artifact_store,
+        db_path_provider=recovery_database_path,
+        unit_of_work_factory=resolve_unit_of_work_factory(),
+        materialization_evidence_port=get_materialization_evidence_port(),
+        relational_fingerprint=relational_fingerprint,
+        overlay_snapshot_service=overlay_snapshot,
+        snapshot_fingerprint=snapshot_fingerprint,
+    )
+    runtime = build_community_recovery_runtime(
+        database_url=settings.database_url,
+        recovery=recovery,
+        input_provider=input_provider,
+        prepared_revoker=prepared_revoker,
+        preparation_operation=preparation_operation,
+    )
+    try:
+        register_recovery_control_plane(runtime.control)
+    except Exception:
+        with contextlib.suppress(Exception):
+            runtime.close(timeout_seconds=0.0)
+        raise
+    return runtime
+
+
+async def _drain_global_discovery_recovery_runtime(
+    runtime,
+    *,
+    timeout_seconds: float,
+) -> bool:
+    """Unpublish first, then drain native work off the event loop."""
+
+    from okto_pulse.core.ports.global_discovery_recovery_control import (
+        reset_recovery_control_plane,
+    )
+
+    reset_recovery_control_plane()
+    try:
+        await asyncio.to_thread(runtime.close, timeout_seconds=timeout_seconds)
+    except Exception:
+        return False
+    return True
 
 
 def create_community_app():
@@ -650,6 +846,9 @@ def create_community_app():
             name="community.metrics_beacon",
         )
 
+        recovery_runtime = _compose_global_discovery_recovery_runtime(settings)
+        app_instance.state.global_discovery_recovery_runtime = recovery_runtime
+
         yield
 
         if metrics_beacon_task is not None:
@@ -661,13 +860,40 @@ def create_community_app():
             with contextlib.suppress(asyncio.CancelledError):
                 await afg_backfill_task
         await scheduler_control.shutdown(wait=False)
+        worker_stop_failures = ()
         if worker_registry is not None:
-            for failure in await worker_registry.stop_all():
+            worker_stop_failures = await worker_registry.stop_all()
+            for failure in worker_stop_failures:
                 _STARTUP_LOGGER.warning(
                     "community.worker.stop_failed family=%s err=%s",
                     failure.family,
                     failure.message,
                 )
+        recovery_drained = await _drain_global_discovery_recovery_runtime(
+            recovery_runtime,
+            timeout_seconds=_RECOVERY_NATIVE_DRAIN_TIMEOUT_S,
+        )
+        blocked_families = sorted(
+            failure.family
+            for failure in worker_stop_failures
+            if failure.resource_close_unsafe
+        )
+        if not recovery_drained:
+            blocked_families.append("global_discovery_recovery")
+        blocked_families.sort()
+        native_drain_incomplete = bool(blocked_families)
+        if native_drain_incomplete:
+            _STARTUP_LOGGER.critical(
+                "community.shutdown.native_drain_incomplete "
+                "families=%s graph_close_skipped=true db_close_skipped=true",
+                ",".join(blocked_families),
+                extra={
+                    "event": "community.shutdown.native_drain_incomplete",
+                    "families": blocked_families,
+                    "graph_close_skipped": True,
+                    "db_close_skipped": True,
+                },
+            )
         from okto_pulse.core.application.kg_events_hub import shutdown_kg_events_hub
 
         await shutdown_kg_events_hub()
@@ -675,8 +901,9 @@ def create_community_app():
         # (shutdown_kg_then_db) — checkpoint+close de todos os board graphs
         # DEPOIS da parada dos workers e ANTES do close do SQLite; sem isto o
         # graph.lbug.wal fica como único portador dos commits recentes.
-        await _close_graphs_on_teardown()
-        await close_db()
+        if not native_drain_incomplete:
+            await _close_graphs_on_teardown()
+            await close_db()
 
     from okto_pulse.community.adapters.sqlalchemy_database import (
         configure_community_database,
@@ -704,7 +931,10 @@ def create_community_app():
         register_community_relational_effects,
     )
 
-    register_community_relational_effects()
+    register_community_relational_effects(
+        settings=settings,
+        api_base_url=f"http://127.0.0.1:{api_port}",
+    )
 
     # R01C REPLAN-IMP4 (FR3/FR5): register the Community relational SCHEMA-LIFECYCLE
     # orchestrator on the core seam BEFORE the lifespan runs init_db, so the core
@@ -860,45 +1090,66 @@ def create_community_app():
             register_and_freeze_community_resource_catalog,
         )
 
-        register_and_freeze_community_resource_catalog()
+        mcp_cold_start_transaction = (
+            register_and_freeze_community_resource_catalog(
+                runtime_composition.runtime_values
+            )
+        )
 
-    app = create_app(
-        settings=settings,
-        auth_provider=auth,
-        storage_provider=storage,
-        cors_origins=settings.cors_origins_list,
-        lifespan=combined_lifespan,
-        composition=runtime_composition,
-        strict_runtime=True,
-        edition_routers=(metrics_router,),
-    )
+    try:
+        app = create_app(
+            settings=settings,
+            auth_provider=auth,
+            storage_provider=storage,
+            cors_origins=settings.cors_origins_list,
+            lifespan=combined_lifespan,
+            composition=runtime_composition,
+            strict_runtime=True,
+            edition_routers=(metrics_router,),
+        )
+        app.state.mcp_cold_start_transaction = mcp_cold_start_transaction
 
-    # System flags endpoint — used by the frontend to honor CLI/env terms pre-acceptance.
-    from okto_pulse.community.acceptance import acceptance_status
+        # System flags endpoint — used by the frontend to honor CLI/env terms
+        # pre-acceptance.
+        from okto_pulse.community.acceptance import acceptance_status
 
-    @app.get("/api/v1/me/system-flags")
-    def get_system_flags():
-        """Surface env/CLI-driven flags the SPA needs at boot time."""
-        return {"terms_acceptance": acceptance_status()}
+        @app.get("/api/v1/me/system-flags")
+        def get_system_flags():
+            """Surface env/CLI-driven flags the SPA needs at boot time."""
+            return {"terms_acceptance": acceptance_status()}
 
-    # Mount frontend (must be AFTER API routes so /api/v1/* takes precedence)
-    _mount_frontend(
-        app,
-        FRONTEND_DIR,
-        api_port=api_port,
-        mcp_port=mcp_port,
-        public_host=public_host,
-        explicit_public_host=public_host_env is not None,
-        public_api_port=public_api_port,
-        public_mcp_port=public_mcp_port,
-    )
+        # Mount frontend after API routes so /api/v1/* takes precedence.
+        _mount_frontend(
+            app,
+            FRONTEND_DIR,
+            api_port=api_port,
+            mcp_port=mcp_port,
+            public_host=public_host,
+            explicit_public_host=public_host_env is not None,
+            public_api_port=public_api_port,
+            public_mcp_port=public_mcp_port,
+        )
+    except BaseException:
+        mcp_cold_start_transaction.rollback()
+        raise
 
     return app
 
 
+def _build_module_app():
+    """Construct the module ASGI boundary under the cold-start rollback."""
+
+    raw_app = create_community_app()
+    try:
+        return AccessLogQueryRedactionMiddleware(raw_app)
+    except BaseException:
+        raw_app.state.mcp_cold_start_transaction.rollback()
+        raise
+
+
 # Module-level app created on import — uvicorn needs "module:app" reference.
 # The print was moved to cmd_serve in cli.py to avoid showing wrong port.
-app = create_community_app()
+app = _build_module_app()
 
 
 async def _wait_for_server_started(
@@ -987,6 +1238,46 @@ async def _shutdown_server_pair(
         set_shutdown_log_suppression(False)
 
 
+async def _shutdown_launched_server_tasks(
+    api_server: uvicorn.Server,
+    mcp_server: uvicorn.Server,
+    api_task: asyncio.Task[None] | None,
+    mcp_task: asyncio.Task[None] | None,
+    *,
+    timeout_seconds: float,
+) -> None:
+    """Drain a partially launched listener pair without orphaning one task."""
+
+    if api_task is not None and mcp_task is not None:
+        await _shutdown_server_pair(
+            api_server,
+            mcp_server,
+            api_task,
+            mcp_task,
+            timeout_seconds=timeout_seconds,
+        )
+        return
+
+    api_server.should_exit = True
+    mcp_server.should_exit = True
+    tasks = tuple(task for task in (api_task, mcp_task) if task is not None)
+    if not tasks:
+        return
+    set_shutdown_log_suppression(True)
+    try:
+        # An incomplete pair has never crossed the listener publication
+        # boundary. Cancel synchronously before the event loop can run the one
+        # scheduled coroutine and expose a single listener.
+        api_server.force_exit = True
+        mcp_server.force_exit = True
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        set_shutdown_log_suppression(False)
+
+
 def _install_shutdown_signal_handlers(
     request_shutdown: Callable[[int], None],
 ) -> list[Callable[[], None]]:
@@ -1058,58 +1349,80 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     lifespan, and the request-scoped MCP credential provider — so the MCP sub-app
     sees a fully-initialised runtime.
     """
-    from okto_pulse.community.adapters.mcp_host import build_community_mcp_asgi_app
-    from okto_pulse.community.adapters.mcp_trace import build_mcp_trace_sink_from_env
-    from okto_pulse.core.mcp import mcp
+    composition = app.state.runtime_composition
+    transaction = app.state.mcp_cold_start_transaction
 
-    settings = CommunitySettings()
-    uvicorn_log_config = build_uvicorn_log_config()
-    shutdown_timeout = _shutdown_timeout_seconds()
-    uvicorn_shutdown_timeout = int(math.ceil(shutdown_timeout))
+    try:
+        from okto_pulse.community.adapters.mcp_host import (
+            build_community_mcp_asgi_app,
+        )
+        from okto_pulse.community.adapters.resources import (
+            CommunityMcpColdStartTransaction,
+        )
+        from okto_pulse.community.adapters.mcp_trace import (
+            build_mcp_trace_sink_from_env,
+        )
+        from okto_pulse.core.composition import runtime_composition_scope
+        from okto_pulse.core.mcp import mcp
 
-    api_config = uvicorn.Config(
-        "okto_pulse.community.main:app",
-        host=settings.host,
-        port=api_port,
-        ws="wsproto",
-        log_level="info",
-        log_config=uvicorn_log_config,
-        timeout_keep_alive=1,
-        timeout_graceful_shutdown=uvicorn_shutdown_timeout,
-    )
-    api_server = uvicorn.Server(api_config)
-    # Disable uvicorn's per-server signal capture — with two Servers in the
-    # same loop the last one wins the process signal handler, which can leave
-    # the other listener waiting forever. asyncio.Runner cancels _serve_dual on
-    # Ctrl+C; we coordinate both listeners in the except block below.
-    api_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
+        if not isinstance(transaction, CommunityMcpColdStartTransaction):
+            raise RuntimeError("community_mcp_cold_start_transaction_missing")
 
-    mcp_config = uvicorn.Config(
-        build_community_mcp_asgi_app(
-            catalog=mcp,
-            trace_sink=build_mcp_trace_sink_from_env(),
-            composition=app.state.runtime_composition,
-        ),
-        # Read host from environment (set by Docker / compose) or fall back to
-        # loopback so a stray process doesn't accidentally expose the MCP
-        # server. Override via MCP_HOST=0.0.0.0 in docker-compose.yml when
-        # port-mapping is required from outside the container.
-        host=os.environ.get("MCP_HOST", "127.0.0.1"),
-        port=mcp_port,
-        ws="wsproto",
-        log_level="info",
-        log_config=uvicorn_log_config,
-        timeout_keep_alive=1,
-        timeout_graceful_shutdown=uvicorn_shutdown_timeout,
-    )
-    mcp_server = uvicorn.Server(mcp_config)
-    mcp_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
+        settings = CommunitySettings()
+        uvicorn_log_config = build_uvicorn_log_config()
+        shutdown_timeout = _shutdown_timeout_seconds()
+        uvicorn_shutdown_timeout = int(math.ceil(shutdown_timeout))
 
-    api_task = asyncio.create_task(api_server.serve(), name="api_ui_server")
-    mcp_task = asyncio.create_task(mcp_server.serve(), name="mcp_server")
-    heartbeat_task = asyncio.create_task(
-        _lock_heartbeat_loop(), name="serve_lock_heartbeat"
-    )
+        with runtime_composition_scope(composition):
+            frozen_resources, projection_identity = (
+                transaction.require_frozen_projection()
+            )
+            mcp_asgi_app = build_community_mcp_asgi_app(
+                catalog=mcp,
+                resource_catalog=frozen_resources,
+                projection_identity=projection_identity,
+                trace_sink=build_mcp_trace_sink_from_env(),
+                composition=composition,
+            )
+
+        api_config = uvicorn.Config(
+            app,
+            host=settings.host,
+            port=api_port,
+            ws="wsproto",
+            log_level="info",
+            log_config=uvicorn_log_config,
+            timeout_keep_alive=1,
+            timeout_graceful_shutdown=uvicorn_shutdown_timeout,
+        )
+        api_server = uvicorn.Server(api_config)
+        # Disable uvicorn's per-server signal capture — with two Servers in the
+        # same loop the last one wins the process signal handler, which can leave
+        # the other listener waiting forever. asyncio.Runner cancels _serve_dual on
+        # Ctrl+C; we coordinate both listeners in the except block below.
+        api_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
+
+        mcp_config = uvicorn.Config(
+            AccessLogQueryRedactionMiddleware(mcp_asgi_app),
+            # Read host from environment (set by Docker / compose) or fall back to
+            # loopback so a stray process doesn't accidentally expose the MCP
+            # server. Override via MCP_HOST=0.0.0.0 in docker-compose.yml when
+            # port-mapping is required from outside the container.
+            host=os.environ.get("MCP_HOST", "127.0.0.1"),
+            port=mcp_port,
+            ws="wsproto",
+            log_level="info",
+            log_config=uvicorn_log_config,
+            timeout_keep_alive=1,
+            timeout_graceful_shutdown=uvicorn_shutdown_timeout,
+        )
+        mcp_server = uvicorn.Server(mcp_config)
+        mcp_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
+    except BaseException:
+        rollback = getattr(transaction, "rollback", None)
+        if callable(rollback):
+            rollback()
+        raise
 
     def _request_ordered_shutdown(signum: int) -> None:
         # KGD-01 (FR2): mesmo caminho ordenado do Ctrl+C — pede o drain dos
@@ -1122,12 +1435,43 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         api_server.should_exit = True
         mcp_server.should_exit = True
 
-    signal_cleanups = _install_shutdown_signal_handlers(_request_ordered_shutdown)
-
+    api_task: asyncio.Task[None] | None = None
+    mcp_task: asyncio.Task[None] | None = None
+    heartbeat_task: asyncio.Task[None] | None = None
+    signal_cleanups: tuple[Callable[[], None], ...] = ()
     try:
+        signal_cleanups = tuple(
+            _install_shutdown_signal_handlers(_request_ordered_shutdown)
+        )
+
+        heartbeat_coroutine = _lock_heartbeat_loop()
+        try:
+            heartbeat_task = asyncio.create_task(
+                heartbeat_coroutine,
+                name="serve_lock_heartbeat",
+            )
+        except BaseException:
+            heartbeat_coroutine.close()
+            raise
+
+        api_coroutine = api_server.serve()
+        try:
+            api_task = asyncio.create_task(api_coroutine, name="api_ui_server")
+        except BaseException:
+            api_coroutine.close()
+            raise
+
+        mcp_coroutine = mcp_server.serve()
+        try:
+            mcp_task = asyncio.create_task(mcp_coroutine, name="mcp_server")
+        except BaseException:
+            mcp_coroutine.close()
+            raise
+
         await _wait_for_server_started("API/UI", api_server, api_task)
         await _wait_for_server_started("MCP", mcp_server, mcp_task)
         _log_ready_servers(api_port, mcp_port)
+        transaction.commit()
         done, _ = await asyncio.wait(
             {api_task, mcp_task},
             return_when=asyncio.FIRST_COMPLETED,
@@ -1147,33 +1491,40 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         # Ctrl+C reached the loop before our handler could flip should_exit.
         # Ask both servers to drain and swallow the cancel — this is the
         # expected shutdown path, not an error.
-        await _shutdown_server_pair(
-            api_server,
-            mcp_server,
-            api_task,
-            mcp_task,
-            timeout_seconds=shutdown_timeout,
-        )
+        try:
+            await _shutdown_launched_server_tasks(
+                api_server,
+                mcp_server,
+                api_task,
+                mcp_task,
+                timeout_seconds=shutdown_timeout,
+            )
+        finally:
+            transaction.rollback()
     except BaseException:
-        await _shutdown_server_pair(
-            api_server,
-            mcp_server,
-            api_task,
-            mcp_task,
-            timeout_seconds=shutdown_timeout,
-        )
+        try:
+            await _shutdown_launched_server_tasks(
+                api_server,
+                mcp_server,
+                api_task,
+                mcp_task,
+                timeout_seconds=shutdown_timeout,
+            )
+        finally:
+            transaction.rollback()
         raise
     finally:
         for _cleanup in signal_cleanups:
             with contextlib.suppress(Exception):
                 _cleanup()
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except (asyncio.CancelledError, Exception):
-            # Heartbeat failures are already logged inside the loop; we
-            # never let them block shutdown.
-            pass
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except (asyncio.CancelledError, Exception):
+                # Heartbeat failures are already logged inside the loop; we
+                # never let them block shutdown.
+                pass
 
 
 async def _lock_heartbeat_loop() -> None:

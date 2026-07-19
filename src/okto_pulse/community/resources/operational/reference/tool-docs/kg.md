@@ -374,7 +374,9 @@ a specific edge set or direction.
 
 Args:
     board_id: Board ID
-    artifact_id: Source artifact reference (source_artifact_ref)
+    artifact_id: Typed source reference: ``spec:<uuid>`` or ``card:<uuid>``.
+        A raw UUID is rejected as ``invalid_artifact_ref``; historical
+        non-UUID source refs remain readable for compatibility.
     min_confidence: Minimum confidence (default 0.5)
     max_rows: Maximum results (default 100)
     rel_types: Comma- or pipe-separated edge types to restrict the
@@ -586,12 +588,31 @@ Returns:
 
 Evaluate whether a bug has the required cognitive closeout before closure.
 
+The product assembles the canonical context from the bug card, linked spec and
+scenarios, linked test tasks, conclusions, validations, comments, Path B
+lineage, and the canonical `Bug` node. `evidence` supplied by the caller is
+additive only: it cannot replace or delete product facts. Empty/non-semantic
+objects and false states such as `{"confirmed": false}` do not count.
+
 Args:
     board_id: Board ID.
     bug_id: Bug card ID.
+    evidence: Optional additional evidence grouped by the bounded categories
+        `root_cause`, `fix_narrative`, `impact`, `regression_proof`,
+        `validation`, `technical_comments`, `test_scenarios`, and `lineage`.
+    requested_action: `evaluate` (default) or `create_learning`. Agent requests
+        for `skip`/`no_action` are refused as human-only controls.
+    reason_code, justification, evidence_refs, revisit_at: Human closeout audit
+        fields; they do not override technical or evidence blockers.
 
 Returns:
-    JSON with closure readiness, missing cognitive items, and gate outcome.
+    JSON with the aggregated `readiness_effect`/`blocking` decision plus the
+    separate `pipeline_readiness`, `evidence_readiness`,
+    `cognitive_work_item`, and redacted `context` diagnostics. Important bounded
+    statuses include `missing_cognitive_work_item`, `evidence_incomplete`,
+    `canonical_bug_node_absent`, `bug_cognitive_context_load_failed`, and
+    `ready_to_commit`. Any unverified source, graph probe, or required evidence
+    fails closed; no Learning or relationship is fabricated.
 
 ## `okto_pulse_kg_record_cognitive_skip`
 
@@ -779,27 +800,36 @@ Returns:
 
 ## `okto_pulse_kg_query_reflective`
 
-V1 stub of the reflective retrieve loop (ideação db8e984f).
+Run the production bounded retrieve → critic → corrective-action loop.
 
-The full agentic loop (critic_evaluate → dispatch action →
-retrieve retry) requires an LLM callable (critic_fn) — MCP
-tools can't receive Python callables, so this V1 delegates to
-the standard execute_natural_query and labels the response
-as a "v1_stub_no_critic_wired" stop reason.
-
-To use the real loop, call
-``okto_pulse.core.kg.retrieve_critic.reflect()`` programmatically
-from a Python host that wires its own LLM provider.
+The Core owns the state machine and depends only on reflective retrieval,
+critic, and telemetry ports. Community wires concrete local graph retrieval
+plus a deterministic critic, so the MCP surface executes a real loop without
+an LLM or network dependency. The critic may accept the evidence, expand graph
+neighbors, reformulate the query, retry at a lower confidence threshold, or
+reject fail-closed. Every iteration records a bounded trace and consumes the
+declared cost/deadline budget.
 
 Args:
     board_id: Board ID (authorization: kg.query.global).
     nl_query: Natural-language query (same as
         okto_pulse_kg_query_natural).
     limit: Max rows (default 20).
+    min_confidence: Initial semantic confidence threshold (default 0.5).
+    graph_layer: ``canonical`` (default), ``working``, or ``all``.
+    max_iterations: Bounded critic-loop iterations (default 3, max 8).
+    deadline_ms: Total loop deadline in milliseconds (default 5000,
+        range 50..30000).
+    budget_units: Total retrieval cost budget (default 10).
 
 Returns:
-    JSON with rows + reflection metadata:
-    ``{nodes, total_matches, stopped_reason, iterations}``.
+    JSON with nodes plus explicit reflective metadata:
+    ``accepted``, ``final_adequacy``, ``terminal_reason`` /
+    ``stopped_reason``, per-iteration traces, budget usage, critic and retrieval
+    identities/versions, and the applied graph layer. Rows are accepted only
+    after a schema-valid ``sufficient + accept`` critic decision. Terminal
+    reasons distinguish acceptance, rejection, malformed critic output, no
+    progress, exhausted budget/deadline, and unavailable providers.
 
 ## `okto_pulse_kg_schema_info`
 
@@ -886,6 +916,139 @@ exactly one bounded sample per call with labels
 ``(board_id, target_status, outcome, reason_code)``. Free-text
 ``reason`` is NEVER labelled; ``reason_code`` is bounded.
 
+## `okto_pulse_kg_global_outbox_dead_letter_list`
+
+List terminal Global Discovery outbox deliveries for global-admin recovery.
+This read-only operation returns only rows whose delivery remains unprocessed
+and whose retry state is the dead-letter sentinel or has exhausted the shared
+retry ceiling. Errors are bounded/redacted.
+
+Args:
+- `limit`: 1-100, default 50.
+- `cursor`: optional opaque keyset cursor. Ordering is deterministic by
+  `(created_at, dead_letter_id)`; never construct or edit the cursor.
+- `classification`: optional `global_open_failure`, `board_source_failure`, or
+  `unclassified_failure`.
+
+The classification filter is evaluated over each bounded physical page. A
+filtered page can therefore return `count=0` together with a non-null
+`next_cursor`; continue from that cursor until it is null. Returns
+`{items, count, next_cursor}`. Each item includes the immutable
+`dead_letter_id`, event/board identity, retry count, classification, redacted
+last error and creation time.
+
+## `okto_pulse_kg_global_outbox_dead_letter_reprocess`
+
+Atomically requeue an explicit terminal Global Discovery outbox selection.
+There is no broad or implicit "all" mode.
+
+Args:
+- `dead_letter_ids`: required native list of 1-100 unique immutable IDs from
+  the list operation.
+- `reason`: required bounded operator audit reason.
+- `process_now`: optional boolean; after a successful commit, signal the owned
+  outbox worker. The signal is never sent before commit.
+
+The entire selection is validated before its guarded update in one dedicated
+transaction. Empty, duplicate, over-limit, unknown, non-terminal,
+superseded, or mixed selections fail closed with `mutated=false`; a row changed
+between validation and update returns `selection_changed`, and relational-store
+lock contention returns `global_outbox_busy` without backend details. Replaying a
+valid request is idempotent. Success returns `selected_ids`, `requeued_ids`,
+`already_queued_ids`, `already_applied_ids`, `rejected_ids`, and
+`worker_signaled`.
+
+## `okto_pulse_kg_global_outbox_dead_letter_verify`
+
+Read the authoritative post-reprocess state for 1-100 explicit immutable IDs.
+Returns one item per requested ID with state `absent`, `still_dead_lettered`,
+`queued`, `processing`, `applied`, or `superseded`, plus event identity,
+`authoritative_id`, ordered `supersedence_chain`, and a bounded `reason_code`.
+Broken lineage never invents authority: a missing successor yields
+`authoritative_id=null` and `supersedence_target_absent`; cycles and the bounded
+chain ceiling likewise return typed reason codes.
+
+## `okto_pulse_kg_global_discovery_recovery_preflight`
+
+Global-admin admission for an unreadable Global Discovery cache. The request
+has a closed, empty input schema. It atomically reserves the single global
+recovery slot and durably dispatches preparation; it never scans boards, opens
+graph files, or materializes the candidate inside the MCP request. Replaying
+the incumbent prepared reservation returns that same run. Another active run
+is refused with the typed global-slot conflict.
+
+Returns within the bounded control-plane window with `run_id`, `state`,
+`phase`, `preparation_state`, monotonic `progress_seq`, and `action_required`.
+Poll the status tool while `phase=preparing`. When `phase=prepared`, status
+also exposes the immutable `manifest_ref` and `preflight_hash` required by
+confirm. A prepared run remains `state=pending` and is not worker-adoptable
+until it is confirmed.
+
+## `okto_pulse_kg_global_discovery_recovery_confirm`
+
+Issue a TTL-bound, single-use token for the exact prepared run, manifest and
+preflight hash. The call rechecks preparation expiry and the persisted source
+fingerprint and fails closed with `manifest_stale` if either changed. It never
+rescans all boards or performs graph/filesystem mutation.
+
+Args: `run_id`, `manifest_ref`, and `preflight_hash` from the prepared status.
+Returns `outcome=confirmation_issued`, `action_required`, `confirmation_id`,
+and `expires_at`.
+
+## `okto_pulse_kg_global_discovery_recovery_run`
+
+Consume the exact confirmation binding, recheck the prepared manifest's TTL
+and fingerprint, and durably dispatch the already-prepared run. It performs no
+all-board inventory, health, source, or candidate-seed scan in the MCP request.
+The call returns without waiting for native work, cutover, or delivery drain.
+Use the status tool to follow monotonic checkpoints and the closed terminal
+state. A stale binding fails closed with `manifest_stale` and requires a new
+preflight.
+
+Args: `confirmation_id`, `manifest_ref`, `preflight_hash`, and bounded audit
+`reason` (1-512 characters). The accepted response contains `run_id`,
+`attempt_id`, epoch, current state, `preparation_state`, progress/heartbeat
+fields, `idempotent_replay=false|true`, `status_tool`, and
+`action_required=call_okto_pulse_kg_global_discovery_recovery_status`. Replaying
+the exact immutable binding returns the existing run and never dispatches a
+second attempt; a different manifest/hash/reason for that run id fails closed.
+
+## `okto_pulse_kg_global_discovery_recovery_status`
+
+Return the authoritative durable control-plane projection for one explicit
+`run_id`. The response includes the current epoch, closed lifecycle state,
+`attempt_id`, `preparation_state`, monotonic `progress_seq`, phase, progress
+counts, heartbeat/deadline timestamps, active and cumulative budget
+consumption, cancellation time, `terminal_outcome`, reason code, retryability,
+and `status_tool`. Any authorized global admin may inspect the global run;
+admitting, confirming, cancelling, and resuming actors remain immutable audit
+facts on their respective transitions.
+
+## `okto_pulse_kg_global_discovery_recovery_cancel`
+
+Request durable cancellation for one explicit `run_id` and its current
+`expected_epoch`. A stale epoch returns `recovery_epoch_conflict` with the
+expected/actual epoch and progress sequence and performs no mutation. The
+bounded request acknowledges the durable intent; the fenced worker reports the
+terminal `cancelled` state only after native work drains safely. `reason` is
+optional and, when supplied, is limited to 512 characters. Cancelling a
+prepared run terminalizes it and releases the global slot without dispatching
+physical work. The authenticated caller is persisted separately as
+`cancel_requested_by_actor_id`; the original admitting actor never changes.
+Prepared manifests and staged inputs remain immutable audit evidence and are
+revoked by append-only evidence rather than deletion.
+
+## `okto_pulse_kg_global_discovery_recovery_resume`
+
+Explicitly resume a resumable terminal attempt or take over an expired worker
+lease for one `run_id` and `expected_epoch`. Admission preserves the same run
+identity, increments the epoch exactly once and enqueues owned work off-request.
+Typed denials include active lease, non-retryable terminal outcome and exhausted
+attempt/cumulative budgets; timeout and success are never resumable. `reason`
+is optional and, when supplied, is limited to 512 characters. Successful
+admission persists `resume_requested_at`, `resume_requested_by_actor_id`, and
+the optional resume reason without changing the original actor binding.
+
 ## `okto_pulse_kg_rebuild_preflight`
 
 Run the KG rebuild preflight for a board — gemelar do REST POST /api/v1/kg/rebuild/preflight.
@@ -895,9 +1058,10 @@ via BoardSourceStore (SQLite), classifies the KG health state, and persists
 the immutable manifest needed for /confirm.
 
 **Admission gate (FR8):** refuses with `rebuild_refused_quarantined` when
-`graph_state == 'quarantined'`. `recovery_needed` IS ADMITTED — rebuild is
-the prescribed exit from that state (see the stop-rule exception in
-`agent_instructions.md`).
+`graph_state == 'quarantined'`. Board `graph_state=recovery_needed` is admitted.
+If the board graph is healthy and only Global Discovery requires recovery, the
+tool returns `board_rebuild_wrong_recovery_scope` and points to the global
+recovery preflight; rebuilding one board cannot repair the global cache.
 
 **Flow:** call `okto_pulse_kg_health` first. If `overall_state == quarantined`
 stop. Otherwise: preflight → confirm → run.

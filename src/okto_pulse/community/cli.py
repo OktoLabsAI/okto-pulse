@@ -176,6 +176,168 @@ def _fail_fast_if_server_running(operation: str) -> None:
         sys.exit(2)
 
 
+class GlobalDiscoveryInitError(RuntimeError):
+    """Typed ``okto-pulse init`` Global Discovery failure/refusal.
+
+    Carries a stable ``.code`` so callers/tests key off the exact typed contract
+    rather than free-form ``RuntimeError`` text (blocker 10).
+    """
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _bootstrap_global_discovery_graph() -> str:
+    """Materialize the Global Discovery graph during ``okto-pulse init``.
+
+    Fail-closed. Acquire the public Global Discovery writer lease and enter its
+    guard, which installs both the exact active lease and the Core safe-write
+    context that ``runtime.require_write_token()`` demands (the private
+    ``community_global_discovery_writer_fence`` does not activate the Core
+    context barrier and is deliberately not used here). Inside the guard,
+    inspect the runtime state once and act on the closed four-state matrix:
+
+    - ``CONFIRMED_ABSENT``: first materialization — ``bootstrap()`` exactly once.
+    - ``PRESENT_READABLE_CANDIDATE``: typed success no-op
+      (``global_discovery_already_present``) — ``bootstrap()`` zero times and the
+      physical fingerprint/metadata is left identical. ``init`` never silently
+      migrates existing Global Discovery; schema migration has its own owner.
+    - ``PRESENT_UNREADABLE_OR_ERROR`` (including residue): typed refusal naming
+      the recovery ceremony, zero mutation.
+    - ``PROVIDER_UNAVAILABLE``: typed failure, zero mutation.
+
+    On a mid-DDL failure the lease is released and handles are closed by the
+    caller's shutdown barrier, and the partial graph is preserved (never
+    auto-deleted) so the residue detector can quarantine it.
+
+    Runs synchronously in the current context: the writer fence is carried on a
+    ``ContextVar`` and must not be handed to a worker thread. Returns the typed
+    outcome code.
+    """
+    from okto_pulse.core.services.application_kg import (
+        get_current_provider_registry,
+    )
+    from okto_pulse.core.ports.global_discovery_recovery_control import (
+        GlobalDiscoveryWriterLease,
+    )
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+        GraphRuntimeObservationState,
+    )
+
+    runtime = get_current_provider_registry().require_global_discovery_runtime()
+
+    lease = GlobalDiscoveryWriterLease.acquire(
+        operation="init_global_discovery",
+        admin_lane=True,
+    )
+    guarded_error: BaseException | None = None
+    outcome = ""
+    try:
+        with lease.guard():
+            observation = runtime.state()
+            obs_state = observation.state
+            if obs_state == GraphRuntimeObservationState.CONFIRMED_ABSENT:
+                runtime.bootstrap()
+                outcome = "global_discovery_materialized"
+            elif (
+                obs_state
+                == GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE
+            ):
+                # Typed success no-op: never re-bootstrap or migrate an existing
+                # readable Global Discovery graph. Zero physical mutation.
+                outcome = "global_discovery_already_present"
+            elif (
+                obs_state
+                == GraphRuntimeObservationState.PROVIDER_UNAVAILABLE
+            ):
+                reason = (
+                    f" reason={observation.reason_code}"
+                    if observation.reason_code
+                    else ""
+                )
+                raise GlobalDiscoveryInitError(
+                    "global_discovery_provider_unavailable: Global Discovery "
+                    f"runtime is unavailable{reason}; init made zero mutation",
+                    code="global_discovery_provider_unavailable",
+                )
+            else:
+                # PRESENT_UNREADABLE_OR_ERROR, including
+                # global_discovery_residue_without_primary and the durable
+                # incomplete-bootstrap marker.
+                from okto_pulse.community.adapters.global_discovery_bootstrap_marker import (  # noqa: E501
+                    BOOTSTRAP_INCOMPLETE_REASON,
+                )
+
+                reason = (
+                    f" reason={observation.reason_code}"
+                    if observation.reason_code
+                    else ""
+                )
+                marker_details = observation.details or {}
+                primary_confirmed_absent = (
+                    marker_details.get("primary_confirmed_absent") is True
+                )
+                if (
+                    observation.reason_code == BOOTSTRAP_INCOMPLETE_REASON
+                    and primary_confirmed_absent
+                ):
+                    # Narrow exception (Nexus msg_20533dbbce3741248416fc0e53b7ea4e
+                    # / msg_08ef262ec7b744c496e742bb6b42d45a): a marker whose
+                    # primary is *physically* CONFIRMED_ABSENT (the previous
+                    # process died before creating any graph artifact) may be
+                    # retried.  ``state()`` stays authoritative — CLI keys off the
+                    # exact reason plus the exact metadata-only
+                    # ``primary_confirmed_absent`` boolean, never a Core-typed
+                    # marker-bypass method.  bootstrap() rewrites a fresh marker
+                    # and clears it only after durable completion plus readback.
+                    # Any primary, including a partial one, is a typed
+                    # ceremony-only refusal (this branch is not taken).
+                    runtime.bootstrap()
+                    outcome = "global_discovery_materialized"
+                elif observation.reason_code == BOOTSTRAP_INCOMPLETE_REASON:
+                    raise GlobalDiscoveryInitError(
+                        "global_discovery_init_refused: incomplete-bootstrap"
+                        " marker with a present/partial primary requires the"
+                        " recovery ceremony before re-running init (zero"
+                        " mutation)",
+                        code="global_discovery_init_refused_marker_present",
+                    )
+                else:
+                    raise GlobalDiscoveryInitError(
+                        "global_discovery_init_refused: refusing to bootstrap over"
+                        f" unreadable/residual state={obs_state.value if obs_state else 'unknown'}"
+                        f"{reason}; resolve interrupted recovery through the recovery"
+                        " ceremony before re-running init (zero mutation)",
+                        code="global_discovery_init_refused",
+                    )
+    except BaseException as exc:
+        guarded_error = exc
+        raise
+    finally:
+        try:
+            released_ok = lease.release()
+        except BaseException:
+            # Surface a release/fence failure only when the guarded body did
+            # not already raise; otherwise preserve the earlier exception.
+            if guarded_error is None:
+                raise
+        else:
+            # A false release return is a fence loss: fail closed when the
+            # guarded body succeeded; preserve an earlier exception otherwise.
+            if not released_ok and guarded_error is None:
+                raise GlobalDiscoveryInitError(
+                    "global_discovery_init_release_failed: writer lease release"
+                    " returned false (fence loss); init fails closed",
+                    code="global_discovery_init_release_failed",
+                )
+    if outcome == "global_discovery_materialized":
+        print("  Global Discovery: materialized")
+    else:
+        print("  Global Discovery: already present (idempotent no-op)")
+    return outcome
+
+
 def cmd_init(args):
     """Initialize ~/.okto-pulse/ directory and seed the database."""
     # KGD-01 C6 (S10): init bootstrapa o grafo do board — nunca com o
@@ -206,6 +368,12 @@ def cmd_init(args):
     from okto_pulse.core import configure_auth
     from okto_pulse.core import configure_storage
     from okto_pulse.community.adapters.composition import community_storage_provider
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
+    from okto_pulse.community.adapters.kg_shutdown import (
+        close_all_graphs_on_shutdown,
+    )
     from okto_pulse.community.auth import LocalAuthProvider
     from okto_pulse.community.seed import seed_community_defaults
     from sqlalchemy import text as sa_text
@@ -226,31 +394,58 @@ def cmd_init(args):
 
     async def _init():
         revealed_agents: list[tuple[str, str]] = []
-        await init_db()
-        board_id = None
-        async with get_session_factory()() as db:
-            result = await seed_community_defaults(db)
-            if result:
-                board, agent, api_key = result
-                revealed_agents.append((agent.name, api_key))
-                board_id = board.id
-                print(f"\n  Board created: {board.name}")
-                print(f"  Agent created: {agent.name}")
-                print(f"  API Key: {api_key}")
-            else:
-                print("\n  Already initialized (seed exists).")
-                # Fetch the default board for KG bootstrap
-                board_result = await db.execute(
-                    sa_text("SELECT id FROM boards ORDER BY created_at, id LIMIT 1")
-                )
-                board_row = board_result.mappings().first()
-                if board_row:
-                    board_id = board_row["id"]
+        # Blocker 9: init_db() is INSIDE the try so a partial failure still runs
+        # the graph-runtime -> DB cleanup boundary (never strand graph handles /
+        # a half-open engine).  Cleanup order stays graph runtime -> DB -> the
+        # outer post-async barrier on success and on every failure.
+        try:
+            await init_db()
+            session_factory = get_session_factory()
 
-        # Bootstrap Knowledge Graph (Kuzu) for the board so the graph
-        # schema and vector indexes are ready before the first agent call.
-        if board_id:
-            try:
+            # The demo seed is optional and may be skipped. Register the full
+            # Community composition independently of that path, after the
+            # relational schema exists and before any seed/bootstrap work.
+            # Passing settings explicitly avoids resolving an implicit Core
+            # fallback configuration.
+            configure_community_kg_registry(
+                session_factory,
+                settings=settings,
+            )
+
+            # Global Discovery materialization acquires the durable writer lease,
+            # which resolves the Community write-lock port; register the local
+            # coordination providers before that acquisition.
+            from okto_pulse.community.adapters.coordination import (
+                register_community_coordination_providers,
+            )
+
+            register_community_coordination_providers()
+
+            board_id = None
+            async with session_factory() as db:
+                result = await seed_community_defaults(db)
+                if result:
+                    board, agent, api_key = result
+                    revealed_agents.append((agent.name, api_key))
+                    board_id = board.id
+                    print(f"\n  Board created: {board.name}")
+                    print(f"  Agent created: {agent.name}")
+                    print(f"  API Key: {api_key}")
+                else:
+                    print("\n  Already initialized (seed exists).")
+                    # Fetch the default board for KG bootstrap
+                    board_result = await db.execute(
+                        sa_text("SELECT id FROM boards ORDER BY created_at, id LIMIT 1")
+                    )
+                    board_row = board_result.mappings().first()
+                    if board_row:
+                        board_id = board_row["id"]
+
+            # Bootstrap Knowledge Graph (Kuzu) for the board so the graph
+            # schema and vector indexes are ready before the first agent call.
+            # This is intentionally fail-closed: a broken first-boot graph is
+            # an initialization failure, not a successful "bootstrap skipped".
+            if board_id:
                 # Schema lifecycle crosses the Core port; the CLI resolves the
                 # Community-local path only for operator-facing diagnostics.
                 from okto_pulse.community.adapters.kg_runtime import board_kuzu_path
@@ -263,13 +458,34 @@ def cmd_init(args):
                 _kg_path = board_kuzu_path(board_id)
                 _kg_ver = await _kg_reg.graph_schema_manager.current_version(board_id)
                 print(f"  Knowledge Graph: {_kg_path} (schema {_kg_ver})")
-            except Exception as exc:
-                print(f"  Knowledge Graph: bootstrap skipped ({exc})")
 
-        await close_db()
-        return revealed_agents
+            # Materialize the Global Discovery graph (``global/discovery.lbug``)
+            # under the public writer-lease fence so cross-board discovery is
+            # ready before the first global write. Fail-closed + idempotent.
+            _bootstrap_global_discovery_graph()
 
-    revealed_agents = asyncio.run(_init())
+            return revealed_agents
+        finally:
+            # ``init`` is a complete runtime lifecycle, not just a relational
+            # migration command.  The demo consolidation and the primary-board
+            # bootstrap both leave Ladybug Database handles in the process-wide
+            # cache.  Closing only SQLite lets interpreter teardown strand recent
+            # commits in graph.lbug.wal (and can make strict WAL replay reject the
+            # fresh Demo graph).  Reuse the same checkpoint+close boundary as the
+            # server shutdown, off the event loop, before disposing SQLite.
+            try:
+                await asyncio.to_thread(close_all_graphs_on_shutdown)
+            finally:
+                await close_db()
+
+    try:
+        revealed_agents = asyncio.run(_init())
+    finally:
+        # ``asyncio.run`` drains/cancels tasks and shuts down its default
+        # executor only after ``_init`` returns. A final synchronous barrier
+        # therefore closes any graph handle opened by a late Global Discovery
+        # task after the in-loop teardown. Idempotent on the normal path.
+        close_all_graphs_on_shutdown()
     print("\nRun 'okto-pulse serve' to start the server.")
 
     # Handle --agents flag: generate .mcp.json with specified agents
@@ -1127,7 +1343,10 @@ def cmd_kg_dedup_entities(args):
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core import configure_settings
     from okto_pulse.core.application.kg_operations import CurationPolicyError
-    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        get_session_factory,
+        init_db,
+    )
     from okto_pulse.core.kg.dedup_migration import (
         format_report_table,
         migrate_dedup_entities,
@@ -1233,7 +1452,10 @@ def cmd_kg_unmerge(args):
     )
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core import configure_settings
-    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        get_session_factory,
+        init_db,
+    )
     from okto_pulse.core.kg.dedup_migration import unmerge_equivalence
     from okto_pulse.core.ports.kg_equivalence_ledger import (
         EquivalenceLedgerError,
@@ -1275,10 +1497,7 @@ def cmd_kg_unmerge(args):
     if emit_json:
         print(json.dumps(result, indent=2, default=str))
     elif result.get("already_revoked"):
-        print(
-            f"AVISO: registro {record_id} ja estava revogado — no-op "
-            f"idempotente."
-        )
+        print(f"AVISO: registro {record_id} ja estava revogado — no-op idempotente.")
     else:
         print(
             f"Un-merge concluido: {result['members_restored']} membro(s) "
@@ -1298,7 +1517,10 @@ def cmd_kg_proposals(args):
     )
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core import configure_settings
-    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        get_session_factory,
+        init_db,
+    )
     from okto_pulse.core.ports.kg_curation_proposals import (
         require_curation_proposal_store,
     )
@@ -1319,19 +1541,21 @@ def cmd_kg_proposals(args):
 
     proposals = asyncio.run(_run())
     if emit_json:
-        print(json.dumps(
-            [
-                {
-                    "proposal_id": pr.proposal_id,
-                    "operation": pr.operation,
-                    "proposal_hash": pr.proposal_hash,
-                    "created_at": pr.created_at,
-                    "groups": len(dict(pr.plan).get("groups", [])),
-                }
-                for pr in proposals
-            ],
-            indent=2,
-        ))
+        print(
+            json.dumps(
+                [
+                    {
+                        "proposal_id": pr.proposal_id,
+                        "operation": pr.operation,
+                        "proposal_hash": pr.proposal_hash,
+                        "created_at": pr.created_at,
+                        "groups": len(dict(pr.plan).get("groups", [])),
+                    }
+                    for pr in proposals
+                ],
+                indent=2,
+            )
+        )
     elif not proposals:
         print(f"Nenhuma proposta pendente para o board {board_id}.")
     else:
@@ -1363,7 +1587,10 @@ def cmd_kg_export(args):
         GraphExportError,
         export_board_jsonld,
     )
-    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        get_session_factory,
+        init_db,
+    )
 
     board_id: str = args.board_id
     output: str = args.output
@@ -1427,7 +1654,10 @@ def cmd_kg_subtype_declare(args):
     )
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core import configure_settings
-    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        get_session_factory,
+        init_db,
+    )
     from okto_pulse.core.ports.kg_subtype_registry import (
         SubtypeDeclaration,
         SubtypeRegistryError,
@@ -1850,7 +2080,8 @@ def main():
     )
     sub_proposals.add_argument("board_id", help="Target board UUID")
     sub_proposals.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="Emit machine-readable JSON instead of text",
     )
     sub_proposals.set_defaults(func=cmd_kg_proposals)
@@ -1862,9 +2093,7 @@ def main():
         "equivalence ledger record (never re-points edges)",
     )
     sub_unmerge.add_argument("board_id", help="Target board UUID")
-    sub_unmerge.add_argument(
-        "record_id", help="Equivalence ledger record id (eqv_...)"
-    )
+    sub_unmerge.add_argument("record_id", help="Equivalence ledger record id (eqv_...)")
     sub_unmerge.add_argument(
         "--json",
         action="store_true",
@@ -1878,9 +2107,7 @@ def main():
         help="Export a board graph to deterministic JSON-LD (PROV-O mapping)",
     )
     sub_export.add_argument("board_id", help="Target board UUID")
-    sub_export.add_argument(
-        "--output", required=True, help="Destination file path"
-    )
+    sub_export.add_argument("--output", required=True, help="Destination file path")
     sub_export.add_argument(
         "--format", default="jsonld", help="Export format (only: jsonld)"
     )

@@ -1,23 +1,24 @@
 """Endpoints for the currently authenticated user/agent.
 
 Exposes effective permissions for frontend gating (`GET /me/permissions`).
-Backend still enforces authorization via 403 — this endpoint only lets the
-frontend reflect the same intent in UI (hide/disable buttons that would be
-rejected anyway).
+Backend still enforces authorization — this endpoint only lets the frontend
+reflect the same intent in UI (hide/disable buttons that would be rejected
+anyway). Missing and inaccessible boards share the same 404 envelope.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
+from okto_pulse.community.api.auth_deps import get_realm_id, require_user
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases.permission_presets import (
     GetMyPermissionsCommand,
     GetMyPermissionsUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.core.application.use_cases.base import EntityNotFoundError
 from okto_pulse.core.repositories import PulseUnitOfWork
 
 router = APIRouter()
@@ -35,6 +36,7 @@ class PermissionsResponse(BaseModel):
 async def get_my_permissions(
     board_id: str = Query(..., description="Board to resolve permissions against"),
     user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> PermissionsResponse:
     """Return the authenticated user's effective permission flags for a board.
@@ -49,11 +51,21 @@ async def get_my_permissions(
     at all default to the full registry (True for everything), matching the
     historical "full access" compat path.
     """
-    result = await GetMyPermissionsUseCase().execute(
-        GetMyPermissionsCommand(board_id=board_id),
-        actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-        uow=uow,
-    )
+    try:
+        result = await GetMyPermissionsUseCase().execute(
+            GetMyPermissionsCommand(board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                realm_id=realm_id,
+                board_id=board_id,
+            ),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Board not found",
+        ) from exc
     permissions = result.permissions
     return PermissionsResponse(
         board_id=permissions.board_id,

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from okto_pulse.community.adapters.telemetry_sender import (
     CommunityTelemetryBeaconSender,
+    payload_digest,
 )
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
 import okto_pulse.community.adapters.telemetry_sender as sender_mod  # patches _utcnow
@@ -156,16 +157,28 @@ def test_send_once_runs_prune_in_publish_flow(tmp_path: Path, monkeypatch) -> No
     class _Accepted:
         status_code = 202
 
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return {
+                "outcome": "accepted",
+                "state": "committed",
+                "payload_digest": payload_digest(self.payload),
+                "receipt": "fh-test",
+            }
+
         def raise_for_status(self) -> None:
             return None
 
     class _Session:
         def post(self, *args, **kwargs):
-            return _Accepted()
+            payload = json.loads(kwargs["data"].decode("utf-8"))
+            return _Accepted(payload)
 
     result = TelemetryBeaconSender(settings, session=_Session()).send_once()  # type: ignore[arg-type]
 
-    assert result == {"sent": True, "batch_seq": 1}
+    assert result["sent"] is True and result["batch_seq"] == 1
     ids = {e["event_id"] for e in LocalTelemetryStore(metrics_dir).iter_events()}
     # The publish flow ran prune_old: the old confirmed event is gone...
     assert "old-confirmed" not in ids

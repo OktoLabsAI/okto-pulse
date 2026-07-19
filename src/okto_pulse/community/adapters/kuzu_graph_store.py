@@ -367,30 +367,26 @@ class CommunityKuzuGraphStore:
         """Vector-search over a node type, reshaped into the find_by_topic row
         shape so ``get_decision_history`` can merge semantic + title hits.
 
-        Uses the existing HNSW index via ``find_similar_nodes_by_type``; pulls
+        Uses this adapter's public ``vector_search`` port; pulls
         full node attributes (content, created_at, source_confidence,
         relevance_score, superseded_by) for each hit. Returns empty list when
         the index is absent or the query fails — caller falls back to
         title-CONTAINS.
         """
-        from okto_pulse.core.kg.search import find_similar_nodes_by_type
-
-        with open_board_connection(board_id) as (_db, conn):
-            raw = find_similar_nodes_by_type(
-                board_id=board_id,
-                node_type=node_type,
-                query_vector=query_vec,
-                top_k=filters.max_rows,
-                min_similarity=min_similarity,
-                conn=conn,
-                include_superseded=bool(
-                    getattr(filters, "include_superseded", False)
-                ),
-            )
+        raw = self.vector_search(
+            board_id,
+            node_type,
+            query_vec,
+            filters.max_rows,
+            min_similarity,
+            include_superseded=bool(
+                getattr(filters, "include_superseded", False)
+            ),
+        )
         if not raw:
             return []
 
-        ids_in_order = [r.graph_node_id for r in raw]
+        ids_in_order = [str(r["node_id"]) for r in raw]
         attrs = self._exec(
             board_id,
             f"MATCH (n:{node_type}) WHERE n.id IN $ids "
@@ -560,6 +556,7 @@ class CommunityKuzuGraphStore:
         top_k: int, min_similarity: float,
         *,
         include_superseded: bool = False,
+        graph_layer: str = "all",
     ) -> list[dict]:
         from okto_pulse.core.kg.graph_availability import (
             graph_unavailable_error,
@@ -569,6 +566,8 @@ class CommunityKuzuGraphStore:
 
         if node_type not in VECTOR_INDEX_TYPES:
             return []
+        if graph_layer not in {"canonical", "working", "all"}:
+            raise ValueError("invalid_graph_layer")
         fetch_k = top_k if include_superseded else max(
             top_k,
             top_k * DECAY_REORDER_POOL_MULTIPLIER,
@@ -580,7 +579,7 @@ class CommunityKuzuGraphStore:
                     f"CALL QUERY_VECTOR_INDEX("
                     f"'{node_type}', '{vector_index_name(node_type)}', $vec, $k) "
                     "RETURN node.id, node.title, node.source_artifact_ref, "
-                    "distance, node.superseded_by",
+                    "distance, node.superseded_by, node.graph_layer",
                     {"vec": query_vec, "k": fetch_k},
                 )
                 indexed_rows = _materialize_native_rows(result)
@@ -597,6 +596,8 @@ class CommunityKuzuGraphStore:
         hits: list[dict[str, Any]] = []
         for row in indexed_rows:
             if row[4] and not include_superseded:
+                continue
+            if graph_layer != "all" and row[5] != graph_layer:
                 continue
             similarity = max(0.0, min(1.0, 1.0 - float(row[3])))
             if similarity < min_similarity:
@@ -626,7 +627,7 @@ class CommunityKuzuGraphStore:
                 result = conn.execute(
                     f"MATCH (n:{node_type}) WHERE n.embedding IS NOT NULL "
                     "RETURN n.id, n.title, n.source_artifact_ref, n.embedding, "
-                    "n.superseded_by LIMIT 500"
+                    "n.superseded_by, n.graph_layer LIMIT 500"
                 )
                 fallback_rows = _materialize_native_rows(result)
         except Exception as exc:
@@ -642,6 +643,8 @@ class CommunityKuzuGraphStore:
 
         for row in fallback_rows:
             if row[4] and not include_superseded:
+                continue
+            if graph_layer != "all" and row[5] != graph_layer:
                 continue
             embedding = row[3]
             if not embedding or len(embedding) != len(query_vec):

@@ -192,13 +192,22 @@ def _parse_multipart_byteranges(body: bytes, content_type: str):
     # segments[0] is the empty preamble; segments[-1] is the trailing "--".
     parts = []
     for seg in segments[1:-1]:
-        seg = seg[2:] if seg.startswith(b"\r\n") else seg  # drop the leading CRLF
-        header_blob, _, rest = seg.partition(b"\r\n\r\n")
-        data = rest[:-2] if rest.endswith(b"\r\n") else rest  # drop the trailing CRLF
+        if seg.startswith(b"\r\n"):
+            seg = seg[2:]
+        elif seg.startswith(b"\n"):
+            seg = seg[1:]
+        separator = b"\r\n\r\n" if b"\r\n\r\n" in seg else b"\n\n"
+        header_blob, _, rest = seg.partition(separator)
         content_range = None
-        for line in header_blob.split(b"\r\n"):
+        for line in header_blob.splitlines():
             if line.lower().startswith(b"content-range:"):
                 content_range = line.split(b":", 1)[1].strip().decode()
+        if content_range:
+            span = content_range.split(" ", 1)[1].split("/", 1)[0]
+            start, end = (int(value) for value in span.split("-", 1))
+            data = rest[: end - start + 1]
+        else:
+            data = rest.rstrip(b"\r\n")
         parts.append((content_range, data))
     return parts
 
@@ -286,16 +295,26 @@ def test_multi_range_206_multipart_byteranges_matches_baseline(env):
 
     assert real.status_code == base.status_code == 206
     assert real.headers["content-type"].startswith("multipart/byteranges; boundary=")
-    assert base.headers["content-type"].startswith("multipart/byteranges; boundary=")
+    # Starlette 0.52 carries its multipart descriptor in Content-Range instead
+    # of Content-Type.  Pulse deliberately emits the standards-compliant
+    # Content-Type header, while this baseline still proves decoded parity.
+    baseline_multipart = base.headers.get("content-type", "")
+    if not baseline_multipart.startswith("multipart/byteranges; boundary="):
+        baseline_multipart = base.headers.get("content-range", "")
+    assert baseline_multipart.startswith("multipart/byteranges; boundary=")
     # content-length is exact on both (mismatch would hang/abort the response)
     assert real.headers["content-length"] == str(len(real.content))
-    assert base.headers["content-length"] == str(len(base.content))
+    # Starlette 0.52's LF-only closing frame is one byte longer than its own
+    # declared length; older supported releases were exact.  The product
+    # response must remain exact while the semantic baseline tolerates that
+    # upstream off-by-one drift.
+    assert len(base.content) - int(base.headers["content-length"]) in {0, 1}
     # the shared metadata headers still match the baseline
     for header in ("content-disposition", "accept-ranges", "etag", "last-modified"):
         assert real.headers.get(header) == base.headers.get(header), header
     # decoded parts (boundary aside) are byte-identical to the baseline's
     real_parts = _parse_multipart_byteranges(real.content, real.headers["content-type"])
-    base_parts = _parse_multipart_byteranges(base.content, base.headers["content-type"])
+    base_parts = _parse_multipart_byteranges(base.content, baseline_multipart)
     assert real_parts == base_parts
     assert [cr for cr, _ in real_parts] == [
         f"bytes 1-3/{len(content)}",

@@ -4,7 +4,7 @@ Community catalog (catalog-aware). Test-only; EXTENDS R11-B/D, does not duplicat
 Scenario mapping:
   TS04 — golden replay over the effective Community catalog in ONE flow: list
        resources + resources/read of ALL URIs + tool-doc link resolution +
-       byte-equivalence of the operational overlays + the selective common/
+       byte-equivalence of the operational replacements + the selective common/
        operational forbidden scan — identical to today (no functional change).
 """
 
@@ -14,7 +14,7 @@ import pytest
 
 import okto_pulse.core.mcp.server as srv
 from okto_pulse.community.adapters.resources import (
-    _COMMUNITY_OVERLAY_TABLE,
+    _COMMUNITY_REPLACEMENT_TABLE,
     _OPERATIONAL_DIR,
     register_and_freeze_community_resource_catalog,
 )
@@ -32,13 +32,15 @@ def _reset_catalog():
     srv.reset_resource_catalog_for_tests()
 
 
-def test_ts04_consolidated_golden_replay_effective_community_catalog():
+def test_ts04_consolidated_golden_replay_effective_community_catalog(
+    active_runtime_registry,
+):
     from okto_pulse.core.mcp import payload_budget
 
     baseline_uris = {s.uri for s in srv.effective_resource_catalog().specs()}
 
     # compose the Community catalog exactly as combined_lifespan does.
-    register_and_freeze_community_resource_catalog()
+    register_and_freeze_community_resource_catalog(active_runtime_registry)
     eff = srv.effective_resource_catalog()
     specs = eff.specs()
     by_uri = {s.uri: s for s in specs}
@@ -58,10 +60,10 @@ def test_ts04_consolidated_golden_replay_effective_community_catalog():
 
     # (d) byte-equivalence: each operational overlay's merged content == the
     #     byte-exact pre-split original (today's content).
-    for uri, rel, _cap in _COMMUNITY_OVERLAY_TABLE:
+    for uri, rel, _cap in _COMMUNITY_REPLACEMENT_TABLE:
         assert by_uri[uri].read() == (_OPERATIONAL_DIR / rel).read_text(encoding="utf-8")
 
-    # (e) selective scan: the effective catalog is clean (operational overlays are
+    # (e) selective scan: effective catalog is clean (operational replacements are
     #     exempt; no COMMON spec leaks a backend term), links resolve, no conflict.
     assert scan_forbidden_terms(eff) == ()
     assert catalog_link_integrity(eff) == ()

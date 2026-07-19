@@ -60,6 +60,8 @@ router = APIRouter()
 
 
 _NOT_FOUND_DETAIL = {
+    "board": "Board not found",
+    "spec": "Spec not found",
     "sprint": "Sprint not found",
     "spec_or_board": "Spec or board not found",
 }
@@ -80,16 +82,19 @@ async def list_board_sprints(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all sprints for a board, optionally filtered by status and/or spec."""
-    result = await ListBoardSprintsUseCase().execute(
-        ListBoardSprintsCommand(
-            board_id,
-            status_filter=status_filter,
-            spec_id=spec_id,
-            include_archived=include_archived,
-        ),
-        actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-        uow=uow,
-    )
+    try:
+        result = await ListBoardSprintsUseCase().execute(
+            ListBoardSprintsCommand(
+                board_id,
+                status_filter=status_filter,
+                spec_id=spec_id,
+                include_archived=include_archived,
+            ),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
     return result.sprints
 
 
@@ -108,7 +113,7 @@ async def create_sprint(
     """Create a new sprint for a spec."""
     try:
         result = await CreateSprintUseCase().execute(
-            CreateSprintCommand(board_id, data),
+            CreateSprintCommand(board_id, data, spec_id=spec_id),
             actor=RESTAdapterContract.actor(user_id, board_id=board_id),
             uow=uow,
         )
@@ -129,11 +134,14 @@ async def list_sprints(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List sprints for a spec."""
-    result = await ListSprintsUseCase().execute(
-        ListSprintsCommand(spec_id),
-        actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-        uow=uow,
-    )
+    try:
+        result = await ListSprintsUseCase().execute(
+            ListSprintsCommand(spec_id),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
     return result.sprints
 
 
@@ -169,6 +177,8 @@ async def update_sprint(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except SprintOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
@@ -192,6 +202,8 @@ async def move_sprint(
         )
     except CancellationReasonRequiredError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
+    except SprintOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
@@ -212,6 +224,8 @@ async def delete_sprint(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except SprintOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
 
@@ -230,6 +244,8 @@ async def submit_evaluation(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except SprintOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
@@ -259,6 +275,8 @@ async def assign_tasks(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
     count = result.assigned
     sprint = result.sprint
     lane_type = sprint.lane_type.value if sprint else None
@@ -287,11 +305,16 @@ async def unassign_tasks(
     card_ids = data.get("card_ids", [])
     if not card_ids:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="card_ids required")
-    result = await UnassignSprintTasksUseCase().execute(
-        UnassignSprintTasksCommand(sprint_id, card_ids),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await UnassignSprintTasksUseCase().execute(
+            UnassignSprintTasksCommand(sprint_id, card_ids),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except SprintOperationError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
     return {"success": True, "unassigned": result.unassigned}
 
 
@@ -302,11 +325,25 @@ async def list_history(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List sprint history."""
-    result = await ListSprintHistoryUseCase().execute(
-        ListSprintHistoryCommand(sprint_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        # This route has no board path parameter. Resolve the real parent through
+        # the application boundary, then run the history read with a board-bound
+        # actor instead of trusting caller-supplied scope.
+        resolved = await GetSprintUseCase().execute(
+            GetSprintCommand(sprint_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+        result = await ListSprintHistoryUseCase().execute(
+            ListSprintHistoryCommand(sprint_id),
+            actor=RESTAdapterContract.actor(
+                user_id,
+                board_id=resolved.sprint.board_id,
+            ),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
     return result.history
 
 
@@ -321,10 +358,12 @@ async def suggest_sprints(
     """Suggest sprint breakdown for a spec."""
     try:
         result = await SuggestSprintsUseCase().execute(
-            SuggestSprintsCommand(spec_id, threshold),
+            SuggestSprintsCommand(spec_id, threshold, board_id=board_id),
             actor=RESTAdapterContract.actor(user_id, board_id=board_id),
             uow=uow,
         )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return {"suggestions": result.suggestions, "count": len(result.suggestions)}

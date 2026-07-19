@@ -68,11 +68,11 @@ def test_ts_4a74634e_community_catalog_built_via_core_contracts():
     assert offenders == [], offenders
 
 
-def test_ts_4a74634e_uris_preserved_and_read_nonempty():
+def test_ts_4a74634e_uris_preserved_and_read_nonempty(active_runtime_registry):
     before = {s.uri for s in core_srv.effective_resource_catalog().specs()}
     assert len(before) >= 45
 
-    register_and_freeze_community_resource_catalog()
+    register_and_freeze_community_resource_catalog(active_runtime_registry)
 
     after_specs = core_srv.effective_resource_catalog().specs()
     after = {s.uri for s in after_specs}
@@ -86,11 +86,11 @@ def test_ts_4a74634e_uris_preserved_and_read_nonempty():
 # ===========================================================================
 # ts_2a2d4e73 (TS06) — golden replay of the combined_lifespan composition hook.
 # ===========================================================================
-def test_ts_2a2d4e73_golden_replay_combined_lifespan_freeze():
+def test_ts_2a2d4e73_golden_replay_combined_lifespan_freeze(active_runtime_registry):
     uris_before = {s.uri for s in core_srv.effective_resource_catalog().specs()}
 
     # The exact hook combined_lifespan invokes after all providers are wired.
-    register_and_freeze_community_resource_catalog()
+    register_and_freeze_community_resource_catalog(active_runtime_registry)
 
     cat = core_srv.effective_resource_catalog()
     uris_after = {s.uri for s in cat.specs()}
@@ -117,10 +117,12 @@ def test_ts_2a2d4e73_golden_replay_combined_lifespan_freeze():
         )
 
 
-def test_community_catalog_registration_is_idempotent_after_freeze():
-    register_and_freeze_community_resource_catalog()
+def test_community_catalog_registration_is_idempotent_after_freeze(
+    active_runtime_registry,
+):
+    register_and_freeze_community_resource_catalog(active_runtime_registry)
     first = {s.uri for s in core_srv.effective_resource_catalog().specs()}
 
-    register_and_freeze_community_resource_catalog()
+    register_and_freeze_community_resource_catalog(active_runtime_registry)
 
     assert {s.uri for s in core_srv.effective_resource_catalog().specs()} == first

@@ -77,6 +77,8 @@ const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
   'evidence_class',
   'replay_command',
   'mcp_replay_manifest',
+  'manifest_ref',
+  'execution_attestation',
   'manual_checklist_ref',
   'expected_output_snapshot',
   'non_replayable_justification',
@@ -1742,7 +1744,23 @@ export function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
             { label: 'Test file', value: evidence?.test_file_path, mono: true },
             { label: 'Function', value: evidence?.test_function, mono: true },
             { label: 'Replay command', value: evidence?.replay_command, mono: true },
-            { label: 'MCP replay manifest', value: evidence?.mcp_replay_manifest, mono: true },
+            { label: 'Manifest (V2)', value: evidence?.manifest_ref, mono: true },
+            {
+              label: 'Execution attestation',
+              value: evidence?.execution_attestation
+                ? `v${evidence.execution_attestation.schema_version} · ${evidence.execution_attestation.run_id} · runtime ${evidence.execution_attestation.product_runtime_exercised ? 'exercised' : 'NOT exercised'}`
+                : null,
+              mono: true,
+            },
+            {
+              label: 'Legacy MCP manifest',
+              value: typeof evidence?.mcp_replay_manifest === 'string'
+                ? evidence.mcp_replay_manifest
+                : evidence?.mcp_replay_manifest
+                  ? 'embedded object (unverified)'
+                  : null,
+              mono: true,
+            },
             { label: 'Manual checklist', value: evidence?.manual_checklist_ref, mono: true },
             { label: 'Last run', value: formatEvidenceTimestamp(evidence?.last_run_at), mono: false },
             { label: 'Run ID', value: evidence?.test_run_id, mono: true },

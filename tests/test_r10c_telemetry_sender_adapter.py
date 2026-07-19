@@ -30,6 +30,7 @@ import requests
 from okto_pulse.community.adapters.telemetry_sender import (
     CommunityTelemetryBeaconSender,
     build_community_telemetry_sender,
+    payload_digest,
     register_community_telemetry_sender,
 )
 from okto_pulse.core.infra.config import CoreSettings
@@ -116,6 +117,29 @@ class FakeSession:
             return self._handshake
         if url.endswith("/v1/usage"):
             assert self._usage is not None, "unexpected usage call"
+            payload = json.loads(kwargs["data"].decode("utf-8"))
+            digest = payload_digest(payload)
+            if 200 <= self._usage.status_code < 300 and "outcome" not in self._usage._json:
+                self._usage._json.update(
+                    {
+                        "outcome": "accepted",
+                        "state": "committed",
+                        "payload_digest": digest,
+                        "receipt": "fh-test",
+                    }
+                )
+            elif (
+                self._usage.status_code == 409
+                and self._usage._json.get("code") == "DUPLICATE_NONCE_OR_BATCH_SEQ"
+            ):
+                self._usage._json.update(
+                    {
+                        "outcome": "duplicate_committed",
+                        "state": "committed",
+                        "payload_digest": digest,
+                        "receipt": "fh-existing",
+                    }
+                )
             return self._usage
         raise AssertionError(f"unexpected url {url}")
 
@@ -341,7 +365,7 @@ def test_ts_b2a15459_reason_code_matrix_preserved(tmp_path, monkeypatch):
             usage=FakeResponse(409, {"code": "DUPLICATE_NONCE_OR_BATCH_SEQ"})
         ),
     ).send_pending()
-    assert result["reason"] == "duplicate"
+    assert result["reason"] == "duplicate_committed"
     assert fs.read_failure_state(state_of(_s_dup)).status == fs.STATUS_OK
 
     # UNKNOWN_INSTALL with handshake failing → rehandshake_failed (DEGRADED).
@@ -409,8 +433,9 @@ def test_ts_6f6c03ba_loop_resolves_registered_sender(tmp_path, monkeypatch):
     import okto_pulse.community.main as main_mod
 
     loop_src = inspect.getsource(main_mod._metrics_beacon_loop)
+    cycle_src = inspect.getsource(main_mod._metrics_publish_cycle)
     assert "get_telemetry_sender" in loop_src
-    assert ".send_pending" in loop_src
+    assert ".send_pending" in cycle_src
     assert "TelemetryBeaconSender(settings)" not in loop_src
 
 

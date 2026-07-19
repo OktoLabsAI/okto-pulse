@@ -7,10 +7,15 @@ from pathlib import Path
 from okto_pulse.core.application.boundary.adapter_provenance import (
     audit_adapter_provenance,
 )
+from okto_pulse.core.application.boundary.public_contract_manifest import (
+    PUBLIC_CORE_CONTRACT_MANIFEST_DIGEST,
+    PUBLIC_CORE_CONTRACT_MANIFEST_VERSION,
+    PUBLIC_CORE_CONTRACT_SURFACES as CORE_PUBLIC_CORE_CONTRACT_SURFACES,
+)
 from okto_pulse.core.ports.f13 import AdapterProvenanceRegistration
 
 
-PUBLIC_CORE_CONTRACT_SURFACES: tuple[str, ...] = (
+_CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.community.api.auth_deps",
     "okto_pulse.community.app",
     "okto_pulse.core.AuthProvider",
@@ -40,6 +45,7 @@ PUBLIC_CORE_CONTRACT_SURFACES: tuple[str, ...] = (
     "okto_pulse.core.resolve_relational_schema_lifecycle_orchestrator",
     "okto_pulse.core.application",
     "okto_pulse.core.composition",
+    "okto_pulse.core.composition.isolated_runtime_provider_scope",
     "okto_pulse.core.discovery_intent_catalog",
     "okto_pulse.core.domain",
     "okto_pulse.core.inbound.enum_error_envelope",
@@ -95,6 +101,7 @@ PUBLIC_CORE_CONTRACT_SURFACES: tuple[str, ...] = (
     "okto_pulse.core.runtime_registry",
     "okto_pulse.core.services.amendment_revision",
     "okto_pulse.core.services.amendment_revision_api",
+    "okto_pulse.core.services.analytics_contract",
     "okto_pulse.core.services.analytics_service",
     "okto_pulse.core.services.application_agents",
     "okto_pulse.core.services.application_kg",
@@ -119,6 +126,38 @@ PUBLIC_CORE_CONTRACT_SURFACES: tuple[str, ...] = (
     "okto_pulse.core.services.spec_structured_entities",
     "okto_pulse.core.services.test_scenario_lifecycle",
     "okto_pulse.core.telemetry",
+)
+
+# Core owns the shipping manifest.  This expectation makes a Core/Community branch
+# mismatch fail at import/CI time instead of silently widening or narrowing the
+# allowlist; the effective Community allowlist is always built from the installed
+# Core wheel plus the two edition-local surfaces below.
+_COMMUNITY_LOCAL_CONTRACT_SURFACES = tuple(
+    item
+    for item in _CROSS_EDITION_CONTRACT_EXPECTATION
+    if item.startswith("okto_pulse.community.")
+)
+_EXPECTED_CORE_CONTRACT_SURFACES = tuple(
+    item
+    for item in _CROSS_EDITION_CONTRACT_EXPECTATION
+    if item.startswith("okto_pulse.core.")
+)
+if (
+    len(_EXPECTED_CORE_CONTRACT_SURFACES)
+    != len(CORE_PUBLIC_CORE_CONTRACT_SURFACES)
+    or set(_EXPECTED_CORE_CONTRACT_SURFACES)
+    != set(CORE_PUBLIC_CORE_CONTRACT_SURFACES)
+):
+    raise RuntimeError(
+        "public_core_contract_manifest_mismatch: Community was built against a "
+        "different Core public-contract manifest "
+        f"(core_version={PUBLIC_CORE_CONTRACT_MANIFEST_VERSION}, "
+        f"core_digest={PUBLIC_CORE_CONTRACT_MANIFEST_DIGEST})"
+    )
+
+PUBLIC_CORE_CONTRACT_SURFACES: tuple[str, ...] = (
+    *_COMMUNITY_LOCAL_CONTRACT_SURFACES,
+    *CORE_PUBLIC_CORE_CONTRACT_SURFACES,
 )
 
 PRIVATE_CORE_IMPLEMENTATION_SURFACES: tuple[str, ...] = (

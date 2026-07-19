@@ -46,6 +46,17 @@ from .boundary_evidence import (
 from .smoke_evidence import (
     build_community_runtime_smoke_evidence,
 )
+from .test_evidence import (
+    CommunityTestEvidenceError,
+    EvidenceMigrationReport,
+    PersistedEvidenceMigrationReport,
+    ProductExecutionObservation,
+    migrate_persisted_test_scenario_evidence,
+    migrate_test_scenario_evidence,
+    normalize_test_scenario_evidence,
+    run_manifest_and_build_evidence_v2,
+    verify_community_evidence_v2,
+)
 from .data_bootstrapper import (
     CommunityDataBootstrapper,
     build_community_data_bootstrap_ledger,
@@ -145,7 +156,11 @@ __all__ = [
     "CommunitySqlAlchemyKGWorkerQueue",
     "CommunityStubEmbeddingProvider",
     "CommunityTelemetryStateCarrier",
+    "CommunityTestEvidenceError",
+    "EvidenceMigrationReport",
     "MCPAuthContext",
+    "PersistedEvidenceMigrationReport",
+    "ProductExecutionObservation",
     "SingletonSchedulerControl",
     "auth_context_from_session",
     "build_community_data_bootstrap_ledger",
@@ -160,6 +175,9 @@ __all__ = [
     "create_mcp_auth_factory",
     "make_community_data_bootstrapper",
     "make_community_mcp_authenticator",
+    "migrate_persisted_test_scenario_evidence",
+    "migrate_test_scenario_evidence",
+    "normalize_test_scenario_evidence",
     "register_community_mcp_host",
     "principal_from_auth_session",
     "make_community_relational_schema_lifecycle_orchestrator",
@@ -172,4 +190,6 @@ __all__ = [
     "register_community_reranker",
     "register_community_telemetry_state_carrier",
     "resolve_pulse_db_path",
+    "run_manifest_and_build_evidence_v2",
+    "verify_community_evidence_v2",
 ]

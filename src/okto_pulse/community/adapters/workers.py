@@ -69,7 +69,11 @@ def build_community_worker_registry(
 
     cancel_safe_relational_scope = _cancel_safe_scope_factory(session_factory)
     clock = UtcWorkerClock()
-    blocking_execution = TrackedBlockingExecution()
+    # Keep shutdown ownership disjoint. Consolidation must prove its own native
+    # operations quiescent before the outbox performs its final iteration; a
+    # shared task set could otherwise miss late submissions from either family.
+    consolidation_blocking_execution = TrackedBlockingExecution()
+    outbox_blocking_execution = TrackedBlockingExecution()
     event_processor = DomainEventDeliveryProcessor(
         CommunitySqlAlchemyDomainEventDeliveryStore(
             session_factory,
@@ -98,11 +102,11 @@ def build_community_worker_registry(
         relational_scope_factory=cancel_safe_relational_scope,
         heartbeat_seconds=kg_queue_heartbeat_seconds,
         clock=clock,
-        blocking_execution=blocking_execution,
+        blocking_execution=consolidation_blocking_execution,
     )
     consolidation_runner = ConsolidationRunner(
         consolidation_processor,
-        blocking_execution=blocking_execution,
+        blocking_execution=consolidation_blocking_execution,
         heartbeat_seconds=float(kg_queue_heartbeat_seconds),
         recovery_interval_seconds=float(kg_queue_recovery_scan_interval_seconds),
         max_concurrent_workers=kg_queue_max_concurrent_workers,
@@ -112,11 +116,14 @@ def build_community_worker_registry(
             cancel_safe_relational_scope,
             interval_seconds=5,
             clock=clock,
+            blocking_execution=outbox_blocking_execution,
         ),
         name="community.kg.outbox_runner",
         interval_seconds=5.0,
         operation_name="process_once",
         final_iteration=True,
+        blocking_execution=outbox_blocking_execution,
+        final_iteration_guard=lambda: consolidation_runner.shutdown_drained,
     )
     registry = RuntimeWorkerRegistry()
     registry.register(
@@ -141,6 +148,9 @@ def build_community_worker_registry(
             family="consolidation_worker",
             start=lambda: start_runner(consolidation_runner),
             stop=stop_runner,
+            # Join every in-flight consolidation/native graph write before
+            # the outbox runner performs its shutdown final iteration.
+            stop_priority=250,
         )
     )
     registry.register(

@@ -34,6 +34,7 @@ const FRESH_HEALTH: healthApi.QueueHealth = {
   claimed_count: 3,
   claimed_boards: ['board-a', 'board-b'],
   dead_letter_count: 0,
+  global_outbox_dead_letter_count: 17,
   claims_per_min_1m: 124,
   claims_per_min_5m: 98,
   alert_threshold: 5000,
@@ -301,6 +302,11 @@ describe('AC12 — Live Queue Health polling lifecycle', () => {
     expect(screen.getByText('47')).toBeInTheDocument();
     expect(screen.getByText('124')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument(); // kuzu_lock_retries_5m
+    const globalOutboxLabel = screen.getByText('Global outbox terminal');
+    expect(globalOutboxLabel.parentElement).toHaveTextContent('17');
+    expect(screen.getByText('Consolidation DLQ').parentElement).toHaveTextContent(
+      '0',
+    );
   });
 });
 

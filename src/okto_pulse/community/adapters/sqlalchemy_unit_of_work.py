@@ -6,10 +6,12 @@ concretes that implement the ``PulseUnitOfWork`` / ``UnitOfWorkFactory`` PORTS
 
 ``CommunityUnitOfWork`` wraps an ``AsyncSession`` by composition, owns the
 transaction boundary (commit/rollback/close) and exposes the repository catalog
-(boards/ideations/specs). It preserves the core teardown invariant EXACTLY:
-``__aexit__`` rolls back ONLY on error and ALWAYS closes the session in a
-``finally``, returning ``None`` so it never suppresses an exception. The same
-path is reached whether the consumer enters via the factory or via
+(boards/ideations/specs). Its teardown rolls back any transaction still active,
+including one left poisoned after a consumer caught a database exception, and
+ALWAYS closes the session in a ``finally``. An explicitly committed happy path
+has no active transaction and receives no redundant rollback. ``__aexit__``
+returns ``None`` so it never suppresses an exception. The same path is reached
+whether the consumer enters via the factory or via
 ``async with uow:`` directly (one teardown path, no connection leak).
 
 ``CommunityUnitOfWorkFactory`` is realm-ready: ``realm_id``/``actor`` are accepted
@@ -25,8 +27,8 @@ composition root registers ``build_community_unit_of_work_factory(...)`` as the
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from contextlib import AbstractAsyncContextManager
+import logging
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -54,14 +56,90 @@ if TYPE_CHECKING:
     from okto_pulse.core.application.use_cases.base import ActorContext
 
 
+logger = logging.getLogger(__name__)
+_UOW_CLEANUP_DRAIN_TIMEOUT_S = 5.0
 _pending_uow_cleanups: set[asyncio.Task[Any]] = set()
 
 
-def _consume_uow_cleanup(task: asyncio.Future[Any]) -> None:
+def _log_background_uow_cleanup_failure(task: asyncio.Future[Any]) -> None:
+    """Consume a detached UoW teardown failure with structured evidence."""
+
     if task.cancelled():
+        logger.error(
+            "db.uow.background_cleanup_cancelled",
+            extra={"event": "db.uow.background_cleanup_cancelled"},
+        )
         return
-    with contextlib.suppress(BaseException):
-        task.exception()
+    try:
+        task.result()
+    except BaseException as exc:  # cleanup failure must never escape callback
+        logger.error(
+            "db.uow.background_cleanup_failed error_type=%s",
+            type(exc).__name__,
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "event": "db.uow.background_cleanup_failed",
+                "error_type": type(exc).__name__,
+            },
+        )
+
+
+async def drain_pending_uow_cleanups(
+    *,
+    timeout_s: float | None = None,
+) -> None:
+    """Wait boundedly for detached UoW rollback/close tasks.
+
+    The Community database runtime invokes this before disposing its engine.
+    The deadline covers all cleanup tasks observed during that close and never
+    cancels a stuck driver task; those tasks retain their structured terminal
+    observer and may still release their connection after the deadline.
+    """
+
+    timeout = (
+        _UOW_CLEANUP_DRAIN_TIMEOUT_S
+        if timeout_s is None
+        else float(timeout_s)
+    )
+    if timeout <= 0:
+        raise ValueError("timeout_s must be positive")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    current = asyncio.current_task()
+    while True:
+        tasks = {
+            task
+            for task in _pending_uow_cleanups
+            if not task.done() and task is not current
+        }
+        if not tasks:
+            return
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.warning(
+                "db.uow.cleanup_drain_timeout pending=%d timeout_s=%.3f",
+                len(tasks),
+                timeout,
+                extra={
+                    "event": "db.uow.cleanup_drain_timeout",
+                    "pending_count": len(tasks),
+                    "timeout_s": timeout,
+                },
+            )
+            return
+        _done, pending = await asyncio.wait(tasks, timeout=remaining)
+        if pending:
+            logger.warning(
+                "db.uow.cleanup_drain_timeout pending=%d timeout_s=%.3f",
+                len(pending),
+                timeout,
+                extra={
+                    "event": "db.uow.cleanup_drain_timeout",
+                    "pending_count": len(pending),
+                    "timeout_s": timeout,
+                },
+            )
+            return
 
 
 def _community_realm_scope(
@@ -107,13 +185,19 @@ class CommunityUnitOfWork:
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        # Single, entry-style-independent teardown: roll back on error and ALWAYS
-        # close the session. The factory context delegates here, and a direct
-        # `async with uow:` reaches the same path — so neither style leaks the
-        # connection (the port docstring advertises both).
+        # Single, entry-style-independent teardown: roll back any still-active
+        # transaction and ALWAYS close the session. This also covers a database
+        # error caught inside the context, while an explicit successful commit
+        # leaves no transaction and therefore receives no extra rollback.
         async def teardown() -> None:
             try:
-                if exc is not None:
+                in_transaction = getattr(self._session, "in_transaction", None)
+                active_transaction = (
+                    bool(in_transaction())
+                    if callable(in_transaction)
+                    else exc is not None
+                )
+                if active_transaction:
                     await self.rollback()
             finally:
                 await self.close()
@@ -124,7 +208,7 @@ class CommunityUnitOfWork:
         try:
             await asyncio.shield(cleanup)
         except asyncio.CancelledError:
-            cleanup.add_done_callback(_consume_uow_cleanup)
+            cleanup.add_done_callback(_log_background_uow_cleanup_failure)
             raise
         return None
 
@@ -270,4 +354,5 @@ __all__ = [
     "CommunityUnitOfWork",
     "CommunityUnitOfWorkFactory",
     "build_community_unit_of_work_factory",
+    "drain_pending_uow_cleanups",
 ]

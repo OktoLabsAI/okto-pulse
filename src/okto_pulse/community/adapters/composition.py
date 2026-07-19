@@ -19,6 +19,7 @@ composition input, not a way to beat a fallback.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from okto_pulse.community.adapters.embedding import (
@@ -88,9 +89,24 @@ def _apply_graph_providers(base: Any) -> None:
 
     for key, value in build_community_graph_providers().items():
         setattr(base, key, value)
+    from okto_pulse.community.adapters.reflective_query import (
+        build_community_reflective_providers,
+    )
+
+    for key, value in build_community_reflective_providers(
+        graph_store=base.graph_store,
+        embedding_provider=base.embedding_provider,
+        cypher_executor=base.cypher_executor,
+    ).items():
+        setattr(base, key, value)
 
 
-def _apply_data_providers(base: Any, session_factory: Any) -> None:
+def _apply_data_providers(
+    base: Any,
+    session_factory: Any,
+    *,
+    settings: Any,
+) -> None:
     """(R05-D) Fill the base registry's three DATA slots (event_bus / audit_repo /
     config) with the Community adapters, REGISTER-BEFORE-FAIL-CLOSED — supplied
     EXPLICITLY here because the core registry no longer creates relational
@@ -98,7 +114,10 @@ def _apply_data_providers(base: Any, session_factory: Any) -> None:
     SQLAlchemy ORM."""
     from okto_pulse.community.adapters.data import build_community_data_providers
 
-    for key, value in build_community_data_providers(session_factory).items():
+    for key, value in build_community_data_providers(
+        session_factory,
+        settings=settings,
+    ).items():
         setattr(base, key, value)
 
 
@@ -128,7 +147,7 @@ def _apply_rebuild_ingestion(base: Any) -> None:
     )
 
 
-def _apply_rebuild_audit_storage(base: Any) -> None:
+def _apply_rebuild_audit_storage(base: Any, *, kg_base_dir: str) -> None:
     """Fill rebuild/audit JSON artifact storage with the Community filesystem adapter."""
     from okto_pulse.community.adapters.rebuild_audit_storage import (
         CommunityFileSystemCognitivePendingWorkProvider,
@@ -137,7 +156,7 @@ def _apply_rebuild_audit_storage(base: Any) -> None:
         default_community_rebuild_base_dir,
     )
 
-    base_dir = default_community_rebuild_base_dir()
+    base_dir = default_community_rebuild_base_dir(Path(kg_base_dir))
     base.rebuild_audit_artifact_store = CommunityFileSystemRebuildAuditArtifactStore(
         base_dir
     )
@@ -169,11 +188,11 @@ def build_community_kg_composition(
     """Build the full Community KG composition (single source): storage +
     embedding + base registry (Onda A in-memory + Onda C graph adapters) and
     register the Community CrossEncoder factory with the core rerank registry."""
-    s = settings if settings is not None else _core_settings()
+    s = _community_settings_snapshot(settings)
     embedding = build_community_embedding(settings=s)
     base = build_community_base_registry(embedding=embedding, settings=s)
     _apply_source_reader(base)
-    _apply_rebuild_audit_storage(base)
+    _apply_rebuild_audit_storage(base, kg_base_dir=str(s.kg_base_dir))
     _apply_quarantine_restore(base)
     _apply_rebuild_ingestion(base)
     if include_graph:
@@ -218,7 +237,7 @@ def configure_community_kg_registry(
         register_community_kg_operational_ports,
     )
 
-    effective_settings = settings if settings is not None else _core_settings()
+    effective_settings = _community_settings_snapshot(settings)
     configure_commit_coordinator()
     configure_write_barrier(
         getattr(effective_settings, "kg_write_barrier_mode", "soft")
@@ -239,9 +258,7 @@ def configure_community_kg_registry(
         register_equivalence_ledger,
     )
 
-    register_equivalence_ledger(
-        CommunitySqlAlchemyEquivalenceLedger(session_factory)
-    )
+    register_equivalence_ledger(CommunitySqlAlchemyEquivalenceLedger(session_factory))
     from okto_pulse.community.adapters.sqlalchemy_kg_curation_proposals import (
         CommunitySqlAlchemyCurationProposalStore,
     )
@@ -265,7 +282,10 @@ def configure_community_kg_registry(
     )
     base = build_community_base_registry(settings=effective_settings)
     _apply_source_reader(base)
-    _apply_rebuild_audit_storage(base)
+    _apply_rebuild_audit_storage(
+        base,
+        kg_base_dir=str(effective_settings.kg_base_dir),
+    )
     _apply_quarantine_restore(base)
     _apply_rebuild_ingestion(base)
     if include_graph:
@@ -273,7 +293,33 @@ def configure_community_kg_registry(
     # R05-D/R-P2-02: supply event_bus / audit_repo / config from the Community
     # adapters EXPLICITLY so the core fail-closed registry validation can pass
     # without any relational fallback.
-    _apply_data_providers(base, session_factory)
+    _apply_data_providers(base, session_factory, settings=effective_settings)
+    if include_graph:
+        from okto_pulse.community.adapters.materialization_health import (
+            CommunityMaterializationEvidenceProbe,
+            CommunityMaterializationGenerationStore,
+            CommunitySqlAlchemyMaterializationCensus,
+        )
+        from okto_pulse.community.adapters.materialization_health_observability import (
+            CommunityFilesystemMutationGuard,
+        )
+        from okto_pulse.core.ports.materialization_health import (
+            register_materialization_evidence_port,
+        )
+
+        generation_store = CommunityMaterializationGenerationStore(session_factory)
+        register_materialization_evidence_port(
+            CommunityMaterializationEvidenceProbe(
+                board_store=base.graph_runtime_store,
+                census=CommunitySqlAlchemyMaterializationCensus(session_factory),
+                discovery_store=base.global_discovery_runtime,
+                generation_store=generation_store,
+                mutation_guard=CommunityFilesystemMutationGuard.from_runtime_stores(
+                    board_store=base.graph_runtime_store,
+                    discovery_store=base.global_discovery_runtime,
+                ),
+            )
+        )
     overrides: dict[str, Any] = {}
     if auth_context_factory is not None:
         overrides["auth_context_factory"] = auth_context_factory
@@ -284,6 +330,26 @@ def _core_settings():
     from okto_pulse.core import get_settings
 
     return get_settings()
+
+
+def _community_settings_snapshot(settings: Any | None = None) -> Any:
+    """Return the edition-owned settings snapshot used by every KG provider.
+
+    Older Community callers can still have a ``CoreSettings`` snapshot in the
+    shared settings registry.  Core intentionally does not own physical storage
+    fields such as ``kg_base_dir``, so normalize Pydantic snapshots through the
+    Community settings model instead of adding edition state back to Core.
+    """
+
+    snapshot = settings if settings is not None else _core_settings()
+    from okto_pulse.community.config import CommunitySettings
+
+    if isinstance(snapshot, CommunitySettings):
+        return snapshot
+    model_dump = getattr(snapshot, "model_dump", None)
+    if callable(model_dump):
+        return CommunitySettings(**model_dump())
+    return snapshot
 
 
 __all__ = [

@@ -26,6 +26,8 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
     monkeypatch,
 ) -> None:
     events: list[str] = []
+    consolidation_drained = False
+    runners: dict[str, object] = {}
 
     def _family(runner) -> str:
         if isinstance(runner, worker_adapters.ConsolidationRunner):
@@ -40,10 +42,17 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
         family = _family(runner)
         events.append(f"start:{family}")
         runner.family = family
+        runners[family] = runner
         return runner
 
     async def _stop(runner) -> None:
+        nonlocal consolidation_drained
+        if runner.family == "outbox_worker":
+            # The real PollingRunner.stop performs the outbox final iteration.
+            assert consolidation_drained is True
         events.append(f"stop:{runner.family}")
+        if runner.family == "consolidation_worker":
+            consolidation_drained = True
 
     monkeypatch.setattr(worker_adapters, "start_runner", _start)
     monkeypatch.setattr(worker_adapters, "stop_runner", _stop)
@@ -54,15 +63,25 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
     failures = await registry.stop_all()
 
     assert failures == ()
+    consolidation_runner = runners["consolidation_worker"]
+    outbox_runner = runners["outbox_worker"]
+    assert (
+        consolidation_runner._blocking_execution
+        is not outbox_runner._blocking_execution
+    )
+    assert (
+        outbox_runner._blocking_execution
+        is outbox_runner.processor._blocking_execution
+    )
     assert events == [
         "start:event_dispatcher",
         "start:cleanup_worker",
         "start:consolidation_worker",
         "start:outbox_worker",
         "stop:event_dispatcher",
+        "stop:consolidation_worker",
         "stop:outbox_worker",
         "stop:cleanup_worker",
-        "stop:consolidation_worker",
     ]
 
 

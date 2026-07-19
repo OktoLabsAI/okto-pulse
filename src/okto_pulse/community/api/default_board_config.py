@@ -39,7 +39,9 @@ from okto_pulse.core.application.use_cases.import_export import (
     validate_items,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.community.api.auth_deps import require_principal, require_user
+from okto_pulse.core.application.use_cases import PermissionDeniedError
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.amendment_revision_api import AmendmentRevisionApiError
 from okto_pulse.core.services.default_board_config_api import (
@@ -133,7 +135,7 @@ async def list_default_board_config_versions(
 async def create_default_board_config_version(
     raw: dict[str, Any] = Body(default_factory=dict),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         reject_bypass_fields(raw)
@@ -145,10 +147,12 @@ async def create_default_board_config_version(
     try:
         result = await CreateDefaultBoardConfigVersionUseCase().execute(
             DefaultBoardConfigCommand(payload=req.model_dump()),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
 
@@ -177,7 +181,7 @@ async def import_default_board_config(
     envelope: dict[str, Any] = Body(default_factory=dict),
     dry_run: bool = False,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Import a kind=board_config envelope. Every item becomes a NEW template
     version through the same validated creation path as
@@ -214,9 +218,11 @@ async def import_default_board_config(
     try:
         result = await ImportBoardConfigUseCase().execute(
             ImportBoardConfigCommand(items=parsed, dry_run=dry_run),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
     except ImportItemError as exc:
         raise HTTPException(
             status_code=400,
@@ -233,15 +239,17 @@ async def import_default_board_config(
 async def activate_default_board_config_version(
     template_id: str,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         result = await ActivateDefaultBoardConfigVersionUseCase().execute(
             DefaultBoardConfigCommand(template_id=template_id),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
 
@@ -250,15 +258,17 @@ async def activate_default_board_config_version(
 async def deactivate_default_board_config_version(
     template_id: str,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         result = await DeactivateDefaultBoardConfigVersionUseCase().execute(
             DefaultBoardConfigCommand(template_id=template_id),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
 
@@ -308,7 +318,7 @@ async def update_default_guideline_refs(
     template_id: str,
     raw: dict[str, Any] = Body(default_factory=dict),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Update guideline_default_refs for a template using only global catalog
     guidelines (api_0845ff2a). Active template => copy-on-write new version."""
@@ -325,10 +335,12 @@ async def update_default_guideline_refs(
                 template_id=template_id,
                 payload={"guideline_default_refs": req.guideline_default_refs},
             ),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
 
@@ -338,7 +350,7 @@ async def set_default_design_system(
     template_id: str,
     raw: dict[str, Any] = Body(default_factory=dict),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Set the Design System default reference + canonical gate mode on a template
     (api_3ed0aee6). Active template => copy-on-write new version. The design_system_id
@@ -353,9 +365,11 @@ async def set_default_design_system(
     try:
         result = await SetDefaultDesignSystemUseCase().execute(
             DefaultBoardConfigCommand(template_id=template_id, payload=req.model_dump()),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases.operational_rest import (
+    BoardNotFoundError,
     GetLineageGraphCommand,
     GetLineageGraphUseCase,
 )
@@ -24,7 +26,8 @@ async def get_lineage_graph(
     entity_type: str = Query(..., min_length=1),
     entity_id: str = Query(..., min_length=1),
     include_artifacts: bool = False,
-    db: PulseUnitOfWork = Depends(get_unit_of_work),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> dict:
     """Return a UI-only SDLC lineage graph rooted at the selected entity."""
     try:
@@ -35,10 +38,12 @@ async def get_lineage_graph(
                 entity_id,
                 include_artifacts,
             ),
-            actor=RESTAdapterContract.actor("traceability-rest", board_id=board_id),
-            uow=db,
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
         )
         return result.data
+    except BoardNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Board not found") from exc
     except TraceabilityReadError as exc:
         raise HTTPException(
             status_code=exc.status_code,

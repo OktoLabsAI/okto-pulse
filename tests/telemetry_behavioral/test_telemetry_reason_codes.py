@@ -18,6 +18,7 @@ import requests
 
 from okto_pulse.community.adapters.telemetry_sender import (
     CommunityTelemetryBeaconSender,
+    payload_digest,
 )
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
 from okto_pulse.community.adapters import (
@@ -73,7 +74,31 @@ class ScriptedSession:
         if url.endswith(USAGE_URL):
             self.calls.append(USAGE_URL)
             assert self._usage, "no scripted /v1/usage response left"
-            return self._usage.pop(0)
+            response = self._usage.pop(0)
+            payload = json.loads(kwargs["data"].decode("utf-8"))
+            digest = payload_digest(payload)
+            if 200 <= response.status_code < 300 and "outcome" not in response._json:
+                response._json.update(
+                    {
+                        "outcome": "accepted",
+                        "state": "committed",
+                        "payload_digest": digest,
+                        "receipt": "fh-test",
+                    }
+                )
+            elif (
+                response.status_code == 409
+                and response._json.get("code") == "DUPLICATE_NONCE_OR_BATCH_SEQ"
+            ):
+                response._json.update(
+                    {
+                        "outcome": "duplicate_committed",
+                        "state": "committed",
+                        "payload_digest": digest,
+                        "receipt": "fh-existing",
+                    }
+                )
+            return response
         raise AssertionError(f"unexpected url {url}")
 
 
@@ -212,7 +237,9 @@ def test_duplicate_is_idempotent_advances_seq_and_not_fatal(tmp_path, monkeypatc
 
     result = TelemetryBeaconSender(settings, session=session).send_once()  # type: ignore[arg-type]
 
-    assert result == {"sent": False, "reason": "duplicate", "batch_seq": 5}
+    assert result["sent"] is True
+    assert result["reason"] == "duplicate_committed"
+    assert result["batch_seq"] == 5
     assert session.calls == [USAGE_URL]  # no replay, no re-handshake
     state = _state(settings)
     assert state["next_batch_seq"] == 6  # send-time seq advanced as resolved
@@ -232,7 +259,9 @@ def test_duplicate_confirms_events_idempotently_no_replay(tmp_path, monkeypatch)
 
     session = ScriptedSession(usage=[_err(409, "DUPLICATE_NONCE_OR_BATCH_SEQ")])
     result = TelemetryBeaconSender(settings, session=session).send_once()  # type: ignore[arg-type]
-    assert result == {"sent": False, "reason": "duplicate", "batch_seq": 5}
+    assert result["sent"] is True
+    assert result["reason"] == "duplicate_committed"
+    assert result["batch_seq"] == 5
 
     # The duplicate confirmed the events durably (ledger) and advanced the cursor.
     assert LocalTelemetryStore(metrics_dir).confirmed_event_ids() == event_ids
@@ -289,7 +318,7 @@ def test_regression_r3a_g_duplicate_confirms_only_original_intent(
     # (4) The retry hits DUPLICATE for the original batch_seq.
     session = ScriptedSession(usage=[_err(409, "DUPLICATE_NONCE_OR_BATCH_SEQ")])
     result = TelemetryBeaconSender(settings, session=session).send_once()  # type: ignore[arg-type]
-    assert result["reason"] == "duplicate"
+    assert result["reason"] == "duplicate_committed"
 
     # (5) ONLY {A} confirmed; {B} stays pending; seq advanced to N+1.
     confirmed = LocalTelemetryStore(metrics_dir).confirmed_event_ids()
@@ -383,7 +412,7 @@ def test_audit_duplicate_emits_reconciled_state(tmp_path, monkeypatch, caplog):
     records = _watermark_audit(caplog)
     send = [rec for rec in records if rec["component"] == "send_once"][-1]
     assert send["action"] == "duplicate_reconciled"
-    assert send["reason_code"] == "duplicate"
+    assert send["reason_code"] == "duplicate_committed"
     _assert_audit_secret_free(records)
 
 

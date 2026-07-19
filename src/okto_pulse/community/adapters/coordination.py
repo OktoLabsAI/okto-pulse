@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -20,16 +22,41 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     DomainEventRow,
     GlobalUpdateOutbox,
 )
+from okto_pulse.core.kg.interfaces import (
+    GLOBAL_DISCOVERY_WRITER_ARTIFACT_ID,
+    GLOBAL_DISCOVERY_WRITER_SCOPE,
+)
 from okto_pulse.core.ports.coordination import (
     ClaimRepository,
     ConfigValidationPort,
+    CoordinationProviderMissing,
     LeaseHandle,
     LeaseProvider,
     RuntimeSettingsProvider,
     WriteLockHandle,
     WriteLockPort,
+    get_write_lock_port,
     register_coordination_providers,
 )
+
+# A5R: Windows can transiently deny the writer-manifest atomic os.replace with
+# a sharing violation (PermissionError [WinError 5]) while an unrelated reader
+# briefly holds the destination open.  Only that exact replace is retried, a
+# fixed number of times with fixed backoffs; every retry restarts the full
+# attempt (fresh recovery lock, fresh manifest read, fresh clock), so an
+# expired, replaced or foreign-token manifest can never be resurrected.  Two
+# backoffs mean three total attempts and at most 0.15s of added latency, far
+# below the shortest writer-lease TTL.
+_SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS = 3
+_SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS = (0.05, 0.1)
+
+
+class _SingleWriterRenewReplaceDenied(Exception):
+    """PermissionError raised by the exact renewal-manifest os.replace."""
+
+    def __init__(self, original: PermissionError) -> None:
+        self.original = original
+        super().__init__(str(original))
 
 
 class CommunityLocalLeaseProvider(LeaseProvider):
@@ -374,14 +401,174 @@ class CommunityLocalWriteLockPort(WriteLockPort):
             board_dir_resolver=board_dir_resolver,
         )
         path = self._single_writer_path(board_dir, artifact_id)
-        manifest = self._read_single_writer_manifest(path)
-        if manifest is None or manifest.owner_token != owner_token:
+        from okto_pulse.core.kg.single_writer_lock import (
+            RECOVERY_LOCK_FILENAME,
+            RECOVERY_LOCK_TTL_SECONDS,
+        )
+
+        recovery_path = board_dir / RECOVERY_LOCK_FILENAME
+        try:
+            with recovery_path.open("x", encoding="utf-8") as stream:
+                json.dump(
+                    {
+                        "owner_id": "exact-token-release",
+                        "operation": "release",
+                        "board_id": board_id,
+                        "acquired_at_epoch": time.time(),
+                        "expires_at_epoch": (
+                            time.time() + RECOVERY_LOCK_TTL_SECONDS
+                        ),
+                    },
+                    stream,
+                )
+        except FileExistsError:
             return False
         try:
-            path.unlink()
-        except FileNotFoundError:
+            manifest = self._read_single_writer_manifest(path)
+            if manifest is None or manifest.owner_token != owner_token:
+                return False
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                return False
+            return True
+        finally:
+            try:
+                recovery_path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def renew_single_writer_sync(
+        self,
+        *,
+        board_id: str,
+        artifact_id: str,
+        owner_token: str,
+        ttl_seconds: int,
+        base_dir_hint: str | None = None,
+        board_dir_resolver: Any | None = None,
+    ) -> bool:
+        """Atomically extend the exact unexpired manifest token."""
+
+        board_dir = self._single_writer_board_dir(
+            board_id,
+            base_dir_hint=base_dir_hint,
+            board_dir_resolver=board_dir_resolver,
+        )
+        board_dir.mkdir(parents=True, exist_ok=True)
+        path = self._single_writer_path(board_dir, artifact_id)
+        from okto_pulse.core.kg.single_writer_lock import (
+            MAX_TTL_SECONDS,
+            RECOVERY_LOCK_FILENAME,
+        )
+
+        if ttl_seconds < 1 or ttl_seconds > MAX_TTL_SECONDS:
+            raise ValueError("ttl_seconds outside the supported writer-lease range")
+        recovery_path = board_dir / RECOVERY_LOCK_FILENAME
+        last_denial: PermissionError | None = None
+        for attempt_index in range(_SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS):
+            if attempt_index:
+                time.sleep(
+                    _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS[attempt_index - 1]
+                )
+            try:
+                return self._renew_single_writer_attempt(
+                    board_id=board_id,
+                    path=path,
+                    recovery_path=recovery_path,
+                    owner_token=owner_token,
+                    ttl_seconds=ttl_seconds,
+                )
+            except _SingleWriterRenewReplaceDenied as denied:
+                last_denial = denied.original
+        assert last_denial is not None
+        raise last_denial
+
+    def _renew_single_writer_attempt(
+        self,
+        *,
+        board_id: str,
+        path: Path,
+        recovery_path: Path,
+        owner_token: str,
+        ttl_seconds: int,
+    ) -> bool:
+        from okto_pulse.core.kg.single_writer_lock import (
+            LockManifest,
+            RECOVERY_LOCK_TTL_SECONDS,
+        )
+
+        now = time.time()
+        try:
+            with recovery_path.open("x", encoding="utf-8") as stream:
+                json.dump(
+                    {
+                        "owner_id": "exact-token-renewal",
+                        "operation": "renew",
+                        "board_id": board_id,
+                        "acquired_at_epoch": now,
+                        "expires_at_epoch": now + RECOVERY_LOCK_TTL_SECONDS,
+                    },
+                    stream,
+                )
+        except FileExistsError:
             return False
-        return True
+
+        temporary: Path | None = None
+        try:
+            manifest = self._read_single_writer_manifest(path)
+            if (
+                manifest is None
+                or manifest.owner_token != owner_token
+                or manifest.expires_at_epoch <= now
+            ):
+                return False
+            renewed = LockManifest(
+                owner_token=manifest.owner_token,
+                owner_id=manifest.owner_id,
+                operation=manifest.operation,
+                acquired_at_epoch=manifest.acquired_at_epoch,
+                expires_at_epoch=now + ttl_seconds,
+                admin_lane=manifest.admin_lane,
+            )
+            temporary = path.with_name(
+                f".{path.name}.{uuid.uuid4().hex}.renewing"
+            )
+            with temporary.open("x", encoding="utf-8") as stream:
+                json.dump(renewed.to_disk_dict(), stream, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            revalidated = self._read_single_writer_manifest(path)
+            # Fresh-clock recheck IMMEDIATELY before publication: the durable
+            # temp write/fsync above can take arbitrarily long, so identity
+            # equality with the snapshot is not enough — the live manifest AND
+            # the expiry being published must both still be in the future at
+            # replace time, or an expired lease would be resurrected.
+            replace_now = time.time()
+            if (
+                revalidated is None
+                or revalidated.owner_token != manifest.owner_token
+                or revalidated.expires_at_epoch != manifest.expires_at_epoch
+                or revalidated.expires_at_epoch <= replace_now
+                or renewed.expires_at_epoch <= replace_now
+            ):
+                return False
+            try:
+                os.replace(temporary, path)
+            except PermissionError as exc:
+                raise _SingleWriterRenewReplaceDenied(exc) from exc
+            temporary = None
+            return True
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+            try:
+                recovery_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def inspect_single_writer_sync(
         self,
@@ -571,6 +758,53 @@ _claim_repository = CommunitySqlAlchemyClaimRepository()
 _runtime_settings_provider = CommunityRuntimeSettingsProvider()
 
 
+@contextmanager
+def community_global_discovery_writer_fence(operation: str):
+    """Use the exact filesystem fence for edition-owned checkpoint/close."""
+
+    try:
+        port = get_write_lock_port()
+    except CoordinationProviderMissing:
+        # Test/late-shutdown fallback: when the runtime registry is already
+        # torn down, the edition singleton is the only possible writer port.
+        port = _write_lock_port
+    acquire = getattr(port, "acquire_single_writer_sync", None)
+    release = getattr(port, "release_single_writer_sync", None)
+    if not callable(acquire) or not callable(release):
+        raise RuntimeError("global_discovery_writer_fence_unavailable")
+    acquisition = acquire(
+        board_id=GLOBAL_DISCOVERY_WRITER_SCOPE,
+        artifact_id=GLOBAL_DISCOVERY_WRITER_ARTIFACT_ID,
+        operation=operation,
+        owner_id=f"community:{operation}:{uuid.uuid4().hex}",
+        ttl_seconds=300,
+        admin_lane=True,
+    )
+    if isinstance(acquisition, Mapping):
+        acquired = bool(acquisition.get("acquired"))
+        owner_token = acquisition.get("owner_token")
+        current_owner = acquisition.get("current_owner")
+    else:
+        acquired = bool(getattr(acquisition, "acquired", False))
+        owner_token = getattr(acquisition, "owner_token", None)
+        current_owner = getattr(acquisition, "current_owner", None)
+    if not acquired or not isinstance(owner_token, str) or not owner_token:
+        raise RuntimeError(
+            "global_discovery_writer_contention:"
+            f"owner={current_owner or 'unknown'}"
+        )
+    try:
+        yield owner_token
+    finally:
+        released = release(
+            board_id=GLOBAL_DISCOVERY_WRITER_SCOPE,
+            artifact_id=GLOBAL_DISCOVERY_WRITER_ARTIFACT_ID,
+            owner_token=owner_token,
+        )
+        if not released:
+            raise RuntimeError("global_discovery_writer_fence_lost")
+
+
 def register_community_coordination_providers() -> None:
     """Register Community local-first coordination providers in core ports."""
 
@@ -588,5 +822,6 @@ __all__ = [
     "CommunityLocalWriteLockPort",
     "CommunityRuntimeSettingsProvider",
     "CommunitySqlAlchemyClaimRepository",
+    "community_global_discovery_writer_fence",
     "register_community_coordination_providers",
 ]

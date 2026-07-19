@@ -249,11 +249,16 @@ async def list_refinement_history(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get detailed change history for a refinement."""
-    result = await ListRefinementHistoryUseCase().execute(
-        ListRefinementHistoryCommand(refinement_id, limit=limit),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListRefinementHistoryUseCase().execute(
+            ListRefinementHistoryCommand(refinement_id, limit=limit),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.history
 
 
@@ -267,11 +272,16 @@ async def list_refinement_qa(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all Q&A items for a refinement."""
-    result = await ListRefinementQAUseCase().execute(
-        ListRefinementQACommand(refinement_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListRefinementQAUseCase().execute(
+            ListRefinementQACommand(refinement_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.items
 
 
@@ -305,7 +315,7 @@ async def answer_refinement_question(
     """Answer a refinement Q&A question."""
     try:
         result = await AnswerRefinementQuestionUseCase().execute(
-            AnswerRefinementQuestionCommand(qa_id, data),
+            AnswerRefinementQuestionCommand(refinement_id, qa_id, data),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
@@ -329,7 +339,7 @@ async def delete_refinement_question(
     """Delete a refinement Q&A item."""
     try:
         await DeleteRefinementQuestionUseCase().execute(
-            DeleteRefinementQuestionCommand(qa_id),
+            DeleteRefinementQuestionCommand(refinement_id, qa_id),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
@@ -347,11 +357,16 @@ async def list_refinement_snapshots(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all version snapshots for a refinement."""
-    result = await ListRefinementSnapshotsUseCase().execute(
-        ListRefinementSnapshotsCommand(refinement_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListRefinementSnapshotsUseCase().execute(
+            ListRefinementSnapshotsCommand(refinement_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.snapshots
 
 
@@ -386,11 +401,16 @@ async def list_refinement_knowledge(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all knowledge base items for a refinement."""
-    result = await ListRefinementKnowledgeUseCase().execute(
-        ListRefinementKnowledgeCommand(refinement_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListRefinementKnowledgeUseCase().execute(
+            ListRefinementKnowledgeCommand(refinement_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.items
 
 

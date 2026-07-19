@@ -6,18 +6,21 @@ import json
 import os
 import secrets
 import shutil
-import tempfile
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from filelock import FileLock
 
 from okto_pulse.core.kg.interfaces.cognitive_pending_work import (
     CognitivePendingRecordRef,
     CognitivePendingWorkProvider,
 )
 from okto_pulse.core.kg.interfaces.rebuild_audit_storage import (
+    AtomicConsumeOutcome,
     RebuildAuditArtifactStore,
     RebuildAuditArtifactStoreResolver,
     RebuildAuditKey,
@@ -27,58 +30,179 @@ from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 from .local_storage_ref import resolve_local_storage_ref
 
 
-def default_community_rebuild_base_dir() -> Path:
-    """Resolve the local-first rebuild artifact root for Community."""
+def default_community_rebuild_base_dir(
+    kg_base_dir: str | os.PathLike[str] | None = None,
+) -> Path:
+    """Resolve rebuild state from the edition's typed durable KG root.
 
-    configured = os.getenv("OKTO_PULSE_REBUILD_BASE_DIR")
-    base_dir = (
-        Path(configured)
-        if configured
-        else Path(tempfile.gettempdir()) / "okto_pulse_kg_rebuild"
-    )
+    Composition passes ``CommunitySettings.kg_base_dir`` explicitly.  The
+    no-argument form is reserved for already-composed runtime adapters (for
+    example the single-writer lock) and fails closed if no configured provider
+    registry exists.  There is deliberately no OS-temporary fallback.
+    """
+
+    if kg_base_dir is None:
+        try:
+            from okto_pulse.core.services.application_kg import (
+                get_current_provider_registry,
+            )
+
+            kg_base_dir = get_current_provider_registry().config.kg_base_dir
+        except Exception as exc:
+            raise RuntimeError(
+                "Community rebuild storage requires configured kg_base_dir"
+            ) from exc
+    raw = os.fspath(kg_base_dir)
+    if not raw.strip() or "://" in raw:
+        raise ValueError("Community rebuild storage requires a local kg_base_dir")
+    base_dir = Path(raw).expanduser().resolve()
     base_dir.mkdir(parents=True, exist_ok=True)
     return base_dir
+
+
+def _fsync_directory(path: Path) -> None:
+    """Best-effort directory durability on the current platform.
+
+    POSIX supports opening and syncing a directory directly.  Windows needs a
+    directory handle opened with backup semantics; filesystems that reject
+    ``FlushFileBuffers`` still retain atomic ``MoveFileExW(...WRITE_THROUGH)``.
+    """
+
+    if os.name != "nt":
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.FlushFileBuffers.argtypes = (wintypes.HANDLE,)
+        kernel32.FlushFileBuffers.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.CreateFileW(
+            str(path),
+            0,
+            0x00000001 | 0x00000002 | 0x00000004,
+            None,
+            3,
+            0x02000000,
+            None,
+        )
+        invalid = wintypes.HANDLE(-1).value
+        if handle == invalid:
+            return
+        try:
+            kernel32.FlushFileBuffers(handle)
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, AttributeError):
+        return
+
+
+def _replace_write_through(source: Path, destination: Path) -> None:
+    if os.name != "nt":
+        os.replace(source, destination)
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    movefile_replace_existing = 0x1
+    movefile_write_through = 0x8
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.MoveFileExW.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+    )
+    kernel32.MoveFileExW.restype = wintypes.BOOL
+    if not kernel32.MoveFileExW(
+        str(source),
+        str(destination),
+        movefile_replace_existing | movefile_write_through,
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
     """Preserve the current local-first rebuild/audit directory layout."""
 
     def __init__(self, base_dir: Path) -> None:
-        self._base_dir = base_dir
-        self._lock = threading.Lock()
+        self._base_dir = Path(base_dir).expanduser().resolve()
+        lock_dir = self._base_dir / "rebuild"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        self._process_lock = threading.RLock()
+        self._file_lock = FileLock(
+            str(lock_dir / ".rebuild-audit-artifact-store.lock"),
+            timeout=30,
+        )
+
+    @contextmanager
+    def _exclusive(self):
+        with self._process_lock:
+            with self._file_lock:
+                yield
 
     def _namespace_dir(self, key: RebuildAuditKey) -> Path:
         audit_dir = self._base_dir / "rebuild" / "audit"
         generations_dir = self._base_dir / "rebuild" / "generations" / key.board_id
         if key.namespace == "event_audit":
-            return audit_dir / "events" / key.board_id
-        if key.namespace == "cognitive_pending":
-            return audit_dir / "cognitive_pending" / key.board_id
-        if key.namespace == "confirmation_audit":
-            return audit_dir / "confirmation" / key.board_id
-        if key.namespace == "run_audit":
-            return audit_dir
-        if key.namespace == "generation_current":
-            return generations_dir
-        if key.namespace == "generation_history":
-            return generations_dir / "history"
-        if key.namespace == "source_manifest":
-            return self._base_dir / "rebuild" / "manifests"
-        if key.namespace == "confirmation_token":
-            return self._base_dir / "rebuild" / "confirmations"
-        if key.namespace == "rebuild_report":
-            return self._base_dir / "rebuild" / "reports"
-        if key.namespace == "candidate_decision":
-            return self._base_dir / "candidate_decisions" / key.board_id
-        if key.namespace == "rebaseline_audit":
-            return self._base_dir / "rebuild" / "rebaseline_audit"
-        if key.namespace == "global_discovery_reindex":
-            return self._base_dir / "rebuild" / "discovery_reindex" / key.board_id
-        if key.namespace == "contingency":
-            return self._base_dir / "contingency"
-        if key.namespace == "stress_evidence":
-            return self._base_dir / "stress"
-        raise ValueError(f"unsupported rebuild audit namespace: {key.namespace}")
+            candidate = audit_dir / "events" / key.board_id
+        elif key.namespace == "cognitive_pending":
+            candidate = audit_dir / "cognitive_pending" / key.board_id
+        elif key.namespace == "confirmation_audit":
+            candidate = audit_dir / "confirmation" / key.board_id
+        elif key.namespace == "run_audit":
+            candidate = audit_dir
+        elif key.namespace == "generation_current":
+            candidate = generations_dir
+        elif key.namespace == "generation_history":
+            candidate = generations_dir / "history"
+        elif key.namespace == "source_manifest":
+            candidate = self._base_dir / "rebuild" / "manifests"
+        elif key.namespace == "confirmation_token":
+            candidate = self._base_dir / "rebuild" / "confirmations"
+        elif key.namespace == "rebuild_report":
+            candidate = self._base_dir / "rebuild" / "reports"
+        elif key.namespace == "candidate_decision":
+            candidate = self._base_dir / "candidate_decisions" / key.board_id
+        elif key.namespace == "rebaseline_audit":
+            candidate = self._base_dir / "rebuild" / "rebaseline_audit"
+        elif key.namespace == "global_discovery_reindex":
+            candidate = (
+                self._base_dir / "rebuild" / "discovery_reindex" / key.board_id
+            )
+        elif key.namespace == "global_discovery_recovery":
+            candidate = self._base_dir / "rebuild" / "global_discovery_recovery"
+        elif key.namespace == "contingency":
+            candidate = self._base_dir / "contingency"
+        elif key.namespace == "stress_evidence":
+            candidate = self._base_dir / "stress"
+        else:
+            raise ValueError(f"unsupported rebuild audit namespace: {key.namespace}")
+        return self._contained_path(candidate)
+
+    def _contained_path(self, candidate: Path, root: Path | None = None) -> Path:
+        resolved = candidate.resolve(strict=False)
+        base = self._base_dir.resolve(strict=False)
+        resolved.relative_to(base)
+        if root is not None:
+            resolved.relative_to(root.resolve(strict=False))
+        return resolved
 
     def _artifact_id(self, key: RebuildAuditKey) -> str:
         if key.namespace in {
@@ -94,15 +218,18 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
         return key.artifact_id
 
     def _path(self, key: RebuildAuditKey) -> Path:
+        namespace_dir = self._namespace_dir(key)
         if key.namespace == "contingency":
             if not key.artifact_id:
                 raise ValueError("contingency key requires artifact_id")
-            return self._namespace_dir(key) / key.artifact_id / "contingency.json"
-        if key.namespace == "stress_evidence":
+            candidate = namespace_dir / key.artifact_id / "contingency.json"
+        elif key.namespace == "stress_evidence":
             if not key.artifact_id:
                 raise ValueError("stress_evidence key requires artifact_id")
-            return self._namespace_dir(key) / key.artifact_id / "evidence.json"
-        return self._namespace_dir(key) / f"{self._artifact_id(key)}.json"
+            candidate = namespace_dir / key.artifact_id / "evidence.json"
+        else:
+            candidate = namespace_dir / f"{self._artifact_id(key)}.json"
+        return self._contained_path(candidate, namespace_dir)
 
     def reference(self, key: RebuildAuditKey) -> str:
         return str(self._path(key))
@@ -111,8 +238,9 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
         try:
             path = Path(reference).resolve(strict=False)
             path.relative_to(self._base_dir.resolve(strict=False))
-            with path.open("r", encoding="utf-8") as fh:
-                payload = json.load(fh)
+            with self._exclusive():
+                self._cleanup_orphan_temps(path)
+                payload = self._read_path_unlocked(path)
         except (FileNotFoundError, OSError, ValueError):
             return None
         return payload if isinstance(payload, dict) else None
@@ -122,7 +250,7 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
         key: RebuildAuditKey,
         payload: Mapping[str, Any],
     ) -> None:
-        with self._lock:
+        with self._exclusive():
             self._write_json_atomic_unlocked(key, payload)
 
     def _write_json_atomic_unlocked(
@@ -132,70 +260,241 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
     ) -> None:
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        with tmp.open("w", encoding="utf-8") as fh:
-            json.dump(dict(payload), fh, indent=2)
-        tmp.replace(path)
+        self._cleanup_orphan_temps(path)
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(12)}.tmp")
+        try:
+            with tmp.open("x", encoding="utf-8", newline="\n") as fh:
+                json.dump(dict(payload), fh, indent=2, sort_keys=True)
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            _replace_write_through(tmp, path)
+            _fsync_directory(path.parent)
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
+    def _read_path_unlocked(path: Path) -> dict[str, Any] | None:
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except FileNotFoundError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _read_path_bounded_unlocked(
+        path: Path,
+        *,
+        max_document_bytes: int,
+    ) -> dict[str, Any] | None:
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            return None
+        if size > max_document_bytes:
+            raise RuntimeError(
+                "rebuild_audit_document_limit_exceeded: "
+                f"{path.name} is {size} bytes; limit={max_document_bytes}"
+            )
+        return CommunityFileSystemRebuildAuditArtifactStore._read_path_unlocked(path)
+
+    @staticmethod
+    def _cleanup_orphan_temps(path: Path) -> None:
+        if not path.parent.exists():
+            return
+        removed = False
+        for tmp in path.parent.glob(f".{path.name}.*.tmp"):
+            try:
+                tmp.unlink()
+                removed = True
+            except FileNotFoundError:
+                continue
+        if removed:
+            _fsync_directory(path.parent)
 
     def read_json(self, key: RebuildAuditKey) -> dict[str, Any] | None:
         path = self._path(key)
-        if not path.exists():
-            return None
-        with path.open("r", encoding="utf-8") as fh:
-            payload = json.load(fh)
-        return payload if isinstance(payload, dict) else None
+        with self._exclusive():
+            self._cleanup_orphan_temps(path)
+            return self._read_path_unlocked(path)
 
     def exists(self, key: RebuildAuditKey) -> bool:
-        return self._path(key).exists()
+        with self._exclusive():
+            return self._path(key).exists()
 
     def delete_json(self, key: RebuildAuditKey) -> bool:
-        try:
-            self._path(key).unlink()
+        with self._exclusive():
+            path = self._path(key)
+            self._cleanup_orphan_temps(path)
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                return False
+            _fsync_directory(path.parent)
             return True
-        except FileNotFoundError:
-            return False
 
     def list_json(self, prefix: RebuildAuditKey) -> Sequence[dict[str, Any]]:
-        directory = self._namespace_dir(prefix)
-        if not directory.exists():
-            return []
-        if prefix.kg_generation_id or prefix.artifact_id:
-            payload = self.read_json(prefix)
-            return [payload] if payload is not None else []
-        rows: list[dict[str, Any]] = []
-        if prefix.namespace == "contingency":
-            for entry in sorted(directory.iterdir()):
-                if not entry.is_dir():
-                    continue
-                manifest_path = entry / "contingency.json"
+        with self._exclusive():
+            directory = self._namespace_dir(prefix)
+            if not directory.exists():
+                return []
+            if prefix.kg_generation_id or prefix.artifact_id:
+                path = self._path(prefix)
+                self._cleanup_orphan_temps(path)
+                payload = self._read_path_unlocked(path)
+                return [payload] if payload is not None else []
+            rows: list[dict[str, Any]] = []
+            if prefix.namespace == "contingency":
+                paths = (
+                    entry / "contingency.json"
+                    for entry in sorted(directory.iterdir())
+                    if entry.is_dir()
+                )
+            else:
+                paths = iter(sorted(directory.glob("*.json")))
+            for path in paths:
                 try:
-                    with manifest_path.open("r", encoding="utf-8") as fh:
-                        payload = json.load(fh)
+                    path = self._contained_path(path, directory)
+                    self._cleanup_orphan_temps(path)
+                    payload = self._read_path_unlocked(path)
                 except Exception:
                     continue
                 if isinstance(payload, dict):
                     rows.append(payload)
             return rows
-        for path in sorted(directory.glob("*.json")):
-            try:
-                with path.open("r", encoding="utf-8") as fh:
-                    payload = json.load(fh)
-            except Exception:
-                continue
-            if isinstance(payload, dict):
-                rows.append(payload)
-        return rows
+
+    def list_json_bounded(
+        self,
+        prefix: RebuildAuditKey,
+        *,
+        max_results: int,
+        max_document_bytes: int,
+    ) -> Sequence[dict[str, Any]]:
+        if max_results < 1:
+            raise ValueError("max_results must be positive")
+        if max_document_bytes < 1:
+            raise ValueError("max_document_bytes must be positive")
+        with self._exclusive():
+            directory = self._namespace_dir(prefix)
+            if not directory.exists():
+                return []
+            if prefix.kg_generation_id or prefix.artifact_id:
+                path = self._path(prefix)
+                self._cleanup_orphan_temps(path)
+                payload = self._read_path_bounded_unlocked(
+                    path,
+                    max_document_bytes=max_document_bytes,
+                )
+                return [payload] if payload is not None else []
+
+            candidates: list[Path] = []
+            for entry in directory.iterdir():
+                if prefix.namespace == "contingency":
+                    if not entry.is_dir():
+                        continue
+                    candidate = entry / "contingency.json"
+                else:
+                    if not entry.is_file() or entry.suffix != ".json":
+                        continue
+                    candidate = entry
+                candidates.append(self._contained_path(candidate, directory))
+                if len(candidates) > max_results:
+                    raise RuntimeError(
+                        "rebuild_audit_result_limit_exceeded: "
+                        f"more than {max_results} documents match {prefix.to_ref()}"
+                    )
+
+            rows: list[dict[str, Any]] = []
+            for path in sorted(candidates):
+                self._cleanup_orphan_temps(path)
+                payload = self._read_path_bounded_unlocked(
+                    path,
+                    max_document_bytes=max_document_bytes,
+                )
+                if payload is not None:
+                    rows.append(payload)
+            return rows
 
     def replace_json(
         self,
         key: RebuildAuditKey,
         transform: Callable[[dict[str, Any] | None], dict[str, Any]],
     ) -> dict[str, Any]:
-        with self._lock:
-            current = self.read_json(key)
+        with self._exclusive():
+            path = self._path(key)
+            self._cleanup_orphan_temps(path)
+            current = self._read_path_unlocked(path)
             next_payload = transform(current)
             self._write_json_atomic_unlocked(key, next_payload)
             return dict(next_payload)
+
+    def replace_json_with_revision(
+        self,
+        *,
+        key: RebuildAuditKey,
+        transform: Callable[[dict[str, Any] | None], dict[str, Any]],
+        revision_key: RebuildAuditKey,
+        revision_transition: Callable[
+            [dict[str, Any] | None],
+            tuple[dict[str, Any], dict[str, Any]],
+        ],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        with self._exclusive():
+            target_path = self._path(key)
+            revision_path = self._path(revision_key)
+            self._cleanup_orphan_temps(target_path)
+            self._cleanup_orphan_temps(revision_path)
+            current_target = self._read_path_unlocked(target_path)
+            current_revision = self._read_path_unlocked(revision_path)
+            next_target = dict(transform(current_target))
+            pending_revision, committed_revision = revision_transition(
+                current_revision
+            )
+            pending = dict(pending_revision)
+            committed = dict(committed_revision)
+            self._write_json_atomic_unlocked(revision_key, pending)
+            self._write_json_atomic_unlocked(key, next_target)
+            self._write_json_atomic_unlocked(revision_key, committed)
+            return dict(next_target), dict(committed)
+
+    def consume_json_with_receipt(
+        self,
+        *,
+        source_key: RebuildAuditKey,
+        expected_source: Mapping[str, Any],
+        receipt_key: RebuildAuditKey,
+        receipt_payload: Mapping[str, Any],
+    ) -> AtomicConsumeOutcome:
+        with self._exclusive():
+            source_path = self._path(source_key)
+            receipt_path = self._path(receipt_key)
+            self._cleanup_orphan_temps(source_path)
+            self._cleanup_orphan_temps(receipt_path)
+            source = self._read_path_unlocked(source_path)
+            receipt = self._read_path_unlocked(receipt_path)
+            expected = dict(expected_source)
+            expected_receipt = dict(receipt_payload)
+            if receipt is not None:
+                if receipt != expected_receipt:
+                    return "receipt_conflict"
+                if source == expected:
+                    source_path.unlink()
+                    _fsync_directory(source_path.parent)
+                return "receipt_exists"
+            if source is None:
+                return "source_missing"
+            if source != expected:
+                return "source_mismatch"
+            # Receipt first: after a crash, proof of authorization survives even
+            # if cleanup of the now-burned token has not yet completed.
+            self._write_json_atomic_unlocked(receipt_key, expected_receipt)
+            source_path.unlink()
+            _fsync_directory(source_path.parent)
+            return "consumed"
 
     def quarantine_storage(
         self,

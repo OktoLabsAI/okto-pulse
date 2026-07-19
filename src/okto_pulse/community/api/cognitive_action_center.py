@@ -22,11 +22,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.core.application.use_cases.board_access import load_accessible_board
 from okto_pulse.core.application.use_cases.cognitive_readiness import (
     ListCognitiveReadinessItemsCommand,
     ListCognitiveReadinessItemsUseCase,
 )
 from okto_pulse.core.application.use_cases.operational_rest import (
+    BoardNotFoundError,
     ClearCognitiveSkipUseCase,
     CognitiveClearCommand,
     CognitiveReadinessMetricsCommand,
@@ -47,6 +49,10 @@ from okto_pulse.core.kg.cognitive_readiness import (
 from okto_pulse.core.repositories import PulseUnitOfWork
 
 router = APIRouter()
+
+
+def _board_not_found(exc: BoardNotFoundError) -> HTTPException:
+    return HTTPException(status_code=404, detail="Board not found")
 
 
 def build_default_readiness_service():
@@ -99,6 +105,9 @@ async def list_cognitive_readiness_items(
     actor: str = Depends(require_user),
 ) -> dict[str, Any]:
     try:
+        actor_context = RESTAdapterContract.actor(actor, board_id=board_id)
+        if await load_accessible_board(db, board_id, actor_context) is None:
+            raise BoardNotFoundError(board_id)
         uc_result = await ListCognitiveReadinessItemsUseCase(
             readiness_service_factory=build_default_readiness_service
         ).execute(
@@ -114,9 +123,11 @@ async def list_cognitive_readiness_items(
                 offset=offset,
                 kg_generation_id=kg_generation_id,
             ),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=actor_context,
             uow=db,
         )
+    except BoardNotFoundError as exc:
+        raise _board_not_found(exc) from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
 
@@ -162,6 +173,8 @@ async def record_cognitive_skip_endpoint(
             actor=RESTAdapterContract.actor(actor, board_id=board_id),
             uow=db,
         )
+    except BoardNotFoundError as exc:
+        raise _board_not_found(exc) from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
     data = result.data
@@ -197,6 +210,8 @@ async def clear_cognitive_skip_endpoint(
             actor=RESTAdapterContract.actor(actor, board_id=board_id),
             uow=db,
         )
+    except BoardNotFoundError as exc:
+        raise _board_not_found(exc) from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
     data = result.data
@@ -229,5 +244,7 @@ async def get_cognitive_readiness_metrics(
             uow=db,
         )
         return result.data
+    except BoardNotFoundError as exc:
+        raise _board_not_found(exc) from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc

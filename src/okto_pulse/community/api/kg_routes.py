@@ -44,6 +44,7 @@ from okto_pulse.core.application.use_cases.base import (
     EntityNotFoundError,
     PermissionDeniedError,
 )
+from okto_pulse.core.application.use_cases.board_access import load_accessible_board
 from okto_pulse.core.kg.cursor_codec import decode_cursor, encode_cursor
 from okto_pulse.community.api.auth_deps import get_current_user, get_realm_id, require_user
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
@@ -119,17 +120,20 @@ def _kg_actor(
 
 
 async def _ensure_board_access(
-    *, board_id: str, actor: ActorContext, uow: PulseUnitOfWork
+    *,
+    board_id: str,
+    actor: ActorContext,
+    uow: PulseUnitOfWork,
+    allowed_share_permissions: set[str] | None = None,
 ) -> None:
-    actor_scope = ActorScope.from_context(actor)
-    query_scope = actor_scope.query_scope(target_board_id=board_id)
-    board = await uow.services.boards.get_board(
+    board = await load_accessible_board(
+        uow,
         board_id,
-        actor_scope.actor_id,
-        query_scope=query_scope,
+        actor,
+        allowed_share_permissions=allowed_share_permissions,
     )
     if board is None:
-        raise HTTPException(status_code=403, detail="Not authorized to access this board")
+        raise HTTPException(status_code=404, detail="Board not found")
 
 
 def _require_kg_admin(actor: ActorContext) -> None:
@@ -167,6 +171,28 @@ async def require_kg_board_actor(
         realm_id=realm_id,
         uow=uow,
     )
+
+
+async def require_kg_board_writer_actor(
+    board_id: str,
+    user_id: str = Depends(require_user),
+    user: dict[str, Any] | None = Depends(get_current_user),
+    realm_id: str | None = Depends(get_realm_id),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+) -> ActorContext:
+    actor = _kg_actor(
+        user_id=user_id,
+        user=user,
+        realm_id=realm_id,
+        board_id=board_id,
+    )
+    await _ensure_board_access(
+        board_id=board_id,
+        actor=actor,
+        uow=uow,
+        allowed_share_permissions={"editor", "admin"},
+    )
+    return actor
 
 
 async def _resolve_kg_board_actor(
@@ -218,7 +244,12 @@ async def require_kg_admin_board_actor(
         realm_id=realm_id,
         board_id=board_id,
     )
-    await _ensure_board_access(board_id=board_id, actor=actor, uow=uow)
+    await _ensure_board_access(
+        board_id=board_id,
+        actor=actor,
+        uow=uow,
+        allowed_share_permissions={"editor", "admin"},
+    )
     _require_kg_admin(actor)
     return actor
 
@@ -856,7 +887,7 @@ async def undo_session(
     board_id: str,
     session_id: str,
     force: bool = False,
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    _actor: ActorContext = Depends(require_kg_board_writer_actor),
 ):
     """Undo a consolidation session."""
     return _problem(501, "Not Implemented", "Undo will be available in governance sprint")
@@ -922,7 +953,7 @@ async def global_search(
 @router.post("/boards/{board_id}/historical-consolidation/start")
 async def start_historical(
     board_id: str,
-    actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_admin_board_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Start historical backfill."""
@@ -940,7 +971,7 @@ async def start_historical(
 @router.post("/boards/{board_id}/historical-consolidation/cancel")
 async def cancel_historical_endpoint(
     board_id: str,
-    actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_admin_board_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Cancel historical backfill."""
@@ -976,7 +1007,7 @@ async def historical_progress_endpoint(
 @router.delete("/boards/{board_id}/kg")
 async def delete_board_kg(
     board_id: str,
-    actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_writer_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Wipe KG data for a board (right-to-erasure)."""
@@ -1067,7 +1098,7 @@ async def get_settings(
 async def update_settings(
     board_id: str,
     request: Request,
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    _actor: ActorContext = Depends(require_kg_board_writer_actor),
 ):
     """Update KG settings for a board."""
     return {"success": True}
@@ -1077,7 +1108,7 @@ async def update_settings(
 async def cypher_query(board_id: str, cypher: str = "", params: dict | None = None,
                        max_rows: int = 1000, timeout_ms: int = 5000,
                        include_working: bool = False,
-                       _actor: ActorContext = Depends(require_kg_board_actor)):
+                       _actor: ActorContext = Depends(require_kg_board_writer_actor)):
     """Delegate to tier power query_cypher."""
     try:
         result = execute_cypher_read_only(
@@ -1290,7 +1321,7 @@ async def retry_pending_entry(
     board_id: str,
     queue_entry_id: str,
     recursive: bool = Query(False, description="Also re-enqueue descendant entries"),
-    actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_writer_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Re-queue a failed/done ConsolidationQueue entry so the worker
@@ -1325,7 +1356,7 @@ async def retry_pending_entry(
 async def boost_node(
     board_id: str,
     node_id: str,
-    actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_writer_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Increment a node's ``relevance_score`` by a fixed +0.3 with clamp [0, 1.5].

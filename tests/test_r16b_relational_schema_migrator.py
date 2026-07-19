@@ -78,13 +78,24 @@ def _step_callable_order() -> list[str]:
     return list(_steps_mod.SCHEMA_STEP_CALLABLES)
 
 
-async def _collect_schema(engine) -> dict[str, list[str]]:
+async def _collect_schema(engine) -> dict[str, dict[str, list]]:
     from sqlalchemy import inspect as sa_inspect
 
     def _inspect(sync_conn):
         insp = sa_inspect(sync_conn)
         return {
-            t: sorted(c["name"] for c in insp.get_columns(t))
+            t: {
+                "columns": sorted(c["name"] for c in insp.get_columns(t)),
+                "foreign_keys": sorted(
+                    (
+                        tuple(fk.get("constrained_columns") or ()),
+                        fk.get("referred_table"),
+                        tuple(fk.get("referred_columns") or ()),
+                        str((fk.get("options") or {}).get("ondelete") or "").upper(),
+                    )
+                    for fk in insp.get_foreign_keys(t)
+                ),
+            }
             for t in sorted(insp.get_table_names())
         }
 
@@ -133,10 +144,10 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    assert len(migrate_names) == 36, (
-        f"expected 36 _migrate_*, found {len(migrate_names)}"
+    assert len(migrate_names) == 38, (
+        f"expected 38 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 36
+    assert len(ledger_migrate_ids) == 38
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]
@@ -158,10 +169,13 @@ def test_ts_7aacc71a_ledger_order_matches_community_step_registry():
     assert _step_callable_order() == ledger_migrate_order
 
 
-def test_ts_7aacc71a_drop_spec_skills_is_the_only_destructive():
+def test_ts_7aacc71a_destructive_steps_are_explicitly_allowlisted():
     ledger = build_community_migration_ledger()
     destructive = {s.step_id for s in ledger if s.destructive}
-    assert destructive == {"_migrate_drop_spec_skills"}
+    assert destructive == {
+        "_migrate_drop_spec_skills",
+        "_migrate_repair_known_fixture_fk_orphans",
+    }
     # _migrate_agent_permissions carries the documented schema-tail nuance.
     perms = next(s for s in ledger if s.step_id == "_migrate_agent_permissions")
     assert perms.phase == "post_create_all"
@@ -192,9 +206,12 @@ def test_ts_5283c465_golden_replay_matches_baseline(tmp_path, _isolate_engine):
 
     baseline_schema, adapter_schema, result = asyncio.run(drive())
     assert result.is_success
-    # Equivalent to baseline init_db (schema = tables + columns).
+    # Equivalent to baseline init_db (schema = tables + columns + foreign keys).
     assert adapter_schema == baseline_schema
     assert baseline_schema  # sanity: non-empty schema
+    sprint_foreign_keys = baseline_schema["sprints"]["foreign_keys"]
+    assert (("origin_sprint_id",), "sprints", ("id",), "SET NULL") in sprint_foreign_keys
+    assert (("origin_bug_id",), "cards", ("id",), "SET NULL") in sprint_foreign_keys
 
 
 def test_ts_5283c465_replay_over_baseline_does_not_alter_schema(
@@ -241,10 +258,16 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
     r1, r2, r3, s1, s2, s3 = asyncio.run(drive())
     total = len(build_community_migration_ledger())
 
-    # First run: everything applied.
+    repair_step = "_migrate_repair_known_fixture_fk_orphans"
+    recovery_convergence_step = "_migrate_global_discovery_recovery_control_plane"
+    first_run_skip_steps = {repair_step}
+    replay_skip_steps = {repair_step, recovery_convergence_step}
+
+    # First run: clean databases skip the fixture repair and the R5 convergence
+    # ALTER because create_all already emitted the complete recovery schema.
     assert r1.is_success
-    assert len(r1.applied_steps) == total
-    assert not r1.skipped_steps
+    assert len(r1.applied_steps) == total - len(first_run_skip_steps)
+    assert {step.step_id for step in r1.skipped_steps} == first_run_skip_steps
 
     # Second run (same instance): everything skipped -> no drift.
     assert r2.is_success
@@ -254,6 +277,8 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
 
     # Fresh instance: real migrations re-execute idempotently -> no drift.
     assert r3.is_success
+    assert len(r3.applied_steps) == total - len(replay_skip_steps)
+    assert {step.step_id for step in r3.skipped_steps} == replay_skip_steps
     assert s3 == s1
 
 

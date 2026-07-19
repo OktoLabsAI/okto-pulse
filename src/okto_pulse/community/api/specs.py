@@ -24,6 +24,8 @@ from okto_pulse.core.application.use_cases import (
     DeleteSpecQuestionUseCase,
     DeleteSpecUseCase,
     EntityNotFoundError,
+    ExecuteTestScenarioEvidenceCommand,
+    ExecuteTestScenarioEvidenceUseCase,
     GetSpecCommand,
     GetSpecKnowledgeCommand,
     GetSpecKnowledgeUseCase,
@@ -67,6 +69,9 @@ from okto_pulse.core.application.use_cases import (
     UpdateSpecUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.community.adapters.test_evidence import (
+    normalize_test_scenario_evidence,
+)
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.models.schemas import (
     SpecCreate,
@@ -77,6 +82,7 @@ from okto_pulse.core.models.schemas import (
     SpecResponse,
     SpecSummary,
     SpecUpdate,
+    TestScenarioEvidence,
 )
 from okto_pulse.core.models.schemas import SpecHistoryResponse, SpecQAAnswer, SpecQACreate, SpecQAResponse
 from okto_pulse.core.application.errors import (
@@ -84,6 +90,7 @@ from okto_pulse.core.application.errors import (
     CardOperationError,
     QASelfAnsweringNotAllowedError,
     ResourceGateError,
+    SprintOperationError,
 )
 from okto_pulse.core.services.gate_contracts import (
     GateContractError,
@@ -100,7 +107,14 @@ class ScenarioStatusUpdate(BaseModel):
     """Request body for the scoped test-scenario status endpoint."""
 
     status: str
-    evidence: dict | None = None
+    evidence: TestScenarioEvidence | None = None
+
+
+class ScenarioEvidenceExecutionRequest(BaseModel):
+    """Run a server-owned replay; this endpoint does not mutate the scenario."""
+
+    status: Literal["automated", "passed", "failed"]
+    manifest_ref: str = Field(..., min_length=1)
 
 STRUCTURED_SPEC_ENTITY_DEPRECATION_WARNING = (
     "Spec child entity edits should use /api/v1/specs/{spec_id}/structured-entities/"
@@ -117,6 +131,30 @@ _STRUCTURED_SPEC_ENTITY_UPDATE_FIELDS = {
     "observability_requirements",
     "decisions",
 }
+
+
+def _prepare_spec_update_evidence(data: SpecUpdate) -> SpecUpdate:
+    """Normalize/verify canonical V2 evidence on the whole-spec REST path."""
+
+    fields_set = set(getattr(data, "model_fields_set", set()))
+    if "test_scenarios" not in fields_set or data.test_scenarios is None:
+        return data
+    payload = data.model_dump(mode="python", exclude_unset=True)
+    scenarios: list[dict[str, Any]] = []
+    for raw_scenario in payload.get("test_scenarios") or []:
+        scenario = dict(raw_scenario)
+        raw_evidence = scenario.get("evidence") or scenario.get("latest_evidence")
+        if raw_evidence is not None:
+            evidence = normalize_test_scenario_evidence(
+                raw_evidence,
+                scenario_id=str(scenario.get("id") or ""),
+                status=str(scenario.get("status") or "draft"),
+            )
+            target = "evidence" if scenario.get("evidence") is not None else "latest_evidence"
+            scenario[target] = evidence
+        scenarios.append(scenario)
+    payload["test_scenarios"] = scenarios
+    return SpecUpdate.model_validate(payload)
 
 
 class StructuredSpecEntityMutationRequest(BaseModel):
@@ -246,7 +284,7 @@ async def create_spec(
     try:
         result = await CreateSpecUseCase().execute(
             CreateSpecCommand(board_id, data),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
     except EntityNotFoundError:
@@ -271,7 +309,7 @@ async def list_specs(
             ListSpecsCommand(
                 board_id, status_filter=status_filter, include_archived=include_archived
             ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
     except EntityNotFoundError:
@@ -316,8 +354,9 @@ async def update_spec(
             STRUCTURED_SPEC_ENTITY_DEPRECATION_WARNING
         )
     try:
+        prepared_data = _prepare_spec_update_evidence(data)
         result = await UpdateSpecUseCase().execute(
-            UpdateSpecCommand(spec_id, data),
+            UpdateSpecCommand(spec_id, prepared_data),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
@@ -460,6 +499,8 @@ async def move_spec(
         )
     except CancellationReasonRequiredError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
+    except SprintOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError:
@@ -490,11 +531,14 @@ async def list_spec_history(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get detailed change history for a spec."""
-    result = await ListSpecHistoryUseCase().execute(
-        ListSpecHistoryCommand(spec_id, limit=limit),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListSpecHistoryUseCase().execute(
+            ListSpecHistoryCommand(spec_id, limit=limit),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
     return result.history
 
 
@@ -601,6 +645,44 @@ async def unlink_task_from_scenario(
     return {"success": True, "spec_id": spec_id, "scenario_id": scenario_id, "card_id": card_id}
 
 
+@router.post(
+    "/specs/{spec_id}/scenarios/{scenario_id}/evidence/execute",
+    status_code=status.HTTP_200_OK,
+)
+async def execute_test_scenario_evidence(
+    spec_id: str,
+    scenario_id: str,
+    body: ScenarioEvidenceExecutionRequest,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Execute an allowlisted local replay and return signed V2 evidence."""
+
+    try:
+        result = await ExecuteTestScenarioEvidenceUseCase().execute(
+            ExecuteTestScenarioEvidenceCommand(
+                spec_id,
+                scenario_id,
+                body.status,
+                body.manifest_ref,
+            ),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        detail = "Spec not found" if exc.entity_type == "spec" else "Scenario not found"
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=detail,
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    return {"evidence": result.evidence}
+
+
 @router.patch(
     "/specs/{spec_id}/scenarios/{scenario_id}/status",
     status_code=status.HTTP_200_OK,
@@ -625,8 +707,17 @@ async def update_test_scenario_status(
     evidence, not a semantic spec edit.
     """
     try:
+        evidence = (
+            normalize_test_scenario_evidence(
+                body.evidence.model_dump(mode="python", exclude_none=True),
+                scenario_id=scenario_id,
+                status=body.status,
+            )
+            if body.evidence is not None
+            else None
+        )
         outcome = await SetTestScenarioStatusUseCase().execute(
-            SetTestScenarioStatusCommand(spec_id, scenario_id, body.status, body.evidence),
+            SetTestScenarioStatusCommand(spec_id, scenario_id, body.status, evidence),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
@@ -731,11 +822,14 @@ async def list_spec_knowledge(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all knowledge base items for a spec (without content)."""
-    result = await ListSpecKnowledgeUseCase().execute(
-        ListSpecKnowledgeCommand(spec_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListSpecKnowledgeUseCase().execute(
+            ListSpecKnowledgeCommand(spec_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
     return result.items
 
 
@@ -805,11 +899,14 @@ async def list_spec_qa(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all Q&A items for a spec."""
-    result = await ListSpecQAUseCase().execute(
-        ListSpecQACommand(spec_id),
-        actor=RESTAdapterContract.actor(user_id),
-        uow=uow,
-    )
+    try:
+        result = await ListSpecQAUseCase().execute(
+            ListSpecQACommand(spec_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
     return result.items
 
 
@@ -843,7 +940,7 @@ async def answer_spec_question(
     """Answer a spec Q&A question."""
     try:
         result = await AnswerSpecQuestionUseCase().execute(
-            AnswerSpecQuestionCommand(qa_id, data),
+            AnswerSpecQuestionCommand(qa_id, data, spec_id=spec_id),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
@@ -867,7 +964,7 @@ async def delete_spec_question(
     """Delete a spec Q&A item."""
     try:
         await DeleteSpecQuestionUseCase().execute(
-            DeleteSpecQuestionCommand(qa_id),
+            DeleteSpecQuestionCommand(qa_id, spec_id=spec_id),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )

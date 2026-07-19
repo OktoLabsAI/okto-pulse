@@ -19,10 +19,31 @@ from okto_pulse.community.adapters.core_import_boundary import (
     CoreReachInLedgerEntry,
     audit_community_core_import_boundary,
 )
+from okto_pulse.core.application.boundary.public_contract_manifest import (
+    PUBLIC_CORE_CONTRACT_SURFACES as CORE_PUBLIC_CORE_CONTRACT_SURFACES,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AF42_EXPECTED_CURRENT_PRIVATE_REACH_INS = 0
+
+
+def test_public_allowlist_is_sourced_from_installed_core_manifest() -> None:
+    community_local = tuple(
+        item
+        for item in PUBLIC_CORE_IMPORT_ALLOWLIST
+        if item.startswith("okto_pulse.community.")
+    )
+    effective_core = tuple(
+        item
+        for item in PUBLIC_CORE_IMPORT_ALLOWLIST
+        if item.startswith("okto_pulse.core.")
+    )
+    assert set(community_local) == {
+        "okto_pulse.community.api.auth_deps",
+        "okto_pulse.community.app",
+    }
+    assert effective_core == CORE_PUBLIC_CORE_CONTRACT_SURFACES
 
 
 def _ledger_entry(

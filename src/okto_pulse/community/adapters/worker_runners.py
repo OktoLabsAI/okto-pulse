@@ -8,7 +8,10 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from okto_pulse.core.ports.runtime_workers import BlockingExecutionPort
+from okto_pulse.core.ports.runtime_workers import (
+    BlockingExecutionPort,
+    WorkerDrainIncomplete,
+)
 
 logger = logging.getLogger("okto_pulse.community.workers")
 
@@ -24,21 +27,63 @@ class TrackedBlockingExecution(BlockingExecutionPort):
     def __init__(self) -> None:
         self._tasks: set[asyncio.Task[Any]] = set()
 
+    def _consume_completed(self, task: asyncio.Task[Any]) -> None:
+        """Retire a native operation only after observing its outcome."""
+        self._tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001 - background outcome boundary
+            logger.error(
+                "community.worker.blocking_operation_failed error_type=%s",
+                type(exc).__name__,
+                extra={
+                    "event": "community.worker.blocking_operation_failed",
+                    "error_type": type(exc).__name__,
+                },
+            )
+
     async def run(self, operation: Callable[[], Any]) -> Any:
         task = asyncio.create_task(
             asyncio.to_thread(operation),
             name="community.worker.blocking_operation",
         )
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._consume_completed)
         return await asyncio.shield(task)
 
+    @property
+    def pending_count(self) -> int:
+        return sum(1 for task in self._tasks if not task.done())
+
     async def join(self, timeout: float) -> int:
-        pending = {task for task in self._tasks if not task.done()}
-        if not pending:
-            return 0
-        _done, pending = await asyncio.wait(pending, timeout=timeout)
-        return len(pending)
+        """Drain until the owned task set is stably empty or the deadline wins.
+
+        A single snapshot is insufficient during shutdown: a cancellation-safe
+        producer can finish one relational step and submit its final native
+        durability call while an earlier batch is being joined. Two empty loop
+        turns prove that all completion callbacks and immediately-following
+        submissions had a chance to run.
+        """
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, float(timeout))
+        stable_empty_turns = 0
+        while True:
+            pending = {task for task in self._tasks if not task.done()}
+            if not pending:
+                stable_empty_turns += 1
+                if stable_empty_turns >= 2:
+                    return 0
+                await asyncio.sleep(0)
+                continue
+
+            stable_empty_turns = 0
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return len(pending)
+            await asyncio.wait(pending, timeout=remaining)
 
 
 class PollingRunner:
@@ -53,6 +98,8 @@ class PollingRunner:
         operation_name: str,
         recover: Callable[[], Awaitable[int]] | None = None,
         final_iteration: bool = False,
+        blocking_execution: BlockingExecutionPort | None = None,
+        final_iteration_guard: Callable[[], bool] | None = None,
     ) -> None:
         self.processor = processor
         self.name = name
@@ -60,6 +107,8 @@ class PollingRunner:
         self.operation_name = operation_name
         self._recover = recover
         self._final_iteration = final_iteration
+        self._blocking_execution = blocking_execution
+        self._final_iteration_guard = final_iteration_guard
         self._task: asyncio.Task[None] | None = None
         self._wake_event: asyncio.Event | None = None
         self._running = False
@@ -111,25 +160,85 @@ class PollingRunner:
                     pass
                 wake.clear()
         except asyncio.CancelledError:
-            if self._final_iteration:
+            final_iteration_allowed = (
+                self._final_iteration_guard is None
+                or self._final_iteration_guard()
+            )
+            if self._final_iteration and final_iteration_allowed:
                 try:
                     await self.process_once()
                 except Exception:
                     logger.exception("worker final iteration failed family=%s", self.name)
+            elif self._final_iteration:
+                logger.critical(
+                    "worker final iteration skipped family=%s "
+                    "reason=upstream_native_drain_incomplete",
+                    self.name,
+                    extra={
+                        "event": "community.worker.final_iteration_skipped",
+                        "family": self.name,
+                        "reason": "upstream_native_drain_incomplete",
+                    },
+                )
             raise
 
     async def stop(self, timeout: float = 10.0) -> None:
         self._running = False
         self.notify()
+        loop = asyncio.get_running_loop()
+        effective_timeout = max(0.0, float(timeout))
+        deadline = loop.time() + effective_timeout
         task = self._task
+        pending_tasks: set[asyncio.Task[None]] = set()
+        task_error: Exception | None = None
         if task is not None and not task.done():
             task.cancel()
+            _done, pending_tasks = await asyncio.wait(
+                {task},
+                timeout=max(0.0, deadline - loop.time()),
+            )
+        if task is not None and task.done():
             try:
-                await asyncio.wait_for(task, timeout=timeout)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+                task.result()
+            except asyncio.CancelledError:
                 pass
+            except Exception as exc:  # noqa: BLE001 - re-raised after native drain
+                task_error = exc
+
+        blocking_pending = 0
+        if self._blocking_execution is not None:
+            blocking_pending = await self._blocking_execution.join(
+                max(0.0, deadline - loop.time())
+            )
+        pending_tasks = {task for task in pending_tasks if not task.done()}
+        if pending_tasks or blocking_pending:
+            logger.critical(
+                "worker native drain incomplete family=%s pending_tasks=%d "
+                "pending_operations=%d timeout_s=%s",
+                self.name,
+                len(pending_tasks),
+                blocking_pending,
+                effective_timeout,
+                extra={
+                    "event": "community.worker.native_drain_incomplete",
+                    "family": self.name,
+                    "phase": "final_iteration_drain",
+                    "pending_tasks": len(pending_tasks),
+                    "pending_operations": blocking_pending,
+                    "timeout_seconds": effective_timeout,
+                },
+            )
+            raise WorkerDrainIncomplete(
+                family=self.name,
+                phase="final_iteration_drain",
+                pending_tasks=len(pending_tasks),
+                pending_operations=blocking_pending,
+                timeout_seconds=effective_timeout,
+            )
         self._task = None
         self._wake_event = None
+        if task_error is not None:
+            raise task_error
 
     def snapshot(self, **_: Any) -> dict[str, Any]:
         return {"running": self.is_running}
@@ -157,10 +266,24 @@ class ConsolidationRunner:
         self._running = False
         self._wake_event: asyncio.Event | None = None
         self._tasks: set[asyncio.Task[None]] = set()
+        self._processing_task: asyncio.Task[None] | None = None
+        self._recovery_task: asyncio.Task[None] | None = None
+        self._shutdown_drained = False
 
     @property
     def is_running(self) -> bool:
-        return self._running and any(not task.done() for task in self._tasks)
+        # Runtime callers use this signal to decide whether notify() is enough
+        # or they must execute one batch directly. A surviving recovery timer
+        # cannot drain pending work, so it must never mask a dead processing
+        # task as a healthy worker family.
+        task = self._processing_task
+        return self._running and task is not None and not task.done()
+
+    @property
+    def shutdown_drained(self) -> bool:
+        """Whether the latest stop proved task and native quiescence."""
+
+        return self._shutdown_drained
 
     def notify(self) -> None:
         if self._wake_event is not None:
@@ -169,19 +292,26 @@ class ConsolidationRunner:
     async def start(self) -> "ConsolidationRunner":
         if self.is_running:
             return self
+        dangling = {task for task in self._tasks if not task.done()}
+        if dangling:
+            self._running = False
+            for task in dangling:
+                task.cancel()
+            await asyncio.gather(*dangling, return_exceptions=True)
+        self._tasks.clear()
+        self._shutdown_drained = False
         await self.processor.recover_stale_claims()
         self._wake_event = asyncio.Event()
         self._running = True
-        self._tasks = {
-            asyncio.create_task(
-                self.run_forever(),
-                name="community.kg.consolidation_runner",
-            ),
-            asyncio.create_task(
-                self.run_recovery_forever(),
-                name="community.kg.consolidation_recovery_runner",
-            ),
-        }
+        self._processing_task = asyncio.create_task(
+            self.run_forever(),
+            name="community.kg.consolidation_runner",
+        )
+        self._recovery_task = asyncio.create_task(
+            self.run_recovery_forever(),
+            name="community.kg.consolidation_recovery_runner",
+        )
+        self._tasks = {self._processing_task, self._recovery_task}
         return self
 
     async def process_once(self) -> int:
@@ -195,7 +325,14 @@ class ConsolidationRunner:
             while self._running:
                 try:
                     processed = await self.process_once()
-                    if processed > 0:
+                    attempted = int(
+                        getattr(self.processor, "last_attempted_count", processed)
+                    )
+                    if processed > 0 or attempted > 0:
+                        # One bounded follow-up lets a same-board backlog move
+                        # after the previous lease was ACKed/re-pended. If the
+                        # only row is now in backoff, that follow-up claims zero
+                        # and the runner sleeps normally (no busy cycle).
                         await asyncio.sleep(0)
                         continue
                 except asyncio.CancelledError:
@@ -221,39 +358,103 @@ class ConsolidationRunner:
         try:
             while self._running:
                 await asyncio.sleep(self.recovery_interval_seconds)
-                await self.processor.recover_stale_claims()
+                try:
+                    await self.processor.recover_stale_claims()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # A transient SQLite lock must not permanently kill stale
+                    # claim recovery while the processing task remains alive.
+                    logger.exception("consolidation stale-claim recovery failed")
         except asyncio.CancelledError:
             raise
 
     async def stop(self, timeout: float | None = None) -> None:
+        self._shutdown_drained = False
         self._running = False
         self.notify()
+        loop = asyncio.get_running_loop()
+        effective_timeout = self.join_timeout if timeout is None else timeout
+        effective_timeout = max(0.0, float(effective_timeout))
+        deadline = loop.time() + effective_timeout
         tasks = {task for task in self._tasks if not task.done()}
         for task in tasks:
             task.cancel()
-        effective_timeout = self.join_timeout if timeout is None else timeout
+        pending: set[asyncio.Task[None]] = set()
+        task_error: Exception | None = None
         if tasks:
-            done, pending = await asyncio.wait(tasks, timeout=effective_timeout)
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=max(0.0, deadline - loop.time()),
+            )
             for task in done:
                 try:
                     task.result()
                 except asyncio.CancelledError:
                     pass
+                except Exception as exc:  # noqa: BLE001 - re-raised after drain
+                    task_error = task_error or exc
             if pending:
                 logger.warning(
                     "consolidation runner join timed out pending=%d timeout_s=%s",
                     len(pending),
                     effective_timeout,
                 )
-        blocking_pending = await self._blocking_execution.join(effective_timeout)
+        # Also observe tasks that reached a terminal state before this stop
+        # attempt; otherwise a failed worker could become an unobserved task
+        # when a later successful retry clears the retained handle set.
+        for completed in {task for task in self._tasks if task.done()}:
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001 - re-raised after drain
+                task_error = task_error or exc
+
+        blocking_pending = await self._blocking_execution.join(
+            max(0.0, deadline - loop.time())
+        )
+        pending = {task for task in pending if not task.done()}
         if blocking_pending:
             logger.warning(
                 "consolidation blocking join timed out pending=%d timeout_s=%s",
                 blocking_pending,
                 effective_timeout,
             )
+        if pending or blocking_pending:
+            logger.critical(
+                "community.worker.native_drain_incomplete family=%s "
+                "pending_tasks=%d pending_operations=%d timeout_s=%s",
+                "community.kg.consolidation_runner",
+                len(pending),
+                blocking_pending,
+                effective_timeout,
+                extra={
+                    "event": "community.worker.native_drain_incomplete",
+                    "family": "community.kg.consolidation_runner",
+                    "phase": "consolidation_drain",
+                    "pending_tasks": len(pending),
+                    "pending_operations": blocking_pending,
+                    "timeout_seconds": effective_timeout,
+                },
+            )
+            # Preserve every task and handle for a bounded retry/diagnostic.
+            # Clearing them here would let graph/DB teardown race a live native
+            # durability operation.
+            raise WorkerDrainIncomplete(
+                family="community.kg.consolidation_runner",
+                phase="consolidation_drain",
+                pending_tasks=len(pending),
+                pending_operations=blocking_pending,
+                timeout_seconds=effective_timeout,
+            )
         self._tasks.clear()
+        self._processing_task = None
+        self._recovery_task = None
         self._wake_event = None
+        self._shutdown_drained = True
+        if task_error is not None:
+            raise task_error
 
     def snapshot(self, *, board_id: str | None = None) -> dict[str, Any]:
         running = self.is_running

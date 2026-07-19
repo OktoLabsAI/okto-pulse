@@ -136,6 +136,9 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     from okto_pulse.core.kg.interfaces.graph_schema_manager import GraphSchemaManager
     from okto_pulse.core.kg.interfaces.graph_store import SemanticGraphStore
     from okto_pulse.core.kg.interfaces.graph_transaction import GraphTransaction
+    from okto_pulse.core.kg.interfaces.global_discovery_recovery import (
+        GlobalDiscoveryRecovery,
+    )
 
     providers = build_community_graph_providers()
     assert set(providers) == {
@@ -145,6 +148,7 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
         "graph_schema_manager",
         "graph_lifecycle",
         "global_discovery_runtime",
+        "global_discovery_recovery",
         "graph_runtime_store",
         "graph_recovery",
     }
@@ -156,6 +160,11 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     assert isinstance(providers["graph_transaction"], GraphTransaction)
     assert callable(providers["global_discovery_runtime"].state)
     assert callable(providers["global_discovery_runtime"].execute)
+    assert isinstance(providers["global_discovery_recovery"], GlobalDiscoveryRecovery)
+    assert (
+        providers["global_discovery_recovery"]._global_runtime
+        is providers["global_discovery_runtime"]
+    )
     # They are the Community classes (registered behind the ports).
     assert type(providers["graph_store"]).__name__ == "CommunityKuzuGraphStore"
 
@@ -169,6 +178,10 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     assert (
         type(base.global_discovery_runtime).__name__
         == "CommunityGlobalDiscoveryRuntime"
+    )
+    assert (
+        type(base.require_global_discovery_recovery()).__name__
+        == "CommunityGlobalDiscoveryRecovery"
     )
 
 

@@ -126,7 +126,7 @@ def _provider_specific_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider=COMMUNITY_KG_PROVIDER,
             edition=COMMUNITY_EDITION,
             capability="mcp_resources",
-            metadata={"overlay": "operational", "catalog": "effective"},
+            metadata={"replacement": "operational", "catalog": "effective"},
         ),
     )
 
@@ -152,14 +152,17 @@ def _local_storage_descriptor() -> CapabilityDescriptor:
 
 
 def _operational_resource_descriptors() -> tuple[CapabilityDescriptor, ...]:
-    """A capability descriptor per DISTINCT operational-overlay capability (R11-B
-    contaminated URIs: kg/errors/decision), DERIVED from the Community overlay
-    table — so the classification covers EVERY capability-tagged resource in the
-    effective catalog (no relevant resource left silently unclassified). ``kg`` is
-    already covered by ``capability:kg_backend``; this fills the rest."""
-    from okto_pulse.community.adapters.resources import _COMMUNITY_OVERLAY_TABLE
+    """Describe every distinct explicit operational replacement capability.
 
-    caps = sorted({cap for _, _, cap in _COMMUNITY_OVERLAY_TABLE} - {"kg"})
+    The R11-B contaminated URIs cover kg/errors/decision. ``kg`` is already
+    represented by ``capability:kg_backend``; this fills the rest from the
+    governed Community replacement table.
+    """
+    from okto_pulse.community.adapters.resources import (
+        _COMMUNITY_REPLACEMENT_TABLE,
+    )
+
+    caps = sorted({cap for _, _, cap in _COMMUNITY_REPLACEMENT_TABLE} - {"kg"})
     return tuple(
         CapabilityDescriptor(
             id=f"capability:operational_{cap}",
@@ -167,7 +170,7 @@ def _operational_resource_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider=COMMUNITY_KG_PROVIDER,
             edition=COMMUNITY_EDITION,
             capability=cap,
-            metadata={"source": "operational_overlay"},
+            metadata={"source": "operational_replacement"},
         )
         for cap in caps
     )
