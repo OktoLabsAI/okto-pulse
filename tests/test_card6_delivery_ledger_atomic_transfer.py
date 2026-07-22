@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -24,14 +24,26 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationQueue,
     GlobalDiscoveryDeliveryLedger,
     GlobalUpdateOutbox,
+    KGTakedownStateEvent,
+)
+from okto_pulse.community.adapters.sqlalchemy_takedown_telemetry import (
+    stage_takedown_transition,
 )
 from okto_pulse.core.ports.delivery_ledger import (
+    DELIVERY_PARITY_REFRESH_REQUIRED_REASON,
+    DeliveryAttemptEnvelope,
+    DeliveryAttemptOutcome,
+    DeliveryAttemptResult,
     DeliveryState,
     DeliveryTransferClaimConflict,
     DeliveryTransferReplayConflict,
     DeliveryTransferRequest,
 )
 from okto_pulse.core.ports.global_outbox import GLOBAL_OUTBOX_MAX_RETRIES
+from okto_pulse.core.ports.takedown_telemetry import (
+    TakedownState,
+    TakedownTransition,
+)
 
 
 BOARD_ID = "11111111-1111-4111-8111-111111111111"
@@ -80,6 +92,8 @@ async def delivery_store(tmp_path):
 def _request(
     *,
     target_state: DeliveryState = DeliveryState.OUTBOX_PERSISTED,
+    reconcile_details: dict[str, object] | None = None,
+    occurred_at: datetime | None = None,
 ) -> DeliveryTransferRequest:
     return DeliveryTransferRequest(
         entry_id=ENTRY_ID,
@@ -90,7 +104,49 @@ def _request(
         generation=1,
         delete_event_id=DELETE_EVENT_ID,
         target_state=target_state,
+        reconcile_details=(
+            {"target_demoted_count": 0}
+            if reconcile_details is None
+            else reconcile_details
+        ),
+        occurred_at=occurred_at,
     )
+
+
+def _attempt(
+    request: DeliveryTransferRequest,
+    *,
+    attempt: int,
+) -> DeliveryAttemptEnvelope:
+    return DeliveryAttemptEnvelope(
+        board_id=request.board_id,
+        artifact_type=request.artifact_type,
+        artifact_id=request.artifact_id,
+        generation=request.generation,
+        delete_event_id=request.delete_event_id,
+        attempt=attempt,
+    )
+
+
+def _attempt_outbox(
+    envelope: DeliveryAttemptEnvelope,
+    *,
+    created_at: datetime | None = None,
+    processed_at: datetime | None = None,
+    retry_count: int = 0,
+) -> GlobalUpdateOutbox:
+    row = GlobalUpdateOutbox(
+        event_id=envelope.attempt_event_key,
+        board_id=envelope.board_id,
+        session_id=envelope.outbox_session_id,
+        event_type=envelope.outbox_event_type,
+        payload=dict(envelope.payload),
+        processed_at=processed_at,
+        retry_count=retry_count,
+    )
+    if created_at is not None:
+        row.created_at = created_at
+    return row
 
 
 def _claimed_queue(
@@ -107,9 +163,7 @@ def _claimed_queue(
         "payload": {
             "schema_version": 1,
             "delete_event_id": request.delete_event_id,
-            "source_refs": [
-                f"{request.artifact_type}:{request.artifact_id}"
-            ],
+            "source_refs": [f"{request.artifact_type}:{request.artifact_id}"],
         },
         "delete_event_id": request.delete_event_id,
         "priority": "high",
@@ -139,15 +193,11 @@ async def _counts(store) -> tuple[int, int, int]:
             or 0
         )
         outbox = int(
-            await session.scalar(
-                select(func.count()).select_from(GlobalUpdateOutbox)
-            )
+            await session.scalar(select(func.count()).select_from(GlobalUpdateOutbox))
             or 0
         )
         queue = int(
-            await session.scalar(
-                select(func.count()).select_from(ConsolidationQueue)
-            )
+            await session.scalar(select(func.count()).select_from(ConsolidationQueue))
             or 0
         )
     return ledger, outbox, queue
@@ -463,7 +513,7 @@ async def test_debt_ledger_with_physical_attempt_zero_fails_closed(
     ids=("healthy-owner-after-degrade", "debt-owner-after-recovery"),
 )
 @pytest.mark.asyncio
-async def test_existing_owner_is_authoritative_across_circuit_change(
+async def test_existing_owner_replay_ignores_current_circuit_snapshot(
     delivery_store,
     existing_state,
     target_state,
@@ -508,7 +558,7 @@ async def test_existing_owner_is_authoritative_across_circuit_change(
         await session.commit()
 
     assert receipt.replayed is True
-    assert receipt.state is existing_state
+    assert receipt.state is DeliveryState.DELIVERY_DEBT
     assert receipt.attempt_event_key == (
         request.attempt_event_key
         if existing_state is DeliveryState.OUTBOX_PERSISTED
@@ -524,11 +574,688 @@ async def test_existing_owner_is_authoritative_across_circuit_change(
             GlobalDiscoveryDeliveryLedger,
             request.delivery_key,
         )
-        assert ledger.state == existing_state.value
+        assert ledger.state == DeliveryState.DELIVERY_DEBT.value
 
 
 @pytest.mark.asyncio
-async def test_divergent_ledger_attempt_is_hard_conflict(delivery_store):
+async def test_live_like_attempt_one_debt_is_authoritative_on_replay(
+    delivery_store,
+):
+    request = _request(reconcile_details={"target_demoted_count": 3})
+    envelope = _attempt(request, attempt=1)
+    async with delivery_store.sessions() as session:
+        session.add(_claimed_queue(request))
+        session.add(
+            GlobalDiscoveryDeliveryLedger(
+                delivery_key=envelope.delivery_key,
+                board_id=envelope.board_id,
+                artifact_type=envelope.artifact_type,
+                artifact_id=envelope.artifact_id,
+                generation=envelope.generation,
+                delete_event_id=envelope.delete_event_id,
+                state=DeliveryState.DELIVERY_DEBT.value,
+                attempt=envelope.attempt,
+                attempt_event_key=envelope.attempt_event_key,
+                last_error="governed_delivery_attempt_terminal",
+            )
+        )
+        session.add(
+            _attempt_outbox(
+                envelope,
+                retry_count=GLOBAL_OUTBOX_MAX_RETRIES,
+            )
+        )
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        receipt = await delivery_store.adapter.transfer_delivery_ownership(
+            session,
+            request,
+        )
+        await session.commit()
+
+    assert receipt.replayed is True
+    assert receipt.state is DeliveryState.DELIVERY_DEBT
+    assert receipt.attempt == 1
+    assert receipt.attempt_event_key == envelope.attempt_event_key
+    assert await _counts(delivery_store) == (1, 1, 0)
+    async with delivery_store.sessions() as session:
+        transitions = (
+            (await session.execute(select(KGTakedownStateEvent))).scalars().all()
+        )
+    assert transitions == []
+
+
+@pytest.mark.asyncio
+async def test_attempt_zero_debt_with_retained_outbox_is_replayable(
+    delivery_store,
+):
+    request = _request(reconcile_details={"target_demoted_count": 1})
+    envelope = _attempt(request, attempt=0)
+    async with delivery_store.sessions() as session:
+        session.add(_claimed_queue(request))
+        session.add(
+            GlobalDiscoveryDeliveryLedger(
+                delivery_key=envelope.delivery_key,
+                board_id=envelope.board_id,
+                artifact_type=envelope.artifact_type,
+                artifact_id=envelope.artifact_id,
+                generation=envelope.generation,
+                delete_event_id=envelope.delete_event_id,
+                state=DeliveryState.DELIVERY_DEBT.value,
+                attempt=0,
+                attempt_event_key=envelope.attempt_event_key,
+                last_error="attempt_zero_terminal",
+            )
+        )
+        session.add(
+            _attempt_outbox(
+                envelope,
+                retry_count=GLOBAL_OUTBOX_MAX_RETRIES,
+            )
+        )
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        receipt = await delivery_store.adapter.transfer_delivery_ownership(
+            session,
+            request,
+        )
+        await session.commit()
+
+    assert receipt.replayed is True
+    assert receipt.state is DeliveryState.DELIVERY_DEBT
+    assert receipt.attempt == 0
+    assert receipt.attempt_event_key == envelope.attempt_event_key
+    assert await _counts(delivery_store) == (1, 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_advanced_pending_outbox_reopens_on_reconstituted_reconcile(
+    delivery_store,
+):
+    request = _request(reconcile_details={"demoted_count": 0})
+    envelope = _attempt(request, attempt=2)
+    async with delivery_store.sessions() as session:
+        session.add(_claimed_queue(request))
+        session.add(
+            GlobalDiscoveryDeliveryLedger(
+                delivery_key=envelope.delivery_key,
+                board_id=envelope.board_id,
+                artifact_type=envelope.artifact_type,
+                artifact_id=envelope.artifact_id,
+                generation=envelope.generation,
+                delete_event_id=envelope.delete_event_id,
+                state=DeliveryState.OUTBOX_PERSISTED.value,
+                attempt=envelope.attempt,
+                attempt_event_key=envelope.attempt_event_key,
+            )
+        )
+        session.add(_attempt_outbox(envelope))
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        receipt = await delivery_store.adapter.transfer_delivery_ownership(
+            session,
+            request,
+        )
+        await session.commit()
+
+    assert receipt.replayed is True
+    assert receipt.state is DeliveryState.DELIVERY_DEBT
+    assert receipt.attempt == 2
+    assert receipt.attempt_event_key == envelope.attempt_event_key
+    assert await _counts(delivery_store) == (1, 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_delivered_owner_reopens_on_reconstituted_reconcile(
+    delivery_store,
+):
+    delivered_at = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+    request = _request(reconcile_details={"target_demoted_count": 0})
+    envelope = _attempt(request, attempt=1)
+    async with delivery_store.sessions() as session:
+        session.add(_claimed_queue(request))
+        session.add(
+            GlobalDiscoveryDeliveryLedger(
+                delivery_key=envelope.delivery_key,
+                board_id=envelope.board_id,
+                artifact_type=envelope.artifact_type,
+                artifact_id=envelope.artifact_id,
+                generation=envelope.generation,
+                delete_event_id=envelope.delete_event_id,
+                state=DeliveryState.DELIVERED.value,
+                attempt=envelope.attempt,
+                attempt_event_key=envelope.attempt_event_key,
+                delivered_at=delivered_at,
+            )
+        )
+        session.add(_attempt_outbox(envelope, processed_at=delivered_at))
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        receipt = await delivery_store.adapter.transfer_delivery_ownership(
+            session,
+            request,
+        )
+        await session.commit()
+
+    assert receipt.replayed is True
+    assert receipt.state is DeliveryState.DELIVERY_DEBT
+    assert receipt.attempt == 1
+    assert receipt.attempt_event_key == envelope.attempt_event_key
+    assert await _counts(delivery_store) == (1, 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_delivered_owner_without_delivered_timestamp_fails_closed(
+    delivery_store,
+):
+    processed_at = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+    request = _request(reconcile_details={"target_demoted_count": 0})
+    envelope = _attempt(request, attempt=1)
+    async with delivery_store.sessions() as session:
+        session.add(_claimed_queue(request))
+        session.add(
+            GlobalDiscoveryDeliveryLedger(
+                delivery_key=envelope.delivery_key,
+                board_id=envelope.board_id,
+                artifact_type=envelope.artifact_type,
+                artifact_id=envelope.artifact_id,
+                generation=envelope.generation,
+                delete_event_id=envelope.delete_event_id,
+                state=DeliveryState.DELIVERED.value,
+                attempt=envelope.attempt,
+                attempt_event_key=envelope.attempt_event_key,
+                delivered_at=None,
+            )
+        )
+        session.add(_attempt_outbox(envelope, processed_at=processed_at))
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        with pytest.raises(
+            DeliveryTransferReplayConflict,
+            match="delivery_delivered_outbox_invariant_broken",
+        ):
+            await delivery_store.adapter.transfer_delivery_ownership(
+                session,
+                request,
+            )
+        await session.rollback()
+
+    assert await _counts(delivery_store) == (1, 1, 1)
+
+
+@pytest.mark.parametrize(
+    ("existing_state", "processed", "retry_count"),
+    [
+        (DeliveryState.OUTBOX_PERSISTED, False, 0),
+        (
+            DeliveryState.OUTBOX_PERSISTED,
+            False,
+            GLOBAL_OUTBOX_MAX_RETRIES,
+        ),
+        (DeliveryState.OUTBOX_PERSISTED, True, 0),
+        (DeliveryState.DELIVERED, True, 0),
+    ],
+    ids=("pending", "terminal", "processed", "delivered"),
+)
+@pytest.mark.asyncio
+async def test_material_graph_change_reopens_current_attempt_for_refresh(
+    delivery_store,
+    existing_state,
+    processed,
+    retry_count,
+):
+    refresh_at = datetime(2026, 7, 22, 12, 5, tzinfo=timezone.utc)
+    owner_at = refresh_at - timedelta(minutes=2)
+    processed_at = refresh_at - timedelta(minutes=1) if processed else None
+    request = _request(
+        reconcile_details={"target_demoted_count": 1},
+        occurred_at=refresh_at,
+    )
+    envelope = _attempt(request, attempt=1)
+    async with delivery_store.sessions() as session:
+        session.add(_claimed_queue(request))
+        session.add(
+            GlobalDiscoveryDeliveryLedger(
+                delivery_key=envelope.delivery_key,
+                board_id=envelope.board_id,
+                artifact_type=envelope.artifact_type,
+                artifact_id=envelope.artifact_id,
+                generation=envelope.generation,
+                delete_event_id=envelope.delete_event_id,
+                state=existing_state.value,
+                attempt=envelope.attempt,
+                attempt_event_key=envelope.attempt_event_key,
+                created_at=owner_at,
+                updated_at=processed_at or owner_at,
+                delivered_at=(
+                    processed_at if existing_state is DeliveryState.DELIVERED else None
+                ),
+            )
+        )
+        session.add(
+            _attempt_outbox(
+                envelope,
+                created_at=owner_at,
+                processed_at=processed_at,
+                retry_count=retry_count,
+            )
+        )
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        receipt = await delivery_store.adapter.transfer_delivery_ownership(
+            session,
+            request,
+        )
+        await session.commit()
+
+    assert receipt.replayed is True
+    assert receipt.state is DeliveryState.DELIVERY_DEBT
+    assert receipt.attempt == envelope.attempt
+    assert receipt.attempt_event_key == envelope.attempt_event_key
+    assert await _counts(delivery_store) == (1, 1, 0)
+    async with delivery_store.sessions() as session:
+        ledger = await session.get(
+            GlobalDiscoveryDeliveryLedger,
+            envelope.delivery_key,
+        )
+        transitions = (
+            (await session.execute(select(KGTakedownStateEvent))).scalars().all()
+        )
+    assert ledger.state == DeliveryState.DELIVERY_DEBT.value
+    assert ledger.attempt == envelope.attempt
+    assert ledger.attempt_event_key == envelope.attempt_event_key
+    assert ledger.last_error == DELIVERY_PARITY_REFRESH_REQUIRED_REASON
+    assert ledger.next_retry_at == refresh_at.replace(tzinfo=None)
+    assert ledger.delivered_at is None
+    assert len(transitions) == 1
+    assert transitions[0].state == DeliveryState.DELIVERY_DEBT.value
+    assert transitions[0].attempt == envelope.attempt
+    assert transitions[0].details == {
+        "source": "stale_reconcile_parity_refresh",
+        "target_demoted_count": 1,
+        "reopened_from": existing_state.value,
+    }
+
+
+@pytest.mark.asyncio
+async def test_refresh_replay_rolls_back_if_final_queue_cas_loses(
+    delivery_store,
+):
+    refresh_at = datetime(2026, 7, 22, 12, 30, tzinfo=timezone.utc)
+    owner_at = refresh_at - timedelta(minutes=1)
+    request = _request(
+        reconcile_details={"target_demoted_count": 1},
+        occurred_at=refresh_at,
+    )
+    envelope = _attempt(request, attempt=1)
+    async with delivery_store.sessions() as session:
+        session.add(_claimed_queue(request, claim_token="stolen-token"))
+        session.add(
+            GlobalDiscoveryDeliveryLedger(
+                delivery_key=envelope.delivery_key,
+                board_id=envelope.board_id,
+                artifact_type=envelope.artifact_type,
+                artifact_id=envelope.artifact_id,
+                generation=envelope.generation,
+                delete_event_id=envelope.delete_event_id,
+                state=DeliveryState.OUTBOX_PERSISTED.value,
+                attempt=envelope.attempt,
+                attempt_event_key=envelope.attempt_event_key,
+                created_at=owner_at,
+                updated_at=owner_at,
+            )
+        )
+        session.add(_attempt_outbox(envelope, created_at=owner_at))
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        with pytest.raises(
+            DeliveryTransferClaimConflict,
+            match="delivery_transfer_queue_claim_conflict",
+        ):
+            await delivery_store.adapter.transfer_delivery_ownership(
+                session,
+                request,
+            )
+        await session.rollback()
+
+    async with delivery_store.sessions() as session:
+        ledger = await session.get(
+            GlobalDiscoveryDeliveryLedger,
+            envelope.delivery_key,
+        )
+        transitions = (
+            (await session.execute(select(KGTakedownStateEvent))).scalars().all()
+        )
+        queue = await session.get(ConsolidationQueue, request.entry_id)
+    assert ledger.state == DeliveryState.OUTBOX_PERSISTED.value
+    assert ledger.last_error is None
+    assert ledger.next_retry_at is None
+    assert transitions == []
+    assert queue is not None
+    assert queue.claim_token == "stolen-token"
+
+    retry_request = _request(
+        reconcile_details={
+            "target_demoted_count": 0,
+            "target_already_converged_count": 1,
+        },
+        occurred_at=refresh_at + timedelta(minutes=1),
+    )
+    async with delivery_store.sessions() as session:
+        queue = await session.get(ConsolidationQueue, request.entry_id)
+        queue.claim_token = retry_request.claim_token
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        receipt = await delivery_store.adapter.transfer_delivery_ownership(
+            session,
+            retry_request,
+        )
+        await session.commit()
+
+    assert receipt.state is DeliveryState.DELIVERY_DEBT
+    async with delivery_store.sessions() as session:
+        ledger = await session.get(
+            GlobalDiscoveryDeliveryLedger,
+            envelope.delivery_key,
+        )
+        transition = (await session.execute(select(KGTakedownStateEvent))).scalar_one()
+    assert ledger.last_error == DELIVERY_PARITY_REFRESH_REQUIRED_REASON
+    assert transition.details == {
+        "source": "stale_reconcile_parity_refresh",
+        "target_demoted_count": 0,
+        "target_already_converged_count": 1,
+        "reopened_from": DeliveryState.OUTBOX_PERSISTED.value,
+    }
+
+
+@pytest.mark.parametrize("clock_offset", [timedelta(), -timedelta(minutes=5)])
+@pytest.mark.asyncio
+async def test_delivered_refresh_timestamp_is_strictly_monotonic(
+    delivery_store,
+    clock_offset,
+):
+    delivered_at = datetime(2026, 7, 22, 13, 0, tzinfo=timezone.utc)
+    owner_at = delivered_at - timedelta(minutes=10)
+    request = _request(
+        reconcile_details={"target_demoted_count": 1},
+        occurred_at=delivered_at + clock_offset,
+    )
+    envelope = _attempt(request, attempt=1)
+    async with delivery_store.sessions() as session:
+        session.add(_claimed_queue(request))
+        ledger = GlobalDiscoveryDeliveryLedger(
+            delivery_key=envelope.delivery_key,
+            board_id=envelope.board_id,
+            artifact_type=envelope.artifact_type,
+            artifact_id=envelope.artifact_id,
+            generation=envelope.generation,
+            delete_event_id=envelope.delete_event_id,
+            state=DeliveryState.DELIVERED.value,
+            attempt=envelope.attempt,
+            attempt_event_key=envelope.attempt_event_key,
+            created_at=owner_at,
+            updated_at=delivered_at,
+            delivered_at=delivered_at,
+        )
+        session.add(ledger)
+        session.add(
+            _attempt_outbox(
+                envelope,
+                created_at=owner_at,
+                processed_at=delivered_at,
+            )
+        )
+        await session.flush()
+        await stage_takedown_transition(
+            session,
+            TakedownTransition(
+                delete_event_id=envelope.delete_event_id,
+                delivery_key=envelope.delivery_key,
+                board_id=envelope.board_id,
+                artifact_type=envelope.artifact_type,
+                artifact_id=envelope.artifact_id,
+                generation=envelope.generation,
+                state=TakedownState.DELIVERED,
+                occurred_at=delivered_at,
+                attempt=envelope.attempt,
+                details={"source": "global_outbox_attempt"},
+            ),
+        )
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        receipt = await delivery_store.adapter.transfer_delivery_ownership(
+            session,
+            request,
+        )
+        await session.commit()
+
+    assert receipt.state is DeliveryState.DELIVERY_DEBT
+    expected_refresh_at = delivered_at + timedelta(microseconds=1)
+    async with delivery_store.sessions() as session:
+        ledger = await session.get(
+            GlobalDiscoveryDeliveryLedger,
+            envelope.delivery_key,
+        )
+        transitions = (
+            (
+                await session.execute(
+                    select(KGTakedownStateEvent).order_by(
+                        KGTakedownStateEvent.occurred_at.asc()
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert ledger.next_retry_at == expected_refresh_at.replace(tzinfo=None)
+    assert [row.state for row in transitions] == [
+        TakedownState.DELIVERED.value,
+        TakedownState.DELIVERY_DEBT.value,
+    ]
+    assert transitions[-1].occurred_at == expected_refresh_at.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_refresh_timestamp_advances_past_future_attempt_timeline(
+    delivery_store,
+):
+    owner_at = datetime(2026, 7, 22, 13, 0, tzinfo=timezone.utc)
+    timeline_at = owner_at + timedelta(hours=1)
+    request = _request(
+        reconcile_details={"target_demoted_count": 1},
+        occurred_at=owner_at,
+    )
+    envelope = _attempt(request, attempt=1)
+    async with delivery_store.sessions() as session:
+        session.add(_claimed_queue(request))
+        ledger = GlobalDiscoveryDeliveryLedger(
+            delivery_key=envelope.delivery_key,
+            board_id=envelope.board_id,
+            artifact_type=envelope.artifact_type,
+            artifact_id=envelope.artifact_id,
+            generation=envelope.generation,
+            delete_event_id=envelope.delete_event_id,
+            state=DeliveryState.OUTBOX_PERSISTED.value,
+            attempt=envelope.attempt,
+            attempt_event_key=envelope.attempt_event_key,
+            created_at=owner_at,
+            updated_at=owner_at,
+        )
+        session.add(ledger)
+        session.add(_attempt_outbox(envelope, created_at=owner_at))
+        await session.flush()
+        await stage_takedown_transition(
+            session,
+            TakedownTransition(
+                delete_event_id=envelope.delete_event_id,
+                delivery_key=envelope.delivery_key,
+                board_id=envelope.board_id,
+                artifact_type=envelope.artifact_type,
+                artifact_id=envelope.artifact_id,
+                generation=envelope.generation,
+                state=TakedownState.OUTBOX_PERSISTED,
+                occurred_at=timeline_at,
+                attempt=envelope.attempt,
+                details={"source": "delivery_redrive"},
+            ),
+        )
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        await delivery_store.adapter.transfer_delivery_ownership(
+            session,
+            request,
+        )
+        await session.commit()
+
+    expected_refresh_at = timeline_at + timedelta(microseconds=1)
+    async with delivery_store.sessions() as session:
+        ledger = await session.get(
+            GlobalDiscoveryDeliveryLedger,
+            envelope.delivery_key,
+        )
+        transitions = (
+            (
+                await session.execute(
+                    select(KGTakedownStateEvent).order_by(
+                        KGTakedownStateEvent.occurred_at.asc()
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert ledger.next_retry_at == expected_refresh_at.replace(tzinfo=None)
+    assert transitions[-1].state == TakedownState.DELIVERY_DEBT.value
+    assert transitions[-1].occurred_at == expected_refresh_at.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_inflight_old_outcome_cannot_absorb_refresh_debt(
+    delivery_store,
+):
+    refresh_at = datetime(2026, 7, 22, 12, 10, tzinfo=timezone.utc)
+    owner_at = refresh_at - timedelta(minutes=1)
+    outcome_at = refresh_at + timedelta(seconds=1)
+    redrive_at = refresh_at + timedelta(seconds=2)
+    request = _request(
+        reconcile_details={"target_demoted_count": 1},
+        occurred_at=refresh_at,
+    )
+    stale_attempt = _attempt(request, attempt=1)
+    async with delivery_store.sessions() as session:
+        session.add(_claimed_queue(request))
+        session.add(
+            GlobalDiscoveryDeliveryLedger(
+                delivery_key=stale_attempt.delivery_key,
+                board_id=stale_attempt.board_id,
+                artifact_type=stale_attempt.artifact_type,
+                artifact_id=stale_attempt.artifact_id,
+                generation=stale_attempt.generation,
+                delete_event_id=stale_attempt.delete_event_id,
+                state=DeliveryState.OUTBOX_PERSISTED.value,
+                attempt=stale_attempt.attempt,
+                attempt_event_key=stale_attempt.attempt_event_key,
+                created_at=owner_at,
+                updated_at=owner_at,
+            )
+        )
+        session.add(_attempt_outbox(stale_attempt, created_at=owner_at))
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        await delivery_store.adapter.transfer_delivery_ownership(
+            session,
+            request,
+        )
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        old_outbox = (
+            await session.execute(
+                select(GlobalUpdateOutbox).where(
+                    GlobalUpdateOutbox.event_id == stale_attempt.attempt_event_key
+                )
+            )
+        ).scalar_one()
+        old_outbox.processed_at = outcome_at
+        await delivery_store.adapter.apply_attempt_outcomes(
+            session,
+            (
+                DeliveryAttemptResult(
+                    envelope=stale_attempt,
+                    outcome=DeliveryAttemptOutcome.DELIVERED,
+                    occurred_at=outcome_at,
+                ),
+            ),
+        )
+        await session.commit()
+
+    async with delivery_store.sessions() as session:
+        ledger = await session.get(
+            GlobalDiscoveryDeliveryLedger,
+            stale_attempt.delivery_key,
+        )
+        assert ledger.state == DeliveryState.DELIVERY_DEBT.value
+        assert ledger.attempt == stale_attempt.attempt
+        assert ledger.last_error == DELIVERY_PARITY_REFRESH_REQUIRED_REASON
+
+        redrive = await delivery_store.adapter.redrive_delivery_debt(
+            session,
+            now=redrive_at,
+            limit=1,
+        )
+        await session.commit()
+
+    successor = _attempt(request, attempt=2)
+    assert redrive.emitted == 1
+    async with delivery_store.sessions() as session:
+        ledger = await session.get(
+            GlobalDiscoveryDeliveryLedger,
+            stale_attempt.delivery_key,
+        )
+        successor_outbox = (
+            await session.execute(
+                select(GlobalUpdateOutbox).where(
+                    GlobalUpdateOutbox.event_id == successor.attempt_event_key
+                )
+            )
+        ).scalar_one()
+        transitions = (
+            (
+                await session.execute(
+                    select(KGTakedownStateEvent).order_by(
+                        KGTakedownStateEvent.occurred_at.asc()
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert ledger.state == DeliveryState.OUTBOX_PERSISTED.value
+    assert ledger.attempt == successor.attempt
+    assert ledger.attempt_event_key == successor.attempt_event_key
+    assert successor_outbox.processed_at is None
+    assert [row.state for row in transitions] == [
+        DeliveryState.DELIVERY_DEBT.value,
+        DeliveryState.OUTBOX_PERSISTED.value,
+    ]
+    assert all(row.state != DeliveryState.DELIVERED.value for row in transitions)
+
+
+@pytest.mark.asyncio
+async def test_advanced_ledger_missing_current_outbox_is_hard_conflict(
+    delivery_store,
+):
     request = _request()
     async with delivery_store.sessions() as session:
         session.add(_claimed_queue(request))
@@ -550,7 +1277,7 @@ async def test_divergent_ledger_attempt_is_hard_conflict(delivery_store):
     async with delivery_store.sessions() as session:
         with pytest.raises(
             DeliveryTransferReplayConflict,
-            match="delivery_ledger_mutable_state_replay_conflict",
+            match="delivery_ledger_outbox_invariant_broken",
         ):
             await delivery_store.adapter.transfer_delivery_ownership(
                 session,

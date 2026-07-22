@@ -214,7 +214,7 @@ def test_p2_02_audit_commit_rows_match_normalized_contract(
         await reg.audit_repo.commit_consolidation_records(audit, node_refs, outbox)
         by_session = await reg.audit_repo.get_audit_by_session("session-p2-02-audit")
         latest = await reg.audit_repo.get_latest_for_artifact(
-            "board-p2-02", "spec-p2-02"
+            "board-p2-02", "spec-p2-02", artifact_type="spec"
         )
         async with _db_mod.get_session_factory()() as session:
             audit_row = (

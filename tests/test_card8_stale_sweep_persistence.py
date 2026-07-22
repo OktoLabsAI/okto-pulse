@@ -17,6 +17,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ArtifactDeletionTombstone,
     Board,
     ConsolidationQueue,
+    KGTakedownStateEvent,
     Spec,
 )
 from okto_pulse.core.ports.stale_sweep import (
@@ -99,6 +100,7 @@ def _batch(
     candidates: tuple[StaleSweepCandidate, ...] = (),
     next_cursor: str = "",
     has_more: bool = False,
+    now: datetime = NOW,
 ) -> StaleSweepBatchRequest:
     return StaleSweepBatchRequest(
         entry_id=entry_id,
@@ -110,7 +112,7 @@ def _batch(
         candidates=candidates,
         next_cursor=next_cursor,
         has_more=has_more,
-        now=NOW,
+        now=now,
     )
 
 
@@ -487,6 +489,115 @@ async def test_committed_replay_reuses_epoch_one_and_reports_no_new_intent(
         expected_event = f"catchup:{BOARD_ID}:card:card-replay:epoch:1"
         assert tombstones[0].delete_event_id == expected_event
         assert intents[0].delete_event_id == expected_event
+
+
+@pytest.mark.asyncio
+async def test_later_sweep_reconstitutes_drained_intent_at_original_timestamp(
+    sweep_db,
+) -> None:
+    factory, adapter = sweep_db
+    candidate = StaleSweepCandidate("card", "card-drained-intent")
+    first_request = _batch(
+        entry_id="sweep-original-intent",
+        claim_token="claim-original-intent",
+        budget=1,
+        candidates=(candidate,),
+        next_cursor='["card","card-drained-intent"]',
+        has_more=False,
+    )
+    async with factory() as session:
+        session.add(
+            _claimed_sweep(
+                entry_id=first_request.entry_id,
+                budget=1,
+                claim_token=first_request.claim_token,
+            )
+        )
+        await session.commit()
+
+    async with factory() as session:
+        first = await adapter.stage_stale_sweep_batch(session, first_request)
+        assert first.action is StaleSweepRunAction.COMPLETED
+        assert first.enqueued == 1
+        await session.commit()
+
+    async with factory() as session:
+        original_intent = (
+            await session.execute(
+                select(ConsolidationQueue).where(
+                    ConsolidationQueue.work_kind == "stale_reconcile",
+                    ConsolidationQueue.artifact_id == candidate.artifact_id,
+                )
+            )
+        ).scalar_one()
+        delete_event_id = str(original_intent.delete_event_id)
+        original_triggered_at = original_intent.triggered_at
+        original_transition = await session.get(
+            KGTakedownStateEvent,
+            f"takedown:{delete_event_id}:intent_created",
+        )
+        assert original_transition is not None
+        assert original_transition.occurred_at == original_triggered_at
+        await session.delete(original_intent)
+        await session.commit()
+
+    later_now = NOW + timedelta(hours=1)
+    later_request = _batch(
+        entry_id="sweep-reconstituted-intent",
+        claim_token="claim-reconstituted-intent",
+        budget=1,
+        candidates=(candidate,),
+        next_cursor='["card","card-drained-intent"]',
+        has_more=False,
+        now=later_now,
+    )
+    async with factory() as session:
+        session.add(
+            _claimed_sweep(
+                entry_id=later_request.entry_id,
+                budget=1,
+                claim_token=later_request.claim_token,
+            )
+        )
+        await session.commit()
+
+    async with factory() as session:
+        replay = await adapter.stage_stale_sweep_batch(session, later_request)
+        assert replay.action is StaleSweepRunAction.COMPLETED
+        assert replay.enqueued == 1
+        await session.commit()
+
+    async with factory() as session:
+        reconstituted_intent = (
+            await session.execute(
+                select(ConsolidationQueue).where(
+                    ConsolidationQueue.work_kind == "stale_reconcile",
+                    ConsolidationQueue.artifact_id == candidate.artifact_id,
+                )
+            )
+        ).scalar_one()
+        tombstones = (
+            await session.execute(
+                select(ArtifactDeletionTombstone).where(
+                    ArtifactDeletionTombstone.artifact_id == candidate.artifact_id
+                )
+            )
+        ).scalars().all()
+        transitions = (
+            await session.execute(
+                select(KGTakedownStateEvent).where(
+                    KGTakedownStateEvent.delete_event_id == delete_event_id,
+                    KGTakedownStateEvent.state == "intent_created",
+                )
+            )
+        ).scalars().all()
+
+    assert len(tombstones) == 1
+    assert tombstones[0].delete_event_id == delete_event_id
+    assert reconstituted_intent.delete_event_id == delete_event_id
+    assert reconstituted_intent.triggered_at == original_triggered_at
+    assert len(transitions) == 1
+    assert transitions[0].occurred_at == original_triggered_at
 
 
 @pytest.mark.asyncio

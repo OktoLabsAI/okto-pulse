@@ -38,6 +38,7 @@ from okto_pulse.core.ports.takedown_telemetry import (
 
 NOW = datetime(2026, 7, 21, 18, 0, tzinfo=timezone.utc)
 BOARD_ID = "a1111111-1111-4111-8111-111111111111"
+OTHER_BOARD_ID = "a2222222-2222-4222-8222-222222222222"
 
 
 @pytest_asyncio.fixture
@@ -96,10 +97,13 @@ def _ledger(
         attempt=attempt,
         attempt_event_key=(
             f"{delivery_key}:attempt:{attempt}"
-            if state is DeliveryState.OUTBOX_PERSISTED
+            if state in {DeliveryState.OUTBOX_PERSISTED, DeliveryState.DELIVERED}
+            or attempt > 0
             else None
         ),
-        last_error=("delivery failed" if state is DeliveryState.DELIVERY_DEBT else None),
+        last_error=(
+            "delivery failed" if state is DeliveryState.DELIVERY_DEBT else None
+        ),
         next_retry_at=(updated_at if state is DeliveryState.DELIVERY_DEBT else None),
         created_at=updated_at - timedelta(hours=1),
         updated_at=updated_at,
@@ -117,9 +121,7 @@ def _transition(
     artifact_id, delete_event_id, delivery_key = _identity(index)
     return TakedownTransition(
         delete_event_id=delete_event_id,
-        delivery_key=(
-            None if state is TakedownState.INTENT_CREATED else delivery_key
-        ),
+        delivery_key=(None if state is TakedownState.INTENT_CREATED else delivery_key),
         board_id=BOARD_ID,
         artifact_type="spec",
         artifact_id=artifact_id,
@@ -230,6 +232,106 @@ async def test_backlog_is_current_and_oldest_open_debt_survives_redrives(
 
 
 @pytest.mark.asyncio
+async def test_reopened_debt_age_starts_after_the_latest_delivery(
+    telemetry_db,
+) -> None:
+    async with telemetry_db.sessions() as session:
+        session.add(
+            _ledger(
+                4,
+                state=DeliveryState.DELIVERY_DEBT,
+                attempt=2,
+                updated_at=NOW - timedelta(minutes=5),
+            )
+        )
+        for state, occurred_at, attempt in (
+            (TakedownState.DELIVERY_DEBT, NOW - timedelta(hours=40), 0),
+            (TakedownState.DELIVERED, NOW - timedelta(hours=1), 1),
+            (TakedownState.DELIVERY_DEBT, NOW - timedelta(minutes=5), 2),
+        ):
+            await stage_takedown_transition(
+                session,
+                _transition(
+                    4,
+                    state,
+                    occurred_at=occurred_at,
+                    attempt=attempt,
+                ),
+            )
+        await session.commit()
+
+    async with telemetry_db.sessions() as session:
+        aggregates = await read_takedown_aggregates(
+            session,
+            now=NOW,
+            circuit_reader=None,
+            board_id=BOARD_ID,
+        )
+
+    assert aggregates.delivery_debt_backlog == 1
+    assert aggregates.oldest_debt_age_seconds == 5 * 60
+
+
+@pytest.mark.asyncio
+async def test_oldest_debt_ignores_divergent_identity_for_the_same_key(
+    telemetry_db,
+) -> None:
+    artifact_id, delete_event_id, delivery_key = _identity(5)
+    divergent_artifact_id = "divergent-artifact"
+    divergent_delete_event_id = "divergent-delete-event"
+    async with telemetry_db.sessions() as session:
+        session.add(
+            _ledger(
+                5,
+                state=DeliveryState.DELIVERY_DEBT,
+                attempt=2,
+                updated_at=NOW - timedelta(minutes=5),
+            )
+        )
+        await stage_takedown_transition(
+            session,
+            _transition(
+                5,
+                TakedownState.DELIVERY_DEBT,
+                occurred_at=NOW - timedelta(minutes=5),
+                attempt=2,
+            ),
+        )
+        for state, occurred_at, attempt in (
+            (TakedownState.DELIVERED, NOW - timedelta(hours=45), 0),
+            (TakedownState.DELIVERY_DEBT, NOW - timedelta(hours=40), 1),
+        ):
+            await stage_takedown_transition(
+                session,
+                TakedownTransition(
+                    delete_event_id=divergent_delete_event_id,
+                    delivery_key=delivery_key,
+                    board_id=BOARD_ID,
+                    artifact_type="spec",
+                    artifact_id=divergent_artifact_id,
+                    generation=1,
+                    state=state,
+                    occurred_at=occurred_at,
+                    attempt=attempt,
+                ),
+            )
+        await session.commit()
+
+    async with telemetry_db.sessions() as session:
+        aggregates = await read_takedown_aggregates(
+            session,
+            now=NOW,
+            circuit_reader=None,
+            board_id=BOARD_ID,
+        )
+
+    assert artifact_id != divergent_artifact_id
+    assert delete_event_id != divergent_delete_event_id
+    assert aggregates.delivery_debt_backlog == 1
+    assert aggregates.oldest_debt_age_seconds == 5 * 60
+
+
+@pytest.mark.asyncio
 async def test_p95_uses_nearest_rank_and_delivered_at_window_boundaries(
     telemetry_db,
 ) -> None:
@@ -294,6 +396,46 @@ async def test_p95_uses_nearest_rank_and_delivered_at_window_boundaries(
 
 
 @pytest.mark.asyncio
+async def test_p95_counts_only_the_latest_delivery_per_delete_event(
+    telemetry_db,
+) -> None:
+    transitions = (
+        _transition(
+            250,
+            TakedownState.INTENT_CREATED,
+            occurred_at=NOW - timedelta(seconds=50),
+        ),
+        _transition(
+            250,
+            TakedownState.DELIVERED,
+            occurred_at=NOW - timedelta(seconds=5),
+            attempt=0,
+        ),
+        _transition(
+            250,
+            TakedownState.DELIVERED,
+            occurred_at=NOW - timedelta(seconds=30),
+            attempt=1,
+        ),
+    )
+    async with telemetry_db.sessions() as session:
+        for transition in transitions:
+            await stage_takedown_transition(session, transition)
+        await session.commit()
+
+    async with telemetry_db.sessions() as session:
+        aggregates = await read_takedown_aggregates(
+            session,
+            now=NOW,
+            circuit_reader=None,
+            board_id=BOARD_ID,
+        )
+
+    assert aggregates.p95_sample_count == 1
+    assert aggregates.p95_seconds_1h == pytest.approx(20.0, abs=0.001)
+
+
+@pytest.mark.asyncio
 async def test_empty_p95_window_is_undefined_not_zero(telemetry_db) -> None:
     async with telemetry_db.sessions() as session:
         aggregates = await read_takedown_aggregates(
@@ -331,9 +473,15 @@ async def test_delivery_selector_recovers_unkeyed_intent(telemetry_db) -> None:
         await session.commit()
 
     async with telemetry_db.sessions() as session:
-        snapshot = await CommunitySqlAlchemyTakedownTelemetry().query_takedown_telemetry(
-            session,
-            TakedownTelemetryQuery(delivery_key=delivery_key, now=NOW),
+        snapshot = (
+            await CommunitySqlAlchemyTakedownTelemetry().query_takedown_telemetry(
+                session,
+                TakedownTelemetryQuery(
+                    board_id=BOARD_ID,
+                    delivery_key=delivery_key,
+                    now=NOW,
+                ),
+            )
         )
 
     assert snapshot is not None
@@ -343,6 +491,138 @@ async def test_delivery_selector_recovers_unkeyed_intent(telemetry_db) -> None:
         TakedownState.OUTBOX_PERSISTED,
     ]
     assert snapshot.states[0].delivery_key is None
+
+
+@pytest.mark.asyncio
+async def test_timeline_and_aggregates_are_scoped_before_materialization(
+    telemetry_db,
+) -> None:
+    own_artifact = "cross-board-own-artifact"
+    own_event = "cross-board-own-delete"
+    own_delivery = f"gd_parity:{BOARD_ID}:spec:{own_artifact}:1"
+    other_artifact = "cross-board-other-artifact"
+    other_event = "cross-board-other-delete"
+    other_delivery = f"gd_parity:{OTHER_BOARD_ID}:spec:{other_artifact}:1"
+
+    def transition(
+        *,
+        board_id: str,
+        artifact_id: str,
+        delete_event_id: str,
+        delivery_key: str,
+        state: TakedownState,
+        occurred_at: datetime,
+    ) -> TakedownTransition:
+        return TakedownTransition(
+            delete_event_id=delete_event_id,
+            delivery_key=(
+                None if state is TakedownState.INTENT_CREATED else delivery_key
+            ),
+            board_id=board_id,
+            artifact_type="spec",
+            artifact_id=artifact_id,
+            generation=1,
+            state=state,
+            occurred_at=occurred_at,
+            attempt=(0 if state is TakedownState.DELIVERED else None),
+        )
+
+    async with telemetry_db.sessions() as session:
+        session.add(
+            Board(
+                id=OTHER_BOARD_ID,
+                name="Card 9 other board",
+                owner_id="other-owner",
+            )
+        )
+        for item in (
+            transition(
+                board_id=BOARD_ID,
+                artifact_id=own_artifact,
+                delete_event_id=own_event,
+                delivery_key=own_delivery,
+                state=TakedownState.INTENT_CREATED,
+                occurred_at=NOW - timedelta(seconds=20),
+            ),
+            transition(
+                board_id=BOARD_ID,
+                artifact_id=own_artifact,
+                delete_event_id=own_event,
+                delivery_key=own_delivery,
+                state=TakedownState.DELIVERED,
+                occurred_at=NOW,
+            ),
+            transition(
+                board_id=OTHER_BOARD_ID,
+                artifact_id=other_artifact,
+                delete_event_id=other_event,
+                delivery_key=other_delivery,
+                state=TakedownState.INTENT_CREATED,
+                occurred_at=NOW - timedelta(seconds=500),
+            ),
+            transition(
+                board_id=OTHER_BOARD_ID,
+                artifact_id=other_artifact,
+                delete_event_id=other_event,
+                delivery_key=other_delivery,
+                state=TakedownState.DELIVERED,
+                occurred_at=NOW,
+            ),
+        ):
+            await stage_takedown_transition(session, item)
+        session.add(
+            GlobalDiscoveryDeliveryLedger(
+                delivery_key=(f"gd_parity:{OTHER_BOARD_ID}:spec:other-debt:1"),
+                board_id=OTHER_BOARD_ID,
+                artifact_type="spec",
+                artifact_id="other-debt",
+                generation=1,
+                delete_event_id="other-board-debt-delete",
+                state=DeliveryState.DELIVERY_DEBT.value,
+                attempt=0,
+                last_error="other board only",
+                next_retry_at=NOW + timedelta(minutes=1),
+                created_at=NOW - timedelta(hours=2),
+                updated_at=NOW - timedelta(hours=1),
+            )
+        )
+        await session.commit()
+
+    reader = CommunitySqlAlchemyTakedownTelemetry()
+    async with telemetry_db.sessions() as session:
+        own = await reader.query_takedown_telemetry(
+            session,
+            TakedownTelemetryQuery(
+                board_id=BOARD_ID,
+                delete_event_id=own_event,
+                now=NOW,
+            ),
+        )
+        hidden_by_event = await reader.query_takedown_telemetry(
+            session,
+            TakedownTelemetryQuery(
+                board_id=BOARD_ID,
+                delete_event_id=other_event,
+                now=NOW,
+            ),
+        )
+        hidden_by_delivery = await reader.query_takedown_telemetry(
+            session,
+            TakedownTelemetryQuery(
+                board_id=BOARD_ID,
+                delivery_key=other_delivery,
+                now=NOW,
+            ),
+        )
+
+    assert own is not None
+    assert own.board_id == BOARD_ID
+    assert own.aggregates.delivery_debt_backlog == 0
+    assert own.aggregates.oldest_debt_age_seconds is None
+    assert own.aggregates.p95_sample_count == 1
+    assert own.aggregates.p95_seconds_1h == pytest.approx(20.0, abs=0.1)
+    assert hidden_by_event is None
+    assert hidden_by_delivery is None
 
 
 @pytest.mark.asyncio
@@ -403,6 +683,7 @@ async def test_staged_transition_query_visibility_rolls_back_atomically(
         visible = await CommunitySqlAlchemyTakedownTelemetry().query_takedown_telemetry(
             session,
             TakedownTelemetryQuery(
+                board_id=BOARD_ID,
                 delete_event_id=transition.delete_event_id,
                 now=NOW,
             ),
@@ -411,12 +692,15 @@ async def test_staged_transition_query_visibility_rolls_back_atomically(
         await session.rollback()
 
     async with telemetry_db.sessions() as session:
-        persisted = await CommunitySqlAlchemyTakedownTelemetry().query_takedown_telemetry(
-            session,
-            TakedownTelemetryQuery(
-                delete_event_id=transition.delete_event_id,
-                now=NOW,
-            ),
+        persisted = (
+            await CommunitySqlAlchemyTakedownTelemetry().query_takedown_telemetry(
+                session,
+                TakedownTelemetryQuery(
+                    board_id=BOARD_ID,
+                    delete_event_id=transition.delete_event_id,
+                    now=NOW,
+                ),
+            )
         )
         row_count = await session.scalar(
             select(func.count()).select_from(KGTakedownStateEvent)

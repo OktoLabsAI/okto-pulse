@@ -472,6 +472,15 @@ Args:
 Returns:
     JSON with stale parity rows and diagnostic metadata.
 
+## `okto_pulse_kg_takedown_status`
+
+Read-only timeline for one governed SOT/KG deletion. Provide exactly one of
+delete_event_id or delivery_key, both returned by the governed delete response.
+The result is board-scoped before selector resolution or aggregation and
+includes ordered states, retry metadata, board-only SLO aggregates and
+fail-closed board/Global Discovery parity health. It never retries, rearms or
+mutates queue work.
+
 ## `okto_pulse_kg_orphan_report`
 
 Return a bounded safe orphan-node report for a board KG.
@@ -664,10 +673,13 @@ needs to distinguish active queue work from DLQ/debt.
 
 Args:
     board_id: Board ID.
-    profile: summary or full.
 
 Returns:
-    JSON with active queue counts, dead-letter counts, and queue diagnostics.
+    JSON with active depth separated into ready, scheduled_retry, claimed and
+    overdue_claimed work; work_kind, attempts, next_retry_at, last_progress_at,
+    safe reason and source classification. Scheduled backoff is not labelled
+    stuck before it becomes eligible, and claims become stuck only after their
+    timeout.
 
 ## `okto_pulse_kg_migrate_schema`
 

@@ -31,7 +31,7 @@ from typing import Any, Sequence
 
 
 EXPECTED_VERSION = "0.3.0"
-EXPECTED_MCP_TOOL_COUNT = 276
+EXPECTED_MCP_TOOL_COUNT = 277
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 CORE_REPO = COMMUNITY_REPO.parent / "okto_labs_pulse_core"
 
@@ -338,7 +338,11 @@ async def main():
     assert initialized.serverInfo.version == "0.3.0"
     assert metadata.version("okto-pulse-core") == "0.3.0"
     assert metadata.version("okto-pulse") == "0.3.0"
-    assert len(names) == manifest["tool_inventory"]["count"] == 276
+    assert (
+        len(names)
+        == manifest["tool_inventory"]["count"]
+        == __EXPECTED_MCP_TOOL_COUNT__
+    )
     assert manifest["tool_inventory"]["sha256"] == tool_inventory_sha256(
         {"tools": names, "aliases": aliases}
     )
@@ -353,7 +357,7 @@ async def main():
     }, sort_keys=True))
 
 asyncio.run(main())
-"""
+""".replace("__EXPECTED_MCP_TOOL_COUNT__", str(EXPECTED_MCP_TOOL_COUNT))
 
 
 def _parse_probe(stdout: str, prefix: str) -> dict[str, Any]:

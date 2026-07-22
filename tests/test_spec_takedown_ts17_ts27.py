@@ -575,6 +575,7 @@ async def test_ts23_committed_2xx_boundary_survives_reopen_and_drains_delivered(
         ).query_takedown_telemetry(
             session,
             TakedownTelemetryQuery(
+                board_id=BOARD_ID,
                 delete_event_id=delete_event_id,
                 now=delivered_at,
             ),
@@ -737,6 +738,7 @@ async def test_ts25_catchup_and_fast_path_share_delivery_and_timeline_contract(
             snapshot = await takedown_db.telemetry.query_takedown_telemetry(
                 session,
                 TakedownTelemetryQuery(
+                    board_id=BOARD_ID,
                     delete_event_id=delete_event_id,
                     now=delivered_at + timedelta(seconds=1),
                 ),

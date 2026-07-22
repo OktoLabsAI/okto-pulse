@@ -42,7 +42,7 @@ async def test_live_catalog_initialize_tools_list_and_manifest_agree(
     assert initialized.serverInfo.version == "0.3.0"
     assert version("okto-pulse-core") == initialized.serverInfo.version
     assert version("okto-pulse") == initialized.serverInfo.version
-    assert len(names) == manifest["tool_inventory"]["count"] == 276
+    assert len(names) == manifest["tool_inventory"]["count"] == 277
     assert manifest["tool_inventory"]["sha256"] == tool_inventory_sha256(
         {"tools": names, "aliases": aliases}
     )

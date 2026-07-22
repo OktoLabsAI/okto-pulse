@@ -21,6 +21,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationDeadLetter,
     ConsolidationQueue,
     Ideation,
+    KGTakedownStateEvent,
     Refinement,
     Spec,
     Sprint,
@@ -549,6 +550,15 @@ class CommunitySqlAlchemyConsolidationPersistence:
             "delete_event_id": request.delete_event_id,
             "source_refs": list(source_refs),
         }
+        existing_intent_transition = await context.get(
+            KGTakedownStateEvent,
+            f"takedown:{request.delete_event_id}:intent_created",
+        )
+        authoritative_occurred_at = (
+            existing_intent_transition.occurred_at
+            if existing_intent_transition is not None
+            else request.occurred_at
+        )
         intent_id = str(uuid.uuid4())
         intent_values: dict[str, object] = {
             "id": intent_id,
@@ -566,8 +576,8 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 request.delete_event_id
             ),
         }
-        if request.occurred_at is not None:
-            intent_values["triggered_at"] = request.occurred_at
+        if authoritative_occurred_at is not None:
+            intent_values["triggered_at"] = authoritative_occurred_at
         statement = (
             sqlite_insert(ConsolidationQueue)
             .values(**intent_values)

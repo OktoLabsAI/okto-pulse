@@ -115,6 +115,7 @@ async def test_ts13_complete_scan_receipt_survives_transfer_and_query(
         snapshot = await telemetry_store.telemetry.query_takedown_telemetry(
             session,
             TakedownTelemetryQuery(
+                board_id=BOARD_ID,
                 delete_event_id=DELETE_EVENT_ID,
                 now=occurred_at + timedelta(seconds=1),
             ),
@@ -292,6 +293,7 @@ async def test_ts16_degraded_transfer_redrives_attempt_one_then_delivers(
         snapshot = await telemetry_store.telemetry.query_takedown_telemetry(
             session,
             TakedownTelemetryQuery(
+                board_id=BOARD_ID,
                 delete_event_id=DELETE_EVENT_ID,
                 now=occurred_at + timedelta(seconds=21),
             ),

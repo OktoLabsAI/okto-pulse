@@ -239,6 +239,75 @@ async def test_reconcile_intent_uses_the_controlled_delete_timestamp(
 
 
 @pytest.mark.asyncio
+async def test_reconcile_intent_requeues_drained_work_with_original_timestamp(
+    telemetry_store,
+):
+    occurred_at = datetime(2026, 7, 21, 12, 34, 56, tzinfo=timezone.utc)
+    original = ReconcileIntentCreate(
+        board_id=BOARD_ID,
+        artifact_type="spec",
+        artifact_id=ARTIFACT_ID,
+        generation=1,
+        delete_event_id=DELETE_EVENT_ID,
+        source_refs=(f"spec:{ARTIFACT_ID}",),
+        occurred_at=occurred_at,
+    )
+    adapter = CommunitySqlAlchemyConsolidationPersistence()
+    async with telemetry_store.sessions() as session:
+        session.add(
+            ArtifactDeletionTombstone(
+                board_id=BOARD_ID,
+                artifact_type="spec",
+                artifact_id=ARTIFACT_ID,
+                generation=1,
+                delete_event_id=DELETE_EVENT_ID,
+            )
+        )
+        await session.commit()
+
+    async with telemetry_store.sessions() as session:
+        first = await adapter.persist_reconcile_intent(session, original)
+        await session.commit()
+
+    async with telemetry_store.sessions() as session:
+        drained = await session.get(ConsolidationQueue, first.intent_id)
+        assert drained is not None
+        await session.delete(drained)
+        await session.commit()
+
+    async with telemetry_store.sessions() as session:
+        replay = await adapter.persist_reconcile_intent(
+            session,
+            ReconcileIntentCreate(
+                board_id=BOARD_ID,
+                artifact_type="spec",
+                artifact_id=ARTIFACT_ID,
+                generation=1,
+                delete_event_id=DELETE_EVENT_ID,
+                source_refs=(f"spec:{ARTIFACT_ID}",),
+                occurred_at=occurred_at + timedelta(hours=1),
+            ),
+        )
+        await session.commit()
+
+    assert replay.created is True
+    async with telemetry_store.sessions() as session:
+        queue = await session.get(ConsolidationQueue, replay.intent_id)
+        transitions = (
+            await session.execute(
+                select(KGTakedownStateEvent).where(
+                    KGTakedownStateEvent.delete_event_id == DELETE_EVENT_ID,
+                    KGTakedownStateEvent.state == "intent_created",
+                )
+            )
+        ).scalars().all()
+    assert queue is not None
+    assert queue.triggered_at == occurred_at.replace(tzinfo=None)
+    assert len(transitions) == 1
+    assert transitions[0].occurred_at == occurred_at.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
 async def test_transfer_redrives_and_outcomes_preserve_complete_timeline(
     telemetry_store,
 ):
@@ -360,6 +429,7 @@ async def test_transfer_redrives_and_outcomes_preserve_complete_timeline(
         by_event = await telemetry_store.telemetry.query_takedown_telemetry(
             session,
             TakedownTelemetryQuery(
+                board_id=BOARD_ID,
                 delete_event_id=DELETE_EVENT_ID,
                 now=query_at,
             ),
@@ -367,6 +437,7 @@ async def test_transfer_redrives_and_outcomes_preserve_complete_timeline(
         by_delivery = await telemetry_store.telemetry.query_takedown_telemetry(
             session,
             TakedownTelemetryQuery(
+                board_id=BOARD_ID,
                 delivery_key=attempt_zero.delivery_key,
                 now=query_at,
             ),
@@ -424,6 +495,7 @@ async def test_schema_contract_and_query_not_found(telemetry_store):
             await telemetry_store.telemetry.query_takedown_telemetry(
                 session,
                 TakedownTelemetryQuery(
+                    board_id=BOARD_ID,
                     delete_event_id="unknown-delete-event",
                     now=datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc),
                 ),

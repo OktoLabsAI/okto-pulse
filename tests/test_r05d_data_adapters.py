@@ -260,10 +260,14 @@ def test_ts4_audit_commit_get_undone_purge_contract(_isolated_db_kg):
         await _seed_board("board-X")
         await repo.commit_consolidation_records(audit, node_refs, outbox)
         by_session = await repo.get_audit_by_session("sess-1")
-        latest = await repo.get_latest_for_artifact("board-X", "art-1")
+        latest = await repo.get_latest_for_artifact(
+            "board-X", "art-1", artifact_type="spec"
+        )
         await repo.mark_audit_undone("sess-1")
         # get_latest filters undo_status == "none" -> now excluded.
-        latest_after_undo = await repo.get_latest_for_artifact("board-X", "art-1")
+        latest_after_undo = await repo.get_latest_for_artifact(
+            "board-X", "art-1", artifact_type="spec"
+        )
         purged = await repo.purge_by_board("board-X")
         return by_session, latest, latest_after_undo, purged
 
@@ -279,6 +283,66 @@ def test_ts4_audit_commit_get_undone_purge_contract(_isolated_db_kg):
     assert latest_after_undo is None
     # purge returns the deleted count.
     assert purged == 1
+
+
+def test_ts4_latest_audit_lookup_scopes_same_id_by_artifact_type(
+    _isolated_db_kg,
+):
+    repo = _isolated_db_kg.audit_repo
+    board_id = "board-typed-audit"
+    artifact_id = "00000000-0000-4000-8000-000000000123"
+    started_at = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _audit(artifact_type: str, sequence: int) -> ConsolidationAuditData:
+        return ConsolidationAuditData(
+            session_id=f"session-{artifact_type}",
+            board_id=board_id,
+            artifact_id=artifact_id,
+            artifact_type=artifact_type,
+            agent_id="agent-typed-audit",
+            started_at=started_at,
+            committed_at=started_at + timedelta(seconds=sequence),
+            content_hash=f"hash-{artifact_type}",
+        )
+
+    def _event(artifact_type: str) -> OutboxEventData:
+        return OutboxEventData(
+            event_id=f"event-{artifact_type}",
+            board_id=board_id,
+            session_id=f"session-{artifact_type}",
+            event_type="consolidation_committed",
+            payload={"artifact_type": artifact_type},
+        )
+
+    async def drive():
+        await _seed_board(board_id)
+        await repo.commit_consolidation_records(
+            _audit("spec", 1), [], _event("spec")
+        )
+        await repo.commit_consolidation_records(
+            _audit("task", 2), [], _event("task")
+        )
+        return (
+            await repo.get_latest_for_artifact(
+                board_id,
+                artifact_id,
+                artifact_type="spec",
+            ),
+            await repo.get_latest_for_artifact(
+                board_id,
+                artifact_id,
+                artifact_type="task",
+            ),
+        )
+
+    spec_latest, task_latest = asyncio.run(drive())
+
+    assert spec_latest is not None
+    assert spec_latest.artifact_type == "spec"
+    assert spec_latest.content_hash == "hash-spec"
+    assert task_latest is not None
+    assert task_latest.artifact_type == "task"
+    assert task_latest.content_hash == "hash-task"
 
 
 # ===========================================================================

@@ -43,6 +43,12 @@ BOARD_ID = "73333333-3333-4333-8333-333333333333"
 NOW = datetime(2026, 7, 22, 15, 0, tzinfo=timezone.utc)
 
 
+class _FixedClock:
+    @staticmethod
+    def now() -> datetime:
+        return NOW
+
+
 class _ClaimRepository:
     async def claim_global_outbox(self, session, *, limit: int):
         rows = await session.execute(
@@ -136,6 +142,7 @@ async def test_terminal_attempt_zero_tick_redrive_attempt_one_then_delivered(
     processor = GlobalOutboxProcessor(
         sessions,
         claim_repository=_ClaimRepository(),
+        clock=_FixedClock(),
         delivery_ledger=ledger,
     )
     assert await processor._process_once_under_writer() == 0
@@ -243,6 +250,7 @@ async def test_terminal_attempt_zero_tick_redrive_attempt_one_then_delivered(
     crashing_processor = GlobalOutboxProcessor(
         sessions,
         claim_repository=_ClaimRepository(),
+        clock=_FixedClock(),
         delivery_ledger=_CrashBeforeCommitDeliveryLedger(),
     )
     with pytest.raises(RuntimeError, match="crash before relational commit"):

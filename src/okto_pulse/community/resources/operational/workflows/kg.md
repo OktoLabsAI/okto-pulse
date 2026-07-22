@@ -110,6 +110,16 @@ source it reuses the deterministic identity
 `stale_reconcile` child and checkpoint together. A pre-existing real tombstone
 is reused without increasing its generation.
 
+If a later sweep finds that the same governed child was already drained, it
+reconstitutes the child with the original immutable `intent_created` timestamp;
+the sweep observation time must not redefine transition identity. Settlement
+then uses the current delivery-ledger owner. Existing delivery debt is retained.
+An owner already in `outbox_persisted` or `delivered` is conservatively reopened
+as parity-refresh debt because the graph may have changed before a relational
+rollback. Any in-flight outcome for that physical attempt is fenced, and the
+tick-owned redrive publishes only a fresh `attempt:n+1` key. Never rearm or
+rewrite an older governed outbox row manually.
+
 If the graph cannot open/read or the source snapshot is incomplete, the worker
 preserves the cursor and re-pends the coordinator for the next tick window;
 synthetic tombstones are not created. Relational board deletion cascades queue

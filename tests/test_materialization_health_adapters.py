@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.global_discovery_runtime import (
@@ -21,14 +21,18 @@ from okto_pulse.community.adapters.materialization_health import (
     CommunityMaterializationEvidenceProbe,
     CommunityMaterializationGenerationStore,
     CommunitySqlAlchemyMaterializationCensus,
+    materialization_generation_key,
 )
 from okto_pulse.community.adapters.sqlalchemy_audit_repo import (
     CommunityAuditRepository,
+    _is_sqlite_write_contention,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
+    AppSetting,
     Base,
     Board,
     Card,
+    ConsolidationAudit,
     ConsolidationDeadLetter,
     ConsolidationQueue,
     DomainEventRow,
@@ -40,6 +44,7 @@ from okto_pulse.core.kg.interfaces.audit_dtos import (
     ConsolidationAuditData,
     OutboxEventData,
 )
+from okto_pulse.core.kg.interfaces.audit_repository import AuditWriteContention
 from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphRuntimeObservationState,
     GraphRuntimeState,
@@ -601,6 +606,224 @@ async def test_normal_commit_advances_generation_before_ack_and_rolls_back_on_fa
         assert await generation_store.current(board_id) == committed_generation
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_borrowed_audit_transaction_reuses_locked_writer_and_obeys_owner_commit(
+    tmp_path: Path,
+) -> None:
+    """The worker-held SQLite writer transaction owns audit and outbox ACK."""
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'borrowed-audit.db'}",
+        connect_args={"timeout": 0.05},
+    )
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    factory_calls = 0
+
+    def tracked_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        return factory()
+
+    logged_correlations: list[str | None] = []
+
+    class RecordingGenerationStore(CommunityMaterializationGenerationStore):
+        def log_advanced(self, advance) -> None:
+            logged_correlations.append(advance.correlation_id)
+
+    board_id = "board-borrowed-audit"
+    repository = CommunityAuditRepository(
+        tracked_factory,
+        materialization_generation_store=RecordingGenerationStore(
+            tracked_factory
+        ),
+    )
+    try:
+        async with factory() as session:
+            session.add(Board(id=board_id, name="Before", owner_id="owner"))
+            await session.commit()
+
+        # This unrelated worker mutation acquires SQLite's writer lock. Before
+        # the fix the repository opened a second writer and failed fast with
+        # ``database is locked`` under the 50 ms timeout above.
+        async with factory() as owner:
+            board = await owner.get(Board, board_id)
+            assert board is not None
+            board.name = "Rolled back"
+            await owner.flush()
+
+            await repository.stage_consolidation_records(
+                owner,
+                _audit(board_id=board_id, session_id="session-borrowed-rollback"),
+                [],
+                _outbox(
+                    board_id=board_id,
+                    session_id="session-borrowed-rollback",
+                    event_id="event-borrowed-rollback",
+                ),
+            )
+
+            assert factory_calls == 0
+            assert await owner.get(
+                ConsolidationAudit, "session-borrowed-rollback"
+            ) is not None
+            assert (
+                await owner.execute(
+                    select(GlobalUpdateOutbox).where(
+                        GlobalUpdateOutbox.event_id == "event-borrowed-rollback"
+                    )
+                )
+            ).scalar_one_or_none() is not None
+            await owner.rollback()
+            assert logged_correlations == []
+
+        async with factory() as observer:
+            board = await observer.get(Board, board_id)
+            assert board is not None and board.name == "Before"
+            assert await observer.get(
+                ConsolidationAudit, "session-borrowed-rollback"
+            ) is None
+            assert (
+                await observer.execute(
+                    select(GlobalUpdateOutbox).where(
+                        GlobalUpdateOutbox.event_id == "event-borrowed-rollback"
+                    )
+                )
+            ).scalar_one_or_none() is None
+            assert await observer.get(
+                AppSetting, materialization_generation_key(board_id)
+            ) is None
+            generation_events = (
+                await observer.execute(
+                    select(DomainEventRow).where(
+                        DomainEventRow.board_id == board_id,
+                        DomainEventRow.event_type
+                        == "kg.materialization_generation_advanced",
+                    )
+                )
+            ).scalars().all()
+            assert generation_events == []
+
+        async with factory() as owner:
+            await repository.stage_consolidation_records(
+                owner,
+                _audit(board_id=board_id, session_id="session-borrowed-commit"),
+                [],
+                _outbox(
+                    board_id=board_id,
+                    session_id="session-borrowed-commit",
+                    event_id="event-borrowed-commit",
+                ),
+            )
+            assert factory_calls == 0
+            assert logged_correlations == []
+            await owner.commit()
+            assert logged_correlations == ["session-borrowed-commit"]
+
+        async with factory() as observer:
+            assert await observer.get(
+                ConsolidationAudit, "session-borrowed-commit"
+            ) is not None
+            assert (
+                await observer.execute(
+                    select(GlobalUpdateOutbox).where(
+                        GlobalUpdateOutbox.event_id == "event-borrowed-commit"
+                    )
+                )
+            ).scalar_one_or_none() is not None
+            assert await observer.get(
+                AppSetting, materialization_generation_key(board_id)
+            ) is not None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_self_owned_audit_maps_real_sqlite_contention_to_stable_port_error(
+    tmp_path: Path,
+) -> None:
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'audit-contention.db'}",
+        connect_args={"timeout": 0.05},
+    )
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    board_id = "board-audit-contention"
+    repository = CommunityAuditRepository(factory)
+    try:
+        async with factory() as session:
+            session.add(Board(id=board_id, name="Before", owner_id="owner"))
+            await session.commit()
+
+        async with factory() as lock_owner:
+            board = await lock_owner.get(Board, board_id)
+            assert board is not None
+            board.name = "Writer lock held"
+            await lock_owner.flush()
+
+            with pytest.raises(AuditWriteContention) as caught:
+                await repository.commit_consolidation_records(
+                    _audit(board_id=board_id, session_id="session-contended"),
+                    [],
+                    _outbox(
+                        board_id=board_id,
+                        session_id="session-contended",
+                        event_id="event-contended",
+                    ),
+                )
+            assert caught.value.code == "audit_write_contention"
+            assert caught.value.retryable is True
+            assert isinstance(caught.value.__cause__, OperationalError)
+            await lock_owner.rollback()
+
+        async with factory() as observer:
+            assert await observer.get(ConsolidationAudit, "session-contended") is None
+            assert (
+                await observer.execute(
+                    select(GlobalUpdateOutbox).where(
+                        GlobalUpdateOutbox.event_id == "event-contended"
+                    )
+                )
+            ).scalar_one_or_none() is None
+
+        await repository.commit_consolidation_records(
+            _audit(board_id=board_id, session_id="session-after-contention"),
+            [],
+            _outbox(
+                board_id=board_id,
+                session_id="session-after-contention",
+                event_id="event-after-contention",
+            ),
+        )
+        async with factory() as observer:
+            assert await observer.get(
+                ConsolidationAudit, "session-after-contention"
+            ) is not None
+    finally:
+        await engine.dispose()
+
+
+def test_audit_contention_text_from_non_sqlite_driver_is_not_mapped() -> None:
+    error = OperationalError(
+        "opaque statement",
+        {},
+        RuntimeError("database is locked"),
+    )
+
+    assert _is_sqlite_write_contention(error) is False
 
 
 @pytest.mark.asyncio

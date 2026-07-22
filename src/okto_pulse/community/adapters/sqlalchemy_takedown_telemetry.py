@@ -7,7 +7,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import aliased
 
@@ -122,18 +122,14 @@ async def stage_takedown_transition(
         populate_existing=True,
     )
     if existing is None or _row_identity(existing) != _transition_identity(transition):
-        raise TakedownTransitionConflict(
-            "takedown_transition_replay_conflict"
-        )
+        raise TakedownTransitionConflict("takedown_transition_replay_conflict")
     return False
 
 
 def _transition_from_row(row: KGTakedownStateEvent) -> TakedownTransition:
     return TakedownTransition(
         delete_event_id=str(row.delete_event_id),
-        delivery_key=(
-            str(row.delivery_key) if row.delivery_key is not None else None
-        ),
+        delivery_key=(str(row.delivery_key) if row.delivery_key is not None else None),
         board_id=str(row.board_id),
         artifact_type=str(row.artifact_type),
         artifact_id=str(row.artifact_id),
@@ -165,22 +161,42 @@ async def read_takedown_aggregates(
     circuit_reader: Any | None,
     board_id: str,
 ) -> TakedownAggregates:
-    """Read the four OR2 metrics with a controlled observation clock."""
+    """Read the four OR2 metrics for one authorized board."""
 
     if not isinstance(now, datetime):
         raise ValueError("takedown_telemetry_now_invalid")
+    board_id = str(board_id or "").strip()
+    if not board_id:
+        raise ValueError("takedown_telemetry_board_id_required")
     backlog = int(
         await context.scalar(
             select(func.count())
             .select_from(GlobalDiscoveryDeliveryLedger)
             .where(
                 GlobalDiscoveryDeliveryLedger.state
-                == DeliveryState.DELIVERY_DEBT.value
+                == DeliveryState.DELIVERY_DEBT.value,
+                GlobalDiscoveryDeliveryLedger.board_id == board_id,
             )
         )
         or 0
     )
     debt_event = aliased(KGTakedownStateEvent)
+    prior_delivery = aliased(KGTakedownStateEvent)
+    last_delivered_at = (
+        select(func.max(prior_delivery.occurred_at))
+        .where(
+            prior_delivery.delivery_key == GlobalDiscoveryDeliveryLedger.delivery_key,
+            prior_delivery.board_id == GlobalDiscoveryDeliveryLedger.board_id,
+            prior_delivery.delete_event_id
+            == GlobalDiscoveryDeliveryLedger.delete_event_id,
+            prior_delivery.artifact_type == GlobalDiscoveryDeliveryLedger.artifact_type,
+            prior_delivery.artifact_id == GlobalDiscoveryDeliveryLedger.artifact_id,
+            prior_delivery.generation == GlobalDiscoveryDeliveryLedger.generation,
+            prior_delivery.state == TakedownState.DELIVERED.value,
+        )
+        .correlate(GlobalDiscoveryDeliveryLedger)
+        .scalar_subquery()
+    )
     oldest_debt_at = await context.scalar(
         select(
             func.min(
@@ -193,36 +209,103 @@ async def read_takedown_aggregates(
         .select_from(GlobalDiscoveryDeliveryLedger)
         .outerjoin(
             debt_event,
-            (
-                debt_event.delivery_key
-                == GlobalDiscoveryDeliveryLedger.delivery_key
+            (debt_event.delivery_key == GlobalDiscoveryDeliveryLedger.delivery_key)
+            & (debt_event.board_id == GlobalDiscoveryDeliveryLedger.board_id)
+            & (
+                debt_event.delete_event_id
+                == GlobalDiscoveryDeliveryLedger.delete_event_id
             )
-            & (debt_event.state == TakedownState.DELIVERY_DEBT.value),
+            & (debt_event.artifact_type == GlobalDiscoveryDeliveryLedger.artifact_type)
+            & (debt_event.artifact_id == GlobalDiscoveryDeliveryLedger.artifact_id)
+            & (debt_event.generation == GlobalDiscoveryDeliveryLedger.generation)
+            & (debt_event.state == TakedownState.DELIVERY_DEBT.value)
+            & or_(
+                last_delivered_at.is_(None),
+                debt_event.occurred_at > last_delivered_at,
+            ),
         )
         .where(
-            GlobalDiscoveryDeliveryLedger.state
-            == DeliveryState.DELIVERY_DEBT.value
+            GlobalDiscoveryDeliveryLedger.state == DeliveryState.DELIVERY_DEBT.value,
+            GlobalDiscoveryDeliveryLedger.board_id == board_id,
         )
     )
 
-    delivered = aliased(KGTakedownStateEvent)
     intent = aliased(KGTakedownStateEvent)
+    delivered = aliased(KGTakedownStateEvent)
+    latest_delivery_attempts = (
+        select(
+            KGTakedownStateEvent.delete_event_id.label("delete_event_id"),
+            KGTakedownStateEvent.board_id.label("board_id"),
+            KGTakedownStateEvent.artifact_type.label("artifact_type"),
+            KGTakedownStateEvent.artifact_id.label("artifact_id"),
+            KGTakedownStateEvent.generation.label("generation"),
+            func.max(KGTakedownStateEvent.attempt).label("attempt"),
+        )
+        .where(
+            KGTakedownStateEvent.state == TakedownState.DELIVERED.value,
+            KGTakedownStateEvent.board_id == board_id,
+        )
+        .group_by(
+            KGTakedownStateEvent.delete_event_id,
+            KGTakedownStateEvent.board_id,
+            KGTakedownStateEvent.artifact_type,
+            KGTakedownStateEvent.artifact_id,
+            KGTakedownStateEvent.generation,
+        )
+        .subquery()
+    )
+    latest_deliveries = (
+        select(
+            delivered.delete_event_id.label("delete_event_id"),
+            delivered.board_id.label("board_id"),
+            delivered.artifact_type.label("artifact_type"),
+            delivered.artifact_id.label("artifact_id"),
+            delivered.generation.label("generation"),
+            func.max(delivered.occurred_at).label("occurred_at"),
+        )
+        .select_from(delivered)
+        .join(
+            latest_delivery_attempts,
+            (delivered.delete_event_id == latest_delivery_attempts.c.delete_event_id)
+            & (delivered.board_id == latest_delivery_attempts.c.board_id)
+            & (delivered.artifact_type == latest_delivery_attempts.c.artifact_type)
+            & (delivered.artifact_id == latest_delivery_attempts.c.artifact_id)
+            & (delivered.generation == latest_delivery_attempts.c.generation)
+            & (delivered.attempt == latest_delivery_attempts.c.attempt),
+        )
+        .where(
+            delivered.state == TakedownState.DELIVERED.value,
+            delivered.board_id == board_id,
+        )
+        .group_by(
+            delivered.delete_event_id,
+            delivered.board_id,
+            delivered.artifact_type,
+            delivered.artifact_id,
+            delivered.generation,
+        )
+        .subquery()
+    )
     duration_seconds = (
-        func.julianday(delivered.occurred_at)
+        func.julianday(latest_deliveries.c.occurred_at)
         - func.julianday(intent.occurred_at)
     ) * 86400.0
     window_start = now - timedelta(seconds=TAKEDOWN_P95_WINDOW_SECONDS)
     durations = (
         select(duration_seconds.label("duration_seconds"))
+        .select_from(latest_deliveries)
         .join(
             intent,
-            (intent.delete_event_id == delivered.delete_event_id)
+            (intent.delete_event_id == latest_deliveries.c.delete_event_id)
+            & (intent.board_id == latest_deliveries.c.board_id)
+            & (intent.artifact_type == latest_deliveries.c.artifact_type)
+            & (intent.artifact_id == latest_deliveries.c.artifact_id)
+            & (intent.generation == latest_deliveries.c.generation)
             & (intent.state == TakedownState.INTENT_CREATED.value),
         )
         .where(
-            delivered.state == TakedownState.DELIVERED.value,
-            delivered.occurred_at >= window_start,
-            delivered.occurred_at <= now,
+            latest_deliveries.c.occurred_at >= window_start,
+            latest_deliveries.c.occurred_at <= now,
         )
         .subquery()
     )
@@ -369,8 +452,8 @@ class CommunitySqlAlchemyTakedownTelemetry:
                     await context.scalars(
                         select(KGTakedownStateEvent.delete_event_id)
                         .where(
-                            KGTakedownStateEvent.delivery_key
-                            == query.delivery_key
+                            KGTakedownStateEvent.delivery_key == query.delivery_key,
+                            KGTakedownStateEvent.board_id == query.board_id,
                         )
                         .distinct()
                     )
@@ -385,7 +468,7 @@ class CommunitySqlAlchemyTakedownTelemetry:
             resolved_delete_event_id = delete_event_ids[0]
         predicate = (
             KGTakedownStateEvent.delete_event_id == resolved_delete_event_id
-        )
+        ) & (KGTakedownStateEvent.board_id == query.board_id)
         state_rank = case(
             *(
                 (KGTakedownStateEvent.state == state.value, rank)
@@ -430,13 +513,9 @@ class CommunitySqlAlchemyTakedownTelemetry:
             != immutable_identity
             for row in rows
         ):
-            raise TakedownTransitionConflict(
-                "takedown_timeline_identity_conflict"
-            )
+            raise TakedownTransitionConflict("takedown_timeline_identity_conflict")
         delivery_keys = {
-            str(row.delivery_key)
-            for row in rows
-            if row.delivery_key is not None
+            str(row.delivery_key) for row in rows if row.delivery_key is not None
         }
         if len(delivery_keys) > 1:
             raise TakedownTransitionConflict(
@@ -444,14 +523,12 @@ class CommunitySqlAlchemyTakedownTelemetry:
             )
         delivery_key = next(iter(delivery_keys), None)
         if query.delivery_key is not None and delivery_key != query.delivery_key:
-            raise TakedownTransitionConflict(
-                "takedown_timeline_selector_conflict"
-            )
+            raise TakedownTransitionConflict("takedown_timeline_selector_conflict")
         aggregates = await read_takedown_aggregates(
             context,
             now=query.now,
             circuit_reader=self._circuit_reader,
-            board_id=str(first.board_id),
+            board_id=query.board_id,
         )
         return TakedownTelemetrySnapshot(
             board_id=str(first.board_id),
