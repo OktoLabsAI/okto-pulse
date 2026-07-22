@@ -86,6 +86,40 @@ END''',
     return expected
 
 
+COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX = (
+    "trg_kg_cognitive_source_immutable"
+)
+
+
+def cognitive_source_immutability_trigger_manifest() -> dict[
+    str, tuple[str, str]
+]:
+    """Return the exact SQLite guard manifest for the append-only ledger."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        KGCognitiveSource,
+        KGCognitiveSourceRevision,
+    )
+
+    expected: dict[str, tuple[str, str]] = {}
+    for table_name in (
+        KGCognitiveSource.__tablename__,
+        KGCognitiveSourceRevision.__tablename__,
+    ):
+        for operation in ("update", "delete"):
+            trigger_name = (
+                f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_"
+                f"{table_name}_{operation}"
+            )
+            trigger_sql = f'''CREATE TRIGGER "{trigger_name}"
+BEFORE {operation.upper()} ON "{table_name}"
+BEGIN
+    SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');
+END'''
+            expected[trigger_name] = (table_name, trigger_sql)
+    return expected
+
+
 def _normalize_sqlite_contract_ddl(raw: object) -> str:
     value = "" if raw is None else str(raw)
     return re.sub(r'[\s"`\[\]]+', "", value.lower())
@@ -1042,6 +1076,138 @@ async def _migrate_global_discovery_delivery_contract() -> str | None:
                 changed = True
         final = await conn.run_sync(_contract)
         _validate(final)
+
+    return None if changed else "skipped"
+
+
+async def _migrate_cognitive_source_revision_ledger() -> str | None:
+    """Audit the additive revision table and install immutable row guards.
+
+    ``create_all_boundary`` creates the child ledger without touching the
+    existing revision-zero rows.  This post-boundary step is deliberately
+    non-repairing: an unexpected physical contract or a modified owned
+    trigger fails startup instead of rewriting durable cognitive history.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        KGCognitiveSource,
+        KGCognitiveSourceRevision,
+    )
+
+    base_table = KGCognitiveSource.__table__
+    revision_table = KGCognitiveSourceRevision.__table__
+    changed = False
+    async with get_engine().begin() as conn:
+        if conn.dialect.name != "sqlite":
+            raise RuntimeError(
+                "cognitive source revision ledger requires SQLite trigger semantics"
+            )
+        # Python's sqlite3 legacy transaction mode does not begin for DDL.
+        # Pin trigger convergence and its final audit to one writer transaction.
+        await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        missing_tables = {
+            base_table.name,
+            revision_table.name,
+        } - table_names
+        if missing_tables:
+            raise RuntimeError(
+                "cognitive source revision migration requires the canonical "
+                "create_all boundary; missing tables: "
+                + ", ".join(sorted(missing_tables))
+            )
+
+        contract = await conn.run_sync(
+            lambda sync_conn: _sqlite_owned_table_contract(
+                sync_conn, revision_table
+            )
+        )
+        if contract["observed"] != contract["expected"]:
+            raise RuntimeError(
+                "cognitive source revision table has a non-canonical contract"
+            )
+
+        expected_triggers = cognitive_source_immutability_trigger_manifest()
+        trigger_rows = (
+            await conn.execute(
+                sa_text(
+                    "SELECT name, tbl_name, sql FROM sqlite_master "
+                    "WHERE type = 'trigger' AND name LIKE :prefix"
+                ),
+                {
+                    "prefix": (
+                        f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}%"
+                    )
+                },
+            )
+        ).mappings().all()
+        existing_triggers = {str(row["name"]): row for row in trigger_rows}
+        unexpected = set(existing_triggers) - set(expected_triggers)
+        if unexpected:
+            raise RuntimeError(
+                "cognitive source revision ledger has unexpected owned triggers: "
+                + ", ".join(sorted(unexpected))
+            )
+        for trigger_name, (table_name, trigger_sql) in expected_triggers.items():
+            existing = existing_triggers.get(trigger_name)
+            if existing is None:
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+                continue
+            if (
+                str(existing["tbl_name"]) != table_name
+                or normalize_global_discovery_source_revision_trigger_sql(
+                    existing["sql"]
+                )
+                != normalize_global_discovery_source_revision_trigger_sql(
+                    trigger_sql
+                )
+            ):
+                raise RuntimeError(
+                    "cognitive source immutability trigger "
+                    f"{trigger_name} is corrupt"
+                )
+
+        final_trigger_rows = (
+            await conn.execute(
+                sa_text(
+                    "SELECT name, tbl_name, sql FROM sqlite_master "
+                    "WHERE type = 'trigger' AND name LIKE :prefix"
+                ),
+                {
+                    "prefix": (
+                        f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}%"
+                    )
+                },
+            )
+        ).mappings().all()
+        final_triggers = {
+            str(row["name"]): row for row in final_trigger_rows
+        }
+        if set(final_triggers) != set(expected_triggers):
+            raise RuntimeError(
+                "cognitive source immutability trigger installation is incomplete"
+            )
+        for trigger_name, (table_name, trigger_sql) in expected_triggers.items():
+            observed = final_triggers[trigger_name]
+            if (
+                str(observed["tbl_name"]) != table_name
+                or normalize_global_discovery_source_revision_trigger_sql(
+                    observed["sql"]
+                )
+                != normalize_global_discovery_source_revision_trigger_sql(
+                    trigger_sql
+                )
+            ):
+                raise RuntimeError(
+                    "cognitive source immutability trigger audit failed: "
+                    + trigger_name
+                )
 
     return None if changed else "skipped"
 
@@ -3192,6 +3358,9 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_consolidation_work_kinds": _migrate_add_consolidation_work_kinds,
     "_migrate_global_discovery_delivery_contract": (
         _migrate_global_discovery_delivery_contract
+    ),
+    "_migrate_cognitive_source_revision_ledger": (
+        _migrate_cognitive_source_revision_ledger
     ),
     "_migrate_global_discovery_recovery_control_plane": (
         _migrate_global_discovery_recovery_control_plane

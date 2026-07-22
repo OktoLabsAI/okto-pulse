@@ -1023,8 +1023,9 @@ def test_a5_configure_installs_runtime_causally_then_cli_resolves_it(
         _application_kg.get_current_provider_registry()
 
     # A composed base registry whose Global Discovery slot holds the exact
-    # runtime; the other required slots are opaque sentinels (configure only
-    # checks presence, not type).
+    # runtime; most other required slots are opaque sentinels.  The audit
+    # repository is a deliberate exception: registry composition validates
+    # the caller-owned UnitOfWork staging capability before installation.
     required_slots = (
         "config",
         "event_bus",
@@ -1037,9 +1038,13 @@ def test_a5_configure_installs_runtime_causally_then_cli_resolves_it(
         "graph_runtime_store",
         "board_source_reader",
     )
+    audit_repo = SimpleNamespace(stage_consolidation_records=lambda *_a, **_k: None)
     base = KGProviderRegistry(
         global_discovery_runtime=runtime,
-        **{slot: object() for slot in required_slots},
+        **{
+            slot: audit_repo if slot == "audit_repo" else object()
+            for slot in required_slots
+        },
     )
     try:
         # CAUSAL install: after this the process singleton IS the base registry.
@@ -1344,6 +1349,11 @@ def _cmd_init_order_harness(
                 yield
             finally:
                 events.append("guard_exit")
+
+        @contextmanager
+        def renewing_guard(self):
+            with self.guard():
+                yield
 
         def release(self):
             events.append("release")

@@ -144,11 +144,12 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 41 = 38 historical steps + pagination + governed queue + GD delivery.
-    assert len(migrate_names) == 41, (
-        f"expected 41 _migrate_*, found {len(migrate_names)}"
+    # 42 = historical steps + pagination, governed queue, GD delivery, and
+    # the additive cognitive-source revision ledger audit.
+    assert len(migrate_names) == 42, (
+        f"expected 42 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 41
+    assert len(ledger_migrate_ids) == 42
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]
@@ -273,6 +274,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         recovery_convergence_step,
         governed_queue_convergence_step,
         delivery_convergence_step,
+        "_migrate_cognitive_source_revision_ledger",
     }
 
     # First run: clean databases skip fixture repair and both convergence

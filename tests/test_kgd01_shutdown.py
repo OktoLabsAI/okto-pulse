@@ -214,7 +214,7 @@ def test_s3_close_all_graphs_on_shutdown_closes_global_discovery(
 
     class _NativeGraphRuntime:
         @staticmethod
-        def open_kuzu_db(path: Path, *, on_corruption=None):
+        def open_global_kuzu_db(path: Path, *, on_corruption=None):
             del on_corruption
             return ladybug.Database(str(path))
 

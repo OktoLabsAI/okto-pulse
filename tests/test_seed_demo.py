@@ -86,10 +86,15 @@ async def test_demo_graph_seed_is_connected_and_passes_zero_orphan_guard(monkeyp
     captured_edges = []
     configured_modes = []
     shutdown_calls = []
+    commit_lifecycle = []
+
+    class FakeSession:
+        async def commit(self):
+            commit_lifecycle.append("relational_commit")
 
     class FakeSessionContext:
         async def __aenter__(self):
-            return object()
+            return FakeSession()
 
         async def __aexit__(self, *_exc):
             return False
@@ -108,8 +113,19 @@ async def test_demo_graph_seed_is_connected_and_passes_zero_orphan_guard(monkeyp
     async def fake_propose(req, *, agent_id, db, force_reprocess=False):
         return SimpleNamespace()
 
-    async def fake_commit(req, *, agent_id, db):
+    async def fake_commit(
+        req, *, agent_id, db, defer_session_finalization=False
+    ):
+        commit_lifecycle.append(
+            f"graph_stage:deferred={defer_session_finalization}"
+        )
         return SimpleNamespace()
+
+    async def fake_finalize(session_id, *, agent_id):
+        commit_lifecycle.append(f"finalize:{session_id}:{agent_id}")
+
+    async def fake_abort(session_id, *, agent_id):
+        commit_lifecycle.append(f"abort:{session_id}:{agent_id}")
 
     class FakeGraphSchemaManager:
         async def ensure_bootstrapped(self, board_id):
@@ -145,6 +161,16 @@ async def test_demo_graph_seed_is_connected_and_passes_zero_orphan_guard(monkeyp
     monkeypatch.setattr(primitives_mod, "propose_reconciliation", fake_propose)
     monkeypatch.setattr(primitives_mod, "commit_consolidation", fake_commit)
     monkeypatch.setattr(
+        primitives_mod,
+        "finalize_deferred_consolidation",
+        fake_finalize,
+    )
+    monkeypatch.setattr(
+        primitives_mod,
+        "abort_deferred_consolidation",
+        fake_abort,
+    )
+    monkeypatch.setattr(
         kg_shutdown_mod,
         "close_all_graphs_on_shutdown",
         lambda: shutdown_calls.append("scoped")
@@ -158,6 +184,11 @@ async def test_demo_graph_seed_is_connected_and_passes_zero_orphan_guard(monkeyp
 
     assert configured_modes == ["stub"]
     assert shutdown_calls == ["scoped"]
+    assert commit_lifecycle == [
+        "graph_stage:deferred=True",
+        "relational_commit",
+        "finalize:seed-session:seed-demo",
+    ]
     assert len(captured_edges) == 3
     node_types = {node.candidate_id: node.node_type for node in captured_nodes}
     assert set(node_types.values()) == {
@@ -224,6 +255,121 @@ async def test_demo_graph_seed_is_connected_and_passes_zero_orphan_guard(monkeyp
         visited.add(current)
         pending.extend(adjacency[current] - visited)
     assert visited == set(node_types)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_lifecycle"),
+    [
+        (
+            "relational_commit",
+            ["graph_stage:deferred=True", "relational_commit", "abort"],
+        ),
+        (
+            "finalize",
+            [
+                "graph_stage:deferred=True",
+                "relational_commit",
+                "finalize",
+                "finalize",
+            ],
+        ),
+    ],
+)
+async def test_demo_graph_seed_cleans_up_deferred_commit_by_durability_boundary(
+    monkeypatch,
+    failure_stage,
+    expected_lifecycle,
+):
+    """Pre-commit failure compensates; post-commit failure only finalizes."""
+    from okto_pulse.community import seed as seed_mod
+    from okto_pulse.community.adapters import composition as composition_mod
+    from okto_pulse.community.adapters import sqlalchemy_database as database_mod
+    from okto_pulse.core.kg import primitives as primitives_mod
+    from okto_pulse.core.services import application_kg as application_kg_mod
+
+    lifecycle = []
+
+    class FakeSession:
+        async def commit(self):
+            lifecycle.append("relational_commit")
+            if failure_stage == "relational_commit":
+                raise RuntimeError("relational commit failed")
+
+    class FakeSessionContext:
+        async def __aenter__(self):
+            return FakeSession()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class FakeGraphSchemaManager:
+        async def ensure_bootstrapped(self, board_id):
+            return None
+
+    async def fake_begin(req, *, agent_id, db):
+        return SimpleNamespace(session_id="seed-session")
+
+    async def fake_add_edge(req, *, agent_id):
+        return SimpleNamespace()
+
+    async def fake_propose(req, *, agent_id, db, force_reprocess=False):
+        return SimpleNamespace()
+
+    async def fake_commit(
+        req, *, agent_id, db, defer_session_finalization=False
+    ):
+        lifecycle.append(
+            f"graph_stage:deferred={defer_session_finalization}"
+        )
+        return SimpleNamespace()
+
+    async def fake_finalize(session_id, *, agent_id):
+        lifecycle.append("finalize")
+        if failure_stage == "finalize":
+            raise RuntimeError("finalize failed")
+
+    async def fake_abort(session_id, *, agent_id):
+        lifecycle.append("abort")
+
+    monkeypatch.setattr(
+        database_mod,
+        "get_session_factory",
+        lambda: FakeSessionContext,
+    )
+    monkeypatch.setattr(
+        composition_mod,
+        "configure_community_kg_registry",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        application_kg_mod,
+        "get_current_provider_registry",
+        lambda: SimpleNamespace(graph_schema_manager=FakeGraphSchemaManager()),
+    )
+    monkeypatch.setattr(primitives_mod, "begin_consolidation", fake_begin)
+    monkeypatch.setattr(primitives_mod, "add_edge_candidate", fake_add_edge)
+    monkeypatch.setattr(primitives_mod, "propose_reconciliation", fake_propose)
+    monkeypatch.setattr(primitives_mod, "commit_consolidation", fake_commit)
+    monkeypatch.setattr(
+        primitives_mod,
+        "finalize_deferred_consolidation",
+        fake_finalize,
+    )
+    monkeypatch.setattr(
+        primitives_mod,
+        "abort_deferred_consolidation",
+        fake_abort,
+    )
+
+    with pytest.raises(RuntimeError, match=failure_stage.replace("_", " ")):
+        await seed_mod._commit_demo_graph_in_runtime(
+            board_id="board-id",
+            spec_id="12345678-1234-1234-1234-123456789abc",
+            demo_settings=SimpleNamespace(kg_embedding_mode="stub"),
+        )
+
+    assert lifecycle == expected_lifecycle
 
 
 @pytest.mark.asyncio

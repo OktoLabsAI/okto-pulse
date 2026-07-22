@@ -23,6 +23,14 @@ from okto_pulse.community.adapters.board_graph_runtime import (
     CommunityBoardGraphRuntime,
 )
 from okto_pulse.community.adapters.graph_error_mapping import map_graph_error
+from okto_pulse.community.adapters.graph_memory_pressure import (
+    GRAPH_OPEN_MEMORY_COOLDOWN_S,
+    clear_graph_open_memory_failure,
+    raise_if_graph_open_memory_cooldown,
+    record_graph_open_memory_failure,
+    reset_graph_open_memory_circuit_for_tests,
+    run_graph_database_open,
+)
 from okto_pulse.community.adapters.kuzu_graph_transaction import (
     _materialize,
     _statement_is_write,
@@ -44,6 +52,13 @@ logger = logging.getLogger("okto_pulse.community.global_discovery_runtime")
 
 GLOBAL_DISCOVERY_FILENAME = "discovery.lbug"
 LIFECYCLE_EXCLUSIVE_TIMEOUT_S = 30.0
+GLOBAL_OPEN_MEMORY_COOLDOWN_S = GRAPH_OPEN_MEMORY_COOLDOWN_S
+
+
+def _reset_global_open_memory_circuit_for_tests() -> None:
+    """Compatibility helper for the process-wide graph-open breaker."""
+
+    reset_graph_open_memory_circuit_for_tests()
 
 _VECTOR_USE_PATTERN = re.compile(
     r"(?:VECTOR_INDEX|EMBEDDING)",
@@ -211,9 +226,15 @@ class CommunityGlobalDiscoveryRuntime:
         graph_runtime: CommunityBoardGraphRuntime | None = None,
         *,
         graph_path_provider: Callable[[], Path] | None = None,
+        open_memory_cooldown_s: float = GLOBAL_OPEN_MEMORY_COOLDOWN_S,
+        monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        if open_memory_cooldown_s <= 0:
+            raise ValueError("open_memory_cooldown_s must be positive")
         self._graph_runtime = graph_runtime or CommunityBoardGraphRuntime()
         self._graph_path_provider = graph_path_provider
+        self._open_memory_cooldown_s = float(open_memory_cooldown_s)
+        self._monotonic_clock = monotonic_clock
         self._lock = threading.RLock()
         self._lifecycle = _LifecycleReadWriteGate()
         self._db: Any | None = None
@@ -232,6 +253,53 @@ class CommunityGlobalDiscoveryRuntime:
 
     def _runtime(self):
         return self._graph_runtime
+
+    def _raise_if_memory_open_cooldown(self, *, path: Path) -> None:
+        raise_if_graph_open_memory_cooldown(
+            path=path,
+            monotonic_clock=self._monotonic_clock,
+        )
+
+    def _record_memory_open_failure(
+        self,
+        *,
+        path: Path,
+        exc: BaseException,
+    ) -> None:
+        record_graph_open_memory_failure(
+            path=path,
+            exc=exc,
+            scope="global_discovery",
+            cooldown_s=self._open_memory_cooldown_s,
+            monotonic_clock=self._monotonic_clock,
+        )
+
+    def _clear_memory_open_failure(self) -> None:
+        clear_graph_open_memory_failure()
+
+    def _open_global_database(
+        self,
+        path: Path,
+        *,
+        on_corruption: Callable[[BaseException], None] | None = None,
+    ) -> Any:
+        """Open through the dedicated global budget and OOM circuit breaker."""
+
+        runtime = self._runtime()
+        opener = getattr(runtime, "open_global_kuzu_db", None)
+        if not callable(opener):
+            raise RuntimeError(
+                "global_discovery_dedicated_open_capability_missing: the graph "
+                "adapter must expose open_global_kuzu_db so Global Discovery "
+                "cannot silently inherit the board memory budget"
+            )
+        return run_graph_database_open(
+            path=path,
+            opener=lambda: opener(path, on_corruption=on_corruption),
+            scope="global_discovery",
+            cooldown_s=self._open_memory_cooldown_s,
+            monotonic_clock=self._monotonic_clock,
+        )
 
     def _kg_base_dir(self) -> Path:
         from okto_pulse.core.services.application_kg import (
@@ -789,7 +857,7 @@ class CommunityGlobalDiscoveryRuntime:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            db = self._runtime().open_kuzu_db(
+            db = self._open_global_database(
                 path,
                 on_corruption=lambda exc: self._record_corrupt_open_failure(
                     path=path,
@@ -925,7 +993,7 @@ class CommunityGlobalDiscoveryRuntime:
 
         runtime = self._runtime()
         try:
-            db = runtime.open_kuzu_db(
+            db = self._open_global_database(
                 path,
                 on_corruption=lambda exc: self._record_corrupt_open_failure(
                     path=path,
@@ -1071,7 +1139,7 @@ class CommunityGlobalDiscoveryRuntime:
                 self._clear_corrupt_open_failure(successful_path=path)
                 return
             try:
-                self._db = self._runtime().open_kuzu_db(
+                self._db = self._open_global_database(
                     path,
                     on_corruption=lambda exc: self._record_corrupt_open_failure(
                         path=path,

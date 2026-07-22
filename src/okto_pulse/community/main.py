@@ -12,6 +12,7 @@ warnings.filterwarnings(
 
 import asyncio
 import contextlib
+import faulthandler
 import logging
 import math
 import os
@@ -59,6 +60,9 @@ _EMBEDDING_LOGGER = logging.getLogger("okto_pulse.community.embedding")
 _STARTUP_LOGGER = logging.getLogger("uvicorn.error")
 _METRICS_LOGGER = logging.getLogger("okto_pulse.community.metrics")
 _LOCK_LOGGER = logging.getLogger("okto_pulse.community.serve_lock")
+_NATIVE_DIAGNOSTICS_LOGGER = logging.getLogger(
+    "okto_pulse.community.native_diagnostics"
+)
 _DEFAULT_STARTUP_TIMEOUT_SECONDS = 120.0
 _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15.0
 # KGD-01 (TR7): budget próprio do checkpoint+close dos grafos no teardown —
@@ -76,6 +80,31 @@ _METRICS_LOG_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 _EMBEDDING_PRELOAD_ATTEMPTS = 3
 _EMBEDDING_PRELOAD_BACKOFF_S = (2.0, 4.0, 8.0)
 _EMBEDDING_PRELOAD_BUDGET_S = 30.0
+
+
+def _enable_native_crash_diagnostics() -> None:
+    """Enable Python's fatal-signal traceback without blocking startup.
+
+    Ladybug/Kuzu executes in a native extension.  A process-level access
+    violation bypasses Python exception handlers; ``faulthandler`` preserves
+    the Python stacks of every thread in stderr so a repeated native crash has
+    an actionable call site.  Some embedded/service hosts expose no usable
+    stderr file descriptor, so diagnostics remain best-effort.
+    """
+
+    if faulthandler.is_enabled():
+        return
+    try:
+        faulthandler.enable(all_threads=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        _NATIVE_DIAGNOSTICS_LOGGER.warning(
+            "native crash diagnostics unavailable error_type=%s",
+            type(exc).__name__,
+            extra={
+                "event": "community.native_diagnostics.unavailable",
+                "error_type": type(exc).__name__,
+            },
+        )
 
 
 def _startup_timeout_seconds() -> float:
@@ -1578,6 +1607,7 @@ def run():
         acquire_serve_lock,
     )
 
+    _enable_native_crash_diagnostics()
     settings = CommunitySettings()
     api_port = int(
         os.environ.get("PORT", os.environ.get("OKTO_PULSE_PORT", str(settings.port)))

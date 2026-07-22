@@ -57,9 +57,16 @@ class CommunitySettings(CoreSettings, BaseSettings):
     kg_embedding_mode: str = COMMUNITY_DEFAULT_EMBEDDING_MODE
     kg_embedding_model: str = COMMUNITY_DEFAULT_EMBEDDING_MODEL
     kg_embedding_dim: int = COMMUNITY_DEFAULT_EMBEDDING_DIM
-    kg_kuzu_buffer_pool_mb: int = Field(512, ge=128, le=512)
+    # Each open Ladybug Database owns its own native buffer pool.  Conservative
+    # defaults keep a local multi-board process below the former 4 x 512 MB
+    # baseline while persisted/operator overrides remain backwards compatible.
+    kg_kuzu_buffer_pool_mb: int = Field(256, ge=128, le=512)
+    # Global Discovery is a separate Database and does not need the full board
+    # write budget.  It is intentionally environment/config-only for now; the
+    # legacy runtime-settings API continues to govern the board pool unchanged.
+    kg_global_kuzu_buffer_pool_mb: int = Field(128, ge=128, le=512)
     kg_kuzu_max_db_size_gb: int = Field(2, ge=2, le=64)
-    kg_connection_pool_size: int = Field(8, ge=1, le=32)
+    kg_connection_pool_size: int = Field(2, ge=1, le=32)
     kg_wal_salvage_enabled: bool = True
     kg_wal_only_recovery_enabled: bool = True
     kg_decay_tick_batch_size: int = 200

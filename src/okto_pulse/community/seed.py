@@ -324,9 +324,12 @@ async def _commit_demo_graph_in_runtime(
     )
     from okto_pulse.core.kg.primitives import (
         add_edge_candidate,
+        abort_deferred_consolidation,
         begin_consolidation,
         commit_consolidation,
+        finalize_deferred_consolidation,
         propose_reconciliation,
+        run_cancellation_atomic,
     )
     from okto_pulse.core.services.application_kg import get_current_provider_registry
     from okto_pulse.core.kg.schemas import (
@@ -467,15 +470,62 @@ async def _commit_demo_graph_in_runtime(
             agent_id=agent_id,
             db=None,
         )
-        async with session_factory() as db:
-            await commit_consolidation(
-                CommitConsolidationRequest(
-                    session_id=begin.session_id,
-                    summary_text="Demo board initial consolidation.",
-                ),
-                agent_id=agent_id,
-                db=db,
-            )
+        relational_commit_confirmed = False
+        try:
+            async with session_factory() as db:
+                await commit_consolidation(
+                    CommitConsolidationRequest(
+                        session_id=begin.session_id,
+                        summary_text="Demo board initial consolidation.",
+                    ),
+                    agent_id=agent_id,
+                    db=db,
+                    defer_session_finalization=True,
+                )
+
+                async def _commit_and_finalize() -> None:
+                    nonlocal relational_commit_confirmed
+                    await db.commit()
+                    relational_commit_confirmed = True
+                    await finalize_deferred_consolidation(
+                        begin.session_id,
+                        agent_id=agent_id,
+                    )
+
+                await run_cancellation_atomic(
+                    _commit_and_finalize(),
+                    task_name="community.seed.demo_commit_and_finalize",
+                )
+        except BaseException:
+            # Before relational durability, graph statements may already have
+            # auto-committed and must be compensated.  Once ``db.commit()``
+            # returned, the relational ledger is authoritative: only retry
+            # idempotent process-local finalization, never release/restage it.
+            try:
+                cleanup = (
+                    finalize_deferred_consolidation(
+                        begin.session_id,
+                        agent_id=agent_id,
+                    )
+                    if relational_commit_confirmed
+                    else abort_deferred_consolidation(
+                        begin.session_id,
+                        agent_id=agent_id,
+                    )
+                )
+                await run_cancellation_atomic(
+                    cleanup,
+                    task_name="community.seed.demo_deferred_cleanup",
+                )
+            except Exception:
+                logger.warning(
+                    "community.seed.demo_deferred_cleanup_failed "
+                    "session=%s relational_commit_confirmed=%s",
+                    begin.session_id,
+                    relational_commit_confirmed,
+                    exc_info=True,
+                )
+            raise
     finally:
         _search_mod.find_similar_for_candidate = _saved_search
         if _saved_primitives is not None:

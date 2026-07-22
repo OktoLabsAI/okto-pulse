@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -88,7 +89,7 @@ class _TransientRecoveryFailureProcessor(_Processor):
 
 
 @pytest.mark.asyncio
-async def test_tracked_blocking_failure_is_consumed_after_parent_cancel(
+async def test_tracked_blocking_failure_is_drained_before_parent_cancel_returns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     executor = TrackedBlockingExecution()
@@ -103,14 +104,16 @@ async def test_tracked_blocking_failure_is_consumed_after_parent_cancel(
     parent = asyncio.create_task(executor.run(operation))
     assert await asyncio.to_thread(started.wait, 1)
     parent.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await parent
+    await asyncio.sleep(0)
+    assert not parent.done()
 
     with caplog.at_level(
         logging.ERROR,
         logger="okto_pulse.community.workers",
     ):
         release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await parent
         assert await executor.join(1) == 0
         await asyncio.sleep(0)
 
@@ -120,9 +123,32 @@ async def test_tracked_blocking_failure_is_consumed_after_parent_cancel(
         if getattr(record, "event", "")
         == "community.worker.blocking_operation_failed"
     ]
-    assert len(records) == 1
-    assert records[0].error_type == "RuntimeError"
+    assert records == []
     assert "payload-must-not-be-logged" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_tracked_blocking_failure_observed_by_parent_is_not_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    executor = TrackedBlockingExecution()
+
+    def operation() -> None:
+        raise RuntimeError("handled-by-caller")
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="okto_pulse.community.workers",
+    ):
+        with pytest.raises(RuntimeError, match="handled-by-caller"):
+            await executor.run(operation)
+        await asyncio.sleep(0)
+
+    assert not any(
+        getattr(record, "event", "")
+        == "community.worker.blocking_operation_failed"
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -138,6 +164,128 @@ async def test_tracked_blocking_execution_preserves_global_write_context() -> No
         active_in_native_thread = await executor.run(has_active_global_guard)
 
     assert active_in_native_thread is True
+
+
+@pytest.mark.asyncio
+async def test_outbox_cancel_drains_tracked_native_io_before_writer_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Community composition cannot release its durable fence early."""
+    from okto_pulse.core.application.processors.global_outbox import (
+        GlobalOutboxProcessor,
+    )
+    from okto_pulse.core.kg.global_discovery_writer import (
+        GlobalDiscoveryWriterLease,
+    )
+
+    native_started = threading.Event()
+    native_release = threading.Event()
+    native_finished = threading.Event()
+    lease_released = threading.Event()
+
+    class _Lease:
+        def guard(self):
+            return nullcontext()
+
+        def renew(self) -> None:
+            return None
+
+        def assert_fenced(self) -> None:
+            return None
+
+        def release(self) -> bool:
+            assert native_finished.is_set()
+            lease_released.set()
+            return True
+
+    lease = _Lease()
+    monkeypatch.setattr(
+        GlobalDiscoveryWriterLease,
+        "acquire",
+        classmethod(lambda _cls, **_kwargs: lease),
+    )
+    executor = TrackedBlockingExecution()
+    processor = GlobalOutboxProcessor(
+        lambda: None,
+        blocking_execution=executor,
+    )
+
+    def _native_write() -> None:
+        native_started.set()
+        assert native_release.wait(timeout=5)
+        native_finished.set()
+
+    async def _batch() -> int:
+        await processor._run_graph_io(_native_write)
+        return 1
+
+    monkeypatch.setattr(processor, "_process_once_under_writer", _batch)
+    parent = asyncio.create_task(processor.process_once())
+    assert await asyncio.to_thread(native_started.wait, 1)
+
+    parent.cancel()
+    await asyncio.sleep(0.01)
+    assert not parent.done()
+    assert not lease_released.is_set()
+
+    native_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await parent
+    assert native_finished.is_set()
+    assert lease_released.is_set()
+    assert await executor.join(1) == 0
+
+
+@pytest.mark.asyncio
+async def test_outbox_cancelled_acquire_releases_result_before_propagating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.core.application.processors.global_outbox import (
+        GlobalOutboxProcessor,
+    )
+    from okto_pulse.core.kg.global_discovery_writer import (
+        GlobalDiscoveryWriterLease,
+    )
+
+    acquire_started = threading.Event()
+    acquire_release = threading.Event()
+    lease_released = threading.Event()
+
+    class _Lease:
+        def release(self) -> bool:
+            lease_released.set()
+            return True
+
+    lease = _Lease()
+
+    def _acquire(_cls, **_kwargs):
+        acquire_started.set()
+        assert acquire_release.wait(timeout=5)
+        return lease
+
+    monkeypatch.setattr(
+        GlobalDiscoveryWriterLease,
+        "acquire",
+        classmethod(_acquire),
+    )
+    executor = TrackedBlockingExecution()
+    processor = GlobalOutboxProcessor(
+        lambda: None,
+        blocking_execution=executor,
+    )
+    parent = asyncio.create_task(processor.process_once())
+    assert await asyncio.to_thread(acquire_started.wait, 1)
+
+    parent.cancel()
+    await asyncio.sleep(0.01)
+    assert not parent.done()
+    assert not lease_released.is_set()
+
+    acquire_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await parent
+    assert lease_released.is_set()
+    assert await executor.join(1) == 0
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,11 @@ from okto_pulse.community.adapters.graph_ddl import (
     build_node_ddl as _build_node_ddl,
     build_rel_ddl as _build_rel_ddl,
 )
+from okto_pulse.community.adapters.graph_memory_pressure import (
+    GraphMemoryPressure,
+    is_graph_memory_pressure_error,
+    run_graph_database_open,
+)
 from okto_pulse.core.kg import schema_contract as _schema_contract
 from okto_pulse.core.kg.interfaces.graph_errors import GraphUnavailable
 
@@ -62,6 +67,11 @@ class BoardGraphHandle:
 # close_all_connections (the rmtree paths).
 _board_db_cache: "OrderedDict[str, Any]" = OrderedDict()
 _board_db_cache_lock = threading.Lock()
+# Miss admission is serialized separately from cache hits.  Eviction must run
+# outside ``_board_db_cache_lock`` because it can wait for close guards; this
+# lock prevents two concurrent misses from independently evicting victims and
+# then both consuming the same last resident-Database slot.
+_board_db_cache_admission_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -267,14 +277,23 @@ def registered_raw_connection(board_id: str, *, within_close_window: bool = Fals
 
 
 # Cap LRU do cache de Databases abertos (campo 2026-06-10): cada
-# kuzu.Database aloca um buffer pool de até kg_kuzu_buffer_pool_mb (512MB
+# kuzu.Database aloca um buffer pool de até kg_kuzu_buffer_pool_mb (256MB
 # default). Sem o close-por-commit (KGDL.01), TODO board visitado ficava com
 # o Database aberto para sempre — um backfill multi-board acumulou 7+ buffer
 # pools e o processo morreu por exaustão de memória nativa ("No more frame
 # groups can be added to the allocator" + abort silencioso). O cap limita o
 # pico de memória; a eviction LRU drena leitores via close guard antes de
 # fechar. Override via env KG_DB_CACHE_CAP.
-_BOARD_DB_CACHE_CAP_DEFAULT = 4
+_BOARD_DB_CACHE_CAP_DEFAULT = 2
+_BOARD_BUFFER_POOL_OPERATIONAL_CAP_MB_DEFAULT = 256
+_BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV = (
+    "OKTO_PULSE_COMMUNITY_KG_BOARD_BUFFER_POOL_CAP_MB"
+)
+_GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT = 2
+_GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV = (
+    "OKTO_PULSE_COMMUNITY_KG_MAX_DB_SIZE_CAP_GB"
+)
+_GRAPH_MAX_DB_SIZE_ALLOWED_GB = frozenset({2, 4, 8, 16, 32, 64})
 
 
 def _board_db_cache_cap() -> int:
@@ -285,6 +304,127 @@ def _board_db_cache_cap() -> int:
         except ValueError:
             pass
     return _BOARD_DB_CACHE_CAP_DEFAULT
+
+
+def _board_buffer_pool_operational_cap_mb() -> int:
+    """Return the Community board constructor's independent safety ceiling.
+
+    Persisted settings remain backwards compatible (for example 512 MB), but
+    the embedded single-process runtime clamps them to 256 MB unless an
+    operator explicitly raises this Community-only environment ceiling.
+    """
+
+    raw = os.environ.get(_BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV)
+    if raw is not None and raw.strip() != "":
+        try:
+            cap = int(raw)
+            if cap > 0:
+                return cap
+        except ValueError:
+            pass
+        logger.warning(
+            "kg.db_open.invalid_board_buffer_pool_cap var=%s value=%r "
+            "falling_back=%d",
+            _BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV,
+            raw,
+            _BOARD_BUFFER_POOL_OPERATIONAL_CAP_MB_DEFAULT,
+            extra={
+                "event": "kg.db_open.invalid_board_buffer_pool_cap",
+                "var": _BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV,
+                "value": raw,
+                "fallback_mb": _BOARD_BUFFER_POOL_OPERATIONAL_CAP_MB_DEFAULT,
+            },
+        )
+    return _BOARD_BUFFER_POOL_OPERATIONAL_CAP_MB_DEFAULT
+
+
+def _graph_max_db_size_operational_cap_gb() -> int:
+    """Return the independent Community ceiling for native DB reservations.
+
+    ``kg_kuzu_max_db_size_gb`` is persisted for backwards compatibility, so
+    an old installation can still contain 16 or 64 GB.  Ladybug reserves
+    address space per Database; the embedded runtime therefore applies this
+    constructor-side 2 GB ceiling to board and Global Discovery databases.
+    Raising it requires an explicit Community-only environment opt-in and the
+    value must satisfy Ladybug's supported power-of-two contract.
+    """
+
+    raw = os.environ.get(_GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV)
+    if raw is not None and raw.strip() != "":
+        try:
+            cap = int(raw)
+            if cap in _GRAPH_MAX_DB_SIZE_ALLOWED_GB:
+                return cap
+        except ValueError:
+            pass
+        logger.warning(
+            "kg.db_open.invalid_max_db_size_cap var=%s value=%r "
+            "falling_back=%d",
+            _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV,
+            raw,
+            _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT,
+            extra={
+                "event": "kg.db_open.invalid_max_db_size_cap",
+                "var": _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV,
+                "configured_value": raw,
+                "effective_cap_gb": (
+                    _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT
+                ),
+            },
+        )
+    return _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT
+
+
+def _effective_graph_max_db_size_gb(configured_gb: int) -> tuple[int, int]:
+    """Return ``(effective, operational_cap)`` for constructor telemetry."""
+
+    if configured_gb not in _GRAPH_MAX_DB_SIZE_ALLOWED_GB:
+        raise ValueError(
+            "kg_kuzu_max_db_size_gb must be one of 2, 4, 8, 16, 32, 64 GB"
+        )
+    operational_cap_gb = _graph_max_db_size_operational_cap_gb()
+    return min(configured_gb, operational_cap_gb), operational_cap_gb
+
+
+def _raise_board_db_cache_admission_pressure(
+    *,
+    path: Path,
+    cache_cap: int,
+    cache_size: int,
+) -> None:
+    """Reject a cold open when every resident Database remains pinned."""
+
+    resident_boards = [
+        Path(cache_key).parent.name for cache_key in _board_db_cache
+    ]
+    logger.warning(
+        "kg.db_cache.admission_rejected path=%s cache_size=%d cache_cap=%d "
+        "reason=resident_databases_pinned",
+        path,
+        cache_size,
+        cache_cap,
+        extra={
+            "event": "kg.db_cache.admission_rejected",
+            "path": str(path),
+            "cache_size": cache_size,
+            "cache_cap": cache_cap,
+            "resident_boards": resident_boards,
+            "admission_reason_code": "resident_databases_pinned",
+            "retryable": True,
+        },
+    )
+    raise GraphMemoryPressure(
+        "LadybugDB resident cache budget is exhausted; all eviction "
+        "candidates are pinned by active readers",
+        details={
+            "scope": "board_graph",
+            "path": str(path),
+            "cache_size": cache_size,
+            "cache_cap": cache_cap,
+            "resident_boards": resident_boards,
+            "admission_reason_code": "resident_databases_pinned",
+        },
+    )
 
 
 def _open_kuzu_db_path_cached(path: Path) -> Any:
@@ -308,39 +448,53 @@ def _open_kuzu_db_path_cached(path: Path) -> Any:
             return cached
 
     # Evict FORA do cache lock: o drain do close guard pode esperar e não
-    # pode bloquear cache hits de outros boards nesse intervalo. A eviction
-    # é DISCRICIONÁRIA (ao contrário do close legítimo): um board com
-    # leitores ativos é pulado — exceder o cap temporariamente é melhor que
-    # fechar um Database em uso (use-after-close).
-    with _board_db_cache_lock:
-        over = len(_board_db_cache) - _board_db_cache_cap() + 1
-        candidates = list(_board_db_cache.keys())[: max(0, over) + 4] if over > 0 else []
-    evicted = 0
-    needed = max(0, over)
-    for evict_key in candidates:
-        if evicted >= needed:
-            break
-        if _evict_board_db(evict_key):
-            evicted += 1
-    if needed > 0 and evicted < needed:
-        logger.debug(
-            "[KG] _board_db_cache over cap (todos os candidatos LRU com "
-            "leitores ativos) — pico temporário aceito"
-        )
+    # pode bloquear cache hits de outros boards nesse intervalo.  Admission
+    # itself is serialized so concurrent misses cannot overbook the same
+    # resident slot.  Unlike the old implementation, failure to drain every
+    # required victim is fail-closed: the native constructor is not called and
+    # the cache never grows beyond its cap.
+    with _board_db_cache_admission_lock:
+        with _board_db_cache_lock:
+            cached = _board_db_cache.get(key)
+            if cached is not None:
+                _board_db_cache.move_to_end(key)
+                return cached
+            cache_cap = _board_db_cache_cap()
+            needed = max(0, len(_board_db_cache) - cache_cap + 1)
+            candidates = list(_board_db_cache.keys())
 
-    with _board_db_cache_lock:
-        cached = _board_db_cache.get(key)
-        if cached is not None:
-            _board_db_cache.move_to_end(key)
-            return cached
-        # Cache miss: call the raw factory directly to avoid recursion.
-        db = _open_kuzu_db(path)
-        _board_db_cache[key] = db
-        logger.debug(
-            "[KG] _board_db_cache.miss path=%s size=%d",
-            path, len(_board_db_cache),
-        )
-        return db
+        evicted = 0
+        for evict_key in candidates:
+            if evicted >= needed:
+                break
+            if _evict_board_db(evict_key):
+                evicted += 1
+
+        with _board_db_cache_lock:
+            cached = _board_db_cache.get(key)
+            if cached is not None:
+                _board_db_cache.move_to_end(key)
+                return cached
+            cache_size = len(_board_db_cache)
+            if cache_size >= cache_cap:
+                _raise_board_db_cache_admission_pressure(
+                    path=path,
+                    cache_cap=cache_cap,
+                    cache_size=cache_size,
+                )
+            # Cache miss: call the raw factory directly to avoid recursion.
+            # Holding the cache lock preserves the existing close-vs-open
+            # ordering: shutdown cannot snapshot an empty cache while a native
+            # constructor is about to publish a new handle.
+            db = _open_kuzu_db(path)
+            _board_db_cache[key] = db
+            logger.debug(
+                "[KG] _board_db_cache.miss path=%s size=%d cap=%d",
+                path,
+                len(_board_db_cache),
+                cache_cap,
+            )
+            return db
 
 
 def _evict_board_db(key: str) -> bool:
@@ -354,6 +508,12 @@ def _evict_board_db(key: str) -> bool:
     fato fechado.
     """
     guard = _get_close_guard(Path(key).parent.name)
+    # The normal pressure case is an active BoardConnection.  Avoid spending
+    # the bounded drain timeout on a victim known to be pinned; closing it is
+    # forbidden regardless.  ``closing`` below remains authoritative for the
+    # race where a reader enters after this observation.
+    if guard.readers > 0:
+        return False
     with guard.closing(timeout=0.5) as (drained, _stuck):
         if not drained:
             return False
@@ -805,6 +965,22 @@ def _raise_existing_graph_open_failed(
     to vanish. Preserve evidence in place; explicit recovery/rebuild tooling
     owns any destructive move.
     """
+    if isinstance(exc, GraphMemoryPressure):
+        raise exc
+    if is_graph_memory_pressure_error(exc):
+        raise GraphMemoryPressure(
+            "Existing LadybugDB graph is temporarily unavailable because the "
+            "native allocation budget could not be satisfied",
+            details={
+                "error_code": GraphMemoryPressure.code,
+                "reason_code": GraphMemoryPressure.code,
+                "retryable": True,
+                "corruption": False,
+                "board_id": board_id,
+                "path": str(path),
+                "operation": operation,
+            },
+        ) from exc
     logger.error(
         "kg.schema.existing_graph_open_failed_preserved "
         "board=%s operation=%s path=%s err=%s",
@@ -829,14 +1005,45 @@ def _raise_existing_graph_open_failed(
     ) from exc
 
 
-def _ladybug_open_error_context(path: Path, exc: BaseException, settings: Any) -> str:
+def _ladybug_open_error_context(
+    path: Path,
+    exc: BaseException,
+    settings: Any,
+    *,
+    buffer_pool_mb: int | None = None,
+    configured_buffer_pool_mb: int | None = None,
+    max_db_size_gb: int | None = None,
+    configured_max_db_size_gb: int | None = None,
+) -> str:
     """Build an operator-facing error with the active Graph DB settings."""
     msg = str(exc)
     lower = msg.lower()
+    effective_buffer_pool_mb = int(
+        buffer_pool_mb or settings.kg_kuzu_buffer_pool_mb
+    )
+    configured_buffer_pool_mb = int(
+        configured_buffer_pool_mb
+        if configured_buffer_pool_mb is not None
+        else settings.kg_kuzu_buffer_pool_mb
+    )
+    effective_max_db_size_gb = int(
+        max_db_size_gb
+        if max_db_size_gb is not None
+        else settings.kg_kuzu_max_db_size_gb
+    )
+    configured_max_db_size_gb = int(
+        configured_max_db_size_gb
+        if configured_max_db_size_gb is not None
+        else settings.kg_kuzu_max_db_size_gb
+    )
     settings_context = (
         "Graph DB settings in effect: "
-        f"kg_kuzu_buffer_pool_mb={settings.kg_kuzu_buffer_pool_mb}MB, "
-        f"kg_kuzu_max_db_size_gb={settings.kg_kuzu_max_db_size_gb}GB "
+        "kg_kuzu_buffer_pool_mb="
+        f"{effective_buffer_pool_mb}MB "
+        f"(configured={configured_buffer_pool_mb}MB), "
+        "kg_kuzu_max_db_size_gb="
+        f"{effective_max_db_size_gb}GB "
+        f"(configured={configured_max_db_size_gb}GB) "
         f"(path={path})."
     )
     guidance: list[str] = []
@@ -847,13 +1054,14 @@ def _ladybug_open_error_context(path: Path, exc: BaseException, settings: Any) -
             "a power of 2 in bytes."
         )
     if (
-        "buffer manager" in lower
+        is_graph_memory_pressure_error(exc)
+        or "buffer manager" in lower
         or "buffer pool" in lower
-        or "unable to allocate memory" in lower
     ):
         guidance.append(
-            "Set Graph DB buffer pool per board to 512 MB and restart before "
-            "retrying the consolidation."
+            "Reduce the Graph DB buffer pool and simultaneous open-board cache, "
+            "restart, and retry. Allocation pressure is retryable and is not "
+            "evidence of graph corruption."
         )
     if "could not set lock" in lower or "lock contention" in lower:
         guidance.append(
@@ -1547,6 +1755,29 @@ def _open_kuzu_db(
     path: Path,
     *,
     on_corruption: Callable[[BaseException], None] | None = None,
+    buffer_pool_mb: int | None = None,
+    graph_scope: str = "board_graph",
+):
+    """Open a board-scoped Database under the process-wide native gate."""
+
+    return run_graph_database_open(
+        path=path,
+        opener=lambda: _open_kuzu_db_unserialized(
+            path,
+            on_corruption=on_corruption,
+            buffer_pool_mb=buffer_pool_mb,
+            graph_scope=graph_scope,
+        ),
+        scope=graph_scope,
+    )
+
+
+def _open_kuzu_db_unserialized(
+    path: Path,
+    *,
+    on_corruption: Callable[[BaseException], None] | None = None,
+    buffer_pool_mb: int | None = None,
+    graph_scope: str = "board_graph",
 ):
     """Single factory for every ``kuzu.Database()`` call in the core.
 
@@ -1573,8 +1804,59 @@ def _open_kuzu_db(
 
     logger.debug("[KG] _open_kuzu_db path=%s", path)
     s = get_settings()
-    bp = s.kg_kuzu_buffer_pool_mb * 1024 * 1024
-    mds = s.kg_kuzu_max_db_size_gb * 1024 * 1024 * 1024
+    configured_buffer_pool_mb = int(
+        buffer_pool_mb if buffer_pool_mb is not None else s.kg_kuzu_buffer_pool_mb
+    )
+    effective_buffer_pool_mb = configured_buffer_pool_mb
+    if buffer_pool_mb is None:
+        operational_cap_mb = _board_buffer_pool_operational_cap_mb()
+        effective_buffer_pool_mb = min(
+            configured_buffer_pool_mb,
+            operational_cap_mb,
+        )
+        if effective_buffer_pool_mb != configured_buffer_pool_mb:
+            logger.warning(
+                "kg.db_open.board_buffer_pool_clamped configured_mb=%d "
+                "effective_mb=%d operational_cap_mb=%d override_env=%s",
+                configured_buffer_pool_mb,
+                effective_buffer_pool_mb,
+                operational_cap_mb,
+                _BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV,
+                extra={
+                    "event": "kg.db_open.board_buffer_pool_clamped",
+                    "configured_mb": configured_buffer_pool_mb,
+                    "effective_mb": effective_buffer_pool_mb,
+                    "operational_cap_mb": operational_cap_mb,
+                    "override_env": _BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV,
+                },
+            )
+    if effective_buffer_pool_mb <= 0:
+        raise ValueError("buffer_pool_mb must be positive")
+    bp = effective_buffer_pool_mb * 1024 * 1024
+    configured_max_db_size_gb = int(s.kg_kuzu_max_db_size_gb)
+    (
+        effective_max_db_size_gb,
+        max_db_size_operational_cap_gb,
+    ) = _effective_graph_max_db_size_gb(configured_max_db_size_gb)
+    if effective_max_db_size_gb != configured_max_db_size_gb:
+        logger.warning(
+            "kg.db_open.max_db_size_clamped scope=%s configured_gb=%d "
+            "effective_gb=%d operational_cap_gb=%d override_env=%s",
+            graph_scope,
+            configured_max_db_size_gb,
+            effective_max_db_size_gb,
+            max_db_size_operational_cap_gb,
+            _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV,
+            extra={
+                "event": "kg.db_open.max_db_size_clamped",
+                "scope": graph_scope,
+                "configured_gb": configured_max_db_size_gb,
+                "effective_gb": effective_max_db_size_gb,
+                "operational_cap_gb": max_db_size_operational_cap_gb,
+                "override_env": _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV,
+            },
+        )
+    mds = effective_max_db_size_gb * 1024 * 1024 * 1024
     # KGD-01 FR1/TR3: kg_wal_salvage_enabled (default true) controla o retry
     # de salvage de WAL abaixo. getattr com default tolera um core antigo sem
     # o campo (repos versionam em lockstep, mas skew de branch acontece).
@@ -1582,7 +1864,15 @@ def _open_kuzu_db(
     # KGD-01 FR3/BR2: kg_wal_only_recovery_enabled (default true) controla o
     # degrau 2 (quarentena wal-only) quando o salvage falhou/indisponível.
     wal_only_enabled = bool(getattr(s, "kg_wal_only_recovery_enabled", True))
-    logger.debug("[KG] _open_kuzu_db buffer_pool=%dMB max_db=%dGB", s.kg_kuzu_buffer_pool_mb, s.kg_kuzu_max_db_size_gb)
+    logger.debug(
+        "[KG] _open_kuzu_db scope=%s buffer_pool=%dMB "
+        "(configured=%dMB) max_db=%dGB (configured=%dGB)",
+        graph_scope,
+        effective_buffer_pool_mb,
+        configured_buffer_pool_mb,
+        effective_max_db_size_gb,
+        configured_max_db_size_gb,
+    )
 
     # Bug d0f6bab2: lock contention happens because every BoardConnection
     # used to spawn a NEW kuzu.Database — but Kùzu locks the .kuzu dir at
@@ -1647,6 +1937,12 @@ def _open_kuzu_db(
                     e = retry_exc
             last_exc = e
             msg = str(e)
+            # Allocation pressure is explicitly retryable/non-corruption.
+            # Short-circuit BEFORE every corruption observer/recovery branch:
+            # mixed native messages can contain both ``bad allocation`` and a
+            # WAL marker, but must never quarantine sidecars or run salvage.
+            if is_graph_memory_pressure_error(e):
+                break
             if not corruption_notified and _is_ladybug_corruption_error(e):
                 corruption_notified = True
                 if on_corruption is not None:
@@ -1749,7 +2045,36 @@ def _open_kuzu_db(
         "[KG] Failed to open LadybugDB database at %s: %s: %s",
         path, type(e).__name__, e,
     )
-    context = _ladybug_open_error_context(path, e, s)
+    context = _ladybug_open_error_context(
+        path,
+        e,
+        s,
+        buffer_pool_mb=effective_buffer_pool_mb,
+        configured_buffer_pool_mb=configured_buffer_pool_mb,
+        max_db_size_gb=effective_max_db_size_gb,
+        configured_max_db_size_gb=configured_max_db_size_gb,
+    )
+    if is_graph_memory_pressure_error(e):
+        raise GraphMemoryPressure(
+            f"LadybugDB allocation failed while opening {path}",
+            details={
+                "error_code": GraphMemoryPressure.code,
+                "reason_code": GraphMemoryPressure.code,
+                "retryable": True,
+                "corruption": False,
+                "graph_buffer_pool_mb": effective_buffer_pool_mb,
+                "graph_buffer_pool_configured_mb": configured_buffer_pool_mb,
+                "graph_buffer_pool_effective_mb": effective_buffer_pool_mb,
+                "graph_max_db_size_gb": effective_max_db_size_gb,
+                "graph_max_db_size_configured_gb": configured_max_db_size_gb,
+                "graph_max_db_size_effective_gb": effective_max_db_size_gb,
+                "graph_scope": graph_scope,
+                "remediation": (
+                    "Reduce the graph buffer pool and simultaneous open-board "
+                    "cache, restart, and retry. Preserve the graph files."
+                ),
+            },
+        ) from e
     raise RuntimeError(
         f"Failed to open LadybugDB database at {path}: "
         f"{type(e).__name__}: {e}. "

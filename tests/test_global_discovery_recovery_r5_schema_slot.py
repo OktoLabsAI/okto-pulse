@@ -292,9 +292,9 @@ def test_r5_schema_migration_is_in_the_canonical_lifecycle_ledger() -> None:
     ids = [step.step_id for step in sorted(ledger, key=lambda step: step.order)]
     assert migration_name in ids
     assert ids.index(migration_name) > ids.index(CREATE_ALL_BOUNDARY_STEP_ID)
-    # 41 = the prior 38 steps + governed queue, GD delivery-contract, and
-    # pagination migrations (deliberate post-create-all ledger extensions).
-    assert len([step for step in ledger if step.step_id.startswith("_migrate_")]) == 41
+    # 42 includes the additive cognitive-source revision ledger audit after
+    # the governed queue, GD delivery-contract, and pagination extensions.
+    assert len([step for step in ledger if step.step_id.startswith("_migrate_")]) == 42
 
 
 def test_preparation_persists_not_null_sentinels_but_authorizes_by_state(

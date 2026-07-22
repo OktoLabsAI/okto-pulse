@@ -79,7 +79,7 @@ class _GraphRuntime:
         self.connections: list[_Connection] = []
         self.dbs: list[_Db] = []
 
-    def open_kuzu_db(self, path: Path, *, on_corruption=None):
+    def open_global_kuzu_db(self, path: Path, *, on_corruption=None):
         self.opened_paths.append(path)
         if self.fail_open:
             exc = RuntimeError("corrupt local discovery artifact")

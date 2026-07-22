@@ -63,6 +63,7 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
     "global_update_outbox",
     "ideations",
     "kg_cognitive_sources",
+    "kg_cognitive_source_revisions",
     "kuzu_node_refs",
     "refinements",
     "specs",
@@ -71,7 +72,7 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
 )
 GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID = "_global"
 GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION = "gdsr-fence-v2"
-GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v2"
+GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v3"
 GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX = (
     "trg_global_discovery_source_revision"
 )
@@ -2912,6 +2913,62 @@ class KGCognitiveSource(Base):
     evidence_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     source_session_id: Mapped[str | None] = mapped_column(
         String(36), nullable=True, index=True,
+    )
+    committed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+
+class KGCognitiveSourceRevision(Base):
+    """Additive immutable revisions for one durable cognitive source row.
+
+    The parent :class:`KGCognitiveSource` remains revision zero so existing
+    databases and identifiers stay byte-for-byte intact.  Every later full
+    semantic snapshot is appended here; no parent row or revision row is
+    rewritten in place.
+    """
+
+    __tablename__ = "kg_cognitive_source_revisions"
+    __table_args__ = (
+        CheckConstraint(
+            "source_revision >= 1",
+            name="ck_kg_cognitive_source_revisions_positive_revision",
+        ),
+        CheckConstraint(
+            "length(record_fingerprint) = 64",
+            name="ck_kg_cognitive_source_revisions_fingerprint_length",
+        ),
+        UniqueConstraint(
+            "cognitive_source_id",
+            "source_revision",
+            name="uq_kg_cognitive_source_revisions_source_revision",
+        ),
+        Index(
+            "idx_kg_cognitive_source_revisions_source_revision",
+            "cognitive_source_id",
+            "source_revision",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    cognitive_source_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "kg_cognitive_sources.id",
+            name="fk_kg_cognitive_source_revisions_source",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    source_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    record_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    evidence_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source_session_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True,
     )
     committed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),

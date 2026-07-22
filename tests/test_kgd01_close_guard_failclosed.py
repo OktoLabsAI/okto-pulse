@@ -50,6 +50,9 @@ import pytest
 import ladybug
 from okto_pulse.community import serve_lock
 from okto_pulse.community.adapters import kg_runtime
+from okto_pulse.community.adapters.graph_memory_pressure import (
+    GraphMemoryPressure,
+)
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.core.infra.config import configure_settings, get_settings
 
@@ -191,6 +194,12 @@ def test_s9_stress_close_guard_is_fail_closed(
     op_errors: list[str] = []
     unexpected_open_errors: list[str] = []
 
+    def is_resident_admission_pressure(exc: GraphMemoryPressure) -> bool:
+        return (
+            exc.details.get("admission_reason_code")
+            == "resident_databases_pinned"
+        )
+
     def bump_iterations() -> int:
         nonlocal iterations
         with state_lock:
@@ -208,6 +217,16 @@ def test_s9_stress_close_guard_is_fail_closed(
                 # Fail-closed permitido: janela closing ativa além do timeout.
                 with state_lock:
                     open_refusals += 1
+                bump_iterations()
+                continue
+            except GraphMemoryPressure as exc:
+                if is_resident_admission_pressure(exc):
+                    with state_lock:
+                        open_refusals += 1
+                    bump_iterations()
+                    continue
+                with state_lock:
+                    unexpected_open_errors.append(repr(exc))
                 bump_iterations()
                 continue
             except Exception as exc:  # noqa: BLE001 — falha de open é bug
@@ -253,6 +272,10 @@ def test_s9_stress_close_guard_is_fail_closed(
                 bc.close()
             except kg_runtime.BoardCloseInProgressError:
                 pass
+            except GraphMemoryPressure as exc:
+                if not is_resident_admission_pressure(exc):
+                    with state_lock:
+                        unexpected_open_errors.append(repr(exc))
             time.sleep(0.1)
 
     def long_reader() -> None:
@@ -261,6 +284,12 @@ def test_s9_stress_close_guard_is_fail_closed(
         try:
             bc = kg_runtime.BoardConnection(_S9_BOARD)
         except kg_runtime.BoardCloseInProgressError:
+            return
+        except GraphMemoryPressure as exc:
+            if is_resident_admission_pressure(exc):
+                return
+            with state_lock:
+                unexpected_open_errors.append(repr(exc))
             return
         try:
             time.sleep(1.5)
@@ -307,7 +336,7 @@ def test_s9_stress_close_guard_is_fail_closed(
         f"db.close() com leitores ativos (fail-open!): {close_instrumentation}"
     )
     assert unexpected_open_errors == [], (
-        "opens falharam com erro diferente de BoardCloseInProgressError: "
+        "opens falharam fora dos modos fail-closed esperados: "
         f"{unexpected_open_errors[:5]}"
     )
     events = _events(caplog)

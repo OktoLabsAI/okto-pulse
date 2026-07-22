@@ -211,9 +211,10 @@ def _bootstrap_global_discovery_graph() -> str:
     caller's shutdown barrier, and the partial graph is preserved (never
     auto-deleted) so the residue detector can quarantine it.
 
-    Runs synchronously in the current context: the writer fence is carried on a
-    ``ContextVar`` and must not be handed to a worker thread. Returns the typed
-    outcome code.
+    Productive graph work runs synchronously in the current context.  A Core
+    renewal guard carries the short durable lease through long native calls;
+    only its heartbeat runs in a context-propagating helper thread. Returns the
+    typed outcome code.
     """
     from okto_pulse.core.services.application_kg import (
         get_current_provider_registry,
@@ -234,7 +235,7 @@ def _bootstrap_global_discovery_graph() -> str:
     guarded_error: BaseException | None = None
     outcome = ""
     try:
-        with lease.guard():
+        with lease.renewing_guard():
             observation = runtime.state()
             obs_state = observation.state
             if obs_state == GraphRuntimeObservationState.CONFIRMED_ABSENT:

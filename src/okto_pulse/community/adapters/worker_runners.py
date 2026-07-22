@@ -26,23 +26,46 @@ class TrackedBlockingExecution(BlockingExecutionPort):
 
     def __init__(self) -> None:
         self._tasks: set[asyncio.Task[Any]] = set()
+        # A blocking operation can outlive the coroutine that submitted it
+        # when that parent is cancelled.  Only that detached case needs a
+        # completion log: failures returned to an awaiting caller are already
+        # observed and classified by the caller's normal error boundary.
+        self._detached_tasks: set[asyncio.Task[Any]] = set()
+        self._parent_observed_tasks: set[asyncio.Task[Any]] = set()
 
     def _consume_completed(self, task: asyncio.Task[Any]) -> None:
-        """Retire a native operation only after observing its outcome."""
+        """Retire a native operation and defer outcome classification.
+
+        Task callbacks run before the coroutine awaiting ``shield(task)`` is
+        necessarily resumed.  Deferring one loop turn lets ``run`` mark an
+        ordinary propagated exception as observed, avoiding a duplicate and
+        misleading ``blocking_operation_failed`` record.
+        """
         self._tasks.discard(task)
+        asyncio.get_running_loop().call_soon(self._consume_outcome, task)
+
+    def _consume_outcome(self, task: asyncio.Task[Any]) -> None:
+        """Observe the task result and log only an actually detached failure."""
         try:
             task.result()
         except asyncio.CancelledError:
             return
         except Exception as exc:  # noqa: BLE001 - background outcome boundary
-            logger.error(
-                "community.worker.blocking_operation_failed error_type=%s",
-                type(exc).__name__,
-                extra={
-                    "event": "community.worker.blocking_operation_failed",
-                    "error_type": type(exc).__name__,
-                },
-            )
+            if (
+                task in self._detached_tasks
+                and task not in self._parent_observed_tasks
+            ):
+                logger.error(
+                    "community.worker.blocking_operation_failed error_type=%s",
+                    type(exc).__name__,
+                    extra={
+                        "event": "community.worker.blocking_operation_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+        finally:
+            self._detached_tasks.discard(task)
+            self._parent_observed_tasks.discard(task)
 
     async def run(self, operation: Callable[[], Any]) -> Any:
         task = asyncio.create_task(
@@ -51,7 +74,32 @@ class TrackedBlockingExecution(BlockingExecutionPort):
         )
         self._tasks.add(task)
         task.add_done_callback(self._consume_completed)
-        return await asyncio.shield(task)
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # A native embedded-graph call may still own a process/durable
+            # writer fence.  Never let parent cancellation detach it: callers
+            # such as GlobalOutboxProcessor release their lease immediately
+            # after this coroutine returns.  Drain through repeated
+            # cancellation requests, observe the terminal native outcome, and
+            # only then propagate the parent's cancellation.
+            self._parent_observed_tasks.add(task)
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    break
+            if task.done() and not task.cancelled():
+                task.exception()
+            raise
+        except Exception:
+            self._parent_observed_tasks.add(task)
+            raise
+        else:
+            self._parent_observed_tasks.add(task)
+            return result
 
     @property
     def pending_count(self) -> int:

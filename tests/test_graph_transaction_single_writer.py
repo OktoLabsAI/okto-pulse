@@ -313,8 +313,8 @@ async def test_cancelled_tracked_writer_stays_joinable_without_loop_stall() -> N
     parent = asyncio.create_task(executor.run(native_commit))
     assert await asyncio.to_thread(entered.wait, 1)
     parent.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await parent
+    await asyncio.sleep(0)
+    assert not parent.done()
     assert await executor.join(0.01) == 1
 
     heartbeat = asyncio.create_task(asyncio.sleep(0))
@@ -328,6 +328,8 @@ async def test_cancelled_tracked_writer_stays_joinable_without_loop_stall() -> N
     await asyncio.wait_for(heartbeat, timeout=0.1)
 
     release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await parent
     assert await executor.join(1) == 0
 
 

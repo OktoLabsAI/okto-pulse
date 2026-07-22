@@ -1,6 +1,6 @@
 """Community LRU pool of local graph handles keyed by ``board_id``.
 
-Sized from :class:`CoreSettings`.kg_connection_pool_size (default 8) with the
+Sized from :class:`CoreSettings`.kg_connection_pool_size (default 2) with the
 env var ``KG_CONNECTION_POOL_SIZE`` kept as an opt-in override for CI/deploy
 scripts (soft-deprecated in 0.1.4 — logs a warning when applied). ``0``
 disables pooling.
@@ -30,7 +30,7 @@ from typing import Any
 logger = logging.getLogger("okto_pulse.kg.connection_pool")
 
 
-_DEFAULT_CAP = 8
+_DEFAULT_CAP = 2
 _ENV_VAR = "KG_CONNECTION_POOL_SIZE"
 
 
@@ -56,7 +56,10 @@ def _read_cap_from_env() -> int:
                 "connection_pool.invalid_cap value=%r falling_back_to_settings",
                 raw,
             )
-            return _cap_from_settings()
+            return _clamp_to_board_db_cache(
+                _cap_from_settings(),
+                source="settings_after_invalid_env",
+            )
         resolved = max(0, cap)
         logger.warning(
             "kg.config.env_override_detected var=%s value=%d "
@@ -65,8 +68,37 @@ def _read_cap_from_env() -> int:
             extra={"event": "kg.config.env_override_detected", "var": _ENV_VAR,
                    "value": resolved},
         )
-        return resolved
-    return _cap_from_settings()
+        return _clamp_to_board_db_cache(resolved, source="environment")
+    return _clamp_to_board_db_cache(_cap_from_settings(), source="settings")
+
+
+def _clamp_to_board_db_cache(requested: int, *, source: str) -> int:
+    """Keep the singleton handle pool within the native Database cache cap."""
+
+    # Lazy import avoids an eager module cycle: kg_runtime imports this module
+    # only from lifecycle hooks, while the pool needs its authoritative cache
+    # cap at singleton construction time.
+    from okto_pulse.community.adapters.kg_runtime import _board_db_cache_cap
+
+    db_cache_cap = _board_db_cache_cap()
+    effective = min(max(0, requested), db_cache_cap)
+    if effective != requested:
+        logger.warning(
+            "kg.connection_pool.cap_clamped source=%s requested=%d "
+            "effective=%d board_db_cache_cap=%d",
+            source,
+            requested,
+            effective,
+            db_cache_cap,
+            extra={
+                "event": "kg.connection_pool.cap_clamped",
+                "source": source,
+                "requested_cap": requested,
+                "effective_cap": effective,
+                "board_db_cache_cap": db_cache_cap,
+            },
+        )
+    return effective
 
 
 def _cap_from_settings() -> int:

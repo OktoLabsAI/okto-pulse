@@ -212,7 +212,7 @@ class _ControllableGlobalOpenRuntime:
         self.corruption = corruption
         self.failures_remaining = failures
 
-    def open_kuzu_db(
+    def open_global_kuzu_db(
         self,
         _path: Path,
         *,

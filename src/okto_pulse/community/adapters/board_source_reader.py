@@ -32,6 +32,9 @@ from okto_pulse.core.kg.interfaces.board_source_reader import (
     SourceReadFailure,
     SourceUnavailableError,
 )
+from okto_pulse.core.ports.kg_cognitive_source import (
+    canonical_cognitive_source_fingerprint,
+)
 
 logger = logging.getLogger("okto_pulse.community.board_source_reader")
 
@@ -300,24 +303,100 @@ def read_realm_cognitive_source_snapshot(
     captured: dict[str, list[dict[str, Any]]] = {
         board_id: [] for board_id in board_ids
     }
-    rows = connection.execute(
-        "SELECT source.board_id, source.node_id, source.node_type, "
-        "source.generation, source.payload, source.committed_at "
-        "FROM kg_cognitive_sources AS source "
-        "INNER JOIN boards AS board ON board.id = source.board_id "
-        "WHERE board.realm_id = ? "
-        "ORDER BY source.board_id COLLATE BINARY, source.committed_at ASC, "
-        "source.node_id COLLATE BINARY, source.generation ASC",
-        (normalized_realm_id,),
-    ).fetchall()
+    revision_table_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'kg_cognitive_source_revisions'"
+    ).fetchone()
+    if revision_table_exists is None:
+        # Legacy databases remain readable before the additive create-all
+        # boundary.  Their immutable parent row is revision zero.
+        query = (
+            "SELECT source.board_id, source.node_id, source.node_type, "
+            "source.generation, source.payload, source.evidence_refs, "
+            "source.source_session_id, source.committed_at, "
+            "0 AS source_revision, NULL AS record_fingerprint "
+            "FROM kg_cognitive_sources AS source "
+            "INNER JOIN boards AS board ON board.id = source.board_id "
+            "WHERE board.realm_id = ? "
+            "ORDER BY source.board_id COLLATE BINARY, "
+            "source.committed_at ASC, source.node_id COLLATE BINARY, "
+            "source.generation ASC"
+        )
+    else:
+        # Resolve one latest full snapshot per immutable parent.  The
+        # correlated MAX is backed by the child (source, revision) index and
+        # keeps the reader compatible with SQLite versions lacking windows.
+        query = (
+            "SELECT source.board_id, source.node_id, source.node_type, "
+            "source.generation, "
+            "CASE WHEN revision.id IS NULL THEN source.payload "
+            "ELSE revision.payload END AS payload, "
+            "CASE WHEN revision.id IS NULL THEN source.evidence_refs "
+            "ELSE revision.evidence_refs END AS evidence_refs, "
+            "CASE WHEN revision.id IS NULL THEN source.source_session_id "
+            "ELSE revision.source_session_id END AS source_session_id, "
+            "CASE WHEN revision.id IS NULL THEN source.committed_at "
+            "ELSE revision.committed_at END AS committed_at, "
+            "COALESCE(revision.source_revision, 0) AS source_revision, "
+            "revision.record_fingerprint AS record_fingerprint "
+            "FROM kg_cognitive_sources AS source "
+            "INNER JOIN boards AS board ON board.id = source.board_id "
+            "LEFT JOIN kg_cognitive_source_revisions AS revision "
+            "ON revision.cognitive_source_id = source.id "
+            "AND revision.source_revision = ("
+            "SELECT MAX(candidate.source_revision) "
+            "FROM kg_cognitive_source_revisions AS candidate "
+            "WHERE candidate.cognitive_source_id = source.id"
+            ") "
+            "WHERE board.realm_id = ? "
+            "ORDER BY source.board_id COLLATE BINARY, "
+            "COALESCE(revision.committed_at, source.committed_at) ASC, "
+            "source.node_id COLLATE BINARY, source.generation ASC"
+        )
+    rows = connection.execute(query, (normalized_realm_id,)).fetchall()
     for row in rows:
+        raw_payload = row["payload"]
+        payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+        if not isinstance(payload, dict):
+            raise ValueError("cognitive source payload must be a JSON object")
+        raw_evidence_refs = row["evidence_refs"]
+        evidence_refs = (
+            json.loads(raw_evidence_refs)
+            if isinstance(raw_evidence_refs, str)
+            else raw_evidence_refs
+        )
+        if not isinstance(evidence_refs, (list, tuple)):
+            raise ValueError("cognitive source evidence_refs must be a JSON array")
+        canonical_fingerprint = canonical_cognitive_source_fingerprint(
+            board_id=str(row["board_id"]),
+            node_id=str(row["node_id"]),
+            node_type=str(row["node_type"]),
+            generation=int(row["generation"]),
+            payload=payload,
+            evidence_refs=(str(ref) for ref in evidence_refs),
+        )
+        stored_fingerprint = row["record_fingerprint"]
+        if (
+            stored_fingerprint is not None
+            and str(stored_fingerprint) != canonical_fingerprint
+        ):
+            raise ValueError(
+                "cognitive source record_fingerprint does not match its "
+                "latest immutable revision"
+            )
+        record_fingerprint = canonical_fingerprint
         captured[str(row["board_id"])].append(
             {
+                "board_id": str(row["board_id"]),
                 "node_id": str(row["node_id"]),
                 "node_type": str(row["node_type"]),
                 "generation": int(row["generation"]),
-                "payload": row["payload"],
+                "payload": raw_payload,
+                "evidence_refs": raw_evidence_refs,
+                "source_session_id": row["source_session_id"],
                 "committed_at": row["committed_at"],
+                "source_revision": int(row["source_revision"]),
+                "record_fingerprint": str(record_fingerprint),
             }
         )
     return {

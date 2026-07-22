@@ -70,6 +70,27 @@ class CommunityBoardGraphRuntime:
             on_corruption=on_corruption,
         )
 
+    def open_global_kuzu_db(
+        self,
+        path: Path,
+        *,
+        on_corruption: Callable[[BaseException], None] | None = None,
+    ) -> Any:
+        """Open Global Discovery with its smaller, dedicated native budget."""
+
+        from okto_pulse.core import get_settings
+
+        settings = get_settings()
+        buffer_pool_mb = int(
+            getattr(settings, "kg_global_kuzu_buffer_pool_mb", 128)
+        )
+        return self._runtime()._open_kuzu_db(
+            path,
+            on_corruption=on_corruption,
+            buffer_pool_mb=buffer_pool_mb,
+            graph_scope="global_discovery",
+        )
+
     def new_connection(self, db: Any) -> Any:
         return self._runtime().kuzu.Connection(db)
 

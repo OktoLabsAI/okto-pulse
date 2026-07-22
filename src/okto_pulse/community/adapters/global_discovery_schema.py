@@ -125,6 +125,26 @@ def raise_existing_global_graph_open_failed(
     operation: str,
     exc: BaseException,
 ) -> None:
+    from okto_pulse.community.adapters.graph_memory_pressure import (
+        GraphMemoryPressure,
+        is_graph_memory_pressure_error,
+    )
+
+    if isinstance(exc, GraphMemoryPressure):
+        raise exc
+    if is_graph_memory_pressure_error(exc):
+        raise GraphMemoryPressure(
+            "Existing Global Discovery graph is temporarily unavailable "
+            "because the native allocation budget could not be satisfied",
+            details={
+                "error_code": GraphMemoryPressure.code,
+                "reason_code": GraphMemoryPressure.code,
+                "retryable": True,
+                "corruption": False,
+                "operation": operation,
+                "storage": str(storage_locator),
+            },
+        ) from exc
     logger.error(
         "global_discovery.existing_graph_open_failed_preserved operation=%s err=%s",
         operation,

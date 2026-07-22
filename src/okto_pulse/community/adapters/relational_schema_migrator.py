@@ -120,6 +120,9 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
     ("_migrate_global_discovery_delivery_contract", "post_create_all", False,
      "Create and validate the durable GD delivery ledger, and widen the "
      "Global Update Outbox physical attempt key without losing rows."),
+    ("_migrate_cognitive_source_revision_ledger", "post_create_all", False,
+     "Audit the additive cognitive-source revision ledger and install "
+     "immutable UPDATE/DELETE guards."),
     ("_migrate_global_discovery_recovery_control_plane", "post_create_all", False,
      "Converge the durable Global Discovery recovery attempt, singleton slot, "
      "and claimed-dispatch control-plane schema."),

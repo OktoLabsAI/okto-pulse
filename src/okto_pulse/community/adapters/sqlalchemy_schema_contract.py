@@ -123,6 +123,7 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "global_discovery_delivery_watchdog_control",
         "kg_takedown_state_events",
         "kg_cognitive_sources",
+        "kg_cognitive_source_revisions",
         "kg_curation_proposals",
         "kg_equivalence_ledger",
         "kg_node_subtypes",

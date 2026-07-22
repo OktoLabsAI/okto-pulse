@@ -222,7 +222,7 @@ def test_marker_survives_open_failure(tmp_path, monkeypatch):
     def _boom(*_a, **_kw):
         raise RuntimeError("synthetic open failure")
 
-    monkeypatch.setattr(runtime._runtime(), "open_kuzu_db", _boom)
+    monkeypatch.setattr(runtime._runtime(), "open_global_kuzu_db", _boom)
     with under_global_safe_write("open-fail", "test"):
         with pytest.raises(Exception):
             runtime.bootstrap()
