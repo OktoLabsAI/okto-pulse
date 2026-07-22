@@ -96,4 +96,13 @@ describe('NodePreviewPanel — S5.2 / AC-8', () => {
     expect(panel.getAttribute('role')).toBe('dialog');
     expect(panel.getAttribute('aria-label')).toBe('Preview of Adopt TypeScript strict mode');
   });
+
+  it('closes the preview with Escape', () => {
+    const onClose = vi.fn();
+    render(<NodePreviewPanel node={NODE} onClose={onClose} />);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

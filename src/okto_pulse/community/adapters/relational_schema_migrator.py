@@ -114,6 +114,12 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
     (CREATE_ALL_BOUNDARY_STEP_ID, "create_all_boundary", False,
      "Base.metadata.create_all — the table-create boundary."),
     # --- post_create_all: schema ALTERs applied AFTER create_all ---
+    ("_migrate_add_consolidation_work_kinds", "post_create_all", False,
+     "Rebuild the legacy consolidation queue into the governed multi-kind, "
+     "generation-aware contract."),
+    ("_migrate_global_discovery_delivery_contract", "post_create_all", False,
+     "Create and validate the durable GD delivery ledger, and widen the "
+     "Global Update Outbox physical attempt key without losing rows."),
     ("_migrate_global_discovery_recovery_control_plane", "post_create_all", False,
      "Converge the durable Global Discovery recovery attempt, singleton slot, "
      "and claimed-dispatch control-plane schema."),
@@ -150,6 +156,9 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
     ("_migrate_add_cancellation_columns", "post_create_all", False,
      "Add cancellation-justification columns (reason/at/by) to ideations, "
      "refinements, specs, sprints, and cards (ITEM 17)."),
+    ("_migrate_pagination_indices_and_positions", "post_create_all", False,
+     "Pagination covering indices + dense card-position backfill "
+     "(actives 0..n-1, archived n..m; idempotent — spec 8b33f9a8)."),
     ("_migrate_repair_known_fixture_fk_orphans", "post_create_all", True,
      "Purge only allowlisted historical test-fixture pollution (including its "
      "synthetic board), then require a clean SQLite foreign_key_check."),

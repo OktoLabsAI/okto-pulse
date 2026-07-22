@@ -100,7 +100,9 @@ async def _require_card_write_access(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     if kb_id is None:
         return
     try:
@@ -110,7 +112,11 @@ async def _require_card_write_access(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        detail = "Card not found" if exc.entity_type == "card" else "Knowledge entry not found"
+        detail = (
+            "Card not found"
+            if exc.entity_type == "card"
+            else "Knowledge entry not found"
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
@@ -126,7 +132,9 @@ async def get_card(
             GetCardCommand(card_id), actor=RESTAdapterContract.actor(user_id), uow=uow
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     return result.card
 
 
@@ -153,7 +161,9 @@ async def get_bug_regression_scenario_candidates(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     except BugRegressionScenarioPreviewError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_dict())
     return result.payload
@@ -176,9 +186,13 @@ async def update_card(
     except CardOperationError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except CardResourceReadOnlyError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     return result.card
 
 
@@ -197,7 +211,12 @@ async def move_card(
             uow=uow,
         )
     except CancellationReasonRequiredError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
+        detail = e.to_dict()
+        # Pagination/move clients consume the typed REST error discriminator
+        # under ``detail.error``.  Keep the legacy ``code`` key additive for
+        # existing callers while publishing the canonical route envelope.
+        detail["error"] = e.code
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
     except CardOperationError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except GateContractError as e:
@@ -210,11 +229,14 @@ async def move_card(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     return result.card
 
 
 # ---- Dependencies ----
+
 
 @router.get("/{card_id}/dependencies")
 async def get_dependencies(
@@ -230,7 +252,9 @@ async def get_dependencies(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     return [
         {"id": d.id, "title": d.title, "status": d.status.value}
         for d in result.dependencies
@@ -251,14 +275,18 @@ async def get_dependents(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     return [
         {"id": d.id, "title": d.title, "status": d.status.value}
         for d in result.dependents
     ]
 
 
-@router.post("/{card_id}/dependencies/{depends_on_id}", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{card_id}/dependencies/{depends_on_id}", status_code=status.HTTP_201_CREATED
+)
 async def add_dependency(
     card_id: str,
     depends_on_id: str,
@@ -278,11 +306,19 @@ async def add_dependency(
             detail="Dependência circular detectada ou auto-referência",
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
-    return {"id": result.dependency_id, "card_id": card_id, "depends_on_id": depends_on_id}
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
+    return {
+        "id": result.dependency_id,
+        "card_id": card_id,
+        "depends_on_id": depends_on_id,
+    }
 
 
-@router.delete("/{card_id}/dependencies/{depends_on_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{card_id}/dependencies/{depends_on_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def remove_dependency(
     card_id: str,
     depends_on_id: str,
@@ -297,7 +333,9 @@ async def remove_dependency(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dependency not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Dependency not found"
+        )
 
 
 @router.get("/{card_id}/activity", response_model=list[ActivityLogResponse])
@@ -315,7 +353,9 @@ async def get_card_activity(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     return result.activity
 
 
@@ -333,11 +373,14 @@ async def get_card_seen_status(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     return result.data
 
 
 # ---- Bug card: link test tasks ----
+
 
 @router.post("/{card_id}/test-tasks", status_code=status.HTTP_201_CREATED)
 async def link_test_task_to_bug(
@@ -360,7 +403,9 @@ async def link_test_task_to_bug(
         detail = "Card not found" if e.entity_type == "card" else "Test task not found"
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
+        )
 
     return {
         "success": True,
@@ -370,7 +415,9 @@ async def link_test_task_to_bug(
     }
 
 
-@router.delete("/{card_id}/test-tasks/{test_task_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{card_id}/test-tasks/{test_task_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def unlink_test_task_from_bug(
     card_id: str,
     test_task_id: str,
@@ -385,7 +432,9 @@ async def unlink_test_task_from_bug(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        detail = "Card not found" if exc.entity_type == "card" else "Test task not found"
+        detail = (
+            "Card not found" if exc.entity_type == "card" else "Test task not found"
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
@@ -398,12 +447,16 @@ async def delete_card(
     """Delete a card."""
     try:
         await DeleteCardUseCase().execute(
-            DeleteCardCommand(card_id), actor=RESTAdapterContract.actor(user_id), uow=uow
+            DeleteCardCommand(card_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
         )
     except CardOperationError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
 
 
 # ---- Task Validation Endpoints ----
@@ -433,9 +486,13 @@ async def submit_task_validation(
             detail=_resource_gate_detail(e),
         )
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
+        )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     return result.validation
 
 
@@ -478,11 +535,15 @@ async def get_task_validation(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Validation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Validation not found"
+        )
     return result.validation
 
 
-@router.delete("/{card_id}/validations/{validation_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{card_id}/validations/{validation_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_task_validation(
     card_id: str,
     validation_id: str,
@@ -499,7 +560,9 @@ async def delete_task_validation(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Validation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Validation not found"
+        )
 
 
 # ==================== CARD KNOWLEDGE BASE ====================
@@ -521,6 +584,7 @@ class CardKnowledgeUpdate(BaseModel):
     description: Optional[str] = None
     mime_type: Optional[str] = None
 
+
 @router.get("/{card_id}/knowledge")
 async def list_card_knowledge(
     card_id: str,
@@ -535,7 +599,9 @@ async def list_card_knowledge(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
+        )
     return {"card_id": card_id, "knowledge": result.knowledge}
 
 
@@ -569,7 +635,9 @@ async def get_card_knowledge(
             uow=uow,
         )
     except EntityNotFoundError as e:
-        detail = "Card not found" if e.entity_type == "card" else "Knowledge entry not found"
+        detail = (
+            "Card not found" if e.entity_type == "card" else "Knowledge entry not found"
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
     return result.knowledge
 
@@ -620,11 +688,16 @@ async def download_card_knowledge(
             uow=uow,
         )
     except EntityNotFoundError as e:
-        detail = "Card not found" if e.entity_type == "card" else "Knowledge entry not found"
+        detail = (
+            "Card not found" if e.entity_type == "card" else "Knowledge entry not found"
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
     target = result.knowledge
 
-    safe_title = "".join(c if c.isalnum() or c in "-_." else "_" for c in (target.get("title") or "knowledge"))
+    safe_title = "".join(
+        c if c.isalnum() or c in "-_." else "_"
+        for c in (target.get("title") or "knowledge")
+    )
     filename = f"{safe_title or 'knowledge'}.md"
     body = (
         f"# {target.get('title', '')}\n\n"

@@ -7,6 +7,25 @@ from pydantic import BaseModel, Field
 
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.lookups import (
+    lookup_page_request,
+    lookup_response,
+    validate_spec_lookup_query,
+)
+from okto_pulse.community.api.pagination import (
+    board_scope,
+    pagination_requested,
+    project_page,
+    record_fields,
+    resolve_window,
+    run_paginated_list,
+    search_groups,
+    validate_pagination_query,
+)
+from okto_pulse.core.ports.application_persistence import (
+    ApplicationFilter,
+    PageRequest,
+)
 from okto_pulse.core.application.use_cases import (
     AnswerSpecQuestionCommand,
     AnswerSpecQuestionUseCase,
@@ -74,11 +93,14 @@ from okto_pulse.community.adapters.test_evidence import (
 )
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.models.schemas import (
+    PageEnvelope,
+    LookupResponse,
     SpecCreate,
     SpecKnowledgeCreate,
     SpecKnowledgeResponse,
     SpecKnowledgeSummary,
     SpecMove,
+    SpecPageItem,
     SpecResponse,
     SpecSummary,
     SpecUpdate,
@@ -295,15 +317,81 @@ async def create_spec(
     return result.spec
 
 
-@router.get("/boards/{board_id}/specs", response_model=list[SpecSummary])
+@router.get(
+    "/boards/{board_id}/specs",
+    response_model=list[SpecSummary] | PageEnvelope[SpecPageItem],
+    dependencies=[Depends(validate_pagination_query)],
+)
 async def list_specs(
     board_id: str,
     status_filter: str | None = Query(None, alias="status"),
+    search: str | None = Query(None),
     include_archived: bool = Query(False, alias="include_archived"),
+    offset: int | None = Query(None),
+    limit: int | None = Query(None),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List specs for a board, optionally filtered by status."""
+    """List specs for a board, optionally filtered by status.
+
+    With ``offset``/``limit``: paginated envelope (spec 8b33f9a8); without:
+    legacy shape unchanged (DR9).
+    """
+    if pagination_requested(offset, limit):
+        command = ListSpecsCommand(
+            board_id,
+            status_filter=status_filter,
+            include_archived=include_archived,
+        )
+        actor = RESTAdapterContract.actor(user_id)
+        use_case = ListSpecsUseCase()
+        try:
+            resolved_offset, resolved_limit = resolve_window(offset, limit)
+            filters: tuple[ApplicationFilter, ...] = ()
+            if status_filter:
+                filters = (ApplicationFilter("status", "eq", status_filter),)
+            page = await run_paginated_list(
+                uow,
+                PageRequest(
+                    surface="spec_list",
+                    scope=board_scope(board_id, include_archived=include_archived),
+                    offset=resolved_offset,
+                    limit=resolved_limit,
+                    filters=filters,
+                    any_groups=search_groups(search, ("title", "description")),
+                ),
+                preflight=lambda: use_case.preflight(
+                    command, actor=actor, uow=uow
+                ),
+            )
+        except EntityNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+            )
+        return project_page(
+            page,
+            lambda record: SpecPageItem(
+                **record_fields(
+                    record,
+                    (
+                        "id",
+                        "board_id",
+                        "ideation_id",
+                        "refinement_id",
+                        "title",
+                        "description",
+                        "status",
+                        "version",
+                        "assignee_id",
+                        "created_by",
+                        "created_at",
+                        "updated_at",
+                        "labels",
+                        "archived",
+                    ),
+                )
+            ),
+        )
     try:
         result = await ListSpecsUseCase().execute(
             ListSpecsCommand(
@@ -315,6 +403,57 @@ async def list_specs(
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
     return result.specs
+
+
+@router.get(
+    "/boards/{board_id}/specs/lookup",
+    response_model=LookupResponse,
+    dependencies=[Depends(validate_spec_lookup_query)],
+)
+async def lookup_specs(
+    board_id: str,
+    search: str | None = Query(None),
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(20),
+    offset: int = Query(0),
+    linked_to_cards: bool = Query(False),
+    include_archived_cards: bool = Query(False),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Return a compact, purpose-filtered spec typeahead page."""
+
+    command = ListSpecsCommand(
+        board_id,
+        status_filter=None,
+        include_archived=False,
+    )
+    actor = RESTAdapterContract.actor(user_id)
+    try:
+        page = await run_paginated_list(
+            uow,
+            lookup_page_request(
+                "spec_lookup",
+                board_id,
+                statuses=status_filter,
+                search=search,
+                offset=offset,
+                limit=limit,
+                linked_to_cards=linked_to_cards,
+                include_archived_cards=include_archived_cards,
+            ),
+            preflight=lambda: ListSpecsUseCase().preflight(
+                command,
+                actor=actor,
+                uow=uow,
+            ),
+        )
+    except EntityNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Board not found",
+        )
+    return lookup_response(page)
 
 
 @router.get("/specs/{spec_id}", response_model=SpecResponse)

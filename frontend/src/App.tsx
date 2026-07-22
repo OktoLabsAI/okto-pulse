@@ -18,6 +18,7 @@ import { GlobalKGActivityIndicator } from '@/components/knowledge/GlobalKGActivi
 import { KGHealthView } from '@/components/knowledge/KGHealthView';
 import { CognitiveActionCenterView } from '@/components/knowledge/CognitiveActionCenterView';
 import { ModalStackProvider, useOptionalModalStack } from '@/contexts/ModalStackContext';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { ModalStackRenderer } from '@/components/modals/ModalStackRenderer';
 import { LineageGraphModal } from '@/components/traceability';
 import { EvidenceGateSkipBanner } from '@/components/banners/EvidenceGateSkipBanner';
@@ -357,6 +358,10 @@ function App() {
     setShowCognitiveActionCenter(false);
   };
 
+  useEscapeToClose(closeAnalytics, { enabled: showAnalytics });
+  useEscapeToClose(closeKGHealth, { enabled: showKGHealth });
+  useEscapeToClose(closeCognitiveActionCenter, { enabled: showCognitiveActionCenter });
+
   useEffect(() => {
     if (isLoaded && isSignedIn) {
       loadBoards();
@@ -389,8 +394,6 @@ function App() {
     try {
       const board = await api.getBoard(boardId);
       setCurrentBoard(board);
-      const columns = await api.getBoardColumns(boardId);
-      setColumns(columns);
     } catch {
       setError('Failed to load board');
       toast.error('Failed to load board');
@@ -405,8 +408,6 @@ function App() {
     try {
       const board = await api.getBoard(currentBoard.id);
       setCurrentBoard(board);
-      const columns = await api.getBoardColumns(currentBoard.id);
-      setColumns(columns);
       setRefreshKey((k) => k + 1);
       toast.success('Board refreshed!');
     } catch {
@@ -544,7 +545,9 @@ function App() {
                 {activeTab === 'refinements' && <RefinementsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'specs' && <SpecsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'sprints' && <SprintsPanel key={refreshKey} boardId={currentBoard.id} />}
-                {activeTab === 'tasks' && <KanbanBoard boardId={currentBoard.id} />}
+                {activeTab === 'tasks' && (
+                  <KanbanBoard boardId={currentBoard.id} refreshKey={refreshKey} />
+                )}
               </div>
             </>
           ) : (

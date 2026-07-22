@@ -21,6 +21,7 @@ import pulseWordmarkLight from '@/assets/pulse-wordmark-light.svg';
 import pulseIcon from '@/assets/pulse-icon.svg';
 import oktolabsIcon from '@/assets/oktolabs-icon.svg';
 import { useTheme } from '@/hooks/useTheme';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { useDashboardApi } from '@/services/api';
 import toast from 'react-hot-toast';
 import type { BoardSettings } from '@/types';
@@ -80,6 +81,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     }
     onKnowledgeGraphOpenChange?.(open);
   };
+
+  useEscapeToClose(() => setShowSettings(false), { enabled: showSettings });
+  useEscapeToClose(() => setShowKnowledgeGraph(false), { enabled: showKnowledgeGraph });
+  useEscapeToClose(() => setShowAbout(false), { enabled: showAbout });
 
   // Close on outside click
   useEffect(() => {

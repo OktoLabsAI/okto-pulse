@@ -70,11 +70,13 @@ import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { ArchitectureTab } from '@/components/architecture';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface IdeationModalProps {
   ideationId: string;
   boardId: string;
   onClose: () => void;
+  onEscape?: () => void;
   onChanged: () => void;
 }
 
@@ -1000,7 +1002,7 @@ function ScopeGauge({ label, value }: { label: string; value: number }) {
    Main IdeationModal
    ============================================================ */
 
-export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChanged }: IdeationModalProps) {
+export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape, onChanged }: IdeationModalProps) {
   const api = useDashboardApi();
   const currentBoard = useCurrentBoard();
   const [ideation, setIdeation] = useState<Ideation | null>(null);
@@ -1012,6 +1014,8 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
   const [expanded, setExpanded] = useState(false);
   const [derivingSpec, setDerivingSpec] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
+  useEscapeToClose(onEscape ?? onClose);
 
   // The Cancellation tab only exists while the ideation is cancelled.
   useEffect(() => {

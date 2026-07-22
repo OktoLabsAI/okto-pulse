@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Archive,
   ArchiveRestore,
   BookOpen,
   ChevronRight,
   GitMerge,
-  GitBranch,
-  Link2,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -15,17 +13,19 @@ import {
   X,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { useDashboardApi } from '@/services/api';
+import { useDashboardApi, type StoryPageItem } from '@/services/api';
 import { SearchInput } from '@/components/shared/SearchInput';
+import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
-import { openLineageGraph } from '@/components/traceability';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useViewMode } from '@/hooks/useViewMode';
 import { sanitizePreview } from '@/lib/sanitizePreview';
-import type { StoryStatus, StorySummary, TopicSummary } from '@/types';
+import type { StoryStatus, TopicSummary } from '@/types';
 import { STORY_STATUS_LABELS } from '@/types';
 import { StoryModal } from './StoryModal';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { PulseLoader } from '@/components/shared/PulseLoader';
+import { usePersistedPagination } from '@/hooks/usePersistedPagination';
 
 interface StoriesPanelProps {
   boardId: string;
@@ -74,11 +74,18 @@ function topicErrorMessage(error: unknown): string {
 
 export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
   const api = useDashboardApi();
+  const apiRef = useRef(api);
+  apiRef.current = api;
   const permissions = usePermissions(boardId);
   const [topics, setTopics] = useState<TopicSummary[]>([]);
-  const [stories, setStories] = useState<StorySummary[]>([]);
+  const [stories, setStories] = useState<StoryPageItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [totalFiltered, setTotalFiltered] = useState(0);
+  const [totalOverall, setTotalOverall] = useState(0);
+  const [reloadKey, setReloadKey] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'' | StoryStatus>('');
   const [topicFilter, setTopicFilter] = useState('');
   const [showArchived, setShowArchived] = useState(false);
@@ -96,6 +103,19 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
   const [mergeConfirmed, setMergeConfirmed] = useState(false);
   const [topicActionError, setTopicActionError] = useState('');
   const [topicActionBusy, setTopicActionBusy] = useState(false);
+
+  useEscapeToClose(() => setTopicFormOpen(false), {
+    enabled: topicFormOpen,
+    canClose: !topicActionBusy,
+  });
+  useEscapeToClose(() => setEditingTopic(null), {
+    enabled: Boolean(editingTopic),
+    canClose: !topicActionBusy,
+  });
+  useEscapeToClose(() => setMergeSourceTopic(null), {
+    enabled: Boolean(mergeSourceTopic),
+    canClose: !topicActionBusy,
+  });
   const { viewMode, setViewMode } = useViewMode('stories', 'list');
   const canCreateTopic = permissions.has('topic.entity.create');
   const canEditTopic = permissions.has('topic.entity.edit_fields');
@@ -103,50 +123,77 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
   const canRestoreTopic = permissions.has('topic.entity.restore');
   const canDeleteTopic = permissions.has('topic.entity.delete');
   const canMergeTopic = permissions.has('topic.entity.merge');
+  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('stories');
 
   const canChangeTopicLifecycle = (topic: TopicSummary) => (topic.archived ? canRestoreTopic : canArchiveTopic);
   const hasTopicActions = (topic: TopicSummary) =>
     canEditTopic || canMergeTopic || canDeleteTopic || canChangeTopicLifecycle(topic);
 
   useEffect(() => {
-    load();
-  }, [boardId, statusFilter, topicFilter, showArchived, refreshKey]);
+    let active = true;
+    void apiRef.current.listTopics(boardId, showArchived).then((data) => {
+      if (active) setTopics(data);
+    }).catch(() => {
+      if (active) toast.error('Failed to load topics');
+    });
+    return () => { active = false; };
+  }, [boardId, showArchived, refreshKey, reloadKey]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setLoadError(null);
+    void apiRef.current.listStoriesPage(boardId, {
+      status: statusFilter || undefined,
+      topicId: topicFilter || undefined,
+      search: debouncedSearch || undefined,
+      includeArchived: showArchived,
+      offset: requestIntent.offset,
+      limit: requestIntent.limit,
+      signal: controller.signal,
+    }).then((page) => {
+      if (controller.signal.aborted) return;
+      setStories(page.items);
+      setTotalFiltered(page.total_filtered);
+      setTotalOverall(page.total_overall);
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      const message = error instanceof Error ? error.message : 'Failed to load stories';
+      setLoadError(message);
+      toast.error('Failed to load stories');
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false);
+    });
+    return () => controller.abort();
+  }, [
+    boardId,
+    statusFilter,
+    topicFilter,
+    showArchived,
+    debouncedSearch,
+    refreshKey,
+    reloadKey,
+    requestIntent.offset,
+    requestIntent.limit,
+  ]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const next = searchQuery.trim();
+      if (next === debouncedSearch) return;
+      setDebouncedSearch(next);
+      setPagination({ page: 1, pageSize });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery, debouncedSearch, pageSize, setPagination]);
 
   const load = async () => {
-    setLoading(true);
-    try {
-      const [topicData, storyData] = await Promise.all([
-        api.listTopics(boardId, showArchived),
-        api.listStories(boardId, {
-          status: statusFilter || undefined,
-          topicId: topicFilter || undefined,
-          includeArchived: showArchived,
-        }),
-      ]);
-      setTopics(topicData);
-      setStories(storyData);
-    } catch {
-      toast.error('Failed to load stories');
-    } finally {
-      setLoading(false);
-    }
+    setReloadKey((value) => value + 1);
   };
 
-  const filteredStories = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return stories;
-    return stories.filter((story) => {
-      const haystack = [
-        story.title,
-        story.description,
-        story.actor || '',
-        story.goal || '',
-        story.benefit || '',
-        ...(story.labels || []),
-      ].join(' ').toLowerCase();
-      return haystack.includes(query);
-    });
-  }, [searchQuery, stories]);
+  const resetPage = () => {
+    setPagination({ page: 1, pageSize });
+  };
 
   const selectedTopic = topics.find((topic) => topic.id === topicFilter) || null;
 
@@ -303,8 +350,7 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Stories</h2>
           <span className="text-sm text-gray-400">
-            ({filteredStories.length}
-            {searchQuery ? ` of ${stories.length}` : ''})
+            ({totalFiltered} of {totalOverall})
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -331,7 +377,10 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
           <button
             key={filter.value || 'all'}
             type="button"
-            onClick={() => setStatusFilter(filter.value)}
+            onClick={() => {
+              setStatusFilter(filter.value);
+              resetPage();
+            }}
             className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
               statusFilter === filter.value
                 ? 'bg-accent-500 text-white shadow-sm'
@@ -343,7 +392,10 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
         ))}
         <button
           type="button"
-          onClick={() => setShowArchived((value) => !value)}
+          onClick={() => {
+            setShowArchived((value) => !value);
+            resetPage();
+          }}
           className={`ml-2 rounded-full px-2.5 py-1 text-xs transition-colors ${
             showArchived
               ? 'bg-amber-500 text-white'
@@ -409,7 +461,10 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
           <div className="space-y-1">
             <button
               type="button"
-              onClick={() => setTopicFilter('')}
+              onClick={() => {
+                setTopicFilter('');
+                resetPage();
+              }}
               className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
                 topicFilter === ''
                   ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
@@ -417,7 +472,7 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
               }`}
             >
               <span>All topics</span>
-              <span className="text-xs text-gray-400">{stories.length}</span>
+              <span className="text-xs text-gray-400">{totalOverall}</span>
             </button>
             {topics.map((topic) => (
               <div
@@ -430,7 +485,10 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
               >
                 <button
                   type="button"
-                  onClick={() => setTopicFilter(topic.id)}
+                  onClick={() => {
+                    setTopicFilter(topic.id);
+                    resetPage();
+                  }}
                   className="flex min-w-0 flex-1 items-center justify-between gap-2 px-2.5 py-2 text-left text-sm"
                 >
                   <span className="min-w-0 truncate">
@@ -499,6 +557,10 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
         <section className="min-h-0 overflow-auto">
           {loading ? (
             <PulseLoader size="sm" label="Loading stories..." />
+          ) : loadError ? (
+            <div className="py-12 text-center text-sm text-red-600" role="alert">
+              Could not load stories.
+            </div>
           ) : topics.length === 0 ? (
             <div className="flex min-h-[300px] items-center justify-center rounded-xl border border-dashed border-surface-300 dark:border-surface-700">
               <div className="text-center">
@@ -515,12 +577,14 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
                 </button>
               </div>
             </div>
-          ) : filteredStories.length === 0 ? (
+          ) : stories.length === 0 ? (
             <div className="flex min-h-[300px] items-center justify-center rounded-xl border border-dashed border-surface-300 dark:border-surface-700">
               <div className="text-center">
                 <BookOpen size={36} className="mx-auto mb-3 text-gray-300 dark:text-gray-600" />
                 <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">
-                  {searchQuery ? `No results for "${searchQuery}"` : 'No stories here'}
+                  {totalFiltered > 0
+                    ? `Page ${page} is out of range`
+                    : searchQuery ? `No results for "${searchQuery}"` : 'No stories here'}
                 </p>
                 <button
                   type="button"
@@ -541,7 +605,7 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
               }`}
               data-testid={`stories-${viewMode}`}
             >
-              {filteredStories.map((story) => (
+              {stories.map((story) => (
                 <div
                   key={story.id}
                   onClick={() => setSelectedStoryId(story.id)}
@@ -583,29 +647,10 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
                       )}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
-                      {story.screen_mockups && story.screen_mockups.length > 0 && (
+                      {story.screen_mockups_count > 0 && (
                         <span className="inline-flex items-center gap-1 rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
-                          {story.screen_mockups.length} mockups
+                          {story.screen_mockups_count} mockups
                         </span>
-                      )}
-                      {story.ideation_links.length > 0 && (
-                        <span className="inline-flex items-center gap-1 rounded bg-cyan-100 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300">
-                          <Link2 size={10} />
-                          {story.ideation_links.length}
-                        </span>
-                      )}
-                      {story.ideation_links.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openLineageGraph('story', story.id);
-                          }}
-                          className="rounded p-1 text-gray-400 opacity-0 transition-opacity hover:bg-gray-100 hover:text-cyan-500 group-hover:opacity-100 dark:hover:bg-gray-700"
-                          title="Open lineage graph"
-                        >
-                          <GitBranch size={14} />
-                        </button>
                       )}
                       {story.archived ? <ArchiveRestore size={14} className="text-gray-300" /> : <Archive size={14} className="text-gray-300" />}
                       <ChevronRight size={16} className="text-gray-300 transition-colors group-hover:text-blue-500 dark:text-gray-600" />
@@ -615,6 +660,21 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
               ))}
             </div>
           )}
+          <AccessiblePaginator
+            page={page}
+            pageSize={pageSize}
+            totalFiltered={totalFiltered}
+            totalOverall={totalOverall}
+            itemCount={stories.length}
+            loading={loading}
+            error={loadError}
+            onRetry={load}
+            onPaginationChange={setPagination}
+            ariaLabel="Stories pagination"
+            emptyMessage="No stories match the active filters."
+            className="mt-3"
+            testId="stories-pagination"
+          />
         </section>
       </div>
 

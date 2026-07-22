@@ -134,6 +134,80 @@ async def test_application_persistence_synchronizes_legacy_direct_commit(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_ideation_derivation_pending_treats_null_complexity_as_false(tmp_path):
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'ideation-derivation.db'}"
+    )
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        info={"realm_scope": RealmScope.local()},
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    adapter = CommunitySqlAlchemyApplicationPersistence()
+    board_id = str(uuid.uuid4())
+    null_id = str(uuid.uuid4())
+    small_id = str(uuid.uuid4())
+    async with factory() as session:
+        await adapter.add(
+            session,
+            ApplicationRecord(
+                entity="board",
+                values={
+                    "id": board_id,
+                    "name": "Ideation derivation",
+                    "owner_id": "owner-derivation",
+                },
+            ),
+        )
+        for ideation_id, complexity in ((null_id, None), (small_id, "small")):
+            await adapter.add(
+                session,
+                ApplicationRecord(
+                    entity="ideation",
+                    values={
+                        "id": ideation_id,
+                        "board_id": board_id,
+                        "title": ideation_id,
+                        "status": "done",
+                        "complexity": complexity,
+                        "created_by": "owner-derivation",
+                    },
+                ),
+            )
+        await adapter.commit(session)
+
+    async with factory() as session:
+        pending = await adapter.list(
+            session,
+            ApplicationQuery(
+                entity="ideation",
+                filters=(
+                    ApplicationFilter("board_id", "eq", board_id),
+                    ApplicationFilter("derivation_pending", "is_true"),
+                ),
+            ),
+        )
+        not_pending = await adapter.list(
+            session,
+            ApplicationQuery(
+                entity="ideation",
+                filters=(
+                    ApplicationFilter("board_id", "eq", board_id),
+                    ApplicationFilter("derivation_pending", "is_false"),
+                ),
+            ),
+        )
+
+    assert {row.id for row in pending} == {small_id}
+    assert {row.id for row in not_pending} == {null_id}
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_agent_seen_item_is_board_scoped(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'seen-scope.db'}")
     factory = async_sessionmaker(

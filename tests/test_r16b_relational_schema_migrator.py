@@ -144,10 +144,11 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    assert len(migrate_names) == 38, (
-        f"expected 38 _migrate_*, found {len(migrate_names)}"
+    # 41 = 38 historical steps + pagination + governed queue + GD delivery.
+    assert len(migrate_names) == 41, (
+        f"expected 41 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 38
+    assert len(ledger_migrate_ids) == 41
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]
@@ -260,11 +261,22 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
 
     repair_step = "_migrate_repair_known_fixture_fk_orphans"
     recovery_convergence_step = "_migrate_global_discovery_recovery_control_plane"
-    first_run_skip_steps = {repair_step}
-    replay_skip_steps = {repair_step, recovery_convergence_step}
+    governed_queue_convergence_step = "_migrate_add_consolidation_work_kinds"
+    delivery_convergence_step = "_migrate_global_discovery_delivery_contract"
+    first_run_skip_steps = {
+        repair_step,
+        governed_queue_convergence_step,
+        delivery_convergence_step,
+    }
+    replay_skip_steps = {
+        repair_step,
+        recovery_convergence_step,
+        governed_queue_convergence_step,
+        delivery_convergence_step,
+    }
 
-    # First run: clean databases skip the fixture repair and the R5 convergence
-    # ALTER because create_all already emitted the complete recovery schema.
+    # First run: clean databases skip fixture repair and both convergence
+    # rebuilds because create_all already emitted their complete schemas.
     assert r1.is_success
     assert len(r1.applied_steps) == total - len(first_run_skip_steps)
     assert {step.step_id for step in r1.skipped_steps} == first_run_skip_steps

@@ -204,7 +204,11 @@ export function TechnicalRequirementsTab({
                     onChange={(event) => setEditDraft(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') saveEdit();
-                      if (event.key === 'Escape') cancelEdit();
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        cancelEdit();
+                      }
                     }}
                     className="flex-1 px-2 py-1 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:border-gray-600"
                     autoFocus

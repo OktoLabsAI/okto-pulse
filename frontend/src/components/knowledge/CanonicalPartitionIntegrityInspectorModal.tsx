@@ -19,6 +19,7 @@ import {
   type CanonicalPartitionIntegrityItem,
   type CanonicalPartitionIntegrityResponse,
 } from '@/services/kg-health-api';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface CanonicalPartitionIntegrityInspectorModalProps {
   boardId: string;
@@ -46,6 +47,8 @@ export function CanonicalPartitionIntegrityInspectorModal({
   const [data, setData] = useState<CanonicalPartitionIntegrityResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEscapeToClose(onClose);
 
   const fetchData = useCallback(async () => {
     setLoading(true);

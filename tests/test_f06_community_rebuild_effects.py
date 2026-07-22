@@ -80,7 +80,14 @@ def _queue_db(tmp_path: Path) -> Path:
             "triggered_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, "
             "last_error TEXT, claimed_by_session_id TEXT, claimed_at TEXT, "
             "worker_id TEXT, claim_timeout_at TEXT, next_retry_at TEXT, "
-            "UNIQUE(board_id, artifact_type, artifact_id))"
+            "work_kind TEXT NOT NULL DEFAULT 'consolidate', "
+            "generation INTEGER NOT NULL DEFAULT 0, payload JSON, "
+            "CHECK(work_kind IN ('consolidate','stale_reconcile','stale_sweep')))"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX uq_queue_consolidate_board_artifact "
+            "ON consolidation_queue(board_id, artifact_type, artifact_id) "
+            "WHERE work_kind='consolidate'"
         )
     return path
 

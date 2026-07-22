@@ -34,6 +34,7 @@ import { triggerKGTick } from '@/services/kg-tick-api';
 import { getKGHealth } from '@/services/kg-health-api';
 import { DeadLetterInspectorModal } from '@/components/knowledge/DeadLetterInspectorModal';
 import { useDashboardStore } from '@/store/dashboard';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface RuntimeSettingsPanelProps {
   onClose: () => void;
@@ -99,6 +100,7 @@ export function RuntimeSettingsPanel({
   onClose,
   initialTab = 'graphdb',
 }: RuntimeSettingsPanelProps) {
+  useEscapeToClose(onClose);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

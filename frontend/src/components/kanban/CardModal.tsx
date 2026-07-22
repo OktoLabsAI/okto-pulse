@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge } from 'lucide-react';
+import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportCard, downloadMarkdown, markdownFilenameForCard } from '@/lib/exportMarkdown';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
@@ -29,6 +29,7 @@ import { openLineageGraph } from '@/components/traceability';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 import { usePermissions } from '@/hooks/usePermissions';
 import { SettingsToggle } from '@/components/board/BoardSettingsForm';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -253,9 +254,10 @@ function BugWorkflowRemediationPanel({
 interface CardModalProps {
   boardId: string;
   onClose?: () => void;
+  onEscape?: () => void;
 }
 
-export function CardModal({ boardId, onClose }: CardModalProps) {
+export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const api = useDashboardApi();
   const perms = usePermissions(boardId);
   const selectedCardId = useSelectedCard();
@@ -497,6 +499,8 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
     onClose?.();
   };
 
+  useEscapeToClose(onEscape ?? handleClose, { enabled: isOpen });
+
   const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string) => {
     if (!card) return;
 
@@ -707,7 +711,12 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
-                if (e.key === 'Escape') { e.currentTarget.textContent = card?.title || ''; e.currentTarget.blur(); }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.currentTarget.textContent = card?.title || '';
+                  e.currentTarget.blur();
+                }
               }}
             >
               {isLoading ? 'Loading...' : card?.title}
@@ -859,7 +868,12 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                   )}
                   {tab === 'qa' && `Q&A (${card.qa_items.length})`}
                   {tab === 'comments' && `Comments (${card.comments.length})`}
-                  {tab === 'activity' && 'Activity'}
+                  {tab === 'activity' && (
+                    <>
+                      <History size={13} className="inline mr-1" />
+                      Activity
+                    </>
+                  )}
                   {tab === 'cancellation' && 'Cancellation'}
                 </button>
               ))}
@@ -2588,9 +2602,7 @@ function ActivityTab({ cardId, api }: { cardId: string; api: ReturnType<typeof u
       .finally(() => setLoading(false));
   }, [cardId]);
 
-  if (loading) return <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>;
-
-  return <ActivityLogList entries={logs} />;
+  return <ActivityLogList entries={logs} loading={loading} />;
 }
 
 // Markdown renderer with prose styling

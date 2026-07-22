@@ -58,7 +58,10 @@ def schema_manifest(
             {
                 "name": index.name,
                 "unique": bool(index.unique),
-                "expressions": sorted(str(expression) for expression in index.expressions),
+                # Index expression order is DDL-significant: ``(a, b)`` and
+                # ``(b, a)`` serve different access paths and must never hash
+                # to the same governed schema contract.
+                "expressions": [str(expression) for expression in index.expressions],
             }
             for index in table.indexes
         ]
@@ -106,7 +109,7 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 # board_id to agent_seen_items. Keep the pre-extraction hash above immutable so
 # migration provenance remains independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "03330737a9fa625512dae9ef7dc7c7e97cb98400b75b6e2f7f8df8eb6921a1f3"
+    "bd60a191fd35f9726351492447709a3ec51f1089292a40f19753d705ba21a50c"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
@@ -114,6 +117,11 @@ CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
 # schema matches the governed Community contract.
 COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
     {
+        "artifact_deletion_tombstones",
+        "global_discovery_delivery_ledger",
+        "global_discovery_delivery_redrive_control",
+        "global_discovery_delivery_watchdog_control",
+        "kg_takedown_state_events",
         "kg_cognitive_sources",
         "kg_curation_proposals",
         "kg_equivalence_ledger",

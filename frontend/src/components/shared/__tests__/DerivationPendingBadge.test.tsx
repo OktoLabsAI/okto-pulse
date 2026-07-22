@@ -141,7 +141,7 @@ describe('DerivationPendingBadge component', () => {
 });
 
 describe('derivation pending badge panel wiring', () => {
-  it('uses the shared helper in list/detail surfaces without per-card refinement fetches', () => {
+  it('uses server-side list filters and shared helpers in detail surfaces without per-card fetches', () => {
     const ideationsPanel = readFileSync(
       join(process.cwd(), 'src/components/ideations/IdeationsPanel.tsx'),
       'utf8',
@@ -159,13 +159,12 @@ describe('derivation pending badge panel wiring', () => {
       'utf8',
     );
 
-    expect(ideationsPanel).toContain('getIdeationPendingDerivationLabel(ideation)');
     expect(ideationsPanel).toContain('ideations-no-derivation-filter');
-    expect(ideationsPanel).toContain('derivationFilteredIdeations');
+    expect(ideationsPanel).toContain('derivationPending: showWithoutDerivation ? true : undefined');
+    expect(ideationsPanel).not.toContain('derivationFilteredIdeations');
     expect(ideationModal).toContain('getIdeationPendingDerivationLabel(ideation)');
-    expect(refinementsPanel).toContain('getRefinementPendingDerivationLabel(refinement)');
     expect(refinementsPanel).toContain('refinements-no-derivation-filter');
-    expect(refinementsPanel).toContain('statusFilteredRefinements.filter(({ refinement }) => Boolean(getRefinementPendingDerivationLabel(refinement)))');
+    expect(refinementsPanel).toContain('derivationPending: showWithoutDerivation ? true : undefined');
     expect(refinementModal).toContain('getRefinementPendingDerivationLabel(refinement)');
     expect(refinementsPanel).not.toContain('api.getRefinement(refinement.id)');
   });

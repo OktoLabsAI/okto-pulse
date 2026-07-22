@@ -14,6 +14,7 @@ import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
 import toast from 'react-hot-toast';
 import type { BoardGuidelineEntry, DefaultGuidelineCandidatesResponse, Guideline } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface GuidelinesPanelProps {
   boardId: string;
@@ -23,6 +24,7 @@ interface GuidelinesPanelProps {
 type Tab = 'board' | 'global';
 
 export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
+  useEscapeToClose(onClose);
   const api = useDashboardApi();
   const importExportApi = useImportExportApi();
   const [activeTab, setActiveTab] = useState<Tab>('global');

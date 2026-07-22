@@ -17,6 +17,7 @@ import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { BoardSettings, SpecValidationSubmitPayload } from '@/types';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface SubmitSpecValidationModalProps {
   specId: string;
@@ -47,6 +48,8 @@ export function SubmitSpecValidationModal({
   const [recommendation, setRecommendation] = useState<'approve' | 'reject' | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
+
+  useEscapeToClose(onClose, { canClose: !submitting, priority: 10 });
 
   const minCompleteness = settings.min_spec_completeness ?? 80;
   const minAssertiveness = settings.min_spec_assertiveness ?? 80;

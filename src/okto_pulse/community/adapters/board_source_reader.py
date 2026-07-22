@@ -28,6 +28,7 @@ from okto_pulse.core.kg.board_source_store import (
     updated_at,
 )
 from okto_pulse.core.kg.interfaces.board_source_reader import (
+    BoardSourceSnapshot,
     SourceReadFailure,
     SourceUnavailableError,
 )
@@ -44,6 +45,49 @@ ARTIFACT_QUERIES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("refinement", "refinements", "status", REFINEMENT_CONTENT_COLUMNS),
     ("sprint", "sprints", "status", SPRINT_CONTENT_COLUMNS),
 )
+
+_REQUIRED_SOURCE_TABLES = frozenset(
+    {
+        "boards",
+        *(table for _, table, _, _ in ARTIFACT_QUERIES),
+        "cards",
+        "amendment_hotfix_revisions",
+    }
+)
+
+_REQUIRED_SOURCE_COLUMNS: dict[str, frozenset[str]] = {
+    "boards": frozenset({"id"}),
+    **{
+        table: frozenset(
+            {
+                "id",
+                "board_id",
+                "created_at",
+                status_col,
+                *content_cols,
+            }
+        )
+        for _, table, status_col, content_cols in ARTIFACT_QUERIES
+    },
+    "cards": frozenset(
+        {
+            "id",
+            "board_id",
+            "created_at",
+            "status",
+            *CARD_CONTENT_COLUMNS,
+        }
+    ),
+    "amendment_hotfix_revisions": frozenset(
+        {
+            "id",
+            "board_id",
+            "created_at",
+            "status",
+            *AMENDMENT_CONTENT_COLUMNS,
+        }
+    ),
+}
 
 
 def resolve_pulse_db_path() -> Path:
@@ -295,14 +339,14 @@ class CommunityBoardSourceReader:
             return Path(self.db_path_provider())
         return resolve_pulse_db_path()
 
-    def fetch(self, board_id: str) -> list[dict[str, Any]]:
+    def fetch(self, board_id: str) -> BoardSourceSnapshot:
         db_path = self._path()
         if not db_path.exists():
             logger.warning(
-                "kg.board_source_reader.db_missing path=%s - returning empty",
+                "kg.board_source_reader.db_missing path=%s - snapshot incomplete",
                 db_path,
             )
-            return []
+            return BoardSourceSnapshot(rows=(), complete=False, cause="db_missing")
 
         try:
             conn = sqlite3.connect(
@@ -318,6 +362,10 @@ class CommunityBoardSourceReader:
 
         conn.row_factory = sqlite3.Row
         try:
+            # sqlite3 does not open a transaction for a SELECT by default.  An
+            # explicit read transaction keeps schema preflight and row
+            # collection pinned to one coherent database snapshot.
+            conn.execute("BEGIN")
             return self._fetch_conn(conn, board_id)
         except sqlite3.Error as exc:
             raise SourceReadFailure(
@@ -327,20 +375,70 @@ class CommunityBoardSourceReader:
         finally:
             conn.close()
 
-    def _fetch_conn(self, conn: sqlite3.Connection, board_id: str) -> list[dict[str, Any]]:
+    def _fetch_conn(
+        self,
+        conn: sqlite3.Connection,
+        board_id: str,
+    ) -> BoardSourceSnapshot:
+        tables = {
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        missing_tables = sorted(_REQUIRED_SOURCE_TABLES - tables)
+        if missing_tables:
+            logger.warning(
+                "kg.board_source_reader.table_missing tables=%s - snapshot incomplete",
+                ",".join(missing_tables),
+            )
+            return BoardSourceSnapshot(
+                rows=(),
+                complete=False,
+                cause="table_missing",
+            )
+
+        missing_columns: dict[str, list[str]] = {}
+        for table, required in _REQUIRED_SOURCE_COLUMNS.items():
+            missing = required - _table_columns(conn, table)
+            if missing:
+                missing_columns[table] = sorted(missing)
+        if missing_columns:
+            details = ",".join(
+                f"{table}:[{'|'.join(columns)}]"
+                for table, columns in sorted(missing_columns.items())
+            )
+            logger.warning(
+                "kg.board_source_reader.realm_incomplete board_id=%s "
+                "reason=required_columns_missing columns=%s",
+                board_id,
+                details,
+            )
+            return BoardSourceSnapshot(
+                rows=(),
+                complete=False,
+                cause="realm_incomplete",
+            )
+
+        board = conn.execute(
+            "SELECT 1 FROM boards WHERE id = ?",
+            (board_id,),
+        ).fetchone()
+        if board is None:
+            logger.warning(
+                "kg.board_source_reader.realm_incomplete board_id=%s "
+                "reason=board_unproven",
+                board_id,
+            )
+            return BoardSourceSnapshot(
+                rows=(),
+                complete=False,
+                cause="realm_incomplete",
+            )
+
         out: list[dict[str, Any]] = []
         working_ttl_days = _board_working_ttl_days(conn, board_id)
         for artifact_type, table, status_col, content_cols in ARTIFACT_QUERIES:
-            exists = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                (table,),
-            ).fetchone()
-            if not exists:
-                logger.warning(
-                    "kg.board_source_reader.table_missing table=%s - skipped",
-                    table,
-                )
-                continue
             rows = conn.execute(
                 f"SELECT * FROM {table} "
                 f"WHERE board_id = ? "
@@ -376,7 +474,7 @@ class CommunityBoardSourceReader:
                     out.extend(decision_sources_from_spec(row))
         self._append_card_rows(conn, board_id, working_ttl_days, out)
         self._append_amendment_rows(conn, board_id, working_ttl_days, out)
-        return out
+        return BoardSourceSnapshot(rows=tuple(out), complete=True, cause=None)
 
     def _append_card_rows(
         self,
@@ -385,14 +483,6 @@ class CommunityBoardSourceReader:
         working_ttl_days: int | None,
         out: list[dict[str, Any]],
     ) -> None:
-        cards_exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='cards'"
-        ).fetchone()
-        if not cards_exists:
-            logger.warning(
-                "kg.board_source_reader.table_missing table=cards - skipped",
-            )
-            return
         rows = conn.execute(
             "SELECT * FROM cards "
             "WHERE board_id = ? "
@@ -425,16 +515,6 @@ class CommunityBoardSourceReader:
         working_ttl_days: int | None,
         out: list[dict[str, Any]],
     ) -> None:
-        amendments_exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name='amendment_hotfix_revisions'"
-        ).fetchone()
-        if not amendments_exists:
-            logger.debug(
-                "kg.board_source_reader.table_missing "
-                "table=amendment_hotfix_revisions - skipped",
-            )
-            return
         rows = conn.execute(
             "SELECT * FROM amendment_hotfix_revisions "
             "WHERE board_id = ? "

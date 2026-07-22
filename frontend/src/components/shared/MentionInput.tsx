@@ -119,6 +119,8 @@ export function MentionInput({
         return;
       }
       if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
         setShowDropdown(false);
         return;
       }

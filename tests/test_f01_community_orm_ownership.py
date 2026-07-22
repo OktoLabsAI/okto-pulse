@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from sqlalchemy import inspect
+from sqlalchemy import Column, Index, Integer, MetaData, Table, inspect
 
 from okto_pulse.community.adapters.core_import_boundary import (
     audit_community_core_import_boundary,
@@ -51,12 +51,43 @@ def test_community_metadata_matches_governed_inherited_schema_contract() -> None
         COMMUNITY_SCHEMA_EXTENSION_TABLES
     )
     assert len(legacy_table_names) == 60
-    assert len(table_names) == 69
+    assert len(table_names) == 60 + len(COMMUNITY_SCHEMA_EXTENSION_TABLES)
     assert schema_contract_sha256(
         Base.metadata,
         table_names=legacy_table_names,
     ) == CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256
     assert CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 != LEGACY_CORE_SCHEMA_SHA256
+
+
+def test_schema_contract_hash_preserves_compound_index_expression_order() -> None:
+    left_first = MetaData()
+    right_first = MetaData()
+    left_table = Table(
+        "ordered_index_probe",
+        left_first,
+        Column("left_value", Integer, nullable=False),
+        Column("right_value", Integer, nullable=False),
+    )
+    right_table = Table(
+        "ordered_index_probe",
+        right_first,
+        Column("left_value", Integer, nullable=False),
+        Column("right_value", Integer, nullable=False),
+    )
+    Index(
+        "ix_ordered_index_probe",
+        left_table.c.left_value,
+        left_table.c.right_value,
+    )
+    Index(
+        "ix_ordered_index_probe",
+        right_table.c.right_value,
+        right_table.c.left_value,
+    )
+
+    assert schema_contract_sha256(left_first) != schema_contract_sha256(
+        right_first
+    )
 
 
 def test_explicit_repository_mappers_keep_domain_free_of_orm_state() -> None:

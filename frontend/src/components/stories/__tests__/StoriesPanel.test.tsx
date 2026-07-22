@@ -6,6 +6,7 @@ import type { IdeationSummary, StorySummary, TopicSummary } from '@/types';
 const apiMock = vi.hoisted(() => ({
   listTopics: vi.fn(),
   listStories: vi.fn(),
+  listStoriesPage: vi.fn(),
   createTopic: vi.fn(),
   getStory: vi.fn(),
   createStory: vi.fn(),
@@ -111,8 +112,16 @@ describe('StoriesPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
+    window.history.replaceState({}, '', '/');
     apiMock.listTopics.mockResolvedValue(topics);
     apiMock.listStories.mockResolvedValue(stories);
+    apiMock.listStoriesPage.mockResolvedValue({
+      items: stories.map((story) => ({ ...story, screen_mockups_count: story.screen_mockups?.length ?? 0 })),
+      total_filtered: stories.length,
+      total_overall: stories.length,
+      offset: 0,
+      limit: 25,
+    });
     apiMock.getStory.mockResolvedValue({
       ...stories[0],
       topic: topics[0],
@@ -277,6 +286,45 @@ describe('StoriesPanel', () => {
     expect(screen.getByTestId('stories-view-mode-grid')).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('issues exactly one paginated request when advancing a page', async () => {
+    apiMock.listStoriesPage.mockImplementation(async (_boardId: string, options: { offset: number; limit: number }) => ({
+      items: options.offset === 0
+        ? stories.map((story) => ({ ...story, screen_mockups_count: 0 }))
+        : [],
+      total_filtered: 50,
+      total_overall: 50,
+      offset: options.offset,
+      limit: options.limit,
+    }));
+
+    render(<StoriesPanel boardId="board-1" />);
+    await waitFor(() => expect(apiMock.listStoriesPage).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+
+    await waitFor(() => expect(apiMock.listStoriesPage).toHaveBeenCalledTimes(2));
+    expect(apiMock.listStoriesPage).toHaveBeenLastCalledWith(
+      'board-1',
+      expect.objectContaining({ offset: 25, limit: 25 }),
+    );
+  });
+
+  it('debounces server search and cancels intermediate request intents', async () => {
+    render(<StoriesPanel boardId="board-1" />);
+    await waitFor(() => expect(apiMock.listStoriesPage).toHaveBeenCalledTimes(1));
+
+    const input = screen.getByTestId('stories-search');
+    fireEvent.change(input, { target: { value: 'ser' } });
+    fireEvent.change(input, { target: { value: 'server' } });
+    fireEvent.change(input, { target: { value: 'server query' } });
+
+    await waitFor(() => expect(apiMock.listStoriesPage).toHaveBeenCalledTimes(2), { timeout: 1_000 });
+    expect(apiMock.listStoriesPage).toHaveBeenLastCalledWith(
+      'board-1',
+      expect.objectContaining({ search: 'server query', offset: 0, limit: 25 }),
+    );
+  });
+
   it('keeps the selected Topic when the global refresh key changes', async () => {
     const { rerender } = render(<StoriesPanel boardId="board-1" refreshKey={0} />);
 
@@ -284,13 +332,13 @@ describe('StoriesPanel', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /Agent onboarding/i })[0]);
 
     await waitFor(() => {
-      expect(apiMock.listStories).toHaveBeenLastCalledWith('board-1', expect.objectContaining({ topicId: 'topic-1' }));
+      expect(apiMock.listStoriesPage).toHaveBeenLastCalledWith('board-1', expect.objectContaining({ topicId: 'topic-1' }));
     });
 
     rerender(<StoriesPanel boardId="board-1" refreshKey={1} />);
 
     await waitFor(() => {
-      expect(apiMock.listStories).toHaveBeenLastCalledWith('board-1', expect.objectContaining({ topicId: 'topic-1' }));
+      expect(apiMock.listStoriesPage).toHaveBeenLastCalledWith('board-1', expect.objectContaining({ topicId: 'topic-1' }));
     });
   });
 

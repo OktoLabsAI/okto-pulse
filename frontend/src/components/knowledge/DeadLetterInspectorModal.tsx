@@ -25,6 +25,7 @@ import {
   type DeadLetterListResponse,
   type DeadLetterRow,
 } from '@/services/dead-letter-api';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface DeadLetterInspectorModalProps {
   boardId: string;
@@ -39,6 +40,8 @@ export function DeadLetterInspectorModal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  useEscapeToClose(onClose);
 
   const fetchData = useCallback(async () => {
     setLoading(true);

@@ -12,6 +12,7 @@ import { countPerEntity, ENTITY_LABELS, countAllFlags } from './PermissionFlagsE
 import { PresetEditorModal } from './PresetEditorModal';
 import type { FlagsMap } from './PermissionFlagsEditor';
 import type { PermissionPreset } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface PresetListModalProps {
   onClose: () => void;
@@ -36,6 +37,8 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
   const [presets, setPresets] = useState<PermissionPreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [editorPreset, setEditorPreset] = useState<PermissionPreset | null | 'new'>(null);
+
+  useEscapeToClose(onClose);
 
   useEffect(() => { loadPresets(); }, []);
 

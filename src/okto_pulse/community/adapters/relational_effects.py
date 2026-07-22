@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, literal, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
+    ArtifactDeletionTombstone,
     Board,
     ConsolidationQueue,
     KGTickRun,
@@ -72,6 +74,13 @@ from okto_pulse.core.ports.global_outbox import register_global_outbox_store
 from okto_pulse.core.ports.consolidation import (
     register_consolidation_persistence_port,
 )
+from okto_pulse.core.ports.delivery_ledger import register_delivery_ledger_port
+from okto_pulse.core.ports.reconcile_intent import register_reconcile_intent_port
+from okto_pulse.core.ports.stale_sweep import register_stale_sweep_port
+from okto_pulse.core.ports.takedown_telemetry import (
+    register_takedown_telemetry_read_port,
+)
+from okto_pulse.core.ports.tombstone import register_tombstone_port
 from okto_pulse.core.ports.kg_health import register_kg_health_read_port
 from okto_pulse.core.ports.kg_governance import register_kg_governance_store
 from okto_pulse.core.ports.discovery_execution import (
@@ -109,25 +118,56 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
         )
         return int(depth or 0)
 
-    async def upsert_consolidation_queue(
+    async def upsert_consolidation_queue_unless_tombstoned(
         self,
         session: Any,
         upsert: ConsolidationQueueUpsert,
-    ) -> None:
+    ) -> bool:
         insert = _upsert_insert_for_session(session)
+        candidate_id = str(uuid.uuid4())
+        admitted_values = select(
+            literal(candidate_id),
+            literal(upsert.board_id),
+            literal(upsert.artifact_type),
+            literal(upsert.artifact_id),
+            literal("consolidate"),
+            literal(0),
+            literal(upsert.priority),
+            literal(upsert.source),
+            literal(upsert.triggered_by_event),
+            literal("pending"),
+            literal(0),
+        ).where(
+            ~exists(
+                select(1).where(
+                    ArtifactDeletionTombstone.board_id == upsert.board_id,
+                    ArtifactDeletionTombstone.artifact_type == upsert.artifact_type,
+                    ArtifactDeletionTombstone.artifact_id == upsert.artifact_id,
+                )
+            )
+        )
         stmt = (
             insert(ConsolidationQueue)
-            .values(
-                board_id=upsert.board_id,
-                artifact_type=upsert.artifact_type,
-                artifact_id=upsert.artifact_id,
-                priority=upsert.priority,
-                source=upsert.source,
-                triggered_by_event=upsert.triggered_by_event,
-                status="pending",
+            .from_select(
+                (
+                    "id",
+                    "board_id",
+                    "artifact_type",
+                    "artifact_id",
+                    "work_kind",
+                    "generation",
+                    "priority",
+                    "source",
+                    "triggered_by_event",
+                    "status",
+                    "attempts",
+                ),
+                admitted_values,
+                include_defaults=False,
             )
             .on_conflict_do_update(
                 index_elements=["board_id", "artifact_type", "artifact_id"],
+                index_where=ConsolidationQueue.work_kind == "consolidate",
                 set_={
                     "status": "pending",
                     "attempts": 0,
@@ -136,6 +176,7 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                     "source": upsert.source,
                     "triggered_by_event": upsert.triggered_by_event,
                     "claimed_by_session_id": None,
+                    "claim_token": None,
                     "claimed_at": None,
                     "worker_id": None,
                     "claim_timeout_at": None,
@@ -143,8 +184,9 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                 },
                 where=ConsolidationQueue.status.notin_(("pending", "claimed")),
             )
+            .returning(ConsolidationQueue.id)
         )
-        await session.execute(stmt)
+        return (await session.execute(stmt)).scalar_one_or_none() is not None
 
     async def list_board_ids(self, session: Any) -> list[str]:
         result = await session.execute(select(Board.id))
@@ -284,6 +326,12 @@ def register_community_relational_effects(
     from okto_pulse.community.adapters.sqlalchemy_consolidation import (
         CommunitySqlAlchemyConsolidationPersistence,
     )
+    from okto_pulse.community.adapters.sqlalchemy_delivery_ledger import (
+        CommunitySqlAlchemyDeliveryLedger,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_takedown_telemetry import (
+        CommunitySqlAlchemyTakedownTelemetry,
+    )
     from okto_pulse.community.adapters.sqlalchemy_kg_health import (
         CommunitySqlAlchemyKGHealthReader,
     )
@@ -381,8 +429,15 @@ def register_community_relational_effects(
     )
     register_design_system_store(CommunitySqlAlchemyDesignSystemStore())
     register_global_outbox_store(CommunitySqlAlchemyGlobalOutboxStore())
-    register_consolidation_persistence_port(
-        CommunitySqlAlchemyConsolidationPersistence()
+    governed_deletion_persistence = CommunitySqlAlchemyConsolidationPersistence()
+    register_consolidation_persistence_port(governed_deletion_persistence)
+    register_tombstone_port(governed_deletion_persistence)
+    register_reconcile_intent_port(governed_deletion_persistence)
+    register_stale_sweep_port(governed_deletion_persistence)
+    delivery_ledger = CommunitySqlAlchemyDeliveryLedger()
+    register_delivery_ledger_port(delivery_ledger)
+    register_takedown_telemetry_read_port(
+        CommunitySqlAlchemyTakedownTelemetry(delivery_ledger)
     )
     register_kg_health_read_port(CommunitySqlAlchemyKGHealthReader())
     register_kg_governance_store(CommunitySqlAlchemyKGGovernanceStore())

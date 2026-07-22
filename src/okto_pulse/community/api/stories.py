@@ -21,7 +21,22 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
+    statement_budget,
+)
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.pagination import (
+    board_scope,
+    pagination_requested,
+    resolve_window,
+    run_paginated_list,
+    search_groups,
+    validate_story_pagination_query,
+)
+from okto_pulse.core.ports.application_persistence import (
+    ApplicationFilter,
+    PageRequest,
+)
 from okto_pulse.core.application.use_cases import (
     EntityNotFoundError,
     PermissionDeniedError,
@@ -65,6 +80,8 @@ from okto_pulse.core.models.schemas import (
     StoryLinkCreate,
     StoryMove,
     StoryResponse,
+    PageEnvelope,
+    StoryPageItem,
     StorySummary,
     StoryUpdate,
     TopicCreate,
@@ -187,11 +204,12 @@ async def list_topics(
 ):
     """List Story Topics for a board."""
     try:
-        result = await ListTopicsUseCase().execute(
-            ListTopicsCommand(board_id, include_archived=include_archived),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-            uow=uow,
-        )
+        async with statement_budget(uow.services.stories.db, 6):
+            result = await ListTopicsUseCase().execute(
+                ListTopicsCommand(board_id, include_archived=include_archived),
+                actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+                uow=uow,
+            )
     except PermissionDeniedError as exc:
         _raise_permission_denied(exc.message)
     except EntityNotFoundError as exc:
@@ -295,7 +313,11 @@ async def create_story(
     return result.story
 
 
-@router.get("/boards/{board_id}/stories", response_model=list[StorySummary])
+@router.get(
+    "/boards/{board_id}/stories",
+    response_model=list[StorySummary] | PageEnvelope[StoryPageItem],
+    dependencies=[Depends(validate_story_pagination_query)],
+)
 async def list_stories(
     board_id: str,
     status_filter: str | None = Query(None, alias="status"),
@@ -304,11 +326,32 @@ async def list_stories(
     linked: bool | None = Query(None),
     converted: bool | None = Query(None),
     include_archived: bool = Query(False, alias="include_archived"),
+    offset: int | None = Query(None),
+    limit: int | None = Query(None),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List Stories for a board."""
+    """List Stories for a board.
+
+    With ``offset``/``limit`` the response is the paginated envelope
+    (server-side filters, two totals, lean projection — spec 8b33f9a8);
+    without them the legacy shape stays byte-identical (DR9).
+    """
     try:
+        if pagination_requested(offset, limit):
+            return await _list_stories_page(
+                board_id,
+                status_filter=status_filter,
+                topic_id=topic_id,
+                search=search,
+                linked=linked,
+                converted=converted,
+                include_archived=include_archived,
+                offset=offset,
+                limit=limit,
+                user_id=user_id,
+                uow=uow,
+            )
         result = await ListStoriesUseCase().execute(
             ListStoriesCommand(
                 board_id,
@@ -329,6 +372,104 @@ async def list_stories(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return result.stories
+
+
+async def _list_stories_page(
+    board_id: str,
+    *,
+    status_filter: str | None,
+    topic_id: str | None,
+    search: str | None,
+    linked: bool | None,
+    converted: bool | None,
+    include_archived: bool,
+    offset: int | None,
+    limit: int | None,
+    user_id: str,
+    uow: PulseUnitOfWork,
+) -> PageEnvelope[StoryPageItem]:
+    """Paginated stories: surface executor + productive TR1 cap.
+
+    ``linked`` runs SERVER-SIDE as the adapter's correlated EXISTS (the
+    legacy post-fetch filter never runs on this path — C3/C5 contract).
+    """
+    resolved_offset, resolved_limit = resolve_window(offset, limit)
+    filters: tuple[ApplicationFilter, ...] = ()
+    if status_filter:
+        filters = (*filters, ApplicationFilter("status", "eq", status_filter))
+    if topic_id:
+        filters = (*filters, ApplicationFilter("topic_id", "eq", topic_id))
+    if linked is not None:
+        filters = (
+            *filters,
+            ApplicationFilter("linked", "is_true" if linked else "is_false", None),
+        )
+    if converted is not None:
+        filters = (
+            *filters,
+            ApplicationFilter(
+                "converted", "is_true" if converted else "is_false", None
+            ),
+        )
+    request = PageRequest(
+        surface="story_list",
+        scope=board_scope(board_id, include_archived=include_archived),
+        offset=resolved_offset,
+        limit=resolved_limit,
+        filters=filters,
+        any_groups=search_groups(
+            search, ("title", "description", "actor", "goal", "benefit")
+        ),
+    )
+    command = ListStoriesCommand(
+        board_id,
+        status_filter=status_filter,
+        topic_id=topic_id,
+        search=search,
+        linked=linked,
+        converted=converted,
+        include_archived=include_archived,
+    )
+    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+    use_case = ListStoriesUseCase()
+    page = await run_paginated_list(
+        uow,
+        request,
+        preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
+    )
+    items = [
+        StoryPageItem(
+            **{
+                field: record.values.get(field)
+                for field in (
+                    "id",
+                    "board_id",
+                    "topic_id",
+                    "title",
+                    "description",
+                    "actor",
+                    "goal",
+                    "benefit",
+                    "labels",
+                    "status",
+                    "assignee_id",
+                    "created_by",
+                    "created_at",
+                    "updated_at",
+                    "archived",
+                )
+            },
+            screen_mockups_count=record.values.get("screen_mockups_count", 0),
+        )
+        for record in page.items
+    ]
+    return PageEnvelope[StoryPageItem](
+        items=items,
+        total_filtered=page.total_filtered,
+        total_overall=page.total_overall,
+        offset=page.offset,
+        limit=page.limit,
+    )
 
 
 @router.get("/stories/{story_id}", response_model=StoryResponse)

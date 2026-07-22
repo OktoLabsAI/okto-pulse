@@ -178,6 +178,15 @@ class CommunityBoardRebuildIngestionAdapter:
 
         with sqlite3.connect(str(self._path()), timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
+            queue_columns = {
+                str(column["name"])
+                for column in conn.execute(
+                    "PRAGMA table_info(consolidation_queue)"
+                ).fetchall()
+            }
+            claim_token_reset = (
+                "claim_token=NULL, " if "claim_token" in queue_columns else ""
+            )
             for row in sources:
                 artifact_type = str(row.get("artifact_type", ""))
                 artifact_id = str(row.get("id", ""))
@@ -190,12 +199,15 @@ class CommunityBoardRebuildIngestionAdapter:
                 written = conn.execute(
                     "INSERT INTO consolidation_queue "
                     "(id, board_id, artifact_type, artifact_id, priority, "
-                    "source, status, triggered_at, attempts) "
-                    "VALUES (?, ?, ?, ?, ?, ?, 'pending', datetime('now'), 0) "
+                    "source, status, triggered_at, attempts, work_kind, generation) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'pending', datetime('now'), 0, "
+                    "'consolidate', 0) "
                     "ON CONFLICT(board_id, artifact_type, artifact_id) "
+                    "WHERE work_kind='consolidate' "
                     "DO UPDATE SET "
                     "status='pending', attempts=0, last_error=NULL, "
-                    "claimed_by_session_id=NULL, claimed_at=NULL, "
+                    "claimed_by_session_id=NULL, "
+                    f"{claim_token_reset}claimed_at=NULL, "
                     "worker_id=NULL, claim_timeout_at=NULL, "
                     "next_retry_at=NULL, priority=excluded.priority, "
                     "source=excluded.source "

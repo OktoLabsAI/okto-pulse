@@ -14,6 +14,23 @@ transition + content/critical-context gates stay inside ``RefinementService``.
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.pagination import (
+    anchor_scope,
+    pagination_requested,
+    project_page,
+    record_fields,
+    resolve_window,
+    run_paginated_list,
+    validate_pagination_query,
+)
+from okto_pulse.community.api.refinements_pagination import (
+    refinement_board_page_request,
+    validate_board_refinement_query,
+)
+from okto_pulse.core.ports.application_persistence import (
+    ApplicationFilter,
+    PageRequest,
+)
 from okto_pulse.core.application.use_cases import EntityNotFoundError
 from okto_pulse.core.application.use_cases.refinements_crud import (
     AnswerRefinementQuestionCommand,
@@ -46,6 +63,8 @@ from okto_pulse.core.application.use_cases.refinements_crud import (
     ListRefinementQAUseCase,
     ListRefinementSnapshotsCommand,
     ListRefinementSnapshotsUseCase,
+    ListBoardRefinementsCommand,
+    ListBoardRefinementsUseCase,
     ListRefinementsCommand,
     ListRefinementsUseCase,
     MoveRefinementCommand,
@@ -56,12 +75,15 @@ from okto_pulse.core.application.use_cases.refinements_crud import (
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models.schemas import (
+    BoardRefinementPageItem,
+    PageEnvelope,
     RefinementCreate,
     RefinementHistoryResponse,
     RefinementKnowledgeCreate,
     RefinementKnowledgeResponse,
     RefinementKnowledgeSummary,
     RefinementMove,
+    RefinementPageItem,
     RefinementQAAnswer,
     RefinementQACreate,
     RefinementQAResponse,
@@ -120,15 +142,86 @@ async def create_refinement(
     return result.refinement
 
 
-@router.get("/ideations/{ideation_id}/refinements", response_model=list[RefinementSummary])
+@router.get(
+    "/ideations/{ideation_id}/refinements",
+    response_model=list[RefinementSummary] | PageEnvelope[RefinementPageItem],
+    dependencies=[Depends(validate_pagination_query)],
+)
 async def list_refinements(
     ideation_id: str,
     status_filter: str | None = Query(None, alias="status"),
     include_archived: bool = Query(False, alias="include_archived"),
+    offset: int | None = Query(None),
+    limit: int | None = Query(None),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List refinements for an ideation, optionally filtered by status."""
+    """List refinements for an ideation, optionally filtered by status.
+
+    With ``offset``/``limit``: paginated envelope (spec 8b33f9a8; the
+    ideation id is the surface's identity anchor); without: legacy shape
+    unchanged (DR9).
+    """
+    if pagination_requested(offset, limit):
+        command = ListRefinementsCommand(
+            ideation_id,
+            status_filter=status_filter,
+            include_archived=include_archived,
+        )
+        actor = RESTAdapterContract.actor(user_id)
+        use_case = ListRefinementsUseCase()
+        try:
+            resolved_offset, resolved_limit = resolve_window(offset, limit)
+            filters: tuple[ApplicationFilter, ...] = ()
+            if status_filter:
+                filters = (ApplicationFilter("status", "eq", status_filter),)
+            page = await run_paginated_list(
+                uow,
+                lambda ideation: PageRequest(
+                    surface="refinement_list",
+                    scope=(
+                        ApplicationFilter("board_id", "eq", ideation.board_id),
+                        *anchor_scope(
+                            "ideation_id",
+                            ideation_id,
+                            include_archived=include_archived,
+                        ),
+                    ),
+                    offset=resolved_offset,
+                    limit=resolved_limit,
+                    filters=filters,
+                ),
+                preflight=lambda: use_case.preflight(
+                    command, actor=actor, uow=uow
+                ),
+            )
+        except EntityNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+            )
+        return project_page(
+            page,
+            lambda record: RefinementPageItem(
+                **record_fields(
+                    record,
+                    (
+                        "id",
+                        "ideation_id",
+                        "board_id",
+                        "title",
+                        "description",
+                        "status",
+                        "version",
+                        "assignee_id",
+                        "created_by",
+                        "created_at",
+                        "updated_at",
+                        "labels",
+                        "archived",
+                    ),
+                )
+            ),
+        )
     try:
         result = await ListRefinementsUseCase().execute(
             ListRefinementsCommand(
@@ -142,6 +235,67 @@ async def list_refinements(
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
     return result.refinements
+
+
+@router.get(
+    "/boards/{board_id}/refinements",
+    response_model=PageEnvelope[BoardRefinementPageItem],
+    dependencies=[Depends(validate_board_refinement_query)],
+)
+async def list_board_refinements(
+    board_id: str,
+    status_filter: str | None = Query(None, alias="status"),
+    search: str | None = Query(
+        None,
+        description=(
+            "Server-side search across refinement title, description, labels "
+            "and parent ideation title."
+        ),
+    ),
+    derivation_pending: bool | None = Query(None),
+    include_archived: bool = Query(False),
+    labels: str | None = Query(
+        None,
+        description="CSV labels with ANY semantics and exact membership.",
+    ),
+    offset: int = Query(0),
+    limit: int = Query(25),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """List refinements across a board without parent-ideation fan-out."""
+
+    resolved_offset, resolved_limit = resolve_window(offset, limit)
+    command = ListBoardRefinementsCommand(board_id)
+    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+    try:
+        page = await run_paginated_list(
+            uow,
+            refinement_board_page_request(
+                board_id,
+                status_value=status_filter,
+                search=search,
+                derivation_pending=derivation_pending,
+                include_archived=include_archived,
+                labels=labels,
+                offset=resolved_offset,
+                limit=resolved_limit,
+            ),
+            preflight=lambda: ListBoardRefinementsUseCase().preflight(
+                command,
+                actor=actor,
+                uow=uow,
+            ),
+        )
+    except EntityNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "board_not_found"},
+        )
+    return project_page(
+        page,
+        lambda record: BoardRefinementPageItem(**record.values),
+    )
 
 
 @router.get("/refinements/{refinement_id}", response_model=RefinementResponse)

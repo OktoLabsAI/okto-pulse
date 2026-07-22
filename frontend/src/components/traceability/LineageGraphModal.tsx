@@ -35,6 +35,7 @@ import { useModalStack } from '@/contexts/ModalStackContext';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
 import type { LineageGraphNode, LineageGraphResponse } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import {
   LINEAGE_GRAPH_EVENT,
   type OpenLineageGraphDetail,
@@ -331,6 +332,8 @@ export function LineageGraphModal({ boardId }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+
+  useEscapeToClose(() => setRequest(null), { enabled: Boolean(request) });
 
   useEffect(() => {
     const handler = (event: Event) => {

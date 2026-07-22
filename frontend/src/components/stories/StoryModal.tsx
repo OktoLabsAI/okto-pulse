@@ -38,6 +38,7 @@ import {
   STORY_STATUSES,
   STORY_STATUS_LABELS,
 } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface StoryModalProps {
   boardId: string;
@@ -45,6 +46,7 @@ interface StoryModalProps {
   topics: TopicSummary[];
   initialTopicId?: string | null;
   onClose: () => void;
+  onEscape?: () => void;
   onChanged: () => void;
 }
 
@@ -94,6 +96,7 @@ export function StoryModal({
   topics,
   initialTopicId,
   onClose,
+  onEscape,
   onChanged,
 }: StoryModalProps) {
   const api = useDashboardApi();
@@ -117,6 +120,8 @@ export function StoryModal({
   const [labels, setLabels] = useState('');
   const [status, setStatus] = useState<StoryStatus>('draft');
   const [mockups, setMockups] = useState<ScreenMockup[]>([]);
+
+  useEscapeToClose(onEscape ?? onClose);
 
   const existing = Boolean(storyId);
 

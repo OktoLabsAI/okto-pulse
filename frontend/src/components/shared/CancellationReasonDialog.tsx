@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react';
 import { Ban } from 'lucide-react';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface CancellationReasonDialogProps {
   open: boolean;
@@ -28,6 +29,8 @@ export function CancellationReasonDialog({
   onCancel,
 }: CancellationReasonDialogProps) {
   const [reason, setReason] = useState('');
+
+  useEscapeToClose(onCancel, { enabled: open, canClose: !submitting, priority: 20 });
 
   // Reset the textarea every time the dialog opens.
   useEffect(() => {

@@ -2,7 +2,7 @@
  * RefinementsPanel - List of refinements across all ideations for a board
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Plus,
   Layers,
@@ -16,14 +16,13 @@ import {
   GitBranch,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { useDashboardApi } from '@/services/api';
-import type { IdeationSummary, RefinementSummary, RefinementStatus } from '@/types';
+import { useDashboardApi, type BoardRefinementPageItem } from '@/services/api';
+import type { RefinementStatus } from '@/types';
 import { REFINEMENT_STATUS_LABELS } from '@/types';
-import { useListSearch } from '@/hooks/useListSearch';
 import { SearchInput } from '@/components/shared/SearchInput';
 import {
   DerivationPendingBadge,
-  getRefinementPendingDerivationLabel,
+  REFINEMENT_PENDING_SPEC_LABEL,
 } from '@/components/shared/DerivationPendingBadge';
 import { useViewMode } from '@/hooks/useViewMode';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
@@ -34,6 +33,8 @@ import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBa
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { QABadge } from '@/components/shared/QABadge';
 import { PulseLoader } from '@/components/shared/PulseLoader';
+import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
+import { usePersistedPagination } from '@/hooks/usePersistedPagination';
 
 interface RefinementsPanelProps {
   boardId: string;
@@ -56,52 +57,84 @@ const STATUS_COLORS: Record<RefinementStatus, string> = {
 };
 
 interface GroupedRefinement {
-  refinement: RefinementSummary;
+  refinement: BoardRefinementPageItem;
   ideationTitle: string;
 }
 
 export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
   const api = useDashboardApi();
-  const [groups, setGroups] = useState<Map<string, { ideation: IdeationSummary; refinements: RefinementSummary[] }>>(new Map());
+  const apiRef = useRef(api);
+  apiRef.current = api;
+  const [refinements, setRefinements] = useState<GroupedRefinement[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [totalFiltered, setTotalFiltered] = useState(0);
+  const [totalOverall, setTotalOverall] = useState(0);
+  const [reloadKey, setReloadKey] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedRefinementId, setSelectedRefinementId] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('');
   const [showWithoutDerivation, setShowWithoutDerivation] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('refinements');
 
   useEffect(() => {
-    loadRefinements();
-  }, [boardId, showArchived]);
+    const controller = new AbortController();
+    setLoading(true);
+    setLoadError(null);
+    void apiRef.current.listBoardRefinementsPage(boardId, {
+      status: filterStatus || undefined,
+      search: debouncedSearch || undefined,
+      derivationPending: showWithoutDerivation ? true : undefined,
+      includeArchived: showArchived,
+      offset: requestIntent.offset,
+      limit: requestIntent.limit,
+      signal: controller.signal,
+    }).then((page) => {
+      if (controller.signal.aborted) return;
+      setRefinements(page.items.map((refinement) => ({
+        refinement,
+        ideationTitle: refinement.ideation_title,
+      })));
+      setTotalFiltered(page.total_filtered);
+      setTotalOverall(page.total_overall);
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      setLoadError(error instanceof Error ? error.message : 'Failed to load refinements');
+      toast.error('Failed to load refinements');
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false);
+    });
+    return () => controller.abort();
+  }, [
+    boardId,
+    filterStatus,
+    showWithoutDerivation,
+    showArchived,
+    debouncedSearch,
+    reloadKey,
+    requestIntent.offset,
+    requestIntent.limit,
+  ]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const next = searchQuery.trim();
+      if (next === debouncedSearch) return;
+      setDebouncedSearch(next);
+      setPagination({ page: 1, pageSize });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery, debouncedSearch, pageSize, setPagination]);
 
   const loadRefinements = async () => {
-    setLoading(true);
-    try {
-      const ideations = await api.listIdeations(boardId, undefined, showArchived);
-      const groupMap = new Map<string, { ideation: IdeationSummary; refinements: RefinementSummary[] }>();
+    setReloadKey((value) => value + 1);
+  };
 
-      // For each ideation, load full details to get refinements
-      const details = await Promise.all(
-        ideations.map((ideation) => api.getIdeation(ideation.id))
-      );
-
-      for (let i = 0; i < ideations.length; i++) {
-        const ideation = ideations[i];
-        const detail = details[i];
-        if (detail.refinements && detail.refinements.length > 0) {
-          groupMap.set(ideation.id, {
-            ideation,
-            refinements: detail.refinements,
-          });
-        }
-      }
-
-      setGroups(groupMap);
-    } catch {
-      toast.error('Failed to load refinements');
-    } finally {
-      setLoading(false);
-    }
+  const resetPage = () => {
+    setPagination({ page: 1, pageSize });
   };
 
   const statusFilters = [
@@ -112,38 +145,11 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
     { value: 'done', label: 'Done' },
   ];
 
-  // Flatten and filter
-  const statusFilteredRefinements: GroupedRefinement[] = [];
-  groups.forEach(({ ideation, refinements }) => {
-    for (const refinement of refinements) {
-      if (!showArchived && refinement.archived) continue;
-      if (!filterStatus || refinement.status === filterStatus) {
-        statusFilteredRefinements.push({ refinement, ideationTitle: ideation.title });
-      }
-    }
-  });
-  const allRefinements = showWithoutDerivation
-    ? statusFilteredRefinements.filter(({ refinement }) => Boolean(getRefinementPendingDerivationLabel(refinement)))
-    : statusFilteredRefinements;
-
   const { viewMode, setViewMode } = useViewMode('refinements', 'list');
-  const search = useListSearch<GroupedRefinement>(allRefinements, {
-    matcher: (it, q) => {
-      const needle = q.toLowerCase();
-      const r = it.refinement;
-      return (
-        (r.title || '').toLowerCase().includes(needle) ||
-        (r.description || '').toLowerCase().includes(needle) ||
-        (r.labels || []).some((l) => (l || '').toLowerCase().includes(needle)) ||
-        (it.ideationTitle || '').toLowerCase().includes(needle)
-      );
-    },
-    urlParam: 'q_refinements',
-  });
 
   // Group by ideation for display
   const displayGroups = new Map<string, { ideationTitle: string; refinements: GroupedRefinement[] }>();
-  for (const item of search.filtered) {
+  for (const item of refinements) {
     const key = item.refinement.ideation_id;
     if (!displayGroups.has(key)) {
       displayGroups.set(key, { ideationTitle: item.ideationTitle, refinements: [] });
@@ -154,7 +160,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
   // KG-03.6 — refinement is a first-line badge target (br_b7535ce1 +
   // ir_21ec0034). Batch by visible refinement source_refs; one HTTP
   // request per panel mount/refresh (api_28a22fec batch semantics).
-  const visibleRefinementSourceRefs = search.filtered.map(
+  const visibleRefinementSourceRefs = refinements.map(
     (item) => `refinement:${item.refinement.id}`,
   );
   const { badges: cognitiveBadges } = useCognitivePendingBadges(
@@ -169,14 +175,13 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Refinements</h2>
           <span className="text-sm text-gray-400">
-            ({search.filtered.length}
-            {search.query || showWithoutDerivation ? ` of ${statusFilteredRefinements.length}` : ''})
+            ({totalFiltered} of {totalOverall})
           </span>
         </div>
         <div className="flex items-center gap-2">
           <SearchInput
-            value={search.query}
-            onChange={search.setQuery}
+            value={searchQuery}
+            onChange={setSearchQuery}
             placeholder="Search refinements…"
             testId="refinements-search"
           />
@@ -196,7 +201,10 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
         {statusFilters.map((f) => (
           <button
             key={f.value}
-            onClick={() => setFilterStatus(f.value)}
+            onClick={() => {
+              setFilterStatus(f.value);
+              resetPage();
+            }}
             className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
               filterStatus === f.value
                 ? 'bg-accent-500 text-white shadow-sm'
@@ -207,7 +215,10 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
           </button>
         ))}
         <button
-          onClick={() => setShowWithoutDerivation(!showWithoutDerivation)}
+          onClick={() => {
+            setShowWithoutDerivation(!showWithoutDerivation);
+            resetPage();
+          }}
           className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full transition-colors ml-2 ${
             showWithoutDerivation
               ? 'bg-cyan-600 text-white shadow-sm'
@@ -219,7 +230,10 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
           No derivation
         </button>
         <button
-          onClick={() => setShowArchived(!showArchived)}
+          onClick={() => {
+            setShowArchived(!showArchived);
+            resetPage();
+          }}
           className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
             showArchived
               ? 'bg-amber-500 text-white'
@@ -234,11 +248,21 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
         {loading ? (
           <PulseLoader size="sm" label="Loading refinements..." />
-        ) : statusFilteredRefinements.length === 0 ? (
+        ) : loadError ? (
+          <div className="py-12 text-center text-sm text-red-600" role="alert">
+            Could not load refinements.
+          </div>
+        ) : refinements.length === 0 ? (
           <div className="text-center py-12">
             <Layers size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
             <p className="text-gray-500 dark:text-gray-400 mb-2">
-              {filterStatus ? 'No refinements with this status' : 'No refinements yet'}
+              {totalFiltered > 0
+                ? `Page ${page} is out of range`
+                : debouncedSearch
+                  ? `No results for “${searchQuery}”`
+                  : filterStatus || showWithoutDerivation
+                    ? 'No refinements match the active filters'
+                    : 'No refinements yet'}
             </p>
             <p className="text-sm text-gray-400 dark:text-gray-500 mb-4">
               Refinements break down ideations into focused areas
@@ -248,28 +272,6 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
               className="btn btn-primary text-sm"
             >
               Create your first refinement
-            </button>
-          </div>
-        ) : allRefinements.length === 0 ? (
-          <div className="text-center py-12">
-            <Layers size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
-            <p className="text-gray-500 dark:text-gray-400 mb-2">
-              No refinements without derivation
-            </p>
-            <button
-              onClick={() => setShowWithoutDerivation(false)}
-              className="btn btn-ghost text-sm"
-            >
-              Clear filter
-            </button>
-          </div>
-        ) : search.filtered.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-gray-500 dark:text-gray-400 mb-2">
-              No results for “{search.query}”
-            </p>
-            <button onClick={search.clear} className="btn btn-ghost text-sm">
-              Clear search
             </button>
           </div>
         ) : (
@@ -306,7 +308,9 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
                             {STATUS_ICON[refinement.status]}
                             {REFINEMENT_STATUS_LABELS[refinement.status]}
                           </span>
-                          <DerivationPendingBadge label={getRefinementPendingDerivationLabel(refinement)} />
+                          <DerivationPendingBadge
+                            label={showWithoutDerivation ? REFINEMENT_PENDING_SPEC_LABEL : null}
+                          />
                           <span className="text-xs text-gray-400">v{refinement.version}</span>
                           <CognitivePendingBadge
                             badge={cognitiveBadges[`refinement:${refinement.id}`]}
@@ -386,6 +390,21 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
           ))
         )}
       </div>
+      <AccessiblePaginator
+        page={page}
+        pageSize={pageSize}
+        totalFiltered={totalFiltered}
+        totalOverall={totalOverall}
+        itemCount={refinements.length}
+        loading={loading}
+        error={loadError}
+        onRetry={loadRefinements}
+        onPaginationChange={setPagination}
+        ariaLabel="Refinements pagination"
+        emptyMessage="No refinements match the active filters."
+        className="mt-3 shrink-0"
+        testId="refinements-pagination"
+      />
 
       {/* Modals */}
       {createOpen && (

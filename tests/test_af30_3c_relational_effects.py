@@ -22,6 +22,9 @@ from okto_pulse.core.ports.relational_effects import (
     KGTickRunUpsert,
     get_relational_effects_port,
 )
+from okto_pulse.core.ports.consolidation import get_consolidation_persistence_port
+from okto_pulse.core.ports.reconcile_intent import get_reconcile_intent_port
+from okto_pulse.core.ports.tombstone import get_tombstone_port
 
 
 @pytest.mark.asyncio
@@ -34,6 +37,9 @@ async def test_af30_3c_community_relational_effects_register_and_persist(tmp_pat
     registered = register_community_relational_effects()
     assert isinstance(registered, CommunitySqlAlchemyRelationalEffects)
     assert get_relational_effects_port() is registered
+    governed_deletion_persistence = get_consolidation_persistence_port()
+    assert get_tombstone_port() is governed_deletion_persistence
+    assert get_reconcile_intent_port() is governed_deletion_persistence
 
     board_id = str(uuid.uuid4())
     tick_id = str(uuid.uuid4())
@@ -47,7 +53,7 @@ async def test_af30_3c_community_relational_effects_register_and_persist(tmp_pat
         assert await port.count_active_consolidation_queue(
             session, board_id=board_id
         ) == 0
-        await port.upsert_consolidation_queue(
+        changed = await port.upsert_consolidation_queue_unless_tombstoned(
             session,
             ConsolidationQueueUpsert(
                 board_id=board_id,
@@ -58,6 +64,7 @@ async def test_af30_3c_community_relational_effects_register_and_persist(tmp_pat
                 triggered_by_event="card.moved",
             ),
         )
+        assert changed is True
         await port.upsert_kg_tick_run(
             session,
             KGTickRunUpsert(

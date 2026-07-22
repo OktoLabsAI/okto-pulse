@@ -86,6 +86,247 @@ END''',
     return expected
 
 
+def _normalize_sqlite_contract_ddl(raw: object) -> str:
+    value = "" if raw is None else str(raw)
+    return re.sub(r'[\s"`\[\]]+', "", value.lower())
+
+
+def _normalize_sqlite_contract_type(raw: object) -> str:
+    value = "" if raw is None else str(raw)
+    return re.sub(r"\s+", "", value.lower())
+
+
+def _normalize_sqlite_contract_default(raw: object) -> str | None:
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    while value.startswith("(") and value.endswith(")"):
+        value = value[1:-1].strip()
+    return re.sub(r"\s+", "", value).lower()
+
+
+def _expected_sqlite_server_default(
+    sync_conn: object,
+    column: object,
+) -> str | None:
+    default = column.server_default
+    if default is None:
+        return None
+    argument = default.arg
+    if isinstance(argument, str):
+        raw = "'" + argument.replace("'", "''") + "'"
+    else:
+        compile_value = getattr(argument, "compile", None)
+        raw = (
+            str(
+                compile_value(
+                    dialect=sync_conn.dialect,
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+            if callable(compile_value)
+            else str(argument)
+        )
+    return _normalize_sqlite_contract_default(raw)
+
+
+def _sqlite_owned_table_contract(
+    sync_conn: object,
+    table: object,
+) -> dict[str, dict[str, object]]:
+    """Return exact expected/observed SQLite contracts for an ORM table."""
+
+    from sqlalchemy import inspect as sa_inspect
+
+    inspector = sa_inspect(sync_conn)
+    expected_columns = tuple(
+        (
+            str(column.name),
+            _normalize_sqlite_contract_type(
+                column.type.compile(dialect=sync_conn.dialect)
+            ),
+            bool(column.nullable),
+            _expected_sqlite_server_default(sync_conn, column),
+        )
+        for column in table.columns
+    )
+    observed_columns = tuple(
+        (
+            str(column["name"]),
+            _normalize_sqlite_contract_type(column["type"]),
+            bool(column["nullable"]),
+            _normalize_sqlite_contract_default(column.get("default")),
+        )
+        for column in inspector.get_columns(table.name)
+    )
+    expected_unique = tuple(
+        sorted(
+            [
+                (
+                    constraint.name,
+                    tuple(str(column.name) for column in constraint.columns),
+                )
+                for constraint in table.constraints
+                if constraint.__class__.__name__ == "UniqueConstraint"
+            ],
+            key=repr,
+        )
+    )
+    observed_unique = tuple(
+        sorted(
+            [
+                (
+                    constraint.get("name"),
+                    tuple(
+                        str(column)
+                        for column in constraint.get("column_names") or ()
+                    ),
+                )
+                for constraint in inspector.get_unique_constraints(table.name)
+            ],
+            key=repr,
+        )
+    )
+    expected_checks = tuple(
+        sorted(
+            [
+                (
+                    constraint.name,
+                    _normalize_sqlite_contract_ddl(constraint.sqltext),
+                )
+                for constraint in table.constraints
+                if constraint.__class__.__name__ == "CheckConstraint"
+            ],
+            key=repr,
+        )
+    )
+    observed_checks = tuple(
+        sorted(
+            [
+                (
+                    constraint.get("name"),
+                    _normalize_sqlite_contract_ddl(constraint.get("sqltext")),
+                )
+                for constraint in inspector.get_check_constraints(table.name)
+            ],
+            key=repr,
+        )
+    )
+    expected_indexes = tuple(
+        sorted(
+            [
+                (
+                    index.name,
+                    bool(index.unique),
+                    tuple(
+                        str(getattr(expression, "name", expression))
+                        for expression in index.expressions
+                    ),
+                )
+                for index in table.indexes
+            ],
+            key=repr,
+        )
+    )
+    observed_indexes = tuple(
+        sorted(
+            [
+                (
+                    index.get("name"),
+                    bool(index.get("unique")),
+                    tuple(
+                        str(column)
+                        for column in index.get("column_names") or ()
+                    ),
+                )
+                for index in inspector.get_indexes(table.name)
+            ],
+            key=repr,
+        )
+    )
+
+    expected_foreign_keys = []
+    for constraint in table.foreign_key_constraints:
+        elements = tuple(constraint.elements)
+        remote_table = elements[0].column.table if elements else None
+        expected_foreign_keys.append(
+            (
+                constraint.name,
+                tuple(str(element.parent.name) for element in elements),
+                getattr(remote_table, "schema", None),
+                getattr(remote_table, "name", None),
+                tuple(str(element.column.name) for element in elements),
+                (
+                    str(elements[0].ondelete).upper()
+                    if elements and elements[0].ondelete
+                    else None
+                ),
+                (
+                    str(elements[0].onupdate).upper()
+                    if elements and elements[0].onupdate
+                    else None
+                ),
+            )
+        )
+    observed_foreign_keys = []
+    for constraint in inspector.get_foreign_keys(table.name):
+        options = constraint.get("options") or {}
+        observed_foreign_keys.append(
+            (
+                constraint.get("name"),
+                tuple(
+                    str(column)
+                    for column in constraint.get("constrained_columns") or ()
+                ),
+                constraint.get("referred_schema"),
+                constraint.get("referred_table"),
+                tuple(
+                    str(column)
+                    for column in constraint.get("referred_columns") or ()
+                ),
+                (
+                    str(options.get("ondelete")).upper()
+                    if options.get("ondelete")
+                    else None
+                ),
+                (
+                    str(options.get("onupdate")).upper()
+                    if options.get("onupdate")
+                    else None
+                ),
+            )
+        )
+
+    primary_key = inspector.get_pk_constraint(table.name)
+    return {
+        "expected": {
+            "columns": expected_columns,
+            "primary_key": (
+                table.primary_key.name,
+                tuple(str(column.name) for column in table.primary_key.columns),
+            ),
+            "unique_constraints": expected_unique,
+            "checks": expected_checks,
+            "indexes": expected_indexes,
+            "foreign_keys": tuple(sorted(expected_foreign_keys, key=repr)),
+        },
+        "observed": {
+            "columns": observed_columns,
+            "primary_key": (
+                primary_key.get("name"),
+                tuple(
+                    str(column)
+                    for column in primary_key.get("constrained_columns") or ()
+                ),
+            ),
+            "unique_constraints": observed_unique,
+            "checks": observed_checks,
+            "indexes": observed_indexes,
+            "foreign_keys": tuple(sorted(observed_foreign_keys, key=repr)),
+        },
+    }
+
+
 async def create_all_boundary() -> None:
     """Create all ORM tables through the Community declarative metadata."""
     async with get_engine().begin() as conn:
@@ -95,6 +336,714 @@ async def create_all_boundary() -> None:
     from okto_pulse.community.adapters.realm_migration import backfill_local_realm
 
     await backfill_local_realm(get_engine())
+
+
+async def _migrate_add_consolidation_work_kinds() -> str | None:
+    """Upgrade ``consolidation_queue`` to the governed multi-kind contract.
+
+    SQLite cannot drop the legacy ``UNIQUE(board_id, artifact_type,
+    artifact_id)`` constraint in place.  The migration therefore rebuilds the
+    table transactionally from the ORM contract, preserving every legacy row
+    and backfilling it as ``work_kind='consolidate', generation=0``.  The new
+    partial unique indexes allow immutable ``stale_reconcile`` generations and
+    one board-scoped ``stale_sweep`` while retaining legacy consolidate
+    deduplication.
+
+    This step intentionally runs immediately after ``create_all`` and before
+    the Global Discovery source-fence step.  Rebuilding an existing queue drops
+    its source-revision triggers; the following control-plane migration then
+    recreates and audits that trigger manifest in the same startup lifecycle.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import ConsolidationQueue
+
+    queue_table = ConsolidationQueue.__table__
+    table_name = queue_table.name
+    backup_name = "consolidation_queue_governed_delete_legacy"
+    required_legacy_columns = {
+        "id",
+        "board_id",
+        "artifact_type",
+        "artifact_id",
+        "priority",
+        "source",
+        "status",
+    }
+    governed_columns = {
+        "work_kind",
+        "generation",
+        "payload",
+        "delete_event_id",
+        "claim_token",
+    }
+    expected_indexes = {
+        "ix_consolidation_queue_delete_event_id": None,
+        "uq_queue_consolidate_board_artifact": "work_kind='consolidate'",
+        "uq_queue_stale_reconcile_generation": "work_kind='stale_reconcile'",
+        "uq_queue_stale_sweep_board": "work_kind='stale_sweep'",
+        "ix_queue_drain_work": None,
+    }
+
+    def _normalize_ddl(raw: object) -> str:
+        return re.sub(r'[\s"`\[\]]+', "", str(raw or "").lower())
+
+    def _contract(sync_conn: object) -> dict[str, object]:
+        inspector = sa_inspect(sync_conn)
+        columns = {
+            str(column["name"]): column
+            for column in inspector.get_columns(table_name)
+        }
+        unique_constraints = {
+            tuple(str(name) for name in constraint.get("column_names") or ())
+            for constraint in inspector.get_unique_constraints(table_name)
+        }
+        checks = {
+            _normalize_ddl(constraint.get("sqltext"))
+            for constraint in inspector.get_check_constraints(table_name)
+        }
+        indexes = {
+            str(row["name"]): {
+                "unique": False,
+                "sql": str(row["sql"] or ""),
+            }
+            for row in sync_conn.exec_driver_sql(
+                "SELECT name, sql "
+                "FROM sqlite_master WHERE type='index' AND tbl_name=? "
+                "AND sql IS NOT NULL",
+                (table_name,),
+            ).mappings()
+        }
+        # sqlite_master's computed alias is not stable across SQLAlchemy
+        # versions; derive uniqueness from the canonical SQL string instead.
+        for value in indexes.values():
+            value["unique"] = _normalize_ddl(value["sql"]).startswith(
+                "createuniqueindex"
+            )
+        return {
+            "columns": columns,
+            "unique_constraints": unique_constraints,
+            "checks": checks,
+            "indexes": indexes,
+        }
+
+    def _rebuild(sync_conn: object, old_columns: set[str]) -> None:
+        inspector = sa_inspect(sync_conn)
+        if backup_name in inspector.get_table_names():
+            raise RuntimeError(
+                "governed queue migration found an unexpected backup table"
+            )
+        missing_required = required_legacy_columns - old_columns
+        if missing_required:
+            raise RuntimeError(
+                "legacy consolidation_queue is missing required columns: "
+                + ", ".join(sorted(missing_required))
+            )
+
+        # Named indexes keep their global SQLite names after a table rename and
+        # would collide with the canonical indexes created for the replacement.
+        for index in inspector.get_indexes(table_name):
+            index_name = str(index.get("name") or "")
+            if index_name and not index_name.startswith("sqlite_autoindex_"):
+                escaped = index_name.replace('"', '""')
+                sync_conn.exec_driver_sql(f'DROP INDEX "{escaped}"')
+
+        sync_conn.exec_driver_sql(
+            f'ALTER TABLE "{table_name}" RENAME TO "{backup_name}"'
+        )
+        queue_table.create(sync_conn, checkfirst=False)
+
+        insert_columns: list[str] = []
+        select_expressions: list[str] = []
+        for column in queue_table.columns:
+            name = str(column.name)
+            if name in old_columns:
+                insert_columns.append(f'"{name}"')
+                if name == "work_kind":
+                    select_expressions.append(
+                        "COALESCE(NULLIF(TRIM(work_kind), ''), 'consolidate')"
+                    )
+                elif name == "generation":
+                    select_expressions.append("COALESCE(generation, 0)")
+                else:
+                    select_expressions.append(f'"{name}"')
+            elif name == "work_kind":
+                insert_columns.append('"work_kind"')
+                select_expressions.append("'consolidate'")
+            elif name == "generation":
+                insert_columns.append('"generation"')
+                select_expressions.append("0")
+            elif name == "payload":
+                insert_columns.append('"payload"')
+                select_expressions.append("NULL")
+            elif name == "delete_event_id":
+                insert_columns.append('"delete_event_id"')
+                select_expressions.append("NULL")
+            elif name == "claim_token":
+                insert_columns.append('"claim_token"')
+                select_expressions.append("NULL")
+
+        sync_conn.exec_driver_sql(
+            f'INSERT INTO "{table_name}" ({", ".join(insert_columns)}) '
+            f'SELECT {", ".join(select_expressions)} FROM "{backup_name}"'
+        )
+        sync_conn.exec_driver_sql(f'DROP TABLE "{backup_name}"')
+
+    changed = False
+    async with get_engine().begin() as conn:
+        if conn.dialect.name != "sqlite":
+            raise RuntimeError(
+                "governed consolidation queue migration requires Community SQLite"
+            )
+
+        before = await conn.run_sync(_contract)
+        before_columns = set(before["columns"])
+        legacy_unique = (
+            "board_id",
+            "artifact_type",
+            "artifact_id",
+        ) in before["unique_constraints"]
+        has_work_kind_check = any(
+            "work_kindin('consolidate','stale_reconcile','stale_sweep')" in check
+            for check in before["checks"]
+        )
+        if (
+            not governed_columns.issubset(before_columns)
+            or legacy_unique
+            or not has_work_kind_check
+        ):
+            await conn.run_sync(
+                lambda sync_conn: _rebuild(sync_conn, before_columns)
+            )
+            changed = True
+
+        backfill_kind = await conn.execute(
+            sa_text(
+                "UPDATE consolidation_queue SET work_kind='consolidate' "
+                "WHERE work_kind IS NULL OR TRIM(work_kind)=''"
+            )
+        )
+        backfill_generation = await conn.execute(
+            sa_text(
+                "UPDATE consolidation_queue SET generation=0 "
+                "WHERE generation IS NULL"
+            )
+        )
+        changed = changed or int(backfill_kind.rowcount or 0) > 0
+        changed = changed or int(backfill_generation.rowcount or 0) > 0
+
+        current = await conn.run_sync(_contract)
+        current_indexes = current["indexes"]
+        for index in queue_table.indexes:
+            index_name = str(index.name)
+            if index_name not in expected_indexes or index_name in current_indexes:
+                continue
+            await conn.run_sync(
+                lambda sync_conn, owned_index=index: owned_index.create(
+                    sync_conn, checkfirst=False
+                )
+            )
+            changed = True
+
+        final = await conn.run_sync(_contract)
+        final_columns = final["columns"]
+        if not governed_columns.issubset(final_columns):
+            raise RuntimeError("governed consolidation queue columns are incomplete")
+        if not bool(final_columns["claim_token"].get("nullable")):
+            raise RuntimeError("governed consolidation queue claim token must be nullable")
+        if (
+            "board_id",
+            "artifact_type",
+            "artifact_id",
+        ) in final["unique_constraints"]:
+            raise RuntimeError("legacy consolidation queue uniqueness still exists")
+        invalid_rows = int(
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT COUNT(*) FROM consolidation_queue "
+                        "WHERE work_kind NOT IN "
+                        "('consolidate','stale_reconcile','stale_sweep') "
+                        "OR generation IS NULL"
+                    )
+                )
+            ).scalar_one()
+        )
+        if invalid_rows:
+            raise RuntimeError("governed consolidation queue backfill is incomplete")
+        for index_name, predicate in expected_indexes.items():
+            observed = final["indexes"].get(index_name)
+            if observed is None:
+                raise RuntimeError(
+                    f"governed consolidation queue index missing: {index_name}"
+                )
+            normalized_sql = _normalize_ddl(observed["sql"])
+            if index_name.startswith("uq_") and not observed["unique"]:
+                raise RuntimeError(
+                    f"governed consolidation queue index is not unique: {index_name}"
+                )
+            if predicate and _normalize_ddl(predicate) not in normalized_sql:
+                raise RuntimeError(
+                    f"governed consolidation queue predicate drift: {index_name}"
+                )
+
+    return None if changed else "skipped"
+
+
+async def _migrate_global_discovery_delivery_contract() -> str | None:
+    """Converge the durable GD delivery ledger and physical attempt key.
+
+    ``create_all_boundary`` creates the additive ledger table.  Existing
+    installations still declare ``global_update_outbox.event_id`` as
+    ``VARCHAR(36)``, while governed delivery uses the literal physical key
+    ``{delivery_key}:attempt:{n}``.  SQLite cannot alter that declared type in
+    place, so this post-boundary step rebuilds only the outbox table, preserves
+    every row, and then proves both relational contracts.  It intentionally
+    precedes the Global Discovery control-plane step, which recreates any
+    source-revision triggers removed with the legacy outbox table.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        GlobalDiscoveryDeliveryLedger,
+        GlobalDiscoveryDeliveryRedriveControl,
+        GlobalDiscoveryDeliveryWatchdogControl,
+        GlobalUpdateOutbox,
+    )
+
+    outbox_table = GlobalUpdateOutbox.__table__
+    ledger_table = GlobalDiscoveryDeliveryLedger.__table__
+    redrive_control_table = GlobalDiscoveryDeliveryRedriveControl.__table__
+    watchdog_control_table = GlobalDiscoveryDeliveryWatchdogControl.__table__
+    outbox_name = outbox_table.name
+    ledger_name = ledger_table.name
+    redrive_control_name = redrive_control_table.name
+    watchdog_control_name = watchdog_control_table.name
+    backup_name = "global_update_outbox_delivery_key_legacy"
+    outbox_columns = tuple(str(column.name) for column in outbox_table.columns)
+    ledger_columns = tuple(str(column.name) for column in ledger_table.columns)
+    redrive_control_columns = tuple(
+        str(column.name) for column in redrive_control_table.columns
+    )
+    watchdog_control_columns = tuple(
+        str(column.name) for column in watchdog_control_table.columns
+    )
+    expected_ledger_uniques = {
+        (
+            "board_id",
+            "artifact_type",
+            "artifact_id",
+            "generation",
+        ),
+        ("delete_event_id",),
+        ("attempt_event_key",),
+    }
+    expected_ledger_checks = {
+        "generation>=1",
+        "statein('outbox_persisted','delivered','delivery_debt')",
+        "attempt>=0",
+        "state!='outbox_persisted'orattempt_event_keyisnotnull",
+    }
+    expected_ledger_indexes = {
+        "ix_gd_delivery_ledger_state_retry": (
+            "state",
+            "next_retry_at",
+            "updated_at",
+            "delivery_key",
+        ),
+        "ix_gd_delivery_ledger_board_state": ("board_id", "state"),
+    }
+
+    def _normalize_ddl(raw: object) -> str:
+        return re.sub(r'[\s"`\[\]]+', "", str(raw or "").lower())
+
+    def _contract(sync_conn: object) -> dict[str, object]:
+        inspector = sa_inspect(sync_conn)
+        table_names = set(inspector.get_table_names())
+        missing_tables = {
+            outbox_name,
+            ledger_name,
+            redrive_control_name,
+            watchdog_control_name,
+        } - table_names
+        if missing_tables:
+            raise RuntimeError(
+                "global discovery delivery schema is missing tables: "
+                + ", ".join(sorted(missing_tables))
+            )
+
+        outbox_observed_columns = {
+            str(column["name"]): column
+            for column in inspector.get_columns(outbox_name)
+        }
+        ledger_observed_columns = {
+            str(column["name"]): column
+            for column in inspector.get_columns(ledger_name)
+        }
+        redrive_control_observed_columns = {
+            str(column["name"]): column
+            for column in inspector.get_columns(redrive_control_name)
+        }
+        watchdog_control_observed_columns = {
+            str(column["name"]): column
+            for column in inspector.get_columns(watchdog_control_name)
+        }
+        ledger_uniques = {
+            tuple(str(name) for name in constraint.get("column_names") or ())
+            for constraint in inspector.get_unique_constraints(ledger_name)
+        }
+        ledger_checks = {
+            _normalize_ddl(constraint.get("sqltext"))
+            for constraint in inspector.get_check_constraints(ledger_name)
+        }
+        ledger_indexes = {
+            str(index.get("name") or ""): tuple(
+                str(name) for name in index.get("column_names") or ()
+            )
+            for index in inspector.get_indexes(ledger_name)
+        }
+        ledger_foreign_keys = tuple(inspector.get_foreign_keys(ledger_name))
+        return {
+            "outbox_columns": outbox_observed_columns,
+            "outbox_uniques": {
+                tuple(
+                    str(name)
+                    for name in constraint.get("column_names") or ()
+                )
+                for constraint in inspector.get_unique_constraints(outbox_name)
+            },
+            "ledger_columns": ledger_observed_columns,
+            "ledger_pk": tuple(
+                str(name)
+                for name in (
+                    inspector.get_pk_constraint(ledger_name).get(
+                        "constrained_columns"
+                    )
+                    or ()
+                )
+            ),
+            "ledger_uniques": ledger_uniques,
+            "ledger_checks": ledger_checks,
+            "ledger_indexes": ledger_indexes,
+            "ledger_foreign_keys": ledger_foreign_keys,
+            "redrive_control_columns": redrive_control_observed_columns,
+            "redrive_control_pk": tuple(
+                str(name)
+                for name in (
+                    inspector.get_pk_constraint(redrive_control_name).get(
+                        "constrained_columns"
+                    )
+                    or ()
+                )
+            ),
+            "redrive_control_checks": {
+                _normalize_ddl(constraint.get("sqltext"))
+                for constraint in inspector.get_check_constraints(
+                    redrive_control_name
+                )
+            },
+            "watchdog_control_columns": watchdog_control_observed_columns,
+            "watchdog_control_pk": tuple(
+                str(name)
+                for name in (
+                    inspector.get_pk_constraint(watchdog_control_name).get(
+                        "constrained_columns"
+                    )
+                    or ()
+                )
+            ),
+            "watchdog_control_checks": {
+                _normalize_ddl(constraint.get("sqltext"))
+                for constraint in inspector.get_check_constraints(
+                    watchdog_control_name
+                )
+            },
+            "watchdog_control_foreign_keys": tuple(
+                inspector.get_foreign_keys(watchdog_control_name)
+            ),
+            "outbox_physical": _sqlite_owned_table_contract(
+                sync_conn,
+                outbox_table,
+            ),
+            "ledger_physical": _sqlite_owned_table_contract(
+                sync_conn,
+                ledger_table,
+            ),
+            "redrive_control_physical": _sqlite_owned_table_contract(
+                sync_conn,
+                redrive_control_table,
+            ),
+            "watchdog_control_physical": _sqlite_owned_table_contract(
+                sync_conn,
+                watchdog_control_table,
+            ),
+        }
+
+    def _observed_columns(sync_conn: object, table_name: str) -> dict[str, object]:
+        return {
+            str(column["name"]): column
+            for column in sa_inspect(sync_conn).get_columns(table_name)
+        }
+
+    def _validate_rebuild_columns(
+        observed_columns: set[str],
+        *,
+        table_name: str,
+    ) -> None:
+        expected_columns = set(outbox_columns)
+        missing_columns = expected_columns - observed_columns
+        extra_columns = observed_columns - expected_columns
+        if missing_columns or extra_columns:
+            raise RuntimeError(
+                f"{table_name} columns cannot be rebuilt safely: "
+                f"missing={sorted(missing_columns)} extra={sorted(extra_columns)}"
+            )
+
+    def _drop_named_indexes(sync_conn: object, table_name: str) -> None:
+        # Named SQLite indexes are database-global and would collide with the
+        # canonical indexes created for the replacement table. Auto-indexes
+        # belong to the table and disappear with it.
+        for index in sa_inspect(sync_conn).get_indexes(table_name):
+            index_name = str(index.get("name") or "")
+            if index_name and not index_name.startswith("sqlite_autoindex_"):
+                escaped = index_name.replace('"', '""')
+                sync_conn.exec_driver_sql(f'DROP INDEX "{escaped}"')
+
+    def _outbox_rows_match(sync_conn: object) -> bool:
+        quoted_columns = ", ".join(f'"{name}"' for name in outbox_columns)
+        difference = sync_conn.exec_driver_sql(
+            "SELECT "
+            "NOT EXISTS (SELECT 1 FROM ("
+            f'SELECT {quoted_columns} FROM "{backup_name}" '
+            "EXCEPT "
+            f'SELECT {quoted_columns} FROM "{outbox_name}")) '
+            "AND NOT EXISTS (SELECT 1 FROM ("
+            f'SELECT {quoted_columns} FROM "{outbox_name}" '
+            "EXCEPT "
+            f'SELECT {quoted_columns} FROM "{backup_name}"))'
+        ).scalar_one()
+        return bool(difference)
+
+    def _rebuild_outbox(sync_conn: object) -> None:
+        inspector = sa_inspect(sync_conn)
+        table_names = set(inspector.get_table_names())
+        if backup_name not in table_names:
+            if outbox_name not in table_names:
+                raise RuntimeError(
+                    "global delivery migration found neither the canonical "
+                    "outbox nor its resumable backup"
+                )
+            _validate_rebuild_columns(
+                set(_observed_columns(sync_conn, outbox_name)),
+                table_name=outbox_name,
+            )
+            sync_conn.exec_driver_sql(
+                f'ALTER TABLE "{outbox_name}" RENAME TO "{backup_name}"'
+            )
+        else:
+            _validate_rebuild_columns(
+                set(_observed_columns(sync_conn, backup_name)),
+                table_name=backup_name,
+            )
+
+        # A process killed under the historical non-transactional DDL path can
+        # leave both names behind. The backup is the authoritative source. An
+        # empty or byte-equivalent replacement is safe to rebuild; any other
+        # non-empty target is ambiguous and must fail closed.
+        table_names = set(sa_inspect(sync_conn).get_table_names())
+        if outbox_name in table_names:
+            observed_target = _observed_columns(sync_conn, outbox_name)
+            _validate_rebuild_columns(
+                set(observed_target),
+                table_name=outbox_name,
+            )
+            target_event_type = observed_target["event_id"]["type"]
+            if getattr(target_event_type, "length", None) != 255:
+                raise RuntimeError(
+                    "resumable global_update_outbox target must be VARCHAR(255)"
+                )
+            target_count = int(
+                sync_conn.exec_driver_sql(
+                    f'SELECT COUNT(*) FROM "{outbox_name}"'
+                ).scalar_one()
+            )
+            if target_count and not _outbox_rows_match(sync_conn):
+                raise RuntimeError(
+                    "resumable global_update_outbox target contains divergent rows"
+                )
+            sync_conn.exec_driver_sql(f'DROP TABLE "{outbox_name}"')
+
+        _drop_named_indexes(sync_conn, backup_name)
+        outbox_table.create(sync_conn, checkfirst=False)
+        quoted_columns = ", ".join(f'"{name}"' for name in outbox_columns)
+        sync_conn.exec_driver_sql(
+            f'INSERT INTO "{outbox_name}" ({quoted_columns}) '
+            f'SELECT {quoted_columns} FROM "{backup_name}"'
+        )
+        if not _outbox_rows_match(sync_conn):
+            raise RuntimeError(
+                "global_update_outbox rebuild did not preserve every row"
+            )
+        sync_conn.exec_driver_sql(f'DROP TABLE "{backup_name}"')
+
+    def _validate(contract: dict[str, object]) -> None:
+        for contract_key, label in (
+            ("outbox_physical", "global_update_outbox"),
+            ("ledger_physical", "global discovery delivery ledger"),
+            (
+                "redrive_control_physical",
+                "global discovery delivery redrive control",
+            ),
+            (
+                "watchdog_control_physical",
+                "global discovery delivery watchdog control",
+            ),
+        ):
+            physical = contract[contract_key]
+            expected = physical["expected"]
+            observed = physical["observed"]
+            drift = tuple(
+                section
+                for section in expected
+                if observed.get(section) != expected[section]
+            )
+            if drift:
+                raise RuntimeError(
+                    f"{label} physical contract drift: " + ", ".join(drift)
+                )
+
+        observed_outbox_columns = contract["outbox_columns"]
+        if set(observed_outbox_columns) != set(outbox_columns):
+            raise RuntimeError("global_update_outbox column contract drift")
+        event_type = observed_outbox_columns["event_id"]["type"]
+        if getattr(event_type, "length", None) != 255:
+            raise RuntimeError(
+                "global_update_outbox.event_id must be VARCHAR(255)"
+            )
+        if ("event_id",) not in contract["outbox_uniques"]:
+            raise RuntimeError("global_update_outbox.event_id must remain unique")
+
+        if set(contract["ledger_columns"]) != set(ledger_columns):
+            raise RuntimeError("global discovery delivery ledger column drift")
+        if contract["ledger_pk"] != ("delivery_key",):
+            raise RuntimeError(
+                "global discovery delivery ledger primary key drift"
+            )
+        if not expected_ledger_uniques.issubset(contract["ledger_uniques"]):
+            raise RuntimeError(
+                "global discovery delivery ledger uniqueness drift"
+            )
+        if not expected_ledger_checks.issubset(contract["ledger_checks"]):
+            raise RuntimeError("global discovery delivery ledger check drift")
+        for index_name, columns in expected_ledger_indexes.items():
+            if contract["ledger_indexes"].get(index_name) != columns:
+                raise RuntimeError(
+                    "global discovery delivery ledger index drift: "
+                    f"{index_name}"
+                )
+        board_foreign_key = any(
+            tuple(str(name) for name in fk.get("constrained_columns") or ())
+            == ("board_id",)
+            and str(fk.get("referred_table") or "") == "boards"
+            and str((fk.get("options") or {}).get("ondelete") or "").upper()
+            == "CASCADE"
+            for fk in contract["ledger_foreign_keys"]
+        )
+        if not board_foreign_key:
+            raise RuntimeError(
+                "global discovery delivery ledger board foreign key drift"
+            )
+        if set(contract["redrive_control_columns"]) != set(
+            redrive_control_columns
+        ):
+            raise RuntimeError(
+                "global discovery delivery redrive control column drift"
+            )
+        if contract["redrive_control_pk"] != ("id",):
+            raise RuntimeError(
+                "global discovery delivery redrive control primary key drift"
+            )
+        expected_redrive_checks = {
+            "id='_global'",
+            "checkpoint_version>=0",
+        }
+        if not expected_redrive_checks.issubset(
+            contract["redrive_control_checks"]
+        ):
+            raise RuntimeError(
+                "global discovery delivery redrive control check drift"
+            )
+        if set(contract["watchdog_control_columns"]) != set(
+            watchdog_control_columns
+        ):
+            raise RuntimeError(
+                "global discovery delivery watchdog control column drift"
+            )
+        if contract["watchdog_control_pk"] != ("board_id",):
+            raise RuntimeError(
+                "global discovery delivery watchdog control primary key drift"
+            )
+        if "checkpoint_version>=0" not in contract[
+            "watchdog_control_checks"
+        ]:
+            raise RuntimeError(
+                "global discovery delivery watchdog control check drift"
+            )
+        watchdog_board_foreign_key = any(
+            tuple(str(name) for name in fk.get("constrained_columns") or ())
+            == ("board_id",)
+            and str(fk.get("referred_table") or "") == "boards"
+            and str((fk.get("options") or {}).get("ondelete") or "").upper()
+            == "CASCADE"
+            for fk in contract["watchdog_control_foreign_keys"]
+        )
+        if not watchdog_board_foreign_key:
+            raise RuntimeError(
+                "global discovery delivery watchdog control board foreign "
+                "key drift"
+            )
+
+    changed = False
+    async with get_engine().begin() as conn:
+        if conn.dialect.name != "sqlite":
+            raise RuntimeError(
+                "global discovery delivery migration requires Community SQLite"
+            )
+
+        # Python's sqlite3 legacy transaction mode does not BEGIN for DDL.
+        # Force a physical write transaction before any rename/create/drop so
+        # a failed copy restores the original table, indexes, triggers, and
+        # rows instead of committing a split-table intermediate state.
+        await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        missing_delivery_tables = {
+            ledger_name,
+            redrive_control_name,
+            watchdog_control_name,
+        } - table_names
+        if missing_delivery_tables:
+            raise RuntimeError(
+                "global discovery delivery schema is missing tables: "
+                + ", ".join(sorted(missing_delivery_tables))
+            )
+        if backup_name in table_names:
+            await conn.run_sync(_rebuild_outbox)
+            changed = True
+        else:
+            before = await conn.run_sync(_contract)
+            event_type = before["outbox_columns"]["event_id"]["type"]
+            if getattr(event_type, "length", None) != 255:
+                await conn.run_sync(_rebuild_outbox)
+                changed = True
+        final = await conn.run_sync(_contract)
+        _validate(final)
+
+    return None if changed else "skipped"
 
 
 async def _migrate_global_discovery_recovery_control_plane() -> str | None:
@@ -1730,6 +2679,179 @@ async def _migrate_add_cancellation_columns() -> None:
                     pass
 
 
+async def _migrate_pagination_indices_and_positions() -> None:
+    """Pagination support (spec 8b33f9a8): covering indices + dense-position backfill.
+
+    1) Covering indices for the paginated read paths (CREATE INDEX IF NOT
+       EXISTS — idempotent):
+       ``cards(board_id, status, position, id)`` for Kanban column scans and
+       the resequencer's deterministic order, plus
+       ``<entity>(board_id, updated_at, id)`` on the six board-wide lists so
+       the stable ``(updated_at DESC, id DESC)`` pagination never needs a
+       table-level TEMP B-TREE.
+    2) Dense-position backfill for cards, per ``(board_id, status)``: active
+       cards get ``0..n-1`` and archived cards ``n..m``, derived from the
+       deterministic order ``(archived ASC, position ASC, id DESC)`` — the
+       same tie-break as ``CardService.resequence_columns`` (refinement v17,
+       item 7). Normalizes legacy defects (literal ``-1`` sentinels, gaps,
+       collisions, interleaved archived rows). Only rows whose position
+       differs are rewritten, so a second run updates zero rows
+       (idempotency oracle ts_dfbe2715).
+    """
+    from sqlalchemy import text as sa_text
+
+    list_entities = (
+        "stories",
+        "ideations",
+        "refinements",
+        "specs",
+        "sprints",
+        "cards",
+    )
+    # FULL TR3 matrix (tr_8b519755) — every canonical read-path shape,
+    # including the ARCHIVED-FREE variants (include_archived=true), the facet
+    # batch with archived BEFORE status, the sprint-by-spec list, the
+    # board+spec EXISTS probe and the open-QA partial indexes.
+    ddl_statements = [
+        # Kanban column page + resequencer canonical query:
+        #   WHERE board_id=? AND status=? [AND archived=?]
+        #   ORDER BY position ASC, id DESC
+        # The mixed direction requires an explicit ``id DESC`` index column
+        # or SQLite emits USE TEMP B-TREE FOR RIGHT PART OF ORDER BY.
+        "CREATE INDEX IF NOT EXISTS ix_cards_board_status_archived_position_iddesc "
+        "ON cards(board_id, status, archived, position, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_cards_board_status_position_iddesc "
+        "ON cards(board_id, status, position, id DESC)",
+        # card_type facets: batch (archived BEFORE status — serves both the
+        # per-column and the GROUP BY status,card_type batch walk), the
+        # board-wide roll-up, and the two ARCHIVED-FREE variants.
+        "CREATE INDEX IF NOT EXISTS ix_cards_board_archived_status_card_type "
+        "ON cards(board_id, archived, status, card_type)",
+        "CREATE INDEX IF NOT EXISTS ix_cards_board_archived_card_type "
+        "ON cards(board_id, archived, card_type)",
+        "CREATE INDEX IF NOT EXISTS ix_cards_board_status_card_type "
+        "ON cards(board_id, status, card_type)",
+        # assignee facets: board-wide archived-aware + ARCHIVED-FREE.
+        "CREATE INDEX IF NOT EXISTS ix_cards_board_archived_assignee "
+        "ON cards(board_id, archived, assignee_id)",
+        "CREATE INDEX IF NOT EXISTS ix_cards_board_assignee "
+        "ON cards(board_id, assignee_id)",
+        # EXISTS probe for lookup options (linked_to_cards universe).
+        "CREATE INDEX IF NOT EXISTS ix_cards_board_spec ON cards(board_id, spec_id)",
+        # Topic summaries aggregate both active and archived Story counts in
+        # one board-scoped GROUP BY without hydrating Story rows.
+        "CREATE INDEX IF NOT EXISTS ix_stories_board_topic_archived "
+        "ON stories(board_id, topic_id, archived)",
+        # Sprint lists scoped by spec (TR3 literal ASC form + the
+        # status-filtered DESC/DESC variant from the round-3 addendum).
+        "CREATE INDEX IF NOT EXISTS ix_sprints_spec_archived_updated_id "
+        "ON sprints(spec_id, archived, updated_at, id)",
+        "CREATE INDEX IF NOT EXISTS ix_sprints_spec_status_archived_updated_id "
+        "ON sprints(spec_id, status, archived, updated_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_sprints_spec_updated_id "
+        "ON sprints(spec_id, updated_at, id)",
+        # MCP list_by_board preserves its legacy sprint order
+        # (created_at ASC, id DESC), independently from the REST list order.
+        "CREATE INDEX IF NOT EXISTS ix_sprints_spec_archived_created_iddesc "
+        "ON sprints(board_id, spec_id, archived, created_at ASC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_sprints_spec_status_archived_created_iddesc "
+        "ON sprints(board_id, spec_id, status, archived, created_at ASC, id DESC)",
+        # Lookup/typeahead canonical order (title ASC, id ASC) — with or
+        # without a status eligibility filter and with the linked_to_cards
+        # EXISTS probe (AC13 covers the lookups too).
+        "CREATE INDEX IF NOT EXISTS ix_specs_board_title_id "
+        "ON specs(board_id, title, id)",
+        "CREATE INDEX IF NOT EXISTS ix_ideations_board_title_id "
+        "ON ideations(board_id, title, id)",
+        # Refinement lists scoped by ideation (the real caller scope): the
+        # archived-filtered and status-filtered DESC/DESC variants plus the
+        # include_archived variant.
+        "CREATE INDEX IF NOT EXISTS ix_refinements_ideation_archived_updated_id "
+        "ON refinements(ideation_id, archived, updated_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_refinements_ideation_status_archived_updated_id "
+        "ON refinements(ideation_id, status, archived, updated_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_refinements_ideation_updated_id "
+        "ON refinements(ideation_id, updated_at, id)",
+        # Nested refinement routes carry BOTH the board and ideation anchors.
+        # Without the composite prefix SQLite may choose the board-wide index
+        # and scan the entire board instead of the handful of rows belonging
+        # to the selected ideation (DR6 @10k repro).
+        "CREATE INDEX IF NOT EXISTS ix_refinements_board_ideation_archived_updated_iddesc "
+        "ON refinements(board_id, ideation_id, archived, updated_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_refinements_board_ideation_status_archived_updated_iddesc "
+        "ON refinements(board_id, ideation_id, status, archived, updated_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_refinements_board_ideation_updated_iddesc "
+        "ON refinements(board_id, ideation_id, updated_at DESC, id DESC)",
+        # C8 board-wide refinement list: active/all/status-filtered forms keep
+        # the canonical updated_at DESC, id DESC order without a table sort.
+        "CREATE INDEX IF NOT EXISTS ix_refinements_board_archived_updated_iddesc "
+        "ON refinements(board_id, archived, updated_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_refinements_board_status_archived_updated_iddesc "
+        "ON refinements(board_id, status, archived, updated_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_refinements_board_updated_iddesc "
+        "ON refinements(board_id, updated_at DESC, id DESC)",
+        # Open-QA partial indexes (open_qa_count derived fields).
+        "CREATE INDEX IF NOT EXISTS ix_qa_items_card_open "
+        "ON qa_items(card_id) WHERE answered_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS ix_ideation_qa_items_parent_open "
+        "ON ideation_qa_items(ideation_id) WHERE answered_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS ix_refinement_qa_items_parent_open "
+        "ON refinement_qa_items(refinement_id) WHERE answered_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS ix_spec_qa_items_parent_open "
+        "ON spec_qa_items(spec_id) WHERE answered_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS ix_sprint_qa_items_parent_open "
+        "ON sprint_qa_items(sprint_id) WHERE answered_at IS NULL",
+    ]
+    for table in list_entities:
+        # Board-wide list, archived-filtered variant — TR3 literally requires
+        # PHYSICAL DESC/DESC on (updated_at, id):
+        #   (scope, archived, updated_at DESC, id DESC).
+        ddl_statements.append(
+            f"CREATE INDEX IF NOT EXISTS ix_{table}_board_archived_updated_id "
+            f"ON {table}(board_id, archived, updated_at DESC, id DESC)"
+        )
+        # include_archived=true variant (no archived predicate; TR3 keeps the
+        # plain ASC form here — a backward scan serves the DESC order).
+        ddl_statements.append(
+            f"CREATE INDEX IF NOT EXISTS ix_{table}_board_updated_id "
+            f"ON {table}(board_id, updated_at, id)"
+        )
+        # Status-filtered list variant — DESC/DESC per TR3.
+        ddl_statements.append(
+            f"CREATE INDEX IF NOT EXISTS ix_{table}_board_status_archived_updated_id "
+            f"ON {table}(board_id, status, archived, updated_at DESC, id DESC)"
+        )
+
+    async with get_engine().begin() as conn:
+        for ddl in ddl_statements:
+            await conn.execute(sa_text(ddl))
+
+        await conn.execute(
+            sa_text(
+                """
+                WITH ranked AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY board_id, status
+                               ORDER BY COALESCE(archived, 0) ASC,
+                                        COALESCE(position, 0) ASC,
+                                        id DESC
+                           ) - 1 AS dense_position
+                    FROM cards
+                )
+                UPDATE cards
+                SET position = (
+                    SELECT dense_position FROM ranked WHERE ranked.id = cards.id
+                )
+                WHERE position IS NULL
+                   OR position <> (
+                       SELECT dense_position FROM ranked WHERE ranked.id = cards.id
+                   )
+                """
+            )
+        )
+
+
 async def _migrate_agent_permissions() -> None:
     """Migrate agents from legacy flat permissions to granular permission_flags."""
     import logging
@@ -2067,6 +3189,10 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_status_renames": _migrate_status_renames,
     "_migrate_add_permission_columns": _migrate_add_permission_columns,
     "_migrate_add_event_tables": _migrate_add_event_tables,
+    "_migrate_add_consolidation_work_kinds": _migrate_add_consolidation_work_kinds,
+    "_migrate_global_discovery_delivery_contract": (
+        _migrate_global_discovery_delivery_contract
+    ),
     "_migrate_global_discovery_recovery_control_plane": (
         _migrate_global_discovery_recovery_control_plane
     ),
@@ -2086,6 +3212,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_agent_seen_board_id": _migrate_add_agent_seen_board_id,
     "_migrate_add_board_guideline_provenance": _migrate_add_board_guideline_provenance,
     "_migrate_add_cancellation_columns": _migrate_add_cancellation_columns,
+    "_migrate_pagination_indices_and_positions": _migrate_pagination_indices_and_positions,
     "_migrate_repair_known_fixture_fk_orphans": _migrate_repair_known_fixture_fk_orphans,
     "_migrate_agent_permissions": _migrate_agent_permissions,
 }

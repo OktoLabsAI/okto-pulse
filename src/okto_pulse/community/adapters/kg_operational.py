@@ -584,6 +584,7 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
                     target.claim_timeout_at = None
                     target.worker_id = None
                     target.claimed_by_session_id = None
+                    target.claim_token = None
                     replay_action = "reopened"
                 else:
                     # Exact artifact identity is the idempotency key. Never
@@ -639,6 +640,7 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
             row.claim_timeout_at = None
             row.worker_id = None
             row.claimed_by_session_id = None
+            row.claim_token = None
 
         _reopen(entry, source="retry_from_ui")
         reopened = [str(entry.id)]

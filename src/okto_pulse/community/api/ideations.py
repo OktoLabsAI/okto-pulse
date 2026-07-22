@@ -4,6 +4,25 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.lookups import (
+    lookup_page_request,
+    lookup_response,
+    validate_ideation_lookup_query,
+)
+from okto_pulse.community.api.pagination import (
+    board_scope,
+    pagination_requested,
+    project_page,
+    record_fields,
+    resolve_window,
+    run_paginated_list,
+    search_groups,
+    validate_ideation_pagination_query,
+)
+from okto_pulse.core.ports.application_persistence import (
+    ApplicationFilter,
+    PageRequest,
+)
 from okto_pulse.core.application.use_cases import (
     AnswerIdeationQuestionCommand,
     AnswerIdeationQuestionUseCase,
@@ -57,6 +76,7 @@ from okto_pulse.core.models.schemas import (
     IdeationKnowledgeResponse,
     IdeationKnowledgeSummary,
     IdeationMove,
+    IdeationPageItem,
     IdeationQAAnswer,
     IdeationQACreate,
     IdeationQAResponse,
@@ -65,6 +85,8 @@ from okto_pulse.core.models.schemas import (
     IdeationSnapshotSummary,
     IdeationSummary,
     IdeationUpdate,
+    LookupResponse,
+    PageEnvelope,
     SpecResponse,
 )
 from okto_pulse.core.application.errors import (
@@ -102,15 +124,92 @@ async def create_ideation(
     return result.ideation
 
 
-@router.get("/boards/{board_id}/ideations", response_model=list[IdeationSummary])
+@router.get(
+    "/boards/{board_id}/ideations",
+    response_model=list[IdeationSummary] | PageEnvelope[IdeationPageItem],
+    dependencies=[Depends(validate_ideation_pagination_query)],
+)
 async def list_ideations(
     board_id: str,
     status_filter: str | None = Query(None, alias="status"),
+    search: str | None = Query(None),
+    derivation_pending: bool | None = Query(None),
     include_archived: bool = Query(False, alias="include_archived"),
+    offset: int | None = Query(None),
+    limit: int | None = Query(None),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List ideations for a board, optionally filtered by status."""
+    """List ideations for a board, optionally filtered by status.
+
+    With ``offset``/``limit``: paginated envelope (spec 8b33f9a8); without:
+    legacy shape unchanged (DR9).
+    """
+    if pagination_requested(offset, limit):
+        command = ListIdeationsCommand(
+            board_id,
+            status_filter=status_filter,
+            include_archived=include_archived,
+        )
+        actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+        use_case = ListIdeationsUseCase()
+        try:
+            resolved_offset, resolved_limit = resolve_window(offset, limit)
+            filters: tuple[ApplicationFilter, ...] = ()
+            if status_filter:
+                filters = (ApplicationFilter("status", "eq", status_filter),)
+            if derivation_pending is not None:
+                filters = (
+                    *filters,
+                    ApplicationFilter(
+                        "derivation_pending",
+                        "is_true" if derivation_pending else "is_false",
+                        None,
+                    ),
+                )
+            page = await run_paginated_list(
+                uow,
+                PageRequest(
+                    surface="ideation_list",
+                    scope=board_scope(board_id, include_archived=include_archived),
+                    offset=resolved_offset,
+                    limit=resolved_limit,
+                    filters=filters,
+                    any_groups=search_groups(search, ("title", "description")),
+                ),
+                preflight=lambda: use_case.preflight(
+                    command, actor=actor, uow=uow
+                ),
+            )
+        except EntityNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+            )
+        return project_page(
+            page,
+            lambda record: IdeationPageItem(
+                **record_fields(
+                    record,
+                    (
+                        "id",
+                        "board_id",
+                        "title",
+                        "description",
+                        "problem_statement",
+                        "complexity",
+                        "status",
+                        "version",
+                        "assignee_id",
+                        "created_by",
+                        "created_at",
+                        "updated_at",
+                        "labels",
+                        "archived",
+                        "scope_assessment",
+                    ),
+                )
+            ),
+        )
     try:
         result = await ListIdeationsUseCase().execute(
             ListIdeationsCommand(
@@ -122,6 +221,53 @@ async def list_ideations(
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
     return result.ideations
+
+
+@router.get(
+    "/boards/{board_id}/ideations/lookup",
+    response_model=LookupResponse,
+    dependencies=[Depends(validate_ideation_lookup_query)],
+)
+async def lookup_ideations(
+    board_id: str,
+    search: str | None = Query(None),
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(20),
+    offset: int = Query(0),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Return a compact, purpose-filtered ideation typeahead page."""
+
+    command = ListIdeationsCommand(
+        board_id,
+        status_filter=None,
+        include_archived=False,
+    )
+    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+    try:
+        page = await run_paginated_list(
+            uow,
+            lookup_page_request(
+                "ideation_lookup",
+                board_id,
+                statuses=status_filter,
+                search=search,
+                offset=offset,
+                limit=limit,
+            ),
+            preflight=lambda: ListIdeationsUseCase().preflight(
+                command,
+                actor=actor,
+                uow=uow,
+            ),
+        )
+    except EntityNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Board not found",
+        )
+    return lookup_response(page)
 
 
 @router.get("/ideations/{ideation_id}", response_model=IdeationResponse)

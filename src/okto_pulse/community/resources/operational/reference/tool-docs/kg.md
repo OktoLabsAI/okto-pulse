@@ -942,6 +942,24 @@ last error and creation time.
 Atomically requeue an explicit terminal Global Discovery outbox selection.
 There is no broad or implicit "all" mode.
 
+This legacy recovery surface never reuses a governed delivery key. Rows whose
+event identity is `gd_parity:...:attempt:n` are owned by tick machinery.
+`kg.tick.daily` starts recovery; each durable `kg.tick.delivery_redrive`
+continuation consumes one global budget with oldest-first queues and
+round-robin board fairness, advances its persisted checkpoint by CAS, and
+inserts a new `attempt:n+1`. Remaining due debt schedules the next bounded run
+in the same transaction. A governed or mixed selection is rejected atomically
+with `governed_delivery_attempt_tick_owned` and `mutated=false`.
+The tick watchdog uses a separate persisted cursor per board; every bounded
+page advances transactionally even when attempts are still active, preventing
+an active prefix from starving a later orphaned attempt.
+The redrive receipt reports the age of the oldest remaining due debt as
+`oldest_debt_age_seconds`; the gauge is `0.0` once the due backlog is drained.
+For historical terminal rows only, the circuit probe can resolve a delivered
+ledger through the payload delivery key, unique delete event, or physical
+attempt-key prefix. Missing or conflicting non-delivered identities remain
+fail-closed; normal attempt consumption still requires the exact envelope.
+
 Args:
 - `dead_letter_ids`: required native list of 1-100 unique immutable IDs from
   the list operation.

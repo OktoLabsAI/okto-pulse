@@ -12,7 +12,6 @@ import type {
   ShareBoardRequest,
   UpdateShareRequest,
   Card,
-  CardSummary,
   CreateCardRequest,
   UpdateCardRequest,
   MoveCardRequest,
@@ -47,6 +46,10 @@ import type {
   CreateCommentRequest,
   UpdateCommentRequest,
   CardStatus,
+  CardType,
+  ColumnPageResponse,
+  ColumnsOptInResponse,
+  LookupPage,
   AllowedTransitionEntityType,
   AllowedTransitionsResponse,
   Spec,
@@ -117,6 +120,81 @@ import type {
   MarkResourceNotApplicableRequest,
   ClearResourceNotApplicableRequest,
 } from '@/types';
+
+export interface BoardColumnsQuery {
+  perColumnLimit?: number;
+  specIds?: string[];
+  includeUnlinked?: boolean;
+  cardTypesByStatus?: Partial<Record<CardStatus, CardType[]>>;
+  search?: string;
+  assigneeId?: string;
+  includeArchived?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface PageEnvelope<T> {
+  items: T[];
+  total_filtered: number;
+  total_overall: number;
+  offset: number;
+  limit: number;
+}
+
+export interface PageWindow {
+  offset: number;
+  limit: 25 | 50 | 100;
+  signal?: AbortSignal;
+}
+
+export type StoryPageItem = Omit<
+  StorySummary,
+  'pre_archive_status' | 'screen_mockups' | 'ideation_links'
+> & {
+  screen_mockups_count: number;
+};
+
+export type BoardRefinementPageItem = RefinementSummary & {
+  ideation_title: string;
+};
+
+export interface SprintPageItem {
+  id: string;
+  spec_id: string;
+  board_id: string;
+  title: string;
+  description: string | null;
+  objective: string | null;
+  expected_outcome: string | null;
+  status: 'draft' | 'active' | 'review' | 'closed' | 'cancelled';
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  archived: boolean;
+}
+
+function boardColumnsParams(
+  options: BoardColumnsQuery,
+  column?: CardStatus,
+  offset?: number,
+): URLSearchParams {
+  const params = new URLSearchParams({
+    per_column_limit: String(options.perColumnLimit ?? 10),
+  });
+  const specIds = [...(options.specIds ?? [])];
+  if (options.includeUnlinked) specIds.push('__unlinked__');
+  if (specIds.length > 0) params.set('spec_ids', specIds.join(','));
+  for (const [status, types] of Object.entries(options.cardTypesByStatus ?? {})) {
+    if (types && types.length > 0) {
+      params.append('card_types', `${status}:${types.join(',')}`);
+    }
+  }
+  if (options.search?.trim()) params.set('search', options.search.trim());
+  if (options.assigneeId) params.set('assignee_id', options.assigneeId);
+  if (options.includeArchived) params.set('include_archived', 'true');
+  if (column) params.set('column', column);
+  if (offset !== undefined) params.set('offset', String(offset));
+  return params;
+}
 
 type StructuredSpecItemField =
   | 'business_rules'
@@ -193,14 +271,31 @@ export function useDashboardApi() {
       await apiClient.fetch(`/boards/${boardId}`, { method: 'DELETE' });
     },
 
-    async getBoardColumns(boardId: string, includeArchived?: boolean): Promise<Record<CardStatus, CardSummary[]>> {
-      const p = new URLSearchParams();
-      if (includeArchived) p.set('include_archived', 'true');
-      const qs = p.toString() ? `?${p.toString()}` : '';
-      const response = await apiClient.fetchJson<{ board_id: string; columns: Record<CardStatus, CardSummary[]> }>(
-        `/boards/${boardId}/columns${qs}`
+    async getBoardColumns(
+      boardId: string,
+      options: BoardColumnsQuery | boolean = {},
+    ): Promise<ColumnsOptInResponse> {
+      const normalized = typeof options === 'boolean'
+        ? { includeArchived: options }
+        : options;
+      const params = boardColumnsParams(normalized);
+      return apiClient.fetchJson<ColumnsOptInResponse>(
+        `/boards/${boardId}/columns?${params.toString()}`,
+        { signal: normalized.signal },
       );
-      return response.columns;
+    },
+
+    async getBoardColumnPage(
+      boardId: string,
+      column: CardStatus,
+      offset: number,
+      options: BoardColumnsQuery = {},
+    ): Promise<ColumnPageResponse> {
+      const params = boardColumnsParams(options, column, offset);
+      return apiClient.fetchJson<ColumnPageResponse>(
+        `/boards/${boardId}/columns?${params.toString()}`,
+        { signal: options.signal },
+      );
     },
 
     async getAllowedTransitions(
@@ -585,6 +680,49 @@ export function useDashboardApi() {
       return apiClient.fetchJson<SpecSummary[]>(`/boards/${boardId}/specs${qs}`);
     },
 
+    async listSpecsPage(
+      boardId: string,
+      options: PageWindow & { status?: string; search?: string; includeArchived?: boolean },
+    ): Promise<PageEnvelope<SpecSummary>> {
+      const params = new URLSearchParams({
+        offset: String(options.offset),
+        limit: String(options.limit),
+      });
+      if (options.status) params.set('status', options.status);
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.includeArchived) params.set('include_archived', 'true');
+      return apiClient.fetchJson<PageEnvelope<SpecSummary>>(
+        `/boards/${boardId}/specs?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async lookupSpecs(
+      boardId: string,
+      options: {
+        search?: string;
+        statuses?: string[];
+        offset?: number;
+        limit?: number;
+        linkedToCards?: boolean;
+        includeArchivedCards?: boolean;
+        signal?: AbortSignal;
+      } = {},
+    ): Promise<LookupPage> {
+      const params = new URLSearchParams({
+        offset: String(options.offset ?? 0),
+        limit: String(options.limit ?? 20),
+      });
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.statuses?.length) params.set('status', options.statuses.join(','));
+      if (options.linkedToCards) params.set('linked_to_cards', 'true');
+      if (options.includeArchivedCards) params.set('include_archived_cards', 'true');
+      return apiClient.fetchJson<LookupPage>(
+        `/boards/${boardId}/specs/lookup?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
     async getSpec(specId: string): Promise<Spec> {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`);
     },
@@ -885,6 +1023,30 @@ export function useDashboardApi() {
       return apiClient.fetchJson<StorySummary[]>(`/boards/${boardId}/stories${qs}`);
     },
 
+    async listStoriesPage(boardId: string, options: PageWindow & {
+      status?: string;
+      topicId?: string;
+      search?: string;
+      linked?: boolean;
+      converted?: boolean;
+      includeArchived?: boolean;
+    }): Promise<PageEnvelope<StoryPageItem>> {
+      const params = new URLSearchParams({
+        offset: String(options.offset),
+        limit: String(options.limit),
+      });
+      if (options.status) params.set('status', options.status);
+      if (options.topicId) params.set('topic_id', options.topicId);
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.linked !== undefined) params.set('linked', String(options.linked));
+      if (options.converted !== undefined) params.set('converted', String(options.converted));
+      if (options.includeArchived) params.set('include_archived', 'true');
+      return apiClient.fetchJson<PageEnvelope<StoryPageItem>>(
+        `/boards/${boardId}/stories?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
     async getStory(storyId: string): Promise<Story> {
       return apiClient.fetchJson<Story>(`/stories/${storyId}`);
     },
@@ -940,6 +1102,53 @@ export function useDashboardApi() {
       if (includeArchived) p.set('include_archived', 'true');
       const qs = p.toString() ? `?${p.toString()}` : '';
       return apiClient.fetchJson<IdeationSummary[]>(`/boards/${boardId}/ideations${qs}`);
+    },
+
+    async listIdeationsPage(
+      boardId: string,
+      options: PageWindow & {
+        status?: string;
+        search?: string;
+        derivationPending?: boolean;
+        includeArchived?: boolean;
+      },
+    ): Promise<PageEnvelope<IdeationSummary>> {
+      const params = new URLSearchParams({
+        offset: String(options.offset),
+        limit: String(options.limit),
+      });
+      if (options.status) params.set('status', options.status);
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.derivationPending !== undefined) {
+        params.set('derivation_pending', String(options.derivationPending));
+      }
+      if (options.includeArchived) params.set('include_archived', 'true');
+      return apiClient.fetchJson<PageEnvelope<IdeationSummary>>(
+        `/boards/${boardId}/ideations?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async lookupIdeations(
+      boardId: string,
+      options: {
+        search?: string;
+        statuses?: string[];
+        offset?: number;
+        limit?: number;
+        signal?: AbortSignal;
+      } = {},
+    ): Promise<LookupPage> {
+      const params = new URLSearchParams({
+        offset: String(options.offset ?? 0),
+        limit: String(options.limit ?? 20),
+      });
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.statuses?.length) params.set('status', options.statuses.join(','));
+      return apiClient.fetchJson<LookupPage>(
+        `/boards/${boardId}/ideations/lookup?${params.toString()}`,
+        { signal: options.signal },
+      );
     },
 
     async getIdeation(ideationId: string): Promise<Ideation> {
@@ -1065,6 +1274,30 @@ export function useDashboardApi() {
 
     async listRefinements(ideationId: string): Promise<RefinementSummary[]> {
       return apiClient.fetchJson<RefinementSummary[]>(`/ideations/${ideationId}/refinements`);
+    },
+
+    async listBoardRefinementsPage(boardId: string, options: PageWindow & {
+      status?: string;
+      search?: string;
+      derivationPending?: boolean;
+      includeArchived?: boolean;
+      labels?: string[];
+    }): Promise<PageEnvelope<BoardRefinementPageItem>> {
+      const params = new URLSearchParams({
+        offset: String(options.offset),
+        limit: String(options.limit),
+      });
+      if (options.status) params.set('status', options.status);
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.derivationPending !== undefined) {
+        params.set('derivation_pending', String(options.derivationPending));
+      }
+      if (options.includeArchived) params.set('include_archived', 'true');
+      if (options.labels?.length) params.set('labels', options.labels.join(','));
+      return apiClient.fetchJson<PageEnvelope<BoardRefinementPageItem>>(
+        `/boards/${boardId}/refinements?${params.toString()}`,
+        { signal: options.signal },
+      );
     },
 
     async getRefinement(refinementId: string): Promise<Refinement> {
@@ -1605,6 +1838,26 @@ export function useDashboardApi() {
       if (includeArchived) params.set('include_archived', 'true');
       const qs = params.toString();
       return apiClient.fetchJson(`/boards/${boardId}/sprints${qs ? `?${qs}` : ''}`);
+    },
+
+    async listBoardSprintsPage(boardId: string, options: PageWindow & {
+      status?: string;
+      specId?: string;
+      search?: string;
+      includeArchived?: boolean;
+    }): Promise<PageEnvelope<SprintPageItem>> {
+      const params = new URLSearchParams({
+        offset: String(options.offset),
+        limit: String(options.limit),
+      });
+      if (options.status) params.set('status', options.status);
+      if (options.specId) params.set('spec_id', options.specId);
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.includeArchived) params.set('include_archived', 'true');
+      return apiClient.fetchJson<PageEnvelope<SprintPageItem>>(
+        `/boards/${boardId}/sprints?${params.toString()}`,
+        { signal: options.signal },
+      );
     },
 
     async createSprint(boardId: string, specId: string, data: any): Promise<any> {

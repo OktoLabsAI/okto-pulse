@@ -1479,13 +1479,59 @@ export interface CardSummary {
   conclusions: ConclusionEntry[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   validations?: ValidationEntry[] | null;
-  // Bug card fields (for kanban display — optional for backwards compat)
+  // Projection fields are present on paginated responses but remain optional
+  // so full Card records and legacy fixtures can share the display surface.
   card_type?: CardType;
   origin_task_id?: string | null;
   severity?: BugSeverity | null;
   linked_test_task_ids?: string[] | null;
   skip_task_requirement_link_gate?: boolean;
   archived?: boolean;
+}
+
+export interface KanbanColumnMeta {
+  total_filtered: number;
+  total_overall: number;
+  has_more: boolean;
+  facets: {
+    card_type: Partial<Record<CardType, number>>;
+  };
+}
+
+export interface KanbanColumnsMeta {
+  columns: Record<CardStatus, KanbanColumnMeta>;
+  facets: {
+    assignee: Array<{ value: string | null; count: number }>;
+  };
+}
+
+export interface ColumnsOptInResponse {
+  board_id: string;
+  columns: Record<CardStatus, CardSummary[]>;
+  columns_meta: KanbanColumnsMeta;
+}
+
+export interface ColumnPageResponse {
+  board_id: string;
+  column: CardStatus;
+  items: CardSummary[];
+  meta: KanbanColumnMeta;
+  offset: number;
+  limit: number;
+  next_offset: number | null;
+}
+
+export interface LookupOption {
+  id: string;
+  title: string;
+  status: string;
+}
+
+export interface LookupPage {
+  items: LookupOption[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 // Permission Preset
@@ -1741,7 +1787,10 @@ export interface ConclusionEntry {
 
 export interface MoveCardRequest {
   status: CardStatus;
-  position?: number;
+  position?: number | null;
+  before_id?: string | null;
+  after_id?: string | null;
+  placement?: 'start' | 'end' | null;
   conclusion?: string;
   completeness?: number;
   completeness_justification?: string;

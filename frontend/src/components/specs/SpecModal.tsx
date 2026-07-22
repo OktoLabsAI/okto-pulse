@@ -22,7 +22,6 @@ import {
   MessageCircleQuestion,
   Send,
   History,
-  ArrowRight,
   Lightbulb,
   Layers,
   FlaskConical,
@@ -88,13 +87,21 @@ import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { RefinementModal } from '@/components/refinements/RefinementModal';
 import { EditableField } from '@/components/shared/EditableField';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
+import { ActivityHistoryList } from '@/components/shared/ActivityHistoryList';
 import { ArchitectureTab } from '@/components/architecture';
+import {
+  getAcceptanceCriterionLabel,
+  isAcceptanceCriterionLinked,
+  normalizeAcceptanceCriteria,
+} from './acceptanceCriteriaCoverage';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface SpecModalProps {
   specId: string;
   boardId: string;
   onClose: () => void;
+  onEscape?: () => void;
   onChanged: () => void;
 }
 
@@ -233,7 +240,11 @@ function EditableRequirementsList({
                     onChange={(event) => setEditDraft(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') void saveEdit();
-                      if (event.key === 'Escape') cancelEdit();
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        cancelEdit();
+                      }
                     }}
                     className="flex-1 px-2 py-1 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:border-gray-600"
                     autoFocus
@@ -286,7 +297,15 @@ function EditableRequirementsList({
             type="text"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { add(); } if (e.key === 'Escape') { setEditing(false); setDraft(''); } }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') add();
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                setEditing(false);
+                setDraft('');
+              }
+            }}
             placeholder={placeholder}
             className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
             autoFocus
@@ -421,40 +440,6 @@ function stableEntityPayload(item: StructuredObjectEntity): Record<string, unkno
   return JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
 }
 
-/* ============================================================
-   History Tab
-   ============================================================ */
-
-const ACTION_LABELS: Record<string, string> = {
-  created: 'Created',
-  updated: 'Updated',
-  status_changed: 'Status changed',
-  cards_derived: 'Cards derived',
-  knowledge_added: 'Knowledge added',
-  knowledge_removed: 'Knowledge removed',
-  qa_added: 'Question added',
-  qa_answered: 'Question answered',
-};
-
-const ACTION_COLORS: Record<string, string> = {
-  created: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
-  updated: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
-  status_changed: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  cards_derived: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-};
-
-function formatValue(val: unknown): string {
-  if (val === null || val === undefined) return '(empty)';
-  if (Array.isArray(val)) {
-    if (val.length === 0) return '(empty list)';
-    return val
-      .map((v, i) => `${i + 1}. ${v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
-      .join('\n');
-  }
-  if (typeof val === 'object') return JSON.stringify(val, null, 2);
-  return String(val);
-}
-
 const SCENARIO_STATUSES = ['draft', 'ready', 'automated', 'passed', 'failed'] as const;
 
 const SCENARIO_STATUS_COLORS: Record<string, string> = {
@@ -481,11 +466,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
   const [newCriteria, setNewCriteria] = useState<string[]>([]);
 
   const scenarios = spec.test_scenarios || [];
-  const criteria = ((spec.acceptance_criteria || []) as unknown[]).map((criterion) =>
-    typeof criterion === 'string'
-      ? criterion
-      : String((criterion as Record<string, unknown>).text || (criterion as Record<string, unknown>).title || '')
-  );
+  const criteria = normalizeAcceptanceCriteria((spec.acceptance_criteria || []) as unknown[]);
 
   const handleAdd = () => {
     if (!newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()) return;
@@ -517,11 +498,13 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
 
   // Coverage matrix
   const coverageMap = new Map<string, string[]>();
-  criteria.forEach((c, i) => {
-    const covering = scenarios.filter((s) => s.linked_criteria?.includes(c) || s.linked_criteria?.includes(String(i)));
-    coverageMap.set(c, covering.map((s) => s.id));
+  criteria.forEach((criterion) => {
+    const covering = scenarios.filter((scenario) =>
+      isAcceptanceCriterionLinked(scenario.linked_criteria, criterion, criteria)
+    );
+    coverageMap.set(criterion.key, covering.map((scenario) => scenario.id));
   });
-  const uncoveredCriteria = criteria.filter((c) => !coverageMap.get(c)?.length);
+  const uncoveredCriteria = criteria.filter((criterion) => !coverageMap.get(criterion.key)?.length);
 
   return (
     <div className="space-y-4">
@@ -553,14 +536,14 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
               />
             </div>
             <div className="space-y-1 max-h-48 overflow-y-auto">
-              {criteria.map((c, i) => {
-                const covering = coverageMap.get(c) || [];
+              {criteria.map((criterion) => {
+                const covering = coverageMap.get(criterion.key) || [];
                 const covered = covering.length > 0;
                 return (
-                  <div key={i} className="flex items-start gap-2 text-xs">
+                  <div key={criterion.key} className="flex items-start gap-2 text-xs">
                     <span className={`mt-0.5 w-3 h-3 rounded-full shrink-0 ${covered ? 'bg-green-500' : 'bg-red-400'}`} />
                     <span className={`flex-1 line-clamp-1 ${covered ? 'text-gray-600 dark:text-gray-400' : 'text-red-600 dark:text-red-400 font-medium'}`}>
-                      {c}
+                      {criterion.label}
                     </span>
                     <span className="text-gray-400 shrink-0">{covering.length} test{covering.length !== 1 ? 's' : ''}</span>
                   </div>
@@ -650,11 +633,14 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
                 {scenario.linked_criteria && scenario.linked_criteria.length > 0 && (
                   <div className="flex flex-wrap gap-1">
                     <span className="text-[10px] text-gray-400 mr-1">Validates:</span>
-                    {scenario.linked_criteria.map((c, i) => (
-                      <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300">
-                        {c.length > 60 ? c.slice(0, 57) + '...' : c}
-                      </span>
-                    ))}
+                    {scenario.linked_criteria.map((reference, i) => {
+                      const label = getAcceptanceCriterionLabel(reference, criteria);
+                      return (
+                        <span key={`${reference}-${i}`} className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300">
+                          {label.length > 60 ? label.slice(0, 57) + '...' : label}
+                        </span>
+                      );
+                    })}
                   </div>
                 )}
                 {/* Linked tasks */}
@@ -765,19 +751,23 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
             <div>
               <span className="text-[10px] text-gray-500 dark:text-gray-400 block mb-1">Link to acceptance criteria:</span>
               <div className="flex flex-wrap gap-1">
-                {criteria.map((c, i) => {
-                  const isLinked = newCriteria.includes(c);
+                {criteria.map((criterion) => {
+                  const isLinked = newCriteria.includes(criterion.reference);
                   return (
                     <button
-                      key={i}
-                      onClick={() => setNewCriteria(isLinked ? newCriteria.filter((x) => x !== c) : [...newCriteria, c])}
+                      key={criterion.key}
+                      onClick={() => setNewCriteria(
+                        isLinked
+                          ? newCriteria.filter((reference) => reference !== criterion.reference)
+                          : [...newCriteria, criterion.reference]
+                      )}
                       className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
                         isLinked
                           ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 ring-1 ring-green-400'
                           : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200'
                       }`}
                     >
-                      {c.length > 60 ? c.slice(0, 57) + '...' : c}
+                      {criterion.label.length > 60 ? criterion.label.slice(0, 57) + '...' : criterion.label}
                     </button>
                   );
                 })}
@@ -798,11 +788,14 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
   );
 }
 
+/* ============================================================
+   History Tab
+   ============================================================ */
+
 function HistoryTab({ specId }: { specId: string }) {
   const api = useDashboardApi();
   const [entries, setEntries] = useState<SpecHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => { load(); }, [specId]);
 
@@ -814,100 +807,7 @@ function HistoryTab({ specId }: { specId: string }) {
     } catch { /* ignore */ } finally { setLoading(false); }
   };
 
-  if (loading) return <div className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Loading history...</div>;
-
-  if (entries.length === 0) {
-    return (
-      <div className="text-center py-6">
-        <History size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-        <p className="text-sm text-gray-500 dark:text-gray-400">No history yet</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-2">
-      {entries.map((entry) => {
-        const isExpanded = expandedId === entry.id;
-        const actionColor = ACTION_COLORS[entry.action] || 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300';
-        const hasChanges = entry.changes && entry.changes.length > 0;
-
-        return (
-          <div
-            key={entry.id}
-            className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden"
-          >
-            <div
-              className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/30"
-              onClick={() => hasChanges && setExpandedId(isExpanded ? null : entry.id)}
-            >
-              {/* Timeline dot */}
-              <div className="w-2 h-2 rounded-full bg-gray-400 dark:bg-gray-500 shrink-0" />
-
-              {/* Action badge */}
-              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${actionColor}`}>
-                {ACTION_LABELS[entry.action] || entry.action}
-              </span>
-
-              {/* Summary */}
-              <span className="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">
-                {entry.summary || entry.action}
-              </span>
-
-              {/* Actor + time */}
-              <div className="flex items-center gap-2 shrink-0 text-[10px] text-gray-400">
-                <span className={`px-1 py-0.5 rounded ${
-                  entry.actor_type === 'agent'
-                    ? 'bg-violet-100 text-violet-600 dark:bg-violet-900/30 dark:text-violet-300'
-                    : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
-                }`}>
-                  {entry.actor_name}
-                </span>
-                {entry.version && <span>v{entry.version}</span>}
-                <span>{new Date(entry.created_at).toLocaleString()}</span>
-              </div>
-
-              {hasChanges && (
-                <span className="text-gray-400 shrink-0">
-                  {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                </span>
-              )}
-            </div>
-
-            {/* Expanded diff view */}
-            {isExpanded && hasChanges && (
-              <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 space-y-2">
-                {entry.changes!.map((change, idx) => (
-                  <div key={idx} className="text-sm">
-                    <div className="font-medium text-gray-700 dark:text-gray-300 text-xs uppercase tracking-wide mb-1">
-                      {change.field}
-                    </div>
-                    <div className="flex items-start gap-2">
-                      {/* Old value */}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[10px] text-red-500 font-medium mb-0.5">Before</div>
-                        <pre className="text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded px-2 py-1 whitespace-pre-wrap overflow-x-auto max-h-32 overflow-y-auto">
-                          {formatValue(change.old)}
-                        </pre>
-                      </div>
-                      <ArrowRight size={14} className="text-gray-400 mt-4 shrink-0" />
-                      {/* New value */}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[10px] text-green-500 font-medium mb-0.5">After</div>
-                        <pre className="text-xs text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20 rounded px-2 py-1 whitespace-pre-wrap overflow-x-auto max-h-32 overflow-y-auto">
-                          {formatValue(change.new)}
-                        </pre>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
+  return <ActivityHistoryList entries={entries} loading={loading} />;
 }
 
 /* ============================================================
@@ -1521,7 +1421,7 @@ function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) 
    Main SpecModal
    ============================================================ */
 
-export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: SpecModalProps) {
+export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChanged }: SpecModalProps) {
   const api = useDashboardApi();
   const currentBoard = useCurrentBoard();
   const perms = usePermissions(_boardId || currentBoard?.id);
@@ -1558,6 +1458,13 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onChanged }: Spe
   const [sprintSuggestions, setSprintSuggestions] = useState<any[] | null>(null);
   const [linkedSprints, setLinkedSprints] = useState<any[]>([]);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
+  useEscapeToClose(onEscape ?? onClose);
+  useEscapeToClose(() => setShowValidateModal(false), {
+    enabled: showValidateModal,
+    canClose: !validating,
+    priority: 10,
+  });
 
   // The Cancellation tab only exists while the spec is cancelled.
   useEffect(() => {

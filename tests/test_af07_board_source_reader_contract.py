@@ -14,6 +14,8 @@ from okto_pulse.community.adapters.board_source_reader import (
 )
 from okto_pulse.core.kg.interfaces.board_source_reader import SourceUnavailableError
 from okto_pulse.core.kg.board_source_store import (
+    AMENDMENT_CONTENT_COLUMNS,
+    CARD_CONTENT_COLUMNS,
     IDEATION_CONTENT_COLUMNS,
     REFINEMENT_CONTENT_COLUMNS,
     SPEC_CONTENT_COLUMNS_V2,
@@ -136,6 +138,38 @@ def _story_db(tmp_path: Path, *, ttl_days: int) -> Path:
             "title TEXT, description TEXT, actor TEXT, goal TEXT, benefit TEXT, "
             "topic_id TEXT, labels TEXT)"
         )
+        # Card 5 makes the source census fail closed: even an empty source
+        # family must be represented in the schema before any row is trusted.
+        required_columns = {
+            table: {
+                "id",
+                "board_id",
+                "created_at",
+                status_col,
+                *content_cols,
+            }
+            for _, table, status_col, content_cols in ARTIFACT_QUERIES
+            if table != "stories"
+        }
+        required_columns["cards"] = {
+            "id",
+            "board_id",
+            "created_at",
+            "status",
+            *CARD_CONTENT_COLUMNS,
+        }
+        required_columns["amendment_hotfix_revisions"] = {
+            "id",
+            "board_id",
+            "created_at",
+            "status",
+            *AMENDMENT_CONTENT_COLUMNS,
+        }
+        for table, columns in sorted(required_columns.items()):
+            declarations = ", ".join(
+                f'"{column}" TEXT' for column in sorted(columns)
+            )
+            conn.execute(f"CREATE TABLE {table} ({declarations})")
         conn.execute(
             "INSERT INTO boards VALUES (?, ?)",
             ("b1", json.dumps({"kg_working_ttl_days": ttl_days})),

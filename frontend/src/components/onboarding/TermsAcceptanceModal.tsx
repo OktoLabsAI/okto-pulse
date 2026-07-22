@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ScrollText, Check } from 'lucide-react';
 import { TERMS_BODY, TERMS_VERSION } from '@/constants/terms';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface TermsAcceptanceModalProps {
   onAccept: () => void;
@@ -19,6 +20,10 @@ const SCROLL_TOLERANCE_PX = 24;
 export function TermsAcceptanceModal({ onAccept }: TermsAcceptanceModalProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrolledToEnd, setScrolledToEnd] = useState(false);
+
+  // This is the one intentionally non-dismissible dialog. Register a guarded
+  // top layer so Escape cannot leak to, and close, any modal behind it.
+  useEscapeToClose(() => {}, { canClose: false, priority: 100 });
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;

@@ -10,6 +10,7 @@ import { useCurrentBoard } from '@/store/dashboard';
 import { PermissionFlagsEditor, PermissionDiffView } from '@/components/permissions';
 import type { FlagsMap } from '@/components/permissions';
 import type { Agent, AgentSummary, PermissionPreset } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 type McpFormat = 'claude' | 'cursor' | 'vscode' | 'windsurf' | 'claude-cli' | 'okto-cli';
 type Tab = 'my-agents' | 'board-access';
@@ -74,6 +75,8 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   const [grantAgentId, setGrantAgentId] = useState('');
   const [presets, setPresets] = useState<PermissionPreset[]>([]);
   const [revealedAgentKeys, setRevealedAgentKeys] = useState<Record<string, string>>({});
+
+  useEscapeToClose(onClose, { enabled: isOpen });
 
   // Load my agents and presets on open
   useEffect(() => {

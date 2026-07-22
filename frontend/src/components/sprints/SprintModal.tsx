@@ -17,6 +17,7 @@ import { EditableField } from '@/components/shared/EditableField';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { openLineageGraph } from '@/components/traceability';
 import { deriveSprintDisplayCounts, normalizeSprintCardType } from './sprintDisplayCounts';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 type SprintTab = 'details' | 'scope' | 'cards' | 'evaluations' | 'qa' | 'history' | 'cancellation';
 
@@ -152,11 +153,12 @@ function SprintHistoryTab({ sprintId, api }: { sprintId: string; api: ReturnType
 interface SprintModalProps {
   sprintId: string;
   onClose: () => void;
+  onEscape?: () => void;
 }
 
 const FLOW_STATUSES: SprintStatus[] = ['draft', 'active', 'review', 'closed'];
 
-export function SprintModal({ sprintId, onClose }: SprintModalProps) {
+export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
   const api = useDashboardApi();
   const [sprint, setSprint] = useState<Sprint | null>(null);
   const [loading, setLoading] = useState(true);
@@ -168,6 +170,8 @@ export function SprintModal({ sprintId, onClose }: SprintModalProps) {
   const [parentSpec, setParentSpec] = useState<any>(null);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [allowedTransitions, setAllowedTransitions] = useState<AllowedTransition[]>([]);
+
+  useEscapeToClose(onEscape ?? onClose);
 
   // The Cancellation tab only exists while the sprint is cancelled.
   useEffect(() => {

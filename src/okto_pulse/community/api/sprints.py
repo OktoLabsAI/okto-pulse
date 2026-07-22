@@ -15,6 +15,20 @@ these.
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.pagination import (
+    board_scope,
+    pagination_requested,
+    project_page,
+    record_fields,
+    resolve_window,
+    run_paginated_list,
+    search_groups,
+    validate_pagination_query,
+)
+from okto_pulse.core.ports.application_persistence import (
+    ApplicationFilter,
+    PageRequest,
+)
 from okto_pulse.core.application.use_cases import EntityNotFoundError
 from okto_pulse.core.application.use_cases.sprints_crud import (
     AssignSprintTasksCommand,
@@ -45,9 +59,11 @@ from okto_pulse.core.application.use_cases.sprints_crud import (
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models.schemas import (
+    PageEnvelope,
     SprintCreate,
     SprintHistoryResponse,
     SprintMove,
+    SprintPageItem,
     SprintResponse,
     SprintSummary,
     SprintUpdate,
@@ -72,16 +88,83 @@ def _not_found(exc: EntityNotFoundError) -> str:
     return _NOT_FOUND_DETAIL.get(exc.entity_type, "Not found")
 
 
-@router.get("/boards/{board_id}/sprints", response_model=list[SprintSummary])
+@router.get(
+    "/boards/{board_id}/sprints",
+    response_model=list[SprintSummary] | PageEnvelope[SprintPageItem],
+    dependencies=[Depends(validate_pagination_query)],
+)
 async def list_board_sprints(
     board_id: str,
     status_filter: str | None = Query(None, alias="status"),
     spec_id: str | None = Query(None, alias="spec_id"),
+    search: str | None = Query(None),
     include_archived: bool = Query(False),
+    offset: int | None = Query(None),
+    limit: int | None = Query(None),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List all sprints for a board, optionally filtered by status and/or spec."""
+    """List all sprints for a board, optionally filtered by status and/or spec.
+
+    With ``offset``/``limit``: paginated envelope (spec 8b33f9a8); without:
+    legacy shape unchanged (DR9).
+    """
+    if pagination_requested(offset, limit):
+        command = ListBoardSprintsCommand(
+            board_id,
+            status_filter=status_filter,
+            spec_id=spec_id,
+            include_archived=include_archived,
+        )
+        actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+        use_case = ListBoardSprintsUseCase()
+        try:
+            resolved_offset, resolved_limit = resolve_window(offset, limit)
+            filters: tuple[ApplicationFilter, ...] = ()
+            if status_filter:
+                filters = (*filters, ApplicationFilter("status", "eq", status_filter))
+            if spec_id:
+                filters = (*filters, ApplicationFilter("spec_id", "eq", spec_id))
+            page = await run_paginated_list(
+                uow,
+                PageRequest(
+                    surface="sprint_list",
+                    scope=board_scope(board_id, include_archived=include_archived),
+                    offset=resolved_offset,
+                    limit=resolved_limit,
+                    filters=filters,
+                    any_groups=search_groups(search, ("title",)),
+                ),
+                preflight=lambda: use_case.preflight(
+                    command, actor=actor, uow=uow
+                ),
+            )
+        except EntityNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+            )
+        return project_page(
+            page,
+            lambda record: SprintPageItem(
+                **record_fields(
+                    record,
+                    (
+                        "id",
+                        "spec_id",
+                        "board_id",
+                        "title",
+                        "description",
+                        "objective",
+                        "expected_outcome",
+                        "status",
+                        "created_by",
+                        "created_at",
+                        "updated_at",
+                        "archived",
+                    ),
+                )
+            ),
+        )
     try:
         result = await ListBoardSprintsUseCase().execute(
             ListBoardSprintsCommand(
@@ -126,20 +209,66 @@ async def create_sprint(
     return result.sprint
 
 
-@router.get("/boards/{board_id}/specs/{spec_id}/sprints", response_model=list[SprintSummary])
+@router.get(
+    "/boards/{board_id}/specs/{spec_id}/sprints",
+    response_model=list[SprintSummary] | PageEnvelope[SprintPageItem],
+    dependencies=[Depends(validate_pagination_query)],
+)
 async def list_sprints(
     board_id: str,
     spec_id: str,
+    include_archived: bool = Query(False),
+    offset: int | None = Query(None),
+    limit: int | None = Query(None),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List sprints for a spec."""
+    """List sprints for a spec; pagination is opt-in (DR9)."""
     try:
-        result = await ListSprintsUseCase().execute(
-            ListSprintsCommand(spec_id),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-            uow=uow,
-        )
+        command = ListSprintsCommand(spec_id)
+        actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+        use_case = ListSprintsUseCase()
+        if pagination_requested(offset, limit):
+            resolved_offset, resolved_limit = resolve_window(offset, limit)
+            scope = (
+                *board_scope(board_id, include_archived=include_archived),
+                ApplicationFilter("spec_id", "eq", spec_id),
+            )
+            page = await run_paginated_list(
+                uow,
+                PageRequest(
+                    surface="sprint_list",
+                    scope=scope,
+                    offset=resolved_offset,
+                    limit=resolved_limit,
+                ),
+                preflight=lambda: use_case.preflight(
+                    command, actor=actor, uow=uow
+                ),
+            )
+            return project_page(
+                page,
+                lambda record: SprintPageItem(
+                    **record_fields(
+                        record,
+                        (
+                            "id",
+                            "spec_id",
+                            "board_id",
+                            "title",
+                            "description",
+                            "objective",
+                            "expected_outcome",
+                            "status",
+                            "created_by",
+                            "created_at",
+                            "updated_at",
+                            "archived",
+                        ),
+                    )
+                ),
+            )
+        result = await use_case.execute(command, actor=actor, uow=uow)
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
     return result.sprints

@@ -9,8 +9,35 @@ import type {
   CardSummary,
   CardStatus,
   Agent,
+  ColumnPageResponse,
+  ColumnsOptInResponse,
+  KanbanColumnMeta,
 } from '@/types';
 import { CARD_STATUSES } from '@/types';
+
+export interface ColumnPageToken {
+  readonly generation: number;
+  readonly offset: number;
+  readonly request_id: string;
+  readonly column: CardStatus;
+}
+
+export interface ColumnPageLoadState {
+  requestId: string | null;
+  error: string | null;
+}
+
+let columnRequestSequence = 0;
+
+function emptyColumnPageState(): Record<CardStatus, ColumnPageLoadState> {
+  return CARD_STATUSES.reduce<Record<CardStatus, ColumnPageLoadState>>(
+    (result, status) => {
+      result[status] = { requestId: null, error: null };
+      return result;
+    },
+    {} as Record<CardStatus, ColumnPageLoadState>,
+  );
+}
 
 interface DashboardState {
   // Data
@@ -18,6 +45,9 @@ interface DashboardState {
   sharedBoards: BoardSummary[];
   currentBoard: Board | null;
   columns: Record<CardStatus, CardSummary[]>;
+  columnsMeta: Partial<Record<CardStatus, KanbanColumnMeta>>;
+  columnsGeneration: number;
+  columnPageState: Record<CardStatus, ColumnPageLoadState>;
   agents: Agent[];
 
   // UI State
@@ -32,6 +62,11 @@ interface DashboardState {
   setSharedBoards: (boards: BoardSummary[]) => void;
   setCurrentBoard: (board: Board | null) => void;
   setColumns: (columns: Record<CardStatus, CardSummary[]>) => void;
+  beginColumnsGeneration: () => number;
+  applyColumnsBatch: (generation: number, response: ColumnsOptInResponse) => boolean;
+  beginColumnPage: (column: CardStatus, offset: number) => ColumnPageToken | null;
+  applyColumnPage: (token: ColumnPageToken, response: ColumnPageResponse) => boolean;
+  failColumnPage: (token: ColumnPageToken, error: string) => boolean;
   setAgents: (agents: Agent[]) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
@@ -66,6 +101,9 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   sharedBoards: [],
   currentBoard: null,
   columns: {} as Record<CardStatus, CardSummary[]>,
+  columnsMeta: {},
+  columnsGeneration: 0,
+  columnPageState: emptyColumnPageState(),
   agents: [],
   isLoading: false,
   error: null,
@@ -76,8 +114,112 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   setBoards: (boards) => set({ boards }),
   addBoard: (board) => set((state) => ({ boards: [board, ...state.boards] })),
   setSharedBoards: (sharedBoards) => set({ sharedBoards }),
-  setCurrentBoard: (board) => set({ currentBoard: board }),
-  setColumns: (columns) => set({ columns }),
+  setCurrentBoard: (board) => set((state) => {
+    if (state.currentBoard?.id === board?.id) return { currentBoard: board };
+    return {
+      currentBoard: board,
+      columns: {} as Record<CardStatus, CardSummary[]>,
+      columnsMeta: {},
+      columnsGeneration: state.columnsGeneration + 1,
+      columnPageState: emptyColumnPageState(),
+    };
+  }),
+  setColumns: (columns) => set((state) => ({
+    columns,
+    columnsMeta: {},
+    columnsGeneration: state.columnsGeneration + 1,
+    columnPageState: emptyColumnPageState(),
+  })),
+  beginColumnsGeneration: () => {
+    const generation = get().columnsGeneration + 1;
+    set({
+      columnsGeneration: generation,
+      columnPageState: emptyColumnPageState(),
+    });
+    return generation;
+  },
+  applyColumnsBatch: (generation, response) => {
+    const state = get();
+    if (
+      generation !== state.columnsGeneration
+      || (state.currentBoard !== null && response.board_id !== state.currentBoard.id)
+    ) return false;
+    set({
+      columns: response.columns,
+      columnsMeta: response.columns_meta.columns,
+      columnPageState: emptyColumnPageState(),
+    });
+    return true;
+  },
+  beginColumnPage: (column, offset) => {
+    if (!Number.isInteger(offset) || offset < 0) return null;
+    const state = get();
+    if (state.columnPageState[column]?.requestId != null) return null;
+    const requestId = `column-${state.columnsGeneration}-${++columnRequestSequence}`;
+    const token = Object.freeze({
+      generation: state.columnsGeneration,
+      offset,
+      request_id: requestId,
+      column,
+    });
+    set({
+      columnPageState: {
+        ...state.columnPageState,
+        [column]: { requestId, error: null },
+      },
+    });
+    return token;
+  },
+  applyColumnPage: (token, response) => {
+    const state = get();
+    if (
+      token.generation !== state.columnsGeneration
+      || state.columnPageState[token.column]?.requestId !== token.request_id
+      || (state.currentBoard !== null && response.board_id !== state.currentBoard.id)
+      || response.column !== token.column
+      || response.offset !== token.offset
+    ) {
+      return false;
+    }
+    const existing = state.columns[token.column] ?? [];
+    const seen = new Set(existing.map((card) => card.id));
+    const appended = response.items.filter((card) => {
+      if (seen.has(card.id)) return false;
+      seen.add(card.id);
+      return true;
+    });
+    set({
+      columns: {
+        ...state.columns,
+        [token.column]: [...existing, ...appended],
+      },
+      columnsMeta: {
+        ...state.columnsMeta,
+        [token.column]: response.meta,
+      },
+      columnPageState: {
+        ...state.columnPageState,
+        [token.column]: { requestId: null, error: null },
+      },
+    });
+    return true;
+  },
+  failColumnPage: (token, error) => {
+    const state = get();
+    if (
+      token.generation !== state.columnsGeneration
+      || state.columnPageState[token.column]?.requestId !== token.request_id
+    ) {
+      return false;
+    }
+    set({
+      columnPageState: {
+        ...state.columnPageState,
+        [token.column]: { requestId: null, error },
+      },
+    });
+    return true;
+  },
   setAgents: (agents) => set({ agents }),
   setLoading: (isLoading) => set({ isLoading }),
   setError: (error) => set({ error }),
@@ -124,6 +266,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   moveCardBetweenColumns: (cardId, fromStatus, toStatus, newPosition) => {
+    if (!Number.isInteger(newPosition) || newPosition < 0) return;
     const { columns } = get();
     const card = (columns[fromStatus] || []).find((c) => c.id === cardId);
     
@@ -133,11 +276,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const fromColumn = (columns[fromStatus] || []).filter((c) => c.id !== cardId);
     
     // Add to new column
-    const toColumn = [...(columns[toStatus] || [])];
+    const toColumn = (columns[toStatus] || []).filter((c) => c.id !== cardId);
     const updatedCard = { ...card, status: toStatus, position: newPosition };
     
     // Insert at position
-    toColumn.splice(newPosition, 0, updatedCard);
+    toColumn.splice(Math.min(newPosition, toColumn.length), 0, updatedCard);
     
     // Reindex positions
     const reindexedColumn = toColumn.map((c, idx) => ({ ...c, position: idx }));
@@ -153,6 +296,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   // Optimistic update - returns the card that was moved
   optimisticMoveCard: (cardId, toStatus, newPosition) => {
+    if (!Number.isInteger(newPosition) || newPosition < 0) return null;
     const { columns } = get();
     
     // Find the card in any column
@@ -174,9 +318,9 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const fromColumn = (columns[fromStatus] || []).filter((c) => c.id !== cardId);
     
     // Add to new column
-    const toColumn = [...(columns[toStatus] || [])];
+    const toColumn = (columns[toStatus] || []).filter((c) => c.id !== cardId);
     const updatedCard = { ...card, status: toStatus, position: newPosition };
-    toColumn.splice(newPosition, 0, updatedCard);
+    toColumn.splice(Math.min(newPosition, toColumn.length), 0, updatedCard);
     const reindexedColumn = toColumn.map((c, idx) => ({ ...c, position: idx }));
 
     set({
@@ -193,6 +337,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
 // Selectors
 export const useColumns = () => useDashboardStore((state) => state.columns);
+export const useColumnsMeta = () => useDashboardStore((state) => state.columnsMeta);
+export const useColumnPageState = () => useDashboardStore((state) => state.columnPageState);
 export const useCurrentBoard = () => useDashboardStore((state) => state.currentBoard);
 export const useBoards = () => useDashboardStore((state) => state.boards);
 export const useSharedBoards = () => useDashboardStore((state) => state.sharedBoards);

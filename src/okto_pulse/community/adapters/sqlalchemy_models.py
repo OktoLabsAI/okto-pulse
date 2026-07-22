@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
     "amendment_hotfix_revisions",
     "app_settings",
+    "artifact_deletion_tombstones",
     "boards",
     "canonical_debt",
     "cards",
@@ -70,7 +71,7 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
 )
 GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID = "_global"
 GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION = "gdsr-fence-v2"
-GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v1"
+GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v2"
 GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX = (
     "trg_global_discovery_source_revision"
 )
@@ -425,6 +426,12 @@ class Story(Base):
     __table_args__ = (
         Index("ix_stories_board_status_archived", "board_id", "status", "archived"),
         Index("ix_stories_board_topic", "board_id", "topic_id"),
+        Index(
+            "ix_stories_board_topic_archived",
+            "board_id",
+            "topic_id",
+            "archived",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -2061,9 +2068,42 @@ class ConsolidationQueue(Base):
 
     __tablename__ = "consolidation_queue"
     __table_args__ = (
-        UniqueConstraint(
-            "board_id", "artifact_type", "artifact_id",
-            name="uq_queue_board_artifact",
+        CheckConstraint(
+            "work_kind IN ('consolidate', 'stale_reconcile', 'stale_sweep')",
+            name="ck_consolidation_queue_work_kind",
+        ),
+        Index(
+            "uq_queue_consolidate_board_artifact",
+            "board_id",
+            "artifact_type",
+            "artifact_id",
+            unique=True,
+            sqlite_where=text("work_kind = 'consolidate'"),
+        ),
+        Index(
+            "uq_queue_stale_reconcile_generation",
+            "board_id",
+            "artifact_type",
+            "artifact_id",
+            "work_kind",
+            "generation",
+            unique=True,
+            sqlite_where=text("work_kind = 'stale_reconcile'"),
+        ),
+        Index(
+            "uq_queue_stale_sweep_board",
+            "board_id",
+            "work_kind",
+            unique=True,
+            sqlite_where=text("work_kind = 'stale_sweep'"),
+        ),
+        Index(
+            "ix_queue_drain_work",
+            "status",
+            "work_kind",
+            "next_retry_at",
+            "priority",
+            "triggered_at",
         ),
     )
 
@@ -2076,6 +2116,16 @@ class ConsolidationQueue(Base):
     )
     artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)
     artifact_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    work_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="consolidate", server_default="consolidate"
+    )
+    generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    delete_event_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, index=True
+    )
     priority: Mapped[str] = mapped_column(
         String(10), nullable=False, default="high"
     )  # "high" (runtime trigger) | "low" (historical backfill)
@@ -2093,6 +2143,9 @@ class ConsolidationQueue(Base):
     )
     claimed_by_session_id: Mapped[str | None] = mapped_column(
         String(36), nullable=True
+    )
+    claim_token: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
     )
     claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -2116,6 +2169,48 @@ class ConsolidationQueue(Base):
     next_retry_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )  # Exp-backoff scheduling: claim ignores rows with next_retry_at > now()
+
+
+class ArtifactDeletionTombstone(Base):
+    """Permanent generation fence for a governed artifact deletion."""
+
+    __tablename__ = "artifact_deletion_tombstones"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "artifact_type",
+            "artifact_id",
+            name="uq_artifact_deletion_tombstone_artifact",
+        ),
+        UniqueConstraint(
+            "delete_event_id",
+            name="uq_artifact_deletion_tombstone_event",
+        ),
+        CheckConstraint(
+            "generation >= 1",
+            name="ck_artifact_deletion_tombstone_generation",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    artifact_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    delete_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class CanonicalDebt(Base):
@@ -2296,7 +2391,10 @@ class GlobalUpdateOutbox(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    event_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    # Governed delivery attempts use the literal physical key
+    # ``{delivery_key}:attempt:{n}``; UUID-sized storage would make that
+    # durable idempotency identity implicit or lossy.
+    event_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     board_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     session_id: Mapped[str] = mapped_column(String(36), nullable=False)
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -2309,6 +2407,257 @@ class GlobalUpdateOutbox(Base):
     )
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class GlobalDiscoveryDeliveryLedger(Base):
+    """Durable ownership ledger for Global Discovery parity delivery."""
+
+    __tablename__ = "global_discovery_delivery_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "artifact_type",
+            "artifact_id",
+            "generation",
+            name="uq_gd_delivery_ledger_artifact_generation",
+        ),
+        UniqueConstraint(
+            "delete_event_id",
+            name="uq_gd_delivery_ledger_delete_event",
+        ),
+        UniqueConstraint(
+            "attempt_event_key",
+            name="uq_gd_delivery_ledger_attempt_event",
+        ),
+        CheckConstraint(
+            "generation >= 1",
+            name="ck_gd_delivery_ledger_generation",
+        ),
+        CheckConstraint(
+            "state IN ('outbox_persisted', 'delivered', 'delivery_debt')",
+            name="ck_gd_delivery_ledger_state",
+        ),
+        CheckConstraint(
+            "attempt >= 0",
+            name="ck_gd_delivery_ledger_attempt",
+        ),
+        CheckConstraint(
+            "state != 'outbox_persisted' OR attempt_event_key IS NOT NULL",
+            name="ck_gd_delivery_ledger_persisted_attempt_key",
+        ),
+        Index(
+            "ix_gd_delivery_ledger_state_retry",
+            "state",
+            "next_retry_at",
+            "updated_at",
+            "delivery_key",
+        ),
+        Index(
+            "ix_gd_delivery_ledger_board_state",
+            "board_id",
+            "state",
+        ),
+    )
+
+    delivery_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    artifact_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    delete_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    attempt_event_key: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+class KGTakedownStateEvent(Base):
+    """Append-only governed-deletion timeline.
+
+    The mutable delivery ledger owns the current state.  These immutable rows
+    preserve every transition across retries/redrives so operational queries
+    never have to infer history from logs or from a later ledger snapshot.
+    """
+
+    __tablename__ = "kg_takedown_state_events"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('intent_created', 'graph_demoted', "
+            "'outbox_persisted', 'delivered', 'delivery_debt')",
+            name="ck_kg_takedown_state",
+        ),
+        CheckConstraint(
+            "generation >= 1",
+            name="ck_kg_takedown_generation",
+        ),
+        CheckConstraint(
+            "attempt IS NULL OR attempt >= 0",
+            name="ck_kg_takedown_attempt",
+        ),
+        CheckConstraint(
+            "state = 'intent_created' OR delivery_key IS NOT NULL",
+            name="ck_kg_takedown_delivery_identity",
+        ),
+        CheckConstraint(
+            "state IN ('intent_created', 'graph_demoted') OR attempt IS NOT NULL",
+            name="ck_kg_takedown_attempt_state",
+        ),
+        Index(
+            "ix_kg_takedown_delete_time",
+            "delete_event_id",
+            "occurred_at",
+            "transition_key",
+        ),
+        Index(
+            "ix_kg_takedown_delivery_time",
+            "delivery_key",
+            "occurred_at",
+            "transition_key",
+        ),
+        Index(
+            "ix_kg_takedown_state_time",
+            "state",
+            "occurred_at",
+        ),
+    )
+
+    transition_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    delete_event_id: Mapped[str] = mapped_column(
+        String(255), nullable=False, index=True
+    )
+    delivery_key: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, index=True
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    artifact_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class GlobalDiscoveryDeliveryRedriveControl(Base):
+    """Singleton cursor for bounded, fair Global Discovery debt redrive."""
+
+    __tablename__ = "global_discovery_delivery_redrive_control"
+    __table_args__ = (
+        CheckConstraint(
+            "id = '_global'",
+            name="ck_gd_delivery_redrive_control_singleton",
+        ),
+        CheckConstraint(
+            "checkpoint_version >= 0",
+            name="ck_gd_delivery_redrive_checkpoint_version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(32),
+        primary_key=True,
+        default="_global",
+        server_default="_global",
+    )
+    cursor_board_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+    cursor_oldest_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    cursor_delivery_key: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    checkpoint_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class GlobalDiscoveryDeliveryWatchdogControl(Base):
+    """Durable board-local cursor for bounded delivery watchdog scans."""
+
+    __tablename__ = "global_discovery_delivery_watchdog_control"
+    __table_args__ = (
+        CheckConstraint(
+            "checkpoint_version >= 0",
+            name="ck_gd_delivery_watchdog_checkpoint_version",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    cursor_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    cursor_delivery_key: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    checkpoint_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class DomainEventRow(Base):

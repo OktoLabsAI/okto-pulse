@@ -9,6 +9,7 @@ import { useDashboardApi } from '@/services/api';
 import { PermissionFlagsEditor, countAllFlags, setAllFlags } from './PermissionFlagsEditor';
 import type { FlagsMap } from './PermissionFlagsEditor';
 import type { PermissionPreset } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface PresetEditorModalProps {
   /** Preset to edit. Null = create new. */
@@ -32,6 +33,8 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
     preset?.flags || templateFlags || {}
   );
   const [saving, setSaving] = useState(false);
+
+  useEscapeToClose(onClose, { canClose: !saving, priority: 10 });
 
   const { total, enabled } = countAllFlags(flags);
 

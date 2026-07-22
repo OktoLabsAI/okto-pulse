@@ -7,6 +7,7 @@
 import { useState } from 'react';
 import * as kgApi from '@/services/kg-api';
 import type { PendingTreeNode } from '@/services/kg-api';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface Props {
   boardId: string;
@@ -19,6 +20,8 @@ export function RetryFromHereDialog({ boardId, node, onClose, onSuccess }: Props
   const [recursive, setRecursive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEscapeToClose(onClose, { canClose: !submitting, priority: 10 });
 
   const queueEntryId = node.queue_entry_id;
   const canRetry = Boolean(queueEntryId);

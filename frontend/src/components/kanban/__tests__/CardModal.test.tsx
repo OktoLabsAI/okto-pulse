@@ -481,18 +481,52 @@ describe('CardModal', () => {
 
     expect(await screen.findByTestId('activity-log-list')).toBeInTheDocument();
     expect(
-      screen.getByText('structured_entity updated type=functional_requirement field=description'),
+      await screen.findByText('structured_entity updated type=functional_requirement field=description'),
     ).toBeInTheDocument();
-    expect(screen.getByText('Validator Agent')).toBeInTheDocument();
+    expect(await screen.findByText('Validator Agent')).toBeInTheDocument();
     expect(document.body.textContent ?? '').not.toContain('[object Object]');
     expect(document.body.textContent ?? '').not.toContain('[object: object]');
+  });
+
+  it('shows task status activity as a Before to After transition', async () => {
+    apiMock.getCardActivity.mockResolvedValue([{
+      id: 'act-move',
+      action: 'card_moved',
+      actor_type: 'user',
+      actor_id: 'user-1',
+      actor_name: 'Task Owner',
+      created_at: '2026-07-22T10:15:00Z',
+      summary: 'not_started->started',
+      trigger: null,
+      details: {
+        from_status: 'not_started',
+        to_status: 'started',
+        from_position: 0,
+        to_position: 1,
+      },
+    }]);
+
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
+    fireEvent.click(await screen.findByRole('button', {
+      name: /Status changed.*Status: not_started → started/i,
+    }));
+
+    const before = await screen.findByRole('region', { name: 'status before value' });
+    const after = await screen.findByRole('region', { name: 'status after value' });
+    expect(within(before).getByText('Before')).toBeInTheDocument();
+    expect(within(before).getByText('not_started')).toBeInTheDocument();
+    expect(within(before).queryByText('started')).not.toBeInTheDocument();
+    expect(within(after).getByText('After')).toBeInTheDocument();
+    expect(within(after).getByText('started')).toBeInTheDocument();
+    expect(within(after).queryByText('not_started')).not.toBeInTheDocument();
   });
 
   it('preserves the no-activity empty state through the shared renderer', async () => {
     render(<CardModal boardId="board-1" />);
     fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
 
-    expect(await screen.findByText('No activity recorded')).toBeInTheDocument();
+    expect(await screen.findByText('No history yet')).toBeInTheDocument();
   });
 });
 

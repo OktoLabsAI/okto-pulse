@@ -7,6 +7,7 @@ import { X, Bug } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore, useColumns } from '@/store/dashboard';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import type { CardStatus, CardPriority, CardType, BugSeverity, SpecSummary } from '@/types';
 import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 
@@ -32,6 +33,8 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
   const [labels, setLabels] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [boardMembers, setBoardMembers] = useState<{ id: string; name: string }[]>([]);
+
+  useEscapeToClose(onClose);
 
   // Spec selection
   const [specs, setSpecs] = useState<SpecSummary[]>([]);

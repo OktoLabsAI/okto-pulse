@@ -20,6 +20,7 @@ import {
 import { useDashboardApi } from '@/services/api';
 import { useImportExportApi } from '@/services/import-export-api';
 import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import type {
   BoardDesignSystemEffectiveResponse,
   DefaultBoardConfigActiveResponse,
@@ -63,6 +64,7 @@ function payloadSummary(payload: Record<string, unknown> | null | undefined) {
 }
 
 export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClose: () => void }) {
+  useEscapeToClose(onClose);
   const api = useDashboardApi();
   const apiRef = useRef(api);
   apiRef.current = api;

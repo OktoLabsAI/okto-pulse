@@ -10,6 +10,7 @@ import {
   type MetricsMode,
   type MetricsSummary,
 } from '@/services/metrics-api';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface MetricsSettingsPanelProps {
   onClose: () => void;
@@ -56,6 +57,7 @@ function modeLabel(mode: MetricsMode): string {
 }
 
 export function MetricsSettingsPanel({ onClose, initialPrompt = false }: MetricsSettingsPanelProps) {
+  useEscapeToClose(onClose);
   const [data, setData] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);

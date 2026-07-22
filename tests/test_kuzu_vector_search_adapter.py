@@ -40,13 +40,28 @@ class _Connection:
                     None,
                     index * 0.01,
                     "newer" if index % 2 == 0 else None,
+                    "canonical" if index % 2 else "working",
                 ]
                 for index in range(params["k"])
             ]
         else:
             rows = [
-                ["learning_a", "A", "spec:a", [1.0, 0.0], None],
-                ["learning_b", "B", "spec:b", [0.0, 1.0], None],
+                [
+                    "learning_a",
+                    "A",
+                    "spec:a",
+                    [1.0, 0.0],
+                    None,
+                    "canonical",
+                ],
+                [
+                    "learning_b",
+                    "B",
+                    "spec:b",
+                    [0.0, 1.0],
+                    None,
+                    "working",
+                ],
             ]
         result = _Result(rows)
         self.results.append(result)
@@ -122,3 +137,68 @@ def test_index_failure_uses_linear_fallback(monkeypatch):
     assert hits[0]["similarity"] == 1.0
     assert hits[1]["similarity"] == 0.0
     assert all(result.closed for result in connection.results)
+
+
+def test_real_ladybug_canonical_excludes_demoted_and_all_preserves_it(
+    monkeypatch,
+):
+    """Exercise the production layer predicate against installed Ladybug."""
+
+    import ladybug
+
+    database = ladybug.Database(":memory:")
+    connection = ladybug.Connection(database)
+    ddl = connection.execute(
+        "CREATE NODE TABLE Decision("
+        "id STRING PRIMARY KEY, title STRING, source_artifact_ref STRING, "
+        "embedding DOUBLE[3], superseded_by STRING, graph_layer STRING)"
+    )
+    ddl.close()
+    for node_id, title, layer in (
+        ("decision-canonical", "Canonical decision", "canonical"),
+        ("decision-demoted", "Demoted decision", "working"),
+    ):
+        created = connection.execute(
+            "CREATE (:Decision {"
+            "id: $id, title: $title, source_artifact_ref: $source_ref, "
+            "embedding: $embedding, superseded_by: $superseded_by, "
+            "graph_layer: $graph_layer})",
+            {
+                "id": node_id,
+                "title": title,
+                "source_ref": f"spec:{node_id}",
+                "embedding": [1.0, 0.0, 0.0],
+                "superseded_by": None,
+                "graph_layer": layer,
+            },
+        )
+        created.close()
+
+    _install_connection(monkeypatch, connection)
+    store = CommunityKuzuGraphStore()
+    try:
+        canonical_hits = store.vector_search(
+            "board-1",
+            "Decision",
+            [1.0, 0.0, 0.0],
+            top_k=10,
+            min_similarity=0.9,
+            graph_layer="canonical",
+        )
+        diagnostic_hits = store.vector_search(
+            "board-1",
+            "Decision",
+            [1.0, 0.0, 0.0],
+            top_k=10,
+            min_similarity=0.9,
+            graph_layer="all",
+        )
+    finally:
+        connection.close()
+        database.close()
+
+    assert [item["node_id"] for item in canonical_hits] == ["decision-canonical"]
+    assert {item["node_id"] for item in diagnostic_hits} == {
+        "decision-canonical",
+        "decision-demoted",
+    }

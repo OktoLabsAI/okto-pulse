@@ -53,11 +53,13 @@ import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { ArchitectureTab } from '@/components/architecture';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface RefinementModalProps {
   refinementId: string;
   boardId: string;
   onClose: () => void;
+  onEscape?: () => void;
   onChanged: () => void;
 }
 
@@ -166,7 +168,15 @@ function EditableList({ title, items, placeholder, colorClass, onUpdate }: {
       {editing && (
         <div className="flex gap-2 mt-2">
           <input type="text" value={draft} onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') add(); if (e.key === 'Escape') { setEditing(false); setDraft(''); } }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') add();
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                setEditing(false);
+                setDraft('');
+              }
+            }}
             placeholder={placeholder}
             className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" autoFocus
           />
@@ -885,7 +895,7 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
    Main RefinementModal
    ============================================================ */
 
-export function RefinementModal({ refinementId, boardId: _boardId, onClose, onChanged }: RefinementModalProps) {
+export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEscape, onChanged }: RefinementModalProps) {
   const api = useDashboardApi();
   const currentBoard = useCurrentBoard();
   const [refinement, setRefinement] = useState<Refinement | null>(null);
@@ -896,6 +906,8 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onCh
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [expanded, setExpanded] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
+  useEscapeToClose(onEscape ?? onClose);
 
   // The Cancellation tab only exists while the refinement is cancelled.
   useEffect(() => {

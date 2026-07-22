@@ -32,6 +32,7 @@ import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { useOptionalGuidedHelp, type GuidedHelpSurface, type GuidedHelpTourProgressStatus } from '@/components/guided-help';
 import pulseIcon from '@/assets/pulse-icon.svg';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface HelpPanelProps {
   onClose: () => void;
@@ -1439,6 +1440,7 @@ Both appear in the sidebar for quick switching.
 }
 
 export function HelpPanel({ onClose }: HelpPanelProps) {
+  useEscapeToClose(onClose);
   const sections = getSections();
   const [activeSection, setActiveSection] = useState(() => sections[0]?.id ?? 'quickstart');
 

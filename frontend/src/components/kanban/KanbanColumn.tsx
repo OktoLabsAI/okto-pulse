@@ -2,13 +2,14 @@
  * KanbanColumn - Column component for the Kanban board
  */
 
+import type { ReactNode } from 'react';
 import {
   SortableContext,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { useDroppable } from '@dnd-kit/core';
 import { Bug, FlaskConical, ListChecks, Plus } from 'lucide-react';
-import type { CardSummary, CardStatus } from '@/types';
+import type { CardSummary, CardStatus, CardType } from '@/types';
 import { STATUS_LABELS } from '@/types';
 import type { KGCognitivePendingBadgeView } from '@/services/kg-health-api';
 import { KanbanCard } from './KanbanCard';
@@ -75,15 +76,21 @@ const CARD_TYPE_TOGGLES = [
   },
 ] as const;
 
-interface KanbanColumnProps {
+export interface KanbanColumnProps {
   status: CardStatus;
   cards: CardSummary[];
   countCards?: CardSummary[];
+  totalCount?: number;
+  cardTypeFacets?: Partial<Record<CardType, number>>;
+  canViewAll?: boolean;
+  onViewAll?: () => void;
   activeCardTypes?: ReadonlySet<KanbanCardFilterType>;
   onToggleCardType?: (type: KanbanCardFilterType) => void;
   onCardClick: (cardId: string) => void;
   onAddCard: (status: CardStatus) => void;
   nameMap: Record<string, string>;
+  /** Optional controls rendered after the cards, inside the column scroll area. */
+  footer?: ReactNode;
   /** KG-03.6 — read-only cognitive badges keyed by source_ref.
    * Resolved at the KanbanBoard level in ONE batch HTTP request and
    * passed down so per-card rendering needs no extra fetch. */
@@ -94,15 +101,31 @@ export function KanbanColumn({
   status,
   cards,
   countCards,
+  totalCount,
+  cardTypeFacets,
+  canViewAll = false,
+  onViewAll,
   activeCardTypes = DEFAULT_ACTIVE_CARD_TYPES,
   onToggleCardType,
   onCardClick,
   onAddCard,
   nameMap,
+  footer,
   cognitiveBadges,
 }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
-  const counts = deriveKanbanCardTypeCounts(countCards ?? cards);
+  const localCounts = deriveKanbanCardTypeCounts(countCards ?? cards);
+  const counts: KanbanCardTypeCounts = cardTypeFacets
+    ? {
+        total: totalCount ?? localCounts.total,
+        task: cardTypeFacets.normal ?? 0,
+        test: cardTypeFacets.test ?? 0,
+        bug: cardTypeFacets.bug ?? 0,
+      }
+    : {
+        ...localCounts,
+        total: totalCount ?? localCounts.total,
+      };
 
   return (
     <div
@@ -211,6 +234,19 @@ export function KanbanColumn({
             Drop here
           </div>
         )}
+
+        {canViewAll && (
+          <button
+            type="button"
+            onClick={onViewAll}
+            aria-label={`View all ${counts.total} cards from ${STATUS_LABELS[status]}`}
+            className="w-full rounded-lg border border-dashed border-accent-300 bg-white px-3 py-2 text-xs font-medium text-accent-600 transition-colors hover:bg-accent-50 dark:border-accent-700 dark:bg-gray-800 dark:text-accent-300 dark:hover:bg-accent-950/30"
+          >
+            View all ({counts.total}) →
+          </button>
+        )}
+
+        {footer}
       </div>
     </div>
   );

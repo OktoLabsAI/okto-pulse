@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { MarkdownContent } from './MarkdownContent';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 export interface SelectableItem {
   id: string;
@@ -33,6 +34,8 @@ export function ContextSelector({
   const [selected, setSelected] = useState<Set<string>>(new Set(items.map((i) => i.id)));
   const [entityTitle, setEntityTitle] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEscapeToClose(onCancel, { priority: 10 });
 
   const toggle = (id: string) => {
     setSelected((prev) => {

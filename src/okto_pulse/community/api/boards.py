@@ -2,9 +2,31 @@
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
+    statement_budget,
+)
+from okto_pulse.community.api.columns_pagination import (
+    KANBAN_STATUSES,
+    assignee_facet_request,
+    batch_type_facet_request,
+    card_summary,
+    column_page_request,
+    column_type_facet_request,
+    page_meta,
+    parse_columns_parameters,
+)
+from okto_pulse.community.api.cards_pagination import (
+    card_page_request,
+    validate_card_list_query,
+)
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.pagination import (
+    project_page,
+    resolve_window,
+    run_paginated_list,
+)
 from okto_pulse.core.application.use_cases import (
     CreateBoardCommand,
     CreateBoardUseCase,
@@ -49,8 +71,11 @@ from okto_pulse.core.models import (
     BoardSummary,
     BoardUpdate,
     CardCreate,
+    CardPageItem,
     CardResponse,
+    ColumnsResponseUnion,
 )
+from okto_pulse.core.models.schemas import PageEnvelope
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.application.errors import CardOperationError
 
@@ -100,7 +125,10 @@ async def list_boards(
 @router.get("/{board_id}", response_model=BoardResponse)
 async def get_board(
     board_id: str,
-    compact: bool = Query(False, description="When true, omit inline cards/agents and return only the overview envelope with counts. Default false preserves the legacy full payload for the existing frontend."),
+    compact: bool = Query(
+        False,
+        description="When true, omit inline cards/agents and return only the overview envelope with counts. Default false preserves the legacy full payload for the existing frontend.",
+    ),
     user_id: str = Depends(require_user),
     realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
@@ -116,7 +144,9 @@ async def get_board(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.board
 
 
@@ -136,7 +166,9 @@ async def update_board(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.board
 
 
@@ -155,10 +187,94 @@ async def delete_board(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
 
 
-@router.post("/{board_id}/cards", response_model=CardResponse, status_code=status.HTTP_201_CREATED)
+@router.get(
+    "/{board_id}/cards",
+    response_model=PageEnvelope[CardPageItem],
+    dependencies=[Depends(validate_card_list_query)],
+)
+async def list_board_cards(
+    board_id: str,
+    status_filter: str | None = Query(None, alias="status"),
+    spec_ids: str | None = Query(
+        None,
+        description="CSV spec ids; __unlinked__ includes cards without a spec.",
+    ),
+    sprint_id: str | None = Query(None),
+    priority: str | None = Query(None),
+    card_types: str | None = Query(
+        None,
+        description="CSV card types: normal,test,bug.",
+    ),
+    assignee_id: str | None = Query(None),
+    labels: str | None = Query(
+        None,
+        description="CSV labels with ANY semantics and exact membership.",
+    ),
+    search: str | None = Query(
+        None,
+        description="Server-side search across title, description and labels.",
+    ),
+    include_archived: bool = Query(False),
+    offset: int = Query(0),
+    limit: int = Query(25),
+    user_id: str = Depends(require_user),
+    realm_id: str | None = Depends(get_realm_id),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """List a board's cards through the lean, fully filtered C7 projection."""
+
+    resolved_offset, resolved_limit = resolve_window(offset, limit)
+    request = card_page_request(
+        board_id,
+        status_value=status_filter,
+        spec_ids=spec_ids,
+        sprint_id=sprint_id,
+        priority=priority,
+        card_types=card_types,
+        assignee_id=assignee_id,
+        labels=labels,
+        search=search,
+        include_archived=include_archived,
+        offset=resolved_offset,
+        limit=resolved_limit,
+    )
+    actor = RESTAdapterContract.actor(
+        user_id,
+        realm_id=realm_id,
+        board_id=board_id,
+    )
+    use_case = GetBoardColumnsUseCase()
+    try:
+        page = await run_paginated_list(
+            uow,
+            request,
+            preflight=lambda: use_case.preflight(
+                GetBoardColumnsCommand(board_id),
+                actor=actor,
+                uow=uow,
+            ),
+        )
+    except EntityNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "board_not_found"},
+        )
+    return project_page(
+        page,
+        lambda record: CardPageItem(**record.values),
+    )
+
+
+@router.post(
+    "/{board_id}/cards",
+    response_model=CardResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_card(
     board_id: str,
     data: CardCreate,
@@ -177,64 +293,221 @@ async def create_card(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except EntityNotFoundError:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found or not owned by user"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Board not found or not owned by user",
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return result.card
 
 
-@router.get("/{board_id}/columns")
+@router.get(
+    "/{board_id}/columns",
+    responses={200: {"model": ColumnsResponseUnion}},
+    dependencies=[Depends(parse_columns_parameters)],
+)
 async def get_board_columns(
     board_id: str,
-    include_archived: bool = Query(False, alias="include_archived"),
+    request: Request,
+    _per_column_limit: str | None = Query(
+        None,
+        alias="per_column_limit",
+        description="Opt-in integer window per column (1..100).",
+    ),
+    _column: str | None = Query(
+        None,
+        alias="column",
+        description="Optional single CardStatus continuation column.",
+    ),
+    _offset: str | None = Query(
+        None,
+        alias="offset",
+        description="Non-negative offset; requires column.",
+    ),
+    _spec_ids: str | None = Query(
+        None,
+        alias="spec_ids",
+        description="CSV spec ids; __unlinked__ includes cards without a spec.",
+    ),
+    _card_types: list[str] | None = Query(
+        None,
+        alias="card_types",
+        description="Repeatable status:normal,test mapping; last status wins.",
+    ),
+    _search: str | None = Query(None, alias="search"),
+    _assignee_id: str | None = Query(None, alias="assignee_id"),
+    _include_archived: bool = Query(
+        False,
+        alias="include_archived",
+        description=(
+            "Legacy-compatible boolean; opt-in columns accepts strict true|false."
+        ),
+    ),
     user_id: str = Depends(require_user),
     realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Get board cards grouped by status/column."""
+    """Get literal legacy columns or an opt-in bounded columns response."""
+
+    parameters = parse_columns_parameters(request)
+    actor = RESTAdapterContract.actor(
+        user_id,
+        realm_id=realm_id,
+        board_id=board_id,
+    )
+    use_case = GetBoardColumnsUseCase()
+
+    if parameters is not None:
+        try:
+            # Authorization happens before the productive 23/4 data budget.
+            await use_case.preflight(
+                GetBoardColumnsCommand(board_id),
+                actor=actor,
+                uow=uow,
+            )
+        except EntityNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "board_not_found"},
+            )
+
+        session = uow.services.cards.db
+        if parameters.column is not None:
+            async with statement_budget(session, 4) as budget:
+                page = await uow.services.entity_pages.list(
+                    column_page_request(
+                        board_id,
+                        parameters.column,
+                        parameters,
+                        offset=parameters.offset,
+                    )
+                )
+                facet_rows = await uow.services.entity_pages.group_count(
+                    column_type_facet_request(
+                        board_id,
+                        parameters.column,
+                        parameters,
+                    )
+                )
+                if not 1 <= budget.used <= 4:
+                    raise RuntimeError(
+                        "columns_statement_budget_mismatch: "
+                        f"column mode used {budget.used}, cap 4"
+                    )
+
+            card_type_facet = {
+                str(getattr(row.values[0], "value", row.values[0])): row.count
+                for row in facet_rows
+            }
+            meta = page_meta(page, card_type_facet)
+            return {
+                "board_id": board_id,
+                "column": parameters.column,
+                "items": [card_summary(record) for record in page.items],
+                "meta": meta,
+                "offset": parameters.offset,
+                "limit": parameters.per_column_limit,
+                "next_offset": (
+                    parameters.offset + len(page.items) if meta["has_more"] else None
+                ),
+            }
+
+        async with statement_budget(session, 23) as budget:
+            columns: dict[str, list[dict]] = {}
+            columns_meta: dict[str, dict] = {}
+            for card_status in KANBAN_STATUSES:
+                page = await uow.services.entity_pages.list(
+                    column_page_request(board_id, card_status, parameters)
+                )
+                columns[card_status] = [card_summary(record) for record in page.items]
+                columns_meta[card_status] = page_meta(page)
+
+            type_rows = await uow.services.entity_pages.group_count(
+                batch_type_facet_request(board_id, parameters)
+            )
+            assignee_rows = await uow.services.entity_pages.group_count(
+                assignee_facet_request(board_id, parameters)
+            )
+            if not 1 <= budget.used <= 23:
+                raise RuntimeError(
+                    "columns_statement_budget_mismatch: "
+                    f"batch used {budget.used}, cap 23"
+                )
+
+        for row in type_rows:
+            card_status = str(getattr(row.values[0], "value", row.values[0]))
+            card_type = str(getattr(row.values[1], "value", row.values[1]))
+            if card_status in columns_meta:
+                columns_meta[card_status]["facets"]["card_type"][card_type] = row.count
+        assignee_facet = sorted(
+            ({"value": row.values[0], "count": row.count} for row in assignee_rows),
+            key=lambda item: (
+                item["value"] is not None,
+                "" if item["value"] is None else str(item["value"]),
+            ),
+        )
+        return {
+            "board_id": board_id,
+            "columns": columns,
+            "columns_meta": {
+                "columns": columns_meta,
+                "facets": {"assignee": assignee_facet},
+            },
+        }
+
+    # Literal legacy path: retain the fully hydrated board and exact wire.
+    include_archived = _include_archived
     try:
-        result = await GetBoardColumnsUseCase().execute(
+        result = await use_case.execute(
             GetBoardColumnsCommand(board_id),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
+            actor=actor,
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Board not found",
+        )
 
     board = result.board
-    # Group cards by status (exclude archived unless requested)
-    columns = {s.value: [] for s in CardStatus}
+    columns = {card_status.value: [] for card_status in CardStatus}
     for card in board.cards:
         if not include_archived and getattr(card, "archived", False):
             continue
-        columns[card.status.value].append({
-            "id": card.id,
-            "board_id": card.board_id,
-            "spec_id": card.spec_id,
-            "title": card.title,
-            "description": card.description,
-            "status": card.status.value,
-            "priority": card.priority.value if card.priority else "none",
-            "position": card.position,
-            "assignee_id": card.assignee_id,
-            "created_by": card.created_by,
-            "created_at": card.created_at.isoformat(),
-            "updated_at": card.updated_at.isoformat(),
-            "due_date": card.due_date.isoformat() if card.due_date else None,
-            "labels": card.labels or [],
-            "test_scenario_ids": card.test_scenario_ids,
-            "conclusions": card.conclusions,
-            # Bug card fields
-            "card_type": getattr(card, "card_type", "normal") or "normal",
-            "origin_task_id": getattr(card, "origin_task_id", None),
-            "severity": getattr(card, "severity", None),
-            "linked_test_task_ids": getattr(card, "linked_test_task_ids", None),
-            "archived": getattr(card, "archived", False),
-            # Unanswered Q&A count (answered_at IS NULL) for the kanban card badge.
-            # card.qa_items is eager-loaded by BoardService.get_board.
-            "open_qa_count": sum(1 for q in (card.qa_items or []) if q.answered_at is None),
-        })
+        columns[card.status.value].append(
+            {
+                "id": card.id,
+                "board_id": card.board_id,
+                "spec_id": card.spec_id,
+                "title": card.title,
+                "description": card.description,
+                "status": card.status.value,
+                "priority": card.priority.value if card.priority else "none",
+                "position": card.position,
+                "assignee_id": card.assignee_id,
+                "created_by": card.created_by,
+                "created_at": card.created_at.isoformat(),
+                "updated_at": card.updated_at.isoformat(),
+                "due_date": card.due_date.isoformat() if card.due_date else None,
+                "labels": card.labels or [],
+                "test_scenario_ids": card.test_scenario_ids,
+                "conclusions": card.conclusions,
+                "card_type": getattr(card, "card_type", "normal") or "normal",
+                "origin_task_id": getattr(card, "origin_task_id", None),
+                "severity": getattr(card, "severity", None),
+                "linked_test_task_ids": getattr(
+                    card,
+                    "linked_test_task_ids",
+                    None,
+                ),
+                "archived": getattr(card, "archived", False),
+                "open_qa_count": sum(
+                    1
+                    for question in (card.qa_items or [])
+                    if question.answered_at is None
+                ),
+            }
+        )
 
     return {"board_id": board_id, "columns": columns}
 
@@ -255,7 +528,9 @@ async def archive_tree(
     try:
         result = await ArchiveTreeUseCase().execute(
             ArchiveTreeCommand(board_id, entity_type, entity_id),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id, realm_id=realm_id, board_id=board_id
+            ),
             uow=uow,
         )
     except EntityNotFoundError as exc:
@@ -264,7 +539,9 @@ async def archive_tree(
             detail=f"{exc.entity_type.capitalize()} not found",
         ) from exc
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        ) from e
     return {"success": True, "archived_count": result.counts}
 
 
@@ -281,7 +558,9 @@ async def restore_tree(
     try:
         result = await RestoreTreeUseCase().execute(
             RestoreTreeCommand(board_id, entity_type, entity_id),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id, realm_id=realm_id, board_id=board_id
+            ),
             uow=uow,
         )
     except EntityNotFoundError as exc:
@@ -290,7 +569,9 @@ async def restore_tree(
             detail=f"{exc.entity_type.capitalize()} not found",
         ) from exc
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        ) from e
     return {"success": True, "restored_count": result.counts}
 
 
@@ -344,11 +625,15 @@ async def list_board_shares(
     try:
         result = await ListBoardSharesUseCase().execute(
             ListBoardSharesCommand(board_id),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id, realm_id=realm_id, board_id=board_id
+            ),
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.shares
 
 
@@ -365,7 +650,9 @@ async def update_board_share(
     try:
         result = await UpdateBoardShareUseCase().execute(
             UpdateBoardShareCommand(board_id, share_id, data),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id, realm_id=realm_id, board_id=board_id
+            ),
             uow=uow,
         )
     except EntityNotFoundError as exc:
@@ -393,7 +680,9 @@ async def revoke_board_share(
     try:
         await RevokeBoardShareUseCase().execute(
             RevokeBoardShareCommand(board_id, share_id),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id, board_id=board_id),
+            actor=RESTAdapterContract.actor(
+                user_id, realm_id=realm_id, board_id=board_id
+            ),
             uow=uow,
         )
     except EntityNotFoundError as exc:
