@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
 import uuid
 from hashlib import sha256
@@ -27,6 +28,7 @@ from sqlalchemy import (
     and_,
     create_engine,
     delete,
+    exists,
     func,
     insert,
     inspect,
@@ -36,13 +38,16 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 
 from okto_pulse.community.adapters.global_discovery_recovery import (
     CommunityGlobalDiscoveryRecoveryFenceError,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
+    ConsolidationQueue,
+    DomainEventHandlerExecution,
+    DomainEventRow,
     GlobalDiscoveryRecoveryAttempt,
     GlobalDiscoveryRecoveryDispatch,
     GlobalDiscoveryRecoverySlot,
@@ -123,6 +128,40 @@ _RECOVERY_WRITER_RENEW_INTERVAL_SECONDS = max(
 )
 _DEFAULT_PREPARATION_MAX_ATTEMPTS = 3
 _DEFAULT_PREPARATION_RETRY_BACKOFF_SECONDS = 1.0
+_PREPARATION_HEARTBEAT_CONTENTION_MAX_ATTEMPTS = 3
+_PREPARATION_HEARTBEAT_CONTENTION_BASE_BACKOFF_SECONDS = 0.025
+# The production recovery store waits at most 750 ms per SQLite write attempt.
+# Three fresh attempts plus backoff stay below this budget and retain ample
+# headroom beneath the 15 s lease / 5 s maximum heartbeat cadence.
+_PREPARATION_HEARTBEAT_CONTENTION_RETRY_BUDGET_SECONDS = 3.0
+_PREPARATION_HEARTBEAT_CONTENTION_ATTEMPT_RESERVE_SECONDS = 0.75
+_KG_TICK_EVENT_TYPES = (
+    "kg.tick.daily",
+    "kg.tick.full_rebuild",
+    "kg.tick.delivery_redrive",
+)
+
+
+def _is_sqlite_lock_contention(exc: BaseException) -> bool:
+    """Recognize only driver-authenticated SQLite BUSY/LOCKED failures."""
+
+    if not isinstance(exc, OperationalError):
+        return False
+    original = exc.orig
+    if not isinstance(original, sqlite3.OperationalError):
+        return False
+    error_code = getattr(original, "sqlite_errorcode", None)
+    if isinstance(error_code, int):
+        return (error_code & 0xFF) in {
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+        }
+    return str(original).strip().casefold() in {
+        "database is locked",
+        "database table is locked",
+        "sqlite_busy",
+        "sqlite_locked",
+    }
 
 
 class RecoveryDispatchStage(str, Enum):
@@ -135,9 +174,55 @@ class RecoveryDispatchStage(str, Enum):
 class RecoveryDispatchState(str, Enum):
     """Closed durable dispatch lifecycle."""
 
+    MATERIALIZING = "materializing"
+    SETTLING = "settling"
     READY = "ready"
     CLAIMED = "claimed"
     DONE = "done"
+
+
+class _RecoveryAdmissionDeferred(RuntimeError):
+    """Private, retryable refusal before a recovery activation is visible."""
+
+    def __init__(self, reason_code: str) -> None:
+        self.reason_code = str(reason_code)
+        super().__init__(self.reason_code)
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRevocationObservation:
+    """External revocation evidence captured without a SQL writer lease."""
+
+    run_id: str
+    attempt_id: str
+    epoch: int
+    manifest_ref: str
+    progress_seq: int
+    cancel_requested_at: datetime | None
+    cancel_requested_by_actor_id: str | None
+    audit_reason: str | None
+    revoked: bool
+
+    def matches(self, status: RecoveryRunStatus) -> bool:
+        return (
+            self.run_id,
+            self.attempt_id,
+            self.epoch,
+            self.manifest_ref,
+            self.progress_seq,
+            self.cancel_requested_at,
+            self.cancel_requested_by_actor_id,
+            self.audit_reason,
+        ) == (
+            status.run_id,
+            status.attempt_id,
+            status.epoch,
+            status.binding.manifest_ref,
+            status.progress_seq,
+            status.cancel_requested_at,
+            status.cancel_requested_by_actor_id,
+            status.audit_reason,
+        )
 
 
 class RecoveryPreparationError(RuntimeError):
@@ -724,6 +809,7 @@ class SQLAlchemyRecoveryRunStore:
     ) -> None:
         if (database_url is None) == (engine is None):
             raise ValueError("provide exactly one of database_url or engine")
+        injected_engine = engine is not None
         if engine is None:
             connect_args: dict[str, object] = {}
             if str(database_url).startswith("sqlite"):
@@ -743,6 +829,22 @@ class SQLAlchemyRecoveryRunStore:
             inspector.has_table(table.name)
             for table in (_slots, _dispatches, _transitions)
         )
+        self._has_tick_guard_schema = all(
+            inspector.has_table(table.__tablename__)
+            for table in (
+                ConsolidationQueue,
+                DomainEventHandlerExecution,
+                DomainEventRow,
+            )
+        )
+        if (
+            self._has_r5_schema
+            and not self._has_tick_guard_schema
+            and not injected_engine
+        ):
+            raise RecoveryStoreSchemaError(
+                code="global_discovery_recovery_tick_guard_schema_missing"
+            )
         if prepared_revoker is not None and not (
             callable(getattr(prepared_revoker, "revoke_prepared", None))
             and callable(getattr(prepared_revoker, "is_prepared_revoked", None))
@@ -767,13 +869,44 @@ class SQLAlchemyRecoveryRunStore:
         )
         self._realm_id = normalized_realm_id
         self._revocation_lock = RLock()
+        self._reconciliation_stop = Event()
         self._revocation_threads: dict[tuple[str, int], Thread] = {}
+        self._resume_reconciliation_threads: dict[tuple[str, int], Thread] = {}
+        self._preparation_settlement_threads: dict[
+            tuple[str, int], Thread
+        ] = {}
         if prepared_revoker is not None and self._has_r5_schema:
             self._schedule_pending_prepared_cancellations()
+        if resume_input_handoff is not None and self._has_r5_schema:
+            self._schedule_pending_resume_reservations()
+        if prepared_revoker is not None and self._has_r5_schema:
+            self._schedule_pending_preparation_settlements()
 
     @property
     def engine(self) -> Engine:
         return self._engine
+
+    def close(self, *, timeout_seconds: float = 10.0) -> None:
+        """Stop and drain store-owned reconciliation threads before disposal."""
+
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        self._reconciliation_stop.set()
+        with self._revocation_lock:
+            threads = tuple(
+                {
+                    *self._revocation_threads.values(),
+                    *self._resume_reconciliation_threads.values(),
+                    *self._preparation_settlement_threads.values(),
+                }
+            )
+        for thread in threads:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        alive = [thread.name for thread in threads if thread.is_alive()]
+        if alive:
+            raise TimeoutError(
+                "recovery store reconciliation did not drain before close "
+                f"deadline; process restart is required: {sorted(alive)}"
+            )
 
     def create_run(
         self,
@@ -885,6 +1018,7 @@ class SQLAlchemyRecoveryRunStore:
             )
         )
         prepared_intent: RecoveryRunStatus | None = None
+        terminal_result: RecoveryRunStatus | None = None
         for _ in range(8):
             with self._engine.begin() as connection:
                 current = self._require_latest(connection, run_id)
@@ -936,23 +1070,29 @@ class SQLAlchemyRecoveryRunStore:
                         and str(preparation_dispatch["state"])
                         == RecoveryDispatchState.READY.value
                     ):
-                        return self._terminalize_preparation_in_transaction(
-                            connection,
-                            current=updated,
-                            cas_current=current,
-                            dispatch=preparation_dispatch,
-                            completed_at=requested,
-                            active_elapsed_ms=updated.active_elapsed_ms,
-                            counts=updated.counts,
-                            outcome=RecoveryTerminalOutcome.CANCELLED,
-                            reason_code=_PREPARATION_CANCELLED_REASON,
+                        terminal_result = (
+                            self._terminalize_preparation_in_transaction(
+                                connection,
+                                current=updated,
+                                cas_current=current,
+                                dispatch=preparation_dispatch,
+                                completed_at=requested,
+                                active_elapsed_ms=updated.active_elapsed_ms,
+                                counts=updated.counts,
+                                outcome=RecoveryTerminalOutcome.CANCELLED,
+                                reason_code=_PREPARATION_CANCELLED_REASON,
+                            )
                         )
-                    if self._write_cas(
+                    elif self._write_cas(
                         connection,
                         current=current,
                         updated=updated,
                     ):
                         return updated
+            if terminal_result is not None:
+                return self._briefly_observe_preparation_settlement(
+                    terminal_result
+                )
             if prepared_intent is not None:
                 thread = self._schedule_prepared_cancellation(prepared_intent)
                 return self._briefly_observe_prepared_cancellation(
@@ -1260,7 +1400,49 @@ class SQLAlchemyRecoveryRunStore:
         requested_by_actor_id: str,
         reason: str | None = None,
     ) -> tuple[RecoveryRunStatus, bool]:
-        """Atomically supersede one attempt, transfer the slot, and dispatch."""
+        """Reserve, materialize, then finalize a resumable recovery dispatch."""
+
+        resumed, transitioned, predecessor = self._reserve_explicit_resume(
+            run_id=run_id,
+            expected_epoch=expected_epoch,
+            requested_at=requested_at,
+            requested_by_actor_id=requested_by_actor_id,
+            reason=reason,
+        )
+        if predecessor is None:
+            return resumed, transitioned
+        handoff = self._resume_input_handoff
+        if handoff is None:
+            raise RecoveryStoreContractError(
+                code="global_discovery_recovery_resume_input_handoff_required"
+            )
+        # Create-only physical input handoff may perform filesystem I/O. The
+        # durable reservation and recovery slot already fence tick publication,
+        # but no relational writer transaction is held while this runs.
+        try:
+            handoff(predecessor, resumed)
+            self._finalize_explicit_resume_dispatch(
+                status=resumed,
+                available_at=requested_at,
+            )
+        except BaseException:
+            # The committed reservation is the crash marker. Its owned
+            # reconciler retries create-only handoff/finalization without an
+            # operator having to issue another resume request.
+            self._schedule_resume_reservation(resumed)
+            raise
+        return resumed, transitioned
+
+    def _reserve_explicit_resume(
+        self,
+        *,
+        run_id: str,
+        expected_epoch: int,
+        requested_at: datetime,
+        requested_by_actor_id: str,
+        reason: str | None = None,
+    ) -> tuple[RecoveryRunStatus, bool, RecoveryRunStatus | None]:
+        """Atomically reserve epoch N+1 without external handoff I/O."""
 
         requested = self._require_dispatch_time(
             requested_at,
@@ -1274,8 +1456,14 @@ class SQLAlchemyRecoveryRunStore:
         audit_reason = normalize_recovery_audit_reason(reason)
 
         rejection: RecoveryResumeRejected | None = None
+        terminal_result: RecoveryRunStatus | None = None
         try:
             with self._engine.begin() as connection:
+                self._begin_slot_admission_window(
+                    connection,
+                    run_id=str(run_id),
+                    operation="explicit_resume",
+                )
                 current = self._require_latest(connection, run_id)
                 if (
                     current.epoch == int(expected_epoch) + 1
@@ -1299,7 +1487,6 @@ class SQLAlchemyRecoveryRunStore:
                     )
                     if (
                         slot is None
-                        or dispatch is None
                         or (
                             str(slot["run_id"]),
                             str(slot["attempt_id"]),
@@ -1310,7 +1497,34 @@ class SQLAlchemyRecoveryRunStore:
                         raise RecoveryStoreSchemaError(
                             code="global_discovery_recovery_resume_commit_incomplete"
                         )
-                    return current, False
+                    if (
+                        dispatch is not None
+                        and str(dispatch["state"])
+                        != RecoveryDispatchState.MATERIALIZING.value
+                    ):
+                        return current, False, None
+                    if (
+                        stage is not RecoveryDispatchStage.RECOVERY
+                        or dispatch is None
+                    ):
+                        raise RecoveryStoreSchemaError(
+                            code="global_discovery_recovery_resume_commit_incomplete"
+                        )
+                    predecessor_row = (
+                        connection.execute(
+                            select(_attempts).where(
+                                _attempts.c.run_id == current.run_id,
+                                _attempts.c.epoch == int(expected_epoch),
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if predecessor_row is None:
+                        raise RecoveryStoreSchemaError(
+                            code="global_discovery_recovery_resume_commit_incomplete"
+                        )
+                    return current, False, _row_status(predecessor_row)
                 self._require_epoch(current, expected_epoch=expected_epoch)
                 slot = self._slot_row(connection)
                 if slot is not None and (
@@ -1318,6 +1532,21 @@ class SQLAlchemyRecoveryRunStore:
                     str(slot["attempt_id"]),
                     int(slot["epoch"]),
                 ) != (current.run_id, current.attempt_id, current.epoch):
+                    raise RecoveryInProgress()
+                preparation_settlement = self._attempt_dispatch_row(
+                    connection,
+                    run_id=current.run_id,
+                    attempt_id=current.attempt_id,
+                    epoch=current.epoch,
+                    stage=RecoveryDispatchStage.PREPARATION,
+                )
+                if (
+                    preparation_settlement is not None
+                    and str(preparation_settlement["state"])
+                    == RecoveryDispatchState.SETTLING.value
+                ):
+                    # The terminal SQL row is visible, but its physical
+                    # candidate cleanup still owns the global mutation fence.
                     raise RecoveryInProgress()
 
                 if current.state is RecoveryRunState.RUNNING:
@@ -1397,15 +1626,17 @@ class SQLAlchemyRecoveryRunStore:
                                 require_claimed=False,
                             )
                         else:
-                            self._terminalize_preparation_in_transaction(
-                                connection,
-                                current=current,
-                                dispatch=incumbent_dispatch,
-                                completed_at=completed_at,
-                                active_elapsed_ms=charged_active_ms,
-                                counts=current.counts,
-                                outcome=RecoveryTerminalOutcome.TIMEOUT,
-                                reason_code=decision.reason_code,
+                            terminal_result = (
+                                self._terminalize_preparation_in_transaction(
+                                    connection,
+                                    current=current,
+                                    dispatch=incumbent_dispatch,
+                                    completed_at=completed_at,
+                                    active_elapsed_ms=charged_active_ms,
+                                    counts=current.counts,
+                                    outcome=RecoveryTerminalOutcome.TIMEOUT,
+                                    reason_code=decision.reason_code,
+                                )
                             )
                     else:
                         previous = current.complete(
@@ -1469,6 +1700,14 @@ class SQLAlchemyRecoveryRunStore:
                         in {RecoveryRunPhase.QUEUED, RecoveryRunPhase.PREPARING}
                         else RecoveryDispatchStage.RECOVERY
                     )
+                    self._create_or_transfer_recovery_slot(
+                        connection,
+                        current=current if slot is not None else None,
+                        admitted=resumed,
+                        acquired_at=requested,
+                        updated_at=requested,
+                        operation="explicit_resume",
+                    )
                     if resumed_stage is RecoveryDispatchStage.RECOVERY:
                         if self._resume_input_handoff is None:
                             raise RecoveryStoreContractError(
@@ -1477,19 +1716,12 @@ class SQLAlchemyRecoveryRunStore:
                                     "handoff_required"
                                 )
                             )
-                        self._resume_input_handoff(current, resumed)
                     previous = replace(
                         previous,
                         progress_seq=previous.progress_seq + 1,
                         updated_at=max(previous.updated_at, requested),
                         superseded_by_epoch=next_epoch,
                     )
-                    if slot is not None:
-                        self._lock_slot(
-                            connection,
-                            status=current,
-                            at=requested,
-                        )
                     if not self._write_cas(
                         connection,
                         current=current,
@@ -1525,48 +1757,35 @@ class SQLAlchemyRecoveryRunStore:
                                 run_id=current.run_id,
                                 epoch=current.epoch,
                             )
-                    if slot is None:
-                        connection.execute(
-                            insert(_slots).values(
-                                slot_id=GLOBAL_RECOVERY_SLOT_ID,
-                                run_id=resumed.run_id,
-                                attempt_id=resumed.attempt_id,
-                                epoch=resumed.epoch,
-                                actor_id=resumed.actor_id,
-                                version=1,
-                                acquired_at=requested,
-                                updated_at=requested,
-                            )
+                    if resumed_stage is RecoveryDispatchStage.PREPARATION:
+                        self._insert_dispatch(
+                            connection,
+                            status=resumed,
+                            stage=resumed_stage,
+                            available_at=requested,
                         )
                     else:
-                        transferred = connection.execute(
-                            update(_slots)
-                            .where(
-                                and_(
-                                    _slots.c.slot_id == GLOBAL_RECOVERY_SLOT_ID,
-                                    _slots.c.run_id == current.run_id,
-                                    _slots.c.attempt_id == current.attempt_id,
-                                    _slots.c.epoch == current.epoch,
-                                )
-                            )
-                            .values(
-                                run_id=resumed.run_id,
-                                attempt_id=resumed.attempt_id,
-                                epoch=resumed.epoch,
-                                actor_id=resumed.actor_id,
-                                version=_slots.c.version + 1,
-                                updated_at=requested,
-                            )
+                        self._insert_resume_materialization_dispatch(
+                            connection,
+                            predecessor=current,
+                            status=resumed,
+                            available_at=requested,
                         )
-                        if transferred.rowcount != 1:
-                            raise RecoveryInProgress()
-                    self._insert_dispatch(
-                        connection,
-                        status=resumed,
-                        stage=resumed_stage,
-                        available_at=requested,
+                    return (
+                        resumed,
+                        True,
+                        (
+                            current
+                            if resumed_stage is RecoveryDispatchStage.RECOVERY
+                            else None
+                        ),
                     )
-                    return resumed, True
+        except _RecoveryAdmissionDeferred:
+            raise RecoveryInProgress() from None
+        except OperationalError as exc:
+            if _is_sqlite_lock_contention(exc):
+                raise RecoveryInProgress() from None
+            raise
         except IntegrityError:
             actual = self.get_status(run_id=str(run_id))
             if actual is None:
@@ -1577,7 +1796,16 @@ class SQLAlchemyRecoveryRunStore:
                 and actual.resume_requested_by_actor_id == requested_by
                 and actual.resume_audit_reason == audit_reason
             ):
-                return actual, False
+                predecessor = (
+                    self.get_status_at_epoch(
+                        run_id=actual.run_id,
+                        epoch=int(expected_epoch),
+                    )
+                    if actual.phase
+                    in {RecoveryRunPhase.CONFIRMED, RecoveryRunPhase.CUTOVER}
+                    else None
+                )
+                return actual, False, predecessor
             raise RecoveryCheckpointConflict(
                 code="recovery_epoch_conflict",
                 run_id=str(run_id),
@@ -1588,7 +1816,91 @@ class SQLAlchemyRecoveryRunStore:
             ) from None
         if rejection is None:  # pragma: no cover - defensive exhaustiveness
             raise RuntimeError("recovery resume completed without a decision")
+        if terminal_result is not None:
+            self._briefly_observe_preparation_settlement(terminal_result)
         raise rejection
+
+    def _finalize_explicit_resume_dispatch(
+        self,
+        *,
+        status: RecoveryRunStatus,
+        available_at: datetime,
+    ) -> None:
+        """Finalize one durable reservation after create-only input handoff."""
+
+        try:
+            with self._engine.begin() as connection:
+                self._begin_slot_admission_window(
+                    connection,
+                    run_id=status.run_id,
+                    operation="explicit_resume_finalize",
+                )
+                current = self._require_latest(connection, status.run_id)
+                slot = self._slot_row(connection)
+                if (
+                    current.attempt_id != status.attempt_id
+                    or current.epoch != status.epoch
+                    or current.supersedes_epoch != status.supersedes_epoch
+                    or slot is None
+                    or (
+                        str(slot["run_id"]),
+                        str(slot["attempt_id"]),
+                        int(slot["epoch"]),
+                    )
+                    != (status.run_id, status.attempt_id, status.epoch)
+                ):
+                    raise RecoveryInProgress()
+                dispatch = self._attempt_dispatch_row(
+                    connection,
+                    run_id=current.run_id,
+                    attempt_id=current.attempt_id,
+                    epoch=current.epoch,
+                    stage=RecoveryDispatchStage.RECOVERY,
+                )
+                ready_at = self._require_dispatch_time(
+                    available_at,
+                    field="available_at",
+                )
+                if dispatch is None:
+                    self._insert_dispatch(
+                        connection,
+                        status=current,
+                        stage=RecoveryDispatchStage.RECOVERY,
+                        available_at=ready_at,
+                    )
+                elif (
+                    str(dispatch["state"])
+                    == RecoveryDispatchState.MATERIALIZING.value
+                ):
+                    finalized = connection.execute(
+                        update(_dispatches)
+                        .where(
+                            and_(
+                                _dispatches.c.dispatch_id
+                                == str(dispatch["dispatch_id"]),
+                                _dispatches.c.run_id == current.run_id,
+                                _dispatches.c.attempt_id == current.attempt_id,
+                                _dispatches.c.epoch == current.epoch,
+                                _dispatches.c.stage
+                                == RecoveryDispatchStage.RECOVERY.value,
+                                _dispatches.c.state
+                                == RecoveryDispatchState.MATERIALIZING.value,
+                            )
+                        )
+                        .values(
+                            state=RecoveryDispatchState.READY.value,
+                            available_at=ready_at,
+                            transition_observed_at=ready_at,
+                        )
+                    )
+                    if finalized.rowcount != 1:
+                        raise RecoveryInProgress()
+        except _RecoveryAdmissionDeferred:
+            raise RecoveryInProgress() from None
+        except OperationalError as exc:
+            if _is_sqlite_lock_contention(exc):
+                raise RecoveryInProgress() from None
+            raise
 
     def list_attempts(self, *, run_id: str) -> tuple[RecoveryRunStatus, ...]:
         with self._engine.connect() as connection:
@@ -1704,6 +2016,178 @@ class SQLAlchemyRecoveryRunStore:
         if connection.dialect.name == "sqlite":
             connection.exec_driver_sql("PRAGMA busy_timeout = 750")
 
+    @staticmethod
+    def _acquire_admission_writer_slot(connection: Connection) -> None:
+        """Serialize the short tick-check + recovery-slot admission window."""
+
+        if connection.dialect.name == "sqlite":
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+    def _begin_slot_admission_window(
+        self,
+        connection: Connection,
+        *,
+        run_id: str,
+        operation: str,
+    ) -> None:
+        """Acquire the relational writer fence used by every slot activation."""
+
+        self._bound_admission_lock_wait(connection)
+        try:
+            self._acquire_admission_writer_slot(connection)
+        except OperationalError as exc:
+            if not _is_sqlite_lock_contention(exc):
+                raise
+            logger.info(
+                "global recovery admission deferred "
+                "reason=relational_writer_busy operation=%s",
+                operation,
+                extra={
+                    "run_id": run_id,
+                    "operation": operation,
+                    "reason": "relational_writer_busy",
+                },
+            )
+            raise _RecoveryAdmissionDeferred("relational_writer_busy") from exc
+
+    def _kg_tick_maintenance_is_active(self, connection: Connection) -> bool:
+        # Narrow injected engines are used by store unit tests to exercise the
+        # R5 tables in isolation. Runtime composition owns a database URL and
+        # fails closed in __init__ when the guard schema is absent.
+        if not self._has_tick_guard_schema:
+            return False
+        event_execution_active = bool(
+            connection.scalar(
+                select(
+                    exists(
+                        select(1)
+                        .select_from(
+                            DomainEventHandlerExecution.__table__.join(
+                                DomainEventRow.__table__,
+                                DomainEventRow.id
+                                == DomainEventHandlerExecution.event_id,
+                            )
+                        )
+                        .where(
+                            DomainEventRow.event_type.in_(_KG_TICK_EVENT_TYPES),
+                            DomainEventHandlerExecution.status.in_(
+                                ("pending", "processing")
+                            ),
+                        )
+                    )
+                )
+            )
+        )
+        if event_execution_active:
+            return True
+        return bool(
+            connection.scalar(
+                select(
+                    exists(
+                        select(1).where(
+                            ConsolidationQueue.status.in_(
+                                ("pending", "claimed", "paused")
+                            ),
+                            or_(
+                                and_(
+                                    ConsolidationQueue.work_kind == "stale_sweep",
+                                    ConsolidationQueue.source == "kg_tick",
+                                ),
+                                and_(
+                                    ConsolidationQueue.work_kind
+                                    == "stale_reconcile",
+                                    ConsolidationQueue.source
+                                    == "governed_delete",
+                                    or_(
+                                        ConsolidationQueue.delete_event_id.like(
+                                            "catchup:%"
+                                        ),
+                                        ConsolidationQueue.triggered_by_event.like(
+                                            "catchup:%"
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        )
+                    )
+                )
+            )
+        )
+
+    def _require_tick_maintenance_quiescent(
+        self,
+        connection: Connection,
+        *,
+        run_id: str,
+        operation: str,
+    ) -> None:
+        if not self._kg_tick_maintenance_is_active(connection):
+            return
+        logger.info(
+            "global recovery admission deferred "
+            "reason=kg_tick_maintenance_active operation=%s",
+            operation,
+            extra={
+                "run_id": run_id,
+                "operation": operation,
+                "reason": "kg_tick_maintenance_active",
+            },
+        )
+        raise _RecoveryAdmissionDeferred("kg_tick_maintenance_active")
+
+    def _create_or_transfer_recovery_slot(
+        self,
+        connection: Connection,
+        *,
+        current: RecoveryRunStatus | None,
+        admitted: RecoveryRunStatus,
+        acquired_at: datetime,
+        updated_at: datetime,
+        operation: str,
+    ) -> None:
+        """Activate exactly one recovery owner inside the fenced writer UoW."""
+
+        self._require_tick_maintenance_quiescent(
+            connection,
+            run_id=admitted.run_id,
+            operation=operation,
+        )
+        if current is None:
+            connection.execute(
+                insert(_slots).values(
+                    slot_id=GLOBAL_RECOVERY_SLOT_ID,
+                    run_id=admitted.run_id,
+                    attempt_id=admitted.attempt_id,
+                    epoch=admitted.epoch,
+                    actor_id=admitted.actor_id,
+                    version=1,
+                    acquired_at=acquired_at,
+                    updated_at=updated_at,
+                )
+            )
+            return
+        transferred = connection.execute(
+            update(_slots)
+            .where(
+                and_(
+                    _slots.c.slot_id == GLOBAL_RECOVERY_SLOT_ID,
+                    _slots.c.run_id == current.run_id,
+                    _slots.c.attempt_id == current.attempt_id,
+                    _slots.c.epoch == current.epoch,
+                )
+            )
+            .values(
+                run_id=admitted.run_id,
+                attempt_id=admitted.attempt_id,
+                epoch=admitted.epoch,
+                actor_id=admitted.actor_id,
+                version=_slots.c.version + 1,
+                updated_at=updated_at,
+            )
+        )
+        if transferred.rowcount != 1:
+            raise RecoveryInProgress()
+
     def _require_prepared_revoker(self) -> PreparedRecoveryRevoker:
         revoker = self._prepared_revoker
         if revoker is None:
@@ -1729,6 +2213,708 @@ class SQLAlchemyRecoveryRunStore:
             )
         for row in rows:
             self._schedule_prepared_cancellation(_row_status(row))
+
+    def _schedule_pending_resume_reservations(self) -> None:
+        """Adopt durable epoch reservations left before dispatch finalization."""
+
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(_attempts).where(
+                        and_(
+                            _attempts.c.state == RecoveryRunState.PENDING.value,
+                            _attempts.c.phase.in_(
+                                (
+                                    RecoveryRunPhase.CONFIRMED.value,
+                                    RecoveryRunPhase.CUTOVER.value,
+                                )
+                            ),
+                            _attempts.c.supersedes_epoch.is_not(None),
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            pending = [
+                _row_status(row)
+                for row in rows
+                if (
+                    (
+                        dispatch := self._attempt_dispatch_row(
+                            connection,
+                            run_id=str(row["run_id"]),
+                            attempt_id=str(row["attempt_id"]),
+                            epoch=int(row["epoch"]),
+                            stage=RecoveryDispatchStage.RECOVERY,
+                        )
+                    )
+                    is None
+                    or str(dispatch["state"])
+                    == RecoveryDispatchState.MATERIALIZING.value
+                )
+            ]
+        for status in pending:
+            self._schedule_resume_reservation(status)
+
+    def _schedule_pending_preparation_settlements(self) -> None:
+        """Adopt terminal PREPARATION revocations left between T1 and T2."""
+
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(_dispatches).where(
+                        and_(
+                            _dispatches.c.stage
+                            == RecoveryDispatchStage.PREPARATION.value,
+                            _dispatches.c.state
+                            == RecoveryDispatchState.SETTLING.value,
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        for row in rows:
+            self._schedule_preparation_settlement(
+                run_id=str(row["run_id"]),
+                epoch=int(row["epoch"]),
+            )
+
+    def _schedule_preparation_settlement(
+        self,
+        *,
+        run_id: str,
+        epoch: int,
+    ) -> Thread | None:
+        key = (str(run_id), int(epoch))
+        with self._revocation_lock:
+            if self._reconciliation_stop.is_set():
+                return None
+            existing = self._preparation_settlement_threads.get(key)
+            if existing is not None and existing.is_alive():
+                return existing
+            thread = Thread(
+                target=self._reconcile_preparation_settlement,
+                kwargs={"run_id": key[0], "epoch": key[1]},
+                name=f"pulse-recovery-preparation-settlement-{key[1]}",
+                daemon=True,
+            )
+            self._preparation_settlement_threads[key] = thread
+            thread.start()
+            return thread
+
+    def _briefly_observe_preparation_settlement(
+        self,
+        status: RecoveryRunStatus,
+    ) -> RecoveryRunStatus:
+        thread = self._schedule_preparation_settlement(
+            run_id=status.run_id,
+            epoch=status.epoch,
+        )
+        if thread is not None:
+            thread.join(timeout=0.25)
+        observed = self.get_status_at_epoch(
+            run_id=status.run_id,
+            epoch=status.epoch,
+        )
+        return status if observed is None else observed
+
+    def _preparation_settlement_pair(
+        self,
+        *,
+        run_id: str,
+        epoch: int,
+    ) -> tuple[
+        RecoveryRunStatus,
+        Mapping[str, Any],
+        Mapping[str, Any],
+    ] | None:
+        """Read one committed settlement reservation without holding a writer."""
+
+        with self._engine.connect() as connection:
+            current = self._latest(connection, str(run_id))
+            dispatch = (
+                None
+                if current is None
+                else self._attempt_dispatch_row(
+                    connection,
+                    run_id=current.run_id,
+                    attempt_id=current.attempt_id,
+                    epoch=int(epoch),
+                    stage=RecoveryDispatchStage.PREPARATION,
+                )
+            )
+            slot = self._slot_row(connection)
+        if current is None or current.epoch != int(epoch):
+            return None
+        if dispatch is not None and str(dispatch["state"]) == (
+            RecoveryDispatchState.DONE.value
+        ):
+            return None
+        # A store-owned thread can start just before its surrounding T1
+        # transaction commits. Treat the old visible state as transient.
+        if (
+            current.state.is_terminal
+            or dispatch is None
+            or str(dispatch["state"])
+            != RecoveryDispatchState.SETTLING.value
+        ):
+            raise RecoveryInProgress()
+        if (
+            slot is None
+            or (
+                str(slot["run_id"]),
+                str(slot["attempt_id"]),
+                int(slot["epoch"]),
+            )
+            != (current.run_id, current.attempt_id, current.epoch)
+        ):
+            raise RecoveryStoreSchemaError(
+                code="global_discovery_recovery_settlement_slot_missing"
+            )
+        transition_payload = dispatch["transition_payload"]
+        marker = (
+            None
+            if not isinstance(transition_payload, Mapping)
+            else transition_payload.get("preparation_terminalization")
+        )
+        if not isinstance(marker, Mapping):
+            raise RecoveryStoreSchemaError(
+                code="global_discovery_recovery_settlement_intent_missing"
+            )
+        try:
+            marker_identity = (
+                str(marker.get("run_id")),
+                str(marker.get("attempt_id")),
+                int(marker.get("epoch", -1)),
+            )
+            marker_progress_seq = int(marker.get("progress_seq", -1))
+        except (TypeError, ValueError) as exc:
+            raise RecoveryStoreSchemaError(
+                code="global_discovery_recovery_settlement_intent_corrupt"
+            ) from exc
+        current_identity = (
+            current.run_id,
+            current.attempt_id,
+            current.epoch,
+        )
+        if (
+            marker_identity == current_identity
+            and marker_progress_seq > current.progress_seq
+        ):
+            # A store-owned reconciler starts before its T1 context exits. Some
+            # SQLite pool/isolation combinations can expose the dispatch
+            # reservation one read before the attempt snapshot advances.
+            raise RecoveryInProgress()
+        if (
+            marker_identity != current_identity
+            or marker_progress_seq != current.progress_seq
+        ):
+            raise RecoveryStoreSchemaError(
+                code="global_discovery_recovery_settlement_intent_conflict"
+            )
+        return current, dispatch, marker
+
+    def _finalize_preparation_settlement(
+        self,
+        *,
+        status: RecoveryRunStatus,
+        dispatch: Mapping[str, Any],
+        marker: Mapping[str, Any],
+        manifest_ref: str | None,
+        manifest_revoked: bool,
+    ) -> None:
+        """T2: ACK one exact durable settlement and release its global slot."""
+
+        try:
+            with self._engine.begin() as connection:
+                self._begin_slot_admission_window(
+                    connection,
+                    run_id=status.run_id,
+                    operation="preparation_settlement_finalize",
+                )
+                current = self._require_latest(connection, status.run_id)
+                fresh_dispatch = self._dispatch_row(
+                    connection,
+                    dispatch_id=str(dispatch["dispatch_id"]),
+                )
+                slot = self._slot_row(connection)
+                transition_payload = (
+                    None
+                    if fresh_dispatch is None
+                    or not isinstance(
+                        fresh_dispatch["transition_payload"],
+                        Mapping,
+                    )
+                    else fresh_dispatch["transition_payload"].get(
+                        "preparation_terminalization"
+                    )
+                )
+                if (
+                    current.attempt_id != status.attempt_id
+                    or current.epoch != status.epoch
+                    or current.progress_seq != status.progress_seq
+                    or current.state.is_terminal
+                    or fresh_dispatch is None
+                    or str(fresh_dispatch["state"])
+                    != RecoveryDispatchState.SETTLING.value
+                    or transition_payload != marker
+                    or slot is None
+                    or (
+                        str(slot["run_id"]),
+                        str(slot["attempt_id"]),
+                        int(slot["epoch"]),
+                    )
+                    != (current.run_id, current.attempt_id, current.epoch)
+                ):
+                    raise RecoveryInProgress()
+                try:
+                    outcome = RecoveryTerminalOutcome(
+                        str(marker["outcome"])
+                    )
+                    counts = RecoveryProgressCounts(
+                        **dict(marker["counts"])
+                    )
+                    reason_code = str(marker["reason_code"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise RecoveryStoreSchemaError(
+                        code=(
+                            "global_discovery_recovery_settlement_intent_"
+                            "corrupt"
+                        )
+                    ) from exc
+                terminal = current.complete(
+                    result=RecoveryWorkerResult(
+                        outcome=outcome,
+                        reason_code=reason_code,
+                        retryable=False,
+                        counts=counts,
+                    ),
+                    completed_at=_aware_datetime(
+                        marker["completed_at"]
+                    ),
+                    active_elapsed_ms=current.active_elapsed_ms,
+                )
+                payload = (
+                    dict(fresh_dispatch["result_payload"])
+                    if isinstance(fresh_dispatch["result_payload"], Mapping)
+                    else {}
+                )
+                payload.update(
+                    {
+                        "manifest_ref": manifest_ref,
+                        "manifest_revoked": bool(manifest_revoked),
+                        "manifest_revocation_pending": False,
+                    }
+                )
+                acknowledged = connection.execute(
+                    update(_dispatches)
+                    .where(
+                        and_(
+                            _dispatches.c.dispatch_id
+                            == str(fresh_dispatch["dispatch_id"]),
+                            _dispatches.c.state
+                            == RecoveryDispatchState.SETTLING.value,
+                        )
+                    )
+                    .values(
+                        state=RecoveryDispatchState.DONE.value,
+                        completed_at=_aware_datetime(
+                            marker["completed_at"]
+                        ),
+                        result_payload=payload,
+                    )
+                )
+                if acknowledged.rowcount != 1:
+                    raise RecoveryInProgress()
+                if not self._write_cas(
+                    connection,
+                    current=current,
+                    updated=terminal,
+                ):
+                    raise self._progress_conflict(connection, current)
+                released = connection.execute(
+                    delete(_slots).where(
+                        and_(
+                            _slots.c.slot_id == GLOBAL_RECOVERY_SLOT_ID,
+                            _slots.c.run_id == current.run_id,
+                            _slots.c.attempt_id == current.attempt_id,
+                            _slots.c.epoch == current.epoch,
+                        )
+                    )
+                )
+                if released.rowcount != 1:
+                    raise RecoveryInProgress()
+        except _RecoveryAdmissionDeferred:
+            raise RecoveryInProgress() from None
+        except OperationalError as exc:
+            if _is_sqlite_lock_contention(exc):
+                raise RecoveryInProgress() from None
+            raise
+
+    def _reconcile_preparation_settlement(
+        self,
+        *,
+        run_id: str,
+        epoch: int,
+    ) -> None:
+        key = (str(run_id), int(epoch))
+        delay_seconds = 0.025
+        try:
+            while not self._reconciliation_stop.is_set():
+                try:
+                    pair = self._preparation_settlement_pair(
+                        run_id=key[0],
+                        epoch=key[1],
+                    )
+                    if pair is None:
+                        return
+                    status, dispatch, marker = pair
+                    marker_manifest = marker.get("manifest_ref")
+                    manifest_ref = self._resolve_dispatch_manifest_ref(
+                        dispatch,
+                        (
+                            None
+                            if marker_manifest is None
+                            else str(marker_manifest)
+                        ),
+                    )
+                    manifest_revoked = False
+                    if manifest_ref is not None:
+                        revoker = self._require_prepared_revoker()
+                        if not revoker.is_prepared_revoked(
+                            run_id=status.run_id,
+                            epoch=status.epoch,
+                            manifest_ref=manifest_ref,
+                        ):
+                            revoker.revoke_prepared(
+                                run_id=status.run_id,
+                                epoch=status.epoch,
+                                manifest_ref=manifest_ref,
+                                revoked_at=_aware_datetime(
+                                    marker["completed_at"]
+                                ),
+                                requested_by_actor_id=status.actor_id,
+                                reason=str(marker["reason_code"]),
+                            )
+                        manifest_revoked = True
+                    self._finalize_preparation_settlement(
+                        status=status,
+                        dispatch=dispatch,
+                        marker=marker,
+                        manifest_ref=manifest_ref,
+                        manifest_revoked=manifest_revoked,
+                    )
+                    return
+                except Exception as exc:  # noqa: BLE001 - durable retry boundary
+                    if self._resume_materialization_error_is_permanent(exc):
+                        logger.error(
+                            "global recovery preparation settlement blocked "
+                            "run_id=%s epoch=%d error_type=%s error_code=%s",
+                            key[0],
+                            key[1],
+                            type(exc).__name__,
+                            getattr(exc, "code", ""),
+                            extra={
+                                "run_id": key[0],
+                                "epoch": key[1],
+                                "error_type": type(exc).__name__,
+                                "error_code": getattr(exc, "code", None),
+                                "retryable": False,
+                                "operator_action_required": True,
+                            },
+                        )
+                        return
+                    logger.warning(
+                        "global recovery preparation settlement retry "
+                        "run_id=%s epoch=%d error_type=%s",
+                        key[0],
+                        key[1],
+                        type(exc).__name__,
+                        extra={
+                            "run_id": key[0],
+                            "epoch": key[1],
+                            "error_type": type(exc).__name__,
+                            "retryable": True,
+                        },
+                    )
+                    if self._reconciliation_stop.wait(delay_seconds):
+                        return
+                    delay_seconds = min(5.0, delay_seconds * 2.0)
+        finally:
+            with self._revocation_lock:
+                self._preparation_settlement_threads.pop(key, None)
+
+    def _schedule_resume_reservation(
+        self,
+        status: RecoveryRunStatus,
+    ) -> Thread | None:
+        key = (status.run_id, status.epoch)
+        with self._revocation_lock:
+            if self._reconciliation_stop.is_set():
+                return None
+            existing = self._resume_reconciliation_threads.get(key)
+            if existing is not None and existing.is_alive():
+                return existing
+            thread = Thread(
+                target=self._reconcile_resume_reservation,
+                kwargs={"run_id": status.run_id, "epoch": status.epoch},
+                name=f"pulse-recovery-resume-reservation-{status.epoch}",
+                daemon=True,
+            )
+            self._resume_reconciliation_threads[key] = thread
+            thread.start()
+            return thread
+
+    def _resume_reservation_pair(
+        self,
+        *,
+        run_id: str,
+        epoch: int,
+    ) -> tuple[RecoveryRunStatus, RecoveryRunStatus] | None:
+        with self._engine.connect() as connection:
+            current = self._latest(connection, run_id)
+            if (
+                current is None
+                or current.epoch != int(epoch)
+                or current.state is not RecoveryRunState.PENDING
+                or current.phase
+                not in {RecoveryRunPhase.CONFIRMED, RecoveryRunPhase.CUTOVER}
+                or current.supersedes_epoch is None
+            ):
+                return None
+            slot = self._slot_row(connection)
+            if (
+                slot is None
+                or (
+                    str(slot["run_id"]),
+                    str(slot["attempt_id"]),
+                    int(slot["epoch"]),
+                )
+                != (current.run_id, current.attempt_id, current.epoch)
+            ):
+                raise RecoveryStoreSchemaError(
+                    code="global_discovery_recovery_resume_commit_incomplete"
+                )
+            dispatch = self._attempt_dispatch_row(
+                connection,
+                run_id=current.run_id,
+                attempt_id=current.attempt_id,
+                epoch=current.epoch,
+                stage=RecoveryDispatchStage.RECOVERY,
+            )
+            if (
+                dispatch is not None
+                and str(dispatch["state"])
+                != RecoveryDispatchState.MATERIALIZING.value
+            ):
+                return None
+            predecessor_row = (
+                connection.execute(
+                    select(_attempts).where(
+                        _attempts.c.run_id == current.run_id,
+                        _attempts.c.epoch == current.supersedes_epoch,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if predecessor_row is None:
+            raise RecoveryStoreSchemaError(
+                code="global_discovery_recovery_resume_commit_incomplete"
+            )
+        return _row_status(predecessor_row), current
+
+    @staticmethod
+    def _resume_materialization_error_is_permanent(exc: BaseException) -> bool:
+        return isinstance(
+            exc,
+            (
+                RecoveryRuntimeConfigurationError,
+                RecoveryStoreContractError,
+                RecoveryStoreSchemaError,
+            ),
+        )
+
+    def _terminalize_resume_materialization_conflict(
+        self,
+        *,
+        status: RecoveryRunStatus,
+        error: BaseException,
+    ) -> None:
+        """Fail one irreconcilable reservation and release the global slot."""
+
+        try:
+            with self._engine.begin() as connection:
+                self._begin_slot_admission_window(
+                    connection,
+                    run_id=status.run_id,
+                    operation="resume_materialization_terminalize",
+                )
+                current = self._require_latest(connection, status.run_id)
+                slot = self._slot_row(connection)
+                dispatch = self._attempt_dispatch_row(
+                    connection,
+                    run_id=current.run_id,
+                    attempt_id=current.attempt_id,
+                    epoch=current.epoch,
+                    stage=RecoveryDispatchStage.RECOVERY,
+                )
+                if (
+                    current.attempt_id != status.attempt_id
+                    or current.epoch != status.epoch
+                    or current.state is not RecoveryRunState.PENDING
+                    or slot is None
+                    or dispatch is None
+                    or str(dispatch["state"])
+                    != RecoveryDispatchState.MATERIALIZING.value
+                    or (
+                        str(slot["run_id"]),
+                        str(slot["attempt_id"]),
+                        int(slot["epoch"]),
+                    )
+                    != (current.run_id, current.attempt_id, current.epoch)
+                ):
+                    raise RecoveryInProgress()
+                observed_at = max(
+                    current.updated_at,
+                    self._require_dispatch_time(
+                        self._wall_clock(),
+                        field="store wall clock",
+                    ),
+                )
+                terminal = replace(
+                    current,
+                    state=RecoveryRunState.FAILED,
+                    progress_seq=current.progress_seq + 1,
+                    phase=RecoveryRunPhase.TERMINAL,
+                    heartbeat_at=observed_at,
+                    updated_at=observed_at,
+                    terminal_outcome=RecoveryTerminalOutcome.FAILED,
+                    reason_code="recovery_resume_materialization_conflict",
+                    retryable=False,
+                )
+                if not self._write_cas(
+                    connection,
+                    current=current,
+                    updated=terminal,
+                ):
+                    raise self._progress_conflict(connection, current)
+                completed = connection.execute(
+                    update(_dispatches)
+                    .where(
+                        and_(
+                            _dispatches.c.dispatch_id
+                            == str(dispatch["dispatch_id"]),
+                            _dispatches.c.state
+                            == RecoveryDispatchState.MATERIALIZING.value,
+                        )
+                    )
+                    .values(
+                        state=RecoveryDispatchState.DONE.value,
+                        completed_at=observed_at,
+                        result_payload={
+                            "outcome": RecoveryTerminalOutcome.FAILED.value,
+                            "reason_code": (
+                                "recovery_resume_materialization_conflict"
+                            ),
+                            "retryable": False,
+                            "error_code": str(
+                                getattr(error, "code", type(error).__name__)
+                            )[:128],
+                        },
+                    )
+                )
+                if completed.rowcount != 1:
+                    raise RecoveryInProgress()
+                released = connection.execute(
+                    delete(_slots).where(
+                        and_(
+                            _slots.c.slot_id == GLOBAL_RECOVERY_SLOT_ID,
+                            _slots.c.run_id == current.run_id,
+                            _slots.c.attempt_id == current.attempt_id,
+                            _slots.c.epoch == current.epoch,
+                        )
+                    )
+                )
+                if released.rowcount != 1:
+                    raise RecoveryInProgress()
+        except _RecoveryAdmissionDeferred:
+            raise RecoveryInProgress() from None
+        except OperationalError as exc:
+            if _is_sqlite_lock_contention(exc):
+                raise RecoveryInProgress() from None
+            raise
+
+    def _reconcile_resume_reservation(
+        self,
+        *,
+        run_id: str,
+        epoch: int,
+    ) -> None:
+        key = (str(run_id), int(epoch))
+        delay_seconds = 0.05
+        try:
+            while True:
+                reserved_for_failure = self.get_status_at_epoch(
+                    run_id=key[0],
+                    epoch=key[1],
+                )
+                if reserved_for_failure is None:
+                    return
+                try:
+                    pair = self._resume_reservation_pair(
+                        run_id=key[0],
+                        epoch=key[1],
+                    )
+                    if pair is None:
+                        return
+                    predecessor, reserved = pair
+                    handoff = self._resume_input_handoff
+                    if handoff is None:
+                        raise RecoveryStoreContractError(
+                            code=(
+                                "global_discovery_recovery_resume_input_"
+                                "handoff_required"
+                            )
+                        )
+                    handoff(predecessor, reserved)
+                    self._finalize_explicit_resume_dispatch(
+                        status=reserved,
+                        available_at=reserved.resume_requested_at
+                        or reserved.updated_at,
+                    )
+                    return
+                except BaseException as exc:
+                    if self._resume_materialization_error_is_permanent(exc):
+                        try:
+                            self._terminalize_resume_materialization_conflict(
+                                status=reserved_for_failure,
+                                error=exc,
+                            )
+                            return
+                        except RecoveryInProgress:
+                            pass
+                    logger.warning(
+                        "global recovery resume reservation retry "
+                        "run_id=%s epoch=%d error_type=%s",
+                        key[0],
+                        key[1],
+                        type(exc).__name__,
+                        extra={
+                            "run_id": key[0],
+                            "epoch": key[1],
+                            "error_type": type(exc).__name__,
+                            "retryable": True,
+                        },
+                    )
+                    if self._reconciliation_stop.wait(delay_seconds):
+                        return
+                    delay_seconds = min(5.0, delay_seconds * 2.0)
+        finally:
+            with self._revocation_lock:
+                self._resume_reconciliation_threads.pop(key, None)
 
     def _schedule_prepared_cancellation(
         self,
@@ -1798,6 +2984,19 @@ class SQLAlchemyRecoveryRunStore:
                 )
             if manifest_ref is None:
                 raise RecoveryPreparedRevokerUnavailable()
+            expected_intent = _PreparedRevocationObservation(
+                run_id=current.run_id,
+                attempt_id=current.attempt_id,
+                epoch=current.epoch,
+                manifest_ref=manifest_ref,
+                progress_seq=current.progress_seq,
+                cancel_requested_at=current.cancel_requested_at,
+                cancel_requested_by_actor_id=(
+                    current.cancel_requested_by_actor_id
+                ),
+                audit_reason=current.audit_reason,
+                revoked=False,
+            )
             revoker = self._require_prepared_revoker()
             if not revoker.is_prepared_revoked(
                 run_id=current.run_id,
@@ -1816,12 +3015,13 @@ class SQLAlchemyRecoveryRunStore:
                 latest = self._require_latest(connection, current.run_id)
                 if latest.epoch != current.epoch or latest.state.is_terminal:
                     return
-                if (
-                    latest.phase is not RecoveryRunPhase.PREPARED
-                    or latest.cancel_requested_at is None
-                    or latest.cancel_requested_by_actor_id is None
-                ):
-                    return
+                if not expected_intent.matches(latest):
+                    raise RecoveryStoreSchemaError(
+                        code=(
+                            "global_discovery_recovery_revocation_intent_"
+                            "conflict"
+                        )
+                    )
                 self._cancel_prepared_in_transaction(
                     connection,
                     current=latest,
@@ -2033,6 +3233,56 @@ class SQLAlchemyRecoveryRunStore:
         return created
 
     @staticmethod
+    def _insert_resume_materialization_dispatch(
+        connection: Connection,
+        *,
+        predecessor: RecoveryRunStatus,
+        status: RecoveryRunStatus,
+        available_at: datetime,
+    ) -> Mapping[str, Any]:
+        existing = SQLAlchemyRecoveryRunStore._attempt_dispatch_row(
+            connection,
+            run_id=status.run_id,
+            attempt_id=status.attempt_id,
+            epoch=status.epoch,
+            stage=RecoveryDispatchStage.RECOVERY,
+        )
+        if existing is not None:
+            return existing
+        dispatch_id = f"gdrd_{uuid.uuid4().hex}"
+        connection.execute(
+            insert(_dispatches).values(
+                dispatch_id=dispatch_id,
+                run_id=status.run_id,
+                attempt_id=status.attempt_id,
+                epoch=status.epoch,
+                stage=RecoveryDispatchStage.RECOVERY.value,
+                state=RecoveryDispatchState.MATERIALIZING.value,
+                claim_token=None,
+                worker_id=None,
+                claimed_at=None,
+                claim_expires_at=None,
+                attempt_count=0,
+                available_at=available_at,
+                completed_at=None,
+                result_payload=None,
+                transition_event_id=None,
+                transition_observed_at=available_at,
+                transition_payload={
+                    "reservation": "resume_input_handoff",
+                    "predecessor_epoch": predecessor.epoch,
+                    "predecessor_attempt_id": predecessor.attempt_id,
+                },
+            )
+        )
+        created = SQLAlchemyRecoveryRunStore._dispatch_row(
+            connection,
+            dispatch_id=dispatch_id,
+        )
+        assert created is not None
+        return created
+
+    @staticmethod
     def _preflight_replayable(
         status: RecoveryRunStatus,
         *,
@@ -2052,6 +3302,234 @@ class SQLAlchemyRecoveryRunStore:
             and status.expires_at is not None
             and observed_at < status.expires_at
         )
+
+    @staticmethod
+    def _prepared_revocation_intent_payload(
+        status: RecoveryRunStatus,
+    ) -> dict[str, object]:
+        if (
+            status.cancel_requested_at is None
+            or status.cancel_requested_by_actor_id is None
+        ):
+            raise RecoveryStoreSchemaError(
+                code="global_discovery_recovery_revocation_intent_missing"
+            )
+        return {
+            "run_id": status.run_id,
+            "attempt_id": status.attempt_id,
+            "epoch": status.epoch,
+            "manifest_ref": status.binding.manifest_ref,
+            "progress_seq": status.progress_seq,
+            "cancel_requested_at": status.cancel_requested_at.isoformat(),
+            "cancel_requested_by_actor_id": (
+                status.cancel_requested_by_actor_id
+            ),
+            "reason": status.audit_reason,
+        }
+
+    def _observe_prepared_revocation(
+        self,
+        *,
+        observed_at: datetime,
+        requester_actor_id: str,
+    ) -> _PreparedRevocationObservation | None:
+        """Read or create revocation evidence without holding a DB writer."""
+
+        with self._engine.connect() as connection:
+            slot = self._slot_row(connection)
+            incumbent = (
+                None
+                if slot is None
+                else self._latest(connection, str(slot["run_id"]))
+            )
+            dispatch = (
+                None
+                if incumbent is None
+                else self._attempt_dispatch_row(
+                    connection,
+                    run_id=incumbent.run_id,
+                    attempt_id=incumbent.attempt_id,
+                    epoch=incumbent.epoch,
+                    stage=RecoveryDispatchStage.PREPARATION,
+                )
+            )
+        if (
+            incumbent is None
+            or incumbent.state is not RecoveryRunState.PENDING
+            or incumbent.phase is not RecoveryRunPhase.PREPARED
+            or incumbent.binding.manifest_ref is None
+        ):
+            return None
+
+        manifest_ref = incumbent.binding.manifest_ref
+        if (
+            incumbent.cancel_requested_at is not None
+            and incumbent.expires_at is not None
+            and observed_at >= incumbent.expires_at
+        ):
+            transition_payload = (
+                None if dispatch is None else dispatch["transition_payload"]
+            )
+            marker = (
+                None
+                if not isinstance(transition_payload, Mapping)
+                else transition_payload.get("expiry_revocation_intent")
+            )
+            if marker != self._prepared_revocation_intent_payload(incumbent):
+                raise RecoveryStoreSchemaError(
+                    code=(
+                        "global_discovery_recovery_revocation_intent_conflict"
+                    )
+                )
+        revoker = self._require_prepared_revoker()
+        revoked = revoker.is_prepared_revoked(
+            run_id=incumbent.run_id,
+            epoch=incumbent.epoch,
+            manifest_ref=manifest_ref,
+        )
+        if (
+            not revoked
+            and incumbent.expires_at is not None
+            and observed_at >= incumbent.expires_at
+        ):
+            has_cancel_intent = (
+                incumbent.cancel_requested_at is not None
+                and incumbent.cancel_requested_by_actor_id is not None
+            )
+            revoker.revoke_prepared(
+                run_id=incumbent.run_id,
+                epoch=incumbent.epoch,
+                manifest_ref=manifest_ref,
+                revoked_at=(
+                    incumbent.cancel_requested_at
+                    if has_cancel_intent
+                    else observed_at
+                ),
+                requested_by_actor_id=(
+                    incumbent.cancel_requested_by_actor_id
+                    if has_cancel_intent
+                    else requester_actor_id
+                ),
+                reason=(
+                    incumbent.audit_reason
+                    if has_cancel_intent
+                    else "prepared_manifest_expired"
+                ),
+            )
+            revoked = True
+        return _PreparedRevocationObservation(
+            run_id=incumbent.run_id,
+            attempt_id=incumbent.attempt_id,
+            epoch=incumbent.epoch,
+            manifest_ref=manifest_ref,
+            progress_seq=incumbent.progress_seq,
+            cancel_requested_at=incumbent.cancel_requested_at,
+            cancel_requested_by_actor_id=(
+                incumbent.cancel_requested_by_actor_id
+            ),
+            audit_reason=incumbent.audit_reason,
+            revoked=bool(revoked),
+        )
+
+    def _reserve_expired_prepared_cancellation(
+        self,
+        *,
+        observed_at: datetime,
+        requester_actor_id: str,
+    ) -> None:
+        """Fence confirmation before any irreversible manifest revocation."""
+
+        try:
+            with self._engine.begin() as connection:
+                self._begin_slot_admission_window(
+                    connection,
+                    run_id="_incumbent",
+                    operation="expired_prepared_reservation",
+                )
+                slot = self._slot_row(connection)
+                incumbent = (
+                    None
+                    if slot is None
+                    else self._latest(connection, str(slot["run_id"]))
+                )
+                if (
+                    incumbent is None
+                    or incumbent.state is not RecoveryRunState.PENDING
+                    or incumbent.phase is not RecoveryRunPhase.PREPARED
+                    or incumbent.binding.manifest_ref is None
+                    or incumbent.expires_at is None
+                    or observed_at < incumbent.expires_at
+                ):
+                    return
+                intent = (
+                    incumbent
+                    if incumbent.cancel_requested_at is not None
+                    else incumbent.request_cancel(
+                        requested_at=observed_at,
+                        requested_by_actor_id=requester_actor_id,
+                        reason="prepared_manifest_expired",
+                    )
+                )
+                self._lock_slot(
+                    connection,
+                    status=incumbent,
+                    at=observed_at,
+                )
+                if intent is not incumbent:
+                    if not self._write_cas(
+                        connection,
+                        current=incumbent,
+                        updated=intent,
+                    ):
+                        raise self._progress_conflict(connection, incumbent)
+                dispatch = self._attempt_dispatch_row(
+                    connection,
+                    run_id=intent.run_id,
+                    attempt_id=intent.attempt_id,
+                    epoch=intent.epoch,
+                    stage=RecoveryDispatchStage.PREPARATION,
+                )
+                if dispatch is None:
+                    raise RecoveryStoreSchemaError(
+                        code=(
+                            "global_discovery_recovery_revocation_intent_"
+                            "dispatch_missing"
+                        )
+                    )
+                payload = (
+                    dict(dispatch["transition_payload"])
+                    if isinstance(dispatch["transition_payload"], Mapping)
+                    else {}
+                )
+                desired_marker = self._prepared_revocation_intent_payload(intent)
+                existing_marker = payload.get("expiry_revocation_intent")
+                if existing_marker is not None and existing_marker != desired_marker:
+                    raise RecoveryStoreSchemaError(
+                        code=(
+                            "global_discovery_recovery_revocation_intent_"
+                            "conflict"
+                        )
+                    )
+                payload["expiry_revocation_intent"] = desired_marker
+                marked = connection.execute(
+                    update(_dispatches)
+                    .where(
+                        _dispatches.c.dispatch_id
+                        == str(dispatch["dispatch_id"])
+                    )
+                    .values(
+                        transition_observed_at=observed_at,
+                        transition_payload=payload,
+                    )
+                )
+                if marked.rowcount != 1:
+                    raise RecoveryInProgress()
+        except _RecoveryAdmissionDeferred:
+            raise RecoveryInProgress() from None
+        except OperationalError as exc:
+            if _is_sqlite_lock_contention(exc):
+                raise RecoveryInProgress() from None
+            raise
 
     @staticmethod
     def _audit_preflight_requester(
@@ -2244,15 +3722,6 @@ class SQLAlchemyRecoveryRunStore:
         revocation_reason = (
             status.audit_reason if has_cancel_intent else "prepared_manifest_expired"
         )
-        revoker = self._require_prepared_revoker()
-        revoker.revoke_prepared(
-            run_id=status.run_id,
-            epoch=status.epoch,
-            manifest_ref=status.binding.manifest_ref,
-            revoked_at=revocation_at,
-            requested_by_actor_id=revocation_actor,
-            reason=revocation_reason,
-        )
         expired = status.cancel_prepared(
             requested_at=revocation_at,
             requested_by_actor_id=revocation_actor,
@@ -2351,9 +3820,21 @@ class SQLAlchemyRecoveryRunStore:
                 self._wall_clock(),
                 field="store wall clock",
             )
+            self._reserve_expired_prepared_cancellation(
+                observed_at=observed_at,
+                requester_actor_id=command.binding.actor_id,
+            )
+            revocation = self._observe_prepared_revocation(
+                observed_at=observed_at,
+                requester_actor_id=command.binding.actor_id,
+            )
             try:
                 with self._engine.begin() as connection:
-                    self._bound_admission_lock_wait(connection)
+                    self._begin_slot_admission_window(
+                        connection,
+                        run_id=command.binding.run_id,
+                        operation="preparation",
+                    )
                     slot = self._slot_row(connection)
                     if slot is not None:
                         incumbent = self._latest(connection, str(slot["run_id"]))
@@ -2368,14 +3849,22 @@ class SQLAlchemyRecoveryRunStore:
                                 status=incumbent,
                                 at=observed_at,
                             )
+                            if incumbent.phase is RecoveryRunPhase.PREPARED and (
+                                revocation is None
+                                or not revocation.matches(incumbent)
+                            ):
+                                if revocation is not None and revocation.revoked:
+                                    raise RecoveryStoreSchemaError(
+                                        code=(
+                                            "global_discovery_recovery_"
+                                            "revocation_intent_conflict"
+                                        )
+                                    )
+                                raise RecoveryInProgress()
                             if (
                                 incumbent.phase is RecoveryRunPhase.PREPARED
-                                and incumbent.binding.manifest_ref is not None
-                                and self._require_prepared_revoker().is_prepared_revoked(
-                                    run_id=incumbent.run_id,
-                                    epoch=incumbent.epoch,
-                                    manifest_ref=incumbent.binding.manifest_ref,
-                                )
+                                and revocation is not None
+                                and revocation.revoked
                             ):
                                 self._release_revoked_prepared_incumbent(
                                     connection,
@@ -2393,6 +3882,19 @@ class SQLAlchemyRecoveryRunStore:
                                 )
                                 return incumbent, False
                         else:
+                            if (
+                                revocation is None
+                                or not revocation.matches(incumbent)
+                                or not revocation.revoked
+                            ):
+                                if revocation is not None and revocation.revoked:
+                                    raise RecoveryStoreSchemaError(
+                                        code=(
+                                            "global_discovery_recovery_"
+                                            "revocation_intent_conflict"
+                                        )
+                                    )
+                                raise RecoveryInProgress()
                             self._revoke_expired_prepared_incumbent(
                                 connection,
                                 status=incumbent,
@@ -2421,6 +3923,14 @@ class SQLAlchemyRecoveryRunStore:
                     desired = RecoveryRunStatus.initial_preparation(
                         replace(command, counts=authoritative_counts)
                     )
+                    self._create_or_transfer_recovery_slot(
+                        connection,
+                        current=None,
+                        admitted=desired,
+                        acquired_at=command.admitted_at,
+                        updated_at=observed_at,
+                        operation="preparation",
+                    )
                     connection.execute(
                         insert(_attempts).values(**_status_values(desired))
                     )
@@ -2428,18 +3938,6 @@ class SQLAlchemyRecoveryRunStore:
                         connection,
                         event=RecoveryTransitionEvent.from_status(desired),
                         observed_at=desired.updated_at,
-                    )
-                    connection.execute(
-                        insert(_slots).values(
-                            slot_id=GLOBAL_RECOVERY_SLOT_ID,
-                            run_id=desired.run_id,
-                            attempt_id=desired.attempt_id,
-                            epoch=desired.epoch,
-                            actor_id=desired.actor_id,
-                            version=1,
-                            acquired_at=command.admitted_at,
-                            updated_at=observed_at,
-                        )
                     )
                     self._insert_dispatch(
                         connection,
@@ -2455,6 +3953,12 @@ class SQLAlchemyRecoveryRunStore:
                         replay=False,
                     )
                     return desired, True
+            except _RecoveryAdmissionDeferred:
+                raise RecoveryInProgress() from None
+            except OperationalError as exc:
+                if _is_sqlite_lock_contention(exc):
+                    raise RecoveryInProgress() from None
+                raise
             except (IntegrityError, RecoveryInProgress):
                 if contention_attempt < 7:
                     continue
@@ -2587,6 +4091,8 @@ class SQLAlchemyRecoveryRunStore:
         if expires <= claimed:
             raise ValueError("claim_expires_at must follow claimed_at")
 
+        terminal_results: list[RecoveryRunStatus] = []
+        claimed_result_receipt: RecoveryDispatchClaim | None = None
         with self._engine.begin() as connection:
             candidates = (
                 connection.execute(
@@ -2641,18 +4147,20 @@ class SQLAlchemyRecoveryRunStore:
                             if outcome is RecoveryTerminalOutcome.CANCELLED
                             else _PREPARATION_BUDGET_EXHAUSTED_REASON
                         )
-                        self._terminalize_preparation_in_transaction(
-                            connection,
-                            current=status,
-                            dispatch=candidate,
-                            completed_at=max(
-                                status.updated_at,
-                                status.active_deadline_at,
-                            ),
-                            active_elapsed_ms=status.attempt_budget_ms,
-                            counts=status.counts,
-                            outcome=outcome,
-                            reason_code=reason_code,
+                        terminal_results.append(
+                            self._terminalize_preparation_in_transaction(
+                                connection,
+                                current=status,
+                                dispatch=candidate,
+                                completed_at=max(
+                                    status.updated_at,
+                                    status.active_deadline_at,
+                                ),
+                                active_elapsed_ms=status.attempt_budget_ms,
+                                counts=status.counts,
+                                outcome=outcome,
+                                reason_code=reason_code,
+                            )
                         )
                     else:
                         # Do not synthesize SQL timeout before reading the
@@ -2673,26 +4181,28 @@ class SQLAlchemyRecoveryRunStore:
                         if status.cancel_requested_at is not None
                         else RecoveryTerminalOutcome.FAILED
                     )
-                    self._terminalize_preparation_in_transaction(
-                        connection,
-                        current=status,
-                        dispatch=candidate,
-                        completed_at=max(status.updated_at, claimed),
-                        active_elapsed_ms=status.active_elapsed_ms,
-                        counts=status.counts,
-                        outcome=exhausted_outcome,
-                        reason_code=(
-                            _PREPARATION_CANCELLED_REASON
-                            if exhausted_outcome is RecoveryTerminalOutcome.CANCELLED
-                            else _PREPARATION_RETRY_EXHAUSTED_REASON
-                        ),
+                    terminal_results.append(
+                        self._terminalize_preparation_in_transaction(
+                            connection,
+                            current=status,
+                            dispatch=candidate,
+                            completed_at=max(status.updated_at, claimed),
+                            active_elapsed_ms=status.active_elapsed_ms,
+                            counts=status.counts,
+                            outcome=exhausted_outcome,
+                            reason_code=(
+                                _PREPARATION_CANCELLED_REASON
+                                if exhausted_outcome
+                                is RecoveryTerminalOutcome.CANCELLED
+                                else _PREPARATION_RETRY_EXHAUSTED_REASON
+                            ),
+                        )
                     )
                     continue
                 reclaim_settled = None
                 if (
                     normalized_stage is RecoveryDispatchStage.RECOVERY
-                    and str(candidate["state"])
-                    == RecoveryDispatchState.CLAIMED.value
+                    and str(candidate["state"]) == RecoveryDispatchState.CLAIMED.value
                     and status.state is RecoveryRunState.RUNNING
                 ):
                     # A5R2: the crashed owner's lease window is charged
@@ -2789,11 +4299,14 @@ class SQLAlchemyRecoveryRunStore:
                     dispatch_id=str(candidate["dispatch_id"]),
                 )
                 assert updated_row is not None
-                return _dispatch_claim(
+                claimed_result_receipt = _dispatch_claim(
                     updated_row,
                     reconciliation_only=reconciliation_only,
                 )
-        return None
+                break
+        for terminal_result in terminal_results:
+            self._briefly_observe_preparation_settlement(terminal_result)
+        return claimed_result_receipt
 
     @staticmethod
     def _require_live_claim(
@@ -2885,7 +4398,7 @@ class SQLAlchemyRecoveryRunStore:
             )
         return normalized
 
-    def _resolve_dispatch_manifest_ref(
+    def _local_dispatch_manifest_ref(
         self,
         dispatch: Mapping[str, Any],
         manifest_ref: str | None,
@@ -2904,7 +4417,17 @@ class SQLAlchemyRecoveryRunStore:
             raise RecoveryStoreContractError(
                 code="global_discovery_recovery_dispatch_manifest_conflict"
             )
-        resolved = explicit or persisted
+        return explicit or persisted
+
+    def _resolve_dispatch_manifest_ref(
+        self,
+        dispatch: Mapping[str, Any],
+        manifest_ref: str | None,
+    ) -> str | None:
+        resolved = self._local_dispatch_manifest_ref(
+            dispatch,
+            manifest_ref,
+        )
         if resolved is not None:
             return resolved
         # A process can stop after Core atomically binds the manifest to the
@@ -3023,13 +4546,13 @@ class SQLAlchemyRecoveryRunStore:
             counts=counts,
         )
         self._lock_slot(connection, status=current, at=observed)
-        # Win dispatch ownership against heartbeat renewal before any external
-        # revocation side effect. The no-op UPDATE locks/revalidates the exact
-        # state, token, and observed expiry in one database operation.
+        # Win dispatch ownership against heartbeat renewal and persist a
+        # durable settlement intent. Physical manifest resolution/revocation
+        # is performed by the owned reconciler only after this T1 commits.
         ownership_lock = connection.execute(
             update(_dispatches)
             .where(and_(*self._dispatch_ownership_predicates(dispatch)))
-            .values(state=str(dispatch["state"]))
+            .values(state=RecoveryDispatchState.SETTLING.value)
         )
         if ownership_lock.rowcount != 1:
             raise RecoveryDispatchClaimConflict(
@@ -3045,20 +4568,11 @@ class SQLAlchemyRecoveryRunStore:
                 run_id=current.run_id,
                 epoch=current.epoch,
             )
-        effective_manifest_ref = self._resolve_dispatch_manifest_ref(
+        effective_manifest_ref = self._local_dispatch_manifest_ref(
             fresh_dispatch,
             manifest_ref,
         )
-        if effective_manifest_ref is not None:
-            self._require_prepared_revoker().revoke_prepared(
-                run_id=current.run_id,
-                epoch=current.epoch,
-                manifest_ref=effective_manifest_ref,
-                revoked_at=observed,
-                requested_by_actor_id=current.actor_id,
-                reason=reason_code,
-            )
-        terminal = progressed.complete(
+        target_terminal = progressed.complete(
             result=RecoveryWorkerResult(
                 outcome=outcome,
                 reason_code=reason_code,
@@ -3068,18 +4582,54 @@ class SQLAlchemyRecoveryRunStore:
             completed_at=observed,
             active_elapsed_ms=progressed.active_elapsed_ms,
         )
+        settling = (
+            progressed
+            if progressed.progress_seq > cas_base.progress_seq
+            else replace(
+                progressed,
+                progress_seq=progressed.progress_seq + 1,
+                heartbeat_at=max(progressed.heartbeat_at, observed),
+                updated_at=max(progressed.updated_at, observed),
+            )
+        )
+        transition_payload = (
+            dict(fresh_dispatch["transition_payload"])
+            if isinstance(fresh_dispatch["transition_payload"], Mapping)
+            else {}
+        )
+        transition_payload["preparation_terminalization"] = {
+            "run_id": settling.run_id,
+            "attempt_id": settling.attempt_id,
+            "epoch": settling.epoch,
+            "progress_seq": settling.progress_seq,
+            "completed_at": observed.isoformat(),
+            "outcome": outcome.value,
+            "reason_code": reason_code,
+            "manifest_ref": effective_manifest_ref,
+            "counts": target_terminal.counts.to_dict(),
+        }
         acknowledged = connection.execute(
             update(_dispatches)
-            .where(and_(*self._dispatch_ownership_predicates(fresh_dispatch)))
+            .where(
+                and_(
+                    _dispatches.c.dispatch_id
+                    == str(fresh_dispatch["dispatch_id"]),
+                    _dispatches.c.state
+                    == RecoveryDispatchState.SETTLING.value,
+                    _dispatches.c.claim_token
+                    == fresh_dispatch["claim_token"],
+                )
+            )
             .values(
-                state=RecoveryDispatchState.DONE.value,
-                completed_at=observed,
+                transition_observed_at=observed,
+                transition_payload=transition_payload,
                 result_payload={
                     "outcome": outcome.value,
                     "reason_code": reason_code,
                     "retryable": False,
-                    "manifest_revoked": effective_manifest_ref is not None,
-                    "counts": terminal.counts.to_dict(),
+                    "manifest_revoked": False,
+                    "manifest_revocation_pending": True,
+                    "counts": target_terminal.counts.to_dict(),
                 },
             )
         )
@@ -3091,22 +4641,17 @@ class SQLAlchemyRecoveryRunStore:
         if not self._write_cas(
             connection,
             current=cas_base,
-            updated=terminal,
+            updated=settling,
         ):
             raise self._progress_conflict(connection, cas_base)
-        released = connection.execute(
-            delete(_slots).where(
-                and_(
-                    _slots.c.slot_id == GLOBAL_RECOVERY_SLOT_ID,
-                    _slots.c.run_id == current.run_id,
-                    _slots.c.attempt_id == current.attempt_id,
-                    _slots.c.epoch == current.epoch,
-                )
-            )
+        # Scheduling before commit is safe: the reconciler treats the old
+        # visible state as transient and retries. A crash after commit is
+        # adopted by `_schedule_pending_preparation_settlements` on startup.
+        self._schedule_preparation_settlement(
+            run_id=settling.run_id,
+            epoch=settling.epoch,
         )
-        if released.rowcount != 1:
-            raise RecoveryInProgress()
-        return terminal
+        return settling
 
     def heartbeat_preparation(
         self,
@@ -3130,6 +4675,7 @@ class SQLAlchemyRecoveryRunStore:
             raise ValueError("requested_expires_at must follow observed_at")
         if not isinstance(counts, RecoveryProgressCounts):
             raise TypeError("counts must be RecoveryProgressCounts")
+        terminal_result: RecoveryRunStatus | None = None
         with self._engine.begin() as connection:
             dispatch = self._dispatch_row(connection, dispatch_id=dispatch_id)
             if dispatch is None:
@@ -3149,12 +4695,12 @@ class SQLAlchemyRecoveryRunStore:
                 observed_at=live_observed,
                 owned=owned,
             )
-            effective_manifest_ref = self._resolve_dispatch_manifest_ref(
+            effective_manifest_ref = self._local_dispatch_manifest_ref(
                 owned,
                 manifest_ref,
             )
             if current.cancel_requested_at is not None:
-                return self._terminalize_preparation_in_transaction(
+                terminal_result = self._terminalize_preparation_in_transaction(
                     connection,
                     current=current,
                     dispatch=owned,
@@ -3165,11 +4711,11 @@ class SQLAlchemyRecoveryRunStore:
                     reason_code=_PREPARATION_CANCELLED_REASON,
                     manifest_ref=effective_manifest_ref,
                 )
-            if (
+            elif (
                 live_observed >= current.active_deadline_at
                 or int(active_elapsed_ms) >= current.attempt_budget_ms
             ):
-                return self._terminalize_preparation_in_transaction(
+                terminal_result = self._terminalize_preparation_in_transaction(
                     connection,
                     current=current,
                     dispatch=owned,
@@ -3183,66 +4729,73 @@ class SQLAlchemyRecoveryRunStore:
                     reason_code=_PREPARATION_BUDGET_EXHAUSTED_REASON,
                     manifest_ref=effective_manifest_ref,
                 )
-            current_expiry = (
-                None
-                if owned["claim_expires_at"] is None
-                else _aware_datetime(owned["claim_expires_at"])
-            )
-            if current_expiry is None or current_expiry <= observed:
-                raise RecoveryDispatchClaimConflict(
-                    run_id=current.run_id,
-                    epoch=current.epoch,
+            else:
+                current_expiry = (
+                    None
+                    if owned["claim_expires_at"] is None
+                    else _aware_datetime(owned["claim_expires_at"])
                 )
-            updated = self._advance_preparation_progress(
-                current,
-                observed_at=observed,
-                active_elapsed_ms=active_elapsed_ms,
-                counts=counts,
-            )
-            effective_expiry = min(
-                current.active_deadline_at,
-                max(current_expiry, requested),
-            )
-            renewal_values: dict[str, object] = {
-                "claim_expires_at": effective_expiry,
-            }
-            if manifest_ref is not None:
-                payload = (
-                    dict(owned["result_payload"])
-                    if isinstance(owned["result_payload"], Mapping)
-                    else {}
-                )
-                payload.update(
-                    {
-                        "outcome": "manifest_published",
-                        "published_manifest_ref": effective_manifest_ref,
-                    }
-                )
-                renewal_values["result_payload"] = payload
-            renewed = connection.execute(
-                update(_dispatches)
-                .where(
-                    and_(
-                        _dispatches.c.dispatch_id == str(dispatch_id),
-                        _dispatches.c.state == RecoveryDispatchState.CLAIMED.value,
-                        _dispatches.c.claim_token == str(claim_token),
-                        _dispatches.c.claim_expires_at == owned["claim_expires_at"],
+                if current_expiry is None or current_expiry <= observed:
+                    raise RecoveryDispatchClaimConflict(
+                        run_id=current.run_id,
+                        epoch=current.epoch,
                     )
+                updated = self._advance_preparation_progress(
+                    current,
+                    observed_at=observed,
+                    active_elapsed_ms=active_elapsed_ms,
+                    counts=counts,
                 )
-                .values(**renewal_values)
-            )
-            if renewed.rowcount != 1:
-                raise RecoveryDispatchClaimConflict(
-                    run_id=current.run_id,
-                    epoch=current.epoch,
+                effective_expiry = min(
+                    current.active_deadline_at,
+                    max(current_expiry, requested),
                 )
-            if updated is not current and not self._write_cas(
-                connection,
-                current=current,
-                updated=updated,
-            ):
-                raise self._progress_conflict(connection, current)
-            return updated
+                renewal_values: dict[str, object] = {
+                    "claim_expires_at": effective_expiry,
+                }
+                if manifest_ref is not None:
+                    payload = (
+                        dict(owned["result_payload"])
+                        if isinstance(owned["result_payload"], Mapping)
+                        else {}
+                    )
+                    payload.update(
+                        {
+                            "outcome": "manifest_published",
+                            "published_manifest_ref": (
+                                effective_manifest_ref
+                            ),
+                        }
+                    )
+                    renewal_values["result_payload"] = payload
+                renewed = connection.execute(
+                    update(_dispatches)
+                    .where(
+                        and_(
+                            _dispatches.c.dispatch_id == str(dispatch_id),
+                            _dispatches.c.state
+                            == RecoveryDispatchState.CLAIMED.value,
+                            _dispatches.c.claim_token == str(claim_token),
+                            _dispatches.c.claim_expires_at
+                            == owned["claim_expires_at"],
+                        )
+                    )
+                    .values(**renewal_values)
+                )
+                if renewed.rowcount != 1:
+                    raise RecoveryDispatchClaimConflict(
+                        run_id=current.run_id,
+                        epoch=current.epoch,
+                    )
+                if updated is not current and not self._write_cas(
+                    connection,
+                    current=current,
+                    updated=updated,
+                ):
+                    raise self._progress_conflict(connection, current)
+                return updated
+        assert terminal_result is not None
+        return self._briefly_observe_preparation_settlement(terminal_result)
 
     def record_preparation_failure(
         self,
@@ -3275,6 +4828,41 @@ class SQLAlchemyRecoveryRunStore:
         )
         if len(normalized_reason) > 128:
             raise ValueError("reason_code must be within 1..128 chars")
+        # Resolving a crash-window manifest may touch the physical input
+        # backend. Probe from a closed read snapshot, then revalidate the exact
+        # claim again in the writer transaction below.
+        with self._engine.connect() as connection:
+            snapshot_dispatch = self._dispatch_row(
+                connection,
+                dispatch_id=dispatch_id,
+            )
+            if snapshot_dispatch is None:
+                raise RecoveryDispatchClaimConflict(
+                    run_id="unknown",
+                    epoch=0,
+                )
+            snapshot_status = self._require_latest(
+                connection,
+                str(snapshot_dispatch["run_id"]),
+            )
+            snapshot_owned = self._require_owned_preparation_claim(
+                connection,
+                status=snapshot_status,
+                dispatch_id=dispatch_id,
+                claim_token=claim_token,
+            )
+            self._require_settleable_preparation_claim(
+                connection,
+                status=snapshot_status,
+                claim_token=claim_token,
+                observed_at=max(snapshot_status.updated_at, failed),
+                owned=snapshot_owned,
+            )
+        resolved_manifest_ref = self._resolve_dispatch_manifest_ref(
+            snapshot_owned,
+            manifest_ref,
+        )
+        terminal_result: RecoveryRunStatus | None = None
         with self._engine.begin() as connection:
             dispatch = self._dispatch_row(connection, dispatch_id=dispatch_id)
             if dispatch is None:
@@ -3294,12 +4882,12 @@ class SQLAlchemyRecoveryRunStore:
                 observed_at=observed,
                 owned=owned,
             )
-            effective_manifest_ref = self._resolve_dispatch_manifest_ref(
+            effective_manifest_ref = self._local_dispatch_manifest_ref(
                 owned,
-                manifest_ref,
+                resolved_manifest_ref,
             )
             if current.cancel_requested_at is not None:
-                return self._terminalize_preparation_in_transaction(
+                terminal_result = self._terminalize_preparation_in_transaction(
                     connection,
                     current=current,
                     dispatch=owned,
@@ -3310,8 +4898,8 @@ class SQLAlchemyRecoveryRunStore:
                     reason_code=_PREPARATION_CANCELLED_REASON,
                     manifest_ref=effective_manifest_ref,
                 )
-            if observed >= current.active_deadline_at:
-                return self._terminalize_preparation_in_transaction(
+            elif observed >= current.active_deadline_at:
+                terminal_result = self._terminalize_preparation_in_transaction(
                     connection,
                     current=current,
                     dispatch=owned,
@@ -3325,66 +4913,76 @@ class SQLAlchemyRecoveryRunStore:
                     reason_code=_PREPARATION_BUDGET_EXHAUSTED_REASON,
                     manifest_ref=effective_manifest_ref,
                 )
-            may_retry = bool(
-                retryable
-                and effective_manifest_ref is None
-                and int(owned["attempt_count"]) < int(max_attempts)
-                and available < current.active_deadline_at
-            )
-            if not may_retry:
-                terminal_reason = (
-                    _PREPARATION_RETRY_EXHAUSTED_REASON
-                    if retryable
-                    else normalized_reason
+            else:
+                may_retry = bool(
+                    retryable
+                    and effective_manifest_ref is None
+                    and int(owned["attempt_count"]) < int(max_attempts)
+                    and available < current.active_deadline_at
                 )
-                return self._terminalize_preparation_in_transaction(
-                    connection,
-                    current=current,
-                    dispatch=owned,
-                    completed_at=observed,
-                    active_elapsed_ms=active_elapsed_ms,
-                    counts=counts,
-                    outcome=RecoveryTerminalOutcome.FAILED,
-                    reason_code=terminal_reason,
-                    manifest_ref=effective_manifest_ref,
-                )
-            progressed = self._advance_preparation_progress(
-                current,
-                observed_at=observed,
-                active_elapsed_ms=active_elapsed_ms,
-                counts=counts,
-            )
-            requeued = connection.execute(
-                update(_dispatches)
-                .where(and_(*self._dispatch_ownership_predicates(owned)))
-                .values(
-                    state=RecoveryDispatchState.READY.value,
-                    claim_token=None,
-                    worker_id=None,
-                    claimed_at=None,
-                    claim_expires_at=None,
-                    available_at=available,
-                    completed_at=None,
-                    result_payload={
-                        "outcome": "retry_scheduled",
-                        "reason_code": normalized_reason,
-                        "retryable": True,
-                        "counts": progressed.counts.to_dict(),
-                    },
-                )
-            )
-            if requeued.rowcount != 1:
-                raise RecoveryDispatchClaimConflict(
-                    run_id=current.run_id,
-                    epoch=current.epoch,
-                )
-            if progressed is not current and not self._write_cas(
-                connection,
-                current=current,
-                updated=progressed,
-            ):
-                raise self._progress_conflict(connection, current)
-            return progressed
+                if not may_retry:
+                    terminal_reason = (
+                        _PREPARATION_RETRY_EXHAUSTED_REASON
+                        if retryable
+                        else normalized_reason
+                    )
+                    terminal_result = (
+                        self._terminalize_preparation_in_transaction(
+                            connection,
+                            current=current,
+                            dispatch=owned,
+                            completed_at=observed,
+                            active_elapsed_ms=active_elapsed_ms,
+                            counts=counts,
+                            outcome=RecoveryTerminalOutcome.FAILED,
+                            reason_code=terminal_reason,
+                            manifest_ref=effective_manifest_ref,
+                        )
+                    )
+                else:
+                    progressed = self._advance_preparation_progress(
+                        current,
+                        observed_at=observed,
+                        active_elapsed_ms=active_elapsed_ms,
+                        counts=counts,
+                    )
+                    requeued = connection.execute(
+                        update(_dispatches)
+                        .where(
+                            and_(
+                                *self._dispatch_ownership_predicates(owned)
+                            )
+                        )
+                        .values(
+                            state=RecoveryDispatchState.READY.value,
+                            claim_token=None,
+                            worker_id=None,
+                            claimed_at=None,
+                            claim_expires_at=None,
+                            available_at=available,
+                            completed_at=None,
+                            result_payload={
+                                "outcome": "retry_scheduled",
+                                "reason_code": normalized_reason,
+                                "retryable": True,
+                                "counts": progressed.counts.to_dict(),
+                            },
+                        )
+                    )
+                    if requeued.rowcount != 1:
+                        raise RecoveryDispatchClaimConflict(
+                            run_id=current.run_id,
+                            epoch=current.epoch,
+                        )
+                    if progressed is not current and not self._write_cas(
+                        connection,
+                        current=current,
+                        updated=progressed,
+                    ):
+                        raise self._progress_conflict(connection, current)
+                    return progressed
+        assert terminal_result is not None
+        return self._briefly_observe_preparation_settlement(terminal_result)
 
     def mark_preparing(
         self,
@@ -3456,6 +5054,7 @@ class SQLAlchemyRecoveryRunStore:
             field="snapshot_fingerprint",
             max_length=255,
         )
+        terminal_result: RecoveryRunStatus | None = None
         with self._engine.begin() as connection:
             current = self._require_latest(connection, run_id)
             self._require_epoch(current, expected_epoch=epoch)
@@ -3490,7 +5089,7 @@ class SQLAlchemyRecoveryRunStore:
                 observed_at=live_observed,
                 owned=dispatch,
             )
-            effective_manifest_ref = self._resolve_dispatch_manifest_ref(
+            effective_manifest_ref = self._local_dispatch_manifest_ref(
                 dispatch,
                 result.manifest_ref,
             )
@@ -3505,7 +5104,7 @@ class SQLAlchemyRecoveryRunStore:
                 ),
             )
             if current.cancel_requested_at is not None:
-                return self._terminalize_preparation_in_transaction(
+                terminal_result = self._terminalize_preparation_in_transaction(
                     connection,
                     current=current,
                     dispatch=dispatch,
@@ -3516,8 +5115,8 @@ class SQLAlchemyRecoveryRunStore:
                     reason_code=_PREPARATION_CANCELLED_REASON,
                     manifest_ref=effective_manifest_ref,
                 )
-            if live_observed >= current.active_deadline_at:
-                return self._terminalize_preparation_in_transaction(
+            elif live_observed >= current.active_deadline_at:
+                terminal_result = self._terminalize_preparation_in_transaction(
                     connection,
                     current=current,
                     dispatch=dispatch,
@@ -3528,56 +5127,63 @@ class SQLAlchemyRecoveryRunStore:
                     reason_code=_PREPARATION_BUDGET_EXHAUSTED_REASON,
                     manifest_ref=effective_manifest_ref,
                 )
-            prepared = current.mark_prepared(
-                prepared=result,
-                expected_progress_seq=current.progress_seq,
-            )
-            acknowledged = connection.execute(
-                update(_dispatches)
-                .where(
-                    and_(
-                        _dispatches.c.dispatch_id == str(dispatch["dispatch_id"]),
-                        _dispatches.c.state == RecoveryDispatchState.CLAIMED.value,
-                        _dispatches.c.claim_token == str(claim_token),
+            else:
+                prepared = current.mark_prepared(
+                    prepared=result,
+                    expected_progress_seq=current.progress_seq,
+                )
+                acknowledged = connection.execute(
+                    update(_dispatches)
+                    .where(
+                        and_(
+                            _dispatches.c.dispatch_id
+                            == str(dispatch["dispatch_id"]),
+                            _dispatches.c.state
+                            == RecoveryDispatchState.CLAIMED.value,
+                            _dispatches.c.claim_token == str(claim_token),
+                        )
+                    )
+                    .values(
+                        state=RecoveryDispatchState.DONE.value,
+                        completed_at=max(observed, result.prepared_at),
+                        result_payload={
+                            "manifest_ref": result.manifest_ref,
+                            "preflight_hash": result.preflight_hash,
+                            "snapshot_fingerprint": (
+                                result.snapshot_fingerprint
+                            ),
+                            "prepared_at": result.prepared_at.isoformat(),
+                            "expires_at": result.expires_at.isoformat(),
+                            "counts": result.counts.to_dict(),
+                        },
                     )
                 )
-                .values(
-                    state=RecoveryDispatchState.DONE.value,
-                    completed_at=max(observed, result.prepared_at),
-                    result_payload={
-                        "manifest_ref": result.manifest_ref,
-                        "preflight_hash": result.preflight_hash,
-                        "snapshot_fingerprint": result.snapshot_fingerprint,
-                        "prepared_at": result.prepared_at.isoformat(),
-                        "expires_at": result.expires_at.isoformat(),
-                        "counts": result.counts.to_dict(),
-                    },
-                )
-            )
-            if acknowledged.rowcount != 1:
-                raise RecoveryDispatchClaimConflict(
-                    run_id=current.run_id,
-                    epoch=current.epoch,
-                )
-            if not self._write_cas(
-                connection,
-                current=current,
-                updated=prepared,
-            ):
-                raise self._progress_conflict(connection, current)
-            connection.execute(
-                update(_slots)
-                .where(
-                    and_(
-                        _slots.c.slot_id == GLOBAL_RECOVERY_SLOT_ID,
-                        _slots.c.run_id == current.run_id,
-                        _slots.c.attempt_id == current.attempt_id,
-                        _slots.c.epoch == current.epoch,
+                if acknowledged.rowcount != 1:
+                    raise RecoveryDispatchClaimConflict(
+                        run_id=current.run_id,
+                        epoch=current.epoch,
                     )
+                if not self._write_cas(
+                    connection,
+                    current=current,
+                    updated=prepared,
+                ):
+                    raise self._progress_conflict(connection, current)
+                connection.execute(
+                    update(_slots)
+                    .where(
+                        and_(
+                            _slots.c.slot_id == GLOBAL_RECOVERY_SLOT_ID,
+                            _slots.c.run_id == current.run_id,
+                            _slots.c.attempt_id == current.attempt_id,
+                            _slots.c.epoch == current.epoch,
+                        )
+                    )
+                    .values(updated_at=observed)
                 )
-                .values(updated_at=observed)
-            )
-            return prepared
+                return prepared
+        assert terminal_result is not None
+        return self._briefly_observe_preparation_settlement(terminal_result)
 
     def mark_prepared(
         self,
@@ -3635,50 +5241,105 @@ class SQLAlchemyRecoveryRunStore:
             max_length=255,
         )
         revoker = self._require_prepared_revoker()
-        observed_at = self._require_dispatch_time(
+        snapshot_at = self._require_dispatch_time(
             self._wall_clock(),
             field="store wall clock",
         )
+        # T1 is a read-only snapshot. The revocation backend may perform
+        # filesystem I/O, so never retain a relational checkout or writer while
+        # probing it. T2 revalidates the exact attempt/progress tuple and the
+        # durable cancellation intent before consuming confirmation.
+        with self._engine.connect() as connection:
+            snapshot = self._require_latest(connection, command.binding.run_id)
+        self._require_epoch(snapshot, expected_epoch=command.expected_epoch)
+        if snapshot.confirmation_state is RecoveryConfirmationState.CONSUMED:
+            with self._engine.begin() as connection:
+                current = self._require_latest(connection, command.binding.run_id)
+                self._require_epoch(
+                    current,
+                    expected_epoch=command.expected_epoch,
+                )
+                if current.binding != command.binding:
+                    raise RecoveryBindingConflict(run_id=current.run_id)
+                self._insert_dispatch(
+                    connection,
+                    status=current,
+                    stage=RecoveryDispatchStage.RECOVERY,
+                    available_at=current.confirmation_consumed_at
+                    or current.updated_at,
+                )
+                return current, False
+        if (
+            snapshot.state is not RecoveryRunState.PENDING
+            or snapshot.phase is not RecoveryRunPhase.PREPARED
+            or snapshot.binding.manifest_ref is None
+        ):
+            raise ValueError("only a prepared recovery can consume confirmation")
+        if snapshot.cancel_requested_at is not None:
+            raise RecoveryResumeRejected(
+                code="recovery_cancel_pending",
+                run_id=snapshot.run_id,
+                epoch=snapshot.epoch,
+            )
+        if snapshot.expires_at is None or snapshot_at >= snapshot.expires_at:
+            raise GlobalDiscoveryRecoveryError(
+                "manifest_stale",
+                "prepared manifest expired before confirmation consumption",
+            )
+        revoked = revoker.is_prepared_revoked(
+            run_id=snapshot.run_id,
+            epoch=snapshot.epoch,
+            manifest_ref=snapshot.binding.manifest_ref,
+        )
+
         with self._engine.begin() as connection:
             current = self._require_latest(connection, command.binding.run_id)
             self._require_epoch(current, expected_epoch=command.expected_epoch)
             if current.confirmation_state is RecoveryConfirmationState.CONSUMED:
-                if current.binding == command.binding:
-                    self._insert_dispatch(
-                        connection,
-                        status=current,
-                        stage=RecoveryDispatchStage.RECOVERY,
-                        available_at=current.confirmation_consumed_at
-                        or current.updated_at,
-                    )
-                    return current, False
-                raise RecoveryBindingConflict(run_id=current.run_id)
+                if current.binding != command.binding:
+                    raise RecoveryBindingConflict(run_id=current.run_id)
+                self._insert_dispatch(
+                    connection,
+                    status=current,
+                    stage=RecoveryDispatchStage.RECOVERY,
+                    available_at=current.confirmation_consumed_at
+                    or current.updated_at,
+                )
+                return current, False
+            if (
+                current.attempt_id != snapshot.attempt_id
+                or current.progress_seq != snapshot.progress_seq
+            ):
+                raise self._progress_conflict(connection, snapshot)
             if (
                 current.state is not RecoveryRunState.PENDING
                 or current.phase is not RecoveryRunPhase.PREPARED
-                or current.binding.manifest_ref is None
+                or current.binding.manifest_ref != snapshot.binding.manifest_ref
             ):
-                raise ValueError("only a prepared recovery can consume confirmation")
+                raise RecoveryDispatchClaimConflict(
+                    run_id=current.run_id,
+                    epoch=current.epoch,
+                )
             if current.cancel_requested_at is not None:
                 raise RecoveryResumeRejected(
                     code="recovery_cancel_pending",
                     run_id=current.run_id,
                     epoch=current.epoch,
                 )
-            self._lock_slot(connection, status=current, at=observed_at)
-            if revoker.is_prepared_revoked(
-                run_id=current.run_id,
-                epoch=current.epoch,
-                manifest_ref=current.binding.manifest_ref,
-            ):
-                raise GlobalDiscoveryRecoveryError(
-                    "prepared_revoked",
-                    "prepared recovery has durable revocation evidence",
-                )
+            observed_at = self._require_dispatch_time(
+                self._wall_clock(),
+                field="store wall clock",
+            )
             if current.expires_at is None or observed_at >= current.expires_at:
                 raise GlobalDiscoveryRecoveryError(
                     "manifest_stale",
                     "prepared manifest expired before confirmation consumption",
+                )
+            self._lock_slot(connection, status=current, at=observed_at)
+            if revoked:
+                raise GlobalDiscoveryRecoveryError(
+                    "prepared_revoked",
+                    "prepared recovery has durable revocation evidence",
                 )
             confirmed = current.mark_confirmed(command)
             if not self._write_cas(
@@ -4826,24 +6487,82 @@ class CommunityRecoveryPreparationPoller:
         counts: RecoveryProgressCounts,
         manifest_ref: str | None = None,
     ) -> RecoveryRunStatus:
-        observed_monotonic = self._monotonic_clock()
-        elapsed_ms = baseline_elapsed_ms + max(
-            0,
-            int((observed_monotonic - started_monotonic) * 1_000),
+        first_observed_monotonic = self._monotonic_clock()
+        retry_deadline = min(
+            float(deadline_at_monotonic),
+            first_observed_monotonic
+            + _PREPARATION_HEARTBEAT_CONTENTION_RETRY_BUDGET_SECONDS,
         )
-        if observed_monotonic >= deadline_at_monotonic:
-            elapsed_ms = max(elapsed_ms, int(attempt_budget_ms))
-        observed_at = self._wall_clock()
-        return self._store.heartbeat_preparation(
-            dispatch_id=claim.dispatch_id,
-            claim_token=claim.claim_token,
-            observed_at=observed_at,
-            requested_expires_at=observed_at
-            + timedelta(milliseconds=RECOVERY_WORKER_LEASE_MS),
-            active_elapsed_ms=elapsed_ms,
-            counts=counts,
-            manifest_ref=manifest_ref,
-        )
+        contention_attempt = 0
+        while True:
+            # Every retry recomputes both clocks and invokes the store again.
+            # ``heartbeat_preparation`` therefore owns a fresh engine.begin()
+            # transaction; a failed SQLite UoW is never reused.
+            observed_monotonic = self._monotonic_clock()
+            elapsed_ms = baseline_elapsed_ms + max(
+                0,
+                int((observed_monotonic - started_monotonic) * 1_000),
+            )
+            if observed_monotonic >= deadline_at_monotonic:
+                elapsed_ms = max(elapsed_ms, int(attempt_budget_ms))
+            observed_at = self._wall_clock()
+            try:
+                return self._store.heartbeat_preparation(
+                    dispatch_id=claim.dispatch_id,
+                    claim_token=claim.claim_token,
+                    observed_at=observed_at,
+                    requested_expires_at=observed_at
+                    + timedelta(milliseconds=RECOVERY_WORKER_LEASE_MS),
+                    active_elapsed_ms=elapsed_ms,
+                    counts=counts,
+                    manifest_ref=manifest_ref,
+                )
+            except OperationalError as exc:
+                if not _is_sqlite_lock_contention(exc):
+                    raise
+                contention_attempt += 1
+                retry_delay = _PREPARATION_HEARTBEAT_CONTENTION_BASE_BACKOFF_SECONDS * (
+                    2 ** (contention_attempt - 1)
+                )
+                remaining_retry_budget = retry_deadline - self._monotonic_clock()
+                can_retry = (
+                    contention_attempt < _PREPARATION_HEARTBEAT_CONTENTION_MAX_ATTEMPTS
+                    and not self._stop.is_set()
+                    and remaining_retry_budget
+                    > (
+                        retry_delay
+                        + _PREPARATION_HEARTBEAT_CONTENTION_ATTEMPT_RESERVE_SECONDS
+                    )
+                )
+                if not can_retry:
+                    logger.warning(
+                        "global recovery preparation heartbeat SQLite "
+                        "contention exhausted attempts=%d",
+                        contention_attempt,
+                        extra={
+                            "run_id": claim.run_id,
+                            "attempt_id": claim.attempt_id,
+                            "epoch": claim.epoch,
+                            "contention_attempts": contention_attempt,
+                        },
+                    )
+                    # Preserve the SQLAlchemy traceback and sqlite3 ``orig``.
+                    # The outer poller leaves the exact durable claim fenced
+                    # until normal lease expiry/reclamation.
+                    raise
+                logger.info(
+                    "global recovery preparation heartbeat SQLite "
+                    "contention retry attempt=%d",
+                    contention_attempt,
+                    extra={
+                        "run_id": claim.run_id,
+                        "attempt_id": claim.attempt_id,
+                        "epoch": claim.epoch,
+                        "contention_attempt": contention_attempt,
+                    },
+                )
+                if self._stop.wait(retry_delay):
+                    raise
 
 
 class CommunityDurableRecoveryDispatcher:
@@ -5568,9 +7287,7 @@ class CommunityRecoveryWorker:
                 )
             return None
         if int(predecessor_epoch) < 1 or int(predecessor_epoch) >= int(running.epoch):
-            raise RecoveryPendingAncestryError(
-                "recovery_pending_ancestry_bad_ordering"
-            )
+            raise RecoveryPendingAncestryError("recovery_pending_ancestry_bad_ordering")
         reader = getattr(self._store, "get_status_at_epoch", None)
         if not callable(reader):
             # An unavailable persisted exact-epoch reader is an anomaly, not a
@@ -5584,9 +7301,7 @@ class CommunityRecoveryWorker:
         cursor = int(predecessor_epoch)
         while True:
             if cursor in seen:
-                raise RecoveryPendingAncestryError(
-                    "recovery_pending_ancestry_cycle"
-                )
+                raise RecoveryPendingAncestryError("recovery_pending_ancestry_cycle")
             if len(ancestry) >= _MAX_PENDING_ANCESTRY_HOPS:
                 raise RecoveryPendingAncestryError(
                     "recovery_pending_ancestry_over_bound"
@@ -5604,8 +7319,7 @@ class CommunityRecoveryWorker:
             if (
                 predecessor.epoch != cursor
                 or predecessor.superseded_by_epoch != successor_epoch
-                or predecessor.attempt_id
-                != recovery_attempt_id(running.run_id, cursor)
+                or predecessor.attempt_id != recovery_attempt_id(running.run_id, cursor)
             ):
                 raise RecoveryPendingAncestryError(
                     "recovery_pending_ancestry_broken_link"
@@ -6282,9 +7996,17 @@ class CommunityRecoveryRuntime:
         except BaseException as exc:
             if failure is None:
                 failure = exc
+        try:
+            self.store.close(
+                timeout_seconds=max(0.0, deadline - time.monotonic())
+            )
+        except BaseException as exc:
+            if failure is None:
+                failure = exc
+        finally:
+            self.store.engine.dispose()
         if failure is not None:
             raise failure
-        self.store.engine.dispose()
 
 
 def build_community_recovery_runtime(

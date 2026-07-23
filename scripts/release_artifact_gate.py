@@ -31,7 +31,7 @@ from typing import Any, Sequence
 
 
 EXPECTED_VERSION = "0.3.0"
-EXPECTED_MCP_TOOL_COUNT = 277
+EXPECTED_MCP_TOOL_COUNT = 281
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 CORE_REPO = COMMUNITY_REPO.parent / "okto_labs_pulse_core"
 

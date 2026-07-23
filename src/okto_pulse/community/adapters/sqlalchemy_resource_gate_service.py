@@ -6,6 +6,7 @@ remain inferred from the existing Architecture, Mockup and Knowledge artifacts.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -24,6 +25,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ResourceNotApplicable,
     Spec,
     SpecKnowledgeBase,
+    KnowledgePropagationScopeRecord,
 )
 from okto_pulse.core.models import with_knowledge_governance
 from okto_pulse.core.services.resource_gate_contracts import (
@@ -40,6 +42,15 @@ from okto_pulse.core.domain.knowledge_fingerprint import (
 )
 from okto_pulse.core.services.resource_lineage import (
     LineageEntityRef,
+)
+from okto_pulse.core.ports.knowledge_propagation import (
+    KnowledgeTargetKey,
+    KnowledgeTargetType,
+)
+from okto_pulse.core.services.knowledge_propagation import (
+    KnowledgePropagationReadResult,
+    KnowledgePropagationService,
+    ResolvedKnowledgeAssignment,
 )
 
 
@@ -62,11 +73,46 @@ def _knowledge_lineage_aliases(item: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _knowledge_stamp_aliases(stamp: Any) -> dict[str, Any]:
+    """Project the canonical Core revision stamp without recomputing identity."""
+
+    return {
+        "root_source_kb_id": stamp.root_id,
+        "immediate_parent_kb_id": stamp.immediate_parent_id,
+        "source_version": stamp.source_revision,
+        "content_hash": stamp.source_content_sha256,
+        "root_resource_id": stamp.root_id,
+        "immediate_parent_resource_id": stamp.immediate_parent_id,
+        "source_revision": stamp.source_revision,
+        "source_content_sha256": stamp.source_content_sha256,
+    }
+
+
+def _resolved_knowledge_payload(
+    item: ResolvedKnowledgeAssignment,
+) -> dict[str, Any] | None:
+    if item.content_bytes is None:
+        return None
+    try:
+        payload = json.loads(item.content_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return dict(payload) if isinstance(payload, Mapping) else None
+
+
 class CommunitySqlAlchemyResourceGateAdapter:
     """Persist and project local Resource Gate evidence."""
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        self._knowledge_read_cache: dict[
+            tuple[str, str, str],
+            KnowledgePropagationReadResult | None,
+        ] = {}
+        self._knowledge_payload_cache: dict[
+            tuple[str, str, str, str],
+            dict[str, Any],
+        ] = {}
 
     async def save_not_applicable(
         self,
@@ -213,6 +259,67 @@ class CommunitySqlAlchemyResourceGateAdapter:
     ) -> dict[str, list[dict[str, Any]]]:
         return await self._collect_refs(ref)
 
+    async def filter_inherited_refs(
+        self,
+        root: LineageEntityRef,
+        parent: LineageEntityRef,
+        refs: dict[str, list[dict[str, Any]]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Apply the target's v2 selection to inherited Knowledge refs.
+
+        Every physical parent ref remains visible in lineage.  Only the exact
+        current source selected by an effective assignment participates in the
+        effective context; unselected siblings are explicitly historical.
+        """
+
+        read = await self._active_knowledge_read(root)
+        if read is None:
+            return refs
+
+        resolved = list(read.effective_assignments)
+        by_source_id: dict[str, ResolvedKnowledgeAssignment] = {}
+        for item in resolved:
+            source_id = str(
+                getattr(item, "resolved_source_knowledge_id", None)
+                or item.assignment.source_knowledge_id
+            )
+            by_source_id[source_id] = item
+
+        projected: list[dict[str, Any]] = []
+        matched_assignment_ids: set[str] = set()
+        for raw in refs.get("knowledge_base") or []:
+            ref = dict(raw)
+            source_id = str(ref.get("id") or "")
+            item = by_source_id.get(source_id)
+            if item is None:
+                ref["effective"] = False
+                projected.append(ref)
+                continue
+            projected.append(
+                self._assignment_ref(
+                    root=root,
+                    parent=parent,
+                    item=item,
+                    base=ref,
+                )
+            )
+            matched_assignment_ids.add(item.assignment.assignment_id)
+
+        if self._is_immediate_knowledge_parent(root, parent):
+            for item in resolved:
+                if item.assignment.assignment_id in matched_assignment_ids:
+                    continue
+                projected.append(
+                    self._assignment_ref(
+                        root=root,
+                        parent=parent,
+                        item=item,
+                        base=None,
+                    )
+                )
+
+        return {**refs, "knowledge_base": projected}
+
     async def load_active_marks(
         self,
         board_id: str,
@@ -233,6 +340,151 @@ class CommunitySqlAlchemyResourceGateAdapter:
         self, task_cards: list[Any]
     ) -> dict[str, dict[str, set[str]]]:
         return await self._collect_task_resource_id_coverage(task_cards)
+
+    async def _active_knowledge_read(
+        self,
+        ref: LineageEntityRef,
+    ) -> KnowledgePropagationReadResult | None:
+        if ref.entity_type not in {"spec", "card"}:
+            return None
+        board_id = str(getattr(ref.entity, "board_id", "") or "")
+        if not board_id:
+            return None
+        cache_key = (board_id, ref.entity_type, ref.entity_id)
+        if cache_key in self._knowledge_read_cache:
+            return self._knowledge_read_cache[cache_key]
+        scope = (
+            await self.db.execute(
+                select(KnowledgePropagationScopeRecord).where(
+                    KnowledgePropagationScopeRecord.board_id == board_id,
+                    KnowledgePropagationScopeRecord.target_type == ref.entity_type,
+                    KnowledgePropagationScopeRecord.target_id == ref.entity_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if scope is None or not bool(scope.v2_active):
+            self._knowledge_read_cache[cache_key] = None
+            return None
+        read = await KnowledgePropagationService().read(
+            self.db,
+            KnowledgeTargetKey(
+                board_id=board_id,
+                target_type=KnowledgeTargetType(ref.entity_type),
+                target_id=ref.entity_id,
+            ),
+        )
+        self._knowledge_read_cache[cache_key] = read
+        return read
+
+    @staticmethod
+    def _is_immediate_knowledge_parent(
+        root: LineageEntityRef,
+        parent: LineageEntityRef,
+    ) -> bool:
+        if root.entity_type == "card":
+            return (
+                parent.entity_type == "spec"
+                and parent.entity_id == getattr(root.entity, "spec_id", None)
+            )
+        if root.entity_type != "spec":
+            return False
+        refinement_id = getattr(root.entity, "refinement_id", None)
+        if refinement_id:
+            return (
+                parent.entity_type == "refinement"
+                and parent.entity_id == refinement_id
+            )
+        return (
+            parent.entity_type == "ideation"
+            and parent.entity_id == getattr(root.entity, "ideation_id", None)
+        )
+
+    def _assignment_ref(
+        self,
+        *,
+        root: LineageEntityRef,
+        parent: LineageEntityRef,
+        item: ResolvedKnowledgeAssignment,
+        base: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        payload = _resolved_knowledge_payload(item) or {}
+        source_id = str(
+            getattr(item, "resolved_source_knowledge_id", None)
+            or payload.get("id")
+            or item.assignment.source_knowledge_id
+        )
+        ref = dict(base or {})
+        ref.update(
+            {
+                "id": source_id,
+                "title": payload.get("title") or ref.get("title"),
+                "source_entity_type": parent.entity_type,
+                "source_entity_id": parent.entity_id,
+                "source_entity_title": parent.title,
+                "origin_class": item.assignment.origin_class.value,
+                "effective": True,
+                "knowledge_assignment_id": item.assignment.assignment_id,
+                "knowledge_assignment_mode": item.assignment.mode.value,
+                "knowledge_assignment_state": item.state.value,
+                "knowledge_assignment_stale": item.state.value == "stale",
+                "knowledge_target_type": root.entity_type,
+                "knowledge_target_id": root.entity_id,
+                "knowledge_target_board_id": getattr(root.entity, "board_id", None),
+            }
+        )
+        ref.update(_knowledge_stamp_aliases(item.revision_stamp))
+        if payload:
+            self._knowledge_payload_cache[
+                (
+                    str(getattr(root.entity, "board_id", "") or ""),
+                    root.entity_type,
+                    root.entity_id,
+                    item.assignment.assignment_id,
+                )
+            ] = payload
+        return ref
+
+    @staticmethod
+    def _apply_physical_knowledge_authority(
+        ref: dict[str, Any],
+        *,
+        source_id: str,
+        read: KnowledgePropagationReadResult | None,
+    ) -> dict[str, Any]:
+        if read is None:
+            return ref
+        local = {
+            item.source_knowledge_id: item
+            for item in getattr(read, "effective_local_attachments", ())
+        }.get(source_id)
+        if local is not None:
+            ref.update(
+                {
+                    "effective": True,
+                    "origin_class": "v2",
+                    "knowledge_resolution": "local",
+                }
+            )
+            ref.update(_knowledge_stamp_aliases(local.revision_stamp))
+            return ref
+        legacy = {
+            item.source_knowledge_id: item
+            for item in read.history_legacy_attachments
+        }.get(source_id)
+        ref.update(
+            {
+                "effective": False,
+                "origin_class": (
+                    "legacy_all"
+                    if legacy is None
+                    else legacy.origin_class.value
+                ),
+                "knowledge_resolution": "history",
+            }
+        )
+        if legacy is not None:
+            ref.update(_knowledge_stamp_aliases(legacy.revision_stamp))
+        return ref
 
     def serialize_na_mark(
         self,
@@ -310,8 +562,48 @@ class CommunitySqlAlchemyResourceGateAdapter:
             bucket = "cancelled" if card.status == CardStatus.CANCELLED else "eligible"
             for item in (card.screen_mockups or []):
                 coverage["mockup"][bucket].update(self._resource_identity_values(item))
-            for item in (card.knowledge_bases or []):
-                coverage["knowledge_base"][bucket].update(self._resource_identity_values(item))
+            card_ref = LineageEntityRef(
+                entity_type="card",
+                entity_id=card.id,
+                title=card.title,
+                entity=card,
+            )
+            v2_read = await self._active_knowledge_read(card_ref)
+            if v2_read is None:
+                for item in (card.knowledge_bases or []):
+                    coverage["knowledge_base"][bucket].update(
+                        self._resource_identity_values(item)
+                    )
+            else:
+                for item in v2_read.effective_assignments:
+                    coverage["knowledge_base"][bucket].update(
+                        self._resource_identity_values(
+                            {
+                                "id": (
+                                    getattr(
+                                        item,
+                                        "resolved_source_knowledge_id",
+                                        None,
+                                    )
+                                    or item.assignment.source_knowledge_id
+                                ),
+                                **_knowledge_stamp_aliases(item.revision_stamp),
+                            }
+                        )
+                    )
+                for item in getattr(
+                    v2_read,
+                    "effective_local_attachments",
+                    (),
+                ):
+                    coverage["knowledge_base"][bucket].update(
+                        self._resource_identity_values(
+                            {
+                                "id": item.source_knowledge_id,
+                                **_knowledge_stamp_aliases(item.revision_stamp),
+                            }
+                        )
+                    )
 
         result = await self.db.execute(
             select(
@@ -394,12 +686,16 @@ class CommunitySqlAlchemyResourceGateAdapter:
 
     async def _knowledge_refs(self, ref: LineageEntityRef) -> list[dict[str, Any]]:
         entity = ref.entity
+        v2_read = await self._active_knowledge_read(ref)
         if ref.entity_type == "card":
             refs: list[dict[str, Any]] = []
             for item in (getattr(entity, "knowledge_bases", None) or []):
+                source_id = str(
+                    item.get("id") if isinstance(item, dict) else ""
+                )
                 item_ref = self._artifact_ref(
                     ref,
-                    artifact_id=item.get("id") if isinstance(item, dict) else None,
+                    artifact_id=source_id or None,
                     title=item.get("title") if isinstance(item, dict) else None,
                 )
                 if isinstance(item, dict):
@@ -416,6 +712,11 @@ class CommunitySqlAlchemyResourceGateAdapter:
                         if item.get(key) not in (None, ""):
                             item_ref[key] = item[key]
                     item_ref.update(_knowledge_lineage_aliases(item))
+                item_ref = self._apply_physical_knowledge_authority(
+                    item_ref,
+                    source_id=source_id,
+                    read=v2_read,
+                )
                 refs.append(item_ref)
             return refs
 
@@ -444,9 +745,10 @@ class CommunitySqlAlchemyResourceGateAdapter:
         )
         refs = []
         for row in result.mappings().all():
+            source_id = str(row.get("id") or "")
             item_ref = self._artifact_ref(
                 ref,
-                artifact_id=row.get("id"),
+                artifact_id=source_id or None,
                 title=row.get("title"),
             )
             for key in (
@@ -461,6 +763,11 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 if row.get(key) not in (None, ""):
                     item_ref[key] = row[key]
             item_ref.update(_knowledge_lineage_aliases(row))
+            item_ref = self._apply_physical_knowledge_authority(
+                item_ref,
+                source_id=source_id,
+                read=v2_read,
+            )
             refs.append(item_ref)
         return refs
 
@@ -510,6 +817,52 @@ class CommunitySqlAlchemyResourceGateAdapter:
         board_id: str,
         ref: dict[str, Any],
     ) -> dict[str, Any] | None:
+        assignment_id = str(ref.get("knowledge_assignment_id") or "")
+        if assignment_id:
+            target_type = str(ref.get("knowledge_target_type") or "")
+            target_id = str(ref.get("knowledge_target_id") or "")
+            cache_key = (board_id, target_type, target_id, assignment_id)
+            payload = self._knowledge_payload_cache.get(cache_key)
+            if payload is None and target_type in {"spec", "card"} and target_id:
+                target_ref = await self._load_entity_ref(
+                    board_id,
+                    target_type,
+                    target_id,
+                )
+                read = await self._active_knowledge_read(target_ref)
+                if read is not None:
+                    resolved = next(
+                        (
+                            item
+                            for item in read.effective_assignments
+                            if item.assignment.assignment_id == assignment_id
+                        ),
+                        None,
+                    )
+                    if resolved is not None:
+                        payload = _resolved_knowledge_payload(resolved)
+                        if payload is not None:
+                            self._knowledge_payload_cache[cache_key] = payload
+            if payload is not None:
+                hydrated = dict(payload)
+                hydrated.update(_knowledge_lineage_aliases(ref))
+                hydrated.update(
+                    {
+                        key: value
+                        for key, value in ref.items()
+                        if key
+                        in {
+                            "root_source_kb_id",
+                            "immediate_parent_kb_id",
+                            "source_version",
+                            "content_hash",
+                            "source_revision",
+                            "source_content_sha256",
+                        }
+                    }
+                )
+                return with_knowledge_governance(hydrated, ref)
+
         source = await self._load_source_entity_ref(board_id, ref)
         if source is None:
             return None

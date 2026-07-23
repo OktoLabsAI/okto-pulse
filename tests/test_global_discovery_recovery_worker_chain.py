@@ -555,7 +555,6 @@ def _kg_base_dir_configured(base_dir: Path):
 
     required = (
         "event_bus",
-        "audit_repo",
         "graph_store",
         "cypher_executor",
         "graph_transaction",
@@ -565,8 +564,20 @@ def _kg_base_dir_configured(base_dir: Path):
         "global_discovery_runtime",
         "board_source_reader",
     )
+
+    class _AuditRepo:
+        async def stage_consolidation_records(
+            self,
+            transaction_context,
+            audit,
+            node_refs,
+            outbox_event,
+        ) -> None:
+            del transaction_context, audit, node_refs, outbox_event
+
     base = KGProviderRegistry(
         config=SimpleNamespace(kg_base_dir=str(base_dir)),
+        audit_repo=_AuditRepo(),
         **{slot: object() for slot in required},
     )
     previous = capture_registry_state_for_tests()
@@ -4952,7 +4963,6 @@ def test_r8_b76_legacy_completed_resume_converges(tmp_path):
     # R8-B7.7 (#2b): a FINAL-cleanup failure on the success path surfaces
     # BEFORE the marker clear — typed error, marker preserved, scratch remains
     # (permanent evidence) until the next entry removes it fail-closed.
-    real_rmtree = _shutil.rmtree
     real_remove_tree_2b = gdr_mod._remove_tree_fenced
     fired = {"n": 0}
 

@@ -56,5 +56,5 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert evidence["installed"]["mcp_http"]["transport"] == (
         "streamable-http-loopback"
     )
-    assert evidence["installed"]["mcp_http"]["tool_count"] == 277
+    assert evidence["installed"]["mcp_http"]["tool_count"] == 281
     assert (work_dir / "release-artifact-evidence.json").is_file()

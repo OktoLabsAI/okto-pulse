@@ -399,7 +399,13 @@ def test_admission_replay_cancel_and_reopen_emit_each_transition_once(
             rows = connection.execute(
                 select(transition).order_by(transition.c.progress_seq)
             ).mappings().all()
-        assert [row["progress_seq"] for row in rows] == [0, cancelled.progress_seq]
+        # Two-stage settlement durably records T1 intent before T2 records the
+        # terminal transition; each progress identity must still appear once.
+        assert [row["progress_seq"] for row in rows] == [
+            0,
+            cancelled.progress_seq - 1,
+            cancelled.progress_seq,
+        ]
         terminal = rows[-1]
         assert terminal["operation"] == "recovery_terminal"
         assert terminal["outcome"] == "cancelled"
@@ -424,7 +430,10 @@ def test_admission_replay_cancel_and_reopen_emit_each_transition_once(
             "SQLAlchemyRecoveryTransitionObserver",
         )
         metrics = observer_type(engine=engine).metric_snapshot(run_id=admitted.run_id)
-        assert sum(metrics.values()) == 2
+        assert sum(metrics.values()) == 3
+        assert metrics[
+            "dispatch:running:preparing:recovery_preparing"
+        ] == 1
         assert metrics[
             "recovery_terminal:cancelled:terminal:"
             "global_discovery_recovery_preparation_cancelled"

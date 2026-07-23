@@ -141,9 +141,22 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
         def board_graph_path(self, _board_id):
             return str(tmp_path / "graph")
 
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+        GraphRuntimeObservationState,
+    )
+
+    global_runtime = SimpleNamespace(
+        state=lambda: SimpleNamespace(
+            state=GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE,
+            reason_code="readable_candidate",
+            details={},
+        )
+    )
     registry = SimpleNamespace(
+        config=SimpleNamespace(kg_base_dir=str(tmp_path / "pulse" / "kg")),
         graph_schema_manager=_GraphSchema(),
         graph_path_resolver=_GraphPath(),
+        require_global_discovery_runtime=lambda: global_runtime,
     )
 
     monkeypatch.setattr(community_config, "CommunitySettings", Settings)

@@ -134,6 +134,7 @@ def knowledge_propagation_v2_trigger_manifest() -> dict[str, tuple[str, str]]:
         KnowledgeAssignmentRecord,
         KnowledgeMutationAttemptRecord,
         KnowledgeMutationLedgerRecord,
+        KnowledgePropagationScopeRecord,
         KnowledgeSnapshotRecord,
         KnowledgeTombstoneRecord,
     )
@@ -153,6 +154,66 @@ BEGIN
     SELECT RAISE(ABORT, 'knowledge_mutation_ledger_immutable');
 END'''
             expected[trigger_name] = (table_name, trigger_sql)
+
+    scope_table = KnowledgePropagationScopeRecord.__tablename__
+    activation_insert = (
+        f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_"
+        f"{scope_table}_activation_insert"
+    )
+    expected[activation_insert] = (
+        scope_table,
+        f'''CREATE TRIGGER "{activation_insert}"
+BEFORE INSERT ON "{scope_table}"
+WHEN (
+        NEW.v2_active = 1
+        AND NEW.v2_activated_at IS NULL
+    )
+    OR (
+        NEW.v2_active = 0
+        AND NEW.v2_activated_at IS NOT NULL
+    )
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'knowledge_propagation_v2_activation_invalid'
+    );
+END''',
+    )
+    activation_update = (
+        f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_"
+        f"{scope_table}_activation_update"
+    )
+    expected[activation_update] = (
+        scope_table,
+        f'''CREATE TRIGGER "{activation_update}"
+BEFORE UPDATE OF v2_active, v2_activated_at ON "{scope_table}"
+WHEN (
+        NEW.v2_active = 0
+        AND NEW.v2_activated_at IS NOT NULL
+    )
+    OR (
+        OLD.v2_activated_at IS NOT NULL
+        AND NEW.v2_activated_at IS NOT OLD.v2_activated_at
+    )
+    OR (
+        OLD.v2_activated_at IS NULL
+        AND NEW.v2_activated_at IS NOT NULL
+        AND NOT (
+            OLD.v2_active = 0
+            AND NEW.v2_active = 1
+        )
+    )
+    OR (
+        NEW.v2_active = 1
+        AND NEW.v2_activated_at IS NULL
+    )
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'knowledge_propagation_v2_activation_immutable'
+    );
+END''',
+    )
 
     def add_temporal_transition_guards(
         table_name: str,
@@ -2873,11 +2934,36 @@ async def _upgrade_knowledge_propagation_scope_board_audit_identity(
     scope_table = KnowledgePropagationScopeRecord.__table__
     temporary_name = f"{scope_table.name}__audit_identity_upgrade"
 
-    def _scope_foreign_keys(sync_conn: object) -> tuple[dict[str, object], ...]:
+    def _scope_upgrade_state(
+        sync_conn: object,
+    ) -> tuple[tuple[dict[str, object], ...], bool]:
         inspector = sa_inspect(sync_conn)
         if scope_table.name not in set(inspector.get_table_names()):
-            return ()
-        return tuple(inspector.get_foreign_keys(scope_table.name))
+            return (), False
+        contract = _sqlite_owned_table_contract(sync_conn, scope_table)
+        expected = dict(contract["expected"])
+        observed = dict(contract["observed"])
+        expected_columns = expected.pop("columns")
+        observed_columns = observed.pop("columns")
+        expected.pop("foreign_keys")
+        observed.pop("foreign_keys")
+        if observed != expected:
+            raise RuntimeError(
+                "knowledge propagation scope audit-identity upgrade "
+                "found unrelated contract drift"
+            )
+        columns_reordered = observed_columns != expected_columns
+        if columns_reordered and tuple(
+            sorted(observed_columns, key=lambda item: str(item[0]))
+        ) != tuple(sorted(expected_columns, key=lambda item: str(item[0]))):
+            raise RuntimeError(
+                "knowledge propagation scope audit-identity upgrade "
+                "found non-canonical column drift"
+            )
+        return (
+            tuple(inspector.get_foreign_keys(scope_table.name)),
+            columns_reordered,
+        )
 
     def _rebuild_scope(sync_conn: object) -> None:
         inspector = sa_inspect(sync_conn)
@@ -2926,25 +3012,26 @@ async def _upgrade_knowledge_propagation_scope_board_audit_identity(
     async with engine.connect() as conn:
         if conn.dialect.name != "sqlite":
             return False
-        foreign_keys = await conn.run_sync(_scope_foreign_keys)
-        if not foreign_keys:
+        foreign_keys, columns_reordered = await conn.run_sync(_scope_upgrade_state)
+        if not foreign_keys and not columns_reordered:
             return False
-        board_foreign_keys = tuple(
-            item
-            for item in foreign_keys
-            if tuple(item.get("constrained_columns") or ()) == ("board_id",)
-            and item.get("referred_table") == "boards"
-            and tuple(item.get("referred_columns") or ()) == ("id",)
-        )
-        if len(foreign_keys) != 1 or len(board_foreign_keys) != 1:
-            raise RuntimeError(
-                "knowledge propagation scope has unexpected foreign-key drift"
+        if foreign_keys:
+            board_foreign_keys = tuple(
+                item
+                for item in foreign_keys
+                if tuple(item.get("constrained_columns") or ()) == ("board_id",)
+                and item.get("referred_table") == "boards"
+                and tuple(item.get("referred_columns") or ()) == ("id",)
             )
-        options = board_foreign_keys[0].get("options") or {}
-        if str(options.get("ondelete") or "").upper() != "CASCADE":
-            raise RuntimeError(
-                "knowledge propagation scope board foreign key is non-canonical"
-            )
+            if len(foreign_keys) != 1 or len(board_foreign_keys) != 1:
+                raise RuntimeError(
+                    "knowledge propagation scope has unexpected foreign-key drift"
+                )
+            options = board_foreign_keys[0].get("options") or {}
+            if str(options.get("ondelete") or "").upper() != "CASCADE":
+                raise RuntimeError(
+                    "knowledge propagation scope board foreign key is non-canonical"
+                )
 
         # Introspection can establish SQLAlchemy's logical transaction even
         # though SQLite has not started a physical writer transaction.
@@ -2982,6 +3069,298 @@ async def _upgrade_knowledge_propagation_scope_board_audit_identity(
                 raise RuntimeError(
                     "knowledge propagation scope upgrade did not restore "
                     "foreign-key enforcement"
+                )
+    return True
+
+
+async def _upgrade_knowledge_propagation_activation_boundary(
+    engine: object,
+) -> bool:
+    """Add and conservatively backfill the first-v2 activation boundary.
+
+    Existing inactive/grandfathered scopes deliberately retain ``NULL``.
+    Existing active scopes predate the boundary column, so their earliest
+    applied non-grandfather ledger timestamp is the strongest durable
+    evidence available. ``updated_at``/``created_at`` are conservative
+    fallbacks for installations whose historical ledger is incomplete.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        KnowledgeMutationLedgerRecord,
+        KnowledgePropagationScopeRecord,
+    )
+
+    scope_table = KnowledgePropagationScopeRecord.__table__
+    ledger_table = KnowledgeMutationLedgerRecord.__table__
+    column = scope_table.c.v2_activated_at
+
+    def _state(sync_conn: object) -> tuple[bool, bool]:
+        inspector = sa_inspect(sync_conn)
+        tables = set(inspector.get_table_names())
+        if scope_table.name not in tables:
+            return False, ledger_table.name in tables
+        columns = {
+            str(item["name"]): item for item in inspector.get_columns(scope_table.name)
+        }
+        observed = columns.get(column.name)
+        if observed is not None:
+            expected_contract = (
+                _normalize_sqlite_contract_type(
+                    column.type.compile(dialect=sync_conn.dialect)
+                ),
+                bool(column.nullable),
+                _expected_sqlite_server_default(sync_conn, column),
+            )
+            observed_contract = (
+                _normalize_sqlite_contract_type(observed["type"]),
+                bool(observed["nullable"]),
+                _normalize_sqlite_contract_default(observed.get("default")),
+            )
+            if observed_contract != expected_contract:
+                raise RuntimeError(
+                    "knowledge propagation activation boundary column "
+                    "is non-canonical"
+                )
+        return observed is not None, ledger_table.name in tables
+
+    async with engine.begin() as conn:
+        if conn.dialect.name != "sqlite":
+            return False
+        await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        column_present, ledger_present = await conn.run_sync(_state)
+        scope_present = await conn.run_sync(
+            lambda sync_conn: scope_table.name
+            in set(sa_inspect(sync_conn).get_table_names())
+        )
+        if not scope_present:
+            return False
+
+        changed = False
+        if not column_present:
+            await conn.exec_driver_sql(
+                f'ALTER TABLE "{scope_table.name}" '
+                'ADD COLUMN "v2_activated_at" DATETIME'
+            )
+            changed = True
+
+        if ledger_present:
+            result = await conn.exec_driver_sql(
+                f"""
+UPDATE "{scope_table.name}" AS scope
+SET v2_activated_at = COALESCE(
+    (
+        SELECT MIN(ledger.applied_at)
+        FROM "{ledger_table.name}" AS ledger
+        WHERE ledger.scope_id = scope.id
+          AND ledger.outcome = 'applied'
+          AND ledger.operation_kind <> 'grandfather'
+    ),
+    scope.updated_at,
+    scope.created_at
+)
+WHERE scope.v2_active = 1
+  AND scope.v2_activated_at IS NULL
+"""
+            )
+        else:
+            result = await conn.exec_driver_sql(
+                f"""
+UPDATE "{scope_table.name}"
+SET v2_activated_at = COALESCE(updated_at, created_at)
+WHERE v2_active = 1
+  AND v2_activated_at IS NULL
+"""
+            )
+        if int(getattr(result, "rowcount", 0) or 0) > 0:
+            changed = True
+
+        invalid_authority_boundary = int(
+            (
+                await conn.exec_driver_sql(
+                    f'SELECT count(*) FROM "{scope_table.name}" '
+                    "WHERE (v2_active = 1 AND v2_activated_at IS NULL) "
+                    "OR (v2_active = 0 AND v2_activated_at IS NOT NULL)"
+                )
+            ).scalar_one()
+        )
+        if invalid_authority_boundary:
+            raise RuntimeError(
+                "knowledge propagation activation boundary backfill "
+                "found "
+                f"{invalid_authority_boundary} scope(s) with inconsistent "
+                "v2 authority"
+            )
+        await conn.run_sync(_state)
+        return changed
+
+
+async def _upgrade_knowledge_propagation_relink_operation_kind(
+    engine: object,
+) -> bool:
+    """Expand immutable ledger/attempt CHECKs for ``relink_reset``.
+
+    SQLite cannot alter a CHECK constraint in place. Only the exact preceding
+    IMP3 contract (without ``relink_reset``) is accepted for rebuild; any
+    other drift fails closed. Rows, indexes, foreign keys, and append-only
+    trigger ownership are re-audited by the enclosing schema migration.
+    """
+
+    from sqlalchemy import MetaData
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        KnowledgeMutationAttemptRecord,
+        KnowledgeMutationLedgerRecord,
+        KnowledgePropagationScopeRecord,
+    )
+
+    tables = (
+        KnowledgeMutationLedgerRecord.__table__,
+        KnowledgeMutationAttemptRecord.__table__,
+    )
+
+    def _previous_contract(expected: dict[str, object]) -> dict[str, object]:
+        prior = dict(expected)
+        checks = []
+        replacement_count = 0
+        for name, expression in expected["checks"]:
+            prior_expression = str(expression).replace(
+                ",'relink_reset'",
+                "",
+            )
+            if prior_expression != expression:
+                replacement_count += 1
+            checks.append((name, prior_expression))
+        if replacement_count != 1:
+            raise RuntimeError(
+                "knowledge propagation relink operation contract "
+                "could not derive its predecessor"
+            )
+        prior["checks"] = tuple(checks)
+        return prior
+
+    def _tables_to_rebuild(sync_conn: object) -> tuple[object, ...]:
+        existing = set(sa_inspect(sync_conn).get_table_names())
+        rebuild: list[object] = []
+        for table in tables:
+            if table.name not in existing:
+                continue
+            contract = _sqlite_owned_table_contract(sync_conn, table)
+            if contract["observed"] == contract["expected"]:
+                continue
+            if contract["observed"] != _previous_contract(contract["expected"]):
+                raise RuntimeError(
+                    "knowledge propagation relink operation migration "
+                    f"found non-canonical drift in {table.name}"
+                )
+            rebuild.append(table)
+        return tuple(rebuild)
+
+    def _rebuild_table(sync_conn: object, table: object) -> None:
+        temporary_name = f"{table.name}__relink_operation_upgrade"
+        inspector = sa_inspect(sync_conn)
+        if temporary_name in set(inspector.get_table_names()):
+            raise RuntimeError(
+                "knowledge propagation relink operation upgrade "
+                f"found stale table {temporary_name}"
+            )
+        quote = sync_conn.dialect.identifier_preparer.quote
+        before_ids = tuple(
+            str(row[0])
+            for row in sync_conn.exec_driver_sql(
+                f"SELECT {quote(next(iter(table.primary_key.columns)).name)} "
+                f'FROM "{table.name}" ORDER BY 1'
+            ).all()
+        )
+
+        temporary_metadata = MetaData()
+        KnowledgePropagationScopeRecord.__table__.to_metadata(temporary_metadata)
+        temporary_table = table.to_metadata(
+            temporary_metadata,
+            name=temporary_name,
+        )
+        sync_conn.execute(CreateTable(temporary_table))
+        columns = ", ".join(quote(column.name) for column in table.columns)
+        sync_conn.exec_driver_sql(
+            f'INSERT INTO "{temporary_name}" ({columns}) '
+            f'SELECT {columns} FROM "{table.name}"'
+        )
+        sync_conn.exec_driver_sql(f'DROP TABLE "{table.name}"')
+        sync_conn.exec_driver_sql(
+            f'ALTER TABLE "{temporary_name}" RENAME TO "{table.name}"'
+        )
+        for index in sorted(table.indexes, key=lambda item: str(item.name)):
+            sync_conn.execute(CreateIndex(index))
+
+        after_ids = tuple(
+            str(row[0])
+            for row in sync_conn.exec_driver_sql(
+                f"SELECT {quote(next(iter(table.primary_key.columns)).name)} "
+                f'FROM "{table.name}" ORDER BY 1'
+            ).all()
+        )
+        if after_ids != before_ids:
+            raise RuntimeError(
+                "knowledge propagation relink operation upgrade "
+                f"did not preserve every row in {table.name}"
+            )
+        contract = _sqlite_owned_table_contract(sync_conn, table)
+        if contract["observed"] != contract["expected"]:
+            raise RuntimeError(
+                "knowledge propagation relink operation upgrade "
+                f"left a non-canonical table: {table.name}"
+            )
+
+    async with engine.connect() as conn:
+        if conn.dialect.name != "sqlite":
+            return False
+        rebuild = await conn.run_sync(_tables_to_rebuild)
+        if not rebuild:
+            return False
+
+        await conn.rollback()
+        original_foreign_keys = int(
+            (await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar_one()
+        )
+        await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        if int((await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar_one()) != 0:
+            raise RuntimeError(
+                "knowledge propagation relink operation upgrade could not "
+                "suspend foreign-key actions"
+            )
+        try:
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+            for table in rebuild:
+                await conn.run_sync(
+                    lambda sync_conn, owned_table=table: _rebuild_table(
+                        sync_conn,
+                        owned_table,
+                    )
+                )
+            violations = (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            if violations:
+                raise RuntimeError(
+                    "knowledge propagation relink operation upgrade left "
+                    f"foreign-key violations: {violations!r}"
+                )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
+        finally:
+            await conn.exec_driver_sql(
+                f"PRAGMA foreign_keys={1 if original_foreign_keys else 0}"
+            )
+            restored = int(
+                (await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar_one()
+            )
+            if restored != original_foreign_keys:
+                raise RuntimeError(
+                    "knowledge propagation relink operation upgrade did not "
+                    "restore foreign-key enforcement"
                 )
     return True
 
@@ -3050,7 +3429,14 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
             )
 
     engine = get_engine()
-    changed = await _upgrade_knowledge_propagation_scope_board_audit_identity(engine)
+    changed = await _upgrade_knowledge_propagation_activation_boundary(engine)
+    changed = (
+        await _upgrade_knowledge_propagation_scope_board_audit_identity(engine)
+        or changed
+    )
+    changed = (
+        await _upgrade_knowledge_propagation_relink_operation_kind(engine) or changed
+    )
     async with engine.begin() as conn:
         if conn.dialect.name != "sqlite":
             raise RuntimeError(
@@ -3144,7 +3530,9 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
                 existing["tbl_name"]
             ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
                 existing["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
+            ) != normalize_global_discovery_source_revision_trigger_sql(
+                trigger_sql
+            ):
                 raise RuntimeError(
                     "knowledge propagation v2 trigger is corrupt: " + trigger_name
                 )
@@ -3173,7 +3561,9 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
                 observed["tbl_name"]
             ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
                 observed["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
+            ) != normalize_global_discovery_source_revision_trigger_sql(
+                trigger_sql
+            ):
                 raise RuntimeError(
                     "knowledge propagation v2 trigger postcondition failed: "
                     + trigger_name

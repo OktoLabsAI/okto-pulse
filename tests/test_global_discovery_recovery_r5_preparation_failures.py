@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 
 import pytest
-from sqlalchemy import create_engine, func, insert, select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import create_engine, event, func, insert, select, update
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 from okto_pulse.community.adapters.global_discovery_recovery_worker import (
     CommunityRecoveryPreparationPoller,
@@ -172,12 +173,23 @@ def _open_store(
     *,
     clock: _Clock,
     revoker: _Revoker,
+    sqlite_timeout_seconds: float = 5.0,
 ) -> tuple[SQLAlchemyRecoveryRunStore, object]:
     engine = create_engine(
         f"sqlite:///{path.as_posix()}",
         future=True,
-        connect_args={"check_same_thread": False, "timeout": 5.0},
+        connect_args={
+            "check_same_thread": False,
+            "timeout": sqlite_timeout_seconds,
+        },
     )
+
+    @event.listens_for(engine, "connect")
+    def set_test_busy_timeout(dbapi_connection, _connection_record) -> None:
+        dbapi_connection.execute(
+            f"PRAGMA busy_timeout={max(1, int(sqlite_timeout_seconds * 1_000))}"
+        )
+
     Base.metadata.create_all(
         engine,
         tables=[
@@ -246,6 +258,40 @@ def _rows(engine) -> tuple[int, dict[str, object]]:
             .one()
         )
     return slot_count, dispatch
+
+
+def _claim_preparation(
+    store: SQLAlchemyRecoveryRunStore,
+    run_id: str,
+) -> tuple[object, object]:
+    _admit(store, run_id)
+    claim = store.claim_next_dispatch(
+        stage=RecoveryDispatchStage.PREPARATION,
+        worker_id=f"worker-{run_id}",
+        claimed_at=NOW,
+        claim_expires_at=NOW + timedelta(seconds=15),
+    )
+    assert claim is not None
+    preparing = store.mark_preparing(
+        run_id=claim.run_id,
+        attempt_id=claim.attempt_id,
+        epoch=claim.epoch,
+        claim_token=claim.claim_token,
+        at=NOW,
+    )
+    return claim, preparing
+
+
+def _transition_count(engine, *, run_id: str) -> int:
+    with engine.connect() as connection:
+        return int(
+            connection.scalar(
+                select(func.count())
+                .select_from(GlobalDiscoveryRecoveryTransition.__table__)
+                .where(GlobalDiscoveryRecoveryTransition.run_id == run_id)
+            )
+            or 0
+        )
 
 
 def test_plain_adapter_runtime_error_is_terminal_and_releases_slot(
@@ -748,7 +794,9 @@ def test_ready_cancel_locks_slot_before_attempt_cas(tmp_path: Path) -> None:
             reason="verify PostgreSQL lock order",
         )
         assert cancelled.state is RecoveryRunState.CANCELLED
-        assert events == ["slot", "attempt"]
+        # T1 must lock the global slot before reserving settlement; T2 then
+        # performs the terminal attempt CAS after the external manifest action.
+        assert events == ["slot", "attempt", "attempt"]
     finally:
         engine.dispose()
 
@@ -847,6 +895,198 @@ def test_atomic_heartbeat_renews_claim_and_stale_token_cannot_terminalize(
     finally:
         first_engine.dispose()
         second_engine.dispose()
+
+
+def test_preparation_heartbeat_retries_real_short_sqlite_lock_in_fresh_uow(
+    tmp_path: Path,
+) -> None:
+    clock = _Clock()
+    revoker = _Revoker()
+    path = tmp_path / "heartbeat-short-lock.sqlite3"
+    store, engine = _open_store(
+        path,
+        clock=clock,
+        revoker=revoker,
+        sqlite_timeout_seconds=0.05,
+    )
+    run_id = "gdr_r5_heartbeat_short_lock"
+    claim, preparing = _claim_preparation(store, run_id)
+    poller_started = time.monotonic()
+
+    def advancing_wall_clock() -> datetime:
+        return NOW + timedelta(seconds=time.monotonic() - poller_started)
+
+    poller = CommunityRecoveryPreparationPoller(
+        store=store,
+        operation=lambda **_kwargs: None,
+        wall_clock=advancing_wall_clock,
+    )
+    heartbeat_calls = 0
+    original_heartbeat = store.heartbeat_preparation
+
+    def tracked_heartbeat(**kwargs):
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        return original_heartbeat(**kwargs)
+
+    store.heartbeat_preparation = tracked_heartbeat  # type: ignore[method-assign]
+    before_transition_count = _transition_count(engine, run_id=run_id)
+    _slot_count, before_dispatch = _rows(engine)
+    lock_owner = sqlite3.connect(
+        path,
+        timeout=0.05,
+        isolation_level=None,
+        check_same_thread=False,
+    )
+    lock_owner.execute("BEGIN IMMEDIATE")
+    released = Event()
+
+    def release_short_lock() -> None:
+        # Admission deliberately installs a 750 ms busy timeout on the pooled
+        # connection. Hold past one complete store attempt, then release while
+        # the second fresh transaction is waiting.
+        time.sleep(1.1)
+        lock_owner.rollback()
+        released.set()
+
+    release_thread = Thread(target=release_short_lock, daemon=True)
+    release_thread.start()
+    started_monotonic = time.monotonic()
+    try:
+        heartbeat = poller._persist_preparation_heartbeat(  # noqa: SLF001
+            claim=claim,
+            started_monotonic=started_monotonic,
+            baseline_elapsed_ms=preparing.active_elapsed_ms,
+            deadline_at_monotonic=started_monotonic + 30,
+            attempt_budget_ms=preparing.attempt_budget_ms,
+            counts=preparing.counts,
+        )
+        release_thread.join(timeout=2)
+        assert released.is_set()
+        assert heartbeat_calls >= 2
+        assert heartbeat.active_elapsed_ms > preparing.active_elapsed_ms
+        assert heartbeat.progress_seq == preparing.progress_seq + 1
+        assert _transition_count(engine, run_id=run_id) == (before_transition_count + 1)
+        _slot_count, after_dispatch = _rows(engine)
+        assert after_dispatch["claim_expires_at"] > before_dispatch["claim_expires_at"]
+    finally:
+        if not released.is_set():
+            lock_owner.rollback()
+        release_thread.join(timeout=2)
+        lock_owner.close()
+        poller.close()
+        engine.dispose()
+
+
+def test_preparation_heartbeat_persistent_sqlite_lock_is_bounded_and_atomic(
+    tmp_path: Path,
+) -> None:
+    clock = _Clock()
+    revoker = _Revoker()
+    path = tmp_path / "heartbeat-persistent-lock.sqlite3"
+    store, engine = _open_store(
+        path,
+        clock=clock,
+        revoker=revoker,
+        sqlite_timeout_seconds=0.05,
+    )
+    run_id = "gdr_r5_heartbeat_persistent_lock"
+    claim, preparing = _claim_preparation(store, run_id)
+    poller = CommunityRecoveryPreparationPoller(
+        store=store,
+        operation=lambda **_kwargs: None,
+        wall_clock=clock,
+    )
+    heartbeat_calls = 0
+    original_heartbeat = store.heartbeat_preparation
+
+    def tracked_heartbeat(**kwargs):
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        return original_heartbeat(**kwargs)
+
+    store.heartbeat_preparation = tracked_heartbeat  # type: ignore[method-assign]
+    before_status = store.get_status(run_id=run_id)
+    before_transition_count = _transition_count(engine, run_id=run_id)
+    _slot_count, before_dispatch = _rows(engine)
+    lock_owner = sqlite3.connect(
+        path,
+        timeout=0.05,
+        isolation_level=None,
+        check_same_thread=False,
+    )
+    lock_owner.execute("BEGIN IMMEDIATE")
+    started_monotonic = time.monotonic()
+    try:
+        with pytest.raises(OperationalError) as caught:
+            poller._persist_preparation_heartbeat(  # noqa: SLF001
+                claim=claim,
+                started_monotonic=started_monotonic,
+                baseline_elapsed_ms=preparing.active_elapsed_ms,
+                deadline_at_monotonic=started_monotonic + 30,
+                attempt_budget_ms=preparing.attempt_budget_ms,
+                counts=preparing.counts,
+            )
+        assert isinstance(caught.value.orig, sqlite3.OperationalError)
+        assert heartbeat_calls == 3
+        assert time.monotonic() - started_monotonic < 4.0
+        assert store.get_status(run_id=run_id) == before_status
+        assert _transition_count(engine, run_id=run_id) == before_transition_count
+        _slot_count, after_dispatch = _rows(engine)
+        assert after_dispatch["claim_expires_at"] == before_dispatch["claim_expires_at"]
+    finally:
+        lock_owner.rollback()
+        lock_owner.close()
+        poller.close()
+        engine.dispose()
+
+
+def test_preparation_heartbeat_does_not_retry_text_only_non_sqlite_error(
+    tmp_path: Path,
+) -> None:
+    clock = _Clock()
+    revoker = _Revoker()
+    store, engine = _open_store(
+        tmp_path / "heartbeat-non-sqlite-error.sqlite3",
+        clock=clock,
+        revoker=revoker,
+    )
+    claim, preparing = _claim_preparation(
+        store,
+        "gdr_r5_heartbeat_non_sqlite_error",
+    )
+    poller = CommunityRecoveryPreparationPoller(
+        store=store,
+        operation=lambda **_kwargs: None,
+        wall_clock=clock,
+    )
+    heartbeat_calls = 0
+
+    def fail_with_text_only_error(**_kwargs):
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        raise OperationalError(
+            "opaque statement",
+            {},
+            RuntimeError("database is locked"),
+        )
+
+    store.heartbeat_preparation = fail_with_text_only_error  # type: ignore[method-assign]
+    started_monotonic = time.monotonic()
+    try:
+        with pytest.raises(OperationalError):
+            poller._persist_preparation_heartbeat(  # noqa: SLF001
+                claim=claim,
+                started_monotonic=started_monotonic,
+                baseline_elapsed_ms=preparing.active_elapsed_ms,
+                deadline_at_monotonic=started_monotonic + 30,
+                attempt_budget_ms=preparing.attempt_budget_ms,
+                counts=preparing.counts,
+            )
+        assert heartbeat_calls == 1
+    finally:
+        poller.close()
+        engine.dispose()
 
 
 def test_delayed_startup_terminalizes_expired_ready_dispatch(

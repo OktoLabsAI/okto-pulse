@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -27,7 +27,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.application.domain_event_delivery import (
     DomainEventDeliveryProcessor,
 )
-from okto_pulse.core.events.types import CardCreated
+from okto_pulse.core.events.types import CardCreated, KGFullRebuildTick
 
 
 NOW = datetime(2026, 7, 11, tzinfo=timezone.utc)
@@ -44,6 +44,17 @@ class FailingHandler:
         board = await session.get(Board, event.board_id)
         board.description = f"must-rollback:{event.card_id}"
         raise RuntimeError("temporary adapter failure")
+
+
+class FlakyFullRebuildHandler:
+    calls = 0
+
+    async def handle(self, event: KGFullRebuildTick, session) -> None:  # noqa: ANN001
+        type(self).calls += 1
+        if type(self).calls == 1:
+            raise RuntimeError("temporary full rebuild failure")
+        board = await session.get(Board, event.board_id)
+        board.description = f"rebuilt:{event.tick_id}"
 
 
 async def _runtime(path: Path):  # noqa: ANN202
@@ -150,6 +161,84 @@ async def test_adapter_rolls_back_handler_effect_before_retry_state(
             assert execution.last_error == "temporary adapter failure"
             assert execution.next_attempt_at is not None
             assert board.description is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_full_rebuild_retry_success_ack_clears_stale_backoff(
+    tmp_path: Path,
+) -> None:
+    engine, session_factory = await _runtime(tmp_path / "full-rebuild-retry.db")
+    event = KGFullRebuildTick(
+        board_id="board-f05",
+        tick_id="full-rebuild-retry",
+        scheduled_at=NOW.isoformat(),
+        force_full_rebuild=True,
+    )
+    async with session_factory() as session:
+        session.add(Board(id="board-f05", name="F05", owner_id="owner-f05"))
+        session.add(
+            DomainEventRow(
+                id=event.event_id,
+                event_type=event.event_type,
+                board_id=event.board_id,
+                actor_id=event.actor_id,
+                actor_type=event.actor_type,
+                payload_json=event.payload_for_storage(),
+                occurred_at=event.occurred_at,
+            )
+        )
+        await session.flush()
+        session.add(
+            DomainEventHandlerExecution(
+                id="exec-full-rebuild-retry",
+                event_id=event.event_id,
+                handler_name=FlakyFullRebuildHandler.__name__,
+                status="pending",
+                attempts=0,
+            )
+        )
+        await session.commit()
+
+    current_time = NOW
+
+    def clock() -> datetime:
+        return current_time
+
+    FlakyFullRebuildHandler.calls = 0
+    processor = DomainEventDeliveryProcessor(
+        CommunitySqlAlchemyDomainEventDeliveryStore(session_factory),
+        handler_resolver=lambda _name, _event: FlakyFullRebuildHandler,
+        clock=clock,
+    )
+    try:
+        assert await processor.process_batch() == 1
+        async with session_factory() as session:
+            pending = await session.get(
+                DomainEventHandlerExecution,
+                "exec-full-rebuild-retry",
+            )
+            assert pending.status == "pending"
+            assert pending.last_error == "temporary full rebuild failure"
+            assert pending.next_attempt_at is not None
+            retry_at = pending.next_attempt_at.replace(tzinfo=timezone.utc)
+
+        current_time = retry_at + timedelta(microseconds=1)
+        assert await processor.process_batch() == 1
+
+        async with session_factory() as session:
+            acknowledged = await session.get(
+                DomainEventHandlerExecution,
+                "exec-full-rebuild-retry",
+            )
+            board = await session.get(Board, "board-f05")
+            assert acknowledged.status == "done"
+            assert acknowledged.attempts == 2
+            assert acknowledged.last_error is None
+            assert acknowledged.next_attempt_at is None
+            assert acknowledged.processed_at.replace(tzinfo=timezone.utc) == current_time
+            assert board.description == "rebuilt:full-rebuild-retry"
     finally:
         await engine.dispose()
 

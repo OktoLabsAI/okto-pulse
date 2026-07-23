@@ -10,6 +10,12 @@ from okto_pulse.community.api import boards as boards_api
 from okto_pulse.community.api import cards as cards_api
 from okto_pulse.community.api import refinements as refinements_api
 from okto_pulse.core.application.use_cases import EntityNotFoundError
+from okto_pulse.core.domain.knowledge_selection import (
+    KnowledgeAssignmentState,
+    KnowledgeOriginClass,
+    KnowledgePropagationMode,
+    KnowledgeSelectionState,
+)
 from okto_pulse.core.models import CardCreate
 from okto_pulse.core.models.knowledge_propagation import (
     DeriveSpecKnowledgeRequest,
@@ -325,3 +331,78 @@ async def test_card_assignment_get_has_stable_not_found_envelope(
 
     assert response.status_code == 404
     assert b'"code":"card_not_found"' in response.body
+
+
+@pytest.mark.asyncio
+async def test_card_assignment_get_projects_current_v2_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assignment = SimpleNamespace(
+        revision_stamp=SimpleNamespace(root_id="root-kb-1"),
+        mode=KnowledgePropagationMode.REFERENCE,
+        origin_class=KnowledgeOriginClass.V2,
+    )
+
+    class _ReadResult:
+        scope_revision = 7
+        selection_state = KnowledgeSelectionState.EXPLICIT_IDS
+        resolved_assignments = (
+            SimpleNamespace(
+                assignment=assignment,
+                state=KnowledgeAssignmentState.ACTIVE,
+            ),
+        )
+
+        @staticmethod
+        def to_dict() -> dict[str, Any]:
+            return {
+                "target": {
+                    "board_id": "board-1",
+                    "target_type": "card",
+                    "target_id": "card-1",
+                },
+                "scope_revision": 7,
+                "v2_active": True,
+                "selection_state": KnowledgeSelectionState.EXPLICIT_IDS,
+                "v2_activated_at": "2026-07-23T12:00:00+00:00",
+                "resolved_assignments": [],
+                "effective_assignment_ids": ["assignment-1"],
+                "effective_legacy_attachments": [],
+                "effective_local_attachments": [],
+                "history_assignments": [],
+                "history_legacy_attachments": [],
+                "tombstones": [],
+                "snapshots": [],
+                "effective_count": 1,
+            }
+
+    async def execute(_self: Any, command: Any, **_kwargs: Any) -> Any:
+        assert command.card_id == "card-1"
+        return SimpleNamespace(read_result=_ReadResult())
+
+    monkeypatch.setattr(
+        cards_api.GetCardKnowledgePropagationUseCase,
+        "execute",
+        execute,
+    )
+
+    response = await cards_api.get_card_knowledge_assignments(
+        "card-1",
+        user_id="user-1",
+        uow=object(),  # type: ignore[arg-type]
+    )
+
+    assert response.model_dump(mode="json") == {
+        "contract_version": 2,
+        "revision": 7,
+        "selection_state": "explicit_ids",
+        "assignments": [
+            {
+                "root_knowledge_id": "root-kb-1",
+                "mode": "reference",
+                "origin_class": "v2",
+                "state": "active",
+                "stale": False,
+            }
+        ],
+    }

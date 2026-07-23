@@ -3,7 +3,7 @@
 Manual endpoint `POST /api/v1/kg/tick/run-now` lets an operator or MCP
 agent schedule an immediate tick without waiting for the periodic cron.
 
-Pattern compartilha a mesma `LeaseProvider` do `_emit_daily_tick` — primeiro
+Pattern compartilha a mesma `LeaseProvider` de `emit_daily_tick` — primeiro
 a chegar ganha; segundo
 recebe HTTP 409. Resposta 202 + tick_id só é retornada depois que o evento
 e suas execuções de handler foram gravados e commitados.
@@ -24,10 +24,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from okto_pulse.community.api.auth_deps import require_principal
-from okto_pulse.community.api.deps import get_unit_of_work, scheduler_control_from_request
+from okto_pulse.community.api.deps import (
+    get_unit_of_work,
+    scheduler_control_from_request,
+)
 from okto_pulse.community.api.kg_health_probe import get_kg_health
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.application.kg_tick import (
+    KGTickAdmissionDeferred,
     refuse_tick_if_degraded as _core_refuse_tick_if_degraded,
 )
 from okto_pulse.core.application.use_cases.board_access import load_accessible_board
@@ -96,12 +100,15 @@ async def _require_tick_access(
     if board_id is None:
         _require_global_tick_access(actor)
         return actor
-    if await load_accessible_board(
-        uow,
-        board_id,
-        actor,
-        allowed_share_permissions={"editor", "admin"},
-    ) is None:
+    if (
+        await load_accessible_board(
+            uow,
+            board_id,
+            actor,
+            allowed_share_permissions={"editor", "admin"},
+        )
+        is None
+    ):
         raise HTTPException(status_code=404, detail="Board not found")
     return actor
 
@@ -112,7 +119,11 @@ class TickRunNowRequest(BaseModel):
 
 
 class TickRunNowResponse(BaseModel):
+    # Legacy correlation root retained for compatible clients.
     tick_id: str
+    correlation_id: str
+    # Concrete durable event ids. A global fan-out has one child per board.
+    tick_ids: list[str]
     status: str  # "running"
     scheduled_at: str  # ISO
 
@@ -151,8 +162,9 @@ async def run_tick_now(
         - ``board_id`` (optional): scope the tick to a single board. When
           omitted, the tick runs globally (same scope as the cron schedule).
         - ``force_full_rebuild`` (optional, default false): zero out
-          ``last_recomputed_at`` for nodes in scope BEFORE the tick, forcing
-          recompute even of fresh nodes (ignores staleness threshold).
+          ``last_recomputed_at`` for nodes in scope inside the durable tick
+          handler before recomputation, forcing even fresh nodes to run
+          (ignores staleness threshold).
 
     Returns 202 after the tick event has been durably scheduled.
     Operator monitors progress via KGHealthView snapshot polling (30s).
@@ -185,51 +197,89 @@ async def run_tick_now(
             },
         )
 
-    # F17 admission gate: refuse a manual tick on a degraded CONCRETE board with
-    # a structured 409 — AFTER the lease check (so tick_already_running keeps
-    # priority, TR7) and BEFORE any tick_id is allocated (no doomed tick). The
-    # global tick (board_id is None) is not health-gated (FR9).
-    refusal = await _refuse_tick_if_degraded(
-        payload.board_id,
-        db,
-        scheduler_control=scheduler_control_from_request(request),
-    )
-    if refusal is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=refusal,
+    schedule_committed = False
+    try:
+        # F17 admission gate: refuse a manual tick on a degraded CONCRETE board
+        # with a structured 409 — AFTER the lease check (so
+        # tick_already_running keeps priority, TR7) and BEFORE any tick_id is
+        # allocated (no doomed tick). The global tick (board_id is None) is not
+        # health-gated (FR9). Every post-acquire branch is inside this
+        # try/finally so a probe refusal or failure cannot strand the lease.
+        refusal = await _refuse_tick_if_degraded(
+            payload.board_id,
+            db,
+            scheduler_control=scheduler_control_from_request(request),
+        )
+        if refusal is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=refusal,
+            )
+
+        tick_id = str(uuid.uuid4())
+        scheduled_at = datetime.now(timezone.utc).isoformat()
+
+        # Audit log — emit BEFORE the background task starts so the trigger
+        # is recorded even if the task crashes immediately.
+        logger.info(
+            "kg.tick.manual_triggered tick_id=%s user=%s board=%s force=%s",
+            tick_id,
+            user,
+            payload.board_id,
+            payload.force_full_rebuild,
+            extra={
+                "event": "kg.tick.manual_triggered",
+                "tick_id": tick_id,
+                "triggered_by_user_id": user,
+                "board_id": payload.board_id,
+                "force_full_rebuild": payload.force_full_rebuild,
+            },
         )
 
-    tick_id = str(uuid.uuid4())
-    scheduled_at = datetime.now(timezone.utc).isoformat()
-
-    # Audit log — emit BEFORE the background task starts so the trigger
-    # is recorded even if the task crashes immediately.
-    logger.info(
-        "kg.tick.manual_triggered tick_id=%s user=%s board=%s force=%s",
-        tick_id, user, payload.board_id, payload.force_full_rebuild,
-        extra={
-            "event": "kg.tick.manual_triggered",
-            "tick_id": tick_id,
-            "triggered_by_user_id": user,
-            "board_id": payload.board_id,
-            "force_full_rebuild": payload.force_full_rebuild,
-        },
-    )
-
-    try:
         try:
-            await db.services.kg.dispatch_manual_tick(
+            dispatched_tick_ids = await db.services.kg.dispatch_manual_tick(
                 tick_id=tick_id,
                 board_id=payload.board_id,
                 force_full_rebuild=payload.force_full_rebuild,
+                scheduled_at=scheduled_at,
             )
+            tick_ids = [str(value) for value in dispatched_tick_ids]
+            if payload.board_id is not None and tick_id not in tick_ids:
+                raise RuntimeError(
+                    "concrete tick dispatch did not return its durable event id"
+                )
             await db.commit()
+            schedule_committed = True
+        except KGTickAdmissionDeferred as exc:
+            await db.rollback()
+            logger.info(
+                "kg.tick.manual_deferred reason=%s board=%s",
+                exc.reason_code,
+                payload.board_id,
+                extra={
+                    "event": "kg.tick.manual_deferred",
+                    "reason": exc.reason_code,
+                    "board_id": payload.board_id,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": exc.code,
+                    "reason": exc.reason_code,
+                    "retryable": True,
+                    "message": (
+                        "KG tick deferred while Global Discovery recovery "
+                        "owns the mutation fence"
+                    ),
+                },
+            ) from exc
         except Exception as exc:
             await db.rollback()
             logger.error(
                 "kg.tick.manual_schedule_failed tick_id=%s err=%s",
-                tick_id, exc,
+                tick_id,
+                exc,
                 extra={
                     "event": "kg.tick.manual_schedule_failed",
                     "tick_id": tick_id,
@@ -249,13 +299,32 @@ async def run_tick_now(
                     "detail": str(exc),
                 },
             ) from exc
+        return TickRunNowResponse(
+            tick_id=tick_id,
+            correlation_id=tick_id,
+            tick_ids=tick_ids,
+            status="running",
+            scheduled_at=scheduled_at,
+        )
     finally:
-        await lease_provider.release(lease)
-
-    return TickRunNowResponse(
-        tick_id=tick_id,
-        status="running",
-        scheduled_at=scheduled_at,
-    )
-
-
+        try:
+            await lease_provider.release(lease)
+        except Exception as exc:  # noqa: BLE001 - never mask the primary result
+            # In particular, a release failure after the event commit must not
+            # turn a durable 202 into a 500 that invites a duplicate retry.
+            # The lease has a finite TTL; surface the coordination fault to
+            # operators while preserving the already-committed outcome.
+            logger.error(
+                "kg.tick.manual_lease_release_failed board=%s "
+                "schedule_committed=%s err=%s",
+                payload.board_id,
+                schedule_committed,
+                exc,
+                exc_info=True,
+                extra={
+                    "event": "kg.tick.manual_lease_release_failed",
+                    "board_id": payload.board_id,
+                    "schedule_committed": schedule_committed,
+                    "error": str(exc),
+                },
+            )

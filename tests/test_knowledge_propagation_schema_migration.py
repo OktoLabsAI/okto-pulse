@@ -19,6 +19,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 import okto_pulse.community.adapters.relational_schema_steps as schema_steps
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -138,6 +139,18 @@ def test_models_expose_the_exact_additive_record_families() -> None:
     }
     assert KnowledgeSnapshotRecord.__table__.c.content_bytes.nullable is False
     assert KnowledgeMutationAttemptRecord.__table__.c.scope_id.nullable is True
+    assert KnowledgePropagationScopeRecord.__table__.c.v2_activated_at.nullable is True
+    for model in (
+        KnowledgeMutationLedgerRecord,
+        KnowledgeMutationAttemptRecord,
+    ):
+        operation_check = next(
+            constraint
+            for constraint in model.__table__.constraints
+            if isinstance(constraint, CheckConstraint)
+            and str(constraint.name).endswith("_operation_kind")
+        )
+        assert "relink_reset" in str(operation_check.sqltext)
 
 
 @pytest.mark.asyncio
@@ -250,6 +263,284 @@ async def test_migration_rejects_owned_trigger_drift(
         )
 
     with pytest.raises(RuntimeError, match="trigger is corrupt"):
+        await schema_steps._migrate_knowledge_propagation_v2_schema()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_backfills_activation_and_rebuilds_relink_checks_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = await _legacy_engine(
+        tmp_path / "activation-and-relink-upgrade.sqlite3",
+        monkeypatch,
+    )
+
+    def create_pre_imp5_contract(sync_connection) -> None:
+        for model in OWNED_MODELS:
+            table = model.__table__
+            ddl = str(
+                CreateTable(table).compile(
+                    dialect=sync_connection.dialect,
+                )
+            )
+            if table is KnowledgePropagationScopeRecord.__table__:
+                ddl = ddl.replace("\n\tv2_activated_at DATETIME, ", "")
+            elif table in {
+                KnowledgeMutationLedgerRecord.__table__,
+                KnowledgeMutationAttemptRecord.__table__,
+            }:
+                ddl = ddl.replace(", 'relink_reset'", "")
+            sync_connection.exec_driver_sql(ddl)
+            for index in sorted(table.indexes, key=lambda item: str(item.name)):
+                sync_connection.execute(CreateIndex(index))
+
+    async with engine.begin() as connection:
+        await connection.run_sync(create_pre_imp5_contract)
+        await connection.execute(
+            text(
+                "INSERT INTO knowledge_propagation_scopes "
+                "(id, board_id, target_type, target_id, scope_revision, "
+                "v2_active, selection_state, created_at, updated_at) VALUES "
+                "('scope-active', 'board-1', 'card', 'card-1', 2, 1, "
+                "'explicit_ids', '2026-07-23 09:00:00', "
+                "'2026-07-23 13:00:00'), "
+                "('scope-grandfather', 'board-1', 'spec', 'spec-history', 1, "
+                "0, NULL, '2026-07-23 08:00:00', '2026-07-23 08:00:00')"
+            )
+        )
+        for operation_id, key, previous, revision, applied_at in (
+            ("operation-active-1", "active-1", 0, 1, "2026-07-23 10:00:00"),
+            ("operation-active-2", "active-2", 1, 2, "2026-07-23 12:00:00"),
+        ):
+            await connection.execute(
+                text(
+                    "INSERT INTO knowledge_mutation_ledger "
+                    "(operation_id, scope_id, board_id, target_type, "
+                    "target_id, idempotency_key, request_hash, "
+                    "operation_kind, actor_id, previous_revision, revision, "
+                    "outcome, details, applied_at, recorded_at) VALUES "
+                    "(:operation_id, 'scope-active', 'board-1', 'card', "
+                    "'card-1', :key, :digest, 'replace', 'actor-1', "
+                    ":previous, :revision, 'applied', '{}', :applied_at, "
+                    ":applied_at)"
+                ),
+                {
+                    "operation_id": operation_id,
+                    "key": key,
+                    "digest": "a" * 64,
+                    "previous": previous,
+                    "revision": revision,
+                    "applied_at": applied_at,
+                },
+            )
+        await connection.execute(
+            text(
+                "INSERT INTO knowledge_mutation_ledger "
+                "(operation_id, scope_id, board_id, target_type, target_id, "
+                "idempotency_key, request_hash, operation_kind, actor_id, "
+                "previous_revision, revision, outcome, details, applied_at, "
+                "recorded_at) VALUES "
+                "('operation-grandfather', 'scope-grandfather', 'board-1', "
+                "'spec', 'spec-history', 'grandfather', :digest, "
+                "'grandfather', 'system:migration', 0, 1, 'grandfathered', "
+                "'{}', '2026-07-23 08:00:00', '2026-07-23 08:00:00')"
+            ),
+            {"digest": "b" * 64},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO knowledge_mutation_attempts "
+                "(attempt_id, scope_id, board_id, target_type, target_id, "
+                "idempotency_key, request_hash, operation_kind, actor_id, "
+                "outcome, recorded_at, original_operation_id, details) "
+                "VALUES ('attempt-existing', 'scope-active', 'board-1', "
+                "'card', 'card-1', 'active-replay', :digest, 'replace', "
+                "'actor-1', 'replayed', '2026-07-23 12:01:00', "
+                "'operation-active-2', '{}')"
+            ),
+            {"digest": "a" * 64},
+        )
+
+    assert await schema_steps._migrate_knowledge_propagation_v2_schema() is None
+    assert await schema_steps._migrate_knowledge_propagation_v2_schema() == "skipped"
+
+    async with engine.begin() as connection:
+        boundaries = (
+            (
+                await connection.execute(
+                    text(
+                        "SELECT id, v2_activated_at "
+                        "FROM knowledge_propagation_scopes ORDER BY id"
+                    )
+                )
+            )
+            .tuples()
+            .all()
+        )
+        assert boundaries == [
+            ("scope-active", "2026-07-23 10:00:00"),
+            ("scope-grandfather", None),
+        ]
+        assert (
+            await connection.execute(
+                text(
+                    "SELECT operation_id FROM knowledge_mutation_ledger "
+                    "ORDER BY operation_id"
+                )
+            )
+        ).scalars().all() == [
+            "operation-active-1",
+            "operation-active-2",
+            "operation-grandfather",
+        ]
+        assert (
+            await connection.execute(
+                text(
+                    "SELECT attempt_id FROM knowledge_mutation_attempts "
+                    "ORDER BY attempt_id"
+                )
+            )
+        ).scalars().all() == ["attempt-existing"]
+        await connection.execute(
+            text(
+                "INSERT INTO knowledge_mutation_ledger "
+                "(operation_id, scope_id, board_id, target_type, target_id, "
+                "idempotency_key, request_hash, operation_kind, actor_id, "
+                "previous_revision, revision, outcome, details, applied_at, "
+                "recorded_at) VALUES "
+                "('operation-relink', 'scope-active', 'board-1', 'card', "
+                "'card-1', 'relink', :digest, 'relink_reset', 'actor-1', "
+                "2, 3, 'applied', '{}', '2026-07-23 14:00:00', "
+                "'2026-07-23 14:00:00')"
+            ),
+            {"digest": "c" * 64},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO knowledge_mutation_attempts "
+                "(attempt_id, scope_id, board_id, target_type, target_id, "
+                "idempotency_key, request_hash, operation_kind, actor_id, "
+                "outcome, recorded_at, original_operation_id, details) "
+                "VALUES ('attempt-relink', 'scope-active', 'board-1', "
+                "'card', 'card-1', 'relink-replay', :digest, "
+                "'relink_reset', 'actor-1', 'replayed', "
+                "'2026-07-23 14:01:00', 'operation-relink', '{}')"
+            ),
+            {"digest": "c" * 64},
+        )
+        assert not (await connection.exec_driver_sql("PRAGMA foreign_key_check")).all()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_activation_boundary_is_first_activation_only_and_immutable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = await _legacy_engine(
+        tmp_path / "activation-invariants.sqlite3",
+        monkeypatch,
+    )
+    await schema_steps._migrate_knowledge_propagation_v2_schema()
+
+    await _assert_statement_rejected(
+        engine,
+        "INSERT INTO knowledge_propagation_scopes "
+        "(id, board_id, target_type, target_id, scope_revision, v2_active, "
+        "selection_state, v2_activated_at) VALUES "
+        "('bad-active', 'board-1', 'card', 'card-bad-active', 1, 1, "
+        "'omitted', NULL)",
+        match="v2_activation_invalid",
+    )
+    await _assert_statement_rejected(
+        engine,
+        "INSERT INTO knowledge_propagation_scopes "
+        "(id, board_id, target_type, target_id, scope_revision, v2_active, "
+        "selection_state, v2_activated_at) VALUES "
+        "('bad-grandfather', 'board-1', 'card', 'card-bad-history', 1, 0, "
+        "NULL, '2026-07-23 10:00:00')",
+        match="v2_activation_invalid",
+    )
+
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO knowledge_propagation_scopes "
+                "(id, board_id, target_type, target_id, scope_revision, "
+                "v2_active, selection_state, v2_activated_at) VALUES "
+                "('scope-direct', 'board-1', 'card', 'card-direct', 1, 1, "
+                "'omitted', '2026-07-23 10:00:00'), "
+                "('scope-transition', 'board-1', 'card', 'card-transition', "
+                "1, 0, NULL, NULL)"
+            )
+        )
+        await connection.execute(
+            text(
+                "UPDATE knowledge_propagation_scopes "
+                "SET v2_active = 1, selection_state = 'omitted', "
+                "v2_activated_at = '2026-07-23 11:00:00' "
+                "WHERE id = 'scope-transition'"
+            )
+        )
+
+    for statement in (
+        "UPDATE knowledge_propagation_scopes "
+        "SET v2_activated_at = '2026-07-23 12:00:00' "
+        "WHERE id = 'scope-direct'",
+        "UPDATE knowledge_propagation_scopes SET v2_activated_at = NULL "
+        "WHERE id = 'scope-direct'",
+        "UPDATE knowledge_propagation_scopes "
+        "SET v2_active = 0, selection_state = NULL, v2_activated_at = NULL "
+        "WHERE id = 'scope-transition'",
+        "UPDATE knowledge_propagation_scopes "
+        "SET v2_active = 0, selection_state = NULL "
+        "WHERE id = 'scope-transition'",
+    ):
+        await _assert_statement_rejected(
+            engine,
+            statement,
+            match="v2_activation_immutable",
+        )
+
+    async with engine.begin() as connection:
+        rows = (
+            (
+                await connection.execute(
+                    text(
+                        "SELECT id, v2_active, v2_activated_at "
+                        "FROM knowledge_propagation_scopes "
+                        "WHERE id IN ('scope-direct', 'scope-transition') "
+                        "ORDER BY id"
+                    )
+                )
+            )
+            .tuples()
+            .all()
+        )
+        assert rows == [
+            ("scope-direct", 1, "2026-07-23 10:00:00"),
+            ("scope-transition", 1, "2026-07-23 11:00:00"),
+        ]
+
+    activation_update_trigger = next(
+        name
+        for name in schema_steps.knowledge_propagation_v2_trigger_manifest()
+        if name.endswith("_activation_update")
+    )
+    async with engine.begin() as connection:
+        await connection.exec_driver_sql(
+            f'DROP TRIGGER "{activation_update_trigger}"'
+        )
+        await connection.execute(
+            text(
+                "UPDATE knowledge_propagation_scopes "
+                "SET v2_active = 0, selection_state = NULL "
+                "WHERE id = 'scope-direct'"
+            )
+        )
+    with pytest.raises(RuntimeError, match="inconsistent v2 authority"):
         await schema_steps._migrate_knowledge_propagation_v2_schema()
     await engine.dispose()
 

@@ -44,6 +44,7 @@ from okto_pulse.core.domain.knowledge_fingerprint import (
 from okto_pulse.core.domain.knowledge_selection import (
     KnowledgeAssignment,
     KnowledgeOriginClass,
+    KnowledgePropagationMode,
     KnowledgeRelevanceLink,
     KnowledgeTargetType,
 )
@@ -51,6 +52,7 @@ from okto_pulse.core.domain.resource_revision import ResourceRevisionStamp
 from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgeIdempotencyLookup,
     KnowledgeLegacyAttachment,
+    KnowledgeLocalAttachment,
     KnowledgeMutationAttempt,
     KnowledgeMutationKind,
     KnowledgeMutationLedgerEntry,
@@ -75,6 +77,7 @@ from okto_pulse.core.ports.knowledge_propagation import (
 from okto_pulse.core.services.knowledge_propagation import (
     KnowledgeGrandfatherAttachment,
     KnowledgeGrandfatherEvidence,
+    KnowledgePropagationService,
 )
 
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
@@ -662,6 +665,58 @@ def _legacy_attachment(
     )
 
 
+def _local_attachment(
+    item: object,
+    *,
+    attached_at: datetime,
+) -> KnowledgeLocalAttachment:
+    content_bytes, content_sha256 = _kb_content(item)
+    return KnowledgeLocalAttachment(
+        source_knowledge_id=_kb_identity(item),
+        revision_stamp=_selectable_kb_stamp(
+            item,
+            content_sha256=content_sha256,
+        ),
+        attached_at=_as_utc(attached_at),
+        content_bytes=content_bytes,
+    )
+
+
+def _is_direct_target_local_attachment(item: object) -> bool:
+    """Distinguish direct v2 authorship from a forbidden physical copy.
+
+    Timestamp evidence proves only *when* a row appeared. Legacy propagation
+    bugs could still create a copied row after v2 activation, so any durable
+    upstream/copy provenance keeps that row in history. A direct row may carry
+    an explicit self-root because some writers normalize ``root=id``.
+    """
+
+    identity = _kb_identity(item)
+    root_id = _first_kb_value(item, "root_source_kb_id")
+    if root_id not in (None, "", identity):
+        return False
+    if any(
+        _first_kb_value(item, field_name) not in (None, "")
+        for field_name in (
+            "source_kb_id",
+            "immediate_parent_kb_id",
+            "source_type",
+            "source_id",
+            "source_title",
+        )
+    ):
+        return False
+    for field_name in ("source", "source_ref", "origin_ref"):
+        value = _kb_value(item, field_name)
+        if value in (None, ""):
+            continue
+        normalized = str(value).strip().lower()
+        if normalized.startswith(("copied_from_", "copied-from-")):
+            return False
+    description = str(_kb_value(item, "description") or "").strip().lower()
+    return not description.startswith("[propagated from parent]")
+
+
 def _grandfathered_classifications(
     details: object,
 ) -> dict[str, Mapping[str, object]]:
@@ -849,6 +904,140 @@ def _selectable_source(
     )
 
 
+def _current_physical_source(
+    candidates: Sequence[object],
+    *,
+    root_id: str,
+    known_parent_root_by_id: Mapping[str, str] | None = None,
+) -> object | None:
+    """Resolve the sole current leaf of one complete linear root, fail-closed.
+
+    A copied parent row can remain physically present after a newer revision
+    is materialized.  Merely finding one leaf is insufficient: a disconnected
+    cycle could otherwise coexist with that leaf and be silently ignored.
+    Every candidate must therefore belong to the requested root and participate
+    in one connected, acyclic chain.
+
+    The oldest row in the table can legitimately point outside this physical
+    table when it was copied from the preceding entity level.  That one anchor
+    is accepted only when it points at the canonical root itself or carries the
+    durable ``source_type``/``source_id`` copy evidence written by propagation.
+    Any other missing parent is a dangling/cross-root reference and fails
+    closed.
+    """
+
+    if not candidates:
+        return None
+
+    known_parent_roots = dict(known_parent_root_by_id or {})
+    by_id: dict[str, object] = {}
+    parent_by_id: dict[str, str | None] = {}
+    malformed_reasons: dict[str, str] = {}
+    for item in candidates:
+        identity = _kb_identity(item)
+        if identity in by_id:
+            malformed_reasons[identity] = "duplicate_identity"
+            continue
+        by_id[identity] = item
+
+        immediate_parent = _kb_value(item, "immediate_parent_kb_id")
+        legacy_parent = _kb_value(item, "source_kb_id")
+        if (
+            immediate_parent not in (None, "")
+            and legacy_parent not in (None, "")
+            and str(immediate_parent) != str(legacy_parent)
+        ):
+            malformed_reasons[identity] = "parent_alias_conflict"
+        parent = (
+            immediate_parent
+            if immediate_parent not in (None, "")
+            else legacy_parent
+        )
+        parent_by_id[identity] = (
+            None if parent in (None, "") else str(parent)
+        )
+
+        if _legacy_kb_stamp(item).root_id != root_id:
+            malformed_reasons[identity] = "root_mismatch"
+
+    candidate_ids = set(by_id)
+    children_by_id: dict[str, list[str]] = {
+        identity: [] for identity in candidate_ids
+    }
+    anchors: list[str] = []
+    dangling_parent_ids: dict[str, str] = {}
+    for identity, item in by_id.items():
+        parent_id = parent_by_id[identity]
+        if parent_id is None:
+            anchors.append(identity)
+            continue
+        if parent_id in candidate_ids:
+            children_by_id[parent_id].append(identity)
+            continue
+        if parent_id in known_parent_roots:
+            malformed_reasons[identity] = "cross_root_parent"
+            continue
+
+        propagated_anchor = (
+            _first_kb_value(item, "source_type") not in (None, "")
+            and _first_kb_value(item, "source_id") not in (None, "")
+        )
+        if parent_id == root_id or propagated_anchor:
+            anchors.append(identity)
+        else:
+            dangling_parent_ids[identity] = parent_id
+
+    branch_parent_ids = sorted(
+        identity
+        for identity, children in children_by_id.items()
+        if len(children) > 1
+    )
+    leaves = tuple(
+        by_id[identity]
+        for identity, children in children_by_id.items()
+        if not children
+    )
+
+    visited: set[str] = set()
+    terminal_anchor: str | None = None
+    if len(leaves) == 1:
+        cursor = _kb_identity(leaves[0])
+        while cursor not in visited:
+            visited.add(cursor)
+            parent_id = parent_by_id[cursor]
+            if parent_id not in candidate_ids:
+                terminal_anchor = cursor
+                break
+            cursor = cast(str, parent_id)
+
+    complete_linear_chain = (
+        not malformed_reasons
+        and not dangling_parent_ids
+        and not branch_parent_ids
+        and len(anchors) == 1
+        and len(leaves) == 1
+        and terminal_anchor == anchors[0]
+        and visited == candidate_ids
+    )
+    if not complete_linear_chain:
+        raise KnowledgePropagationPortError(
+            "knowledge_propagation_source_revision_ambiguous",
+            "the source root is not one complete linear physical revision chain",
+            details={
+                "root_id": root_id,
+                "candidate_ids": sorted(candidate_ids),
+                "leaf_ids": sorted(_kb_identity(item) for item in leaves),
+                "anchor_ids": sorted(anchors),
+                "visited_ids": sorted(visited),
+                "branch_parent_ids": branch_parent_ids,
+                "dangling_parent_ids": dict(sorted(dangling_parent_ids.items())),
+                "malformed_reasons": dict(sorted(malformed_reasons.items())),
+                "known_parent_roots": dict(sorted(known_parent_roots.items())),
+            },
+        )
+    return leaves[0]
+
+
 class CommunitySqlAlchemyKnowledgePropagationStore:
     """SQLAlchemy implementation of both propagation and rejected-audit ports."""
 
@@ -999,6 +1188,14 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         )
         if not source_ids:
             return
+        if await self._spec_parent_uses_v2_authority(
+            context,
+            evidence.parent,
+        ):
+            # _fence_parent_evidence already write-locks the Spec target. Every
+            # Spec propagation mutation locks that same row before its scope
+            # CAS, so a fresh effective read below is the authoritative fence.
+            return
         await self._lock_source_ids(
             context,
             parent=evidence.parent,
@@ -1054,11 +1251,12 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         if not expected:
             return
         source_ids = tuple(sorted(expected))
-        await self._lock_source_ids(
-            context,
-            parent=parent,
-            source_ids=source_ids,
-        )
+        if not await self._spec_parent_uses_v2_authority(context, parent):
+            await self._lock_source_ids(
+                context,
+                parent=parent,
+                source_ids=source_ids,
+            )
         fresh = await self.load_parent_evidence(
             context,
             KnowledgeParentLookup(
@@ -1207,6 +1405,178 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             )
         )
 
+    @staticmethod
+    async def _spec_parent_uses_v2_authority(
+        context: Any,
+        parent: KnowledgeParentKey,
+    ) -> bool:
+        if parent.parent_type is not KnowledgeParentType.SPEC:
+            return False
+        matched = (
+            await context.execute(
+                select(KnowledgePropagationScopeRecord.id).where(
+                    KnowledgePropagationScopeRecord.board_id == parent.board_id,
+                    KnowledgePropagationScopeRecord.target_type
+                    == KnowledgeTargetType.SPEC.value,
+                    KnowledgePropagationScopeRecord.target_id == parent.parent_id,
+                    KnowledgePropagationScopeRecord.v2_active.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        return matched is not None
+
+    async def _effective_spec_parent_sources(
+        self,
+        context: Any,
+        *,
+        parent: KnowledgeParentKey,
+        requested_ids: tuple[str, ...],
+    ) -> tuple[KnowledgeSelectableSource, ...] | None:
+        """Resolve Card sources from the Spec's effective v2 authority.
+
+        ``None`` means the parent has no active v2 boundary and the caller may
+        use the legacy physical projection.  An empty tuple is authoritative:
+        the Spec is v2-active but has no effective Knowledge to expose.
+        """
+
+        if not await self._spec_parent_uses_v2_authority(context, parent):
+            return None
+        if not requested_ids:
+            return ()
+
+        read = await KnowledgePropagationService(port=self).read(
+            context,
+            KnowledgeTargetKey(
+                board_id=parent.board_id,
+                target_type=KnowledgeTargetType.SPEC,
+                target_id=parent.parent_id,
+            ),
+        )
+        if not read.v2_active:
+            raise KnowledgePropagationPortError(
+                "knowledge_propagation_parent_authority_changed",
+                "the parent Spec v2 authority changed during source resolution",
+                details=parent.to_dict(),
+            )
+
+        # One logical representative per root. Target-local Spec attachments
+        # shadow an inherited assignment of the same root, matching Resource
+        # Lineage's direct-over-inherited rule.
+        representatives: dict[
+            str,
+            tuple[
+                int,
+                str,
+                ResourceRevisionStamp,
+                bytes,
+                frozenset[str],
+            ],
+        ] = {}
+        for item in read.effective_assignments:
+            content_bytes = item.content_bytes
+            if content_bytes is None:
+                raise KnowledgePropagationPortError(
+                    "knowledge_propagation_parent_effective_source_unreadable",
+                    "an effective parent assignment has no canonical content",
+                    details={
+                        **parent.to_dict(),
+                        "assignment_id": item.assignment.assignment_id,
+                    },
+                )
+            assignment = item.assignment
+            root = item.revision_stamp.root_id
+            source_id = assignment.source_knowledge_id
+            aliases = {root}
+            if assignment.mode is KnowledgePropagationMode.REFERENCE:
+                current_source_id = item.resolved_source_knowledge_id
+                if current_source_id is not None:
+                    source_id = current_source_id
+                    aliases.add(current_source_id)
+            else:
+                # A parent Snapshot's frozen source remains its effective
+                # identity until that parent assignment is explicitly
+                # refreshed. The upstream physical "current" id is only stale
+                # evidence and must not become a downstream selection token.
+                aliases.add(assignment.source_knowledge_id)
+            candidate = (
+                0,
+                source_id,
+                item.revision_stamp,
+                content_bytes,
+                frozenset(aliases),
+            )
+            prior = representatives.get(root)
+            if prior is not None and prior != candidate:
+                raise KnowledgePropagationPortError(
+                    "knowledge_propagation_parent_effective_root_ambiguous",
+                    "the parent Spec exposes multiple inherited resources for one root",
+                    details={
+                        **parent.to_dict(),
+                        "root_id": root,
+                    },
+                )
+            representatives[root] = candidate
+
+        for item in read.effective_local_attachments:
+            if item.content_bytes is None:
+                raise KnowledgePropagationPortError(
+                    "knowledge_propagation_parent_effective_source_unreadable",
+                    "an effective parent-local attachment has no canonical content",
+                    details={
+                        **parent.to_dict(),
+                        "source_knowledge_id": item.source_knowledge_id,
+                    },
+                )
+            root = item.revision_stamp.root_id
+            candidate = (
+                1,
+                item.source_knowledge_id,
+                item.revision_stamp,
+                item.content_bytes,
+                frozenset((root, item.source_knowledge_id)),
+            )
+            prior = representatives.get(root)
+            if prior is not None and prior[0] == 1 and prior != candidate:
+                raise KnowledgePropagationPortError(
+                    "knowledge_propagation_parent_effective_root_ambiguous",
+                    "the parent Spec exposes multiple local resources for one root",
+                    details={
+                        **parent.to_dict(),
+                        "root_id": root,
+                    },
+                )
+            representatives[root] = candidate
+
+        resolved: list[KnowledgeSelectableSource] = []
+        for requested_id in requested_ids:
+            matches = tuple(
+                candidate
+                for candidate in representatives.values()
+                if requested_id in candidate[4]
+            )
+            if len(matches) > 1:
+                raise KnowledgePropagationPortError(
+                    "knowledge_propagation_parent_source_alias_ambiguous",
+                    "a parent source token resolves to multiple effective roots",
+                    details={
+                        **parent.to_dict(),
+                        "requested_knowledge_id": requested_id,
+                    },
+                )
+            if not matches:
+                continue
+            _priority, source_id, stamp, content_bytes, _aliases = matches[0]
+            resolved.append(
+                KnowledgeSelectableSource(
+                    requested_knowledge_id=requested_id,
+                    source_knowledge_id=source_id,
+                    revision_stamp=stamp,
+                    content_bytes=content_bytes,
+                    source_deleted=False,
+                )
+            )
+        return tuple(resolved)
+
     async def load_parent_evidence(
         self,
         context: Any,
@@ -1237,17 +1607,25 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             acceptance_criterion_ids: tuple[str, ...] = ()
             test_scenario_ids: tuple[str, ...] = ()
             if same_board:
-                source_rows = await self._parent_source_rows(
+                effective_spec_sources = await self._effective_spec_parent_sources(
                     context,
                     parent=request.parent,
                     requested_ids=request.source_knowledge_ids,
                 )
-                by_id = {str(item.id): item for item in source_rows}
-                sources = tuple(
-                    _selectable_source(source_id, by_id[source_id])
-                    for source_id in request.source_knowledge_ids
-                    if source_id in by_id
-                )
+                if effective_spec_sources is None:
+                    source_rows = await self._parent_source_rows(
+                        context,
+                        parent=request.parent,
+                        requested_ids=request.source_knowledge_ids,
+                    )
+                    by_id = {str(item.id): item for item in source_rows}
+                    sources = tuple(
+                        _selectable_source(source_id, by_id[source_id])
+                        for source_id in request.source_knowledge_ids
+                        if source_id in by_id
+                    )
+                else:
+                    sources = effective_spec_sources
                 if request.parent.parent_type is KnowledgeParentType.SPEC:
                     assert isinstance(row, Spec)
                     linked_spec_id = str(row.id)
@@ -1363,13 +1741,17 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             )
         ).scalar_one_or_none()
 
-    async def _legacy_attachments(
+    async def _physical_attachments(
         self,
         context: Any,
         *,
         target: KnowledgeTargetKey,
         target_row: Spec | Card,
-    ) -> tuple[KnowledgeLegacyAttachment, ...]:
+        v2_activated_at: datetime | None,
+    ) -> tuple[
+        tuple[KnowledgeLegacyAttachment, ...],
+        tuple[KnowledgeLocalAttachment, ...],
+    ]:
         grandfathered = await self._latest_grandfather_classifications(
             context,
             target,
@@ -1389,19 +1771,39 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 .scalars()
                 .all()
             )
-            return tuple(
-                _legacy_attachment(
+            legacy: list[KnowledgeLegacyAttachment] = []
+            local: list[KnowledgeLocalAttachment] = []
+            activation = None if v2_activated_at is None else _as_utc(v2_activated_at)
+            for row in rows:
+                durable_classification = _physical_grandfather_record(
+                    grandfathered,
                     row,
-                    _physical_grandfather_record(
-                        grandfathered,
-                        row,
-                        storage_kind="entity_row",
-                        table="spec_knowledge_bases",
-                        owner_id=target.target_id,
-                    ),
+                    storage_kind="entity_row",
+                    table="spec_knowledge_bases",
+                    owner_id=target.target_id,
                 )
-                for row in rows
-            )
+                created_at = getattr(row, "created_at", None)
+                if (
+                    durable_classification is None
+                    and activation is not None
+                    and isinstance(created_at, datetime)
+                    and _as_utc(created_at) > activation
+                    and _is_direct_target_local_attachment(row)
+                ):
+                    local.append(
+                        _local_attachment(
+                            row,
+                            attached_at=created_at,
+                        )
+                    )
+                else:
+                    legacy.append(
+                        _legacy_attachment(
+                            row,
+                            durable_classification,
+                        )
+                    )
+            return tuple(legacy), tuple(local)
 
         values = target_row.knowledge_bases
         if values is None:
@@ -1414,23 +1816,26 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 "card knowledge_bases must contain only JSON objects",
                 details=target.to_dict(),
             )
-        return tuple(
-            sorted(
-                (
-                    _legacy_attachment(
-                        item,
-                        _physical_grandfather_record(
-                            grandfathered,
+        return (
+            tuple(
+                sorted(
+                    (
+                        _legacy_attachment(
                             item,
-                            storage_kind="card_json",
-                            table="cards",
-                            owner_id=target.target_id,
-                        ),
-                    )
-                    for item in values
-                ),
-                key=lambda item: item.source_knowledge_id,
-            )
+                            _physical_grandfather_record(
+                                grandfathered,
+                                item,
+                                storage_kind="card_json",
+                                table="cards",
+                                owner_id=target.target_id,
+                            ),
+                        )
+                        for item in values
+                    ),
+                    key=lambda item: item.source_knowledge_id,
+                )
+            ),
+            (),
         )
 
     async def _latest_grandfather_classifications(
@@ -1540,6 +1945,17 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             spec_id = cast(Card, target_row).spec_id
             if not spec_id:
                 return ()
+            effective_spec_sources = await self._effective_spec_parent_sources(
+                context,
+                parent=KnowledgeParentKey(
+                    board_id=target.board_id,
+                    parent_type=KnowledgeParentType.SPEC,
+                    parent_id=str(spec_id),
+                ),
+                requested_ids=requested_ids,
+            )
+            if effective_spec_sources is not None:
+                return effective_spec_sources
             model = SpecKnowledgeBase
             parent_predicates = (
                 SpecKnowledgeBase.spec_id == spec_id,
@@ -1579,7 +1995,7 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         physical_ids = set(requested_ids)
         physical_ids.update(root_bindings.values())
         root_ids = set(root_bindings)
-        rows = (
+        initial_rows = (
             (
                 await context.execute(
                     statement.where(
@@ -1594,7 +2010,73 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             .scalars()
             .all()
         )
-        by_id = {str(row.id): row for row in rows}
+        discovered_roots = set(root_ids)
+        for row in initial_rows:
+            _content, content_hash = _kb_content(row)
+            discovered_roots.add(
+                _selectable_kb_stamp(
+                    row,
+                    content_sha256=content_hash,
+                ).root_id
+            )
+        expanded_rows: Sequence[object] = ()
+        if discovered_roots:
+            expanded_rows = (
+                (
+                    await context.execute(
+                        statement.where(
+                            *parent_predicates,
+                            or_(
+                                model.id.in_(tuple(sorted(discovered_roots))),
+                                model.root_source_kb_id.in_(
+                                    tuple(sorted(discovered_roots))
+                                ),
+                            ),
+                        ).order_by(model.id.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        by_id = {
+            str(row.id): row
+            for row in (*initial_rows, *expanded_rows)
+        }
+        rows = tuple(by_id[identity] for identity in sorted(by_id))
+
+        external_parent_ids = {
+            str(parent_id)
+            for row in rows
+            if (
+                parent_id := _first_kb_value(
+                    row,
+                    "immediate_parent_kb_id",
+                    "source_kb_id",
+                )
+            )
+            not in (None, "")
+            and str(parent_id) not in by_id
+        }
+        known_parent_roots: dict[str, str] = {}
+        if external_parent_ids:
+            same_table_parents = (
+                (
+                    await context.execute(
+                        select(model).where(
+                            model.id.in_(tuple(sorted(external_parent_ids)))
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for row in same_table_parents:
+                _content, content_hash = _kb_content(row)
+                known_parent_roots[str(row.id)] = _selectable_kb_stamp(
+                    row,
+                    content_sha256=content_hash,
+                ).root_id
+
         by_root: dict[str, list[object]] = {}
         for row in rows:
             _content, content_hash = _kb_content(row)
@@ -1604,26 +2086,51 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             ).root_id
             by_root.setdefault(root_id, []).append(row)
 
+        bound_root_by_source = {
+            source_id: root_id for root_id, source_id in root_bindings.items()
+        }
         resolved: list[KnowledgeSelectableSource] = []
         for requested_id in requested_ids:
-            bound_source_id = root_bindings.get(requested_id)
-            row = None if bound_source_id is None else by_id.get(bound_source_id)
-            if row is not None:
-                _content, content_hash = _kb_content(row)
-                if (
-                    _selectable_kb_stamp(
-                        row,
-                        content_sha256=content_hash,
-                    ).root_id
-                    != requested_id
-                ):
-                    row = None
+            lookup_root = (
+                requested_id
+                if requested_id in root_bindings
+                else bound_root_by_source.get(requested_id)
+            )
+            row = (
+                None
+                if lookup_root is None
+                else _current_physical_source(
+                    by_root.get(lookup_root, ()),
+                    root_id=lookup_root,
+                    known_parent_root_by_id=known_parent_roots,
+                )
+            )
             if row is None and requested_id in by_id:
-                row = by_id[requested_id]
+                exact = by_id[requested_id]
+                _content, content_hash = _kb_content(exact)
+                exact_root = _selectable_kb_stamp(
+                    exact,
+                    content_sha256=content_hash,
+                ).root_id
+                current = _current_physical_source(
+                    by_root.get(exact_root, ()),
+                    root_id=exact_root,
+                    known_parent_root_by_id=known_parent_roots,
+                )
+                # A new request by physical id is valid only for the current
+                # leaf. Existing assignments carry an explicit root binding
+                # and take the lookup_root branch above.
+                if (
+                    current is not None
+                    and _kb_identity(current) == requested_id
+                ):
+                    row = current
             if row is None:
-                candidates = by_root.get(requested_id, ())
-                if len(candidates) == 1:
-                    row = candidates[0]
+                row = _current_physical_source(
+                    by_root.get(requested_id, ()),
+                    root_id=requested_id,
+                    known_parent_root_by_id=known_parent_roots,
+                )
             if row is not None:
                 resolved.append(_selectable_source(requested_id, row))
         return tuple(resolved)
@@ -1826,6 +2333,16 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         try:
             target_row = await self._load_target(context, request.target)
             scope = await self._scope_row(context, request.target)
+            if (
+                scope is not None
+                and bool(scope.v2_active)
+                and scope.v2_activated_at is None
+            ):
+                raise KnowledgePropagationPortError(
+                    "knowledge_propagation_v2_activation_missing",
+                    "an active scope has no durable v2 activation boundary",
+                    details=request.target.to_dict(),
+                )
             assignments: tuple[TemporalKnowledgeAssignment, ...] = ()
             tombstones: tuple[KnowledgePropagationTombstone, ...] = ()
             snapshots: tuple[KnowledgePropagationSnapshot, ...] = ()
@@ -1854,15 +2371,14 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                     for item in assignments
                     if item.temporal.is_current
                 )
-                requested_roots = set(request.source_knowledge_ids)
                 root_bindings = {
                     item.assignment.revision_stamp.root_id: (
                         item.assignment.source_knowledge_id
                     )
                     for item in assignments
                     if item.temporal.is_current
-                    and item.assignment.revision_stamp.root_id in requested_roots
                 }
+                source_ids.update(root_bindings)
                 tombstone_rows = (
                     (
                         await context.execute(
@@ -1896,10 +2412,16 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 )
                 snapshots = tuple(_snapshot_from_row(row) for row in snapshot_rows)
 
-            legacy = await self._legacy_attachments(
+            v2_activated_at = (
+                None
+                if scope is None or scope.v2_activated_at is None
+                else _as_utc(scope.v2_activated_at)
+            )
+            legacy, local = await self._physical_attachments(
                 context,
                 target=request.target,
                 target_row=target_row,
+                v2_activated_at=v2_activated_at,
             )
             sources = await self._selectable_sources(
                 context,
@@ -1918,6 +2440,8 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 snapshots=snapshots,
                 legacy_attachments=legacy,
                 sources=sources,
+                local_attachments=local,
+                v2_activated_at=v2_activated_at,
             )
         except KnowledgePropagationPortError:
             raise
@@ -1972,6 +2496,9 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                     scope_revision=plan.next_revision,
                     v2_active=plan.next_scope_v2_active,
                     selection_state=next_selection_state,
+                    v2_activated_at=(
+                        plan.occurred_at if plan.next_scope_v2_active else None
+                    ),
                     created_at=plan.occurred_at,
                     updated_at=plan.occurred_at,
                 )
@@ -1979,6 +2506,15 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             await context.flush()
             return scope_id
 
+        v2_activated_at = scope.v2_activated_at
+        if v2_activated_at is None and plan.next_scope_v2_active:
+            if bool(scope.v2_active):
+                raise KnowledgePropagationPortError(
+                    "knowledge_propagation_v2_activation_missing",
+                    "an active scope has no durable v2 activation boundary",
+                    details=plan.target.to_dict(),
+                )
+            v2_activated_at = plan.occurred_at
         statement = (
             update(KnowledgePropagationScopeRecord)
             .where(
@@ -1990,6 +2526,7 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 scope_revision=plan.next_revision,
                 v2_active=plan.next_scope_v2_active,
                 selection_state=next_selection_state,
+                v2_activated_at=v2_activated_at,
                 updated_at=plan.occurred_at,
             )
             .execution_options(synchronize_session=False)

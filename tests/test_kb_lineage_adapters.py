@@ -172,3 +172,67 @@ async def test_resource_gate_card_ref_derives_legacy_root_without_rewriting() ->
     assert ref["immediate_parent_resource_id"] == "kb-parent"
     assert ref["source_content_sha256"] == knowledge_content_sha256(item)
     assert item["root_source_kb_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_v2_filter_keeps_only_selected_parent_source_effective() -> None:
+    root = LineageEntityRef(
+        entity_type="card",
+        entity_id="card-1",
+        title="Card",
+        entity=SimpleNamespace(board_id="board-1", spec_id="spec-1"),
+    )
+    parent = LineageEntityRef(
+        entity_type="spec",
+        entity_id="spec-1",
+        title="Spec",
+        entity=SimpleNamespace(board_id="board-1"),
+    )
+    stamp = SimpleNamespace(
+        root_id="root-selected",
+        immediate_parent_id="kb-parent",
+        source_revision="rev-2",
+        source_content_sha256="a" * 64,
+    )
+    assignment = SimpleNamespace(
+        assignment_id="assignment-1",
+        source_knowledge_id="kb-old",
+        origin_class=SimpleNamespace(value="v2"),
+        mode=SimpleNamespace(value="snapshot"),
+    )
+    resolved = SimpleNamespace(
+        assignment=assignment,
+        resolved_source_knowledge_id="kb-selected",
+        revision_stamp=stamp,
+        state=SimpleNamespace(value="stale"),
+        content_bytes=(
+            b'{"content":"frozen","description":null,"id":"kb-selected",'
+            b'"mime_type":"text/markdown","title":"Selected"}'
+        ),
+    )
+    read = SimpleNamespace(effective_assignments=(resolved,))
+
+    class _V2Adapter(CommunitySqlAlchemyResourceGateAdapter):
+        async def _active_knowledge_read(self, _ref):
+            return read
+
+    adapter = _V2Adapter(object())
+    refs = await adapter.filter_inherited_refs(
+        root,
+        parent,
+        {
+            "architecture": [],
+            "mockup": [],
+            "knowledge_base": [
+                {"id": "kb-selected", "title": "Selected current"},
+                {"id": "kb-unselected", "title": "Not selected"},
+            ],
+        },
+    )
+
+    by_id = {item["id"]: item for item in refs["knowledge_base"]}
+    assert by_id["kb-selected"]["effective"] is True
+    assert by_id["kb-selected"]["root_resource_id"] == "root-selected"
+    assert by_id["kb-selected"]["source_revision"] == "rev-2"
+    assert by_id["kb-selected"]["knowledge_assignment_stale"] is True
+    assert by_id["kb-unselected"]["effective"] is False

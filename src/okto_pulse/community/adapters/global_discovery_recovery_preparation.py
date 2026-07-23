@@ -33,6 +33,7 @@ from okto_pulse.core.ports.global_discovery_recovery_control import (
     CognitivePendingOverlaySnapshotError,
     CognitivePendingOverlaySnapshotService,
     GlobalDiscoveryPreparedRevocationService,
+    GlobalDiscoveryRecoveryBoardSeedService,
     GlobalDiscoveryRecoveryError,
     GlobalDiscoveryRecoveryPreparationService,
     RecoveryPreparedResult,
@@ -87,6 +88,7 @@ class CommunityGlobalDiscoveryRecoveryPreparationOperation:
         db_path_provider: Callable[[], Path],
         unit_of_work_factory: object,
         materialization_evidence_port: object | None,
+        board_seed_service: object | None = None,
         relational_fingerprint: CommunityRelationalRecoverySnapshotFingerprint
         | None = None,
         overlay_snapshot_service: CognitivePendingOverlaySnapshotService | None = None,
@@ -137,6 +139,11 @@ class CommunityGlobalDiscoveryRecoveryPreparationOperation:
         self._relational_fingerprint = relational
         self._overlay = overlay
         self._snapshot_fingerprint = composite
+        self._board_seed_service = (
+            GlobalDiscoveryRecoveryBoardSeedService()
+            if board_seed_service is None
+            else board_seed_service
+        )
         self._preparation = GlobalDiscoveryRecoveryPreparationService(
             recovery=recovery,  # type: ignore[arg-type]
             artifact_store=artifact_store,  # type: ignore[arg-type]
@@ -673,13 +680,19 @@ class CommunityGlobalDiscoveryRecoveryPreparationOperation:
                             realm_scope=RealmScope.local()
                         )
 
-                        async def build_materialized_seed() -> tuple[object, ...]:
+                        async def capture_materialized_seed_input() -> tuple[
+                            object, ...
+                        ]:
                             # Enter, use, and exit the async context manager in one
                             # asyncio task.  Community's UoW owns ContextVar tokens;
                             # splitting these phases across separate ensure_future
                             # tasks makes teardown fail with a foreign-Context token.
                             async with manager as uow:
-                                return await uow.services.kg.build_global_discovery_recovery_seeds(
+                                kg_services = uow.services.kg
+                                capture_seed_inputs = (
+                                    kg_services.capture_global_discovery_recovery_seed_inputs
+                                )
+                                return await capture_seed_inputs(
                                     boards=[
                                         (
                                             board_id,
@@ -694,8 +707,23 @@ class CommunityGlobalDiscoveryRecoveryPreparationOperation:
                                     },
                                 )
 
-                        built = await self._await_within_attempt(
-                            build_materialized_seed(),
+                        captured_inputs = await self._await_within_attempt(
+                            capture_materialized_seed_input(),
+                            deadline_at_monotonic=deadline_at_monotonic,
+                            fence_check=fence_check,
+                        )
+                        if len(captured_inputs) != 1:
+                            raise RecoveryPreparationTerminalError(
+                                "global_discovery_recovery_board_seed_invalid"
+                            )
+
+                        # The UoW above has fully rolled back/closed before this
+                        # graph-only phase starts.  No AsyncSession or checkout
+                        # crosses into graph I/O, revalidation, or embedding.
+                        seed = await self._await_within_attempt(
+                            self._board_seed_service.build_board_seed(
+                                captured_inputs[0]
+                            ),
                             deadline_at_monotonic=deadline_at_monotonic,
                             fence_check=fence_check,
                         )
@@ -713,11 +741,6 @@ class CommunityGlobalDiscoveryRecoveryPreparationOperation:
                         raise RecoveryPreparationTerminalError(
                             "global_discovery_recovery_board_seed_failed"
                         ) from exc
-                    if len(built) != 1:
-                        raise RecoveryPreparationTerminalError(
-                            "global_discovery_recovery_board_seed_invalid"
-                        )
-                    seed = built[0]
                 else:
                     seed = await self._await_within_attempt(
                         asyncio.to_thread(

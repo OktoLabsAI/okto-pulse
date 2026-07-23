@@ -167,6 +167,11 @@ async def get_card(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
         )
+    except (
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _card_knowledge_error_response(uow, exc)
     return result.card
 
 
@@ -225,6 +230,11 @@ async def update_card(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
         )
+    except (
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _card_knowledge_error_response(uow, exc)
     return result.card
 
 
@@ -264,6 +274,11 @@ async def move_card(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
         )
+    except (
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _card_knowledge_error_response(uow, exc)
     return result.card
 
 
@@ -769,6 +784,11 @@ async def list_card_knowledge(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
         )
+    except (
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _card_knowledge_error_response(uow, exc)
     return {"card_id": card_id, "knowledge": result.knowledge}
 
 
@@ -806,6 +826,11 @@ async def get_card_knowledge(
             "Card not found" if e.entity_type == "card" else "Knowledge entry not found"
         )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+    except (
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _card_knowledge_error_response(uow, exc)
     return result.knowledge
 
 

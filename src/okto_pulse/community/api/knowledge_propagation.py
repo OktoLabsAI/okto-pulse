@@ -50,6 +50,15 @@ _NOT_FOUND_CODES = frozenset(
         "refinement_not_found",
     }
 )
+_SERVICE_UNAVAILABLE_CODES = frozenset(
+    {
+        "knowledge_propagation_port_not_configured",
+        "knowledge_propagation_effective_read_failed",
+        "knowledge_propagation_parent_evidence_read_failed",
+        "knowledge_propagation_ledger_read_failed",
+        "knowledge_propagation_scope_read_failed",
+    }
+)
 _ResultT = TypeVar("_ResultT")
 
 
@@ -103,6 +112,8 @@ def knowledge_propagation_error_response(
         status_code = status.HTTP_409_CONFLICT
     elif code in _NOT_FOUND_CODES:
         status_code = status.HTTP_404_NOT_FOUND
+    elif code in _SERVICE_UNAVAILABLE_CODES or code.endswith("_unavailable"):
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     else:
         status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
     return JSONResponse(

@@ -126,6 +126,8 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
             await handler().handle(event, session)
             execution.status = "done"
             execution.processed_at = processed_at
+            execution.last_error = None
+            execution.next_attempt_at = None
             await session.commit()
 
     async def mark_event_missing(

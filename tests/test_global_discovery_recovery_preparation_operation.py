@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
 import sqlite3
 import time
@@ -10,6 +11,12 @@ from threading import Event
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 import okto_pulse.core.infra.database as database_module
 import okto_pulse.community.adapters.global_discovery_recovery_preparation as preparation_module
@@ -31,6 +38,9 @@ from okto_pulse.community.adapters.rebuild_audit_storage import (
 from okto_pulse.community.adapters.relational_schema_lifecycle import (
     register_community_relational_schema_lifecycle,
 )
+from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
+    build_community_unit_of_work_factory,
+)
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.kg.interfaces.global_discovery_recovery import (
     GlobalDiscoveryArtifactSnapshot,
@@ -40,6 +50,8 @@ from okto_pulse.core.ports.global_discovery_recovery_control import (
     CognitivePendingOverlaySnapshot,
     CognitivePendingOverlaySnapshotService,
     GlobalDiscoveryPreparedRevocationService,
+    GlobalDiscoveryRecoveryBoardSeedInput,
+    RecoveryProgressCounts,
     recovery_attempt_id,
 )
 from okto_pulse.core.ports.materialization_health import CensusStatus
@@ -113,19 +125,35 @@ class _EvidencePort:
 class _SeedKGOperations:
     def __init__(self, seed: GlobalDiscoveryBoardSeed) -> None:
         self.seed = seed
+        self.seed_input = GlobalDiscoveryRecoveryBoardSeedInput(
+            board_id=seed.board_id,
+            board_name=seed.board_name,
+            board_summary=seed.summary,
+            overlay_exclusions=(),
+        )
         self.calls: list[dict[str, object]] = []
 
-    async def build_global_discovery_recovery_seeds(self, **kwargs):
+    async def capture_global_discovery_recovery_seed_inputs(self, **kwargs):
         self.calls.append(dict(kwargs))
-        return (self.seed,)
+        return (self.seed_input,)
 
 
-class _CancellableHangingSeedKGOperations:
+class _StaticBoardSeedService:
+    def __init__(self, seed: GlobalDiscoveryBoardSeed) -> None:
+        self.seed = seed
+        self.calls: list[object] = []
+
+    async def build_board_seed(self, seed_input: object) -> GlobalDiscoveryBoardSeed:
+        self.calls.append(seed_input)
+        return self.seed
+
+
+class _CancellableHangingSeedInputOperations:
     def __init__(self) -> None:
         self.entered = Event()
         self.cancelled = Event()
 
-    async def build_global_discovery_recovery_seeds(self, **_kwargs):
+    async def capture_global_discovery_recovery_seed_inputs(self, **_kwargs):
         self.entered.set()
         try:
             await asyncio.Event().wait()
@@ -220,6 +248,7 @@ def test_preparation_captures_local_realm_and_publishes_fenced_inputs(
         source_inventory_hash="seed-inventory",
     )
     seed_operations = _SeedKGOperations(seed)
+    seed_service = _StaticBoardSeedService(seed)
     uow_factory = _UoWFactory(seed_operations)
     operation = CommunityGlobalDiscoveryRecoveryPreparationOperation(
         recovery=recovery,
@@ -227,6 +256,7 @@ def test_preparation_captures_local_realm_and_publishes_fenced_inputs(
         db_path_provider=lambda: database_path,
         unit_of_work_factory=uow_factory,
         materialization_evidence_port=_EvidencePort(),
+        board_seed_service=seed_service,
         relational_fingerprint=relational,
         overlay_snapshot_service=overlay,  # type: ignore[arg-type]
         snapshot_fingerprint=composite,
@@ -264,7 +294,148 @@ def test_preparation_captures_local_realm_and_publishes_fenced_inputs(
             "captured_cognitive_pending_exclusions": {"board-preparation": {}},
         }
     ]
+    assert seed_service.calls == [seed_operations.seed_input]
     assert checkpoints[-1] == prepared.counts
+
+
+@pytest.mark.asyncio
+async def test_materialized_seed_releases_checkout_before_blocked_embedding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.core.application.processors.global_outbox import (
+        GlobalOutboxProcessor,
+    )
+    from okto_pulse.core.kg import canonical_partition_integrity as partition
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'recovery-seed-checkout.db'}",
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.25,
+    )
+    sessions = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE concurrent_probe "
+                "(id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+            )
+        )
+
+    relational_capture_checked_out: list[int] = []
+
+    async def capture_debt(db, *, board_id: str) -> dict[str, str]:
+        assert board_id == "board-preparation"
+        await db.execute(text("SELECT 1"))
+        relational_capture_checked_out.append(
+            engine.sync_engine.pool.checkedout()
+        )
+        return {}
+
+    monkeypatch.setattr(partition, "canonical_debt_exclusions", capture_debt)
+    monkeypatch.setattr(
+        GlobalOutboxProcessor,
+        "_read_board_digestable_node_types",
+        staticmethod(lambda _board_id: {}),
+    )
+    monkeypatch.setattr(
+        GlobalOutboxProcessor,
+        "_read_board_nodes_for_refs",
+        staticmethod(lambda _board_id, _refs: []),
+    )
+    monkeypatch.setattr(
+        GlobalOutboxProcessor,
+        "_read_board_layer_meta",
+        staticmethod(lambda _board_id, _source_types: {}),
+    )
+
+    embedding_started = Event()
+    release_embedding = Event()
+
+    class _BlockingEmbeddingProvider:
+        def encode(self, text_value: str) -> list[float]:
+            assert text_value == "Board Prepared board"
+            embedding_started.set()
+            if not release_embedding.wait(timeout=5):
+                raise TimeoutError("test did not release blocked embedding")
+            return [0.25]
+
+    monkeypatch.setattr(
+        "okto_pulse.core.kg.embedding.get_embedding_provider",
+        lambda: _BlockingEmbeddingProvider(),
+    )
+
+    operation = CommunityGlobalDiscoveryRecoveryPreparationOperation(
+        recovery=object(),
+        artifact_store=object(),
+        db_path_provider=lambda: tmp_path / "unused.db",
+        unit_of_work_factory=build_community_unit_of_work_factory(sessions),
+        materialization_evidence_port=_EvidencePort(),
+        max_parallel_boards=1,
+    )
+    captured = SimpleNamespace(
+        board_rows=(
+            {
+                "board_id": "board-preparation",
+                "board_name": "Prepared board",
+                "board_summary": "",
+            },
+        ),
+        inventories=(
+            SimpleNamespace(board_id="board-preparation", source_count=0),
+        ),
+        overlay=CognitivePendingOverlaySnapshot(
+            revision_fingerprint="overlay-checkout",
+            exclusions=(("board-preparation", ()),),
+        ),
+    )
+    task = asyncio.create_task(
+        operation._prepare_boards(  # noqa: SLF001
+            captured=captured,
+            fence_check=lambda **_kwargs: None,
+            checkpoint=lambda _counts: None,
+            initial_progress=RecoveryProgressCounts(boards_total=1),
+            deadline_at_monotonic=time.monotonic() + 10,
+        )
+    )
+    try:
+        assert await asyncio.to_thread(embedding_started.wait, 2)
+        assert relational_capture_checked_out == [1]
+        assert engine.sync_engine.pool.checkedout() == 0
+
+        # A fresh session can acquire the one-connection pool and write while
+        # embedding is deliberately blocked in the graph-only phase.
+        async with sessions() as writer:
+            await writer.execute(
+                text(
+                    "INSERT INTO concurrent_probe (id, value) "
+                    "VALUES (1, 'written-during-embedding')"
+                )
+            )
+            await writer.commit()
+        assert engine.sync_engine.pool.checkedout() == 0
+
+        release_embedding.set()
+        _plans, seeds, progress = await asyncio.wait_for(task, timeout=2)
+        assert seeds[0].summary_embedding == (0.25,)
+        assert progress.boards_scanned == 1
+
+        async with engine.connect() as connection:
+            assert await connection.scalar(
+                text("SELECT value FROM concurrent_probe WHERE id = 1")
+            ) == "written-during-embedding"
+    finally:
+        release_embedding.set()
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        await engine.dispose()
 
 
 def test_snapshot_drift_inside_publication_revokes_the_published_manifest(
@@ -310,6 +481,7 @@ def test_snapshot_drift_inside_publication_revokes_the_published_manifest(
         db_path_provider=lambda: database_path,
         unit_of_work_factory=_UoWFactory(_SeedKGOperations(seed)),
         materialization_evidence_port=_EvidencePort(),
+        board_seed_service=_StaticBoardSeedService(seed),
         relational_fingerprint=relational,
         overlay_snapshot_service=overlay,  # type: ignore[arg-type]
         snapshot_fingerprint=composite,
@@ -352,7 +524,7 @@ def test_snapshot_drift_inside_publication_revokes_the_published_manifest(
     )
 
 
-def test_attempt_deadline_cancels_hung_uow_seed_with_bounded_cleanup(
+def test_attempt_deadline_cancels_hung_seed_input_capture_with_bounded_cleanup(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "pulse-hung-seed.sqlite3"
@@ -380,8 +552,8 @@ def test_attempt_deadline_cancels_hung_uow_seed_with_bounded_cleanup(
     )
     recovery = _Recovery()
     recovery.snapshot_provider = composite
-    hanging_seed = _CancellableHangingSeedKGOperations()
-    uow_factory = _UoWFactory(hanging_seed)  # type: ignore[arg-type]
+    hanging_capture = _CancellableHangingSeedInputOperations()
+    uow_factory = _UoWFactory(hanging_capture)  # type: ignore[arg-type]
     operation = CommunityGlobalDiscoveryRecoveryPreparationOperation(
         recovery=recovery,
         artifact_store=artifact_store,
@@ -407,8 +579,8 @@ def test_attempt_deadline_cancels_hung_uow_seed_with_bounded_cleanup(
         )
 
     assert raised.value.code == "recovery_attempt_budget_exhausted"
-    assert hanging_seed.entered.is_set()
-    assert hanging_seed.cancelled.wait(timeout=0.5)
+    assert hanging_capture.entered.is_set()
+    assert hanging_capture.cancelled.wait(timeout=0.5)
     assert len(uow_factory.contexts) == 1
     assert uow_factory.contexts[0].enter_task is uow_factory.contexts[0].exit_task
     assert time.monotonic() - started < 1.0

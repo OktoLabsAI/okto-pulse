@@ -44,10 +44,10 @@ MANIFEST_PATH = Path(__file__).with_name(
 )
 OPT_OUT_ENV = "OKTO_SKIP_GLOBAL_DISCOVERY_INSTALLED_E2E"
 BOARD_CENSUS_SIZE = 1_500
-EXPECTED_TOOL_COUNT = 276
-EXPECTED_CANONICAL_TOOL_COUNT = 268
+EXPECTED_TOOL_COUNT = 281
+EXPECTED_CANONICAL_TOOL_COUNT = 273
 EXPECTED_TOOL_INVENTORY_SHA256 = (
-    "72cf9029f87de5a52b888d43968ab53d690effa340e25b19e9e0b482d9a458eb"
+    "b0d4909474dbc6b94d07afc89a500623a522e8b3fcd6a265d5101feb1dc5e93e"
 )
 EXPECTED_TOOL_ALIASES = {
     "okto_pulse_ask_ideation_question": "okto_pulse_ask",
@@ -216,14 +216,10 @@ def installed_runtime(
         assert final_wheel_dir.is_dir(), final_wheel_dir
         all_wheels = sorted(final_wheel_dir.glob("*.whl"))
         core_candidates = [
-            wheel
-            for wheel in all_wheels
-            if wheel.name.startswith("okto_pulse_core-")
+            wheel for wheel in all_wheels if wheel.name.startswith("okto_pulse_core-")
         ]
         community_candidates = [
-            wheel
-            for wheel in all_wheels
-            if wheel.name.startswith("okto_pulse-")
+            wheel for wheel in all_wheels if wheel.name.startswith("okto_pulse-")
         ]
         assert len(all_wheels) == 2, all_wheels
         assert len(core_candidates) == 1, all_wheels
@@ -233,9 +229,7 @@ def installed_runtime(
         assert "-0.3.0-" in core_wheel.name, core_wheel.name
         assert "-0.3.0-" in community_wheel.name, community_wheel.name
         expected_core_sha = os.environ.get("OKTO_E2E_FINAL_CORE_WHEEL_SHA256")
-        expected_community_sha = os.environ.get(
-            "OKTO_E2E_FINAL_COMMUNITY_WHEEL_SHA256"
-        )
+        expected_community_sha = os.environ.get("OKTO_E2E_FINAL_COMMUNITY_WHEEL_SHA256")
         if expected_core_sha:
             assert _sha256(core_wheel) == expected_core_sha.lower()
         if expected_community_sha:
@@ -477,9 +471,9 @@ with runtime_value_scope(runtime_values):
     # (never just ``discovery.lbug``) is required: leftover ``discovery.lbug.*``
     # sidecars would classify as residual/unreadable state instead of the
     # CONFIRMED_ABSENT total loss this recovery scenario needs.
-    assert "  Global Discovery: materialized" in initialized.stdout, (
-        initialized.stdout[-4000:]
-    )
+    assert "  Global Discovery: materialized" in initialized.stdout, initialized.stdout[
+        -4000:
+    ]
     global_dir = data_dir / "global"
     assert sorted(global_dir.rglob("discovery.lbug")), sorted(global_dir.rglob("*"))
     total_loss_backup = root / "global-discovery-total-loss-backup"
@@ -559,6 +553,19 @@ print(json.dumps({"api_key_hash": key_hash, "api_key_marker": credential_marker(
         )
         observed = int(connection.execute("SELECT COUNT(*) FROM boards").fetchone()[0])
         assert observed == BOARD_CENSUS_SIZE
+        # The real daily scheduler is part of this installed runtime. Persist a
+        # recent completed tick so its normal catch-up policy schedules the next
+        # run at the configured interval instead of the first-install +120 s
+        # floor. This isolates recovery from an unrelated 1500-board tick wave;
+        # explicit snapshot-drift scenarios below still mutate authoritative
+        # source tables and exercise the production fence unchanged.
+        connection.execute(
+            "INSERT INTO kg_tick_runs "
+            "(tick_id, started_at, completed_at, nodes_recomputed, duration_ms, "
+            " error, boards_processed, boards_failed) "
+            "VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 0.0, NULL, 0, 0)",
+            ("installed-e2e-scheduler-baseline",),
+        )
         connection.commit()
 
     yield InstalledRuntime(
@@ -1045,17 +1052,11 @@ def _running_server(
         "OKTO_E2E_Z2_TARGET_FILE": str(runtime.z2_target_file),
         "OKTO_E2E_Z2_SIGNAL_FILE": str(runtime.z2_signal_file),
         "OKTO_E2E_Z2_TRIPWIRE_MARKER": str(runtime.z2_tripwire_marker),
-        "OKTO_E2E_ADOPTION_POLL_SIGNAL_FILE": str(
-            runtime.adoption_poll_signal_file
-        ),
+        "OKTO_E2E_ADOPTION_POLL_SIGNAL_FILE": str(runtime.adoption_poll_signal_file),
         "OKTO_E2E_SUBMIT_GATE_TARGET_FILE": str(runtime.submit_gate_target_file),
         "OKTO_E2E_SUBMIT_GATE_SIGNAL_FILE": str(runtime.submit_gate_signal_file),
-        "OKTO_E2E_SUBMIT_GATE_RELEASE_FILE": str(
-            runtime.submit_gate_release_file
-        ),
-        "OKTO_E2E_SUBMIT_GATE_TIMEOUT_MARKER": str(
-            runtime.submit_gate_timeout_marker
-        ),
+        "OKTO_E2E_SUBMIT_GATE_RELEASE_FILE": str(runtime.submit_gate_release_file),
+        "OKTO_E2E_SUBMIT_GATE_TIMEOUT_MARKER": str(runtime.submit_gate_timeout_marker),
     }
     command = [
         str(runtime.python),
@@ -1733,10 +1734,7 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             )
             assert partial["state"] == "partial"
             assert partial["terminal_outcome"] == "partial"
-            assert (
-                partial["reason_code"]
-                == "recovery_physical_reconciliation_pending"
-            )
+            assert partial["reason_code"] == "recovery_physical_reconciliation_pending"
             assert partial["retryable"] is False
             assert partial.get("physical_truth") in (None, "unknown")
             assert int(partial["epoch"]) == int(accepted_start["epoch"])
@@ -1830,9 +1828,7 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 }
                 assert set(replayed_resume) == set(resumed)
                 changed = {
-                    key
-                    for key in resumed
-                    if replayed_resume[key] != resumed[key]
+                    key for key in resumed if replayed_resume[key] != resumed[key]
                 }
                 # Everything outside the closed live set — counts, deadlines,
                 # cumulative charge, binding/manifest/preflight, confirmation
@@ -1848,9 +1844,7 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 } <= changed, changed
                 assert replayed_resume["state"] == "running"
                 assert replayed_resume["phase"] == "cutover"
-                assert (
-                    replayed_resume["reason_code"] == "recovery_cutover_running"
-                )
+                assert replayed_resume["reason_code"] == "recovery_cutover_running"
                 assert int(replayed_resume["progress_seq"]) > int(
                     resumed["progress_seq"]
                 )
@@ -1862,9 +1856,7 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             finally:
                 # Unconditional cooperative release so the server drain is
                 # always clean regardless of assertion outcome.
-                runtime.resume_gate_release_file.write_text(
-                    "release", encoding="ascii"
-                )
+                runtime.resume_gate_release_file.write_text("release", encoding="ascii")
 
             resumed_terminal = await _wait_for_phase(
                 client,
@@ -1899,8 +1891,7 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             # predecessor binding is required on the successor journal.
             assert n_journal_path.read_bytes() == n_journal_bytes
             assert (
-                hashlib.sha256(n_journal_path.read_bytes()).hexdigest()
-                == n_journal_sha
+                hashlib.sha256(n_journal_path.read_bytes()).hexdigest() == n_journal_sha
             )
             successor_attempt_id = str(resumed["attempt_id"])
             successor_journal_path = (
@@ -1927,8 +1918,7 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             recovery_dispatches = [
                 row
                 for row in _recovery_dispatch_rows(runtime, run_id)
-                if row["stage"] == "recovery"
-                and int(row["epoch"]) == partial_epoch + 1
+                if row["stage"] == "recovery" and int(row["epoch"]) == partial_epoch + 1
             ]
             assert len(recovery_dispatches) == 1, recovery_dispatches
             assert recovery_dispatches[0]["attempt_id"] == successor_attempt_id
@@ -2102,9 +2092,7 @@ def _recovery_transition_rows(
     return [dict(row) for row in rows]
 
 
-def _stale_surface_snapshot(
-    runtime: InstalledRuntime, run_id: str
-) -> dict[str, Any]:
+def _stale_surface_snapshot(runtime: InstalledRuntime, run_id: str) -> dict[str, Any]:
     """Full durable surface for the stale-token loser proof: status/attempt,
     dispatches, slot and transitions — byte-identity across a loser call."""
 
@@ -2353,7 +2341,7 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
     and prove same-run adoption (attempt_count +1, changed worker/token,
     bounded takeover, positive non-double crash charge) through to SUCCESS."""
 
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     runtime = installed_runtime
     _relocate_global_for_recovery(runtime, "hard-kill")
@@ -2479,9 +2467,7 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
             poll_started_raw = runtime.adoption_poll_signal_file.read_text(
                 encoding="ascii"
             ).strip()
-            poll_started = datetime.fromisoformat(
-                poll_started_raw.replace(" ", "T")
-            )
+            poll_started = datetime.fromisoformat(poll_started_raw.replace(" ", "T"))
             adopted_claimed_raw = str(adopted["claimed_at"])
             adopted_claimed = datetime.fromisoformat(
                 adopted_claimed_raw.replace(" ", "T")
@@ -2490,9 +2476,9 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
                 claim_expires_raw,
                 adopted_claimed_raw,
             )
-            assert adopted_claimed <= max(
-                claim_expires, poll_started
-            ) + timedelta(seconds=adoption_bound_seconds), (
+            assert adopted_claimed <= max(claim_expires, poll_started) + timedelta(
+                seconds=adoption_bound_seconds
+            ), (
                 adopted_claimed_raw,
                 claim_expires_raw,
                 poll_started_raw,
@@ -2580,9 +2566,7 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
                     timeout=120,
                 )
                 outcome = json.loads(completed.stdout.strip().splitlines()[-1])
-                assert outcome["result"] == "RecoveryDispatchClaimConflict", (
-                    outcome
-                )
+                assert outcome["result"] == "RecoveryDispatchClaimConflict", outcome
                 after = _stale_surface_snapshot(runtime, run_id)
                 assert after == before
                 stale_audit["losers"].append(
@@ -2602,9 +2586,7 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
                 json.dumps(stale_audit, indent=2), encoding="utf-8"
             )
         finally:
-            runtime.submit_gate_release_file.write_text(
-                "release", encoding="ascii"
-            )
+            runtime.submit_gate_release_file.write_text("release", encoding="ascii")
 
         async with Client(
             _authenticated_mcp_url(runtime, restarted), timeout=45, init_timeout=45

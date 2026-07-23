@@ -62,6 +62,34 @@ def test_propagation_missing_target_maps_to_404() -> None:
 @pytest.mark.parametrize(
     "code",
     [
+        "knowledge_propagation_port_not_configured",
+        "knowledge_propagation_effective_read_failed",
+        "knowledge_propagation_parent_evidence_read_failed",
+        "knowledge_propagation_ledger_read_failed",
+        "knowledge_propagation_scope_read_failed",
+        "knowledge_read_unavailable",
+    ],
+)
+def test_propagation_read_infrastructure_failures_map_to_503(
+    code: str,
+) -> None:
+    response = knowledge_propagation_error_response(
+        KnowledgePropagationServiceError(code, "read is unavailable")
+    )
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {
+        "error": code,
+        "code": code,
+        "detail": "read is unavailable",
+        "details": {},
+        "retryable": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
         "knowledge_propagation_constraint_conflict",
         "knowledge_propagation_parent_changed",
         "knowledge_propagation_parent_not_eligible",

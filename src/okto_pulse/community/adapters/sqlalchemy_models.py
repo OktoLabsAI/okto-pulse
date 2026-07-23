@@ -1299,7 +1299,9 @@ class SpecKnowledgeBase(Base):
     governance_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -4097,6 +4099,13 @@ class KnowledgePropagationScopeRecord(Base):
         server_default=text("false"),
     )
     selection_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # First durable transition into selective propagation v2.  It remains
+    # immutable across governed re-links so physical Spec KB rows can always
+    # be classified against the original v2 boundary.
+    v2_activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -4383,7 +4392,7 @@ class KnowledgeMutationLedgerRecord(Base):
         CheckConstraint(
             "operation_kind IN "
             "('replace_omitted', 'replace', 'drop_delta', 'replace_empty', "
-            "'refresh_snapshot', 'grandfather')",
+            "'refresh_snapshot', 'grandfather', 'relink_reset')",
             name="ck_knowledge_mutation_ledger_operation_kind",
         ),
         CheckConstraint(
@@ -4458,7 +4467,7 @@ class KnowledgeMutationAttemptRecord(Base):
         CheckConstraint(
             "operation_kind IN "
             "('replace_omitted', 'replace', 'drop_delta', 'replace_empty', "
-            "'refresh_snapshot', 'grandfather')",
+            "'refresh_snapshot', 'grandfather', 'relink_reset')",
             name="ck_knowledge_mutation_attempt_operation_kind",
         ),
         CheckConstraint(

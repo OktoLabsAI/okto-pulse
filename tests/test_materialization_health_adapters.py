@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import okto_pulse.community.adapters.materialization_health as materialization_module
 from okto_pulse.community.adapters.global_discovery_runtime import (
     CommunityGlobalDiscoveryRuntime,
 )
@@ -538,6 +540,188 @@ async def test_relational_census_returns_typed_timeout_without_sql(
 
 
 @pytest.mark.asyncio
+async def test_relational_census_cancellation_drains_checked_out_session(
+    tmp_path: Path,
+) -> None:
+    engine, factory = await _database(tmp_path, "cancelled-census.db")
+    query_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    allow_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    class BlockingSessionScope:
+        def __init__(self) -> None:
+            self._scope = factory()
+            self._session = None
+
+        async def __aenter__(self):
+            self._session = await self._scope.__aenter__()
+            # Hold a real QueuePool checkout before the modeled long query.
+            await self._session.connection()
+            return self
+
+        async def execute(self, _statement):
+            query_started.set()
+            await asyncio.Event().wait()
+
+        def in_transaction(self) -> bool:
+            assert self._session is not None
+            return bool(self._session.in_transaction())
+
+        async def rollback(self) -> None:
+            assert self._session is not None
+            cleanup_started.set()
+            await allow_cleanup.wait()
+            await self._session.rollback()
+
+        async def __aexit__(self, *exc_info) -> None:
+            try:
+                await self._scope.__aexit__(*exc_info)
+            finally:
+                cleanup_finished.set()
+
+    census = CommunitySqlAlchemyMaterializationCensus(BlockingSessionScope)
+    task = asyncio.create_task(
+        census.snapshot(
+            "board-cancelled",
+            generation="generation-cancelled",
+            deadline=HealthProbeDeadline(time.monotonic() + 30),
+        )
+    )
+    try:
+        await asyncio.wait_for(query_started.wait(), timeout=2)
+        task.cancel()
+        await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+        # Model the overlapping outer-gather/stage timeout cancellation from
+        # recovery preparation while rollback/close is already in progress.
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert engine.sync_engine.pool.checkedout() == 1
+
+        allow_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+
+        assert cleanup_finished.is_set()
+        assert engine.sync_engine.pool.checkedout() == 0
+    finally:
+        allow_cleanup.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_resistant_cleanup_is_bounded_through_real_asyncio_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        materialization_module,
+        "_CENSUS_SESSION_CLEANUP_TIMEOUT_SECONDS",
+        0.05,
+    )
+    monkeypatch.setattr(
+        materialization_module,
+        "_CENSUS_SESSION_CLEANUP_CANCEL_DRAIN_TIMEOUT_SECONDS",
+        0.2,
+    )
+    database_path = tmp_path / "asyncio-run-resistant-cleanup.db"
+    scenario_ready = threading.Event()
+
+    def run_scenario() -> tuple[float, int, bool]:
+        async def scenario() -> tuple[float, int, bool]:
+            engine, factory = await _database(
+                database_path.parent,
+                database_path.name,
+            )
+            query_started = asyncio.Event()
+            cleanup_started = asyncio.Event()
+            cleanup_finished = asyncio.Event()
+
+            class CancellationResistantScope:
+                def __init__(self) -> None:
+                    self._scope = factory()
+                    self._session = None
+
+                async def __aenter__(self):
+                    self._session = await self._scope.__aenter__()
+                    await self._session.connection()
+                    return self
+
+                async def execute(self, _statement):
+                    query_started.set()
+                    await asyncio.Event().wait()
+
+                def in_transaction(self) -> bool:
+                    assert self._session is not None
+                    return bool(self._session.in_transaction())
+
+                async def rollback(self) -> None:
+                    assert self._session is not None
+                    cleanup_started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        # Deliberately suppress the first teardown cancellation,
+                        # then complete the real database rollback.
+                        await self._session.rollback()
+
+                async def __aexit__(self, *exc_info) -> None:
+                    try:
+                        await self._scope.__aexit__(*exc_info)
+                    finally:
+                        cleanup_finished.set()
+
+            census = CommunitySqlAlchemyMaterializationCensus(
+                CancellationResistantScope
+            )
+            task = asyncio.create_task(
+                census.snapshot(
+                    "board-resistant-cleanup",
+                    generation="generation-resistant-cleanup",
+                    deadline=HealthProbeDeadline(time.monotonic() + 30),
+                )
+            )
+            started = time.monotonic()
+            scenario_ready.set()
+            try:
+                await asyncio.wait_for(query_started.wait(), timeout=1)
+                task.cancel()
+                await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=1)
+                return (
+                    time.monotonic() - started,
+                    engine.sync_engine.pool.checkedout(),
+                    cleanup_finished.is_set(),
+                )
+            finally:
+                if not task.done():
+                    task.cancel()
+                await engine.dispose()
+
+        return asyncio.run(scenario())
+
+    scenario_task = asyncio.create_task(asyncio.to_thread(run_scenario))
+    # Schema creation is test-fixture setup, not part of the cancellation
+    # boundary under test. Wait for the inner loop to finish that setup before
+    # starting the unchanged one-second cleanup budget.
+    assert await asyncio.to_thread(scenario_ready.wait, 5.0)
+    elapsed, checked_out, cleanup_finished = await asyncio.wait_for(
+        scenario_task,
+        timeout=1,
+    )
+    assert elapsed < 0.5
+    assert checked_out == 0
+    assert cleanup_finished is True
+
+
+@pytest.mark.asyncio
 async def test_normal_commit_advances_generation_before_ack_and_rolls_back_on_failure(
     tmp_path: Path,
 ) -> None:
@@ -641,9 +825,7 @@ async def test_borrowed_audit_transaction_reuses_locked_writer_and_obeys_owner_c
     board_id = "board-borrowed-audit"
     repository = CommunityAuditRepository(
         tracked_factory,
-        materialization_generation_store=RecordingGenerationStore(
-            tracked_factory
-        ),
+        materialization_generation_store=RecordingGenerationStore(tracked_factory),
     )
     try:
         async with factory() as session:
@@ -671,9 +853,10 @@ async def test_borrowed_audit_transaction_reuses_locked_writer_and_obeys_owner_c
             )
 
             assert factory_calls == 0
-            assert await owner.get(
-                ConsolidationAudit, "session-borrowed-rollback"
-            ) is not None
+            assert (
+                await owner.get(ConsolidationAudit, "session-borrowed-rollback")
+                is not None
+            )
             assert (
                 await owner.execute(
                     select(GlobalUpdateOutbox).where(
@@ -687,9 +870,10 @@ async def test_borrowed_audit_transaction_reuses_locked_writer_and_obeys_owner_c
         async with factory() as observer:
             board = await observer.get(Board, board_id)
             assert board is not None and board.name == "Before"
-            assert await observer.get(
-                ConsolidationAudit, "session-borrowed-rollback"
-            ) is None
+            assert (
+                await observer.get(ConsolidationAudit, "session-borrowed-rollback")
+                is None
+            )
             assert (
                 await observer.execute(
                     select(GlobalUpdateOutbox).where(
@@ -697,18 +881,23 @@ async def test_borrowed_audit_transaction_reuses_locked_writer_and_obeys_owner_c
                     )
                 )
             ).scalar_one_or_none() is None
-            assert await observer.get(
-                AppSetting, materialization_generation_key(board_id)
-            ) is None
+            assert (
+                await observer.get(AppSetting, materialization_generation_key(board_id))
+                is None
+            )
             generation_events = (
-                await observer.execute(
-                    select(DomainEventRow).where(
-                        DomainEventRow.board_id == board_id,
-                        DomainEventRow.event_type
-                        == "kg.materialization_generation_advanced",
+                (
+                    await observer.execute(
+                        select(DomainEventRow).where(
+                            DomainEventRow.board_id == board_id,
+                            DomainEventRow.event_type
+                            == "kg.materialization_generation_advanced",
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert generation_events == []
 
         async with factory() as owner:
@@ -728,9 +917,10 @@ async def test_borrowed_audit_transaction_reuses_locked_writer_and_obeys_owner_c
             assert logged_correlations == ["session-borrowed-commit"]
 
         async with factory() as observer:
-            assert await observer.get(
-                ConsolidationAudit, "session-borrowed-commit"
-            ) is not None
+            assert (
+                await observer.get(ConsolidationAudit, "session-borrowed-commit")
+                is not None
+            )
             assert (
                 await observer.execute(
                     select(GlobalUpdateOutbox).where(
@@ -738,9 +928,10 @@ async def test_borrowed_audit_transaction_reuses_locked_writer_and_obeys_owner_c
                     )
                 )
             ).scalar_one_or_none() is not None
-            assert await observer.get(
-                AppSetting, materialization_generation_key(board_id)
-            ) is not None
+            assert (
+                await observer.get(AppSetting, materialization_generation_key(board_id))
+                is not None
+            )
     finally:
         await engine.dispose()
 
@@ -809,9 +1000,10 @@ async def test_self_owned_audit_maps_real_sqlite_contention_to_stable_port_error
             ),
         )
         async with factory() as observer:
-            assert await observer.get(
-                ConsolidationAudit, "session-after-contention"
-            ) is not None
+            assert (
+                await observer.get(ConsolidationAudit, "session-after-contention")
+                is not None
+            )
     finally:
         await engine.dispose()
 

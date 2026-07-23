@@ -11,6 +11,11 @@ from okto_pulse.community.api.knowledge_governance import (
     KnowledgeGovernanceInvalidMetadata,
     knowledge_governance_error_response,
 )
+from okto_pulse.community.api.knowledge_propagation import (
+    KnowledgePropagationServiceError,
+    knowledge_propagation_error_response,
+    rollback_and_record_knowledge_error,
+)
 from okto_pulse.community.api.lookups import (
     lookup_page_request,
     lookup_response,
@@ -29,6 +34,9 @@ from okto_pulse.community.api.pagination import (
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
+)
+from okto_pulse.core.ports.knowledge_propagation import (
+    KnowledgePropagationPortError,
 )
 from okto_pulse.core.application.use_cases import (
     AnswerSpecQuestionCommand,
@@ -127,6 +135,17 @@ from okto_pulse.core.services.spec_structured_entities import (
 from okto_pulse.core.services.test_scenario_lifecycle import StatusNotMutableError
 
 router = APIRouter()
+
+
+async def _spec_knowledge_error_response(
+    uow: PulseUnitOfWork,
+    error: KnowledgePropagationPortError | KnowledgePropagationServiceError,
+):
+    if isinstance(error, KnowledgePropagationServiceError):
+        await rollback_and_record_knowledge_error(uow, error)
+    else:
+        await uow.rollback()
+    return knowledge_propagation_error_response(error)
 
 
 class ScenarioStatusUpdate(BaseModel):
@@ -473,6 +492,11 @@ async def get_spec(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+    except (
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _spec_knowledge_error_response(uow, exc)
     return result.spec
 
 
@@ -511,6 +535,11 @@ async def update_spec(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e),
         )
+    except (
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _spec_knowledge_error_response(uow, exc)
     return result.spec
 
 
@@ -648,6 +677,11 @@ async def move_spec(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+    except (
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _spec_knowledge_error_response(uow, exc)
     return result.spec
 
 
@@ -973,6 +1007,11 @@ async def list_spec_knowledge(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+    except (
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _spec_knowledge_error_response(uow, exc)
     return result.items
 
 
@@ -992,6 +1031,11 @@ async def get_spec_knowledge(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge base item not found")
+    except (
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _spec_knowledge_error_response(uow, exc)
     return result.knowledge
 
 

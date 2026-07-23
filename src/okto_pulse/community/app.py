@@ -14,10 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from okto_pulse.core.application.startup import (
     apply_persisted_runtime_settings,
     backfill_qa_answered_at,
-    compute_tick_catch_up_next_run as _compute_tick_catch_up_next_run,
-    emit_daily_tick as _emit_daily_tick,
+    compute_tick_catch_up_next_run,
+    emit_daily_tick,
     run_startup_schema_sweep,
-    tick_next_run_from_last as _tick_next_run_from_last,  # noqa: F401
 )
 from okto_pulse.core.application.kg_runtime_access import resolve_graph_lifecycle
 from okto_pulse.core import configure_auth
@@ -193,7 +192,7 @@ def build_kg_daily_tick_job_spec(
         coalesce=True,
         replace_existing=True,
         next_run_time=next_run_time,
-        handler_ref="okto_pulse.core.infra.daily_tick.emit_daily_tick",
+        handler_ref="okto_pulse.core.application.startup.emit_daily_tick",
     )
 
 
@@ -216,7 +215,7 @@ async def register_kg_daily_tick_job(
     interval_minutes = _get_settings().kg_decay_tick_interval_minutes
     next_run_time = None
     try:
-        next_run_time = await _compute_tick_catch_up_next_run(interval_minutes)
+        next_run_time = await compute_tick_catch_up_next_run(interval_minutes)
     except Exception as exc:
         logger.warning(
             "kg.tick.catch_up_compute_failed err=%s",
@@ -246,7 +245,7 @@ async def register_kg_daily_tick_job(
         )
 
     try:
-        result = await scheduler_control.register_job(job_spec, _emit_daily_tick)
+        result = await scheduler_control.register_job(job_spec, emit_daily_tick)
     except Exception as exc:
         logger.warning(
             "kg.tick.scheduler_failed err=%s",

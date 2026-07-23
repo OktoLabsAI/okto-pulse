@@ -87,6 +87,11 @@
       "justification": "Seed exactly 1500 authoritative zero-source boards; production schema, triggers, and runtime consume them unchanged."
     },
     {
+      "id": "kg-daily-tick-quiescent-baseline",
+      "surface": "Stopped-server kg_tick_runs fixture setup",
+      "justification": "Persist one recent completed operational tick so the real scheduler consumes its normal durable history and schedules the next run at the configured interval, rather than emitting an unrelated 1500-board first-install catch-up wave at +120 seconds. No scheduler code, clock, handler, or source-revision fence is patched; the explicit authoritative-board mutation scenarios continue to prove real snapshot-drift refusal."
+    },
+    {
       "id": "global-discovery-total-loss",
       "surface": "Stopped-server filesystem relocation of the observed KG storage tree",
       "justification": "A5 cmd_init always materializes the Global Discovery graph, so a fresh `okto-pulse init` first PROVES bootstrap (asserting the exact '  Global Discovery: materialized' evidence). Then, while the server is stopped and all CLI handles are closed, the COMPLETE `data_dir/global` directory is moved to a backup path inside the isolated runtime root and recreated empty, simulating physical total loss so the observed primary is CONFIRMED_ABSENT and production preparation legitimately admits recovery. The whole directory is relocated (never just discovery.lbug) so no residual discovery.lbug.* sidecars remain; admission logic, wait semantics, census size, and ports are unchanged."

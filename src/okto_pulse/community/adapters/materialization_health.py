@@ -12,9 +12,10 @@ import hashlib
 import logging
 import time
 import uuid
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from sqlalchemy import func, or_, select
 
@@ -57,10 +58,162 @@ INITIAL_MATERIALIZATION_GENERATION = "unmaterialized-v1"
 _GENERATION_KEY_PREFIX = "kg_mat_gen:"
 _BOARD_STAT_PROBE = "materialization_board_stat"
 _DISCOVERY_STAT_PROBE = "materialization_discovery_stat"
+_CENSUS_SESSION_CLEANUP_TIMEOUT_SECONDS = 2.0
+_CENSUS_SESSION_CLEANUP_CANCEL_DRAIN_TIMEOUT_SECONDS = 1.0
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _teardown_census_session(
+    session: Any,
+    exit_: Callable[..., Awaitable[None]] | None,
+    exc_info: tuple[type[BaseException] | None, BaseException | None, Any],
+) -> None:
+    """Rollback and close one census session as an indivisible cleanup task."""
+
+    try:
+        in_transaction = getattr(session, "in_transaction", None)
+        if callable(in_transaction) and in_transaction():
+            await session.rollback()
+    finally:
+        if exit_ is not None:
+            await exit_(*exc_info)
+        else:
+            await session.close()
+
+
+async def _drain_census_session_cleanup(
+    cleanup: Awaitable[None],
+) -> None:
+    """Drain rollback/close before the preparation's temporary loop exits.
+
+    The session and its teardown must stay on the loop/thread that created
+    them. A first deadline requests cancellation; a second deadline only emits
+    the explicit restart-required boundary. Production process supervision owns
+    termination if a driver ignores cancellation indefinitely.
+    """
+
+    loop = asyncio.get_running_loop()
+    cleanup_task = loop.create_task(cleanup)
+    deadline = loop.time() + _CENSUS_SESSION_CLEANUP_TIMEOUT_SECONDS
+    cancellation: asyncio.CancelledError | None = None
+    parent_cancel_requested = False
+    while not cleanup_task.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            await asyncio.wait({cleanup_task}, timeout=remaining)
+        except asyncio.CancelledError as exc:
+            # Do not let repeated task cancellation strand a checked-out
+            # connection. Promptly request cancellation of the teardown task
+            # so a cancellation-aware driver can enter rollback/close without
+            # waiting out the normal cleanup grace period. The cancellation is
+            # re-raised only after that teardown drains.
+            cancellation = exc
+            parent_cancel_requested = True
+            break
+
+    if cleanup_task.done():
+        cleanup_task.result()
+        if cancellation is not None:
+            raise cancellation
+        return
+
+    if parent_cancel_requested:
+        logger.info(
+            "kg.materialization_census.session_cleanup_cancel_requested",
+            extra={
+                "event": (
+                    "kg.materialization_census.session_cleanup_cancel_requested"
+                ),
+            },
+        )
+    else:
+        logger.error(
+            "kg.materialization_census.session_cleanup_timeout timeout_s=%.3f",
+            _CENSUS_SESSION_CLEANUP_TIMEOUT_SECONDS,
+            extra={
+                "event": "kg.materialization_census.session_cleanup_timeout",
+                "timeout_s": _CENSUS_SESSION_CLEANUP_TIMEOUT_SECONDS,
+            },
+        )
+    cleanup_task.cancel()
+
+    cancel_deadline = (
+        loop.time() + _CENSUS_SESSION_CLEANUP_CANCEL_DRAIN_TIMEOUT_SECONDS
+    )
+    while not cleanup_task.done():
+        remaining = cancel_deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            await asyncio.wait({cleanup_task}, timeout=remaining)
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+            continue
+
+    if not cleanup_task.done():
+        logger.critical(
+            "kg.materialization_census.session_cleanup_restart_required "
+            "cancel_drain_timeout_s=%.3f",
+            _CENSUS_SESSION_CLEANUP_CANCEL_DRAIN_TIMEOUT_SECONDS,
+            extra={
+                "event": (
+                    "kg.materialization_census.session_cleanup_restart_required"
+                ),
+                "cancel_drain_timeout_s": (
+                    _CENSUS_SESSION_CLEANUP_CANCEL_DRAIN_TIMEOUT_SECONDS
+                ),
+                "process_boundary_required": True,
+            },
+        )
+        # Do not move a live AsyncSession to another loop/thread. A
+        # non-cooperative driver requires process supervision to terminate the
+        # worker; repeated cancellation is the only safe in-process action.
+        cleanup_task.cancel()
+        if cancellation is not None:
+            raise cancellation
+        raise TimeoutError(
+            "materialization census session cleanup requires process restart"
+        )
+
+    with suppress(BaseException):
+        cleanup_task.result()
+    if cancellation is not None:
+        raise cancellation
+    raise TimeoutError("materialization census session cleanup timed out")
+
+
+@asynccontextmanager
+async def _cancel_safe_census_session_scope(
+    session_factory: Callable[..., Any],
+) -> AsyncIterator[Any]:
+    scope = session_factory()
+    enter = getattr(scope, "__aenter__", None)
+    exit_ = getattr(scope, "__aexit__", None)
+    if callable(enter) and callable(exit_):
+        session = await enter()
+    else:
+        session = scope
+        exit_ = None
+    exc_info: tuple[type[BaseException] | None, BaseException | None, Any] = (
+        None,
+        None,
+        None,
+    )
+    try:
+        yield session
+    except BaseException as exc:
+        exc_info = (type(exc), exc, exc.__traceback__)
+        raise
+    finally:
+        await _drain_census_session_cleanup(
+            _teardown_census_session(session, exit_, exc_info)
+        )
 
 
 def materialization_generation_key(board_id: str) -> str:
@@ -291,7 +444,7 @@ class CommunitySqlAlchemyMaterializationCensus:
             count(GlobalUpdateOutbox, *terminal_outbox_filter).label("outbox_terminal"),
         )
 
-        async with self._sf() as session:
+        async with _cancel_safe_census_session_scope(self._sf) as session:
             row = (await session.execute(statement)).one()._mapping
             if deadline.expired(now=time.monotonic()):
                 raise TimeoutError

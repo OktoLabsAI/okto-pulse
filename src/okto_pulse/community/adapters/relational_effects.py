@@ -7,13 +7,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import exists, func, literal, select
+from sqlalchemy import exists, func, literal, select, update
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ArtifactDeletionTombstone,
     Board,
     ConsolidationQueue,
+    GlobalDiscoveryRecoveryAttempt,
+    GlobalDiscoveryRecoverySlot,
     KGTickRun,
+)
+from okto_pulse.core.ports.global_discovery_recovery_control import (
+    GLOBAL_RECOVERY_SLOT_ID,
 )
 from okto_pulse.core.ports.relational_effects import (
     ConsolidationQueueUpsert,
@@ -195,6 +200,40 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
     async def list_board_ids(self, session: Any) -> list[str]:
         result = await session.execute(select(Board.id))
         return list(result.scalars().all())
+
+    async def is_global_recovery_active(self, session: Any) -> bool:
+        active = await session.scalar(
+            select(
+                exists(
+                    select(1).where(
+                        GlobalDiscoveryRecoverySlot.slot_id == GLOBAL_RECOVERY_SLOT_ID
+                    )
+                )
+                | exists(
+                    select(1).where(
+                        GlobalDiscoveryRecoveryAttempt.state.in_(("pending", "running"))
+                    )
+                )
+            )
+        )
+        return bool(active)
+
+    async def fence_kg_tick_publication(self, session: Any) -> bool:
+        """Acquire SQLite's writer slot for the caller's short publication UoW.
+
+        Even when no recovery slot row exists, executing this no-op UPDATE
+        starts SQLite's write transaction. Recovery admission uses
+        ``BEGIN IMMEDIATE`` against the same database, so exactly one side can
+        win the check-and-publish/check-and-admit window. The caller publishes
+        its durable event before releasing the transaction.
+        """
+
+        await session.execute(
+            update(GlobalDiscoveryRecoverySlot)
+            .where(GlobalDiscoveryRecoverySlot.slot_id == GLOBAL_RECOVERY_SLOT_ID)
+            .values(version=GlobalDiscoveryRecoverySlot.version)
+        )
+        return await self.is_global_recovery_active(session)
 
     async def read_latest_kg_tick_completed_at(
         self,
