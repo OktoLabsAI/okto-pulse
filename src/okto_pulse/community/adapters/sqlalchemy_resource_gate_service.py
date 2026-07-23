@@ -25,6 +25,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Spec,
     SpecKnowledgeBase,
 )
+from okto_pulse.core.models import with_knowledge_governance
 from okto_pulse.core.services.resource_gate_contracts import (
     ENTITY_TYPES,
     RESOURCE_TYPES,
@@ -485,7 +486,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 if not isinstance(item, dict):
                     continue
                 if str(item.get("id") or "") == resource_id:
-                    return dict(item)
+                    return with_knowledge_governance(dict(item), item)
             return None
 
         kb_model, fk_column, fk_name = {
@@ -510,7 +511,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
         kb = result.scalar_one_or_none()
         if kb is None:
             return None
-        return {
+        payload = {
             "id": kb.id,
             fk_name: source.entity_id,
             "title": kb.title,
@@ -528,6 +529,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
             "created_at": self._isoformat(kb.created_at),
             "updated_at": self._isoformat(kb.updated_at),
         }
+        return with_knowledge_governance(payload, kb)
 
     async def _load_source_entity_ref(
         self,

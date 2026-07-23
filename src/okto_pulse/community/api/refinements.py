@@ -14,6 +14,10 @@ transition + content/critical-context gates stay inside ``RefinementService``.
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.knowledge_governance import (
+    KnowledgeGovernanceInvalidMetadata,
+    knowledge_governance_error_response,
+)
 from okto_pulse.community.api.pagination import (
     anchor_scope,
     pagination_requested,
@@ -607,6 +611,8 @@ async def create_refinement_knowledge(
         )
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except KnowledgeGovernanceInvalidMetadata as exc:
+        return knowledge_governance_error_response(exc)
     return result.knowledge
 
 

@@ -18,9 +18,10 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Story,
     StoryIdeationLink,
 )
+from okto_pulse.core.models import with_knowledge_governance
+from okto_pulse.core.ports.traceability import TraceabilityReadError
 from okto_pulse.core.services.analytics_service import spec_coverage_summary
 from okto_pulse.core.services.reference_resolution import resolve_task_context_references
-from okto_pulse.core.ports.traceability import TraceabilityReadError
 
 
 class _LegacyTraceabilityReadError(Exception):
@@ -63,7 +64,7 @@ def _serialize_knowledge_base(kb: Any, *, include_content: bool = False) -> dict
         for attr in ("created_by", "created_at", "updated_at"):
             if kb.get(attr):
                 data[attr] = kb[attr]
-        return data
+        return with_knowledge_governance(data, kb)
 
     data: dict[str, Any] = {
         "id": getattr(kb, "id", None),
@@ -90,7 +91,7 @@ def _serialize_knowledge_base(kb: Any, *, include_content: bool = False) -> dict
         value = getattr(kb, attr, None)
         if value:
             data[attr] = value.isoformat() if hasattr(value, "isoformat") else value
-    return data
+    return with_knowledge_governance(data, kb)
 
 
 def _artifact_id(item: Any) -> Any:

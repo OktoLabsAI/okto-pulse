@@ -136,6 +136,8 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
      "Add knowledge-source columns."),
     ("_migrate_add_kb_lineage_columns", "post_create_all", False,
      "Add knowledge-base lineage columns."),
+    ("_migrate_add_kb_governance_metadata", "post_create_all", False,
+     "Add and validate nullable JSON governance metadata on entity knowledge bases."),
     ("_migrate_add_sprint_scope_fields", "post_create_all", False,
      "Add sprint scope fields."),
     ("_migrate_add_sprint_lane_fields", "post_create_all", False,

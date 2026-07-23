@@ -108,6 +108,14 @@ class CommunitySqlAlchemySpecResourcePropagationStore:
                 description=row.description,
                 content=str(row.content),
                 mime_type=str(row.mime_type or "text/markdown"),
+                source_kb_id=getattr(row, "source_kb_id", None),
+                root_source_kb_id=getattr(row, "root_source_kb_id", None),
+                immediate_parent_kb_id=getattr(
+                    row, "immediate_parent_kb_id", None
+                ),
+                governance_metadata=copy.deepcopy(
+                    getattr(row, "governance_metadata", None)
+                ),
             )
             for row in rows
         )

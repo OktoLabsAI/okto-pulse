@@ -144,12 +144,12 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 42 = historical steps + pagination, governed queue, GD delivery, and
-    # the additive cognitive-source revision ledger audit.
-    assert len(migrate_names) == 42, (
-        f"expected 42 _migrate_*, found {len(migrate_names)}"
+    # 43 = historical steps + pagination, governed queue, GD delivery,
+    # cognitive-source revision audit, and KB governance metadata.
+    assert len(migrate_names) == 43, (
+        f"expected 43 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 42
+    assert len(ledger_migrate_ids) == 43
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]
@@ -264,10 +264,12 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
     recovery_convergence_step = "_migrate_global_discovery_recovery_control_plane"
     governed_queue_convergence_step = "_migrate_add_consolidation_work_kinds"
     delivery_convergence_step = "_migrate_global_discovery_delivery_contract"
+    kb_governance_convergence_step = "_migrate_add_kb_governance_metadata"
     first_run_skip_steps = {
         repair_step,
         governed_queue_convergence_step,
         delivery_convergence_step,
+        kb_governance_convergence_step,
     }
     replay_skip_steps = {
         repair_step,
@@ -275,10 +277,11 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         governed_queue_convergence_step,
         delivery_convergence_step,
         "_migrate_cognitive_source_revision_ledger",
+        kb_governance_convergence_step,
     }
 
-    # First run: clean databases skip fixture repair and both convergence
-    # rebuilds because create_all already emitted their complete schemas.
+    # First run: clean databases skip fixture repair and convergence steps
+    # because create_all already emitted their complete schemas.
     assert r1.is_success
     assert len(r1.applied_steps) == total - len(first_run_skip_steps)
     assert {step.step_id for step in r1.skipped_steps} == first_run_skip_steps

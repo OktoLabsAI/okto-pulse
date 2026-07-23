@@ -2530,6 +2530,101 @@ async def _migrate_add_kb_lineage_columns() -> None:
                     pass
 
 
+async def _migrate_add_kb_governance_metadata() -> str | None:
+    """Add the optional governance metadata envelope to entity KB tables.
+
+    Introspection happens before any mutation so a pre-existing malformed
+    column fails closed without extending the remaining tables.  A second
+    introspection validates the complete physical contract after the additive
+    changes, making replay both idempotent and observable.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    table_names = (
+        "ideation_knowledge_bases",
+        "refinement_knowledge_bases",
+        "spec_knowledge_bases",
+    )
+    column_name = "governance_metadata"
+
+    def _contracts(sync_conn: object) -> dict[str, dict[str, object] | None]:
+        inspector = sa_inspect(sync_conn)
+        existing_tables = set(inspector.get_table_names())
+        missing_tables = sorted(set(table_names) - existing_tables)
+        if missing_tables:
+            raise RuntimeError(
+                "KB governance metadata migration is missing target tables: "
+                + ", ".join(missing_tables)
+            )
+
+        contracts: dict[str, dict[str, object] | None] = {}
+        for table_name in table_names:
+            columns = {
+                str(column["name"]): column
+                for column in inspector.get_columns(table_name)
+            }
+            contracts[table_name] = columns.get(column_name)
+        return contracts
+
+    def _require_canonical(
+        contracts: dict[str, dict[str, object] | None],
+        *,
+        require_present: bool,
+    ) -> None:
+        for table_name, column in contracts.items():
+            if column is None:
+                if require_present:
+                    raise RuntimeError(
+                        "KB governance metadata migration left a missing column: "
+                        f"{table_name}.{column_name}"
+                    )
+                continue
+            observed_type = _normalize_sqlite_contract_type(column.get("type"))
+            observed_nullable = bool(column.get("nullable"))
+            observed_default = _normalize_sqlite_contract_default(
+                column.get("default")
+            )
+            if (
+                observed_type != "json"
+                or not observed_nullable
+                or observed_default is not None
+            ):
+                raise RuntimeError(
+                    "KB governance metadata column is non-canonical: "
+                    f"{table_name}.{column_name} "
+                    f"type={observed_type!r} nullable={observed_nullable!r} "
+                    f"default={observed_default!r}"
+                )
+
+    changed = False
+    async with get_engine().begin() as conn:
+        if conn.dialect.name == "sqlite":
+            # Python's sqlite3 legacy transaction mode does not BEGIN for DDL.
+            # Pin all three ALTERs and the postcondition audit to one physical
+            # transaction so a mid-step failure cannot leave a partial schema.
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        before = await conn.run_sync(_contracts)
+        _require_canonical(before, require_present=False)
+
+        for table_name, column in before.items():
+            if column is not None:
+                continue
+            await conn.execute(
+                sa_text(
+                    f'ALTER TABLE "{table_name}" '
+                    f'ADD COLUMN "{column_name}" JSON'
+                )
+            )
+            changed = True
+
+        after = await conn.run_sync(_contracts)
+        _require_canonical(after, require_present=True)
+
+    return None if changed else "skipped"
+
+
 async def _migrate_add_sprint_scope_fields() -> None:
     """Add objective and expected_outcome columns to sprints table."""
     from sqlalchemy import text as sa_text
@@ -3370,6 +3465,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_card_knowledge_bases": _migrate_add_card_knowledge_bases,
     "_migrate_add_knowledge_source_columns": _migrate_add_knowledge_source_columns,
     "_migrate_add_kb_lineage_columns": _migrate_add_kb_lineage_columns,
+    "_migrate_add_kb_governance_metadata": _migrate_add_kb_governance_metadata,
     "_migrate_add_sprint_scope_fields": _migrate_add_sprint_scope_fields,
     "_migrate_add_sprint_lane_fields": _migrate_add_sprint_lane_fields,
     "_migrate_agent_boards": _migrate_agent_boards,

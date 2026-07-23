@@ -42,8 +42,9 @@ class CommunitySqlAlchemyEffectiveResourcePersistence:
                 .order_by(model.created_at.asc())
             )
         ).scalars().all()
-        return [
-            {
+        payloads: list[dict[str, Any]] = []
+        for row in rows:
+            payload = {
                 "id": row.id,
                 "title": row.title,
                 "description": getattr(row, "description", None),
@@ -51,8 +52,11 @@ class CommunitySqlAlchemyEffectiveResourcePersistence:
                 "mime_type": getattr(row, "mime_type", None) or "text/markdown",
                 "root_source_kb_id": getattr(row, "root_source_kb_id", None),
             }
-            for row in rows
-        ]
+            governance_metadata = getattr(row, "governance_metadata", None)
+            if governance_metadata is not None:
+                payload["governance_metadata"] = governance_metadata
+            payloads.append(payload)
+        return payloads
 
     async def load_mockups(
         self,

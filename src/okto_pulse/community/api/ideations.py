@@ -4,6 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.knowledge_governance import (
+    KnowledgeGovernanceInvalidMetadata,
+    knowledge_governance_error_response,
+)
 from okto_pulse.community.api.lookups import (
     lookup_page_request,
     lookup_response,
@@ -538,6 +542,8 @@ async def create_ideation_knowledge(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+    except KnowledgeGovernanceInvalidMetadata as exc:
+        return knowledge_governance_error_response(exc)
     return result.knowledge
 
 

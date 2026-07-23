@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field
 
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.knowledge_governance import (
+    KnowledgeGovernanceInvalidMetadata,
+    knowledge_governance_error_response,
+)
 from okto_pulse.community.api.lookups import (
     lookup_page_request,
     lookup_response,
@@ -1007,6 +1011,8 @@ async def create_spec_knowledge(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+    except KnowledgeGovernanceInvalidMetadata as exc:
+        return knowledge_governance_error_response(exc)
     return result.knowledge
 
 
