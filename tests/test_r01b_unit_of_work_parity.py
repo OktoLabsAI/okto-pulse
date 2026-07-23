@@ -18,27 +18,35 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from okto_pulse.community.adapters.sqlalchemy_database import (
     CommunityDatabaseRuntime,
     build_community_engine,
     build_community_session_factory,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board as BoardRow
+from okto_pulse.community.adapters.sqlalchemy_models import (
+    Base,
+    Board as BoardRow,
+    Card as CardRow,
+)
 from okto_pulse.community.adapters import sqlalchemy_unit_of_work as uow_mod
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     CommunityUnitOfWork,
     build_community_unit_of_work_factory,
 )
+from okto_pulse.core.application.use_cases.knowledge_propagation import (
+    KnowledgeCreationRaceError,
+)
 from okto_pulse.core.domain.entities import Board
+from okto_pulse.core.domain.knowledge_selection import KnowledgeTargetType
+from okto_pulse.core.ports.knowledge_propagation import KnowledgeTargetKey
 
 
 @pytest.fixture
 def _temp_session_factory(tmp_path):
     """Temp SQLite DB built entirely by Community relational adapters."""
-    engine = build_community_engine(
-        f"sqlite+aiosqlite:///{tmp_path / 'r01b_uow.db'}"
-    )
+    engine = build_community_engine(f"sqlite+aiosqlite:///{tmp_path / 'r01b_uow.db'}")
     session_factory = build_community_session_factory(engine)
 
     async def setup() -> None:
@@ -151,6 +159,95 @@ def test_ac2_explicit_rollback_discards(_temp_session_factory):
         return row
 
     assert asyncio.run(drive()) is None
+
+
+def test_synchronize_preserves_integrity_error_by_default(
+    _temp_session_factory,
+):
+    sf = _temp_session_factory
+    factory = build_community_unit_of_work_factory(sf)
+    board_id = "r01b-sync-default-conflict"
+
+    async def drive() -> None:
+        async with factory() as uow:
+            await uow.boards.add(_board(board_id))
+            await uow.commit()
+        with pytest.raises(IntegrityError):
+            async with factory() as uow:
+                await uow.boards.add(_board(board_id))
+                await uow.synchronize()
+
+    asyncio.run(drive())
+
+
+def test_synchronize_maps_only_target_integrity_error_to_supplied_conflict(
+    _temp_session_factory,
+):
+    sf = _temp_session_factory
+    factory = build_community_unit_of_work_factory(sf)
+    board_id = "r01b-sync-mapped-conflict"
+    target = KnowledgeTargetKey(
+        board_id=board_id,
+        target_type=KnowledgeTargetType.CARD,
+        target_id="r01b-deterministic-card",
+    )
+
+    async def drive() -> None:
+        async with factory() as uow:
+            await uow.boards.add(_board(board_id))
+            await uow.commit()
+        async with sf() as session:
+            session.add(
+                CardRow(
+                    id=target.target_id,
+                    board_id=board_id,
+                    title="winner",
+                    created_by="r01b-user",
+                )
+            )
+            await session.commit()
+        modeled = KnowledgeCreationRaceError(target)
+        with pytest.raises(KnowledgeCreationRaceError) as raised:
+            async with factory() as uow:
+                uow._session.add(
+                    CardRow(
+                        id=target.target_id,
+                        board_id=board_id,
+                        title="loser",
+                        created_by="r01b-user",
+                    )
+                )
+                await uow.synchronize(conflict_error=modeled)
+        assert raised.value is modeled
+        assert isinstance(raised.value.__cause__, IntegrityError)
+
+    asyncio.run(drive())
+
+
+def test_synchronize_preserves_non_target_integrity_error_with_race_envelope(
+    _temp_session_factory,
+):
+    sf = _temp_session_factory
+    factory = build_community_unit_of_work_factory(sf)
+    board_id = "r01b-sync-unrelated-conflict"
+    target = KnowledgeTargetKey(
+        board_id=board_id,
+        target_type=KnowledgeTargetType.CARD,
+        target_id="r01b-unrelated-card",
+    )
+
+    async def drive() -> None:
+        async with factory() as uow:
+            await uow.boards.add(_board(board_id))
+            await uow.commit()
+        modeled = KnowledgeCreationRaceError(target)
+        with pytest.raises(IntegrityError) as raised:
+            async with factory() as uow:
+                await uow.boards.add(_board(board_id))
+                await uow.synchronize(conflict_error=modeled)
+        assert raised.value is not modeled
+
+    asyncio.run(drive())
 
 
 def test_ac2_unit_of_work_satisfies_ports(_temp_session_factory):

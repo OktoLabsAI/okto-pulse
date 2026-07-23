@@ -11,9 +11,19 @@ the legacy endpoint caught it, ``QASelfAnsweringNotAllowedError`` → 403 with i
 transition + content/critical-context gates stay inside ``RefinementService``.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.deps import (
+    get_unit_of_work,
+    get_unit_of_work_factory,
+)
+from okto_pulse.community.api.knowledge_propagation import (
+    KnowledgePropagationContractError,
+    KnowledgePropagationServiceError,
+    execute_knowledge_creation_with_one_retry,
+    knowledge_propagation_error_response,
+    rollback_and_record_knowledge_error,
+)
 from okto_pulse.community.api.knowledge_governance import (
     KnowledgeGovernanceInvalidMetadata,
     knowledge_governance_error_response,
@@ -76,6 +86,9 @@ from okto_pulse.core.application.use_cases.refinements_crud import (
     UpdateRefinementCommand,
     UpdateRefinementUseCase,
 )
+from okto_pulse.core.application.knowledge_propagation_projection import (
+    project_derive_spec_response,
+)
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models.schemas import (
@@ -96,7 +109,13 @@ from okto_pulse.core.models.schemas import (
     RefinementSnapshotSummary,
     RefinementSummary,
     RefinementUpdate,
-    SpecResponse,
+    DeriveSpecResponse,
+)
+from okto_pulse.core.models.knowledge_propagation import (
+    DeriveSpecKnowledgeRequest,
+)
+from okto_pulse.core.ports.knowledge_propagation import (
+    KnowledgePropagationPortError,
 )
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.application.errors import (
@@ -379,24 +398,72 @@ async def delete_refinement(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
 
 
-@router.post("/refinements/{refinement_id}/derive-spec", response_model=SpecResponse)
+@router.post(
+    "/refinements/{refinement_id}/derive-spec",
+    response_model=DeriveSpecResponse,
+)
 async def derive_spec(
     refinement_id: str,
+    request: Request,
+    data: DeriveSpecKnowledgeRequest | None = None,
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Derive a spec from a refinement."""
-    try:
-        result = await DeriveSpecFromRefinementUseCase().execute(
-            DeriveSpecFromRefinementCommand(refinement_id),
-            actor=RESTAdapterContract.actor(user_id),
-            uow=uow,
+    """Derive a spec, preserving the complete v1 path without a v2 body."""
+    body_reader = getattr(request, "body", None)
+    if data is None and callable(body_reader):
+        raw_body = await body_reader()
+        if isinstance(raw_body, bytes) and raw_body.strip() == b"null":
+            return knowledge_propagation_error_response(
+                KnowledgePropagationContractError(
+                    "knowledge_propagation_envelope_required",
+                    (
+                        "the request body must be a complete v2 envelope "
+                        "when a JSON body is present"
+                    ),
+                )
+            )
+    if data is not None and getattr(data, "kb_ids", None) is not None:
+        return knowledge_propagation_error_response(
+            KnowledgePropagationServiceError(
+                "conflicting_propagation_parameters",
+                "legacy kb_ids and knowledge_propagation v2 are mutually exclusive",
+            )
         )
+    actor = RESTAdapterContract.actor(user_id)
+    command = DeriveSpecFromRefinementCommand(
+        refinement_id,
+        data.knowledge_propagation if data is not None else None,
+    )
+
+    async def _execute(target_uow: PulseUnitOfWork):
+        return await DeriveSpecFromRefinementUseCase().execute(
+            command,
+            actor=actor,
+            uow=target_uow,
+        )
+
+    try:
+        if data is None:
+            result = await _execute(uow)
+            return result.spec
+        result = await execute_knowledge_creation_with_one_retry(
+            uow=uow,
+            uow_factory=get_unit_of_work_factory(request),
+            actor=actor,
+            operation=_execute,
+        )
+        return project_derive_spec_response(result.knowledge_mutation)
+    except KnowledgePropagationServiceError as exc:
+        await rollback_and_record_knowledge_error(uow, exc)
+        return knowledge_propagation_error_response(exc)
+    except (KnowledgePropagationContractError, KnowledgePropagationPortError) as exc:
+        await uow.rollback()
+        return knowledge_propagation_error_response(exc)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
-    return result.spec
 
 
 @router.get("/refinements/{refinement_id}/history", response_model=list[RefinementHistoryResponse])

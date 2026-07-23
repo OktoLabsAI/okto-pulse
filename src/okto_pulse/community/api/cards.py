@@ -3,10 +3,21 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.knowledge_propagation import (
+    KnowledgePropagationContractError,
+    KnowledgePropagationServiceError,
+    knowledge_propagation_error_response,
+    rollback_and_record_knowledge_error,
+)
+from okto_pulse.core.application.knowledge_propagation_projection import (
+    project_knowledge_mutation_response,
+    project_refresh_response,
+    project_technical_read_response,
+)
 from okto_pulse.core.application.use_cases.card_crud import (
     GetBugRegressionScenarioCandidatesCommand,
     GetBugRegressionScenarioCandidatesUseCase,
@@ -54,6 +65,16 @@ from okto_pulse.core.application.use_cases import (
     UpdateCardCommand,
     UpdateCardUseCase,
 )
+from okto_pulse.core.application.use_cases.knowledge_propagation import (
+    DropCardKnowledgeAssignmentsCommand,
+    DropCardKnowledgeAssignmentsUseCase,
+    GetCardKnowledgePropagationCommand,
+    GetCardKnowledgePropagationUseCase,
+    RefreshCardKnowledgeAssignmentsCommand,
+    RefreshCardKnowledgeAssignmentsUseCase,
+    ReplaceCardKnowledgeAssignmentsCommand,
+    ReplaceCardKnowledgeAssignmentsUseCase,
+)
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.community.api.auth_deps import require_user
@@ -62,6 +83,17 @@ from okto_pulse.core.models import (
     CardMove,
     CardResponse,
     CardUpdate,
+)
+from okto_pulse.core.models.knowledge_propagation import (
+    KnowledgeAssignmentDropRequest,
+    KnowledgeAssignmentRefreshRequest,
+    KnowledgeAssignmentReplaceRequest,
+    KnowledgeMutationResponse,
+    KnowledgeRefreshResponse,
+    KnowledgeTechnicalReadResponse,
+)
+from okto_pulse.core.ports.knowledge_propagation import (
+    KnowledgePropagationPortError,
 )
 from okto_pulse.core.application.errors import (
     CARD_RESOURCE_READ_ONLY_MESSAGE,
@@ -563,6 +595,141 @@ async def delete_task_validation(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Validation not found"
         )
+
+
+async def _card_knowledge_error_response(
+    uow: PulseUnitOfWork,
+    error: (
+        KnowledgePropagationContractError
+        | KnowledgePropagationPortError
+        | KnowledgePropagationServiceError
+    ),
+):
+    if isinstance(error, KnowledgePropagationServiceError):
+        await rollback_and_record_knowledge_error(uow, error)
+    else:
+        await uow.rollback()
+    return knowledge_propagation_error_response(error)
+
+
+def _card_not_found_response() -> JSONResponse:
+    return knowledge_propagation_error_response(
+        KnowledgePropagationServiceError(
+            "card_not_found",
+            "Card not found",
+        )
+    )
+
+
+@router.put(
+    "/{card_id}/knowledge-assignments",
+    response_model=KnowledgeMutationResponse,
+)
+async def replace_card_knowledge_assignments(
+    card_id: str,
+    data: KnowledgeAssignmentReplaceRequest,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Atomically replace the card's governed v2 Knowledge selection."""
+    try:
+        result = await ReplaceCardKnowledgeAssignmentsUseCase().execute(
+            ReplaceCardKnowledgeAssignmentsCommand(card_id, data),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+        return project_knowledge_mutation_response(result)
+    except EntityNotFoundError:
+        return _card_not_found_response()
+    except (
+        KnowledgePropagationContractError,
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _card_knowledge_error_response(uow, exc)
+
+
+@router.post(
+    "/{card_id}/knowledge-assignments/drop",
+    response_model=KnowledgeMutationResponse,
+)
+async def drop_card_knowledge_assignments(
+    card_id: str,
+    data: KnowledgeAssignmentDropRequest,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Drop selected roots, or all effective roots for an explicit empty list."""
+    try:
+        result = await DropCardKnowledgeAssignmentsUseCase().execute(
+            DropCardKnowledgeAssignmentsCommand(card_id, data),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+        return project_knowledge_mutation_response(result)
+    except EntityNotFoundError:
+        return _card_not_found_response()
+    except (
+        KnowledgePropagationContractError,
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _card_knowledge_error_response(uow, exc)
+
+
+@router.post(
+    "/{card_id}/knowledge-assignments/refresh",
+    response_model=KnowledgeRefreshResponse,
+)
+async def refresh_card_knowledge_assignments(
+    card_id: str,
+    data: KnowledgeAssignmentRefreshRequest,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Refresh snapshot assignments by stable root Knowledge ID."""
+    try:
+        result = await RefreshCardKnowledgeAssignmentsUseCase().execute(
+            RefreshCardKnowledgeAssignmentsCommand(card_id, data),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+        return project_refresh_response(result)
+    except EntityNotFoundError:
+        return _card_not_found_response()
+    except (
+        KnowledgePropagationContractError,
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _card_knowledge_error_response(uow, exc)
+
+
+@router.get(
+    "/{card_id}/knowledge-assignments",
+    response_model=KnowledgeTechnicalReadResponse,
+)
+async def get_card_knowledge_assignments(
+    card_id: str,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Return the technical dual-read projection for the card."""
+    try:
+        result = await GetCardKnowledgePropagationUseCase().execute(
+            GetCardKnowledgePropagationCommand(card_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+        return project_technical_read_response(result.read_result)
+    except EntityNotFoundError:
+        return _card_not_found_response()
+    except (
+        KnowledgePropagationContractError,
+        KnowledgePropagationPortError,
+        KnowledgePropagationServiceError,
+    ) as exc:
+        return await _card_knowledge_error_response(uow, exc)
 
 
 # ==================== CARD KNOWLEDGE BASE ====================

@@ -27,11 +27,13 @@ composition root registers ``build_community_unit_of_work_factory(...)`` as the
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
 import logging
 import sys
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.sqlalchemy_repositories import (
@@ -51,6 +53,10 @@ from okto_pulse.core.domain.realm import RealmScope, require_realm_scope
 from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
     CommunitySqlAlchemyApplicationPersistence,
 )
+from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
+    is_knowledge_creation_race_error,
+)
+from okto_pulse.core.ports.knowledge_propagation import KnowledgeTargetKey
 
 if TYPE_CHECKING:
     from okto_pulse.core.application.use_cases.base import ActorContext
@@ -59,6 +65,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _UOW_CLEANUP_DRAIN_TIMEOUT_S = 5.0
 _pending_uow_cleanups: set[asyncio.Task[Any]] = set()
+
+
+def _knowledge_creation_race_target(
+    conflict_error: Exception,
+) -> KnowledgeTargetKey | None:
+    """Return the verified target carried by a Core creation-race envelope."""
+
+    if getattr(conflict_error, "code", None) != "knowledge_creation_race":
+        return None
+    target = getattr(conflict_error, "target", None)
+    if not isinstance(target, KnowledgeTargetKey):
+        return None
+    details = getattr(conflict_error, "details", None)
+    if not isinstance(details, Mapping):
+        return None
+    projected_target = details.get("target")
+    if not isinstance(projected_target, Mapping):
+        return None
+    if dict(projected_target) != target.to_dict():
+        return None
+    return target
 
 
 def _log_background_uow_cleanup_failure(task: asyncio.Future[Any]) -> None:
@@ -96,11 +123,7 @@ async def drain_pending_uow_cleanups(
     observer and may still release their connection after the deadline.
     """
 
-    timeout = (
-        _UOW_CLEANUP_DRAIN_TIMEOUT_S
-        if timeout_s is None
-        else float(timeout_s)
-    )
+    timeout = _UOW_CLEANUP_DRAIN_TIMEOUT_S if timeout_s is None else float(timeout_s)
     if timeout <= 0:
         raise ValueError("timeout_s must be positive")
     loop = asyncio.get_running_loop()
@@ -149,7 +172,9 @@ def _community_realm_scope(
     if realm_scope is not None:
         return require_realm_scope(realm_scope)
     if realm_id:
-        return RealmScope.local() if realm_id == "local" else RealmScope.tenant(realm_id)
+        return (
+            RealmScope.local() if realm_id == "local" else RealmScope.tenant(realm_id)
+        )
     return RealmScope.local()
 
 
@@ -218,12 +243,29 @@ class CommunityUnitOfWork:
     async def rollback(self) -> None:
         await self._application_persistence.rollback(self._session)
 
-    async def synchronize(self) -> None:
-        await self._application_persistence.flush(self._session)
-
-    async def reload(
-        self, entity: object, *, fields: tuple[str, ...] = ()
+    async def synchronize(
+        self,
+        *,
+        conflict_error: Exception | None = None,
     ) -> None:
+        try:
+            await self._application_persistence.flush(self._session)
+        except (IntegrityError, OperationalError) as exc:
+            if conflict_error is None:
+                raise
+            target = _knowledge_creation_race_target(conflict_error)
+            if target is None or not is_knowledge_creation_race_error(
+                exc,
+                target_type=target.target_type,
+                target_id=target.target_id,
+            ):
+                raise
+            # Translate only a verified deterministic-target collision. Leave
+            # rollback/close to __aexit__; this adapter never commits or
+            # repairs a poisoned UoW.
+            raise conflict_error from exc
+
+    async def reload(self, entity: object, *, fields: tuple[str, ...] = ()) -> None:
         if isinstance(entity, ApplicationRecord):
             await self._application_persistence.refresh(self._session, entity)
             return

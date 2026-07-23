@@ -5,19 +5,24 @@ from __future__ import annotations
 import copy
 from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Mapping
 from weakref import WeakKeyDictionary, WeakSet
 
-from sqlalchemy import and_, event, false, func, or_, select, true
+from sqlalchemy import and_, event, false, func, or_, select, true, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import selectinload
 
 from okto_pulse.community.adapters import sqlalchemy_models as models
+from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
+    is_knowledge_creation_race_error,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     ApplicationGroupCount,
     ApplicationGroupCountQuery,
     ApplicationQuery,
     ApplicationRecord,
+    ApplicationRecordConflictError,
 )
 from okto_pulse.core.ports.permission_policy import (
     legacy_permissions_to_flags,
@@ -1046,7 +1051,54 @@ class CommunitySqlAlchemyApplicationPersistence:
         )
         return rows[0] if rows else None
 
-    async def add(self, context: Any, record: ApplicationRecord) -> ApplicationRecord:
+    async def fence(
+        self,
+        context: Any,
+        *,
+        entity: str,
+        record_id: str,
+        expected_values: Mapping[str, object],
+    ) -> bool:
+        """Acquire a write fence only while authoritative scalar facts match."""
+
+        model = _model(entity)
+        scope = _realm_scope(context, entity)
+        predicates = [model.id == record_id]
+        if scope is not None:
+            predicates.append(_realm_predicate(entity, scope))
+        for field_name, expected in expected_values.items():
+            if field_name not in model.__table__.columns:
+                raise ValueError(f"unsupported_application_fence_field:{field_name}")
+            predicates.append(getattr(model, field_name) == expected)
+        fence_values = {
+            column.key: getattr(model, column.key)
+            for column in model.__table__.columns
+            if column.primary_key or column.onupdate is not None
+        }
+        try:
+            result = await context.execute(
+                update(model)
+                .where(*predicates)
+                .values(**fence_values)
+                .execution_options(synchronize_session=False)
+            )
+        except OperationalError as exc:
+            if is_knowledge_creation_race_error(
+                exc,
+                target_type=entity,
+                target_id=record_id,
+            ):
+                return False
+            raise
+        return int(result.rowcount or 0) == 1
+
+    async def add(
+        self,
+        context: Any,
+        record: ApplicationRecord,
+        *,
+        conflict_error: Exception | None = None,
+    ) -> ApplicationRecord:
         model = _model(record.entity)
         scope = _realm_scope(context, record.entity)
         if scope is not None:
@@ -1093,7 +1145,24 @@ class CommunitySqlAlchemyApplicationPersistence:
         }
         row = model(**values)
         context.add(row)
-        await context.flush()
+        try:
+            await context.flush()
+        except (IntegrityError, OperationalError) as exc:
+            record_id = str(record.values.get("id") or "")
+            if (
+                isinstance(conflict_error, ApplicationRecordConflictError)
+                and conflict_error.entity == record.entity
+                and conflict_error.record_id == record_id
+                and record.entity in {"card", "spec"}
+                and record_id
+                and is_knowledge_creation_race_error(
+                    exc,
+                    target_type=record.entity,
+                    target_id=record_id,
+                )
+            ):
+                raise conflict_error from exc
+            raise
         fresh = _record(record.entity, row)
         record.values.clear()
         record.values.update(fresh.values)

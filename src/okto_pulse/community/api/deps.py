@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from fastapi import HTTPException, Request
 
 from okto_pulse.core.ports.scheduler import SchedulerControl
-from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.repositories import PulseUnitOfWork, UnitOfWorkFactory
 from okto_pulse.core.runtime_registry import resolve_unit_of_work_factory
 
 
@@ -31,6 +31,26 @@ async def get_unit_of_work(
     request: Request,
 ) -> AsyncIterator[PulseUnitOfWork]:
     """Yield one edition-owned UoW for the complete HTTP request."""
+    try:
+        factory = get_unit_of_work_factory(request)
+        realm_scope = factory.resolve_realm_scope()
+        async with factory(realm_scope=realm_scope) as uow:
+            yield uow
+    except HTTPException:
+        raise
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "persistence_provider_not_configured",
+                "message": str(exc),
+            },
+        ) from exc
+
+
+def get_unit_of_work_factory(request: Request) -> UnitOfWorkFactory:
+    """Resolve the public UoW factory for bounded transport-level retries."""
+
     composition = getattr(request.app.state, "runtime_composition", None)
     preferred = (
         getattr(composition, "uow_factory", None) if composition is not None else None
@@ -54,17 +74,4 @@ async def get_unit_of_work(
                 "message": "The edition UoW factory cannot resolve a realm scope.",
             },
         )
-    try:
-        realm_scope = realm_resolver()
-        async with factory(realm_scope=realm_scope) as uow:
-            yield uow
-    except HTTPException:
-        raise
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "persistence_provider_not_configured",
-                "message": str(exc),
-            },
-        ) from exc
+    return factory

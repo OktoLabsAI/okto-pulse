@@ -20,7 +20,7 @@ import re
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -57,6 +57,10 @@ from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgeMutationOutcome,
     KnowledgeMutationPlan,
     KnowledgeMutationReceipt,
+    KnowledgeParentEvidence,
+    KnowledgeParentKey,
+    KnowledgeParentLookup,
+    KnowledgeParentType,
     KnowledgePropagationPortError,
     KnowledgePropagationScope,
     KnowledgePropagationSnapshot,
@@ -101,6 +105,31 @@ def _copy_sequence(value: object | None) -> list[object]:
     return []
 
 
+def _status_value(value: object) -> str:
+    return str(getattr(value, "value", value)).strip()
+
+
+def _structured_ids(value: object | None) -> tuple[str, ...]:
+    """Project canonical ids from a structured Spec JSON collection.
+
+    Historical specs can contain partially-authored rows. Those rows are not
+    valid evidence for a relevance link, but they also must not make unrelated
+    valid ids unreadable. The Core preflight rejects any requested link absent
+    from this conservative projection.
+    """
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    identities: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        identity = item.get("id")
+        if isinstance(identity, str) and identity.strip():
+            identities.add(identity.strip())
+    return tuple(sorted(identities))
+
+
 def _target_predicates(
     model: type[KnowledgePropagationScopeRecord] | type[KnowledgeMutationLedgerRecord],
     target: KnowledgeTargetKey,
@@ -109,6 +138,127 @@ def _target_predicates(
         model.board_id == target.board_id,
         model.target_type == _enum_value(target.target_type),
         model.target_id == target.target_id,
+    )
+
+
+def _has_sqlite_busy_snapshot(exc: BaseException) -> bool:
+    """Recognize SQLITE_BUSY_SNAPSHOT (517) without textual lock heuristics."""
+
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if getattr(current, "sqlite_errorcode", None) == 517:
+            return True
+        for candidate in (
+            getattr(current, "orig", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if isinstance(candidate, BaseException):
+                pending.append(candidate)
+    return False
+
+
+def is_knowledge_creation_race_error(
+    exc: BaseException,
+    *,
+    target_type: KnowledgeTargetType | str | None = None,
+    target_id: str | None = None,
+) -> bool:
+    """Recognize only deterministic-target/first-scope concurrency failures.
+
+    Creation routes call ``uow.synchronize()`` before the propagation adapter
+    stages its plan. They use this same narrow classifier for raw SQLAlchemy
+    errors, avoiding a second drift-prone list of backend markers.
+    """
+
+    normalized_target_type = (
+        None
+        if target_type is None
+        else str(getattr(target_type, "value", target_type)).strip()
+    )
+    if (
+        normalized_target_type
+        in {
+            KnowledgeTargetType.CARD.value,
+            KnowledgeTargetType.SPEC.value,
+        }
+        and bool(target_id)
+        and _has_sqlite_busy_snapshot(exc)
+    ):
+        return True
+
+    message = str(exc).lower()
+    common_collision_markers = (
+        "uq_knowledge_propagation_scope_target",
+        "unique constraint failed: knowledge_propagation_scopes.board_id, "
+        "knowledge_propagation_scopes.target_type, "
+        "knowledge_propagation_scopes.target_id",
+        "uq_knowledge_mutation_ledger_target_key",
+        "unique constraint failed: knowledge_mutation_ledger.board_id, "
+        "knowledge_mutation_ledger.target_type, "
+        "knowledge_mutation_ledger.target_id, "
+        "knowledge_mutation_ledger.idempotency_key",
+    )
+    target_collision_markers: tuple[str, ...]
+    if normalized_target_type == KnowledgeTargetType.CARD.value:
+        target_collision_markers = (
+            "unique constraint failed: cards.id",
+            "cards_pkey",
+        )
+    elif normalized_target_type == KnowledgeTargetType.SPEC.value:
+        target_collision_markers = (
+            "unique constraint failed: specs.id",
+            "specs_pkey",
+        )
+    else:
+        target_collision_markers = (
+            "unique constraint failed: cards.id",
+            "unique constraint failed: specs.id",
+            "cards_pkey",
+            "specs_pkey",
+        )
+    matched = any(
+        marker in message
+        for marker in (*common_collision_markers, *target_collision_markers)
+    )
+    if (
+        matched
+        and target_id is not None
+        and ("[parameters:" in message or "key (" in message)
+    ):
+        return target_id.lower() in message
+    return matched
+
+
+def _plan_has_creation_receipt(plan: KnowledgeMutationPlan) -> bool:
+    ledger = plan.ledger_entry
+    if ledger is None:
+        return False
+    result_v2 = ledger.receipt.details.get("result_v2")
+    if not isinstance(result_v2, Mapping):
+        return False
+    creation_result = result_v2.get("creation_result")
+    return isinstance(creation_result, Mapping) and bool(creation_result)
+
+
+def _is_first_creation_race(
+    exc: SQLAlchemyError,
+    plan: KnowledgeMutationPlan,
+) -> bool:
+    return (
+        plan.expected_revision == 0
+        and _plan_has_creation_receipt(plan)
+        and is_knowledge_creation_race_error(
+            exc,
+            target_type=cast(KnowledgeTargetType, plan.target.target_type),
+            target_id=plan.target.target_id,
+        )
     )
 
 
@@ -517,11 +667,16 @@ def _grandfathered_classifications(
 ) -> dict[str, Mapping[str, object]]:
     if not isinstance(details, Mapping):
         raise ValueError("knowledge_propagation_grandfather_details_invalid")
-    if set(details) != {
+    required_keys = {
         "contract_version",
         "legacy_content_preserved",
         "grandfathered_attachments",
-    }:
+    }
+    if not required_keys.issubset(details) or not set(details).issubset(
+        required_keys | {"result_v2"}
+    ):
+        raise ValueError("knowledge_propagation_grandfather_details_invalid")
+    if "result_v2" in details and not isinstance(details["result_v2"], Mapping):
         raise ValueError("knowledge_propagation_grandfather_details_invalid")
     if (
         details.get("contract_version") != 2
@@ -702,6 +857,265 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             raise TypeError("knowledge_propagation_session_factory_invalid")
         self._session_factory = session_factory
 
+    @staticmethod
+    async def _lock_rows(
+        context: Any,
+        model: Any,
+        *predicates: object,
+    ) -> int:
+        """Acquire a write fence without mutating timestamps/defaults."""
+
+        fence_values = {
+            column.key: getattr(model, column.key)
+            for column in model.__table__.columns
+            if column.primary_key or column.onupdate is not None
+        }
+        result = await context.execute(
+            update(model)
+            .where(*predicates)
+            .values(**fence_values)
+            .execution_options(synchronize_session=False)
+        )
+        return int(result.rowcount or 0)
+
+    async def _lock_target(
+        self,
+        context: Any,
+        plan: KnowledgeMutationPlan,
+    ) -> Spec | Card:
+        target = plan.target
+        model: type[Spec] | type[Card]
+        predicates: list[object]
+        if target.target_type is KnowledgeTargetType.SPEC:
+            model = Spec
+            predicates = [
+                Spec.id == target.target_id,
+                Spec.board_id == target.board_id,
+            ]
+            if plan.parent is not None:
+                if plan.parent.parent_type is KnowledgeParentType.REFINEMENT:
+                    predicates.append(
+                        Spec.refinement_id == plan.parent.parent_id
+                    )
+                elif plan.parent.parent_type is KnowledgeParentType.IDEATION:
+                    predicates.append(Spec.ideation_id == plan.parent.parent_id)
+                else:
+                    raise KnowledgePropagationPortError(
+                        "knowledge_propagation_parent_changed",
+                        "the Spec target has an invalid physical parent type",
+                        details=plan.parent.to_dict(),
+                    )
+        else:
+            model = Card
+            predicates = [
+                Card.id == target.target_id,
+                Card.board_id == target.board_id,
+            ]
+            if plan.parent is not None:
+                predicates.append(Card.spec_id == plan.parent.parent_id)
+
+        matched = await self._lock_rows(context, model, *predicates)
+        if matched != 1:
+            actual_parent: KnowledgeParentKey | None = None
+            if plan.parent is not None:
+                try:
+                    actual_row = await self._load_target(context, target)
+                except KnowledgePropagationPortError:
+                    actual_row = None
+                if actual_row is not None:
+                    actual_parent = self._target_parent_key(
+                        target,
+                        actual_row,
+                    )
+            code = (
+                "knowledge_propagation_parent_changed"
+                if plan.parent is not None
+                else "knowledge_propagation_target_not_found"
+            )
+            raise KnowledgePropagationPortError(
+                code,
+                (
+                    "the target parent changed after propagation preflight"
+                    if plan.parent is not None
+                    else "knowledge propagation target no longer exists"
+                ),
+                details=(
+                    target.to_dict()
+                    if plan.parent is None
+                    else {
+                        "target": target.to_dict(),
+                        "expected_parent": plan.parent.to_dict(),
+                        "actual_parent": (
+                            None
+                            if actual_parent is None
+                            else actual_parent.to_dict()
+                        ),
+                    }
+                ),
+            )
+        return await self._load_target(context, target)
+
+    @staticmethod
+    def _parent_model(
+        parent: KnowledgeParentKey,
+    ) -> type[Ideation] | type[Refinement] | type[Spec]:
+        if parent.parent_type is KnowledgeParentType.IDEATION:
+            return Ideation
+        if parent.parent_type is KnowledgeParentType.REFINEMENT:
+            return Refinement
+        return Spec
+
+    async def _lock_parent(
+        self,
+        context: Any,
+        parent: KnowledgeParentKey,
+    ) -> None:
+        model = self._parent_model(parent)
+        matched = await self._lock_rows(
+            context,
+            model,
+            model.id == parent.parent_id,
+            model.board_id == parent.board_id,
+        )
+        if matched != 1:
+            raise KnowledgePropagationPortError(
+                "knowledge_propagation_parent_not_eligible",
+                "the target parent no longer exists in the target board",
+                details=parent.to_dict(),
+            )
+
+    async def _lock_parent_sources(
+        self,
+        context: Any,
+        evidence: KnowledgeParentEvidence,
+    ) -> None:
+        source_ids = tuple(
+            sorted(
+                {
+                    source.source_knowledge_id
+                    for source in evidence.sources
+                }
+            )
+        )
+        if not source_ids:
+            return
+        await self._lock_source_ids(
+            context,
+            parent=evidence.parent,
+            source_ids=source_ids,
+        )
+
+    async def _lock_source_ids(
+        self,
+        context: Any,
+        *,
+        parent: KnowledgeParentKey,
+        source_ids: tuple[str, ...],
+    ) -> None:
+        if not source_ids:
+            return
+        if parent.parent_type is KnowledgeParentType.IDEATION:
+            model = IdeationKnowledgeBase
+            owner_column = IdeationKnowledgeBase.ideation_id
+        elif parent.parent_type is KnowledgeParentType.REFINEMENT:
+            model = RefinementKnowledgeBase
+            owner_column = RefinementKnowledgeBase.refinement_id
+        else:
+            model = SpecKnowledgeBase
+            owner_column = SpecKnowledgeBase.spec_id
+        matched = await self._lock_rows(
+            context,
+            model,
+            owner_column == parent.parent_id,
+            model.id.in_(source_ids),
+        )
+        if matched != len(source_ids):
+            raise KnowledgePropagationPortError(
+                "knowledge_propagation_preflight_stale",
+                "parent Knowledge evidence changed after creation preflight",
+                details=parent.to_dict(),
+            )
+
+    async def _fence_planned_sources(
+        self,
+        context: Any,
+        *,
+        plan: KnowledgeMutationPlan,
+        parent: KnowledgeParentKey | None,
+    ) -> None:
+        if parent is None or plan.parent_evidence is not None:
+            return
+        expected = {
+            item.assignment.source_knowledge_id: (
+                item.assignment.revision_stamp.to_dict()
+            )
+            for item in plan.assignments_to_open
+        }
+        if not expected:
+            return
+        source_ids = tuple(sorted(expected))
+        await self._lock_source_ids(
+            context,
+            parent=parent,
+            source_ids=source_ids,
+        )
+        fresh = await self.load_parent_evidence(
+            context,
+            KnowledgeParentLookup(
+                parent=parent,
+                source_knowledge_ids=source_ids,
+            ),
+        )
+        actual = {
+            source.source_knowledge_id: source.revision_stamp.to_dict()
+            for source in fresh.sources
+        }
+        if actual != expected:
+            raise KnowledgePropagationPortError(
+                "knowledge_propagation_preflight_stale",
+                "selected Knowledge changed before the mutation write fence",
+                details={
+                    "parent": parent.to_dict(),
+                    "expected_sources": expected,
+                    "actual_sources": actual,
+                },
+            )
+
+    async def _fence_parent_evidence(
+        self,
+        context: Any,
+        plan: KnowledgeMutationPlan,
+        physical_parent: KnowledgeParentKey | None,
+    ) -> None:
+        parent = plan.parent or physical_parent
+        if parent is None:
+            return
+        await self._lock_parent(context, parent)
+        expected = plan.parent_evidence
+        if expected is None:
+            return
+        await self._lock_parent_sources(context, expected)
+        requested_ids = tuple(
+            source.requested_knowledge_id for source in expected.sources
+        )
+        fresh = await self.load_parent_evidence(
+            context,
+            KnowledgeParentLookup(
+                parent=parent,
+                source_knowledge_ids=requested_ids,
+            ),
+        )
+        if fresh.to_dict() != expected.to_dict():
+            raise KnowledgePropagationPortError(
+                "knowledge_propagation_preflight_stale",
+                "parent evidence changed after creation preflight",
+                details={
+                    "parent": parent.to_dict(),
+                    "expected_evidence": expected.to_dict(),
+                    "actual_evidence": fresh.to_dict(),
+                },
+            )
+
     async def _load_target(
         self,
         context: Any,
@@ -710,19 +1124,23 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         if target.target_type is KnowledgeTargetType.SPEC:
             row = (
                 await context.execute(
-                    select(Spec).where(
+                    select(Spec)
+                    .where(
                         Spec.id == target.target_id,
                         Spec.board_id == target.board_id,
                     )
+                    .execution_options(populate_existing=True)
                 )
             ).scalar_one_or_none()
         else:
             row = (
                 await context.execute(
-                    select(Card).where(
+                    select(Card)
+                    .where(
                         Card.id == target.target_id,
                         Card.board_id == target.board_id,
                     )
+                    .execution_options(populate_existing=True)
                 )
             ).scalar_one_or_none()
         if row is None:
@@ -732,6 +1150,205 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 details=target.to_dict(),
             )
         return row
+
+    @staticmethod
+    async def _load_parent_row(
+        context: Any,
+        parent: KnowledgeParentKey,
+    ) -> Ideation | Refinement | Spec | None:
+        model: type[Ideation] | type[Refinement] | type[Spec]
+        if parent.parent_type is KnowledgeParentType.IDEATION:
+            model = Ideation
+        elif parent.parent_type is KnowledgeParentType.REFINEMENT:
+            model = Refinement
+        else:
+            model = Spec
+        return (
+            await context.execute(
+                select(model)
+                .where(model.id == parent.parent_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+
+    @staticmethod
+    async def _parent_source_rows(
+        context: Any,
+        *,
+        parent: KnowledgeParentKey,
+        requested_ids: tuple[str, ...],
+    ) -> tuple[Any, ...]:
+        if not requested_ids:
+            return ()
+        if parent.parent_type is KnowledgeParentType.IDEATION:
+            model = IdeationKnowledgeBase
+            owner_column = IdeationKnowledgeBase.ideation_id
+        elif parent.parent_type is KnowledgeParentType.REFINEMENT:
+            model = RefinementKnowledgeBase
+            owner_column = RefinementKnowledgeBase.refinement_id
+        else:
+            model = SpecKnowledgeBase
+            owner_column = SpecKnowledgeBase.spec_id
+        return tuple(
+            (
+                (
+                    await context.execute(
+                        select(model)
+                        .where(
+                            owner_column == parent.parent_id,
+                            model.id.in_(requested_ids),
+                        )
+                        .order_by(model.id.asc())
+                        .execution_options(populate_existing=True)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        )
+
+    async def load_parent_evidence(
+        self,
+        context: Any,
+        request: KnowledgeParentLookup,
+    ) -> KnowledgeParentEvidence:
+        """Resolve creation preflight facts without requiring a target row."""
+
+        if not isinstance(request, KnowledgeParentLookup):
+            raise TypeError("knowledge_propagation_parent_lookup_invalid")
+        try:
+            row = await self._load_parent_row(context, request.parent)
+            parent_exists = row is not None
+            same_board = (
+                row is not None and str(row.board_id) == request.parent.board_id
+            )
+            parent_state = (
+                None
+                if row is None
+                else (
+                    "archived"
+                    if bool(getattr(row, "archived", False))
+                    else _status_value(getattr(row, "status", ""))
+                )
+            )
+            sources: tuple[KnowledgeSelectableSource, ...] = ()
+            linked_spec_id: str | None = None
+            functional_requirement_ids: tuple[str, ...] = ()
+            acceptance_criterion_ids: tuple[str, ...] = ()
+            test_scenario_ids: tuple[str, ...] = ()
+            if same_board:
+                source_rows = await self._parent_source_rows(
+                    context,
+                    parent=request.parent,
+                    requested_ids=request.source_knowledge_ids,
+                )
+                by_id = {str(item.id): item for item in source_rows}
+                sources = tuple(
+                    _selectable_source(source_id, by_id[source_id])
+                    for source_id in request.source_knowledge_ids
+                    if source_id in by_id
+                )
+                if request.parent.parent_type is KnowledgeParentType.SPEC:
+                    assert isinstance(row, Spec)
+                    linked_spec_id = str(row.id)
+                    functional_requirement_ids = _structured_ids(
+                        row.functional_requirements
+                    )
+                    acceptance_criterion_ids = _structured_ids(row.acceptance_criteria)
+                    test_scenario_ids = _structured_ids(row.test_scenarios)
+
+            return KnowledgeParentEvidence(
+                parent=request.parent,
+                parent_exists=parent_exists,
+                same_board=same_board,
+                parent_state=parent_state,
+                sources=sources,
+                linked_spec_id=linked_spec_id,
+                functional_requirement_ids=functional_requirement_ids,
+                acceptance_criterion_ids=acceptance_criterion_ids,
+                test_scenario_ids=test_scenario_ids,
+            )
+        except KnowledgePropagationPortError:
+            raise
+        except (SQLAlchemyError, TypeError, ValueError) as exc:
+            raise KnowledgePropagationPortError(
+                "knowledge_propagation_parent_evidence_read_failed",
+                "knowledge propagation parent evidence could not be read safely",
+                details=request.parent.to_dict(),
+            ) from exc
+
+    @staticmethod
+    def _target_parent_key(
+        target: KnowledgeTargetKey,
+        target_row: Spec | Card,
+    ) -> KnowledgeParentKey | None:
+        if target.target_type is KnowledgeTargetType.CARD:
+            spec_id = cast(Card, target_row).spec_id
+            if not spec_id:
+                return None
+            return KnowledgeParentKey(
+                board_id=target.board_id,
+                parent_type=KnowledgeParentType.SPEC,
+                parent_id=str(spec_id),
+            )
+
+        spec = cast(Spec, target_row)
+        if spec.refinement_id:
+            return KnowledgeParentKey(
+                board_id=target.board_id,
+                parent_type=KnowledgeParentType.REFINEMENT,
+                parent_id=str(spec.refinement_id),
+            )
+        if spec.ideation_id:
+            return KnowledgeParentKey(
+                board_id=target.board_id,
+                parent_type=KnowledgeParentType.IDEATION,
+                parent_id=str(spec.ideation_id),
+            )
+        return None
+
+    async def _revalidate_target_parent(
+        self,
+        context: Any,
+        *,
+        plan: KnowledgeMutationPlan,
+        target_row: Spec | Card,
+    ) -> None:
+        """Fence the CAS with fresh physical parent/board facts."""
+
+        if plan.operation_kind is KnowledgeMutationKind.GRANDFATHER:
+            return
+        physical_parent = self._target_parent_key(plan.target, target_row)
+        if plan.parent is not None and physical_parent != plan.parent:
+            raise KnowledgePropagationPortError(
+                "knowledge_propagation_parent_changed",
+                "the target parent changed after propagation preflight",
+                details={
+                    "expected_parent": plan.parent.to_dict(),
+                    "actual_parent": (
+                        None
+                        if physical_parent is None
+                        else physical_parent.to_dict()
+                    ),
+                },
+            )
+        parent = plan.parent or physical_parent
+        if parent is None:
+            # Legacy manually-created targets have no derivation parent. Their
+            # target existence fence remains authoritative for compatibility.
+            return
+        evidence = await self.load_parent_evidence(
+            context,
+            KnowledgeParentLookup(
+                parent=parent,
+            ),
+        )
+        if not evidence.parent_exists or not evidence.same_board:
+            raise KnowledgePropagationPortError(
+                "knowledge_propagation_parent_not_eligible",
+                "the target parent no longer exists in the target board",
+                details=evidence.to_dict(),
+            )
 
     async def _scope_row(
         self,
@@ -906,11 +1523,13 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         target: KnowledgeTargetKey,
         target_row: Spec | Card,
         requested_ids: tuple[str, ...],
+        root_bindings: Mapping[str, str] | None = None,
     ) -> tuple[KnowledgeSelectableSource, ...]:
         """Resolve only the target's legitimate immediate-parent KB set."""
 
         if not requested_ids:
             return ()
+        root_bindings = dict(root_bindings or {})
         model: (
             type[IdeationKnowledgeBase]
             | type[RefinementKnowledgeBase]
@@ -957,12 +1576,18 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 )
             else:
                 return ()
+        physical_ids = set(requested_ids)
+        physical_ids.update(root_bindings.values())
+        root_ids = set(root_bindings)
         rows = (
             (
                 await context.execute(
                     statement.where(
                         *parent_predicates,
-                        model.id.in_(requested_ids),
+                        or_(
+                            model.id.in_(tuple(sorted(physical_ids))),
+                            model.root_source_kb_id.in_(tuple(sorted(root_ids))),
+                        ),
                     ).order_by(model.id.asc())
                 )
             )
@@ -970,11 +1595,38 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             .all()
         )
         by_id = {str(row.id): row for row in rows}
-        return tuple(
-            _selectable_source(requested_id, by_id[requested_id])
-            for requested_id in requested_ids
-            if requested_id in by_id
-        )
+        by_root: dict[str, list[object]] = {}
+        for row in rows:
+            _content, content_hash = _kb_content(row)
+            root_id = _selectable_kb_stamp(
+                row,
+                content_sha256=content_hash,
+            ).root_id
+            by_root.setdefault(root_id, []).append(row)
+
+        resolved: list[KnowledgeSelectableSource] = []
+        for requested_id in requested_ids:
+            bound_source_id = root_bindings.get(requested_id)
+            row = None if bound_source_id is None else by_id.get(bound_source_id)
+            if row is not None:
+                _content, content_hash = _kb_content(row)
+                if (
+                    _selectable_kb_stamp(
+                        row,
+                        content_sha256=content_hash,
+                    ).root_id
+                    != requested_id
+                ):
+                    row = None
+            if row is None and requested_id in by_id:
+                row = by_id[requested_id]
+            if row is None:
+                candidates = by_root.get(requested_id, ())
+                if len(candidates) == 1:
+                    row = candidates[0]
+            if row is not None:
+                resolved.append(_selectable_source(requested_id, row))
+        return tuple(resolved)
 
     async def load_grandfather_inventory(
         self,
@@ -1137,18 +1789,23 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         if not isinstance(request, KnowledgeIdempotencyLookup):
             raise TypeError("knowledge_propagation_idempotency_lookup_invalid")
         try:
-            row = (
-                await context.execute(
-                    select(KnowledgeMutationLedgerRecord).where(
-                        *_target_predicates(
-                            KnowledgeMutationLedgerRecord,
-                            request.target,
-                        ),
-                        KnowledgeMutationLedgerRecord.idempotency_key
-                        == request.idempotency_key,
+            # Replay is intentionally target-independent. A deterministic
+            # target may already be staged in this caller UoW; flushing it
+            # before consulting the durable ledger would turn a valid retry
+            # into a target-PK collision instead of a replay.
+            with context.no_autoflush:
+                row = (
+                    await context.execute(
+                        select(KnowledgeMutationLedgerRecord).where(
+                            *_target_predicates(
+                                KnowledgeMutationLedgerRecord,
+                                request.target,
+                            ),
+                            KnowledgeMutationLedgerRecord.idempotency_key
+                            == request.idempotency_key,
+                        )
                     )
-                )
-            ).scalar_one_or_none()
+                ).scalar_one_or_none()
             return None if row is None else _ledger_from_row(row)
         except KnowledgePropagationPortError:
             raise
@@ -1173,6 +1830,7 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             tombstones: tuple[KnowledgePropagationTombstone, ...] = ()
             snapshots: tuple[KnowledgePropagationSnapshot, ...] = ()
             source_ids = set(request.source_knowledge_ids)
+            root_bindings: dict[str, str] = {}
             if scope is not None:
                 assignment_rows = (
                     (
@@ -1196,6 +1854,15 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                     for item in assignments
                     if item.temporal.is_current
                 )
+                requested_roots = set(request.source_knowledge_ids)
+                root_bindings = {
+                    item.assignment.revision_stamp.root_id: (
+                        item.assignment.source_knowledge_id
+                    )
+                    for item in assignments
+                    if item.temporal.is_current
+                    and item.assignment.revision_stamp.root_id in requested_roots
+                }
                 tombstone_rows = (
                     (
                         await context.execute(
@@ -1239,6 +1906,7 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 target=request.target,
                 target_row=target_row,
                 requested_ids=tuple(sorted(source_ids)),
+                root_bindings=root_bindings,
             )
             return KnowledgePropagationScope(
                 target=request.target,
@@ -1553,6 +2221,42 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             if existing is not None:
                 if existing == plan.ledger_entry:
                     return existing.receipt
+                same_request = (
+                    existing.target == plan.target
+                    and existing.idempotency_key == plan.idempotency_key
+                    and existing.request_hash == plan.request_hash
+                    and existing.operation_kind is plan.operation_kind
+                    and existing.actor_id == plan.actor_id
+                )
+                if same_request:
+                    if (
+                        existing.receipt.outcome
+                        is KnowledgeMutationOutcome.REJECTED
+                    ):
+                        raise KnowledgePropagationPortError(
+                            str(existing.receipt.reason_code),
+                            str(existing.receipt.reason_detail),
+                            details=existing.receipt.details,
+                        )
+                    replay = existing.receipt.as_replay()
+                    await self._stage_attempt(
+                        context,
+                        KnowledgeMutationAttempt(
+                            attempt_id=f"kbatm_late_{plan.operation_id}",
+                            target=plan.target,
+                            idempotency_key=plan.idempotency_key,
+                            request_hash=plan.request_hash,
+                            operation_kind=plan.operation_kind,
+                            actor_id=plan.actor_id,
+                            outcome=KnowledgeMutationOutcome.REPLAYED,
+                            recorded_at=plan.occurred_at,
+                            original_operation_id=(
+                                existing.receipt.operation_id
+                            ),
+                            details={"late_stage_replay": True},
+                        ),
+                    )
+                    return replay
                 raise KnowledgePropagationPortError(
                     "knowledge_propagation_idempotency_conflict",
                     "idempotency key was already used with a different mutation",
@@ -1567,7 +2271,23 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             # relational FK. Revalidate it after replay lookup and directly
             # before the CAS/insert boundary. SQLAlchemy autoflush also makes
             # a target newly staged in this same caller UoW visible here.
-            await self._load_target(context, plan.target)
+            target_row = await self._lock_target(context, plan)
+            physical_parent = self._target_parent_key(plan.target, target_row)
+            await self._fence_parent_evidence(
+                context,
+                plan,
+                physical_parent,
+            )
+            await self._fence_planned_sources(
+                context,
+                plan=plan,
+                parent=plan.parent or physical_parent,
+            )
+            await self._revalidate_target_parent(
+                context,
+                plan=plan,
+                target_row=target_row,
+            )
             scope_id = await self._advance_scope(context, plan)
             await self._close_records(context, scope_id=scope_id, plan=plan)
             self._stage_open_records(context, scope_id=scope_id, plan=plan)
@@ -1583,12 +2303,33 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         except KnowledgePropagationPortError:
             raise
         except IntegrityError as exc:
+            if _is_first_creation_race(exc, plan):
+                raise KnowledgePropagationPortError(
+                    "knowledge_creation_race",
+                    "a concurrent deterministic creation won; retry for replay",
+                    details=plan.target.to_dict(),
+                ) from exc
             raise KnowledgePropagationPortError(
                 "knowledge_propagation_constraint_conflict",
                 "a concurrent or divergent mutation violated a durable invariant",
                 details=plan.target.to_dict(),
             ) from exc
         except SQLAlchemyError as exc:
+            if _is_first_creation_race(exc, plan):
+                raise KnowledgePropagationPortError(
+                    "knowledge_creation_race",
+                    "a concurrent deterministic creation won; retry for replay",
+                    details=plan.target.to_dict(),
+                ) from exc
+            if _has_sqlite_busy_snapshot(exc):
+                raise KnowledgePropagationPortError(
+                    "knowledge_propagation_concurrent_write",
+                    (
+                        "a concurrent writer changed the propagation "
+                        "preflight snapshot"
+                    ),
+                    details=plan.target.to_dict(),
+                ) from exc
             raise KnowledgePropagationPortError(
                 "knowledge_propagation_stage_failed",
                 "knowledge propagation mutation could not be staged",
@@ -1675,4 +2416,7 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 raise
 
 
-__all__ = ["CommunitySqlAlchemyKnowledgePropagationStore"]
+__all__ = [
+    "CommunitySqlAlchemyKnowledgePropagationStore",
+    "is_knowledge_creation_race_error",
+]

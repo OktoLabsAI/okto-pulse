@@ -115,6 +115,23 @@ def _canonical_json(value: Mapping[str, object]) -> str:
     )
 
 
+def _grandfather_classification_details(
+    value: object,
+) -> dict[str, object]:
+    """Ignore additive receipt projections when comparing backfill intent."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("knowledge_propagation_grandfather_details_invalid")
+    required = (
+        "contract_version",
+        "legacy_content_preserved",
+        "grandfathered_attachments",
+    )
+    if any(key not in value for key in required):
+        raise ValueError("knowledge_propagation_grandfather_details_invalid")
+    return {key: value[key] for key in required}
+
+
 def _idempotency_key(
     target: KnowledgeTargetKey,
     desired_details: Mapping[str, object],
@@ -215,13 +232,11 @@ async def _latest_grandfather_details(
         return None
     highest_revision = int(rows[0]["revision"])
     contenders = [row for row in rows if int(row["revision"]) == highest_revision]
-    selected = contenders[0]["details"]
-    if not isinstance(selected, Mapping):
-        raise ValueError("knowledge_propagation_grandfather_details_invalid")
+    selected = _grandfather_classification_details(contenders[0]["details"])
     canonical = _canonical_json(selected)
     for contender in contenders[1:]:
-        details = contender["details"]
-        if not isinstance(details, Mapping) or _canonical_json(details) != canonical:
+        details = _grandfather_classification_details(contender["details"])
+        if _canonical_json(details) != canonical:
             raise ValueError("knowledge_propagation_grandfather_revision_ambiguous")
     return selected
 

@@ -12,6 +12,9 @@ from mcp.client.streamable_http import streamable_http_client
 
 from okto_pulse.community.adapters.mcp_host import CommunityMcpHostProvider
 from okto_pulse.core.mcp.catalog import CoreMcpCatalog
+from okto_pulse.core.models.knowledge_propagation import (
+    KnowledgePropagationEnvelopeV2,
+)
 from okto_pulse.core.ports.mcp_resources import (
     StaticMcpResourceCatalog,
     freeze_mcp_resource_catalog,
@@ -24,6 +27,20 @@ def _catalog() -> CoreMcpCatalog:
     @catalog.tool()
     async def success(value: str) -> str:
         return json.dumps({"value": value})
+
+    @catalog.tool()
+    async def optional_envelope(
+        knowledge_propagation: KnowledgePropagationEnvelopeV2 = None,  # type: ignore[assignment]
+    ) -> str:
+        return json.dumps(
+            {
+                "mode": (
+                    "v1"
+                    if knowledge_propagation is None
+                    else "v2"
+                )
+            }
+        )
 
     @catalog.tool()
     async def domain_error(case: str, profile: str = "summary") -> str:
@@ -83,6 +100,32 @@ async def test_fastmcp_argument_validation_uses_the_v2_error_contract():
     assert result.structured_content["outcome"] == "error"
     assert result.structured_content["error_code"] == "validation_failed"
     assert result.structured_content["data"]["issues"]
+
+
+@pytest.mark.asyncio
+async def test_optional_non_nullable_envelope_distinguishes_omission_from_null():
+    host = _host()
+    async with Client(host) as client:
+        omitted = await client.call_tool("optional_envelope", {})
+        explicit_null = await client.call_tool(
+            "optional_envelope",
+            {"knowledge_propagation": None},
+            raise_on_error=False,
+        )
+        explicit_v2 = await client.call_tool(
+            "optional_envelope",
+            {
+                "knowledge_propagation": {
+                    "selection_state": "omitted",
+                    "idempotency_key": "transport-v2",
+                }
+            },
+        )
+
+    assert omitted.structured_content["data"] == {"mode": "v1"}
+    assert explicit_null.is_error is True
+    assert explicit_null.structured_content["error_code"] == "validation_failed"
+    assert explicit_v2.structured_content["data"] == {"mode": "v2"}
 
 
 @pytest.mark.asyncio
@@ -168,6 +211,10 @@ async def test_streamable_http_initialize_list_and_call_use_real_protocol():
                     result = await session.call_tool("success", {"value": "http"})
 
     assert initialized.serverInfo.version == "0.3.0"
-    assert {tool.name for tool in listed.tools} == {"success", "domain_error"}
+    assert {tool.name for tool in listed.tools} == {
+        "success",
+        "optional_envelope",
+        "domain_error",
+    }
     assert result.isError is False
     assert result.structuredContent["data"] == {"value": "http"}

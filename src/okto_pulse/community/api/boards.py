@@ -21,7 +21,17 @@ from okto_pulse.community.api.cards_pagination import (
     card_page_request,
     validate_card_list_query,
 )
-from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.deps import (
+    get_unit_of_work,
+    get_unit_of_work_factory,
+)
+from okto_pulse.community.api.knowledge_propagation import (
+    KnowledgePropagationContractError,
+    KnowledgePropagationServiceError,
+    execute_knowledge_creation_with_one_retry,
+    knowledge_propagation_error_response,
+    rollback_and_record_knowledge_error,
+)
 from okto_pulse.community.api.pagination import (
     project_page,
     resolve_window,
@@ -59,6 +69,9 @@ from okto_pulse.core.application.use_cases.boards_crud import (
     UpdateBoardShareUseCase,
     UpdateBoardUseCase,
 )
+from okto_pulse.core.application.knowledge_propagation_projection import (
+    project_card_create_response,
+)
 from okto_pulse.core.domain.enums import CardStatus
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user, get_realm_id
@@ -71,9 +84,12 @@ from okto_pulse.core.models import (
     BoardSummary,
     BoardUpdate,
     CardCreate,
+    CardCreateResponse,
     CardPageItem,
-    CardResponse,
     ColumnsResponseUnion,
+)
+from okto_pulse.core.ports.knowledge_propagation import (
+    KnowledgePropagationPortError,
 )
 from okto_pulse.core.models.schemas import PageEnvelope
 from okto_pulse.core.repositories import PulseUnitOfWork
@@ -272,23 +288,58 @@ async def list_board_cards(
 
 @router.post(
     "/{board_id}/cards",
-    response_model=CardResponse,
+    response_model=CardCreateResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_card(
     board_id: str,
+    request: Request,
     data: CardCreate,
     user_id: str = Depends(require_user),
     realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Create a new card in a board."""
-    try:
-        result = await CreateCardInBoardUseCase().execute(
-            CreateCardInBoardCommand(board_id, data),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
-            uow=uow,
+    """Create a card, preserving v1 unless propagation v2 is explicit."""
+    actor = RESTAdapterContract.actor(user_id, realm_id=realm_id)
+    command = CreateCardInBoardCommand(board_id, data)
+
+    async def _execute(target_uow: PulseUnitOfWork):
+        return await CreateCardInBoardUseCase().execute(
+            command,
+            actor=actor,
+            uow=target_uow,
         )
+
+    try:
+        if (
+            "knowledge_propagation" in data.model_fields_set
+            and data.knowledge_propagation is None
+        ):
+            return knowledge_propagation_error_response(
+                KnowledgePropagationContractError(
+                    "knowledge_propagation_envelope_required",
+                    (
+                        "knowledge_propagation must be a complete v2 envelope "
+                        "when the field is present"
+                    ),
+                )
+            )
+        if data.knowledge_propagation is None:
+            result = await _execute(uow)
+            return result.card
+        result = await execute_knowledge_creation_with_one_retry(
+            uow=uow,
+            uow_factory=get_unit_of_work_factory(request),
+            actor=actor,
+            operation=_execute,
+        )
+        return project_card_create_response(result.knowledge_mutation)
+    except KnowledgePropagationServiceError as exc:
+        await rollback_and_record_knowledge_error(uow, exc)
+        return knowledge_propagation_error_response(exc)
+    except (KnowledgePropagationContractError, KnowledgePropagationPortError) as exc:
+        await uow.rollback()
+        return knowledge_propagation_error_response(exc)
     except CardOperationError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except EntityNotFoundError:
@@ -298,7 +349,6 @@ async def create_card(
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    return result.card
 
 
 @router.get(
