@@ -21,6 +21,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.models import with_knowledge_governance
 from okto_pulse.core.ports.traceability import TraceabilityReadError
 from okto_pulse.core.services.analytics_service import spec_coverage_summary
+from okto_pulse.core.domain.knowledge_fingerprint import (
+    resolve_knowledge_content_sha256,
+)
 from okto_pulse.core.services.reference_resolution import resolve_task_context_references
 
 
@@ -56,9 +59,12 @@ def _serialize_knowledge_base(kb: Any, *, include_content: bool = False) -> dict
             "source_title",
             "source_version",
             "source_kb_id",
+            "root_source_kb_id",
+            "immediate_parent_kb_id",
         ):
-            if kb.get(attr):
+            if kb.get(attr) not in (None, ""):
                 data[attr] = kb[attr]
+        data["content_hash"] = resolve_knowledge_content_sha256(kb)
         if include_content:
             data["content"] = kb.get("content")
         for attr in ("created_by", "created_at", "updated_at"):
@@ -81,10 +87,13 @@ def _serialize_knowledge_base(kb: Any, *, include_content: bool = False) -> dict
         "source_title",
         "source_version",
         "source_kb_id",
+        "root_source_kb_id",
+        "immediate_parent_kb_id",
     ):
         value = getattr(kb, attr, None)
-        if value:
+        if value not in (None, ""):
             data[attr] = value
+    data["content_hash"] = resolve_knowledge_content_sha256(kb)
     if include_content:
         data["content"] = getattr(kb, "content", None)
     for attr in ("created_by", "created_at", "updated_at"):

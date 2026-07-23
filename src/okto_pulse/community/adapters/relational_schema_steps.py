@@ -2502,32 +2502,98 @@ async def _migrate_add_knowledge_source_columns() -> None:
 
 
 async def _migrate_add_kb_lineage_columns() -> None:
-    """R6-IMP4: add multi-hop KB lineage columns to the entity KB tables.
+    """Add multi-hop lineage and immutable-content identity to entity KBs.
 
     ``root_source_kb_id`` = the INITIAL canonical origin KB (preserved across
     ideation->refinement->spec hops); ``immediate_parent_kb_id`` = the direct
     parent KB. Additive + idempotent; ``source_kb_id`` stays the immediate parent
-    for back-compat. Mirrors ``_migrate_add_knowledge_source_columns``."""
+    for back-compat. ``content_hash`` remains nullable so legacy rows are not
+    rewritten or assigned fabricated persisted revisions. Existing columns are
+    introspected before mutation and the complete contract is post-validated;
+    DDL failures are never swallowed."""
+    from sqlalchemy import inspect as sa_inspect
     from sqlalchemy import text as sa_text
 
-    tables = [
+    tables = (
         "ideation_knowledge_bases",
         "refinement_knowledge_bases",
         "spec_knowledge_bases",
-    ]
-    columns = [
-        ("root_source_kb_id", "VARCHAR(36)"),
-        ("immediate_parent_kb_id", "VARCHAR(36)"),
-    ]
-    async with get_engine().begin() as conn:
-        for table in tables:
-            for col_name, col_type in columns:
-                try:
-                    await conn.execute(
-                        sa_text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+    )
+    columns = {
+        "root_source_kb_id": "varchar(36)",
+        "immediate_parent_kb_id": "varchar(36)",
+        "content_hash": "varchar(64)",
+    }
+
+    def _contracts(sync_conn: object) -> dict[str, dict[str, dict[str, object]]]:
+        inspector = sa_inspect(sync_conn)
+        existing_tables = set(inspector.get_table_names())
+        missing_tables = sorted(set(tables) - existing_tables)
+        if missing_tables:
+            raise RuntimeError(
+                "KB lineage migration is missing target tables: "
+                + ", ".join(missing_tables)
+            )
+        return {
+            table_name: {
+                str(column["name"]): column
+                for column in inspector.get_columns(table_name)
+                if str(column["name"]) in columns
+            }
+            for table_name in tables
+        }
+
+    def _require_canonical(
+        contracts: dict[str, dict[str, dict[str, object]]],
+        *,
+        require_present: bool,
+    ) -> None:
+        for table_name, observed_columns in contracts.items():
+            for column_name, expected_type in columns.items():
+                column = observed_columns.get(column_name)
+                if column is None:
+                    if require_present:
+                        raise RuntimeError(
+                            "KB lineage migration left a missing column: "
+                            f"{table_name}.{column_name}"
+                        )
+                    continue
+                observed_type = _normalize_sqlite_contract_type(column.get("type"))
+                observed_nullable = bool(column.get("nullable"))
+                observed_default = _normalize_sqlite_contract_default(
+                    column.get("default")
+                )
+                if (
+                    observed_type != expected_type
+                    or not observed_nullable
+                    or observed_default is not None
+                ):
+                    raise RuntimeError(
+                        "KB lineage column is non-canonical: "
+                        f"{table_name}.{column_name} "
+                        f"type={observed_type!r} nullable={observed_nullable!r} "
+                        f"default={observed_default!r}"
                     )
-                except Exception:
-                    pass
+
+    async with get_engine().begin() as conn:
+        if conn.dialect.name == "sqlite":
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        before = await conn.run_sync(_contracts)
+        _require_canonical(before, require_present=False)
+
+        for table_name, observed_columns in before.items():
+            for column_name, column_type in columns.items():
+                if column_name in observed_columns:
+                    continue
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{table_name}" '
+                        f'ADD COLUMN "{column_name}" {column_type.upper()}'
+                    )
+                )
+
+        after = await conn.run_sync(_contracts)
+        _require_canonical(after, require_present=True)
 
 
 async def _migrate_add_kb_governance_metadata() -> str | None:

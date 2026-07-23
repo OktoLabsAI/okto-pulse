@@ -629,6 +629,7 @@ class IdeationKnowledgeBase(Base):
     source_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_kb_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # R6-IMP4: multi-hop KB lineage. root_source_kb_id = the INITIAL canonical
     # origin (preserved across ideation->refinement->spec->card hops, never
     # overwritten by the immediate parent); immediate_parent_kb_id = the direct
@@ -733,6 +734,7 @@ class RefinementKnowledgeBase(Base):
     source_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_kb_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # R6-IMP4: multi-hop KB lineage. root_source_kb_id = the INITIAL canonical
     # origin (preserved across ideation->refinement->spec->card hops, never
     # overwritten by the immediate parent); immediate_parent_kb_id = the direct
@@ -1012,6 +1014,7 @@ class SpecKnowledgeBase(Base):
     source_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_kb_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # R6-IMP4: multi-hop KB lineage. root_source_kb_id = the INITIAL canonical
     # origin (preserved across ideation->refinement->spec->card hops, never
     # overwritten by the immediate parent); immediate_parent_kb_id = the direct

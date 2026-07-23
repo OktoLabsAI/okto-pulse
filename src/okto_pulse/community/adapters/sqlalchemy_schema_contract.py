@@ -106,11 +106,11 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 )
 
 # Current inherited schema after the governed tenant-scope migration and the
-# additive nullable governance_metadata columns on all three Knowledge Base
-# tables. Keep the pre-extraction hash above immutable so migration provenance
-# remains independently verifiable.
+# additive nullable governance_metadata/content_hash columns on all three
+# Knowledge Base tables. Keep the pre-extraction hash above immutable so
+# migration provenance remains independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "293430fd71c648537b3bec6f3e06201ce7f99b2505ff98f3b38f086e6555903c"
+    "227109980d23880272ee054eed1c6be1943b1ed50bb10028c8a8ad8ded9fdd48"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They

@@ -7,7 +7,7 @@ remain inferred from the existing Architecture, Mockup and Knowledge artifacts.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,9 +35,31 @@ from okto_pulse.core.services.resource_gate_contracts import (
 from okto_pulse.core.services.architecture import (
     ArchitectureDesignRepository,
 )
+from okto_pulse.core.domain.knowledge_fingerprint import (
+    resolve_knowledge_content_sha256,
+)
 from okto_pulse.core.services.resource_lineage import (
     LineageEntityRef,
 )
+
+
+def _knowledge_lineage_aliases(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Project KB-specific storage fields into the neutral lineage contract."""
+
+    root_source_kb_id = item.get("root_source_kb_id")
+    source_kb_id = item.get("source_kb_id")
+    immediate_parent_kb_id = item.get("immediate_parent_kb_id")
+    source_version = item.get("source_version")
+    content_hash = resolve_knowledge_content_sha256(item)
+    return {
+        "content_hash": content_hash,
+        "root_resource_id": root_source_kb_id or item.get("id"),
+        "immediate_parent_resource_id": (
+            immediate_parent_kb_id or source_kb_id
+        ),
+        "source_revision": source_version,
+        "source_content_sha256": content_hash,
+    }
 
 
 class CommunitySqlAlchemyResourceGateAdapter:
@@ -385,12 +407,15 @@ class CommunitySqlAlchemyResourceGateAdapter:
                         "root_source_kb_id",
                         "source_kb_id",
                         "immediate_parent_kb_id",
+                        "source_version",
+                        "content_hash",
                         "origin_ref",
                         "source_ref",
                         "source",
                     ):
-                        if item.get(key):
+                        if item.get(key) not in (None, ""):
                             item_ref[key] = item[key]
+                    item_ref.update(_knowledge_lineage_aliases(item))
                 refs.append(item_ref)
             return refs
 
@@ -403,9 +428,14 @@ class CommunitySqlAlchemyResourceGateAdapter:
             select(
                 kb_model.id,
                 kb_model.title,
+                kb_model.description,
+                kb_model.content,
+                kb_model.mime_type,
+                kb_model.source_version,
                 kb_model.source_kb_id,
                 kb_model.root_source_kb_id,
                 kb_model.immediate_parent_kb_id,
+                kb_model.content_hash,
                 kb_model.source_type,
                 kb_model.source_id,
             )
@@ -423,11 +453,14 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 "source_kb_id",
                 "root_source_kb_id",
                 "immediate_parent_kb_id",
+                "source_version",
+                "content_hash",
                 "source_type",
                 "source_id",
             ):
-                if row.get(key):
+                if row.get(key) not in (None, ""):
                     item_ref[key] = row[key]
+            item_ref.update(_knowledge_lineage_aliases(row))
             refs.append(item_ref)
         return refs
 
@@ -486,7 +519,9 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 if not isinstance(item, dict):
                     continue
                 if str(item.get("id") or "") == resource_id:
-                    return with_knowledge_governance(dict(item), item)
+                    payload = dict(item)
+                    payload.update(_knowledge_lineage_aliases(item))
+                    return with_knowledge_governance(payload, item)
             return None
 
         kb_model, fk_column, fk_name = {
@@ -525,10 +560,12 @@ class CommunitySqlAlchemyResourceGateAdapter:
             "source_kb_id": kb.source_kb_id,
             "root_source_kb_id": kb.root_source_kb_id,
             "immediate_parent_kb_id": kb.immediate_parent_kb_id,
+            "content_hash": resolve_knowledge_content_sha256(kb),
             "created_by": kb.created_by,
             "created_at": self._isoformat(kb.created_at),
             "updated_at": self._isoformat(kb.updated_at),
         }
+        payload.update(_knowledge_lineage_aliases(payload))
         return with_knowledge_governance(payload, kb)
 
     async def _load_source_entity_ref(

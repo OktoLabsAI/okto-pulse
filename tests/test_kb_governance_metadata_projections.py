@@ -13,6 +13,9 @@ from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import (
 from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import (
     _artifact_refs,
 )
+from okto_pulse.core.domain.knowledge_fingerprint import (
+    knowledge_content_sha256,
+)
 
 
 def _valid_metadata() -> dict[str, object]:
@@ -74,6 +77,39 @@ def test_traceability_kb_artifacts_use_canonical_governance_projection(
     else:
         assert projected["governance"]["missing_fields"] == []
         assert projected["governance"]["metadata"] == raw_metadata
+
+
+@pytest.mark.parametrize("as_mapping", [False, True])
+def test_traceability_kb_artifacts_preserve_revision_hash_lineage(
+    as_mapping: bool,
+) -> None:
+    values = {
+        "id": "kb-child",
+        "title": "Reference",
+        "description": "A reference artifact",
+        "content": "Body",
+        "mime_type": "text/markdown",
+        "source_version": 3,
+        "source_kb_id": "kb-parent",
+        "root_source_kb_id": "kb-root",
+        "immediate_parent_kb_id": "kb-parent",
+        "content_hash": None,
+        "governance_metadata": None,
+    }
+    kb = values if as_mapping else SimpleNamespace(**values)
+    entity = SimpleNamespace(
+        knowledge_bases=[kb],
+        screen_mockups=[],
+        architecture_designs=[],
+    )
+
+    projected = _artifact_refs(entity)["knowledge_bases"][0]
+
+    assert projected["source_version"] == 3
+    assert projected["source_kb_id"] == "kb-parent"
+    assert projected["root_source_kb_id"] == "kb-root"
+    assert projected["immediate_parent_kb_id"] == "kb-parent"
+    assert projected["content_hash"] == knowledge_content_sha256(kb)
 
 
 @pytest.mark.asyncio
@@ -184,4 +220,5 @@ async def test_resource_gate_projects_relational_kb_governance(
     assert projected is not None
     assert projected["governance"]["metadata_status"] == expected_status
     assert projected["governance"]["metadata"] == raw_metadata
-
+    assert projected["content_hash"] == knowledge_content_sha256(kb)
+    assert projected["source_content_sha256"] == projected["content_hash"]

@@ -21,6 +21,9 @@ from okto_pulse.core.ports.spec_resource_propagation import (
     ResourcePropagationKnowledgeBaseFact,
     ResourcePropagationSpecFact,
 )
+from okto_pulse.core.domain.knowledge_fingerprint import (
+    resolve_knowledge_content_sha256,
+)
 
 
 class CommunitySqlAlchemySpecResourcePropagationStore:
@@ -45,6 +48,7 @@ class CommunitySqlAlchemySpecResourcePropagationStore:
             id=str(row.id),
             board_id=str(row.board_id),
             screen_mockups=tuple(copy.deepcopy(row.screen_mockups or ())),
+            version=getattr(row, "version", None),
         )
 
     async def get_card(
@@ -108,11 +112,13 @@ class CommunitySqlAlchemySpecResourcePropagationStore:
                 description=row.description,
                 content=str(row.content),
                 mime_type=str(row.mime_type or "text/markdown"),
+                source_version=getattr(row, "source_version", None),
                 source_kb_id=getattr(row, "source_kb_id", None),
                 root_source_kb_id=getattr(row, "root_source_kb_id", None),
                 immediate_parent_kb_id=getattr(
                     row, "immediate_parent_kb_id", None
                 ),
+                content_hash=resolve_knowledge_content_sha256(row),
                 governance_metadata=copy.deepcopy(
                     getattr(row, "governance_metadata", None)
                 ),
