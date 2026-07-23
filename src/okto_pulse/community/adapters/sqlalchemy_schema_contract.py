@@ -133,6 +133,12 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "global_discovery_recovery_dispatches",
         "global_discovery_recovery_transitions",
         "global_discovery_source_revision",
+        "knowledge_propagation_scopes",
+        "knowledge_propagation_assignments",
+        "knowledge_propagation_snapshots",
+        "knowledge_propagation_tombstones",
+        "knowledge_mutation_ledger",
+        "knowledge_mutation_attempts",
     }
 )
 

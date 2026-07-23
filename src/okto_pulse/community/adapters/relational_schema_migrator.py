@@ -138,6 +138,13 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
      "Add knowledge-base lineage columns."),
     ("_migrate_add_kb_governance_metadata", "post_create_all", False,
      "Add and validate nullable JSON governance metadata on entity knowledge bases."),
+    (
+        "_migrate_knowledge_propagation_v2_schema",
+        "post_create_all",
+        False,
+        "Create and post-validate target scopes, temporal assignments, governed "
+        "snapshots, DROP tombstones, and append-only mutation ledgers.",
+    ),
     ("_migrate_add_sprint_scope_fields", "post_create_all", False,
      "Add sprint scope fields."),
     ("_migrate_add_sprint_lane_fields", "post_create_all", False,

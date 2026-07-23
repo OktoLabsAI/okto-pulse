@@ -25,6 +25,10 @@ from okto_pulse.core.ports.relational_effects import (
 from okto_pulse.core.ports.consolidation import get_consolidation_persistence_port
 from okto_pulse.core.ports.reconcile_intent import get_reconcile_intent_port
 from okto_pulse.core.ports.tombstone import get_tombstone_port
+from okto_pulse.core.ports.knowledge_propagation import (
+    get_knowledge_mutation_audit_sink,
+    get_knowledge_propagation_port,
+)
 
 
 @pytest.mark.asyncio
@@ -40,6 +44,8 @@ async def test_af30_3c_community_relational_effects_register_and_persist(tmp_pat
     governed_deletion_persistence = get_consolidation_persistence_port()
     assert get_tombstone_port() is governed_deletion_persistence
     assert get_reconcile_intent_port() is governed_deletion_persistence
+    knowledge_propagation = get_knowledge_propagation_port()
+    assert get_knowledge_mutation_audit_sink() is knowledge_propagation
 
     board_id = str(uuid.uuid4())
     tick_id = str(uuid.uuid4())
@@ -50,9 +56,9 @@ async def test_af30_3c_community_relational_effects_register_and_persist(tmp_pat
 
         port = get_relational_effects_port()
         assert await port.list_board_ids(session) == [board_id]
-        assert await port.count_active_consolidation_queue(
-            session, board_id=board_id
-        ) == 0
+        assert (
+            await port.count_active_consolidation_queue(session, board_id=board_id) == 0
+        )
         changed = await port.upsert_consolidation_queue_unless_tombstoned(
             session,
             ConsolidationQueueUpsert(
@@ -78,9 +84,7 @@ async def test_af30_3c_community_relational_effects_register_and_persist(tmp_pat
         )
         await session.commit()
 
-        queue_row = (
-            await session.execute(select(ConsolidationQueue))
-        ).scalar_one()
+        queue_row = (await session.execute(select(ConsolidationQueue))).scalar_one()
         tick_row = (await session.execute(select(KGTickRun))).scalar_one()
         latest_tick = await port.read_latest_kg_tick_completed_at(session)
 

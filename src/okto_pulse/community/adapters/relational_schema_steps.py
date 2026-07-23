@@ -9,7 +9,10 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from okto_pulse.community.adapters.sqlalchemy_models import Base
-from okto_pulse.community.adapters.sqlalchemy_database import get_engine, get_session_factory
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    get_engine,
+    get_session_factory,
+)
 
 StepCallable = Callable[[], "Awaitable[object] | object"]
 
@@ -20,9 +23,7 @@ def normalize_global_discovery_source_revision_trigger_sql(raw: object) -> str:
     return re.sub(r'[\s"`;\[\]]+', "", str(raw or "").lower())
 
 
-def global_discovery_source_revision_trigger_manifest() -> dict[
-    str, tuple[str, str]
-]:
+def global_discovery_source_revision_trigger_manifest() -> dict[str, tuple[str, str]]:
     """Return the exact owned trigger name -> (table, SQL) contract."""
 
     from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -86,14 +87,12 @@ END''',
     return expected
 
 
-COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX = (
-    "trg_kg_cognitive_source_immutable"
-)
+COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX = "trg_kg_cognitive_source_immutable"
+
+KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX = "trg_knowledge_propagation_v2"
 
 
-def cognitive_source_immutability_trigger_manifest() -> dict[
-    str, tuple[str, str]
-]:
+def cognitive_source_immutability_trigger_manifest() -> dict[str, tuple[str, str]]:
     """Return the exact SQLite guard manifest for the append-only ledger."""
 
     from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -118,6 +117,230 @@ BEGIN
 END'''
             expected[trigger_name] = (table_name, trigger_sql)
     return expected
+
+
+def knowledge_propagation_v2_trigger_manifest() -> dict[str, tuple[str, str]]:
+    """Return SQLite guards owned by the selective-propagation schema.
+
+    Canonical mutation results and attempt observations are append-only.
+    Assignment, snapshot, and tombstone history may be closed exactly once,
+    then linked to a successor exactly once after closure; neither temporal
+    field may subsequently be reopened, retimed, cleared, or relinked.  The
+    tombstone guards additionally make the global anti-resurrection marker
+    mutually exclusive with per-root current markers.
+    """
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        KnowledgeAssignmentRecord,
+        KnowledgeMutationAttemptRecord,
+        KnowledgeMutationLedgerRecord,
+        KnowledgeSnapshotRecord,
+        KnowledgeTombstoneRecord,
+    )
+
+    expected: dict[str, tuple[str, str]] = {}
+    for table_name in (
+        KnowledgeMutationLedgerRecord.__tablename__,
+        KnowledgeMutationAttemptRecord.__tablename__,
+    ):
+        for operation in ("update", "delete"):
+            trigger_name = (
+                f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{table_name}_{operation}"
+            )
+            trigger_sql = f'''CREATE TRIGGER "{trigger_name}"
+BEFORE {operation.upper()} ON "{table_name}"
+BEGIN
+    SELECT RAISE(ABORT, 'knowledge_mutation_ledger_immutable');
+END'''
+            expected[trigger_name] = (table_name, trigger_sql)
+
+    def add_temporal_transition_guards(
+        table_name: str,
+        history_kind: str,
+    ) -> None:
+        closure_name = (
+            f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{table_name}_closure_update"
+        )
+        expected[closure_name] = (
+            table_name,
+            f'''CREATE TRIGGER "{closure_name}"
+BEFORE UPDATE OF effective_to ON "{table_name}"
+WHEN OLD.effective_to IS NOT NULL
+    AND NEW.effective_to IS NOT OLD.effective_to
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'knowledge_propagation_{history_kind}_closure_immutable'
+    );
+END''',
+        )
+        supersession_name = (
+            f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_"
+            f"{table_name}_supersession_update"
+        )
+        expected[supersession_name] = (
+            table_name,
+            f'''CREATE TRIGGER "{supersession_name}"
+BEFORE UPDATE OF superseded_by_id ON "{table_name}"
+WHEN NEW.superseded_by_id IS NOT OLD.superseded_by_id
+    AND NOT (
+        OLD.superseded_by_id IS NULL
+        AND NEW.superseded_by_id IS NOT NULL
+        AND OLD.effective_to IS NOT NULL
+    )
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'knowledge_propagation_{history_kind}_supersession_immutable'
+    );
+END''',
+        )
+
+    temporal_guards = {
+        KnowledgeAssignmentRecord.__tablename__: (
+            "assignment_id, scope_id, source_knowledge_id, root_id, "
+            "immediate_parent_id, source_revision, source_content_sha256, "
+            "mode, state, origin_class, actor_id, revision, justification, "
+            "relevance_links, effective_from",
+            (
+                "NEW.assignment_id IS NOT OLD.assignment_id\n"
+                "    OR NEW.scope_id IS NOT OLD.scope_id\n"
+                "    OR NEW.source_knowledge_id IS NOT OLD.source_knowledge_id\n"
+                "    OR NEW.root_id IS NOT OLD.root_id\n"
+                "    OR NEW.immediate_parent_id IS NOT OLD.immediate_parent_id\n"
+                "    OR NEW.source_revision IS NOT OLD.source_revision\n"
+                "    OR NEW.source_content_sha256 IS NOT "
+                "OLD.source_content_sha256\n"
+                "    OR NEW.mode IS NOT OLD.mode\n"
+                "    OR NEW.state IS NOT OLD.state\n"
+                "    OR NEW.origin_class IS NOT OLD.origin_class\n"
+                "    OR NEW.actor_id IS NOT OLD.actor_id\n"
+                "    OR NEW.revision IS NOT OLD.revision\n"
+                "    OR NEW.justification IS NOT OLD.justification\n"
+                "    OR NEW.relevance_links IS NOT OLD.relevance_links\n"
+                "    OR NEW.effective_from IS NOT OLD.effective_from"
+            ),
+            "knowledge_propagation_assignment_history_immutable",
+        ),
+        KnowledgeSnapshotRecord.__tablename__: (
+            "snapshot_id, scope_id, assignment_id, root_id, "
+            "immediate_parent_id, source_revision, source_content_sha256, "
+            "content_bytes, effective_from",
+            (
+                "NEW.snapshot_id IS NOT OLD.snapshot_id\n"
+                "    OR NEW.scope_id IS NOT OLD.scope_id\n"
+                "    OR NEW.assignment_id IS NOT OLD.assignment_id\n"
+                "    OR NEW.root_id IS NOT OLD.root_id\n"
+                "    OR NEW.immediate_parent_id IS NOT OLD.immediate_parent_id\n"
+                "    OR NEW.source_revision IS NOT OLD.source_revision\n"
+                "    OR NEW.source_content_sha256 IS NOT "
+                "OLD.source_content_sha256\n"
+                "    OR NEW.content_bytes IS NOT OLD.content_bytes\n"
+                "    OR NEW.effective_from IS NOT OLD.effective_from"
+            ),
+            "knowledge_propagation_snapshot_history_immutable",
+        ),
+    }
+    for table_name, (
+        protected_columns,
+        changed_predicate,
+        error_code,
+    ) in temporal_guards.items():
+        update_name = (
+            f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{table_name}_content_update"
+        )
+        expected[update_name] = (
+            table_name,
+            f'''CREATE TRIGGER "{update_name}"
+BEFORE UPDATE OF {protected_columns} ON "{table_name}"
+WHEN {changed_predicate}
+BEGIN
+    SELECT RAISE(ABORT, '{error_code}');
+END''',
+        )
+        delete_name = f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{table_name}_delete"
+        expected[delete_name] = (
+            table_name,
+            f'''CREATE TRIGGER "{delete_name}"
+BEFORE DELETE ON "{table_name}"
+BEGIN
+    SELECT RAISE(ABORT, '{error_code}');
+END''',
+        )
+        add_temporal_transition_guards(
+            table_name,
+            "assignment"
+            if table_name == KnowledgeAssignmentRecord.__tablename__
+            else "snapshot",
+        )
+
+    tombstone_table = KnowledgeTombstoneRecord.__tablename__
+    add_temporal_transition_guards(tombstone_table, "tombstone")
+    conflict_insert = (
+        f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_tombstone_current_conflict_insert"
+    )
+    expected[conflict_insert] = (
+        tombstone_table,
+        f'''CREATE TRIGGER "{conflict_insert}"
+BEFORE INSERT ON "{tombstone_table}"
+WHEN NEW.effective_to IS NULL
+    AND EXISTS (
+        SELECT 1
+        FROM "{tombstone_table}" AS current_marker
+        WHERE current_marker.scope_id = NEW.scope_id
+          AND current_marker.effective_to IS NULL
+          AND (
+              NEW.root_id IS NULL
+              OR current_marker.root_id IS NULL
+          )
+    )
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'knowledge_propagation_current_global_tombstone_conflict'
+    );
+END''',
+    )
+    identity_update = (
+        f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_tombstone_identity_update"
+    )
+    expected[identity_update] = (
+        tombstone_table,
+        f'''CREATE TRIGGER "{identity_update}"
+BEFORE UPDATE OF tombstone_id, scope_id, root_id, actor_id, justification,
+    effective_from ON "{tombstone_table}"
+WHEN NEW.tombstone_id IS NOT OLD.tombstone_id
+    OR NEW.scope_id IS NOT OLD.scope_id
+    OR NEW.root_id IS NOT OLD.root_id
+    OR NEW.actor_id IS NOT OLD.actor_id
+    OR NEW.justification IS NOT OLD.justification
+    OR NEW.effective_from IS NOT OLD.effective_from
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'knowledge_propagation_tombstone_identity_immutable'
+    );
+END''',
+    )
+    tombstone_delete = f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_tombstone_delete"
+    expected[tombstone_delete] = (
+        tombstone_table,
+        f'''CREATE TRIGGER "{tombstone_delete}"
+BEFORE DELETE ON "{tombstone_table}"
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'knowledge_propagation_tombstone_history_immutable'
+    );
+END''',
+    )
+    return expected
+
+
+def _knowledge_propagation_migration_checkpoint(stage: str) -> None:
+    """Deterministic fault-injection seam used by migration replay tests."""
+
+    del stage
 
 
 def _normalize_sqlite_contract_ddl(raw: object) -> str:
@@ -212,8 +435,7 @@ def _sqlite_owned_table_contract(
                 (
                     constraint.get("name"),
                     tuple(
-                        str(column)
-                        for column in constraint.get("column_names") or ()
+                        str(column) for column in constraint.get("column_names") or ()
                     ),
                 )
                 for constraint in inspector.get_unique_constraints(table.name)
@@ -268,10 +490,7 @@ def _sqlite_owned_table_contract(
                 (
                     index.get("name"),
                     bool(index.get("unique")),
-                    tuple(
-                        str(column)
-                        for column in index.get("column_names") or ()
-                    ),
+                    tuple(str(column) for column in index.get("column_names") or ()),
                 )
                 for index in inspector.get_indexes(table.name)
             ],
@@ -315,8 +534,7 @@ def _sqlite_owned_table_contract(
                 constraint.get("referred_schema"),
                 constraint.get("referred_table"),
                 tuple(
-                    str(column)
-                    for column in constraint.get("referred_columns") or ()
+                    str(column) for column in constraint.get("referred_columns") or ()
                 ),
                 (
                     str(options.get("ondelete")).upper()
@@ -427,8 +645,7 @@ async def _migrate_add_consolidation_work_kinds() -> str | None:
     def _contract(sync_conn: object) -> dict[str, object]:
         inspector = sa_inspect(sync_conn)
         columns = {
-            str(column["name"]): column
-            for column in inspector.get_columns(table_name)
+            str(column["name"]): column for column in inspector.get_columns(table_name)
         }
         unique_constraints = {
             tuple(str(name) for name in constraint.get("column_names") or ())
@@ -548,9 +765,7 @@ async def _migrate_add_consolidation_work_kinds() -> str | None:
             or legacy_unique
             or not has_work_kind_check
         ):
-            await conn.run_sync(
-                lambda sync_conn: _rebuild(sync_conn, before_columns)
-            )
+            await conn.run_sync(lambda sync_conn: _rebuild(sync_conn, before_columns))
             changed = True
 
         backfill_kind = await conn.execute(
@@ -561,8 +776,7 @@ async def _migrate_add_consolidation_work_kinds() -> str | None:
         )
         backfill_generation = await conn.execute(
             sa_text(
-                "UPDATE consolidation_queue SET generation=0 "
-                "WHERE generation IS NULL"
+                "UPDATE consolidation_queue SET generation=0 WHERE generation IS NULL"
             )
         )
         changed = changed or int(backfill_kind.rowcount or 0) > 0
@@ -586,7 +800,9 @@ async def _migrate_add_consolidation_work_kinds() -> str | None:
         if not governed_columns.issubset(final_columns):
             raise RuntimeError("governed consolidation queue columns are incomplete")
         if not bool(final_columns["claim_token"].get("nullable")):
-            raise RuntimeError("governed consolidation queue claim token must be nullable")
+            raise RuntimeError(
+                "governed consolidation queue claim token must be nullable"
+            )
         if (
             "board_id",
             "artifact_type",
@@ -710,12 +926,10 @@ async def _migrate_global_discovery_delivery_contract() -> str | None:
             )
 
         outbox_observed_columns = {
-            str(column["name"]): column
-            for column in inspector.get_columns(outbox_name)
+            str(column["name"]): column for column in inspector.get_columns(outbox_name)
         }
         ledger_observed_columns = {
-            str(column["name"]): column
-            for column in inspector.get_columns(ledger_name)
+            str(column["name"]): column for column in inspector.get_columns(ledger_name)
         }
         redrive_control_observed_columns = {
             str(column["name"]): column
@@ -743,19 +957,14 @@ async def _migrate_global_discovery_delivery_contract() -> str | None:
         return {
             "outbox_columns": outbox_observed_columns,
             "outbox_uniques": {
-                tuple(
-                    str(name)
-                    for name in constraint.get("column_names") or ()
-                )
+                tuple(str(name) for name in constraint.get("column_names") or ())
                 for constraint in inspector.get_unique_constraints(outbox_name)
             },
             "ledger_columns": ledger_observed_columns,
             "ledger_pk": tuple(
                 str(name)
                 for name in (
-                    inspector.get_pk_constraint(ledger_name).get(
-                        "constrained_columns"
-                    )
+                    inspector.get_pk_constraint(ledger_name).get("constrained_columns")
                     or ()
                 )
             ),
@@ -775,9 +984,7 @@ async def _migrate_global_discovery_delivery_contract() -> str | None:
             ),
             "redrive_control_checks": {
                 _normalize_ddl(constraint.get("sqltext"))
-                for constraint in inspector.get_check_constraints(
-                    redrive_control_name
-                )
+                for constraint in inspector.get_check_constraints(redrive_control_name)
             },
             "watchdog_control_columns": watchdog_control_observed_columns,
             "watchdog_control_pk": tuple(
@@ -791,9 +998,7 @@ async def _migrate_global_discovery_delivery_contract() -> str | None:
             ),
             "watchdog_control_checks": {
                 _normalize_ddl(constraint.get("sqltext"))
-                for constraint in inspector.get_check_constraints(
-                    watchdog_control_name
-                )
+                for constraint in inspector.get_check_constraints(watchdog_control_name)
             },
             "watchdog_control_foreign_keys": tuple(
                 inspector.get_foreign_keys(watchdog_control_name)
@@ -954,29 +1159,22 @@ async def _migrate_global_discovery_delivery_contract() -> str | None:
             raise RuntimeError("global_update_outbox column contract drift")
         event_type = observed_outbox_columns["event_id"]["type"]
         if getattr(event_type, "length", None) != 255:
-            raise RuntimeError(
-                "global_update_outbox.event_id must be VARCHAR(255)"
-            )
+            raise RuntimeError("global_update_outbox.event_id must be VARCHAR(255)")
         if ("event_id",) not in contract["outbox_uniques"]:
             raise RuntimeError("global_update_outbox.event_id must remain unique")
 
         if set(contract["ledger_columns"]) != set(ledger_columns):
             raise RuntimeError("global discovery delivery ledger column drift")
         if contract["ledger_pk"] != ("delivery_key",):
-            raise RuntimeError(
-                "global discovery delivery ledger primary key drift"
-            )
+            raise RuntimeError("global discovery delivery ledger primary key drift")
         if not expected_ledger_uniques.issubset(contract["ledger_uniques"]):
-            raise RuntimeError(
-                "global discovery delivery ledger uniqueness drift"
-            )
+            raise RuntimeError("global discovery delivery ledger uniqueness drift")
         if not expected_ledger_checks.issubset(contract["ledger_checks"]):
             raise RuntimeError("global discovery delivery ledger check drift")
         for index_name, columns in expected_ledger_indexes.items():
             if contract["ledger_indexes"].get(index_name) != columns:
                 raise RuntimeError(
-                    "global discovery delivery ledger index drift: "
-                    f"{index_name}"
+                    f"global discovery delivery ledger index drift: {index_name}"
                 )
         board_foreign_key = any(
             tuple(str(name) for name in fk.get("constrained_columns") or ())
@@ -990,12 +1188,8 @@ async def _migrate_global_discovery_delivery_contract() -> str | None:
             raise RuntimeError(
                 "global discovery delivery ledger board foreign key drift"
             )
-        if set(contract["redrive_control_columns"]) != set(
-            redrive_control_columns
-        ):
-            raise RuntimeError(
-                "global discovery delivery redrive control column drift"
-            )
+        if set(contract["redrive_control_columns"]) != set(redrive_control_columns):
+            raise RuntimeError("global discovery delivery redrive control column drift")
         if contract["redrive_control_pk"] != ("id",):
             raise RuntimeError(
                 "global discovery delivery redrive control primary key drift"
@@ -1004,15 +1198,9 @@ async def _migrate_global_discovery_delivery_contract() -> str | None:
             "id='_global'",
             "checkpoint_version>=0",
         }
-        if not expected_redrive_checks.issubset(
-            contract["redrive_control_checks"]
-        ):
-            raise RuntimeError(
-                "global discovery delivery redrive control check drift"
-            )
-        if set(contract["watchdog_control_columns"]) != set(
-            watchdog_control_columns
-        ):
+        if not expected_redrive_checks.issubset(contract["redrive_control_checks"]):
+            raise RuntimeError("global discovery delivery redrive control check drift")
+        if set(contract["watchdog_control_columns"]) != set(watchdog_control_columns):
             raise RuntimeError(
                 "global discovery delivery watchdog control column drift"
             )
@@ -1020,12 +1208,8 @@ async def _migrate_global_discovery_delivery_contract() -> str | None:
             raise RuntimeError(
                 "global discovery delivery watchdog control primary key drift"
             )
-        if "checkpoint_version>=0" not in contract[
-            "watchdog_control_checks"
-        ]:
-            raise RuntimeError(
-                "global discovery delivery watchdog control check drift"
-            )
+        if "checkpoint_version>=0" not in contract["watchdog_control_checks"]:
+            raise RuntimeError("global discovery delivery watchdog control check drift")
         watchdog_board_foreign_key = any(
             tuple(str(name) for name in fk.get("constrained_columns") or ())
             == ("board_id",)
@@ -1036,8 +1220,7 @@ async def _migrate_global_discovery_delivery_contract() -> str | None:
         )
         if not watchdog_board_foreign_key:
             raise RuntimeError(
-                "global discovery delivery watchdog control board foreign "
-                "key drift"
+                "global discovery delivery watchdog control board foreign key drift"
             )
 
     changed = False
@@ -1123,9 +1306,7 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
             )
 
         contract = await conn.run_sync(
-            lambda sync_conn: _sqlite_owned_table_contract(
-                sync_conn, revision_table
-            )
+            lambda sync_conn: _sqlite_owned_table_contract(sync_conn, revision_table)
         )
         if contract["observed"] != contract["expected"]:
             raise RuntimeError(
@@ -1134,18 +1315,18 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
 
         expected_triggers = cognitive_source_immutability_trigger_manifest()
         trigger_rows = (
-            await conn.execute(
-                sa_text(
-                    "SELECT name, tbl_name, sql FROM sqlite_master "
-                    "WHERE type = 'trigger' AND name LIKE :prefix"
-                ),
-                {
-                    "prefix": (
-                        f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}%"
-                    )
-                },
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name LIKE :prefix"
+                    ),
+                    {"prefix": (f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}%")},
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         existing_triggers = {str(row["name"]): row for row in trigger_rows}
         unexpected = set(existing_triggers) - set(expected_triggers)
         if unexpected:
@@ -1159,51 +1340,40 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
                 await conn.execute(sa_text(trigger_sql))
                 changed = True
                 continue
-            if (
-                str(existing["tbl_name"]) != table_name
-                or normalize_global_discovery_source_revision_trigger_sql(
-                    existing["sql"]
-                )
-                != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
-                )
-            ):
+            if str(
+                existing["tbl_name"]
+            ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
+                existing["sql"]
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
                 raise RuntimeError(
-                    "cognitive source immutability trigger "
-                    f"{trigger_name} is corrupt"
+                    f"cognitive source immutability trigger {trigger_name} is corrupt"
                 )
 
         final_trigger_rows = (
-            await conn.execute(
-                sa_text(
-                    "SELECT name, tbl_name, sql FROM sqlite_master "
-                    "WHERE type = 'trigger' AND name LIKE :prefix"
-                ),
-                {
-                    "prefix": (
-                        f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}%"
-                    )
-                },
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name LIKE :prefix"
+                    ),
+                    {"prefix": (f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}%")},
+                )
             )
-        ).mappings().all()
-        final_triggers = {
-            str(row["name"]): row for row in final_trigger_rows
-        }
+            .mappings()
+            .all()
+        )
+        final_triggers = {str(row["name"]): row for row in final_trigger_rows}
         if set(final_triggers) != set(expected_triggers):
             raise RuntimeError(
                 "cognitive source immutability trigger installation is incomplete"
             )
         for trigger_name, (table_name, trigger_sql) in expected_triggers.items():
             observed = final_triggers[trigger_name]
-            if (
-                str(observed["tbl_name"]) != table_name
-                or normalize_global_discovery_source_revision_trigger_sql(
-                    observed["sql"]
-                )
-                != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
-                )
-            ):
+            if str(
+                observed["tbl_name"]
+            ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
+                observed["sql"]
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
                 raise RuntimeError(
                     "cognitive source immutability trigger audit failed: "
                     + trigger_name
@@ -1274,9 +1444,7 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
             }
         )
         preparation_state_was_missing = "preparation_state" not in existing_columns
-        requester_audit_was_missing = (
-            "requester_actor_ids_json" not in existing_columns
-        )
+        requester_audit_was_missing = "requester_actor_ids_json" not in existing_columns
         additive_columns = {
             "attempt_id": "VARCHAR(512) NOT NULL DEFAULT ''",
             "preparation_state": "VARCHAR(32) NOT NULL DEFAULT 'queued'",
@@ -1346,9 +1514,7 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
             attempt_indexes = await conn.run_sync(
                 lambda sync_conn: {
                     str(index.get("name"))
-                    for index in sa_inspect(sync_conn).get_indexes(
-                        attempt_table.name
-                    )
+                    for index in sa_inspect(sync_conn).get_indexes(attempt_table.name)
                     if index.get("name")
                 }
             )
@@ -1366,8 +1532,7 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
             )
             await conn.execute(
                 sa_text(
-                    f'UPDATE "{attempt_table.name}" SET attempt_id = '
-                    f"{attempt_identity}"
+                    f'UPDATE "{attempt_table.name}" SET attempt_id = {attempt_identity}'
                 )
             )
             for related_table in (slot_table, dispatch_table):
@@ -1408,8 +1573,7 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
                 continue
             await conn.execute(
                 sa_text(
-                    f'UPDATE "{related_table.name}" SET attempt_id = '
-                    f"{related_identity}"
+                    f'UPDATE "{related_table.name}" SET attempt_id = {related_identity}'
                 )
             )
             changed = True
@@ -1477,7 +1641,9 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
                 raw = str(argument)
             return _normalize_ddl(raw)
 
-        def _owned_table_contract(sync_conn: object, table: object) -> dict[str, object]:
+        def _owned_table_contract(
+            sync_conn: object, table: object
+        ) -> dict[str, object]:
             inspector = sa_inspect(sync_conn)
             actual_columns = inspector.get_columns(table.name)
             expected_columns = tuple(
@@ -1523,8 +1689,7 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
             }
             observed_unique = {
                 str(constraint["name"]): tuple(
-                    str(column)
-                    for column in constraint.get("column_names") or ()
+                    str(column) for column in constraint.get("column_names") or ()
                 )
                 for constraint in inspector.get_unique_constraints(table.name)
                 if constraint.get("name")
@@ -1536,9 +1701,7 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
                 and constraint.name
             }
             observed_checks = {
-                str(constraint["name"]): _normalize_ddl(
-                    constraint.get("sqltext")
-                )
+                str(constraint["name"]): _normalize_ddl(constraint.get("sqltext"))
                 for constraint in inspector.get_check_constraints(table.name)
                 if constraint.get("name")
             }
@@ -1678,13 +1841,17 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
         if row_was_inserted:
             changed = True
         revision_rows = (
-            await conn.execute(
-                sa_text(
-                    "SELECT scope_id, fence_version, trigger_manifest_version, "
-                    f'incarnation_id, revision, mutation_nonce FROM "{revision_table.name}"'
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT scope_id, fence_version, trigger_manifest_version, "
+                        f'incarnation_id, revision, mutation_nonce FROM "{revision_table.name}"'
+                    )
                 )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         if (
             len(revision_rows) != 1
             or str(revision_rows[0]["scope_id"])
@@ -1708,17 +1875,19 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
         expected_triggers = global_discovery_source_revision_trigger_manifest()
 
         existing_trigger_rows = (
-            await conn.execute(
-                sa_text(
-                    "SELECT name, tbl_name, sql FROM sqlite_master "
-                    "WHERE type = 'trigger' AND name LIKE :prefix"
-                ),
-                {"prefix": f"{GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX}%"},
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name LIKE :prefix"
+                    ),
+                    {"prefix": f"{GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX}%"},
+                )
             )
-        ).mappings().all()
-        existing_triggers = {
-            str(row["name"]): row for row in existing_trigger_rows
-        }
+            .mappings()
+            .all()
+        )
+        existing_triggers = {str(row["name"]): row for row in existing_trigger_rows}
         unexpected_triggers = set(existing_triggers) - set(expected_triggers)
         if unexpected_triggers:
             raise RuntimeError(
@@ -1734,23 +1903,17 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
                 changed = True
                 repaired_trigger_manifest = True
                 continue
-            if (
-                str(existing["tbl_name"]) != table_name
-                or normalize_global_discovery_source_revision_trigger_sql(
-                    existing["sql"]
-                )
-                != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
-                )
-            ):
+            if str(
+                existing["tbl_name"]
+            ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
+                existing["sql"]
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
                 raise RuntimeError(
                     f"global recovery source revision trigger {trigger_name} is corrupt"
                 )
 
         stored_fence_version = str(revision_rows[0]["fence_version"])
-        stored_trigger_version = str(
-            revision_rows[0]["trigger_manifest_version"]
-        )
+        stored_trigger_version = str(revision_rows[0]["trigger_manifest_version"])
         version_changed = (
             stored_fence_version != GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION
             or stored_trigger_version
@@ -1781,43 +1944,45 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
             changed = True
 
         final_trigger_rows = (
-            await conn.execute(
-                sa_text(
-                    "SELECT name, tbl_name, sql FROM sqlite_master "
-                    "WHERE type = 'trigger' AND name LIKE :prefix"
-                ),
-                {"prefix": f"{GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX}%"},
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name LIKE :prefix"
+                    ),
+                    {"prefix": f"{GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX}%"},
+                )
             )
-        ).mappings().all()
-        if {str(row["name"]) for row in final_trigger_rows} != set(
-            expected_triggers
-        ):
+            .mappings()
+            .all()
+        )
+        if {str(row["name"]) for row in final_trigger_rows} != set(expected_triggers):
             raise RuntimeError(
                 "global recovery source revision trigger installation is incomplete"
             )
         final_revision = (
-            await conn.execute(
-                sa_text(
-                    "SELECT scope_id, fence_version, trigger_manifest_version, "
-                    "incarnation_id, revision, mutation_nonce "
-                    f'FROM "{revision_table.name}"'
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT scope_id, fence_version, trigger_manifest_version, "
+                        "incarnation_id, revision, mutation_nonce "
+                        f'FROM "{revision_table.name}"'
+                    )
                 )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         if len(final_revision) != 1:
-            raise RuntimeError(
-                "global recovery source revision singleton audit failed"
-            )
+            raise RuntimeError("global recovery source revision singleton audit failed")
         final_row = final_revision[0]
         hex_values = (
             str(final_row["incarnation_id"]),
             str(final_row["mutation_nonce"]),
         )
         if (
-            str(final_row["scope_id"])
-            != GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID
-            or str(final_row["fence_version"])
-            != GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION
+            str(final_row["scope_id"]) != GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID
+            or str(final_row["fence_version"]) != GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION
             or str(final_row["trigger_manifest_version"])
             != GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION
             or isinstance(final_row["revision"], bool)
@@ -1829,9 +1994,7 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
                 for value in hex_values
             )
         ):
-            raise RuntimeError(
-                "global recovery source revision singleton audit failed"
-            )
+            raise RuntimeError("global recovery source revision singleton audit failed")
 
     return None if changed else "skipped"
 
@@ -2649,9 +2812,7 @@ async def _migrate_add_kb_governance_metadata() -> str | None:
                 continue
             observed_type = _normalize_sqlite_contract_type(column.get("type"))
             observed_nullable = bool(column.get("nullable"))
-            observed_default = _normalize_sqlite_contract_default(
-                column.get("default")
-            )
+            observed_default = _normalize_sqlite_contract_default(column.get("default"))
             if (
                 observed_type != "json"
                 or not observed_nullable
@@ -2678,15 +2839,353 @@ async def _migrate_add_kb_governance_metadata() -> str | None:
             if column is not None:
                 continue
             await conn.execute(
-                sa_text(
-                    f'ALTER TABLE "{table_name}" '
-                    f'ADD COLUMN "{column_name}" JSON'
-                )
+                sa_text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" JSON')
             )
             changed = True
 
         after = await conn.run_sync(_contracts)
         _require_canonical(after, require_present=True)
+
+    return None if changed else "skipped"
+
+
+async def _upgrade_knowledge_propagation_scope_board_audit_identity(
+    engine: object,
+) -> bool:
+    """Remove the historical board CASCADE FK without losing audit rows.
+
+    ``knowledge_propagation_scopes.board_id`` is an immutable audit identity,
+    not ownership. A board delete must therefore leave the whole propagation
+    cluster reconstructible. SQLite cannot drop a foreign key in place, so a
+    database created by an earlier IMP3 build is rebuilt atomically while
+    foreign-key actions are disabled on this one migration connection. Every
+    child FK is checked again before the connection is returned to the pool.
+    """
+
+    from sqlalchemy import MetaData
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        KnowledgePropagationScopeRecord,
+    )
+
+    scope_table = KnowledgePropagationScopeRecord.__table__
+    temporary_name = f"{scope_table.name}__audit_identity_upgrade"
+
+    def _scope_foreign_keys(sync_conn: object) -> tuple[dict[str, object], ...]:
+        inspector = sa_inspect(sync_conn)
+        if scope_table.name not in set(inspector.get_table_names()):
+            return ()
+        return tuple(inspector.get_foreign_keys(scope_table.name))
+
+    def _rebuild_scope(sync_conn: object) -> None:
+        inspector = sa_inspect(sync_conn)
+        if temporary_name in set(inspector.get_table_names()):
+            raise RuntimeError(
+                "knowledge propagation scope audit-identity upgrade "
+                "found a stale temporary table"
+            )
+        before_count = int(
+            sync_conn.exec_driver_sql(
+                f'SELECT count(*) FROM "{scope_table.name}"'
+            ).scalar_one()
+        )
+        temporary_metadata = MetaData()
+        temporary_table = scope_table.to_metadata(
+            temporary_metadata,
+            name=temporary_name,
+        )
+        sync_conn.execute(CreateTable(temporary_table))
+        quote = sync_conn.dialect.identifier_preparer.quote
+        columns = ", ".join(quote(column.name) for column in scope_table.columns)
+        sync_conn.exec_driver_sql(
+            f'INSERT INTO "{temporary_name}" ({columns}) '
+            f'SELECT {columns} FROM "{scope_table.name}"'
+        )
+        sync_conn.exec_driver_sql(f'DROP TABLE "{scope_table.name}"')
+        sync_conn.exec_driver_sql(
+            f'ALTER TABLE "{temporary_name}" RENAME TO "{scope_table.name}"'
+        )
+        for index in sorted(
+            scope_table.indexes,
+            key=lambda item: str(item.name),
+        ):
+            sync_conn.execute(CreateIndex(index))
+        after_count = int(
+            sync_conn.exec_driver_sql(
+                f'SELECT count(*) FROM "{scope_table.name}"'
+            ).scalar_one()
+        )
+        if after_count != before_count:
+            raise RuntimeError(
+                "knowledge propagation scope audit-identity upgrade "
+                "did not preserve every scope row"
+            )
+
+    async with engine.connect() as conn:
+        if conn.dialect.name != "sqlite":
+            return False
+        foreign_keys = await conn.run_sync(_scope_foreign_keys)
+        if not foreign_keys:
+            return False
+        board_foreign_keys = tuple(
+            item
+            for item in foreign_keys
+            if tuple(item.get("constrained_columns") or ()) == ("board_id",)
+            and item.get("referred_table") == "boards"
+            and tuple(item.get("referred_columns") or ()) == ("id",)
+        )
+        if len(foreign_keys) != 1 or len(board_foreign_keys) != 1:
+            raise RuntimeError(
+                "knowledge propagation scope has unexpected foreign-key drift"
+            )
+        options = board_foreign_keys[0].get("options") or {}
+        if str(options.get("ondelete") or "").upper() != "CASCADE":
+            raise RuntimeError(
+                "knowledge propagation scope board foreign key is non-canonical"
+            )
+
+        # Introspection can establish SQLAlchemy's logical transaction even
+        # though SQLite has not started a physical writer transaction.
+        await conn.rollback()
+        original_foreign_keys = int(
+            (await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar_one()
+        )
+        await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        if int((await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar_one()) != 0:
+            raise RuntimeError(
+                "knowledge propagation scope upgrade could not suspend "
+                "foreign-key actions"
+            )
+        try:
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+            await conn.run_sync(_rebuild_scope)
+            violations = (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            if violations:
+                raise RuntimeError(
+                    "knowledge propagation scope audit-identity upgrade "
+                    f"left foreign-key violations: {violations!r}"
+                )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
+        finally:
+            await conn.exec_driver_sql(
+                f"PRAGMA foreign_keys={1 if original_foreign_keys else 0}"
+            )
+            restored = int(
+                (await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar_one()
+            )
+            if restored != original_foreign_keys:
+                raise RuntimeError(
+                    "knowledge propagation scope upgrade did not restore "
+                    "foreign-key enforcement"
+                )
+    return True
+
+
+async def _migrate_knowledge_propagation_v2_schema() -> str | None:
+    """Converge and prove the additive selective-propagation schema.
+
+    Each owned table is created independently with ``checkfirst`` and audited
+    before the next checkpoint.  The enclosing ``BEGIN IMMEDIATE`` makes a
+    fault at any checkpoint rollback-safe on SQLite, while replay can also
+    resume a database in which an earlier process committed only a prefix.
+    Existing legacy KB rows and card JSON are never selected, copied, updated,
+    or deleted by this migration.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+    from sqlalchemy.schema import CreateIndex
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        KnowledgeAssignmentRecord,
+        KnowledgeMutationAttemptRecord,
+        KnowledgeMutationLedgerRecord,
+        KnowledgePropagationScopeRecord,
+        KnowledgeSnapshotRecord,
+        KnowledgeTombstoneRecord,
+    )
+
+    stages = (
+        ("scope", KnowledgePropagationScopeRecord.__table__),
+        ("assignment", KnowledgeAssignmentRecord.__table__),
+        ("snapshot", KnowledgeSnapshotRecord.__table__),
+        ("tombstone", KnowledgeTombstoneRecord.__table__),
+        ("ledger", KnowledgeMutationLedgerRecord.__table__),
+        ("attempt", KnowledgeMutationAttemptRecord.__table__),
+    )
+    owned_tables = tuple(table for _, table in stages)
+
+    def _create_table(sync_conn: object, table: object) -> None:
+        table.create(sync_conn, checkfirst=True)
+
+    def _table_names(sync_conn: object) -> set[str]:
+        return set(sa_inspect(sync_conn).get_table_names())
+
+    def _expected_partial_indexes(sync_conn: object) -> dict[str, str]:
+        expected: dict[str, str] = {}
+        for table in owned_tables:
+            for index in table.indexes:
+                sqlite_where = index.dialect_options["sqlite"].get("where")
+                if sqlite_where is None:
+                    continue
+                expected[str(index.name)] = _normalize_sqlite_contract_ddl(
+                    CreateIndex(index).compile(
+                        dialect=sync_conn.dialect,
+                        compile_kwargs={"literal_binds": True},
+                    )
+                )
+        return expected
+
+    def _require_table_contract(sync_conn: object, table: object) -> None:
+        contract = _sqlite_owned_table_contract(sync_conn, table)
+        if contract["observed"] != contract["expected"]:
+            raise RuntimeError(
+                "knowledge propagation v2 table has a non-canonical contract: "
+                + str(table.name)
+            )
+
+    engine = get_engine()
+    changed = await _upgrade_knowledge_propagation_scope_board_audit_identity(engine)
+    async with engine.begin() as conn:
+        if conn.dialect.name != "sqlite":
+            raise RuntimeError(
+                "knowledge propagation v2 migration requires Community SQLite"
+            )
+        # sqlite3 legacy transaction mode does not begin for DDL.  Pin table
+        # convergence, trigger installation, and every postcondition audit to
+        # one physical writer transaction.
+        await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        existing_tables = await conn.run_sync(_table_names)
+
+        for stage, table in stages:
+            if table.name not in existing_tables:
+                await conn.run_sync(
+                    lambda sync_conn, owned_table=table: _create_table(
+                        sync_conn,
+                        owned_table,
+                    )
+                )
+                changed = True
+                existing_tables.add(table.name)
+            await conn.run_sync(
+                lambda sync_conn, owned_table=table: _require_table_contract(
+                    sync_conn,
+                    owned_table,
+                )
+            )
+            _knowledge_propagation_migration_checkpoint(stage)
+
+        expected_partial_indexes = await conn.run_sync(_expected_partial_indexes)
+        if expected_partial_indexes:
+            placeholders = ", ".join(
+                f":index_{position}"
+                for position, _ in enumerate(expected_partial_indexes)
+            )
+            parameters = {
+                f"index_{position}": index_name
+                for position, index_name in enumerate(sorted(expected_partial_indexes))
+            }
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, sql FROM sqlite_master "
+                            "WHERE type = 'index' "
+                            f"AND name IN ({placeholders})"
+                        ),
+                        parameters,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            observed_partial_indexes = {
+                str(row["name"]): _normalize_sqlite_contract_ddl(row["sql"])
+                for row in rows
+            }
+            if observed_partial_indexes != expected_partial_indexes:
+                raise RuntimeError(
+                    "knowledge propagation v2 partial-index contract drift"
+                )
+
+        expected_triggers = knowledge_propagation_v2_trigger_manifest()
+        trigger_rows = (
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name LIKE :prefix"
+                    ),
+                    {"prefix": (f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}%")},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        existing_triggers = {str(row["name"]): row for row in trigger_rows}
+        unexpected = set(existing_triggers) - set(expected_triggers)
+        if unexpected:
+            raise RuntimeError(
+                "knowledge propagation v2 has unexpected owned triggers: "
+                + ", ".join(sorted(unexpected))
+            )
+        for trigger_name, (table_name, trigger_sql) in expected_triggers.items():
+            existing = existing_triggers.get(trigger_name)
+            if existing is None:
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+                continue
+            if str(
+                existing["tbl_name"]
+            ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
+                existing["sql"]
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
+                raise RuntimeError(
+                    "knowledge propagation v2 trigger is corrupt: " + trigger_name
+                )
+
+        final_trigger_rows = (
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name LIKE :prefix"
+                    ),
+                    {"prefix": (f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}%")},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        final_triggers = {str(row["name"]): row for row in final_trigger_rows}
+        if set(final_triggers) != set(expected_triggers):
+            raise RuntimeError(
+                "knowledge propagation v2 trigger installation is incomplete"
+            )
+        for trigger_name, (table_name, trigger_sql) in expected_triggers.items():
+            observed = final_triggers[trigger_name]
+            if str(
+                observed["tbl_name"]
+            ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
+                observed["sql"]
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
+                raise RuntimeError(
+                    "knowledge propagation v2 trigger postcondition failed: "
+                    + trigger_name
+                )
+
+        for table in owned_tables:
+            await conn.run_sync(
+                lambda sync_conn, owned_table=table: _require_table_contract(
+                    sync_conn,
+                    owned_table,
+                )
+            )
 
     return None if changed else "skipped"
 
@@ -3233,9 +3732,7 @@ async def _migrate_agent_permissions() -> None:
             await session.rollback()
 
 
-_RKG04_FIXTURE_BOARD_RE = re.compile(
-    r"^(?:rkg04-[0-9a-f]{10}|rkg04mcp-[0-9a-f]{8})$"
-)
+_RKG04_FIXTURE_BOARD_RE = re.compile(r"^(?:rkg04-[0-9a-f]{10}|rkg04mcp-[0-9a-f]{8})$")
 _FIXTURE_POLLUTION_FIRST_DAY = "2026-06-27"
 _FIXTURE_POLLUTION_LAST_DAY = "2026-07-02"
 
@@ -3299,7 +3796,9 @@ async def _migrate_repair_known_fixture_fk_orphans() -> str | None:
                     or not str(row.id).startswith("sprint-crud-")
                     or not _fixture_pollution_day_allowed(row.created_at)
                 ):
-                    raise RuntimeError("fixture FK repair rejected an unknown card orphan")
+                    raise RuntimeError(
+                        "fixture FK repair rejected an unknown card orphan"
+                    )
                 card_rowids.append(rowid)
                 continue
 
@@ -3340,7 +3839,9 @@ async def _migrate_repair_known_fixture_fk_orphans() -> str | None:
                     or _RKG04_FIXTURE_BOARD_RE.fullmatch(str(row.board_id)) is None
                     or not _fixture_pollution_day_allowed(row.created_at)
                 ):
-                    raise RuntimeError("fixture FK repair rejected an unknown DLQ orphan")
+                    raise RuntimeError(
+                        "fixture FK repair rejected an unknown DLQ orphan"
+                    )
                 dlq_rowids.append(rowid)
                 continue
 
@@ -3380,13 +3881,13 @@ async def _migrate_repair_known_fixture_fk_orphans() -> str | None:
             }
             for table_name in sorted(table_names):
                 if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name) is None:
-                    raise RuntimeError("fixture FK repair rejected an unsafe table name")
+                    raise RuntimeError(
+                        "fixture FK repair rejected an unsafe table name"
+                    )
                 columns = {
                     str(row[1])
                     for row in (
-                        await conn.exec_driver_sql(
-                            f'PRAGMA table_info("{table_name}")'
-                        )
+                        await conn.exec_driver_sql(f'PRAGMA table_info("{table_name}")')
                     ).all()
                 }
                 if "board_id" not in columns:
@@ -3447,16 +3948,12 @@ async def _migrate_repair_known_fixture_fk_orphans() -> str | None:
             relational_changed = True
         if dlq_rowids:
             await conn.execute(
-                sa_text(
-                    "DELETE FROM consolidation_dead_letter WHERE rowid = :rowid"
-                ),
+                sa_text("DELETE FROM consolidation_dead_letter WHERE rowid = :rowid"),
                 [{"rowid": rowid} for rowid in dlq_rowids],
             )
             relational_changed = True
 
-        remaining = list(
-            (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
-        )
+        remaining = list((await conn.exec_driver_sql("PRAGMA foreign_key_check")).all())
         if remaining:
             raise RuntimeError("fixture FK repair did not converge to a clean database")
 
@@ -3532,6 +4029,9 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_knowledge_source_columns": _migrate_add_knowledge_source_columns,
     "_migrate_add_kb_lineage_columns": _migrate_add_kb_lineage_columns,
     "_migrate_add_kb_governance_metadata": _migrate_add_kb_governance_metadata,
+    "_migrate_knowledge_propagation_v2_schema": (
+        _migrate_knowledge_propagation_v2_schema
+    ),
     "_migrate_add_sprint_scope_fields": _migrate_add_sprint_scope_fields,
     "_migrate_add_sprint_lane_fields": _migrate_add_sprint_lane_fields,
     "_migrate_agent_boards": _migrate_agent_boards,

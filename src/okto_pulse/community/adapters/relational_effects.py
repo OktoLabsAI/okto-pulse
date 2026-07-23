@@ -83,6 +83,10 @@ from okto_pulse.core.ports.takedown_telemetry import (
 from okto_pulse.core.ports.tombstone import register_tombstone_port
 from okto_pulse.core.ports.kg_health import register_kg_health_read_port
 from okto_pulse.core.ports.kg_governance import register_kg_governance_store
+from okto_pulse.core.ports.knowledge_propagation import (
+    register_knowledge_mutation_audit_sink,
+    register_knowledge_propagation_port,
+)
 from okto_pulse.core.ports.discovery_execution import (
     register_discovery_execution_read_port,
 )
@@ -197,13 +201,17 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
         session: Any,
     ) -> datetime | None:
         return (
-            await session.execute(
-                select(KGTickRun.completed_at)
-                .where(KGTickRun.completed_at.is_not(None))
-                .order_by(KGTickRun.completed_at.desc())
-                .limit(1)
+            (
+                await session.execute(
+                    select(KGTickRun.completed_at)
+                    .where(KGTickRun.completed_at.is_not(None))
+                    .order_by(KGTickRun.completed_at.desc())
+                    .limit(1)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
 
     async def upsert_kg_tick_run(
         self,
@@ -338,6 +346,9 @@ def register_community_relational_effects(
     from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
         CommunitySqlAlchemyKGGovernanceStore,
     )
+    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
+        CommunitySqlAlchemyKnowledgePropagationStore,
+    )
     from okto_pulse.community.adapters.sqlalchemy_discovery_execution import (
         CommunitySqlAlchemyDiscoveryExecutionReader,
     )
@@ -395,12 +406,8 @@ def register_community_relational_effects(
         CommunitySqlAlchemyCognitiveEffectivenessReader()
     )
     register_skip_override_read_port(CommunitySqlAlchemySkipOverrideReader())
-    register_discovery_catalog_read_port(
-        CommunitySqlAlchemyDiscoveryCatalogReader()
-    )
-    register_amendment_revision_store(
-        CommunitySqlAlchemyAmendmentRevisionStore()
-    )
+    register_discovery_catalog_read_port(CommunitySqlAlchemyDiscoveryCatalogReader())
+    register_amendment_revision_store(CommunitySqlAlchemyAmendmentRevisionStore())
     register_parent_artifact_read_port(CommunitySqlAlchemyParentArtifactReader())
     register_architecture_legacy_snapshot_read_port(
         CommunitySqlAlchemyArchitectureLegacySnapshotReader()
@@ -408,12 +415,8 @@ def register_community_relational_effects(
     register_bug_regression_preview_read_port(
         CommunitySqlAlchemyBugRegressionPreviewReader()
     )
-    register_discovery_selector_read_port(
-        CommunitySqlAlchemyDiscoverySelectorReader()
-    )
-    register_board_relational_cleanup_port(
-        CommunitySqlAlchemyBoardRelationalCleanup()
-    )
+    register_discovery_selector_read_port(CommunitySqlAlchemyDiscoverySelectorReader())
+    register_board_relational_cleanup_port(CommunitySqlAlchemyBoardRelationalCleanup())
     register_structured_spec_store(CommunitySqlAlchemyStructuredSpecStore())
     register_effective_resource_persistence_port(
         CommunitySqlAlchemyEffectiveResourcePersistence()
@@ -421,9 +424,7 @@ def register_community_relational_effects(
     register_spec_resource_propagation_store(
         CommunitySqlAlchemySpecResourcePropagationStore()
     )
-    register_critical_context_read_port(
-        CommunitySqlAlchemyCriticalContextReader()
-    )
+    register_critical_context_read_port(CommunitySqlAlchemyCriticalContextReader())
     register_default_board_configuration_store(
         CommunitySqlAlchemyDefaultBoardConfigurationStore()
     )
@@ -441,16 +442,19 @@ def register_community_relational_effects(
     )
     register_kg_health_read_port(CommunitySqlAlchemyKGHealthReader())
     register_kg_governance_store(CommunitySqlAlchemyKGGovernanceStore())
+    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory
+
+    knowledge_propagation_store = CommunitySqlAlchemyKnowledgePropagationStore(
+        lambda: get_session_factory()()
+    )
+    register_knowledge_propagation_port(knowledge_propagation_store)
+    register_knowledge_mutation_audit_sink(knowledge_propagation_store)
     register_discovery_execution_read_port(
         CommunitySqlAlchemyDiscoveryExecutionReader()
     )
     register_analytics_read_port(CommunitySqlAlchemyAnalyticsReader())
-    register_architecture_persistence_port(
-        CommunitySqlAlchemyArchitecturePersistence()
-    )
-    register_application_persistence_port(
-        CommunitySqlAlchemyApplicationPersistence()
-    )
+    register_architecture_persistence_port(CommunitySqlAlchemyArchitecturePersistence())
+    register_application_persistence_port(CommunitySqlAlchemyApplicationPersistence())
     register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     register_runtime_settings_adapter(runtime_settings_adapter)
     register_traceability_adapter(traceability_adapter)

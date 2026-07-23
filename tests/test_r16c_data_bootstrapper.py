@@ -66,6 +66,7 @@ _DATA_BOOTSTRAP_STEP_IDS = (
     "_reconcile_builtin_presets",
     "_reconcile_agent_permission_flags",
     "_bootstrap_default_discovery_intents",
+    "_backfill_knowledge_propagation_v2",
 )
 
 
@@ -146,12 +147,13 @@ def test_ts_8d495739_contract_imports_in_isolation(tmp_path):
 def test_ts_26bd0c7a_ledger_four_domains_in_order():
     ledger = build_community_data_bootstrap_ledger()
     assert [s.step_id for s in ledger] == list(_DATA_BOOTSTRAP_STEP_IDS)
-    assert [s.order for s in ledger] == [1, 2, 3, 4]
+    assert [s.order for s in ledger] == [1, 2, 3, 4, 5]
     assert [s.domain for s in ledger] == [
         "presets",
         "presets",
         "permissions",
         "discovery_intents",
+        "knowledge_propagation",
     ]
     assert all(s.owner == "community" and s.idempotent for s in ledger)
     # Domains are drawn from the canonical set.
@@ -196,11 +198,14 @@ def test_ts_71673acb_idempotent_replay_preserves_presets_and_flags(
     assert before["presets"] == 7 and before["di"] == 14  # init_db seeded
 
     assert r1.is_success
-    assert len(r1.applied_steps) == 4 and not r1.skipped_steps
+    assert len(r1.applied_steps) == 4
+    assert {step.step_id for step in r1.skipped_steps} == {
+        "_backfill_knowledge_propagation_v2"
+    }
     assert after1 == before  # presets/flags/intents preserved, no drift
 
     assert r2.is_success
-    assert not r2.applied_steps and len(r2.skipped_steps) == 4
+    assert not r2.applied_steps and len(r2.skipped_steps) == 5
     assert after2 == before
 
     assert r3.is_success  # fresh instance re-ran the real funcs idempotently
@@ -318,7 +323,7 @@ def test_ts_5a7b50e2_data_and_schema_ledgers_are_disjoint():
     # No overlap in either direction.
     assert data_ids & schema_ids == set(), f"overlap: {data_ids & schema_ids}"
 
-    # The 4 data-bootstrap funcs are NOT in the schema ledger.
+    # The data-bootstrap funcs are NOT in the schema ledger.
     for sid in _DATA_BOOTSTRAP_STEP_IDS:
         assert sid in data_ids
         assert sid not in schema_ids

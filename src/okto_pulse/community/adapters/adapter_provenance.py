@@ -119,6 +119,7 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.services.effective_resource_propagation",
     "okto_pulse.core.services.gate_contracts",
     "okto_pulse.core.services.kg_health_readiness_service",
+    "okto_pulse.core.services.knowledge_propagation",
     "okto_pulse.core.services.reference_resolution",
     "okto_pulse.core.services.resource_gate_contracts",
     "okto_pulse.core.services.resource_gate",

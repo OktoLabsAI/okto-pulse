@@ -67,6 +67,9 @@ _LEDGER: tuple[tuple[str, str, str], ...] = (
      "non-destructive)."),
     ("_bootstrap_default_discovery_intents", "discovery_intents",
      "Upsert the v1 seed catalog of Discovery intents (idempotent ON CONFLICT)."),
+    ("_backfill_knowledge_propagation_v2", "knowledge_propagation",
+     "Grandfather physical legacy Knowledge Base attachments one target and "
+     "transaction at a time without activating v2 or rewriting legacy content."),
 )
 
 

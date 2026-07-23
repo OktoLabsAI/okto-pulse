@@ -144,12 +144,13 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 43 = historical steps + pagination, governed queue, GD delivery,
-    # cognitive-source revision audit, and KB governance metadata.
-    assert len(migrate_names) == 43, (
-        f"expected 43 _migrate_*, found {len(migrate_names)}"
+    # 44 = historical steps + pagination, governed queue, GD delivery,
+    # cognitive-source revision audit, KB governance metadata, and the
+    # selective Knowledge-propagation v2 schema.
+    assert len(migrate_names) == 44, (
+        f"expected 44 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 43
+    assert len(ledger_migrate_ids) == 44
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]
@@ -212,7 +213,12 @@ def test_ts_5283c465_golden_replay_matches_baseline(tmp_path, _isolate_engine):
     assert adapter_schema == baseline_schema
     assert baseline_schema  # sanity: non-empty schema
     sprint_foreign_keys = baseline_schema["sprints"]["foreign_keys"]
-    assert (("origin_sprint_id",), "sprints", ("id",), "SET NULL") in sprint_foreign_keys
+    assert (
+        ("origin_sprint_id",),
+        "sprints",
+        ("id",),
+        "SET NULL",
+    ) in sprint_foreign_keys
     assert (("origin_bug_id",), "cards", ("id",), "SET NULL") in sprint_foreign_keys
 
 
@@ -278,6 +284,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         delivery_convergence_step,
         "_migrate_cognitive_source_revision_ledger",
         kb_governance_convergence_step,
+        "_migrate_knowledge_propagation_v2_schema",
     }
 
     # First run: clean databases skip fixture repair and convergence steps

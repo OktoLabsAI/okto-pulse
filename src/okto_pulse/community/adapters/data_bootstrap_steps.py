@@ -166,9 +166,21 @@ async def _bootstrap_default_discovery_intents() -> None:
             )
 
 
+async def _backfill_knowledge_propagation_v2() -> str | None:
+    """Resume conservative legacy classification after schema convergence."""
+
+    from okto_pulse.community.adapters.knowledge_propagation_backfill import (
+        backfill_knowledge_propagation_v2,
+    )
+
+    result = await backfill_knowledge_propagation_v2()
+    return None if result.applied_targets else "skipped"
+
+
 DATA_BOOTSTRAP_STEP_CALLABLES: dict[str, StepCallable] = {
     "_seed_builtin_presets": _seed_builtin_presets,
     "_reconcile_builtin_presets": _reconcile_builtin_presets,
     "_reconcile_agent_permission_flags": _reconcile_agent_permission_flags,
     "_bootstrap_default_discovery_intents": _bootstrap_default_discovery_intents,
+    "_backfill_knowledge_propagation_v2": _backfill_knowledge_propagation_v2,
 }
