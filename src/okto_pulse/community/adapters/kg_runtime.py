@@ -283,7 +283,8 @@ def registered_raw_connection(board_id: str, *, within_close_window: bool = Fals
 # pools e o processo morreu por exaustão de memória nativa ("No more frame
 # groups can be added to the allocator" + abort silencioso). O cap limita o
 # pico de memória; a eviction LRU drena leitores via close guard antes de
-# fechar. Override via env KG_DB_CACHE_CAP.
+# fechar. ``kg_connection_pool_size`` pode reduzir o número de Databases
+# residentes; KG_DB_CACHE_CAP é o override operacional explícito.
 _BOARD_DB_CACHE_CAP_DEFAULT = 2
 _BOARD_BUFFER_POOL_OPERATIONAL_CAP_MB_DEFAULT = 256
 _BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV = (
@@ -303,7 +304,13 @@ def _board_db_cache_cap() -> int:
             return max(1, int(raw))
         except ValueError:
             pass
-    return _BOARD_DB_CACHE_CAP_DEFAULT
+    try:
+        from okto_pulse.core import get_settings
+
+        configured = max(1, int(get_settings().kg_connection_pool_size))
+    except Exception:
+        configured = _BOARD_DB_CACHE_CAP_DEFAULT
+    return min(configured, _BOARD_DB_CACHE_CAP_DEFAULT)
 
 
 def _board_buffer_pool_operational_cap_mb() -> int:

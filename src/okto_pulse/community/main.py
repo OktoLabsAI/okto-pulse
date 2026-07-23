@@ -771,6 +771,17 @@ def create_community_app():
     # register the MCP session factory so the mounted sub-app finds the DB.
     async def combined_lifespan(app_instance) -> AsyncGenerator[None, None]:
         await init_db()
+
+        # Rehydrate the composed settings snapshot immediately after schema
+        # initialization. First-boot seeding materializes the demo graph, so it
+        # must observe persisted graph-memory limits just like every later
+        # background task and graph constructor.
+        from okto_pulse.community.adapters.sqlalchemy_runtime_settings_service import (
+            apply_persisted_settings_to_core_settings,
+        )
+
+        await apply_persisted_settings_to_core_settings()
+
         from okto_pulse.community.adapters.kg_events import (
             register_community_kg_events_reader,
         )
@@ -822,7 +833,10 @@ def create_community_app():
                 )
 
                 async with database_runtime.cancel_safe_session_scope() as _afg_db:
-                    _afg_stats = await backfill_architecture_finding_runs(_afg_db)
+                    _afg_stats = await backfill_architecture_finding_runs(
+                        _afg_db,
+                        only_missing=True,
+                    )
                 _STARTUP_LOGGER.info(
                     "architecture.finding_backfill.completed %s",
                     _afg_stats,
@@ -841,12 +855,6 @@ def create_community_app():
         # Preload the embedding model before serving requests so the first
         # KG search doesn't pay the multi-second model-load cost synchronously.
         await _preload_embedding_model(settings)
-
-        from okto_pulse.community.adapters.sqlalchemy_runtime_settings_service import (
-            apply_persisted_settings_to_core_settings,
-        )
-
-        await apply_persisted_settings_to_core_settings()
 
         metrics_beacon_task = None
 

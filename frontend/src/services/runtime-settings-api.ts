@@ -6,7 +6,7 @@
  * the next process restart because graph database startup settings are constructor-time.
  */
 
-export interface RuntimeSettings {
+export interface RuntimeSettingsValues {
   // Graph DB tab — restart-required on change.
   kg_kuzu_buffer_pool_mb: number;
   kg_kuzu_max_db_size_gb: number;
@@ -23,13 +23,22 @@ export interface RuntimeSettings {
   kg_decay_tick_interval_minutes: number;
   kg_decay_tick_staleness_days: number;
   kg_decay_tick_max_age_days: number;
+}
+
+export interface RuntimeSettings extends RuntimeSettingsValues {
+  /**
+   * Persisted/configured values that are not necessarily active yet.
+   *
+   * Older backends do not return this additive projection, so callers must
+   * fall back to the effective top-level values. The object is partial to keep
+   * rolling frontend/backend upgrades compatible.
+   */
+  desired_values?: Partial<RuntimeSettingsValues>;
   // Toggled APENAS by Graph DB tab changes (graph database startup-time).
   restart_required: boolean;
 }
 
-export type RuntimeSettingsPatch = Partial<
-  Omit<RuntimeSettings, 'restart_required'>
-> & {
+export type RuntimeSettingsPatch = Partial<RuntimeSettingsValues> & {
   /**
    * KG-01.5 (KGConfigChangeGuard): obrigatório quando um setting do grupo
    * storage/wal/index muda — sem ele o backend responde 400
@@ -45,7 +54,7 @@ export type RuntimeSettingsPatch = Partial<
  */
 export const MIGRATION_PLAN_KEYS = [
   'kg_kuzu_max_db_size_gb',
-] as const satisfies ReadonlyArray<keyof RuntimeSettings>;
+] as const satisfies ReadonlyArray<keyof RuntimeSettingsValues>;
 
 /**
  * Keys that gate the amber "Restart required" banner. Mudar qualquer um
@@ -56,7 +65,7 @@ export const GRAPH_DB_KEYS = [
   'kg_kuzu_buffer_pool_mb',
   'kg_kuzu_max_db_size_gb',
   'kg_connection_pool_size',
-] as const satisfies ReadonlyArray<keyof RuntimeSettings>;
+] as const satisfies ReadonlyArray<keyof RuntimeSettingsValues>;
 
 export const EVENT_QUEUE_KEYS = [
   'kg_queue_max_concurrent_workers',
@@ -64,13 +73,13 @@ export const EVENT_QUEUE_KEYS = [
   'kg_queue_claim_timeout_s',
   'kg_queue_max_attempts',
   'kg_queue_alert_threshold',
-] as const satisfies ReadonlyArray<keyof RuntimeSettings>;
+] as const satisfies ReadonlyArray<keyof RuntimeSettingsValues>;
 
 export const DECAY_TICK_KEYS = [
   'kg_decay_tick_interval_minutes',
   'kg_decay_tick_staleness_days',
   'kg_decay_tick_max_age_days',
-] as const satisfies ReadonlyArray<keyof RuntimeSettings>;
+] as const satisfies ReadonlyArray<keyof RuntimeSettingsValues>;
 
 const BASE = '/api/v1';
 

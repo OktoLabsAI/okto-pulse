@@ -9,6 +9,7 @@ import pytest
 
 from okto_pulse.core.composition import RuntimeProviderMissing
 from okto_pulse.community.adapters.runtime_composition import (
+    CommunitySettingsSnapshotProvider,
     build_community_runtime_composition,
 )
 
@@ -35,7 +36,14 @@ def test_builder_returns_complete_immutable_provider_identity() -> None:
     providers = _providers()
     composition = build_community_runtime_composition(**providers)
 
-    assert composition.settings_provider is providers["settings"]
+    assert isinstance(
+        composition.settings_provider,
+        CommunitySettingsSnapshotProvider,
+    )
+    assert (
+        composition.settings_provider.get_settings_snapshot()
+        is providers["settings"]
+    )
     assert composition.auth_provider is providers["auth_provider"]
     assert composition.uow_factory is providers["uow_factory"]
     assert composition.worker_registry is providers["worker_registry"]
@@ -109,3 +117,46 @@ def test_lifespan_uses_the_worker_registry_owned_by_the_app_composition() -> Non
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "build_community_worker_registry" not in called_names
+
+
+def test_lifespan_applies_persisted_settings_before_background_runtime() -> None:
+    tree = ast.parse(MAIN_PATH.read_text(encoding="utf-8"), filename=str(MAIN_PATH))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "create_community_app"
+    )
+    lifespan = next(
+        node
+        for node in function.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "combined_lifespan"
+    )
+
+    def call_name(call: ast.Call) -> str:
+        func = call.func
+        if isinstance(func, ast.Name):
+            return func.id
+        if isinstance(func, ast.Attribute):
+            return func.attr
+        return ""
+
+    calls = [node for node in ast.walk(lifespan) if isinstance(node, ast.Call)]
+    apply_line = min(
+        call.lineno
+        for call in calls
+        if call_name(call) == "apply_persisted_settings_to_core_settings"
+    )
+    runtime_start_lines = [
+        call.lineno
+        for call in calls
+        if call_name(call)
+        in {
+            "seed_community_defaults",
+            "create_task",
+            "_preload_embedding_model",
+            "start_all",
+        }
+    ]
+
+    assert runtime_start_lines
+    assert apply_line < min(runtime_start_lines)

@@ -172,5 +172,11 @@ class CommunitySqlAlchemyArchitecturePersistence:
         await context.commit()
         self._tracked.pop(context, None)
 
+    async def rollback(self, context: Any) -> None:
+        try:
+            await context.rollback()
+        finally:
+            self._tracked.pop(context, None)
+
 
 __all__ = ["CommunitySqlAlchemyArchitecturePersistence"]

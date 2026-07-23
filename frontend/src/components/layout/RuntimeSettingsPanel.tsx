@@ -25,6 +25,7 @@ import {
   MIGRATION_PLAN_KEYS,
   type RuntimeSettings,
   type RuntimeSettingsPatch,
+  type RuntimeSettingsValues,
 } from '@/services/runtime-settings-api';
 import {
   getQueueHealth,
@@ -49,7 +50,7 @@ type ActiveTab = 'graphdb' | 'eventqueue' | 'decaytick';
 
 const GRAPH_DB_MAX_SIZE_GB_OPTIONS = [2, 4, 8, 16, 32, 64] as const;
 
-const RANGES: Record<keyof Omit<RuntimeSettings, 'restart_required'>, { min: number; max: number }> = {
+const RANGES: Record<keyof RuntimeSettingsValues, { min: number; max: number }> = {
   // Graph DB tab
   kg_kuzu_buffer_pool_mb: { min: 128, max: 512 },
   kg_kuzu_max_db_size_gb: { min: 2, max: 64 },
@@ -71,7 +72,7 @@ const RANGES: Record<keyof Omit<RuntimeSettings, 'restart_required'>, { min: num
 const BUDGET_BASELINE_MB = 620;
 const HEALTH_POLL_INTERVAL_MS = 2000;
 
-type DraftState = Omit<RuntimeSettings, 'restart_required'>;
+type DraftState = RuntimeSettingsValues;
 
 const ZERO_DRAFT: DraftState = {
   kg_kuzu_buffer_pool_mb: 0,
@@ -89,9 +90,13 @@ const ZERO_DRAFT: DraftState = {
 };
 
 function snapshotDraft(data: RuntimeSettings): DraftState {
+  const editableValues = {
+    ...data,
+    ...(data.desired_values ?? {}),
+  };
   const out: DraftState = { ...ZERO_DRAFT };
   for (const key of Object.keys(ZERO_DRAFT) as Array<keyof DraftState>) {
-    out[key] = data[key];
+    out[key] = editableValues[key];
   }
   return out;
 }
@@ -104,7 +109,7 @@ export function RuntimeSettingsPanel({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [values, setValues] = useState<RuntimeSettings | null>(null);
+  const [values, setValues] = useState<DraftState | null>(null);
   // Draft state lets the user type freely without triggering saves;
   // shared across both tabs so Save persists partial PUTs in one shot.
   const [draft, setDraft] = useState<DraftState>(ZERO_DRAFT);
@@ -131,8 +136,9 @@ export function RuntimeSettingsPanel({
     getRuntimeSettings()
       .then((data) => {
         if (!active) return;
-        setValues(data);
-        setDraft(snapshotDraft(data));
+        const editableValues = snapshotDraft(data);
+        setValues(editableValues);
+        setDraft(editableValues);
         setRestartRequired(data.restart_required);
       })
       .catch((err) => {
@@ -211,14 +217,21 @@ export function RuntimeSettingsPanel({
   const migrationPlanMissing =
     migrationPlanRequired && migrationPlanRef.trim() === '';
 
-  const buildPatch = (): RuntimeSettingsPatch =>
-    migrationPlanRequired
-      ? { ...draft, migration_plan_ref: migrationPlanRef.trim() }
-      : { ...draft };
+  const buildPatch = (): RuntimeSettingsPatch => {
+    const patch = Object.fromEntries(
+      (Object.keys(ZERO_DRAFT) as Array<keyof DraftState>)
+        .filter((key) => values === null || draft[key] !== values[key])
+        .map((key) => [key, draft[key]]),
+    ) as RuntimeSettingsPatch;
+    if (migrationPlanRequired) {
+      patch.migration_plan_ref = migrationPlanRef.trim();
+    }
+    return patch;
+  };
 
   const onReset = () => {
     if (!values) return;
-    setDraft(snapshotDraft(values));
+    setDraft({ ...values });
     setMigrationPlanRef('');
   };
 
@@ -239,7 +252,9 @@ export function RuntimeSettingsPanel({
     setSaving(true);
     try {
       const resp = await putRuntimeSettings(buildPatch());
-      setValues(resp);
+      const editableValues = snapshotDraft(resp);
+      setValues(editableValues);
+      setDraft(editableValues);
       setRestartRequired(resp.restart_required);
       setMigrationPlanRef('');
       if (resp.restart_required) {
@@ -270,7 +285,9 @@ export function RuntimeSettingsPanel({
     setTimeout(() => { inFlightRef.current = false; }, 3000);
     try {
       const resp = await putRuntimeSettings(buildPatch());
-      setValues(resp);
+      const editableValues = snapshotDraft(resp);
+      setValues(editableValues);
+      setDraft(editableValues);
       setRestartRequired(resp.restart_required);
       setMigrationPlanRef('');
       try {

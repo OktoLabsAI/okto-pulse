@@ -357,10 +357,15 @@ async def apply_persisted_settings_to_core_settings() -> dict[str, int]:
 
 
 async def get_runtime_settings(db: AsyncSession) -> dict[str, Any]:
-    """Return the current effective values + restart_required flag.
+    """Return effective and desired values plus ``restart_required``.
 
     Effective = what CoreSettings is currently exposing to the graph runtime
-    and connection_pool.
+    and connection_pool.  These values remain at the top level for backwards
+    compatibility.
+
+    ``desired_values`` is the editable/persisted projection.  It overlays valid
+    rows from ``app_settings`` on the effective snapshot so the UI does not
+    appear to lose a constructor-time change while a restart is pending.
 
     ``restart_required`` is True when a graph-runtime key in the persisted
     table diverges from the boot snapshot; those are constructor-time for the
@@ -376,8 +381,14 @@ async def get_runtime_settings(db: AsyncSession) -> dict[str, Any]:
     restart_required = any(
         k in persisted and persisted[k] != boot.get(k) for k in GRAPH_DB_KEYS
     )
+    desired = dict(effective)
+    desired.update(persisted)
 
-    return {**effective, "restart_required": restart_required}
+    return {
+        **effective,
+        "desired_values": desired,
+        "restart_required": restart_required,
+    }
 
 
 def _apply_live_tick_settings(values: dict[str, int]) -> None:

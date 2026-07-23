@@ -406,7 +406,10 @@ def create_app(
 
                 factory = get_session_factory()
                 async with factory() as _afg_session:
-                    _afg_stats = await backfill_architecture_finding_runs(_afg_session)
+                    _afg_stats = await backfill_architecture_finding_runs(
+                        _afg_session,
+                        only_missing=True,
+                    )
                 logger.info(
                     "architecture.finding_backfill.completed %s",
                     _afg_stats,

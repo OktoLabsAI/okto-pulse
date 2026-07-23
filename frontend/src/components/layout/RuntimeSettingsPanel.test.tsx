@@ -125,8 +125,73 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
 
     await waitFor(() => expect(putSpy).toHaveBeenCalled());
     const lastCallPayload = putSpy.mock.calls[0][0];
-    expect(lastCallPayload.kg_kuzu_buffer_pool_mb).toBe(256);
-    expect(lastCallPayload.kg_queue_max_concurrent_workers).toBe(8);
+    expect(lastCallPayload).toEqual({
+      kg_kuzu_buffer_pool_mb: 256,
+      kg_queue_max_concurrent_workers: 8,
+    });
+  });
+
+  test('valor desejado pendente de restart reaparece ao reabrir a modal', async () => {
+    vi.mocked(runtimeApi.getRuntimeSettings).mockResolvedValue({
+      ...FRESH_SETTINGS,
+      restart_required: true,
+      desired_values: {
+        kg_kuzu_buffer_pool_mb: 256,
+      },
+    });
+
+    const firstMount = render(<RuntimeSettingsPanel onClose={() => {}} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('input-buffer-pool-mb')).toHaveValue(256),
+    );
+    firstMount.unmount();
+
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('input-buffer-pool-mb')).toHaveValue(256),
+    );
+    expect(runtimeApi.getRuntimeSettings).toHaveBeenCalledTimes(2);
+  });
+
+  test('Reset restaura o valor desejado persistido, não o efetivo top-level', async () => {
+    vi.mocked(runtimeApi.getRuntimeSettings).mockResolvedValue({
+      ...FRESH_SETTINGS,
+      restart_required: true,
+      desired_values: {
+        kg_kuzu_buffer_pool_mb: 256,
+      },
+    });
+
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+    const bufferInput = await screen.findByTestId('input-buffer-pool-mb');
+    expect(bufferInput).toHaveValue(256);
+
+    fireEvent.change(bufferInput, { target: { value: '128' } });
+    expect(bufferInput).toHaveValue(128);
+    fireEvent.click(screen.getByText('Reset'));
+
+    expect(bufferInput).toHaveValue(256);
+  });
+
+  test('após PUT o draft e a baseline seguem desired_values retornado', async () => {
+    vi.mocked(runtimeApi.putRuntimeSettings).mockResolvedValue({
+      ...FRESH_SETTINGS,
+      restart_required: true,
+      desired_values: {
+        kg_kuzu_buffer_pool_mb: 256,
+      },
+    });
+
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+    const bufferInput = await screen.findByTestId('input-buffer-pool-mb');
+    fireEvent.change(bufferInput, { target: { value: '384' } });
+    fireEvent.click(screen.getByTestId('save-runtime-settings'));
+
+    await waitFor(() => expect(bufferInput).toHaveValue(256));
+
+    fireEvent.change(bufferInput, { target: { value: '128' } });
+    fireEvent.click(screen.getByText('Reset'));
+    expect(bufferInput).toHaveValue(256);
   });
 
   test('Graph DB max database size usa slider com valores válidos do Ladybug', async () => {

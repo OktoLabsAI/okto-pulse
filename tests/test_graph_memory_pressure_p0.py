@@ -25,6 +25,9 @@ from okto_pulse.community.adapters.graph_memory_pressure import (
     is_graph_memory_pressure_error,
 )
 from okto_pulse.community.config import CommunitySettings
+from okto_pulse.core.kg.interfaces.graph_errors import (
+    graph_memory_pressure_retry_after_seconds,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +44,15 @@ def _wrapped_memory_error(message: str = "bad allocation") -> RuntimeError:
         wrapped = RuntimeError("native graph constructor failed")
         wrapped.__cause__ = exc
         return wrapped
+
+
+def test_core_retry_policy_consumes_actual_community_pressure_contract() -> None:
+    failure = GraphMemoryPressure(
+        "allocator cooldown",
+        details={"retry_after_ms": 12_001},
+    )
+
+    assert graph_memory_pressure_retry_after_seconds(failure) == 13
 
 
 @pytest.mark.parametrize(
@@ -109,6 +121,30 @@ def test_community_memory_defaults_are_bounded(monkeypatch: pytest.MonkeyPatch) 
     assert CommunitySettings.model_fields["kg_connection_pool_size"].default == 2
     assert graph_connection_pool._DEFAULT_CAP == 2
     assert kg_runtime._board_db_cache_cap() == 2
+
+
+def test_connection_pool_setting_can_reduce_resident_board_databases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import okto_pulse.core as core_package
+
+    monkeypatch.delenv("KG_DB_CACHE_CAP", raising=False)
+    monkeypatch.setattr(
+        core_package,
+        "get_settings",
+        lambda: SimpleNamespace(kg_connection_pool_size=1),
+    )
+    assert kg_runtime._board_db_cache_cap() == 1
+
+    monkeypatch.setattr(
+        core_package,
+        "get_settings",
+        lambda: SimpleNamespace(kg_connection_pool_size=8),
+    )
+    assert kg_runtime._board_db_cache_cap() == 2
+
+    monkeypatch.setenv("KG_DB_CACHE_CAP", "4")
+    assert kg_runtime._board_db_cache_cap() == 4
 
 
 def test_effective_connection_pool_never_exceeds_board_db_cache_cap(

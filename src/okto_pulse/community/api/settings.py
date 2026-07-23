@@ -41,7 +41,9 @@ class RuntimeSettingsResponse(BaseModel):
 
     ``restart_required`` is true only when a graph-runtime key diverges from
     the boot snapshot. Event Queue keys hot-reload via the
-    worker pool's 5s settings cache.
+    worker pool's 5s settings cache.  Top-level setting fields are the effective
+    runtime snapshot; ``desired_values`` is the persisted editable projection
+    used while a constructor-time change is waiting for restart.
     """
 
     # Graph runtime tab - legacy public field names, restart-required on change.
@@ -64,6 +66,7 @@ class RuntimeSettingsResponse(BaseModel):
     kg_decay_tick_interval_minutes: int
     kg_decay_tick_staleness_days: int
     kg_decay_tick_max_age_days: int
+    desired_values: dict[str, int] = Field(default_factory=dict)
     restart_required: bool
 
 
