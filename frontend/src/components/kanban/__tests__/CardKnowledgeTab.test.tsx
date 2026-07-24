@@ -287,37 +287,51 @@ describe('CardKnowledgeTab', () => {
 
   it('builds the selectable source inventory from effective spec roots and ref metadata', async () => {
     apiMock.getEffectiveResources.mockImplementation(
-      (_boardId: string, entityType: string) => {
+      (
+        _boardId: string,
+        entityType: string,
+        _entityId: string,
+        options?: { profile?: string; cursor?: string; limit?: number },
+      ) => {
         if (entityType !== 'spec') return Promise.resolve(emptyEffectiveResources);
         return Promise.resolve({
+          board_id: 'b1',
+          entity_type: 'spec',
+          entity_id: 's1',
+          profile: 'summary',
+          items: [{
+            resource_type: 'knowledge_base',
+            canonical_unique_resource_id: 'knowledge_base:root-source-id',
+            versioned_projection_id: 'knowledge_base:root-source-id@7',
+            root_id: 'root-source-id',
+            resource_version: '7',
+            representative_resource_id: 'physical-child-id',
+            title: 'Inherited source reference',
+            attachment_kind: 'inherited_reference',
+            inherited: true,
+            grandfathered: false,
+            stale: true,
+            superseded: false,
+            provenance: {
+              source_entity_type: 'spec',
+              source_entity_id: 's1',
+              source_entity_title: 'Parent spec',
+              origin_class: 'selected_legacy',
+              source_revision: '7',
+              source_content_sha256: null,
+            },
+            physical_attachments: [],
+            detail_cursor: 'detail-source',
+            relevance_links: [],
+            body_omitted_reason: 'profile_summary',
+          }],
+          next_cursor: null,
           resources: {
             architecture: [],
             mockup: [],
-            knowledge_base: [
-              {
-                id: 'physical-child-id',
-                resource_id: 'physical-child-id',
-                title: 'Fallback physical title',
-                resource_type: 'knowledge_base',
-                attachment_kind: 'inherited_reference',
-                inherited: true,
-                read_only: true,
-                hydrated: true,
-                ref: {
-                  root_resource_id: 'root-source-id',
-                  knowledge_assignment_stale: true,
-                  origin_class: 'selected_legacy',
-                },
-                resource: {
-                  id: 'physical-child-id',
-                  title: 'Inherited source reference',
-                  description: 'Effective source context',
-                  content: 'source body',
-                  mime_type: 'text/markdown',
-                },
-              },
-            ],
+            knowledge_base: [],
           },
+          request_options: options,
         });
       },
     );
@@ -332,6 +346,7 @@ describe('CardKnowledgeTab', () => {
         'b1',
         'spec',
         's1',
+        { profile: 'summary', limit: 25 },
       );
     });
     const selector = await screen.findByTestId('card-knowledge-propagation');
@@ -359,6 +374,76 @@ describe('CardKnowledgeTab', () => {
         }),
       );
     });
+  });
+
+  it('paginates the source spec inventory with summary projections only', async () => {
+    const summaryItem = (rootId: string, title: string) => ({
+      resource_type: 'knowledge_base',
+      canonical_unique_resource_id: `knowledge_base:${rootId}`,
+      versioned_projection_id: `knowledge_base:${rootId}@1`,
+      root_id: rootId,
+      resource_version: '1',
+      representative_resource_id: `${rootId}-physical`,
+      title,
+      inherited: false,
+      grandfathered: false,
+      stale: false,
+      superseded: false,
+      provenance: {
+        source_entity_type: 'spec',
+        source_entity_id: 's1',
+        source_entity_title: 'Parent spec',
+        origin_class: 'v2',
+        source_revision: '1',
+        source_content_sha256: null,
+      },
+      physical_attachments: [],
+      detail_cursor: `detail-${rootId}`,
+      relevance_links: [],
+      body_omitted_reason: 'profile_summary',
+    });
+    apiMock.getEffectiveResources.mockImplementation(
+      (
+        _boardId: string,
+        entityType: string,
+        _entityId: string,
+        options?: { cursor?: string },
+      ) => {
+        if (entityType !== 'spec') return Promise.resolve(emptyEffectiveResources);
+        return Promise.resolve({
+          board_id: 'b1',
+          entity_type: 'spec',
+          entity_id: 's1',
+          profile: 'summary',
+          items: options?.cursor
+            ? [summaryItem('root-page-2', 'Page two KB')]
+            : [summaryItem('root-page-1', 'Page one KB')],
+          next_cursor: options?.cursor ? null : 'source-page-2',
+          resources: { architecture: [], mockup: [], knowledge_base: [] },
+        });
+      },
+    );
+
+    renderTab({
+      card: { ...baseCard, knowledge_bases: [] },
+      specKnowledgeBases: [],
+    });
+
+    const selector = await screen.findByTestId('card-knowledge-propagation');
+    expect(within(selector).getByText('Page one KB')).toBeInTheDocument();
+    expect(within(selector).getByText('Page two KB')).toBeInTheDocument();
+    expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
+      'b1',
+      'spec',
+      's1',
+      { profile: 'summary', limit: 25 },
+    );
+    expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
+      'b1',
+      'spec',
+      's1',
+      { profile: 'summary', limit: 25, cursor: 'source-page-2' },
+    );
   });
 
   it('assigns selected stable roots with the current revision', async () => {

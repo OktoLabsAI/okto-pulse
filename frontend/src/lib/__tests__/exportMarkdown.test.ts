@@ -1037,6 +1037,156 @@ describe('exportMarkdown complete spec export', () => {
   });
 });
 
+describe('Spec C Knowledge Workspace export', () => {
+  it('exports logical/physical counts and renders one body per root/version', () => {
+    const repeatedBody = 'ROOT-7-BODY-MUST-APPEAR-ONCE';
+    const nextBody = 'ROOT-8-BODY-MUST-APPEAR-ONCE';
+    const md = exportSpec({
+      id: 'spec-knowledge-workspace',
+      title: 'Version-aware knowledge export',
+      status: 'in_progress',
+      version: 1,
+      labels: [],
+      functional_requirements: [],
+      technical_requirements: [],
+      acceptance_criteria: [],
+      test_scenarios: [],
+      business_rules: [],
+      api_contracts: [],
+      integration_requirements: [],
+      observability_requirements: [],
+      decisions: [],
+      cards: [],
+      screen_mockups: [],
+      architecture_designs: [],
+      qa_items: [],
+      knowledge_workspace: {
+        unique_effective_count: 4,
+        raw_attachment_count: 12,
+        workspace_item_count: 7,
+        items: [
+          {
+            resource_type: 'knowledge_base',
+            canonical_unique_resource_id: 'knowledge_base:kb-root',
+            root_id: 'kb-root',
+            resource_version: '7',
+            representative_resource_id: 'kb-physical-a',
+            title: 'Operational reference v7',
+            body: { content: repeatedBody },
+            physical_attachments: [
+              { resource_id: 'kb-physical-a' },
+              { resource_id: 'kb-physical-b' },
+            ],
+          },
+        ],
+      },
+      knowledge_bases: [
+        {
+          id: 'kb-physical-a',
+          title: 'Operational reference v7',
+          root_source_kb_id: 'kb-root',
+          content: repeatedBody,
+        },
+        {
+          id: 'kb-physical-b',
+          title: 'Inherited operational reference v7',
+          root_source_kb_id: 'kb-root',
+          source_version: 7,
+          content: repeatedBody,
+        },
+        {
+          id: 'kb-physical-c',
+          title: 'Operational reference v8',
+          root_source_kb_id: 'kb-root',
+          source_version: 8,
+          content: nextBody,
+        },
+      ],
+    } as unknown as Parameters<typeof exportSpec>[0]);
+
+    expect(md).toContain('## Knowledge Resource Counts');
+    expect(md).toContain('**Canonical roots (`unique_effective_count`):** 4');
+    expect(md).toContain('**Physical attachments (`raw_attachment_count`):** 12');
+    expect(md).toContain('**Root/version items (`workspace_item_count`):** 7');
+    expect(md.match(/- \*\*Canonical root:\*\* `kb-root`/g)).toHaveLength(2);
+    expect(md).toContain('- **Resource version:** `7`');
+    expect(md).toContain('- **Resource version:** `8`');
+    expect(md).toContain('- **Physical attachments:** 2');
+    expect(md.match(new RegExp(repeatedBody, 'g'))).toHaveLength(1);
+    expect(md.match(new RegExp(nextBody, 'g'))).toHaveLength(1);
+  });
+
+  it('does not duplicate a copied KB body between spec context and card snapshot', () => {
+    const body = 'PARENT-CARD-SHARED-BODY-MUST-APPEAR-ONCE';
+    const spec = {
+      id: 'spec-parent',
+      title: 'Parent spec',
+      status: 'in_progress',
+      version: 1,
+      labels: [],
+      functional_requirements: [],
+      technical_requirements: [],
+      acceptance_criteria: [],
+      test_scenarios: [],
+      business_rules: [],
+      api_contracts: [],
+      integration_requirements: [],
+      observability_requirements: [],
+      decisions: [],
+      cards: [],
+      knowledge_bases: [
+        {
+          id: 'spec-kb',
+          title: 'Shared KB',
+          root_source_kb_id: 'kb-root',
+          source_version: 3,
+          content: body,
+        },
+      ],
+      screen_mockups: [],
+      architecture_designs: [],
+      qa_items: [],
+    } as unknown as Parameters<typeof exportSpec>[0];
+    const md = exportCard({
+      id: 'card-1',
+      title: 'Card with copied KB',
+      status: 'in_progress',
+      priority: 'medium',
+      card_type: 'normal',
+      labels: [],
+      screen_mockups: [],
+      architecture_designs: [],
+      knowledge_bases: [
+        {
+          id: 'card-kb',
+          title: 'Shared KB snapshot',
+          source: 'spec',
+          source_id: 'spec-kb',
+          content: body,
+        },
+      ],
+      conclusions: [],
+      validations: [],
+      comments: [],
+      attachments: [],
+      resource_counts: {
+        unique_effective_count: 1,
+        raw_attachment_count: 2,
+        workspace_item_count: 1,
+      },
+    } as unknown as Parameters<typeof exportCard>[0], spec);
+
+    expect(md.match(new RegExp(body, 'g'))).toHaveLength(1);
+    expect(md).toContain('- **Canonical root:** `kb-root`');
+    expect(md).toContain('- **Resource version:** `3`');
+    expect(md).toContain('- **Physical attachments:** 2');
+    expect(md).toContain('`spec-kb`, `card-kb`');
+    expect(md).toContain('**Canonical roots (`unique_effective_count`):** 1');
+    expect(md).toContain('**Physical attachments (`raw_attachment_count`):** 2');
+    expect(md).toContain('**Root/version items (`workspace_item_count`):** 1');
+  });
+});
+
 describe('exportMarkdown complete task family export', () => {
   const parentSpec = {
     title: 'Parent spec',

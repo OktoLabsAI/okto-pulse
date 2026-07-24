@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMock = vi.hoisted(() => ({
   listDesignSystems: vi.fn(),
+  getDesignSystem: vi.fn(),
   getBoardDesignSystem: vi.fn(),
   getActiveDefaultBoardConfig: vi.fn(),
   createDesignSystem: vi.fn(),
@@ -74,6 +75,9 @@ describe('DesignSystemPanel', () => {
       },
     });
     apiMock.createDesignSystem.mockResolvedValue(ds());
+    apiMock.getDesignSystem.mockResolvedValue(
+      ds({ id: 'g1', payload: { content: 'Use compact controls.' } }),
+    );
     apiMock.updateDesignSystem.mockResolvedValue(ds());
     apiMock.deleteDesignSystem.mockResolvedValue(undefined);
     apiMock.linkBoardDesignSystem.mockResolvedValue({});
@@ -163,6 +167,24 @@ describe('DesignSystemPanel', () => {
         payload: { content: 'Updated assistant context.' },
       }),
     );
+  });
+
+  it('hydrates a summary item only when opening it for editing', async () => {
+    apiMock.listDesignSystems.mockImplementation((scope: string) =>
+      scope === 'global'
+        ? Promise.resolve([ds({ id: 'g1', title: 'DS1', payload: undefined, payload_available: true })])
+        : Promise.resolve([]),
+    );
+    apiMock.getDesignSystem.mockResolvedValue(
+      ds({ id: 'g1', title: 'DS1', payload: { content: 'Hydrated body.' } }),
+    );
+
+    render(<DesignSystemPanel boardId="b1" onClose={() => {}} />);
+    fireEvent.click(await screen.findByTestId('dsp-edit-g1'));
+
+    await screen.findByTestId('dsp-save-edit');
+    expect(apiMock.getDesignSystem).toHaveBeenCalledWith('g1', 'full', undefined);
+    expect(screen.getByTestId('dsp-new-content')).toHaveValue('Hydrated body.');
   });
 
   it('links a non-effective global Design System to the board', async () => {

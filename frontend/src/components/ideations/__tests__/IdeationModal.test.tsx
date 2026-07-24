@@ -6,6 +6,7 @@ import type { Ideation } from '@/types';
 const apiMock = vi.hoisted(() => ({
   getIdeation: vi.fn(),
   getArchitectureDesign: vi.fn(),
+  getEffectiveResources: vi.fn(),
   listIdeationSnapshots: vi.fn(),
   listIdeationKnowledge: vi.fn(),
   listIdeationHistory: vi.fn(),
@@ -107,6 +108,15 @@ describe('IdeationModal Markdown export', () => {
     apiMock.getIdeation.mockResolvedValue(baseIdeation);
     apiMock.listIdeationSnapshots.mockResolvedValue([]);
     apiMock.listIdeationKnowledge.mockResolvedValue([]);
+    apiMock.getEffectiveResources.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'ideation',
+      entity_id: 'ideation-1',
+      profile: 'summary',
+      items: [],
+      next_cursor: null,
+      resources: { architecture: [], mockup: [], knowledge_base: [] },
+    });
     apiMock.listIdeationHistory.mockResolvedValue([]);
     apiMock.listIdeationQA.mockResolvedValue([]);
     apiMock.getAllowedTransitions.mockResolvedValue({
@@ -191,5 +201,29 @@ describe('IdeationModal Markdown export', () => {
     expect(screen.getByRole('button', { name: /Draft/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Approved/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Cancelled/ })).toBeNull();
+  });
+
+  it('opens Knowledge through the bounded Workspace without eager listing', async () => {
+    render(
+      <IdeationModal
+        ideationId="ideation-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('My Ideation');
+    fireEvent.click(screen.getByText('Knowledge'));
+
+    await waitFor(() => {
+      expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
+        'board-1',
+        'ideation',
+        'ideation-1',
+        { profile: 'summary', limit: 25 },
+      );
+    });
+    expect(apiMock.listIdeationKnowledge).not.toHaveBeenCalled();
   });
 });

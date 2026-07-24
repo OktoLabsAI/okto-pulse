@@ -119,12 +119,21 @@ async def create_design_system(
 async def list_design_systems(
     scope: str = "global",
     board_id: str | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
+    profile: str = "summary",
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     try:
         result = await ListDesignSystemsUseCase().execute(
-            DesignSystemCommand(scope=scope, board_id=board_id or ""),
+            DesignSystemCommand(
+                scope=scope,
+                board_id=board_id or "",
+                limit=limit,
+                cursor=cursor,
+                profile=profile,
+            ),
             actor=RESTAdapterContract.actor(actor, board_id=board_id),
             uow=db,
         )
@@ -231,6 +240,7 @@ async def export_design_system(
 async def get_design_system(
     design_system_id: str,
     board_id: str | None = None,
+    profile: str = "full",
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),
 ) -> dict[str, Any]:
@@ -239,6 +249,7 @@ async def get_design_system(
             DesignSystemCommand(
                 design_system_id=design_system_id,
                 board_id=board_id or "",
+                profile=profile,
             ),
             actor=RESTAdapterContract.actor(actor, board_id=board_id),
             uow=db,

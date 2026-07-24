@@ -1039,13 +1039,15 @@ Specs and refinements cannot transition to \`done\` while they (or their decisio
 
 Boards can set \`skip_cognitive_consolidation\` to allow \`done\` transitions anyway — badges and the KG Health pending list **remain visible** so the debt is never silently hidden.
 
-### Resource Gate (Architecture / Mockups / Knowledge)
+### Resource Gate (Architecture / Mockups blocking; Knowledge advisory)
 
-Task cards must account for the spec's attached resources before completing: each resource type (architecture designs, screen mockups, knowledge-base entries) must be either **covered** (copied/linked to the card) or **explicitly marked N/A** with a justification (\`mark_resource_not_applicable\`). Notes:
+Resource Gate tracks all three resource types, but their authority is different:
 
-- N/A is **per level** — marking a resource N/A on the ideation does *not* propagate to refinement/spec/card (only KB inherits); each level declares its own
-- The gate is **completion-only**: cards move freely through \`started\`/\`in_progress\`/\`validation\`, but \`validation → done\` is blocked until every resource is covered or N/A
-- The **Resource Gate Summary** panel on the card shows the per-resource status
+- **Architecture designs and screen mockups are blocking.** Before entity completion, each must be present or explicitly marked N/A with a real justification. At \`spec_validation\` and \`spec_done\`, every effective Architecture/Mockup root must also be covered by a non-cancelled task.
+- **Knowledge Base entries are advisory.** They remain visible with lineage, relevance and provenance, but a missing or uncovered KB never blocks entity completion, spec validation or spec completion. Attach or copy a KB when it materially improves implementation context; do not create filler solely to satisfy a gate.
+- Effective N/A marks and resources inherit down the ideation → refinement → spec → card chain. Clear an inherited or local N/A only when the resource becomes applicable.
+- Cards move freely through \`started\`/\`in_progress\`/\`validation\`; \`validation → done\` enforces the blocking Architecture/Mockup policy and architecture findings.
+- The **Resource Gate Summary** shows each resource's \`blocking\` or \`advisory\` authority instead of treating all three as peers.
 
 ### Architecture Finding Done Gate
 

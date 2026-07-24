@@ -118,6 +118,7 @@ from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgePropagationPortError,
 )
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.services.architecture import ArchitectureDesignSelectionError
 from okto_pulse.core.application.errors import (
     CancellationReasonRequiredError,
     QASelfAnsweringNotAllowedError,
@@ -158,6 +159,11 @@ async def create_refinement(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except ArchitectureDesignSelectionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=e.to_error_dict(),
+        ) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
@@ -454,6 +460,12 @@ async def derive_spec(
             operation=_execute,
         )
         return project_derive_spec_response(result.knowledge_mutation)
+    except ArchitectureDesignSelectionError as exc:
+        await uow.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.to_error_dict(),
+        ) from exc
     except KnowledgePropagationServiceError as exc:
         await rollback_and_record_knowledge_error(uow, exc)
         return knowledge_propagation_error_response(exc)

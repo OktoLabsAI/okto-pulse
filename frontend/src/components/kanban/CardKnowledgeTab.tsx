@@ -5,10 +5,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
-  BookOpen,
-  ChevronDown,
-  ChevronUp,
-  Download,
   RefreshCw,
   Shield,
 } from 'lucide-react';
@@ -20,9 +16,10 @@ import type {
   EffectiveResourceItem,
   KnowledgeAssignmentTechnicalProjection,
   KnowledgeTechnicalReadResponse,
+  KnowledgeWorkspaceItem,
 } from '@/types';
-import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
+import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
 import {
   KnowledgePropagationSelector,
 } from '@/components/shared/KnowledgePropagationSelector';
@@ -53,61 +50,6 @@ interface CardKnowledgeTabProps {
   onBusyChange?: (busy: boolean) => void;
 }
 
-function isSpecSnapshot(kb: any): boolean {
-  const source = String(kb.source || '');
-  return source === 'spec' || source.startsWith('copied_from_spec:') || Boolean(kb.source_kb_id);
-}
-
-function effectiveKnowledgeToCardSnapshot(item: EffectiveResourceItem): any | null {
-  const resource = item.resource && typeof item.resource === 'object'
-    ? item.resource as Record<string, unknown>
-    : item as Record<string, unknown>;
-  const id = String(item.id || resource.id || '');
-  if (!id) return null;
-  return {
-    id,
-    title: String(resource.title || item.title || 'Inherited knowledge'),
-    description: typeof resource.description === 'string' ? resource.description : null,
-    content: typeof resource.content === 'string' ? resource.content : '',
-    mime_type: typeof resource.mime_type === 'string' ? resource.mime_type : 'text/markdown',
-    inherited: item.inherited,
-    read_only: item.read_only,
-    source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
-    source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
-    source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
-    source_id: item.source_id ?? resource.source_id ?? null,
-    source_kb_id: item.source_kb_id ?? resource.source_kb_id ?? null,
-    root_source_kb_id:
-      item.ref?.root_resource_id
-      ?? item.root_source_kb_id
-      ?? resource.root_source_kb_id
-      ?? null,
-    knowledge_assignment_mode: item.ref?.knowledge_assignment_mode ?? null,
-    knowledge_assignment_state: item.ref?.knowledge_assignment_state ?? null,
-    knowledge_assignment_stale: item.ref?.knowledge_assignment_stale ?? false,
-    origin_class: item.ref?.origin_class ?? null,
-  };
-}
-
-function knowledgeIdentityValues(kb: any): string[] {
-  return [
-    kb?.id,
-    kb?.source_id,
-    kb?.source_kb_id,
-    kb?.root_source_kb_id,
-    kb?.source_ref,
-    kb?.source,
-  ]
-    .filter((value): value is string | number => value !== null && value !== undefined && value !== '')
-    .map((value) => String(value));
-}
-
-function sourceLabel(kb: any): string {
-  const type = kb.source_entity_type || 'source';
-  const title = kb.source_entity_title || kb.source_entity_id || 'parent';
-  return `${type}: ${title}`;
-}
-
 const ORIGIN_CLASS_LABELS: Record<string, string> = {
   v2: 'v2',
   legacy_all: 'legacy all',
@@ -121,6 +63,17 @@ function assignmentTitle(
 ): string {
   return candidates.find((item) => item.id === assignment.root_knowledge_id)?.title
     || assignment.root_knowledge_id;
+}
+
+function workspaceKnowledgeCandidate(
+  item: KnowledgeWorkspaceItem,
+): KnowledgePropagationCandidate {
+  return {
+    id: item.root_id,
+    title: item.title || item.root_id,
+    stale: item.stale,
+    origin_class: item.provenance.origin_class,
+  };
 }
 
 function mutationErrorMessage(error: unknown): string {
@@ -150,11 +103,9 @@ export function CardKnowledgeTab({
 }: CardKnowledgeTabProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
-  const [effectiveItems, setEffectiveItems] = useState<EffectiveResourceItem[]>([]);
-  const [sourceEffectiveItems, setSourceEffectiveItems] = useState<
-    EffectiveResourceItem[]
+  const [sourceEffectiveCandidates, setSourceEffectiveCandidates] = useState<
+    KnowledgePropagationCandidate[]
   >([]);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [technicalRead, setTechnicalRead] = useState<KnowledgeTechnicalReadResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -173,22 +124,9 @@ export function CardKnowledgeTab({
     fingerprint: string;
     idempotencyKey: string;
   } | null>(null);
-  const cardKBs: any[] = useMemo(() => {
-    const direct = card.knowledge_bases || [];
-    const directIds = new Set(direct.flatMap(knowledgeIdentityValues));
-    const inherited = effectiveItems
-      .filter((item) => item.inherited)
-      .map(effectiveKnowledgeToCardSnapshot)
-      .filter((item): item is any => Boolean(item))
-      .filter((item) => !knowledgeIdentityValues(item).some((value) => directIds.has(value)));
-    return [...direct, ...inherited];
-  }, [card.knowledge_bases, effectiveItems]);
-
   const candidates = useMemo<KnowledgePropagationCandidate[]>(() => {
     const physical = specKnowledgeBases.map(physicalKnowledgeCandidate);
-    const effective = sourceEffectiveItems
-      .map(effectiveKnowledgeCandidate)
-      .filter((item): item is KnowledgePropagationCandidate => item !== null);
+    const effective = sourceEffectiveCandidates;
     const assignments = (technicalRead?.assignments || []).map((assignment) => {
       const existing = [...physical, ...effective].find(
         (item) => item.id === assignment.root_knowledge_id,
@@ -206,7 +144,7 @@ export function CardKnowledgeTab({
       effective,
       assignments,
     );
-  }, [sourceEffectiveItems, specKnowledgeBases, technicalRead]);
+  }, [sourceEffectiveCandidates, specKnowledgeBases, technicalRead]);
 
   const busy = mutationBusy || refreshingRootId !== null;
 
@@ -238,31 +176,45 @@ export function CardKnowledgeTab({
 
     Promise.allSettled([
       Promise.resolve().then(() =>
-        apiRef.current.getEffectiveResources(card.board_id, 'card', card.id),
-      ),
-      Promise.resolve().then(() =>
         apiRef.current.getCardKnowledgeAssignments(card.id),
       ),
       Promise.resolve().then(async () => {
-        if (!card.spec_id) return [] as EffectiveResourceItem[];
-        const response = await apiRef.current.getEffectiveResources(
-          card.board_id,
-          'spec',
-          card.spec_id,
-        );
-        return response.resources.knowledge_base || [];
+        if (!card.spec_id) return [] as KnowledgePropagationCandidate[];
+        const collected: KnowledgePropagationCandidate[] = [];
+        const consumedCursors = new Set<string>();
+        let cursor: string | null = null;
+        do {
+          const response = await apiRef.current.getEffectiveResources(
+            card.board_id,
+            'spec',
+            card.spec_id,
+            {
+              profile: 'summary',
+              limit: 25,
+              ...(cursor ? { cursor } : {}),
+            },
+          );
+          const pageCandidates = Array.isArray(response.items)
+            ? response.items
+              .filter((item) => item.resource_type === 'knowledge_base')
+              .map(workspaceKnowledgeCandidate)
+            : (response.resources?.knowledge_base || [])
+              .map((item: EffectiveResourceItem) => effectiveKnowledgeCandidate(item))
+              .filter((item): item is KnowledgePropagationCandidate => item !== null);
+          collected.push(...pageCandidates);
+          cursor = response.next_cursor || null;
+          if (cursor) {
+            if (consumedCursors.has(cursor)) {
+              throw new Error('Source spec Knowledge inventory returned a repeated cursor.');
+            }
+            consumedCursors.add(cursor);
+          }
+        } while (cursor);
+        return mergeKnowledgePropagationCandidates(collected);
       }),
-    ]).then(([effectiveResult, technicalResult, sourceResult]) => {
+    ]).then(([technicalResult, sourceResult]) => {
       if (cancelled) return;
       const errors: string[] = [];
-      if (effectiveResult.status === 'fulfilled') {
-        setEffectiveItems(
-          effectiveResult.value.resources.knowledge_base || [],
-        );
-      } else {
-        setEffectiveItems([]);
-        errors.push('effective Knowledge resources');
-      }
       if (technicalResult.status === 'fulfilled') {
         setTechnicalRead(technicalResult.value);
       } else {
@@ -270,9 +222,9 @@ export function CardKnowledgeTab({
         errors.push('governed assignments');
       }
       if (sourceResult.status === 'fulfilled') {
-        setSourceEffectiveItems(sourceResult.value);
+        setSourceEffectiveCandidates(sourceResult.value);
       } else {
-        setSourceEffectiveItems([]);
+        setSourceEffectiveCandidates([]);
         errors.push('source spec Knowledge inventory');
       }
       if (errors.length > 0) {
@@ -375,21 +327,6 @@ export function CardKnowledgeTab({
     } finally {
       setRefreshingRootId(null);
     }
-  };
-
-  const downloadMarkdown = (kb: any) => {
-    const safeTitle = (kb.title || 'knowledge').replace(/[^A-Za-z0-9._-]+/g, '_');
-    const filename = `${safeTitle || 'knowledge'}.md`;
-    const body = `# ${kb.title || ''}\n\n> ${kb.description || ''}\n\n${kb.content || ''}\n`;
-    const blob = new Blob([body], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
   };
 
   return (
@@ -498,53 +435,13 @@ export function CardKnowledgeTab({
         </section>
       )}
 
-      {!loading && cardKBs.length === 0 ? (
-        <div className="text-center py-8">
-          <BookOpen size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-          <p className="text-sm text-gray-500 dark:text-gray-400">No knowledge bases</p>
-          <p className="text-xs text-gray-400 mt-1">Choose an explicit reference or snapshot below when one is relevant.</p>
-        </div>
-      ) : !loading ? (
-        <div className="space-y-2">
-          {cardKBs.map((kb: any) => (
-            <div key={kb.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-              <div
-                data-testid={`kb-row-${kb.id}`}
-                className="flex items-center gap-2 p-2.5 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800"
-                onClick={() => setExpandedId(expandedId === kb.id ? null : kb.id)}
-              >
-                <BookOpen size={14} className="text-gray-400 shrink-0" />
-                <span className="text-sm font-medium text-gray-800 dark:text-gray-200 flex-1 truncate">{kb.title}</span>
-                {isSpecSnapshot(kb) && (
-                  <span className="text-[9px] px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 rounded">from spec</span>
-                )}
-                {kb.inherited && (
-                  <span className="text-[9px] px-1.5 py-0.5 bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-200 rounded">
-                    from {sourceLabel(kb)}
-                  </span>
-                )}
-                <span className="text-[9px] text-gray-400">{kb.mime_type || 'text/markdown'}</span>
-                <button
-                  onClick={(e) => { e.stopPropagation(); downloadMarkdown(kb); }}
-                  className="text-gray-400 hover:text-emerald-600 p-0.5"
-                  aria-label="Download markdown"
-                  data-testid={`kb-download-${kb.id}`}
-                >
-                  <Download size={12} />
-                </button>
-                {expandedId === kb.id ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
-              </div>
-              {expandedId === kb.id && (
-                <div className="px-3 pb-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30">
-                  <div className="pt-2 text-sm prose dark:prose-invert max-w-none">
-                    <MarkdownContent content={kb.content} />
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : null}
+      <KnowledgeWorkspace
+        boardId={card.board_id}
+        entityType="card"
+        entityId={card.id}
+        refreshKey={reloadGeneration}
+        fallbackItems={card.knowledge_bases || []}
+      />
 
       {!loading && technicalRead && (
         <>

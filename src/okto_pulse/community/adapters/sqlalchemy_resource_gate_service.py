@@ -427,9 +427,30 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 "knowledge_assignment_mode": item.assignment.mode.value,
                 "knowledge_assignment_state": item.state.value,
                 "knowledge_assignment_stale": item.state.value == "stale",
+                "knowledge_assignment_revision": getattr(
+                    item.assignment,
+                    "revision",
+                    None,
+                ),
+                "knowledge_assignment_origin_class": (
+                    item.assignment.origin_class.value
+                ),
                 "knowledge_target_type": root.entity_type,
                 "knowledge_target_id": root.entity_id,
                 "knowledge_target_board_id": getattr(root.entity, "board_id", None),
+                # ResourceLineage.v2 remains the sole identity and dedup
+                # authority.  The workspace only projects the structured
+                # linkage already persisted by knowledge propagation; it does
+                # not infer relevance from title/content or create a second
+                # resolver.
+                "relevance_links": [
+                    link.to_dict()
+                    for link in getattr(
+                        item.assignment,
+                        "relevance_links",
+                        (),
+                    )
+                ],
             }
         )
         ref.update(_knowledge_stamp_aliases(item.revision_stamp))

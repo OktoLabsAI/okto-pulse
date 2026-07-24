@@ -17,8 +17,6 @@ import {
   BookOpen,
   Plus,
   Trash2,
-  ChevronDown,
-  ChevronUp,
   MessageCircleQuestion,
   Send,
   History,
@@ -53,7 +51,6 @@ import type {
   ObservabilityRequirement,
   Spec,
   SpecStatus,
-  SpecKnowledgeSummary,
   SpecQAItem,
   SpecHistoryEntry,
   SpecStructuredEntityOperation,
@@ -62,7 +59,6 @@ import type {
   TestScenario,
   BoardSettings,
   Decision,
-  EffectiveResourceItem,
 } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { EvidenceBadge } from './EvidenceBadge';
@@ -95,6 +91,7 @@ import {
   normalizeAcceptanceCriteria,
 } from './acceptanceCriteriaCoverage';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
+import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface SpecModalProps {
@@ -1228,77 +1225,18 @@ function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<type
    Knowledge Base Tab
    ============================================================ */
 
-type SpecKnowledgeListItem = SpecKnowledgeSummary & {
-  inherited?: boolean;
-  read_only?: boolean;
-  source_entity_type?: string | null;
-  source_entity_id?: string | null;
-  source_entity_title?: string | null;
-  content?: string;
-};
-
-function effectiveKnowledgeToSpecItem(item: EffectiveResourceItem): SpecKnowledgeListItem | null {
-  const resource = item.resource && typeof item.resource === 'object'
-    ? item.resource as Partial<SpecKnowledgeListItem>
-    : item as Partial<SpecKnowledgeListItem>;
-  const id = String(item.id || resource.id || '');
-  if (!id) return null;
-  return {
-    id,
-    spec_id: String(resource.spec_id || item.source_entity_id || ''),
-    title: String(resource.title || item.title || 'Inherited knowledge'),
-    description: typeof resource.description === 'string' ? resource.description : null,
-    mime_type: String(resource.mime_type || 'text/markdown'),
-    created_at: String(resource.created_at || ''),
-    content: typeof resource.content === 'string' ? resource.content : '',
-    inherited: item.inherited,
-    read_only: item.read_only,
-    source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
-    source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
-    source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
-  };
-}
-
-function knowledgeSourceLabel(item: SpecKnowledgeListItem): string {
-  const type = item.source_entity_type || 'source';
-  const title = item.source_entity_title || item.source_entity_id || 'parent';
-  return `${type}: ${title}`;
-}
-
 function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) {
   const api = useDashboardApi();
-  const [items, setItems] = useState<SpecKnowledgeSummary[]>([]);
-  const [effectiveItems, setEffectiveItems] = useState<EffectiveResourceItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [refreshGeneration, setRefreshGeneration] = useState(0);
   const [adding, setAdding] = useState(false);
-  const [viewingId, setViewingId] = useState<string | null>(null);
-  const [viewContent, setViewContent] = useState<string>('');
 
   // Add form
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newContent, setNewContent] = useState('');
 
-  useEffect(() => { load(); }, [specId]);
-
-  const visibleItems: SpecKnowledgeListItem[] = [
-    ...items,
-    ...effectiveItems
-      .filter((item) => item.inherited && !items.some((direct) => direct.id === item.id))
-      .map(effectiveKnowledgeToSpecItem)
-      .filter((item): item is SpecKnowledgeListItem => Boolean(item)),
-  ];
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [direct, effective] = await Promise.all([
-        api.listSpecKnowledge(specId),
-        api.getEffectiveResources(boardId, 'spec', specId).catch(() => null),
-      ]);
-      setItems(direct);
-      setEffectiveItems(effective?.resources.knowledge_base || []);
-    } catch { /* ignore */ } finally { setLoading(false); }
+  const refreshWorkspace = () => {
+    setRefreshGeneration((current) => current + 1);
   };
 
   const handleAdd = async () => {
@@ -1312,87 +1250,32 @@ function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) 
       toast.success('Knowledge base item added');
       setAdding(false);
       setNewTitle(''); setNewDesc(''); setNewContent('');
-      await load();
+      refreshWorkspace();
     } catch { toast.error('Failed to add knowledge'); }
   };
 
   const handleDelete = async (knowledgeId: string) => {
-    if (!confirm('Delete this knowledge base item?')) return;
+    if (!confirm('Delete this knowledge base item?')) return false;
     try {
       await api.deleteSpecKnowledge(specId, knowledgeId);
       toast.success('Deleted');
-      if (viewingId === knowledgeId) { setViewingId(null); setViewContent(''); }
-      await load();
-    } catch { toast.error('Failed to delete'); }
-  };
-
-  const handleView = async (knowledgeId: string) => {
-    if (viewingId === knowledgeId) { setViewingId(null); setViewContent(''); return; }
-    const inherited = visibleItems.find((item) => item.id === knowledgeId && item.inherited);
-    if (inherited) {
-      setViewingId(knowledgeId);
-      setViewContent(inherited.content || '');
-      return;
+      return true;
+    } catch {
+      toast.error('Failed to delete');
+      return false;
     }
-    try {
-      const kb = await api.getSpecKnowledge(specId, knowledgeId);
-      setViewingId(knowledgeId);
-      setViewContent(kb.content);
-    } catch { toast.error('Failed to load content'); }
   };
-
-  if (loading) return <div className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Loading knowledge base...</div>;
 
   return (
     <div className="space-y-3">
-      {visibleItems.length === 0 && !adding && (
-        <div className="text-center py-6">
-          <BookOpen size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-          <p className="text-sm text-gray-500 dark:text-gray-400">No knowledge base items</p>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Attach reference documents, API specs, or context docs</p>
-        </div>
-      )}
-
-      {visibleItems.map((item) => (
-        <div key={item.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-          <div
-            className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-700/50 cursor-pointer"
-            onClick={() => handleView(item.id)}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <BookOpen size={14} className="text-amber-500 shrink-0" />
-              <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{item.title}</span>
-              {item.inherited && (
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
-                  from {knowledgeSourceLabel(item)}
-                </span>
-              )}
-              <span className="text-[10px] px-1 py-0.5 rounded bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400">{item.mime_type}</span>
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
-              {!item.read_only && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
-                  className="p-1 text-gray-400 hover:text-red-500"
-                >
-                  <Trash2 size={14} />
-                </button>
-              )}
-              {viewingId === item.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            </div>
-          </div>
-          {item.description && (
-            <p className="text-xs text-gray-500 dark:text-gray-400 px-3 py-1">{item.description}</p>
-          )}
-          {viewingId === item.id && viewContent && (
-            <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700">
-              <div className="bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto max-h-64 overflow-y-auto">
-                <MarkdownContent content={viewContent} className="text-xs" />
-              </div>
-            </div>
-          )}
-        </div>
-      ))}
+      <KnowledgeWorkspace
+        boardId={boardId}
+        entityType="spec"
+        entityId={specId}
+        refreshKey={refreshGeneration}
+        loadFallbackDetail={(id) => api.getSpecKnowledge(specId, id)}
+        onDelete={handleDelete}
+      />
 
       {adding ? (
         <div className="border border-amber-200 dark:border-amber-700 rounded-lg p-3 space-y-2 bg-amber-50/50 dark:bg-amber-900/10">

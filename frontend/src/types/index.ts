@@ -85,6 +85,15 @@ export interface LineageGraphNode {
   source_entity_type?: string;
   source_entity_id?: string;
   summary?: Record<string, unknown>;
+  resource_counts?: LineageResourceCounts;
+}
+
+export interface LineageResourceCounts {
+  unique_effective_count: number;
+  raw_attachment_count: number;
+  workspace_item_count: number;
+  /** Distinct root/version projections; absent on rolling-upgrade servers. */
+  unique_root_version_count?: number;
 }
 
 export interface LineageGraphEdge {
@@ -109,6 +118,7 @@ export interface LineageGraphResponse {
   nodes: LineageGraphNode[];
   edges: LineageGraphEdge[];
   summary: Record<string, number>;
+  resource_counts?: LineageResourceCounts;
   warnings: string[];
 }
 
@@ -160,6 +170,8 @@ export interface ResourceGateNaMark {
 export interface ResourceGateResource {
   resource_type: ResourceGateResourceType;
   state: ResourceGateState;
+  authority?: 'blocking' | 'advisory';
+  blocking?: boolean;
   direct_count: number;
   inherited_count: number;
   direct_refs?: ResourceGateRef[];
@@ -176,6 +188,14 @@ export interface ResourceGateSummary {
   resources: ResourceGateResource[];
   blocking: boolean;
   missing_resources: ResourceGateResource[];
+  advisory_resources?: ResourceGateResource[];
+  advisory_missing_resources?: ResourceGateResource[];
+  authority_policy?: {
+    policy_version?: number;
+    context?: string;
+    blocking_resource_types?: ResourceGateResourceType[];
+    advisory_resource_types?: ResourceGateResourceType[];
+  };
   warnings: Array<{ code?: string; message: string; resource_type?: string }>;
 }
 
@@ -205,10 +225,78 @@ export interface EffectiveResourceItem extends ResourceGateRef {
   resource?: Record<string, unknown> | ArchitectureDesign | ScreenMockup | null;
 }
 
+export type KnowledgeWorkspaceProfile = 'summary' | 'detail' | 'full' | 'legacy';
+
+export interface KnowledgeWorkspacePhysicalAttachment {
+  resource_id: string | null;
+  attachment_kind: string | null;
+  inherited: boolean;
+  source_entity_type: string | null;
+  source_entity_id: string | null;
+  source_entity_title: string | null;
+  effective: boolean;
+  resource_version: string | null;
+  revision_stamp: Record<string, unknown> | null;
+}
+
+export interface KnowledgeWorkspaceItem {
+  resource_type: ResourceGateResourceType;
+  canonical_unique_resource_id: string;
+  versioned_projection_id: string;
+  root_id: string;
+  resource_version: string | null;
+  representative_resource_id: string | null;
+  title: string | null;
+  attachment_kind: string | null;
+  inherited: boolean;
+  grandfathered: boolean;
+  stale: boolean;
+  superseded: boolean;
+  provenance: {
+    source_entity_type: string | null;
+    source_entity_id: string | null;
+    source_entity_title: string | null;
+    origin_class: string | null;
+    source_revision: string | null;
+    source_content_sha256: string | null;
+  };
+  physical_attachments: KnowledgeWorkspacePhysicalAttachment[];
+  detail_cursor: string;
+  relevance_links: Array<Record<string, unknown>>;
+  body?: unknown;
+  body_omitted_reason?: 'profile_summary' | 'body_unavailable' | 'body_size_limit' | 'response_budget' | string;
+  body_ref?: {
+    resource_type: ResourceGateResourceType;
+    resource_id: string | null;
+  };
+}
+
+export interface EffectiveResourcesOptions {
+  profile?: KnowledgeWorkspaceProfile;
+  cursor?: string | null;
+  limit?: number;
+}
+
 export interface EffectiveResourcesResponse {
+  contract_version?: number;
   board_id: string;
   entity_type: ResourceGateEntityType;
   entity_id: string;
+  profile?: KnowledgeWorkspaceProfile;
+  items?: KnowledgeWorkspaceItem[];
+  count?: number;
+  total_count?: number;
+  next_cursor?: string | null;
+  truncated?: boolean;
+  unique_effective_count?: number;
+  raw_attachment_count?: number;
+  workspace_item_count?: number;
+  unique_root_version_count?: number;
+  response_bytes?: number;
+  /**
+   * Populated by the explicit `legacy` profile. Kept mandatory in the
+   * normalized client result so rolling upgrades do not break older callers.
+   */
   resources: Record<ResourceGateResourceType, EffectiveResourceItem[]>;
   lineage_counts?: Record<string, unknown>;
   resource_lineage?: Record<string, unknown>;
@@ -2233,12 +2321,22 @@ export interface DesignSystem {
   scope: string;
   board_id: string | null;
   title: string;
-  payload: Record<string, unknown> | null;
+  /** Present only on detail/full projections. Catalog summary pages omit it. */
+  payload?: Record<string, unknown> | null;
+  payload_available?: boolean;
   version: number;
   status: string;
   owner_id: string;
   created_at: string | null;
   updated_at: string | null;
+  profile?: 'summary' | 'detail' | 'full' | 'legacy';
+}
+
+export interface DesignSystemListPage {
+  items: DesignSystem[];
+  count: number;
+  next_cursor: string | null;
+  profile: 'summary';
 }
 
 export interface BoardDesignSystemEffective {
@@ -2250,11 +2348,18 @@ export interface BoardDesignSystemEffective {
   scope?: string | null;
   gate_mode?: string | null;
   exists?: boolean;
+  configured?: boolean;
+  resolvable?: boolean;
+  mandate?: boolean;
 }
 
 export interface BoardDesignSystemEffectiveResponse {
   board_id: string;
   effective: BoardDesignSystemEffective | null;
+  configured?: boolean;
+  resolvable?: boolean;
+  mandate?: boolean;
+  gate_mode?: string;
 }
 
 export interface CreateDesignSystemRequest {

@@ -146,4 +146,31 @@ describe('ResourceGateSummary', () => {
       );
     });
   });
+
+  it('labels a missing Knowledge Base as advisory and non-blocking', async () => {
+    apiMock.getResourceGateSummary.mockResolvedValue({
+      ...baseSummary,
+      missing_resources: baseSummary.resources.filter(
+        (item) => item.resource_type === 'architecture',
+      ),
+      resources: baseSummary.resources.map((item) => (
+        item.resource_type === 'knowledge_base'
+          ? {
+              ...item,
+              state: 'missing',
+              authority: 'advisory',
+              blocking: false,
+              na_mark: null,
+            }
+          : item
+      )),
+    });
+
+    render(<ResourceGateSummary boardId="board-1" entityType="ideation" entityId="idea-1" />);
+
+    const knowledge = await screen.findByTestId('resource-gate-row-knowledge_base');
+    expect(within(knowledge).getByText('Advisory')).toBeInTheDocument();
+    expect(within(knowledge).getByText(/does not block the transition/i)).toBeInTheDocument();
+    expect(screen.getByText(/Architecture and Mockup are blocking/i)).toBeInTheDocument();
+  });
 });

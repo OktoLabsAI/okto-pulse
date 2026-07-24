@@ -6,8 +6,10 @@ import type { Spec, SpecHistoryEntry } from '@/types';
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
   getAllowedTransitions: vi.fn(),
+  getEffectiveResources: vi.fn(),
   listSprints: vi.fn(),
   listSpecHistory: vi.fn(),
+  listSpecKnowledge: vi.fn(),
 }));
 
 vi.mock('@/services/api', () => ({
@@ -109,6 +111,15 @@ describe('SpecModal Activity tab', () => {
     apiMock.getAllowedTransitions.mockResolvedValue({ allowed_transitions: [] });
     apiMock.listSprints.mockResolvedValue([]);
     apiMock.listSpecHistory.mockResolvedValue([historyEntry]);
+    apiMock.getEffectiveResources.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'spec',
+      entity_id: spec.id,
+      profile: 'summary',
+      items: [],
+      next_cursor: null,
+      resources: { architecture: [], mockup: [], knowledge_base: [] },
+    });
   });
 
   it('loads and expands the shared Before/After history renderer', async () => {
@@ -142,5 +153,29 @@ describe('SpecModal Activity tab', () => {
     expect(within(before).getByText('Previous specification title')).toBeInTheDocument();
     expect(within(after).getByText('After')).toBeInTheDocument();
     expect(within(after).getByText('Current specification title')).toBeInTheDocument();
+  });
+
+  it('opens Knowledge through the bounded Workspace without eager listing', async () => {
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('button', { name: 'Knowledge' }));
+
+    await waitFor(() => {
+      expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
+        'board-1',
+        'spec',
+        spec.id,
+        { profile: 'summary', limit: 25 },
+      );
+    });
+    expect(apiMock.listSpecKnowledge).not.toHaveBeenCalled();
   });
 });

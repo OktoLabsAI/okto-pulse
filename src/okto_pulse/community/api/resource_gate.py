@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
@@ -9,10 +11,14 @@ from pydantic import BaseModel
 
 from okto_pulse.community.api.auth_deps import get_realm_id, require_user
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.core.application.knowledge_workspace import (
+    KnowledgeWorkspaceProjectionError,
+)
 from okto_pulse.core.application.use_cases.operational_rest import (
     BoardNotFoundError,
     ClearResourceNotApplicableCommand,
     ClearResourceNotApplicableUseCase,
+    GetEffectiveResourcesCommand,
     GetEffectiveResourcesUseCase,
     GetResourceGateSummaryUseCase,
     GetSpecResourceTaskCoverageUseCase,
@@ -32,6 +38,9 @@ from okto_pulse.core.services.resource_gate import (
 )
 
 router = APIRouter()
+_WORKSPACE_LOGGER = logging.getLogger(
+    "okto_pulse.community.knowledge_workspace"
+)
 
 EntityType = Literal["ideation", "refinement", "spec", "card"]
 ResourceType = Literal["architecture", "mockup", "knowledge_base"]
@@ -78,6 +87,15 @@ def _board_not_found(exc: BoardNotFoundError) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail="Board not found",
+    )
+
+
+def _workspace_projection_exception(
+    exc: KnowledgeWorkspaceProjectionError,
+) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail=exc.to_dict(),
     )
 
 
@@ -139,14 +157,32 @@ async def get_effective_resources(
     entity_type: EntityType,
     entity_id: str,
     board_id: str = Query(...),
+    profile: str | None = Query(None),
+    cursor: str | None = Query(None),
+    limit: int | None = Query(None),
     user_id: str = Depends(require_user),
     realm_id: str | None = Depends(get_realm_id),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Return hydrated effective Resource Gate resources for UI rendering."""
+    """Return a bounded Knowledge Workspace page.
+
+    Omitting ``profile`` preserves the historical hydrated ``resources`` map
+    during rolling upgrades.  Bounded workspace profiles are opt-in and never
+    mix that heavy payload into their response, so ``summary`` cannot
+    accidentally disclose bodies or exceed its byte budget.
+    """
+    started = time.perf_counter()
+    requested_profile = "legacy" if profile is None else profile
     try:
         result = await GetEffectiveResourcesUseCase().execute(
-            ResourceGateEntityCommand(board_id, entity_type, entity_id),
+            GetEffectiveResourcesCommand(
+                board_id,
+                entity_type,
+                entity_id,
+                requested_profile,
+                cursor,
+                limit,
+            ),
             actor=RESTAdapterContract.actor(
                 user_id,
                 realm_id=realm_id,
@@ -154,9 +190,28 @@ async def get_effective_resources(
             ),
             uow=db,
         )
-        return result.data
+        data = result.data
+        _WORKSPACE_LOGGER.info(
+            (
+                "knowledge_workspace.read profile=%s count=%d "
+                "unique_effective_count=%d raw_attachment_count=%d "
+                "workspace_item_count=%d response_bytes=%d truncated=%s "
+                "duration_ms=%.3f"
+            ),
+            str(data.get("profile") or requested_profile),
+            int(data.get("count") or 0),
+            int(data.get("unique_effective_count") or 0),
+            int(data.get("raw_attachment_count") or 0),
+            int(data.get("workspace_item_count") or 0),
+            int(data.get("response_bytes") or 0),
+            bool(data.get("truncated")),
+            (time.perf_counter() - started) * 1000,
+        )
+        return data
     except BoardNotFoundError as exc:
         raise _board_not_found(exc) from exc
+    except KnowledgeWorkspaceProjectionError as exc:
+        raise _workspace_projection_exception(exc) from exc
     except ResourceGateError as exc:
         raise _resource_gate_exception(exc) from exc
 

@@ -28,6 +28,7 @@ import type {
   BoardDesignSystemEffectiveResponse,
   CreateDesignSystemRequest,
   DesignSystem,
+  DesignSystemListPage,
   SetDefaultDesignSystemRequest,
   UpdateDesignSystemRequest,
   CreateAmendmentRevisionRequest,
@@ -116,6 +117,7 @@ import type {
   ResourceGateEntityType,
   ResourceGateResourceType,
   ResourceGateSummary,
+  EffectiveResourcesOptions,
   EffectiveResourcesResponse,
   MarkResourceNotApplicableRequest,
   ClearResourceNotApplicableRequest,
@@ -366,11 +368,40 @@ export function useDashboardApi() {
       boardId: string,
       entityType: ResourceGateEntityType,
       entityId: string,
+      options: EffectiveResourcesOptions = {},
     ): Promise<EffectiveResourcesResponse> {
-      const p = new URLSearchParams({ board_id: boardId });
-      return apiClient.fetchJson<EffectiveResourcesResponse>(
+      // Existing feature surfaces still consume the historical hydrated map.
+      // Request it explicitly during rolling upgrades; the shared Knowledge
+      // Workspace opts into the bounded v2 projections below.
+      const profile = options.profile || 'legacy';
+      const p = new URLSearchParams({ board_id: boardId, profile });
+      if (options.cursor) p.set('cursor', options.cursor);
+      if (options.limit !== undefined) p.set('limit', String(options.limit));
+      const response = await apiClient.fetchJson<Partial<EffectiveResourcesResponse>>(
         `/resource-gate/${entityType}/${entityId}/effective-resources?${p.toString()}`
       );
+      const hasBoundedItems = Array.isArray(response.items);
+      const hasLegacyResources = Boolean(
+        response.resources
+        && typeof response.resources === 'object',
+      );
+      // An older server ignores the bounded profile parameters and returns the
+      // historical hydrated map without a profile discriminator. Preserve that
+      // truth instead of labelling the eager response as summary/detail.
+      const responseProfile = response.profile
+        || (hasLegacyResources && !hasBoundedItems ? 'legacy' : profile);
+      return {
+        ...response,
+        board_id: response.board_id || boardId,
+        entity_type: response.entity_type || entityType,
+        entity_id: response.entity_id || entityId,
+        profile: responseProfile,
+        resources: response.resources || {
+          architecture: [],
+          mockup: [],
+          knowledge_base: [],
+        },
+      };
     },
 
     async markResourceNotApplicable(
@@ -683,13 +714,44 @@ export function useDashboardApi() {
     // ==================== DESIGN SYSTEM (spec 3a006f65) ====================
 
     async listDesignSystems(scope = 'global', boardId?: string): Promise<DesignSystem[]> {
-      const params = new URLSearchParams({ scope });
-      if (boardId) params.set('board_id', boardId);
-      return apiClient.fetchJson<DesignSystem[]>(`/design-systems?${params.toString()}`);
+      const items: DesignSystem[] = [];
+      const seenCursors = new Set<string>();
+      let cursor: string | null = null;
+
+      do {
+        const params = new URLSearchParams({ scope, profile: 'summary', limit: '100' });
+        if (boardId) params.set('board_id', boardId);
+        if (cursor) params.set('cursor', cursor);
+        const response = await apiClient.fetchJson<DesignSystemListPage | DesignSystem[]>(
+          `/design-systems?${params.toString()}`,
+        );
+        // Rolling upgrades may briefly pair the new client with the legacy REST
+        // array. Keep the UI compatible while the canonical server contract is
+        // the bounded summary envelope.
+        if (Array.isArray(response)) return response;
+        items.push(...response.items);
+        cursor = response.next_cursor;
+        if (cursor) {
+          if (seenCursors.has(cursor)) {
+            throw new Error('Design System catalog returned a repeated cursor.');
+          }
+          seenCursors.add(cursor);
+        }
+      } while (cursor);
+
+      return items;
     },
 
-    async getDesignSystem(designSystemId: string): Promise<DesignSystem> {
-      return apiClient.fetchJson<DesignSystem>(`/design-systems/${designSystemId}`);
+    async getDesignSystem(
+      designSystemId: string,
+      profile: 'summary' | 'detail' | 'full' = 'full',
+      boardId?: string,
+    ): Promise<DesignSystem> {
+      const params = new URLSearchParams({ profile });
+      if (boardId) params.set('board_id', boardId);
+      return apiClient.fetchJson<DesignSystem>(
+        `/design-systems/${designSystemId}?${params.toString()}`,
+      );
     },
 
     async createDesignSystem(payload: CreateDesignSystemRequest): Promise<DesignSystem> {

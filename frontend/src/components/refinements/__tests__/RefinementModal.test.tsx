@@ -349,20 +349,54 @@ describe('RefinementModal Knowledge tab markdown rendering', () => {
       allowed_transitions: [],
     });
     apiMock.getArchitectureDesign.mockResolvedValue(null);
-    apiMock.listRefinementKnowledge.mockResolvedValue([
-      {
-        id: 'kb-1',
-        title: 'API Notes',
-        description: null,
-        mime_type: 'text/markdown',
-        created_at: '2026-05-06T10:00:00Z',
+    const summaryItem = {
+      resource_type: 'knowledge_base',
+      canonical_unique_resource_id: 'knowledge_base:kb-1',
+      versioned_projection_id: 'knowledge_base:kb-1@1',
+      root_id: 'kb-1',
+      resource_version: '1',
+      representative_resource_id: 'kb-1',
+      title: 'API Notes',
+      attachment_kind: 'direct',
+      inherited: false,
+      grandfathered: false,
+      stale: false,
+      superseded: false,
+      provenance: {
+        source_entity_type: 'refinement',
+        source_entity_id: 'refinement-1',
+        source_entity_title: 'My Refinement',
+        origin_class: 'v2',
+        source_revision: '1',
+        source_content_sha256: null,
       },
-    ]);
-    apiMock.getEffectiveResources.mockResolvedValue({ resources: { knowledge_base: [] } });
-    apiMock.getRefinementKnowledge.mockResolvedValue({
-      id: 'kb-1',
-      content: '# KB Heading\n\nThis is **bold** markdown',
-    });
+      physical_attachments: [],
+      detail_cursor: 'detail-kb-1',
+      relevance_links: [],
+      body_omitted_reason: 'profile_summary',
+    };
+    apiMock.getEffectiveResources.mockImplementation(
+      async (
+        _boardId: string,
+        _entityType: string,
+        _entityId: string,
+        options: { profile: string },
+      ) => ({
+        board_id: 'board-1',
+        entity_type: 'refinement',
+        entity_id: 'refinement-1',
+        profile: options.profile,
+        items: options.profile === 'detail'
+          ? [{
+            ...summaryItem,
+            body: { content: '# KB Heading\n\nThis is **bold** markdown' },
+            body_omitted_reason: undefined,
+          }]
+          : [summaryItem],
+        next_cursor: null,
+        resources: { architecture: [], mockup: [], knowledge_base: [] },
+      }),
+    );
   });
 
   it('renders knowledge base content as markdown elements, not plain text', async () => {
@@ -374,13 +408,25 @@ describe('RefinementModal Knowledge tab markdown rendering', () => {
 
     fireEvent.click(screen.getByText('Knowledge'));
 
-    // Knowledge list loads, then expanding an item fetches its content.
+    // The bounded summary loads, then expanding hydrates one detail projection.
     const kbTitle = await screen.findByText('API Notes');
+    expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
+      'board-1',
+      'refinement',
+      'refinement-1',
+      { profile: 'summary', limit: 25 },
+    );
     fireEvent.click(kbTitle);
 
     await waitFor(() =>
-      expect(apiMock.getRefinementKnowledge).toHaveBeenCalledWith('refinement-1', 'kb-1'),
+      expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
+        'board-1',
+        'refinement',
+        'refinement-1',
+        { profile: 'detail', cursor: 'detail-kb-1' },
+      ),
     );
+    expect(apiMock.listRefinementKnowledge).not.toHaveBeenCalled();
 
     // Markdown becomes real elements: heading + <strong>, no raw text dump.
     expect(await screen.findByRole('heading', { name: 'KB Heading' })).toBeInTheDocument();

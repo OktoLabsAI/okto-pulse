@@ -45,12 +45,10 @@ import type {
   IdeationStatus,
   IdeationQAItem,
   IdeationHistoryEntry,
-  IdeationKnowledgeSummary,
   IdeationSnapshot,
   IdeationSnapshotSummary,
   RefinementSummary,
   StorySummary,
-  EffectiveResourceItem,
 } from '@/types';
 import {
   IDEATION_STATUSES,
@@ -70,6 +68,7 @@ import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { ArchitectureTab } from '@/components/architecture';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
+import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface IdeationModalProps {
@@ -278,79 +277,16 @@ function VersionsTab({ ideationId }: { ideationId: string }) {
   );
 }
 
-type IdeationKnowledgeListItem = IdeationKnowledgeSummary & {
-  inherited?: boolean;
-  read_only?: boolean;
-  source_entity_type?: string | null;
-  source_entity_id?: string | null;
-  source_entity_title?: string | null;
-  content?: string;
-};
-
-function effectiveKnowledgeToIdeationItem(item: EffectiveResourceItem): IdeationKnowledgeListItem | null {
-  const resource = item.resource && typeof item.resource === 'object'
-    ? item.resource as Partial<IdeationKnowledgeListItem>
-    : item as Partial<IdeationKnowledgeListItem>;
-  const id = String(item.id || resource.id || '');
-  if (!id) return null;
-  return {
-    id,
-    ideation_id: String(resource.ideation_id || item.source_entity_id || ''),
-    title: String(resource.title || item.title || 'Inherited knowledge'),
-    description: typeof resource.description === 'string' ? resource.description : null,
-    mime_type: String(resource.mime_type || 'text/markdown'),
-    created_at: String(resource.created_at || ''),
-    content: typeof resource.content === 'string' ? resource.content : '',
-    inherited: item.inherited,
-    read_only: item.read_only,
-    source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
-    source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
-    source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
-  };
-}
-
-function knowledgeSourceLabel(item: IdeationKnowledgeListItem): string {
-  const type = item.source_entity_type || 'source';
-  const title = item.source_entity_title || item.source_entity_id || 'parent';
-  return `${type}: ${title}`;
-}
-
 function KnowledgeTab({ ideationId, boardId }: { ideationId: string; boardId: string }) {
   const api = useDashboardApi();
-  const [items, setItems] = useState<IdeationKnowledgeSummary[]>([]);
-  const [effectiveItems, setEffectiveItems] = useState<EffectiveResourceItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [refreshGeneration, setRefreshGeneration] = useState(0);
   const [adding, setAdding] = useState(false);
-  const [viewingId, setViewingId] = useState<string | null>(null);
-  const [viewContent, setViewContent] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newContent, setNewContent] = useState('');
 
-  useEffect(() => { load(); }, [ideationId]);
-
-  const visibleItems: IdeationKnowledgeListItem[] = [
-    ...items,
-    ...effectiveItems
-      .filter((item) => item.inherited && !items.some((direct) => direct.id === item.id))
-      .map(effectiveKnowledgeToIdeationItem)
-      .filter((item): item is IdeationKnowledgeListItem => Boolean(item)),
-  ];
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [direct, effective] = await Promise.all([
-        api.listIdeationKnowledge(ideationId),
-        api.getEffectiveResources(boardId, 'ideation', ideationId).catch(() => null),
-      ]);
-      setItems(direct);
-      setEffectiveItems(effective?.resources.knowledge_base || []);
-    } catch {
-      toast.error('Failed to load knowledge base');
-    } finally {
-      setLoading(false);
-    }
+  const refreshWorkspace = () => {
+    setRefreshGeneration((current) => current + 1);
   };
 
   const handleAdd = async () => {
@@ -366,97 +302,33 @@ function KnowledgeTab({ ideationId, boardId }: { ideationId: string; boardId: st
       setNewTitle('');
       setNewDesc('');
       setNewContent('');
-      await load();
+      refreshWorkspace();
     } catch {
       toast.error('Failed to add knowledge');
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this knowledge base item?')) return;
+    if (!confirm('Delete this knowledge base item?')) return false;
     try {
       await api.deleteIdeationKnowledge(ideationId, id);
-      if (viewingId === id) {
-        setViewingId(null);
-        setViewContent('');
-      }
-      await load();
+      return true;
     } catch {
       toast.error('Failed to delete knowledge');
+      return false;
     }
   };
-
-  const handleView = async (id: string) => {
-    if (viewingId === id) {
-      setViewingId(null);
-      setViewContent('');
-      return;
-    }
-    const inherited = visibleItems.find((item) => item.id === id && item.inherited);
-    if (inherited) {
-      setViewingId(id);
-      setViewContent(inherited.content || '');
-      return;
-    }
-    try {
-      const kb = await api.getIdeationKnowledge(ideationId, id);
-      setViewingId(id);
-      setViewContent(kb.content);
-    } catch {
-      toast.error('Failed to load knowledge');
-    }
-  };
-
-  if (loading) {
-    return <div className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Loading knowledge base...</div>;
-  }
 
   return (
     <div className="space-y-3">
-      {visibleItems.length === 0 && !adding && (
-        <div className="text-center py-6">
-          <BookOpen size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-          <p className="text-sm text-gray-500 dark:text-gray-400">No knowledge base items</p>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Attach reference documents, discovery notes, or context docs</p>
-        </div>
-      )}
-      {visibleItems.map((item) => (
-        <div key={item.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-          <div
-            className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-700/50 cursor-pointer"
-            onClick={() => handleView(item.id)}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <BookOpen size={14} className="text-amber-500 shrink-0" />
-              <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{item.title}</span>
-              {item.inherited && (
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
-                  from {knowledgeSourceLabel(item)}
-                </span>
-              )}
-              <span className="text-[10px] px-1 py-0.5 rounded bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400">{item.mime_type}</span>
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
-              {!item.read_only && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
-                  className="p-1 text-gray-400 hover:text-red-500"
-                >
-                  <Trash2 size={14} />
-                </button>
-              )}
-              {viewingId === item.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            </div>
-          </div>
-          {viewingId === item.id && viewContent && (
-            <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700">
-              <div className="bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto max-h-64 overflow-y-auto">
-                <MarkdownContent content={viewContent} className="text-xs" />
-              </div>
-            </div>
-          )}
-        </div>
-      ))}
+      <KnowledgeWorkspace
+        boardId={boardId}
+        entityType="ideation"
+        entityId={ideationId}
+        refreshKey={refreshGeneration}
+        loadFallbackDetail={(id) => api.getIdeationKnowledge(ideationId, id)}
+        onDelete={handleDelete}
+      />
       {adding ? (
         <div className="border border-amber-200 dark:border-amber-700 rounded-lg p-3 space-y-2 bg-amber-50/50 dark:bg-amber-900/10">
           <input

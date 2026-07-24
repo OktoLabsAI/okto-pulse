@@ -56,7 +56,11 @@ function buildPayload(content: string): Record<string, unknown> | null {
   return { content: trimmed };
 }
 
-function payloadSummary(payload: Record<string, unknown> | null | undefined) {
+function payloadSummary(
+  payload: Record<string, unknown> | null | undefined,
+  payloadAvailable = false,
+) {
+  if (payload === undefined && payloadAvailable) return 'Content available — open to view';
   const content = contentFromPayload(payload).trim();
   if (!content) return 'No content yet';
   const oneLine = content.replace(/\s+/g, ' ');
@@ -153,13 +157,28 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
     setShowGlobalForm(false);
   };
 
-  const openEdit = (designSystem: DesignSystem) => {
-    setEditing(designSystem);
-    setTitle(designSystem.title);
-    setContent(contentFromPayload(designSystem.payload));
-    setShowGlobalForm(false);
-    setShowInlineForm(false);
-    setActiveTab(designSystem.scope === 'inline' ? 'board' : 'global');
+  const openEdit = async (designSystem: DesignSystem) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const hydrated = designSystem.payload !== undefined
+        ? designSystem
+        : await apiRef.current.getDesignSystem(
+          designSystem.id,
+          'full',
+          designSystem.scope === 'inline' ? boardId : undefined,
+        );
+      setEditing(hydrated);
+      setTitle(hydrated.title);
+      setContent(contentFromPayload(hydrated.payload));
+      setShowGlobalForm(false);
+      setShowInlineForm(false);
+      setActiveTab(hydrated.scope === 'inline' ? 'board' : 'global');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load the Design System.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const createGlobal = () => run(async () => {
@@ -486,7 +505,9 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                     {isBoardLinked && badge(`dsp-linked-${d.id}`, 'linked', 'green')}
                                     {isDefault && badge(`dsp-default-${d.id}`, 'default', 'blue')}
                                   </div>
-                                  <p className="line-clamp-2 text-xs text-gray-500 dark:text-gray-400">{payloadSummary(d.payload)}</p>
+                                  <p className="line-clamp-2 text-xs text-gray-500 dark:text-gray-400">
+                                    {payloadSummary(d.payload, d.payload_available)}
+                                  </p>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-1">
                                   <button
@@ -625,7 +646,9 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                     {linked && badge(`dsp-linked-${d.id}`, 'linked', 'green')}
                                   </div>
                                   <div className="text-xs text-gray-500 dark:text-gray-400">inline · v{d.version} · {d.status}</div>
-                                  <div className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">{payloadSummary(d.payload)}</div>
+                                  <div className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">
+                                    {payloadSummary(d.payload, d.payload_available)}
+                                  </div>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-1">
                                   {linked ? (
