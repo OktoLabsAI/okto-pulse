@@ -119,6 +119,15 @@ import type {
   EffectiveResourcesResponse,
   MarkResourceNotApplicableRequest,
   ClearResourceNotApplicableRequest,
+  CardCreateKnowledgeMutationResponse,
+  DeriveSpecKnowledgeRequest,
+  DeriveSpecKnowledgeResponse,
+  KnowledgeAssignmentDropRequest,
+  KnowledgeAssignmentRefreshRequest,
+  KnowledgeAssignmentReplaceRequest,
+  KnowledgeMutationResponse,
+  KnowledgeRefreshResponse,
+  KnowledgeTechnicalReadResponse,
 } from '@/types';
 
 export interface BoardColumnsQuery {
@@ -170,6 +179,18 @@ export interface SprintPageItem {
   created_at: string;
   updated_at: string;
   archived: boolean;
+}
+
+function isCardCreateKnowledgeMutationResponse(
+  response: Card | CardCreateKnowledgeMutationResponse,
+): response is CardCreateKnowledgeMutationResponse {
+  return (
+    typeof response === 'object'
+    && response !== null
+    && 'contract_version' in response
+    && response.contract_version === 2
+    && 'card' in response
+  );
 }
 
 function boardColumnsParams(
@@ -406,10 +427,15 @@ export function useDashboardApi() {
     // ==================== CARDS ====================
 
     async createCard(boardId: string, data: CreateCardRequest): Promise<Card> {
-      return apiClient.fetchJson<Card>(`/boards/${boardId}/cards`, {
+      const response = await apiClient.fetchJson<
+        Card | CardCreateKnowledgeMutationResponse
+      >(`/boards/${boardId}/cards`, {
         method: 'POST',
         body: JSON.stringify(data),
       });
+      return isCardCreateKnowledgeMutationResponse(response)
+        ? response.card
+        : response;
     },
 
     async getCard(cardId: string): Promise<Card> {
@@ -436,6 +462,53 @@ export function useDashboardApi() {
 
     async getCardActivity(cardId: string): Promise<ActivityLogEntry[]> {
       return apiClient.fetchJson<ActivityLogEntry[]>(`/cards/${cardId}/activity`);
+    },
+
+    async getCardKnowledgeAssignments(
+      cardId: string,
+    ): Promise<KnowledgeTechnicalReadResponse> {
+      return apiClient.fetchJson<KnowledgeTechnicalReadResponse>(
+        `/cards/${cardId}/knowledge-assignments`,
+      );
+    },
+
+    async replaceCardKnowledgeAssignments(
+      cardId: string,
+      data: KnowledgeAssignmentReplaceRequest,
+    ): Promise<KnowledgeMutationResponse> {
+      return apiClient.fetchJson<KnowledgeMutationResponse>(
+        `/cards/${cardId}/knowledge-assignments`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(data),
+        },
+      );
+    },
+
+    async dropCardKnowledgeAssignments(
+      cardId: string,
+      data: KnowledgeAssignmentDropRequest,
+    ): Promise<KnowledgeMutationResponse> {
+      return apiClient.fetchJson<KnowledgeMutationResponse>(
+        `/cards/${cardId}/knowledge-assignments/drop`,
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+        },
+      );
+    },
+
+    async refreshCardKnowledgeAssignments(
+      cardId: string,
+      data: KnowledgeAssignmentRefreshRequest,
+    ): Promise<KnowledgeRefreshResponse> {
+      return apiClient.fetchJson<KnowledgeRefreshResponse>(
+        `/cards/${cardId}/knowledge-assignments/refresh`,
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+        },
+      );
     },
 
     async getCardDependencies(cardId: string): Promise<{ id: string; title: string; status: string }[]> {
@@ -1322,10 +1395,27 @@ export function useDashboardApi() {
       await apiClient.fetch(`/refinements/${refinementId}`, { method: 'DELETE' });
     },
 
-    async deriveSpecFromRefinement(refinementId: string): Promise<Spec> {
-      return apiClient.fetchJson<Spec>(`/refinements/${refinementId}/derive-spec`, {
-        method: 'POST',
-      });
+    async deriveSpecFromRefinement<
+      TRequest extends DeriveSpecKnowledgeRequest | undefined = undefined,
+    >(
+      refinementId: string,
+      data?: TRequest,
+    ): Promise<
+      TRequest extends DeriveSpecKnowledgeRequest
+        ? DeriveSpecKnowledgeResponse
+        : Spec
+    > {
+      type Response = TRequest extends DeriveSpecKnowledgeRequest
+        ? DeriveSpecKnowledgeResponse
+        : Spec;
+      const options: RequestInit = { method: 'POST' };
+      if (data !== undefined) {
+        options.body = JSON.stringify(data);
+      }
+      return apiClient.fetchJson<Response>(
+        `/refinements/${refinementId}/derive-spec`,
+        options,
+      );
     },
 
     async listRefinementHistory(refinementId: string, limit = 50): Promise<RefinementHistoryEntry[]> {

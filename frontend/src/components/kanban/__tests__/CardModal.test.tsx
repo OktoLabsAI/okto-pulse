@@ -45,6 +45,10 @@ const markdownMock = vi.hoisted(() => ({
   markdownFilenameForCard: vi.fn(() => 'bug_bug-traceability-is-hidden.md'),
 }));
 
+const cardKnowledgeTabMock = vi.hoisted(() => ({
+  render: vi.fn(),
+}));
+
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
@@ -92,7 +96,28 @@ vi.mock('@/components/specs/SpecModal', () => ({
 }));
 
 vi.mock('../CardKnowledgeTab', () => ({
-  CardKnowledgeTab: () => <div />,
+  CardKnowledgeTab: (props: { onBusyChange?: (busy: boolean) => void }) => {
+    cardKnowledgeTabMock.render(props);
+    return (
+      <div data-testid="card-knowledge-tab">
+        {(['assign', 'drop', 'refresh'] as const).map((operation) => (
+          <button
+            key={operation}
+            type="button"
+            onClick={() => props.onBusyChange?.(true)}
+          >
+            Begin {operation}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => props.onBusyChange?.(false)}
+        >
+          Finish knowledge operation
+        </button>
+      </div>
+    );
+  },
 }));
 
 vi.mock('@/components/architecture', () => ({
@@ -528,6 +553,41 @@ describe('CardModal', () => {
 
     expect(await screen.findByText('No history yet')).toBeInTheDocument();
   });
+
+  it.each(['assign', 'drop', 'refresh'] as const)(
+    'keeps the Knowledge tab mounted and ignores Escape, backdrop, and tab changes during %s',
+    async (operation) => {
+      render(<CardModal boardId="board-1" />);
+      fireEvent.click(await screen.findByRole('button', { name: /^Knowledge/ }));
+      expect(await screen.findByTestId('card-knowledge-tab')).toBeInTheDocument();
+      expect(cardKnowledgeTabMock.render).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          onBusyChange: expect.any(Function),
+        }),
+      );
+
+      fireEvent.click(
+        screen.getByRole('button', { name: `Begin ${operation}` }),
+      );
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(storeMock.closeCardModal).not.toHaveBeenCalled();
+
+      const backdrop = document.querySelector('.modal-overlay');
+      expect(backdrop).not.toBeNull();
+      fireEvent.click(backdrop!);
+      expect(storeMock.closeCardModal).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: /^Details$/ }));
+      expect(screen.getByTestId('card-knowledge-tab')).toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Finish knowledge operation' }),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /^Details$/ }));
+      expect(screen.queryByTestId('card-knowledge-tab')).not.toBeInTheDocument();
+    },
+  );
 });
 
 describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)', () => {

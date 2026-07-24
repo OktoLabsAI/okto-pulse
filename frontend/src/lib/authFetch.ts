@@ -9,6 +9,34 @@ export interface AuthFetchOptions extends RequestInit {
   maxRetries?: number;
 }
 
+export class AuthenticatedFetchError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+  readonly details: unknown;
+  readonly retryable: boolean;
+
+  constructor({
+    message,
+    status,
+    code = null,
+    details = null,
+    retryable = false,
+  }: {
+    message: string;
+    status: number;
+    code?: string | null;
+    details?: unknown;
+    retryable?: boolean;
+  }) {
+    super(message);
+    this.name = 'AuthenticatedFetchError';
+    this.status = status;
+    this.code = code;
+    this.details = details;
+    this.retryable = retryable;
+  }
+}
+
 export class AuthenticatedFetch {
   private tokenGetter: TokenGetter;
   private baseUrl: string;
@@ -64,7 +92,22 @@ export class AuthenticatedFetch {
             ?? ((detail as Record<string, unknown>).error as string | undefined)
             ?? JSON.stringify(detail)
           : errorData.message || errorData.error || `HTTP ${response.status}: ${response.statusText}`;
-      throw new Error(message);
+      const detailRecord =
+        typeof detail === 'object' && detail !== null
+          ? detail as Record<string, unknown>
+          : null;
+      const rawCode =
+        errorData.code
+        ?? errorData.error
+        ?? detailRecord?.code
+        ?? detailRecord?.error;
+      throw new AuthenticatedFetchError({
+        message,
+        status: response.status,
+        code: typeof rawCode === 'string' ? rawCode : null,
+        details: errorData.details ?? detailRecord?.details ?? null,
+        retryable: Boolean(errorData.retryable ?? detailRecord?.retryable),
+      });
     }
 
     // 204 No Content (and any other empty-body success, e.g. DELETE endpoints) carry

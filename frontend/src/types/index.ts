@@ -193,6 +193,15 @@ export interface EffectiveResourceItem extends ResourceGateRef {
     source_entity_title?: string | null;
     resource_id?: string | null;
   };
+  ref?: {
+    root_resource_id?: string | null;
+    knowledge_assignment_id?: string | null;
+    knowledge_assignment_mode?: KnowledgePropagationMode | null;
+    knowledge_assignment_state?: KnowledgeAssignmentState | null;
+    knowledge_assignment_stale?: boolean | null;
+    origin_class?: KnowledgeOriginClass | null;
+    [key: string]: unknown;
+  };
   resource?: Record<string, unknown> | ArchitectureDesign | ScreenMockup | null;
 }
 
@@ -571,6 +580,11 @@ export interface IdeationKnowledge {
   source_title?: string | null;
   source_version?: number | null;
   source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -587,6 +601,11 @@ export interface IdeationKnowledgeSummary {
   source_title?: string | null;
   source_version?: number | null;
   source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_at: string;
 }
 
@@ -623,6 +642,16 @@ export interface RefinementKnowledge {
   description: string | null;
   content: string;
   mime_type: string;
+  source_type?: string;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -634,6 +663,16 @@ export interface RefinementKnowledgeSummary {
   title: string;
   description: string | null;
   mime_type: string;
+  source_type?: string;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_at: string;
 }
 
@@ -1183,6 +1222,139 @@ export interface CardKnowledgeBase {
   source_id?: string;
 }
 
+// Selective Knowledge Base propagation v2
+export type KnowledgeSelectionState = 'omitted' | 'explicit_empty' | 'explicit_ids';
+export type KnowledgePropagationMode = 'reference' | 'snapshot' | 'drop';
+export type KnowledgeAssignmentState =
+  | 'active'
+  | 'stale'
+  | 'source_deleted'
+  | 'dropped'
+  | 'inactive';
+export type KnowledgeOriginClass =
+  | 'v2'
+  | 'legacy_all'
+  | 'selected_legacy'
+  | 'legacy_unresolved';
+export type KnowledgeRelevanceEntityType =
+  | 'functional_requirement'
+  | 'acceptance_criterion'
+  | 'test_scenario';
+
+export interface KnowledgeRelevanceLinkRequest {
+  entity_type: KnowledgeRelevanceEntityType;
+  entity_id: string;
+}
+
+/**
+ * Authoritative v2 selection envelope. Omitting the envelope itself preserves
+ * the legacy v1 path; `selection_state: 'omitted'` is a distinct persisted v2
+ * decision.
+ */
+export interface KnowledgePropagationEnvelopeV2 {
+  contract_version?: 2;
+  selection_state: KnowledgeSelectionState;
+  mode?: KnowledgePropagationMode | null;
+  knowledge_ids?: string[];
+  justification?: string | null;
+  idempotency_key: string;
+  expected_revision?: 0 | null;
+  relevance_links?: KnowledgeRelevanceLinkRequest[];
+}
+
+export interface DeriveSpecKnowledgeRequest {
+  knowledge_propagation: KnowledgePropagationEnvelopeV2;
+}
+
+export interface KnowledgeAssignmentReplaceRequest {
+  contract_version?: 2;
+  knowledge_ids: string[];
+  mode: Extract<KnowledgePropagationMode, 'reference' | 'snapshot'>;
+  justification: string;
+  idempotency_key: string;
+  expected_revision: number;
+  linkage?: KnowledgeRelevanceLinkRequest[];
+}
+
+export interface KnowledgeAssignmentDropRequest {
+  contract_version?: 2;
+  knowledge_ids?: string[];
+  justification: string;
+  idempotency_key: string;
+  expected_revision: number;
+}
+
+export interface KnowledgeAssignmentRefreshRequest {
+  contract_version?: 2;
+  knowledge_ids: string[];
+  idempotency_key: string;
+  expected_revision: number;
+}
+
+export interface KnowledgeMutationAssignmentResponse {
+  root_knowledge_id: string;
+  source_knowledge_id: string;
+  mode: KnowledgePropagationMode;
+  state: KnowledgeAssignmentState;
+  stale: boolean;
+}
+
+export interface KnowledgeMutationResponse {
+  contract_version: 2;
+  target_type: 'spec' | 'card';
+  target_id: string;
+  operation_id: string;
+  revision: number;
+  replayed: boolean;
+  selection_state: KnowledgeSelectionState;
+  assignments: KnowledgeMutationAssignmentResponse[];
+}
+
+export interface DeriveSpecKnowledgeResponse extends KnowledgeMutationResponse {
+  target_type: 'spec';
+  spec_id: string;
+}
+
+export interface CardCreateKnowledgeMutationResponse {
+  contract_version: 2;
+  card: Card;
+  operation_id: string;
+  revision: number;
+  replayed: boolean;
+  selection_state: KnowledgeSelectionState;
+  assignments: KnowledgeMutationAssignmentResponse[];
+}
+
+export interface KnowledgeRefreshItemResponse {
+  root_knowledge_id: string;
+  source_revision: string;
+  source_content_sha256: string;
+  stale: false;
+}
+
+export interface KnowledgeRefreshResponse {
+  contract_version: 2;
+  operation_id: string;
+  revision: number;
+  replayed: boolean;
+  refreshed: KnowledgeRefreshItemResponse[];
+}
+
+export interface KnowledgeAssignmentTechnicalProjection {
+  root_knowledge_id: string;
+  mode: KnowledgePropagationMode;
+  origin_class: KnowledgeOriginClass;
+  state: KnowledgeAssignmentState;
+  stale: boolean;
+}
+
+export interface KnowledgeTechnicalReadResponse {
+  contract_version: 2;
+  revision: number;
+  selection_state: KnowledgeSelectionState | null;
+  assignments: KnowledgeAssignmentTechnicalProjection[];
+}
+
 // Spec History
 export interface SpecHistoryChange {
   field: string;
@@ -1232,6 +1404,16 @@ export interface SpecKnowledge {
   description: string | null;
   content: string;
   mime_type: string;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -1243,6 +1425,16 @@ export interface SpecKnowledgeSummary {
   title: string;
   description: string | null;
   mime_type: string;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_at: string;
 }
 
@@ -1747,6 +1939,7 @@ export interface CreateCardRequest {
   observed_behavior?: string;
   steps_to_reproduce?: string;
   action_plan?: string;
+  knowledge_propagation?: KnowledgePropagationEnvelopeV2;
 }
 
 export interface UpdateCardRequest {

@@ -17,7 +17,10 @@ const apiMock = vi.hoisted(() => ({
   moveRefinement: vi.fn(),
   deleteRefinement: vi.fn(),
   updateRefinement: vi.fn(),
+  deriveSpecFromRefinement: vi.fn(),
 }));
+
+const contextSelectorMock = vi.hoisted(() => vi.fn());
 
 const markdownMock = vi.hoisted(() => ({
   exportRefinement: vi.fn(() => '# refinement export'),
@@ -64,7 +67,86 @@ vi.mock('@/components/shared/MentionInput', () => ({
 }));
 
 vi.mock('@/components/shared/ContextSelector', () => ({
-  ContextSelector: () => <div />,
+  ContextSelector: (props: {
+    busy?: boolean;
+    knowledgeOnly?: boolean;
+    title?: string;
+    description?: string;
+    items: Array<{ id: string }>;
+    knowledgeItems: Array<{
+      id: string;
+      title: string;
+      stale?: boolean;
+      origin_class?: string | null;
+    }>;
+    onConfirm: (
+      selectedItems: Array<{ id: string }>,
+      title: string,
+      choice: {
+        action: 'reference' | 'drop';
+        knowledgeIds: string[];
+        justification: string;
+      },
+    ) => void | Promise<void>;
+  }) => {
+    contextSelectorMock(props);
+    return (
+      <div
+        data-testid="context-selector"
+        data-busy={props.busy ? 'true' : 'false'}
+        data-knowledge-only={props.knowledgeOnly ? 'true' : 'false'}
+        data-context-count={String(props.items.length)}
+      >
+        <span data-testid="selector-description">{props.description}</span>
+        <span data-testid="selector-knowledge">
+          {props.knowledgeItems
+            .map((item) =>
+              [
+                item.id,
+                item.title,
+                item.stale ? 'stale' : 'current',
+                item.origin_class || 'no-origin',
+              ].join('|'),
+            )
+            .join(',')}
+        </span>
+        <button
+          type="button"
+          disabled={props.busy}
+          onClick={() => {
+            void props.onConfirm(
+              [],
+              '',
+              {
+                action: 'reference',
+                knowledgeIds: ['root-refinement-kb'],
+                justification: 'Required by the derived functional scope',
+              },
+            );
+          }}
+        >
+          Confirm selector
+        </button>
+        <button
+          type="button"
+          disabled={props.busy}
+          onClick={() => {
+            void props.onConfirm(
+              [],
+              '',
+              {
+                action: 'drop',
+                knowledgeIds: [],
+                justification: 'No Knowledge is relevant to the derived spec',
+              },
+            );
+          }}
+        >
+          Confirm explicit empty
+        </button>
+      </div>
+    );
+  },
   buildRefinementItems: vi.fn(() => []),
 }));
 
@@ -305,5 +387,311 @@ describe('RefinementModal Knowledge tab markdown rendering', () => {
     const bold = screen.getByText('bold');
     expect(bold.tagName).toBe('STRONG');
     expect(screen.queryByText('This is **bold** markdown')).toBeNull();
+  });
+});
+
+describe('RefinementModal selective Knowledge derivation', () => {
+  const doneRefinement = {
+    ...baseRefinement,
+    status: 'done',
+    knowledge_bases: [
+      {
+        id: 'copied-refinement-kb',
+        refinement_id: 'refinement-1',
+        title: 'Derived Knowledge',
+        description: 'Reference for the spec',
+        mime_type: 'text/markdown',
+        root_source_kb_id: 'root-refinement-kb',
+        created_at: '2026-05-06T10:00:00Z',
+      },
+    ],
+  } as Refinement;
+
+  const effectiveRefinementKnowledge = {
+    board_id: 'board-1',
+    entity_type: 'refinement',
+    entity_id: 'refinement-1',
+    resources: {
+      architecture_design: [],
+      screen_mockup: [],
+      knowledge_base: [
+        {
+          id: 'effective-direct-row',
+          resource_type: 'knowledge_base',
+          resource_id: 'effective-direct-resource',
+          attachment_kind: 'direct',
+          inherited: false,
+          read_only: false,
+          hydrated: true,
+          ref: {
+            root_resource_id: 'root-refinement-kb',
+            knowledge_assignment_stale: false,
+            origin_class: 'v2',
+          },
+          resource: {
+            id: 'effective-direct-resource',
+            title: 'Derived Knowledge',
+            description: 'Reference for the spec',
+          },
+        },
+        {
+          id: 'effective-inherited-row',
+          resource_type: 'knowledge_base',
+          resource_id: 'effective-inherited-resource',
+          attachment_kind: 'inherited_reference',
+          inherited: true,
+          read_only: true,
+          hydrated: true,
+          ref: {
+            root_resource_id: 'root-inherited-refinement-kb',
+            knowledge_assignment_stale: true,
+            origin_class: 'selected_legacy',
+          },
+          provenance: {
+            source_entity_type: 'ideation',
+            source_entity_id: 'ideation-1',
+            source_entity_title: 'Parent ideation',
+          },
+          resource: {
+            id: 'effective-inherited-resource',
+            title: 'Inherited refinement knowledge',
+            description: 'Inherited technical reference',
+          },
+        },
+      ],
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.getRefinement.mockResolvedValue(doneRefinement);
+    apiMock.getEffectiveResources.mockResolvedValue(
+      effectiveRefinementKnowledge,
+    );
+    apiMock.listRefinementSnapshots.mockResolvedValue([]);
+    apiMock.listRefinementHistory.mockResolvedValue([]);
+    apiMock.listRefinementQA.mockResolvedValue([]);
+    apiMock.getArchitectureDesign.mockResolvedValue(null);
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'refinement',
+      entity_id: 'refinement-1',
+      current_status: 'done',
+      source: 'programmatic_backend_transition_authority',
+      allowed_transitions: [],
+    });
+    apiMock.deriveSpecFromRefinement.mockResolvedValue({
+      contract_version: 2,
+      target_type: 'spec',
+      target_id: 'spec-derived',
+      spec_id: 'spec-derived',
+      operation_id: 'op-derive',
+      revision: 1,
+      replayed: false,
+      selection_state: 'explicit_ids',
+      assignments: [],
+    });
+  });
+
+  it('opens a knowledge-only selector with direct and inherited effective inventory', async () => {
+    const onChanged = vi.fn();
+    render(
+      <RefinementModal
+        refinementId="refinement-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+
+    await screen.findByText('My Refinement');
+    expect(screen.queryByTestId('context-selector')).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Create Spec Draft' }),
+    );
+    const selector = await screen.findByTestId('context-selector');
+    await waitFor(() =>
+      expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
+        'board-1',
+        'refinement',
+        'refinement-1',
+      ),
+    );
+    expect(selector).toHaveAttribute('data-knowledge-only', 'true');
+    expect(selector).toHaveAttribute('data-context-count', '0');
+    expect(screen.getByTestId('selector-description')).not.toHaveTextContent(
+      /parts of the refinement|title/i,
+    );
+    expect(selector).toHaveTextContent('root-refinement-kb');
+    expect(selector).toHaveTextContent('root-inherited-refinement-kb');
+    expect(selector).toHaveTextContent('Inherited refinement knowledge');
+    expect(selector).toHaveTextContent('stale');
+    expect(selector).toHaveTextContent('selected_legacy');
+    const selectorProps = contextSelectorMock.mock.calls.at(-1)?.[0];
+    expect(selectorProps).toEqual(
+      expect.objectContaining({
+        knowledgeOnly: true,
+        items: [],
+      }),
+    );
+    expect(selectorProps.knowledgeItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'root-inherited-refinement-kb',
+          stale: true,
+          origin_class: 'selected_legacy',
+        }),
+      ]),
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Confirm selector' }),
+    );
+
+    await waitFor(() =>
+      expect(apiMock.deriveSpecFromRefinement).toHaveBeenCalledTimes(1),
+    );
+    expect(apiMock.deriveSpecFromRefinement).toHaveBeenCalledWith(
+      'refinement-1',
+      {
+        knowledge_propagation: {
+          contract_version: 2,
+          selection_state: 'explicit_ids',
+          mode: 'reference',
+          knowledge_ids: ['root-refinement-kb'],
+          justification: 'Required by the derived functional scope',
+          idempotency_key: expect.any(String),
+          expected_revision: 0,
+          relevance_links: [],
+        },
+      },
+    );
+    const deriveBody =
+      apiMock.deriveSpecFromRefinement.mock.calls[0][1];
+    expect(Object.keys(deriveBody)).toEqual(['knowledge_propagation']);
+    expect(deriveBody).not.toHaveProperty('title');
+    expect(deriveBody).not.toHaveProperty('context');
+    await waitFor(() =>
+      expect(screen.queryByTestId('context-selector')).toBeNull(),
+    );
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the selector open after an error and reuses the same key for an exact retry', async () => {
+    apiMock.deriveSpecFromRefinement.mockRejectedValueOnce(
+      new Error('derive temporarily unavailable'),
+    );
+    render(
+      <RefinementModal
+        refinementId="refinement-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('My Refinement');
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Create Spec Draft' }),
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Confirm selector' }),
+    );
+
+    await waitFor(() =>
+      expect((toast as any).error).toHaveBeenCalledWith(
+        'derive temporarily unavailable',
+      ),
+    );
+    expect(screen.getByTestId('context-selector')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Confirm selector' }),
+      ).toBeEnabled(),
+    );
+
+    apiMock.deriveSpecFromRefinement.mockResolvedValueOnce({
+      contract_version: 2,
+      target_type: 'spec',
+      target_id: 'spec-derived',
+      spec_id: 'spec-derived',
+      operation_id: 'op-derive',
+      revision: 1,
+      replayed: true,
+      selection_state: 'explicit_ids',
+      assignments: [],
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Confirm selector' }),
+    );
+
+    await waitFor(() =>
+      expect(apiMock.deriveSpecFromRefinement).toHaveBeenCalledTimes(2),
+    );
+    const firstKey =
+      apiMock.deriveSpecFromRefinement.mock.calls[0][1]
+        .knowledge_propagation.idempotency_key;
+    const retryKey =
+      apiMock.deriveSpecFromRefinement.mock.calls[1][1]
+        .knowledge_propagation.idempotency_key;
+    expect(retryKey).toBe(firstKey);
+    await waitFor(() =>
+      expect(screen.queryByTestId('context-selector')).toBeNull(),
+    );
+  });
+
+  it('rotates the key when a failed derive changes intent and sends explicit_empty', async () => {
+    apiMock.deriveSpecFromRefinement.mockRejectedValueOnce(
+      new Error('derive temporarily unavailable'),
+    );
+    render(
+      <RefinementModal
+        refinementId="refinement-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('My Refinement');
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Create Spec Draft' }),
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Confirm selector' }),
+    );
+
+    await waitFor(() =>
+      expect(apiMock.deriveSpecFromRefinement).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Confirm explicit empty' }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Confirm explicit empty' }),
+    );
+
+    await waitFor(() =>
+      expect(apiMock.deriveSpecFromRefinement).toHaveBeenCalledTimes(2),
+    );
+    const firstEnvelope =
+      apiMock.deriveSpecFromRefinement.mock.calls[0][1]
+        .knowledge_propagation;
+    const changedEnvelope =
+      apiMock.deriveSpecFromRefinement.mock.calls[1][1]
+        .knowledge_propagation;
+    expect(changedEnvelope.idempotency_key).not.toBe(
+      firstEnvelope.idempotency_key,
+    );
+    expect(changedEnvelope).toMatchObject({
+      contract_version: 2,
+      selection_state: 'explicit_empty',
+      mode: 'drop',
+      knowledge_ids: [],
+      justification: 'No Knowledge is relevant to the derived spec',
+    });
   });
 });

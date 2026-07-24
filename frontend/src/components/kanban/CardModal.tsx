@@ -287,6 +287,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const [bugRegressionPreview, setBugRegressionPreview] = useState<BugRegressionScenarioPreview | null>(null);
   const [amendmentRevisions, setAmendmentRevisions] = useState<AmendmentRevisionListResponse | null>(null);
   const [amendmentBusy, setAmendmentBusy] = useState(false);
+  const [knowledgeMutationBusy, setKnowledgeMutationBusy] = useState(false);
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
@@ -495,11 +496,21 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   };
 
   const handleClose = () => {
+    if (knowledgeMutationBusy) return;
     closeCardModal();
     onClose?.();
   };
 
-  useEscapeToClose(onEscape ?? handleClose, { enabled: isOpen });
+  useEscapeToClose(
+    () => {
+      if (onEscape) onEscape();
+      else handleClose();
+    },
+    {
+      enabled: isOpen,
+      canClose: !knowledgeMutationBusy,
+    },
+  );
 
   const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string) => {
     if (!card) return;
@@ -792,7 +803,12 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
             <button onClick={() => setExpanded(!expanded)} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title={expanded ? 'Collapse' : 'Expand'}>
               {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
-            <button onClick={handleClose} className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded">
+            <button
+              onClick={handleClose}
+              disabled={knowledgeMutationBusy}
+              aria-label="Close card dialog"
+              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded disabled:cursor-not-allowed disabled:opacity-50"
+            >
               <X size={20} />
             </button>
           </div>
@@ -816,11 +832,12 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
+                  disabled={knowledgeMutationBusy}
                   className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px relative ${
                     activeTab === tab
                       ? 'border-blue-500 text-blue-600 dark:text-blue-400'
                       : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'
-                  }`}
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   {tab === 'details' && 'Details'}
                   {tab === 'tests' && (
@@ -1484,6 +1501,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                     const updated = await api.updateCard(card.id, { knowledge_bases: kbs } as any);
                     setCard(updated);
                   }}
+                  onBusyChange={setKnowledgeMutationBusy}
                 />
               )}
 

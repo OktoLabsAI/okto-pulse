@@ -2,7 +2,7 @@
  * RefinementModal - View and manage a refinement, derive specs
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   X,
   ChevronRight,
@@ -33,6 +33,7 @@ import {
   GitBranch,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { v4 as uuidv4 } from 'uuid';
 import { exportRefinement, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
@@ -45,6 +46,16 @@ import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { ContextSelector, buildRefinementItems, type SelectableItem } from '@/components/shared/ContextSelector';
+import {
+  buildKnowledgePropagationEnvelope,
+  type KnowledgePropagationChoice,
+} from '@/components/shared/knowledgePropagationChoice';
+import {
+  effectiveKnowledgeCandidate,
+  mergeKnowledgePropagationCandidates,
+  physicalKnowledgeCandidate,
+  type KnowledgePropagationCandidate,
+} from '@/components/shared/knowledgePropagationCandidates';
 import {
   DerivationPendingBadge,
   getRefinementPendingDerivationLabel,
@@ -989,22 +1000,104 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   };
 
   const [showSpecSelector, setShowSpecSelector] = useState(false);
+  const [deriveIdempotencyKey, setDeriveIdempotencyKey] = useState<string>(
+    () => uuidv4(),
+  );
+  const lastSubmittedDeriveIntentRef = useRef<string | null>(null);
+  const [deriveKnowledgeItems, setDeriveKnowledgeItems] = useState<
+    KnowledgePropagationCandidate[]
+  >([]);
+  const [deriveKnowledgeLoading, setDeriveKnowledgeLoading] = useState(false);
+  const [deriveKnowledgeError, setDeriveKnowledgeError] = useState<string | null>(
+    null,
+  );
+  const [deriveKnowledgeReload, setDeriveKnowledgeReload] = useState(0);
 
-  const handleDeriveSpec = async () => {
+  useEffect(() => {
+    if (!showSpecSelector || !refinement) return;
+    let cancelled = false;
+    setDeriveKnowledgeLoading(true);
+    setDeriveKnowledgeError(null);
+    const direct = (refinement.knowledge_bases || []).map(
+      physicalKnowledgeCandidate,
+    );
+    api.getEffectiveResources(
+      refinement.board_id,
+      'refinement',
+      refinement.id,
+    ).then((response) => {
+      if (cancelled) return;
+      const effective = (response.resources.knowledge_base || [])
+        .map(effectiveKnowledgeCandidate)
+        .filter((item): item is KnowledgePropagationCandidate => item !== null);
+      setDeriveKnowledgeItems(
+        mergeKnowledgePropagationCandidates(direct, effective),
+      );
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      setDeriveKnowledgeItems(direct);
+      setDeriveKnowledgeError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to load effective Knowledge resources',
+      );
+    }).finally(() => {
+      if (!cancelled) setDeriveKnowledgeLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [showSpecSelector, refinement, deriveKnowledgeReload]);
+
+  const openSpecSelector = () => {
+    if (derivingSpec) return;
+    setDeriveIdempotencyKey(uuidv4());
+    lastSubmittedDeriveIntentRef.current = null;
+    setDeriveKnowledgeItems([]);
+    setDeriveKnowledgeError(null);
+    setShowSpecSelector(true);
+  };
+
+  const handleDeriveSpec = async (
+    knowledgeChoice: KnowledgePropagationChoice,
+  ) => {
     if (!refinement) return;
+    const intentFingerprint = JSON.stringify(
+      buildKnowledgePropagationEnvelope(
+        knowledgeChoice,
+        '__intent_fingerprint__',
+      ),
+    );
+    let idempotencyKey = deriveIdempotencyKey;
+    if (
+      lastSubmittedDeriveIntentRef.current !== null
+      && lastSubmittedDeriveIntentRef.current !== intentFingerprint
+    ) {
+      idempotencyKey = uuidv4();
+      setDeriveIdempotencyKey(idempotencyKey);
+    }
+    lastSubmittedDeriveIntentRef.current = intentFingerprint;
     setDerivingSpec(true);
     try {
-      // Use derive endpoint — propagates KBs, mockups, and compiles context server-side
-      await api.deriveSpecFromRefinement(refinementId);
+      await api.deriveSpecFromRefinement(refinementId, {
+        knowledge_propagation: buildKnowledgePropagationEnvelope(
+          knowledgeChoice,
+          idempotencyKey,
+        ),
+      });
       toast.success('Spec draft created');
+      setShowSpecSelector(false);
       await loadRefinement();
       onChanged();
     } catch (err) { toast.error(getErrorMessage(err)); } finally { setDerivingSpec(false); }
   };
 
-  const handleSpecSelectorConfirm = async (_selectedItems: SelectableItem[], _title: string) => {
-    await handleDeriveSpec();
-    setShowSpecSelector(false);
+  const handleSpecSelectorConfirm = async (
+    _selectedItems: SelectableItem[],
+    _title: string,
+    knowledgeChoice: KnowledgePropagationChoice,
+  ) => {
+    await handleDeriveSpec(knowledgeChoice);
   };
 
   const handleDelete = async () => {
@@ -1310,7 +1403,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
               )}
               {canDeriveSpec && (
                 <button
-                  onClick={handleDeriveSpec}
+                  onClick={openSpecSelector}
                   disabled={derivingSpec}
                   className="flex items-center gap-1.5 text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 mt-3"
                 >
@@ -1329,7 +1422,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
           </button>
           <div className="flex gap-2">
             {canDeriveSpec && (
-              <button onClick={handleDeriveSpec} disabled={derivingSpec} className="btn btn-primary flex items-center gap-1.5">
+              <button onClick={openSpecSelector} disabled={derivingSpec} className="btn btn-primary flex items-center gap-1.5">
                 <Zap size={16} />
                 {derivingSpec ? 'Creating...' : 'Create Spec Draft'}
               </button>
@@ -1353,11 +1446,19 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
       {showSpecSelector && refinement && (
         <ContextSelector
           title={refinement.title}
-          description="Select which parts of the refinement to include in the spec draft context"
+          description="Choose only the non-authoritative Knowledge references that are relevant to the derived spec."
           items={buildRefinementItems(refinement)}
+          knowledgeItems={deriveKnowledgeItems}
+          knowledgeLoading={deriveKnowledgeLoading}
+          knowledgeError={deriveKnowledgeError}
+          onKnowledgeRetry={() =>
+            setDeriveKnowledgeReload((current) => current + 1)
+          }
+          knowledgeOnly
           targetLabel="Spec Draft"
           onConfirm={handleSpecSelectorConfirm}
           onCancel={() => setShowSpecSelector(false)}
+          busy={derivingSpec}
         />
       )}
 

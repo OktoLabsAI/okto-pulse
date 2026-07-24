@@ -1,17 +1,35 @@
-/**
- * CardKnowledgeTab - read-only card Knowledge snapshots.
- */
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
 import { CardKnowledgeTab } from '../CardKnowledgeTab';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 const apiMock = vi.hoisted(() => ({
   getEffectiveResources: vi.fn(),
+  getCardKnowledgeAssignments: vi.fn(),
+  replaceCardKnowledgeAssignments: vi.fn(),
+  dropCardKnowledgeAssignments: vi.fn(),
+  refreshCardKnowledgeAssignments: vi.fn(),
+  markResourceNotApplicable: vi.fn(),
+}));
+
+const toastMock = vi.hoisted(() => ({
+  error: vi.fn(),
+  success: vi.fn(),
 }));
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
+}));
+
+vi.mock('react-hot-toast', () => ({
+  default: toastMock,
 }));
 
 const baseCard = {
@@ -37,91 +55,127 @@ const baseCard = {
   ],
 } as any;
 
+const emptyEffectiveResources = {
+  resources: {
+    architecture: [],
+    mockup: [],
+    knowledge_base: [],
+  },
+};
+
+const emptyTechnicalRead = {
+  contract_version: 2 as const,
+  revision: 7,
+  selection_state: 'omitted' as const,
+  assignments: [],
+};
+
+const mutationResponse = {
+  contract_version: 2 as const,
+  target_type: 'card' as const,
+  target_id: 'c1',
+  operation_id: 'operation-1',
+  revision: 8,
+  replayed: false,
+  selection_state: 'explicit_ids' as const,
+  assignments: [],
+};
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function renderTab({
+  card = baseCard,
+  specKnowledgeBases = [],
+  onBusyChange = vi.fn(),
+}: {
+  card?: any;
+  specKnowledgeBases?: any[];
+  onBusyChange?: (busy: boolean) => void;
+} = {}) {
+  return render(
+    <CardKnowledgeTab
+      card={card}
+      specKnowledgeBases={specKnowledgeBases}
+      onUpdate={vi.fn()}
+      onBusyChange={onBusyChange}
+    />,
+  );
+}
+
 beforeEach(() => {
   document.body.innerHTML = '';
   vi.clearAllMocks();
-  apiMock.getEffectiveResources.mockResolvedValue({
-    resources: { architecture: [], mockup: [], knowledge_base: [] },
+  apiMock.getEffectiveResources.mockResolvedValue(emptyEffectiveResources);
+  apiMock.getCardKnowledgeAssignments.mockResolvedValue(emptyTechnicalRead);
+  apiMock.replaceCardKnowledgeAssignments.mockResolvedValue(mutationResponse);
+  apiMock.dropCardKnowledgeAssignments.mockResolvedValue({
+    ...mutationResponse,
+    selection_state: 'explicit_empty',
+  });
+  apiMock.refreshCardKnowledgeAssignments.mockResolvedValue({
+    contract_version: 2,
+    operation_id: 'refresh-1',
+    revision: 8,
+    replayed: false,
+    refreshed: [],
   });
 });
 
 describe('CardKnowledgeTab', () => {
-  it('renders existing knowledge snapshots as read-only rows', () => {
-    render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
+  it('keeps existing Knowledge content read-only and expandable', async () => {
+    renderTab();
 
-    expect(screen.getByText('Card knowledge snapshots are read-only')).toBeTruthy();
-    expect(screen.getByText('Existing KB')).toBeTruthy();
-    expect(screen.getByText('from spec')).toBeTruthy();
-    expect(screen.getByTestId('kb-row-kb_existing')).toBeTruthy();
-    expect(screen.queryByText(/New KB/i)).toBeNull();
-    expect(screen.queryByText(/Link from Spec/i)).toBeNull();
-    expect(screen.queryByTestId('kb-edit-kb_existing')).toBeNull();
-    expect(screen.queryByTestId('kb-delete-kb_existing')).toBeNull();
-  });
-
-  it('expands a snapshot to show markdown content', () => {
-    render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
+    expect(
+      await screen.findByText(
+        'Knowledge content is read-only; propagation decisions are governed below.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Existing KB')).toBeInTheDocument();
+    expect(screen.getByText('from spec')).toBeInTheDocument();
+    expect(screen.queryByText(/New KB/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('kb-edit-kb_existing')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('kb-delete-kb_existing')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('kb-row-kb_existing'));
-    expect(screen.getByText('orig content')).toBeTruthy();
+    expect(screen.getByText('orig content')).toBeInTheDocument();
   });
 
-  it('download button creates a Blob URL and triggers download', () => {
+  it('downloads the existing snapshot as Markdown', async () => {
     const createObjectURL = vi.fn().mockReturnValue('blob:mock-url');
     const revokeObjectURL = vi.fn();
     (URL as any).createObjectURL = createObjectURL;
     (URL as any).revokeObjectURL = revokeObjectURL;
 
-    render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
-    fireEvent.click(screen.getByTestId('kb-download-kb_existing'));
+    renderTab();
+    fireEvent.click(await screen.findByTestId('kb-download-kb_existing'));
 
     expect(createObjectURL).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
   });
 
-  it('shows empty state with copy guidance', () => {
-    render(<CardKnowledgeTab card={{ ...baseCard, knowledge_bases: [] }} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
-
-    expect(screen.getByText('No knowledge bases')).toBeTruthy();
-    expect(screen.getByText('Copy knowledge from the parent spec to populate card context.')).toBeTruthy();
-  });
-
-  it('renders inherited effective knowledge as read-only context', async () => {
-    apiMock.getEffectiveResources.mockResolvedValue({
-      resources: {
-        architecture: [],
-        mockup: [],
-        knowledge_base: [
-          {
-            id: 'kb_parent',
-            title: 'Parent KB',
-            resource_type: 'knowledge_base',
-            attachment_kind: 'inherited_reference',
-            inherited: true,
-            read_only: true,
-            hydrated: true,
-            source_entity_type: 'spec',
-            source_entity_id: 's1',
-            source_entity_title: 'Parent spec',
-            resource: {
-              id: 'kb_parent',
-              title: 'Parent KB',
-              content: 'parent content',
-              mime_type: 'text/markdown',
-            },
-          },
-        ],
-      },
+  it('renders an honest empty state after both governed reads finish', async () => {
+    renderTab({
+      card: { ...baseCard, knowledge_bases: [] },
     });
 
-    render(<CardKnowledgeTab card={{ ...baseCard, knowledge_bases: [] }} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
-
-    expect(await screen.findByText('Parent KB')).toBeTruthy();
-    expect(screen.getByText('from spec: Parent spec')).toBeTruthy();
-    expect(screen.queryByText('Copy knowledge from the parent spec to populate card context.')).toBeNull();
+    expect(await screen.findByText('No knowledge bases')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Choose an explicit reference or snapshot below when one is relevant.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('No active governed assignments.')).toBeInTheDocument();
   });
 
-  it('deduplicates inherited effective knowledge already copied to the card', async () => {
+  it('renders inherited effective Knowledge and deduplicates a copied snapshot', async () => {
     apiMock.getEffectiveResources.mockResolvedValue({
       resources: {
         architecture: [],
@@ -145,13 +199,516 @@ describe('CardKnowledgeTab', () => {
               mime_type: 'text/markdown',
             },
           },
+          {
+            id: 'kb_parent',
+            title: 'Parent KB',
+            resource_type: 'knowledge_base',
+            attachment_kind: 'inherited_reference',
+            inherited: true,
+            read_only: true,
+            hydrated: true,
+            source_entity_type: 'spec',
+            source_entity_id: 's1',
+            source_entity_title: 'Parent spec',
+            resource: {
+              id: 'kb_parent',
+              title: 'Parent KB',
+              content: 'parent content',
+              mime_type: 'text/markdown',
+            },
+          },
         ],
       },
     });
 
-    render(<CardKnowledgeTab card={baseCard} specKnowledgeBases={[]} onUpdate={vi.fn()} />);
+    renderTab();
 
-    expect(await screen.findByText('Existing KB')).toBeTruthy();
-    expect(screen.getAllByText('Existing KB')).toHaveLength(1);
+    const inheritedRow = await screen.findByTestId('kb-row-kb_parent');
+    expect(within(inheritedRow).getByText('Parent KB')).toBeInTheDocument();
+    expect(screen.getAllByTestId('kb-row-kb_existing')).toHaveLength(1);
+    expect(within(inheritedRow).getByText('from spec: Parent spec')).toBeInTheDocument();
+  });
+
+  it('shows revision, mode, stale state and origin metadata from the technical read', async () => {
+    apiMock.getCardKnowledgeAssignments.mockResolvedValue({
+      contract_version: 2,
+      revision: 11,
+      selection_state: 'explicit_ids',
+      assignments: [
+        {
+          root_knowledge_id: 'root-snapshot',
+          mode: 'snapshot',
+          origin_class: 'selected_legacy',
+          state: 'stale',
+          stale: true,
+        },
+        {
+          root_knowledge_id: 'root-reference',
+          mode: 'reference',
+          origin_class: 'legacy_unresolved',
+          state: 'active',
+          stale: false,
+        },
+      ],
+    });
+
+    renderTab({
+      card: { ...baseCard, knowledge_bases: [] },
+      specKnowledgeBases: [
+        {
+          id: 'local-snapshot',
+          root_source_kb_id: 'root-snapshot',
+          title: 'Snapshot notes',
+          content: '',
+        },
+        {
+          id: 'local-reference',
+          root_source_kb_id: 'root-reference',
+          title: 'Reference notes',
+          content: '',
+        },
+      ],
+    });
+
+    expect(await screen.findByText('revision 11')).toBeInTheDocument();
+    expect(screen.getByText('explicit_ids')).toBeInTheDocument();
+
+    const snapshot = screen.getByTestId('knowledge-assignment-root-snapshot');
+    expect(within(snapshot).getByText('Snapshot notes')).toBeInTheDocument();
+    expect(within(snapshot).getByText('snapshot')).toBeInTheDocument();
+    expect(within(snapshot).getByText('selected legacy')).toBeInTheDocument();
+    expect(within(snapshot).getByText('stale')).toBeInTheDocument();
+    expect(within(snapshot).getByRole('button', { name: 'Refresh' })).toBeInTheDocument();
+
+    const reference = screen.getByTestId('knowledge-assignment-root-reference');
+    expect(within(reference).getByText('legacy unresolved')).toBeInTheDocument();
+    expect(within(reference).queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument();
+  });
+
+  it('builds the selectable source inventory from effective spec roots and ref metadata', async () => {
+    apiMock.getEffectiveResources.mockImplementation(
+      (_boardId: string, entityType: string) => {
+        if (entityType !== 'spec') return Promise.resolve(emptyEffectiveResources);
+        return Promise.resolve({
+          resources: {
+            architecture: [],
+            mockup: [],
+            knowledge_base: [
+              {
+                id: 'physical-child-id',
+                resource_id: 'physical-child-id',
+                title: 'Fallback physical title',
+                resource_type: 'knowledge_base',
+                attachment_kind: 'inherited_reference',
+                inherited: true,
+                read_only: true,
+                hydrated: true,
+                ref: {
+                  root_resource_id: 'root-source-id',
+                  knowledge_assignment_stale: true,
+                  origin_class: 'selected_legacy',
+                },
+                resource: {
+                  id: 'physical-child-id',
+                  title: 'Inherited source reference',
+                  description: 'Effective source context',
+                  content: 'source body',
+                  mime_type: 'text/markdown',
+                },
+              },
+            ],
+          },
+        });
+      },
+    );
+
+    renderTab({
+      card: { ...baseCard, knowledge_bases: [] },
+      specKnowledgeBases: [],
+    });
+
+    await waitFor(() => {
+      expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
+        'b1',
+        'spec',
+        's1',
+      );
+    });
+    const selector = await screen.findByTestId('card-knowledge-propagation');
+    expect(within(selector).getByText('Inherited source reference')).toBeInTheDocument();
+    expect(within(selector).getByText('stale')).toBeInTheDocument();
+    expect(within(selector).getByText('selected legacy')).toBeInTheDocument();
+
+    fireEvent.click(within(selector).getByRole('radio', { name: 'Reference' }));
+    fireEvent.click(
+      within(selector).getByRole('checkbox', {
+        name: 'Select Inherited source reference',
+      }),
+    );
+    fireEvent.change(within(selector).getByLabelText(/Relevance justification/i), {
+      target: { value: 'The effective inherited root is relevant.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save explicit decision' }));
+
+    await waitFor(() => {
+      expect(apiMock.replaceCardKnowledgeAssignments).toHaveBeenCalledWith(
+        'c1',
+        expect.objectContaining({
+          knowledge_ids: ['root-source-id'],
+          expected_revision: 7,
+        }),
+      );
+    });
+  });
+
+  it('assigns selected stable roots with the current revision', async () => {
+    renderTab({
+      card: { ...baseCard, knowledge_bases: [] },
+      specKnowledgeBases: [
+        {
+          id: 'local-spec-kb',
+          root_source_kb_id: 'root-spec-kb',
+          title: 'Spec KB',
+          description: 'Relevant implementation notes',
+          content: 'body',
+        },
+      ],
+    });
+
+    await screen.findByText('revision 7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Reference' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Spec KB' }));
+    fireEvent.change(screen.getByLabelText(/Relevance justification/i), {
+      target: { value: 'Required to implement the linked acceptance criterion.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save explicit decision' }));
+
+    await waitFor(() => {
+      expect(apiMock.replaceCardKnowledgeAssignments).toHaveBeenCalledWith(
+        'c1',
+        {
+          contract_version: 2,
+          knowledge_ids: ['root-spec-kb'],
+          mode: 'reference',
+          justification: 'Required to implement the linked acceptance criterion.',
+          idempotency_key: expect.any(String),
+          expected_revision: 7,
+          linkage: [],
+        },
+      );
+    });
+    expect(apiMock.dropCardKnowledgeAssignments).not.toHaveBeenCalled();
+    expect(toastMock.success).toHaveBeenCalledWith('Knowledge assignments saved');
+  });
+
+  it('preserves an explicit-empty DROP separately from Resource Gate N/A', async () => {
+    renderTab({
+      card: { ...baseCard, knowledge_bases: [] },
+    });
+
+    await screen.findByText('revision 7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Drop' }));
+    expect(screen.getByText(/Explicit empty will be saved/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Relevance justification/i), {
+      target: { value: 'No inherited Knowledge applies to this card.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save explicit decision' }));
+
+    await waitFor(() => {
+      expect(apiMock.dropCardKnowledgeAssignments).toHaveBeenCalledWith(
+        'c1',
+        {
+          contract_version: 2,
+          knowledge_ids: [],
+          justification: 'No inherited Knowledge applies to this card.',
+          idempotency_key: expect.any(String),
+          expected_revision: 7,
+        },
+      );
+    });
+    expect(apiMock.replaceCardKnowledgeAssignments).not.toHaveBeenCalled();
+    expect(apiMock.markResourceNotApplicable).not.toHaveBeenCalled();
+    expect(
+      screen.getByText('DROP and explicit empty do not mark Resource Gate as N/A.'),
+    ).toBeInTheDocument();
+  });
+
+  it('refreshes only a stale snapshot by stable root ID and current revision', async () => {
+    apiMock.getCardKnowledgeAssignments.mockResolvedValue({
+      contract_version: 2,
+      revision: 13,
+      selection_state: 'explicit_ids',
+      assignments: [
+        {
+          root_knowledge_id: 'root-stale',
+          mode: 'snapshot',
+          origin_class: 'v2',
+          state: 'stale',
+          stale: true,
+        },
+      ],
+    });
+
+    renderTab({
+      card: { ...baseCard, knowledge_bases: [] },
+      specKnowledgeBases: [
+        {
+          id: 'local-stale',
+          root_source_kb_id: 'root-stale',
+          title: 'Stale snapshot',
+          content: '',
+        },
+      ],
+    });
+
+    const assignment = await screen.findByTestId(
+      'knowledge-assignment-root-stale',
+    );
+    fireEvent.click(within(assignment).getByRole('button', { name: 'Refresh' }));
+
+    await waitFor(() => {
+      expect(apiMock.refreshCardKnowledgeAssignments).toHaveBeenCalledWith(
+        'c1',
+        {
+          contract_version: 2,
+          knowledge_ids: ['root-stale'],
+          idempotency_key: expect.any(String),
+          expected_revision: 13,
+        },
+      );
+    });
+    expect(toastMock.success).toHaveBeenCalledWith('Knowledge snapshot refreshed');
+  });
+
+  it('reuses the refresh key for an exact retry and rotates it after a successful new revision', async () => {
+    const staleAt = (revision: number) => ({
+      contract_version: 2,
+      revision,
+      selection_state: 'explicit_ids',
+      assignments: [
+        {
+          root_knowledge_id: 'root-stale',
+          mode: 'snapshot',
+          origin_class: 'v2',
+          state: 'stale',
+          stale: true,
+        },
+      ],
+    });
+    apiMock.getCardKnowledgeAssignments
+      .mockResolvedValueOnce(staleAt(13))
+      .mockResolvedValueOnce(staleAt(13))
+      .mockResolvedValueOnce(staleAt(14))
+      .mockResolvedValue(staleAt(14));
+    apiMock.refreshCardKnowledgeAssignments
+      .mockRejectedValueOnce(new Error('temporary transport failure'))
+      .mockResolvedValue({
+        contract_version: 2,
+        operation_id: 'refresh-success',
+        revision: 14,
+        replayed: false,
+        refreshed: [],
+      });
+
+    renderTab({
+      card: { ...baseCard, knowledge_bases: [] },
+      specKnowledgeBases: [
+        {
+          id: 'local-stale',
+          root_source_kb_id: 'root-stale',
+          title: 'Stale snapshot',
+          content: '',
+        },
+      ],
+    });
+
+    let refresh = within(
+      await screen.findByTestId('knowledge-assignment-root-stale'),
+    ).getByRole('button', { name: 'Refresh' });
+    fireEvent.click(refresh);
+    await waitFor(() => {
+      expect(apiMock.refreshCardKnowledgeAssignments).toHaveBeenCalledTimes(1);
+      expect(apiMock.getCardKnowledgeAssignments.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    await waitFor(() => expect(refresh).toBeEnabled());
+
+    refresh = within(
+      screen.getByTestId('knowledge-assignment-root-stale'),
+    ).getByRole('button', { name: 'Refresh' });
+    fireEvent.click(refresh);
+    await waitFor(() => {
+      expect(apiMock.refreshCardKnowledgeAssignments).toHaveBeenCalledTimes(2);
+    });
+    const firstPayload = apiMock.refreshCardKnowledgeAssignments.mock.calls[0][1];
+    const exactRetryPayload = apiMock.refreshCardKnowledgeAssignments.mock.calls[1][1];
+    expect(exactRetryPayload.idempotency_key).toBe(firstPayload.idempotency_key);
+
+    await screen.findByText('revision 14');
+    refresh = within(
+      screen.getByTestId('knowledge-assignment-root-stale'),
+    ).getByRole('button', { name: 'Refresh' });
+    fireEvent.click(refresh);
+    await waitFor(() => {
+      expect(apiMock.refreshCardKnowledgeAssignments).toHaveBeenCalledTimes(3);
+    });
+    const newRevisionPayload = apiMock.refreshCardKnowledgeAssignments.mock.calls[2][1];
+    expect(newRevisionPayload.expected_revision).toBe(14);
+    expect(newRevisionPayload.idempotency_key).not.toBe(firstPayload.idempotency_key);
+  });
+
+  it.each([
+    ['assign', 'Reference'],
+    ['drop', 'Drop'],
+    ['refresh', 'Refresh'],
+  ] as const)(
+    'reports busy for the complete %s operation lifetime',
+    async (operation, controlLabel) => {
+      const onBusyChange = vi.fn();
+      const pending = deferred<unknown>();
+
+      if (operation === 'refresh') {
+        apiMock.getCardKnowledgeAssignments.mockResolvedValue({
+          contract_version: 2,
+          revision: 13,
+          selection_state: 'explicit_ids',
+          assignments: [
+            {
+              root_knowledge_id: 'root-stale',
+              mode: 'snapshot',
+              origin_class: 'v2',
+              state: 'stale',
+              stale: true,
+            },
+          ],
+        });
+        apiMock.refreshCardKnowledgeAssignments.mockReturnValue(pending.promise);
+      } else if (operation === 'assign') {
+        apiMock.replaceCardKnowledgeAssignments.mockReturnValue(pending.promise);
+      } else {
+        apiMock.dropCardKnowledgeAssignments.mockReturnValue(pending.promise);
+      }
+
+      renderTab({
+        card: { ...baseCard, knowledge_bases: [] },
+        specKnowledgeBases: [
+          {
+            id: 'local-source',
+            root_source_kb_id: 'root-source',
+            title: 'Source KB',
+            content: '',
+          },
+        ],
+        onBusyChange,
+      });
+
+      await screen.findByText(operation === 'refresh' ? 'revision 13' : 'revision 7');
+      if (operation === 'refresh') {
+        const assignment = screen.getByTestId('knowledge-assignment-root-stale');
+        fireEvent.click(within(assignment).getByRole('button', { name: controlLabel }));
+      } else {
+        fireEvent.click(screen.getByRole('radio', { name: controlLabel }));
+        if (operation === 'assign') {
+          fireEvent.click(screen.getByRole('checkbox', { name: 'Select Source KB' }));
+        }
+        fireEvent.change(screen.getByLabelText(/Relevance justification/i), {
+          target: { value: `Justification for ${operation}.` },
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Save explicit decision' }));
+      }
+
+      await waitFor(() => {
+        expect(onBusyChange).toHaveBeenCalledWith(true);
+      });
+      expect(onBusyChange).toHaveBeenLastCalledWith(true);
+
+      pending.resolve(
+        operation === 'refresh'
+          ? {
+            contract_version: 2,
+            operation_id: 'refresh-settled',
+            revision: 14,
+            replayed: false,
+            refreshed: [],
+          }
+          : mutationResponse,
+      );
+      await waitFor(() => {
+        expect(onBusyChange).toHaveBeenLastCalledWith(false);
+      });
+    },
+  );
+
+  it('reloads the technical revision after a conflict instead of retrying the stale write', async () => {
+    apiMock.replaceCardKnowledgeAssignments.mockRejectedValue(
+      new Error('knowledge_propagation_revision_conflict'),
+    );
+
+    renderTab({
+      card: { ...baseCard, knowledge_bases: [] },
+      specKnowledgeBases: [
+        {
+          id: 'local-spec-kb',
+          root_source_kb_id: 'root-spec-kb',
+          title: 'Spec KB',
+          content: '',
+        },
+      ],
+    });
+
+    await screen.findByText('revision 7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Reference' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Spec KB' }));
+    fireEvent.change(screen.getByLabelText(/Relevance justification/i), {
+      target: { value: 'Relevant to this task.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save explicit decision' }));
+
+    await waitFor(() => {
+      expect(toastMock.error).toHaveBeenCalledWith(
+        'knowledge_propagation_revision_conflict',
+      );
+      expect(apiMock.getCardKnowledgeAssignments.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    expect(apiMock.replaceCardKnowledgeAssignments).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('radio', { name: 'No decision' })).toBeChecked();
+  });
+
+  it('uses typed HTTP 409 metadata to reload the revision and require reconfirmation', async () => {
+    const conflict = new AuthenticatedFetchError({
+      message: 'The source changed after preflight',
+      status: 409,
+      code: 'knowledge_propagation_preflight_stale',
+      details: {
+        status: 409,
+        expected_revision: 7,
+      },
+    });
+    apiMock.replaceCardKnowledgeAssignments.mockRejectedValue(conflict);
+
+    renderTab({
+      card: { ...baseCard, knowledge_bases: [] },
+      specKnowledgeBases: [
+        {
+          id: 'local-spec-kb',
+          root_source_kb_id: 'root-spec-kb',
+          title: 'Spec KB',
+          content: '',
+        },
+      ],
+    });
+
+    await screen.findByText('revision 7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Reference' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Spec KB' }));
+    fireEvent.change(screen.getByLabelText(/Relevance justification/i), {
+      target: { value: 'Relevant before the source changed.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save explicit decision' }));
+
+    await waitFor(() => {
+      expect(apiMock.getCardKnowledgeAssignments.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    expect(apiMock.replaceCardKnowledgeAssignments).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('radio', { name: 'No decision' })).toBeChecked();
   });
 });
