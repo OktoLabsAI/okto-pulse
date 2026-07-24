@@ -51,10 +51,7 @@ class TrackedBlockingExecution(BlockingExecutionPort):
         except asyncio.CancelledError:
             return
         except Exception as exc:  # noqa: BLE001 - background outcome boundary
-            if (
-                task in self._detached_tasks
-                and task not in self._parent_observed_tasks
-            ):
+            if task in self._detached_tasks and task not in self._parent_observed_tasks:
                 logger.error(
                     "community.worker.blocking_operation_failed error_type=%s",
                     type(exc).__name__,
@@ -159,6 +156,7 @@ class PollingRunner:
         self._final_iteration_guard = final_iteration_guard
         self._task: asyncio.Task[None] | None = None
         self._wake_event: asyncio.Event | None = None
+        self._notify_loop: asyncio.AbstractEventLoop | None = None
         self._running = False
 
     @property
@@ -170,14 +168,22 @@ class PollingRunner:
         return self._wake_event
 
     def notify(self) -> None:
-        if self._wake_event is not None:
-            self._wake_event.set()
+        loop = self._notify_loop
+        wake_event = self._wake_event
+        if loop is None or wake_event is None or loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(wake_event.set)
+        except RuntimeError:
+            # The loop may close between the snapshot and scheduling.
+            return
 
     async def start(self) -> "PollingRunner":
         if self.is_running:
             return self
         if self._recover is not None:
             await self._recover()
+        self._notify_loop = asyncio.get_running_loop()
         self._wake_event = asyncio.Event()
         self._running = True
         self._task = asyncio.create_task(self.run_forever(), name=self.name)
@@ -209,14 +215,15 @@ class PollingRunner:
                 wake.clear()
         except asyncio.CancelledError:
             final_iteration_allowed = (
-                self._final_iteration_guard is None
-                or self._final_iteration_guard()
+                self._final_iteration_guard is None or self._final_iteration_guard()
             )
             if self._final_iteration and final_iteration_allowed:
                 try:
                     await self.process_once()
                 except Exception:
-                    logger.exception("worker final iteration failed family=%s", self.name)
+                    logger.exception(
+                        "worker final iteration failed family=%s", self.name
+                    )
             elif self._final_iteration:
                 logger.critical(
                     "worker final iteration skipped family=%s "
@@ -285,6 +292,7 @@ class PollingRunner:
             )
         self._task = None
         self._wake_event = None
+        self._notify_loop = None
         if task_error is not None:
             raise task_error
 
@@ -313,6 +321,7 @@ class ConsolidationRunner:
         self.join_timeout = join_timeout
         self._running = False
         self._wake_event: asyncio.Event | None = None
+        self._notify_loop: asyncio.AbstractEventLoop | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._processing_task: asyncio.Task[None] | None = None
         self._recovery_task: asyncio.Task[None] | None = None
@@ -333,9 +342,20 @@ class ConsolidationRunner:
 
         return self._shutdown_drained
 
+    @property
+    def wake_event(self) -> asyncio.Event | None:
+        return self._wake_event
+
     def notify(self) -> None:
-        if self._wake_event is not None:
-            self._wake_event.set()
+        loop = self._notify_loop
+        wake_event = self._wake_event
+        if loop is None or wake_event is None or loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(wake_event.set)
+        except RuntimeError:
+            # The loop may close between the snapshot and scheduling.
+            return
 
     async def start(self) -> "ConsolidationRunner":
         if self.is_running:
@@ -349,6 +369,7 @@ class ConsolidationRunner:
         self._tasks.clear()
         self._shutdown_drained = False
         await self.processor.recover_stale_claims()
+        self._notify_loop = asyncio.get_running_loop()
         self._wake_event = asyncio.Event()
         self._running = True
         self._processing_task = asyncio.create_task(
@@ -500,6 +521,7 @@ class ConsolidationRunner:
         self._processing_task = None
         self._recovery_task = None
         self._wake_event = None
+        self._notify_loop = None
         self._shutdown_drained = True
         if task_error is not None:
             raise task_error

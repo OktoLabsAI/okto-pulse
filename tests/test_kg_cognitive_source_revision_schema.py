@@ -88,9 +88,7 @@ def test_revision_model_is_additive_and_has_the_exact_owned_contract() -> None:
         if isinstance(constraint, CheckConstraint)
     }
     assert checks == {
-        "ck_kg_cognitive_source_revisions_positive_revision": (
-            "source_revision >= 1"
-        ),
+        "ck_kg_cognitive_source_revisions_positive_revision": ("source_revision >= 1"),
         "ck_kg_cognitive_source_revisions_fingerprint_length": (
             "length(record_fingerprint) = 64"
         ),
@@ -153,11 +151,8 @@ def test_migration_installs_guards_and_child_insert_advances_global_fence(
             (f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}%",),
         ).fetchall()
         assert {str(row["name"]) for row in guard_rows} == set(expected_guards)
-        assert {
-            str(row["name"]): str(row["tbl_name"]) for row in guard_rows
-        } == {
-            name: table_name
-            for name, (table_name, _sql) in expected_guards.items()
+        assert {str(row["name"]): str(row["tbl_name"]) for row in guard_rows} == {
+            name: table_name for name, (table_name, _sql) in expected_guards.items()
         }
 
         before = int(
@@ -252,6 +247,47 @@ def test_migration_installs_guards_and_child_insert_advances_global_fence(
         connection.close()
 
 
+def test_migration_upgrades_exact_pre_erasure_delete_guards(tmp_path: Path) -> None:
+    database_path = tmp_path / "cognitive-erasure-guard-upgrade.sqlite3"
+    _initialize_schema(database_path)
+    predecessor = cognitive_source_immutability_trigger_manifest(
+        allow_board_erasure=False,
+    )
+
+    connection = sqlite3.connect(database_path)
+    try:
+        for trigger_name in predecessor:
+            connection.execute(f'DROP TRIGGER "{trigger_name}"')
+        for _table_name, trigger_sql in predecessor.values():
+            connection.execute(trigger_sql)
+        connection.commit()
+    finally:
+        connection.close()
+
+    async def upgrade() -> tuple[str | None, str | None]:
+        database_module.create_database(
+            f"sqlite+aiosqlite:///{database_path.as_posix()}"
+        )
+        first = await _migrate_cognitive_source_revision_ledger()
+        second = await _migrate_cognitive_source_revision_ledger()
+        await database_module.get_engine().dispose()
+        return first, second
+
+    assert asyncio.run(upgrade()) == (None, "skipped")
+
+    connection = sqlite3.connect(database_path)
+    try:
+        delete_guards = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' "
+            "AND name LIKE ? AND name LIKE '%_delete'",
+            (f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}%",),
+        ).fetchall()
+        assert len(delete_guards) == 2
+        assert all("kg_board_erasure_permits" in str(row[0]) for row in delete_guards)
+    finally:
+        connection.close()
+
+
 def test_legacy_database_without_child_is_upgraded_without_rewriting_base(
     tmp_path: Path,
 ) -> None:
@@ -298,9 +334,12 @@ def test_legacy_database_without_child_is_upgraded_without_rewriting_base(
             "SELECT * FROM kg_cognitive_sources WHERE id = 'legacy-source'"
         ).fetchone()
         assert after == before
-        assert connection.execute(
-            "SELECT COUNT(*) FROM kg_cognitive_source_revisions"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM kg_cognitive_source_revisions"
+            ).fetchone()[0]
+            == 0
+        )
         child_trigger_count = connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' "
             "AND tbl_name = 'kg_cognitive_source_revisions'"
@@ -451,8 +490,7 @@ def test_reader_returns_only_latest_child_revision_and_preserves_realm_scope(
             evidence_refs=evidence,
         )
         connection.execute(
-            "INSERT INTO kg_cognitive_source_revisions VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO kg_cognitive_source_revisions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 f"revision-{revision}",
                 "source-reader",
@@ -506,8 +544,7 @@ def test_reader_fails_closed_when_latest_revision_fingerprint_is_tampered(
         ),
     )
     connection.execute(
-        "INSERT INTO kg_cognitive_source_revisions VALUES "
-        "(?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO kg_cognitive_source_revisions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             "revision-tampered",
             "source-tampered",

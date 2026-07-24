@@ -34,6 +34,7 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
             return "consolidation_worker"
         return {
             "community.event_dispatcher": "event_dispatcher",
+            "community.kg.board_erasure_runner": "board_erasure_worker",
             "community.kg.cleanup_runner": "cleanup_worker",
             "community.kg.outbox_runner": "outbox_worker",
         }[runner.name]
@@ -70,15 +71,16 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
         is not outbox_runner._blocking_execution
     )
     assert (
-        outbox_runner._blocking_execution
-        is outbox_runner.processor._blocking_execution
+        outbox_runner._blocking_execution is outbox_runner.processor._blocking_execution
     )
     assert events == [
         "start:event_dispatcher",
+        "start:board_erasure_worker",
         "start:cleanup_worker",
         "start:consolidation_worker",
         "start:outbox_worker",
         "stop:event_dispatcher",
+        "stop:board_erasure_worker",
         "stop:consolidation_worker",
         "stop:outbox_worker",
         "stop:cleanup_worker",
@@ -113,9 +115,7 @@ async def test_worker_relational_scope_returns_checkout_after_hard_cancel(
     runtime = configure_community_database(
         f"sqlite+aiosqlite:///{tmp_path / 'worker-cancel.db'}"
     )
-    scope_factory = worker_adapters._cancel_safe_scope_factory(
-        runtime.session_factory
-    )
+    scope_factory = worker_adapters._cancel_safe_scope_factory(runtime.session_factory)
     entered = asyncio.Event()
 
     async def victim() -> None:

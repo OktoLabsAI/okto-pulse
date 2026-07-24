@@ -88,6 +88,67 @@ class _TransientRecoveryFailureProcessor(_Processor):
         return 0
 
 
+async def _assert_notify_is_marshaled_to_event_loop(runner, processor) -> None:
+    await runner.start()
+    await asyncio.wait_for(processor.first_call.wait(), timeout=1)
+    wake_event = runner.wake_event
+    assert wake_event is not None
+
+    loop_thread_id = threading.get_ident()
+    setter_threads: list[int] = []
+    notifier_threads: list[int] = []
+    setter_called = asyncio.Event()
+    original_set = wake_event.set
+
+    def observed_set() -> None:
+        setter_threads.append(threading.get_ident())
+        original_set()
+        setter_called.set()
+
+    wake_event.set = observed_set
+
+    def notify_from_foreign_thread() -> None:
+        notifier_threads.append(threading.get_ident())
+        runner.notify()
+
+    thread = threading.Thread(target=notify_from_foreign_thread)
+    thread.start()
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    await asyncio.wait_for(setter_called.wait(), timeout=1)
+
+    assert notifier_threads and notifier_threads[0] != loop_thread_id
+    assert setter_threads == [loop_thread_id]
+
+    wake_event.set = original_set
+    await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_polling_runner_notify_is_thread_safe() -> None:
+    processor = _Processor()
+    runner = PollingRunner(
+        processor,
+        name="test.polling.threadsafe_notify",
+        interval_seconds=60,
+        operation_name="process_once",
+    )
+    await _assert_notify_is_marshaled_to_event_loop(runner, processor)
+
+
+@pytest.mark.asyncio
+async def test_consolidation_runner_notify_is_thread_safe() -> None:
+    processor = _Processor()
+    runner = ConsolidationRunner(
+        processor,
+        blocking_execution=_BlockingExecution(),
+        heartbeat_seconds=60,
+        recovery_interval_seconds=60,
+        max_concurrent_workers=1,
+    )
+    await _assert_notify_is_marshaled_to_event_loop(runner, processor)
+
+
 @pytest.mark.asyncio
 async def test_tracked_blocking_failure_is_drained_before_parent_cancel_returns(
     caplog: pytest.LogCaptureFixture,
@@ -120,8 +181,7 @@ async def test_tracked_blocking_failure_is_drained_before_parent_cancel_returns(
     records = [
         record
         for record in caplog.records
-        if getattr(record, "event", "")
-        == "community.worker.blocking_operation_failed"
+        if getattr(record, "event", "") == "community.worker.blocking_operation_failed"
     ]
     assert records == []
     assert "payload-must-not-be-logged" not in caplog.text
@@ -145,8 +205,7 @@ async def test_tracked_blocking_failure_observed_by_parent_is_not_logged(
         await asyncio.sleep(0)
 
     assert not any(
-        getattr(record, "event", "")
-        == "community.worker.blocking_operation_failed"
+        getattr(record, "event", "") == "community.worker.blocking_operation_failed"
         for record in caplog.records
     )
 
@@ -468,8 +527,7 @@ async def test_outbox_final_iteration_is_blocked_without_consolidation_drain(
     assert processor.calls == 1
     assert executor.pending_count == 0
     assert any(
-        getattr(record, "event", "")
-        == "community.worker.final_iteration_skipped"
+        getattr(record, "event", "") == "community.worker.final_iteration_skipped"
         for record in caplog.records
     )
 

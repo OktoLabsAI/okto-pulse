@@ -53,6 +53,7 @@ from okto_pulse.community.adapters import kg_runtime
 from okto_pulse.community.adapters.graph_memory_pressure import (
     GraphMemoryPressure,
 )
+from okto_pulse.core.kg.interfaces.graph_errors import GraphLockContention
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.core.infra.config import configure_settings, get_settings
 
@@ -160,6 +161,37 @@ def _count_probe_rows(board_id: str) -> int:
             res.close()
 
 
+def test_board_storage_mutation_window_drains_or_fails_closed(kg_env):
+    from okto_pulse.community.adapters.ladybug_writer import (
+        writer_lease_is_active,
+    )
+
+    board_id = "kgd01-governed-storage-window"
+    _seed_board(board_id)
+    active_reader = kg_runtime.BoardConnection(board_id)
+    entered = False
+    try:
+        with pytest.raises(GraphLockContention):
+            with kg_runtime.board_storage_mutation_window(
+                board_id,
+                phase="test_restore",
+                drain_timeout=0.05,
+            ):
+                entered = True
+    finally:
+        active_reader.close()
+
+    assert entered is False
+
+    with kg_runtime.board_storage_mutation_window(
+        board_id,
+        phase="test_restore",
+        drain_timeout=1.0,
+    ):
+        assert writer_lease_is_active() is True
+        assert kg_runtime._get_close_guard(board_id).readers == 0
+
+
 # ---------------------------------------------------------------------------
 # S9 — ts_0393503b: stress concorrente, zero close com leitor registrado
 # ---------------------------------------------------------------------------
@@ -195,10 +227,7 @@ def test_s9_stress_close_guard_is_fail_closed(
     unexpected_open_errors: list[str] = []
 
     def is_resident_admission_pressure(exc: GraphMemoryPressure) -> bool:
-        return (
-            exc.details.get("admission_reason_code")
-            == "resident_databases_pinned"
-        )
+        return exc.details.get("admission_reason_code") == "resident_databases_pinned"
 
     def bump_iterations() -> int:
         nonlocal iterations

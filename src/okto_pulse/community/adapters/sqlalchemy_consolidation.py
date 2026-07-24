@@ -72,7 +72,7 @@ _MODELS = {
 
 _DELETION_INTENT_SCHEMA_VERSION = 1
 _GOVERNED_DELETION_ARTIFACT_TYPES = frozenset(
-    {"card", "spec", "ideation", "refinement"}
+    {"card", "spec", "ideation", "refinement", "sprint"}
 )
 
 
@@ -185,8 +185,15 @@ async def _stage_intent_created_transition(
 
 def _apply_queue(row: Any, record: ConsolidationQueueRecord) -> None:
     for field_name in (
-        "status", "attempts", "last_error", "next_retry_at", "claimed_at",
-        "claim_timeout_at", "worker_id", "claimed_by_session_id", "claim_token",
+        "status",
+        "attempts",
+        "last_error",
+        "next_retry_at",
+        "claimed_at",
+        "claim_timeout_at",
+        "worker_id",
+        "claimed_by_session_id",
+        "claim_token",
     ):
         setattr(row, field_name, getattr(record, field_name))
 
@@ -229,26 +236,30 @@ class CommunitySqlAlchemyConsolidationPersistence:
         self, context: Any, *, now, legacy_cutoff
     ) -> tuple[ConsolidationQueueRecord, ...]:
         rows = (
-            await context.execute(
-                select(ConsolidationQueue).where(
-                    ConsolidationQueue.status == "claimed",
-                    or_(
-                        # Rows claimed before the claim-token migration cannot
-                        # prove ownership and must be recovered immediately.
-                        ConsolidationQueue.claim_token.is_(None),
-                        (
-                            ConsolidationQueue.claim_timeout_at.is_not(None)
-                            & (ConsolidationQueue.claim_timeout_at < now)
+            (
+                await context.execute(
+                    select(ConsolidationQueue).where(
+                        ConsolidationQueue.status == "claimed",
+                        or_(
+                            # Rows claimed before the claim-token migration cannot
+                            # prove ownership and must be recovered immediately.
+                            ConsolidationQueue.claim_token.is_(None),
+                            (
+                                ConsolidationQueue.claim_timeout_at.is_not(None)
+                                & (ConsolidationQueue.claim_timeout_at < now)
+                            ),
+                            (
+                                ConsolidationQueue.claim_timeout_at.is_(None)
+                                & ConsolidationQueue.claimed_at.is_not(None)
+                                & (ConsolidationQueue.claimed_at < legacy_cutoff)
+                            ),
                         ),
-                        (
-                            ConsolidationQueue.claim_timeout_at.is_(None)
-                            & ConsolidationQueue.claimed_at.is_not(None)
-                            & (ConsolidationQueue.claimed_at < legacy_cutoff)
-                        ),
-                    ),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return tuple(_queue_record(row) for row in rows)
 
     async def count_pending(self, context: Any) -> int:
@@ -259,33 +270,41 @@ class CommunitySqlAlchemyConsolidationPersistence:
 
     async def list_claimed_board_ids(self, context: Any) -> frozenset[str]:
         rows = (
-            await context.execute(
-                select(ConsolidationQueue.board_id).where(
-                    ConsolidationQueue.status == "claimed"
+            (
+                await context.execute(
+                    select(ConsolidationQueue.board_id).where(
+                        ConsolidationQueue.status == "claimed"
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return frozenset(str(value) for value in rows)
 
     async def list_ready_pending(
         self, context: Any, *, now
     ) -> tuple[ConsolidationQueueRecord, ...]:
         rows = (
-            await context.execute(
-                select(ConsolidationQueue)
-                .where(
-                    ConsolidationQueue.status == "pending",
-                    or_(
-                        ConsolidationQueue.next_retry_at.is_(None),
-                        ConsolidationQueue.next_retry_at <= now,
-                    ),
-                )
-                .order_by(
-                    ConsolidationQueue.priority.asc(),
-                    ConsolidationQueue.triggered_at.asc(),
+            (
+                await context.execute(
+                    select(ConsolidationQueue)
+                    .where(
+                        ConsolidationQueue.status == "pending",
+                        or_(
+                            ConsolidationQueue.next_retry_at.is_(None),
+                            ConsolidationQueue.next_retry_at <= now,
+                        ),
+                    )
+                    .order_by(
+                        ConsolidationQueue.priority.asc(),
+                        ConsolidationQueue.triggered_at.asc(),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return tuple(_queue_record(row) for row in rows)
 
     async def get_queue_entry(
@@ -532,8 +551,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             await context.execute(
                 select(ArtifactDeletionTombstone).where(
                     ArtifactDeletionTombstone.board_id == request.board_id,
-                    ArtifactDeletionTombstone.artifact_type
-                    == request.artifact_type,
+                    ArtifactDeletionTombstone.artifact_type == request.artifact_type,
                     ArtifactDeletionTombstone.artifact_id == request.artifact_id,
                 )
             )
@@ -572,9 +590,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             "priority": "high",
             "source": "governed_delete",
             "status": "pending",
-            "triggered_by_event": _event_trigger_marker(
-                request.delete_event_id
-            ),
+            "triggered_by_event": _event_trigger_marker(request.delete_event_id),
         }
         if authoritative_occurred_at is not None:
             intent_values["triggered_at"] = authoritative_occurred_at
@@ -689,9 +705,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 )
                 .on_conflict_do_nothing(
                     index_elements=["board_id", "work_kind"],
-                    index_where=(
-                        ConsolidationQueue.work_kind == STALE_SWEEP_WORK_KIND
-                    ),
+                    index_where=(ConsolidationQueue.work_kind == STALE_SWEEP_WORK_KIND),
                 )
                 .returning(ConsolidationQueue.id)
             )
@@ -762,9 +776,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             )
         ).scalar_one_or_none()
         if matched is None:
-            raise StaleSweepClaimConflict(
-                f"stale_sweep_claim_lost entry_id={entry_id}"
-            )
+            raise StaleSweepClaimConflict(f"stale_sweep_claim_lost entry_id={entry_id}")
         row = (
             await context.execute(
                 select(ConsolidationQueue).where(ConsolidationQueue.id == entry_id)
@@ -1032,13 +1044,17 @@ class CommunitySqlAlchemyConsolidationPersistence:
         self, context: Any, *, board_id: str, max_attempts: int
     ) -> tuple[ConsolidationPoisonRow, ...]:
         rows = (
-            await context.execute(
-                select(ConsolidationDeadLetter).where(
-                    ConsolidationDeadLetter.board_id == board_id,
-                    ConsolidationDeadLetter.attempts >= max_attempts,
+            (
+                await context.execute(
+                    select(ConsolidationDeadLetter).where(
+                        ConsolidationDeadLetter.board_id == board_id,
+                        ConsolidationDeadLetter.attempts >= max_attempts,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         result = tuple(
             ConsolidationPoisonRow(id=str(row.id), attempts=int(row.attempts))
             for row in rows

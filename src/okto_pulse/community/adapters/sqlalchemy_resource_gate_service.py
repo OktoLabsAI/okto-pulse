@@ -6,6 +6,7 @@ remain inferred from the existing Architecture, Mockup and Knowledge artifacts.
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -65,9 +66,7 @@ def _knowledge_lineage_aliases(item: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "content_hash": content_hash,
         "root_resource_id": root_source_kb_id or item.get("id"),
-        "immediate_parent_resource_id": (
-            immediate_parent_kb_id or source_kb_id
-        ),
+        "immediate_parent_resource_id": (immediate_parent_kb_id or source_kb_id),
         "source_revision": source_version,
         "source_content_sha256": content_hash,
     }
@@ -97,7 +96,16 @@ def _resolved_knowledge_payload(
         payload = json.loads(item.content_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
-    return dict(payload) if isinstance(payload, Mapping) else None
+    if not isinstance(payload, Mapping):
+        return None
+    resolved = dict(payload)
+    # Governance evidence is stored beside canonical bytes so metadata-only
+    # changes never alter content identity. Re-attach the reference-current or
+    # snapshot-frozen evidence at the projection boundary.
+    resolved["governance_metadata"] = copy.deepcopy(
+        getattr(item, "governance_metadata", None)
+    )
+    return resolved
 
 
 class CommunitySqlAlchemyResourceGateAdapter:
@@ -166,6 +174,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
             actor_id=actor_id,
             reason=reason,
         )
+
     async def _load_active_marks(
         self,
         board_id: str,
@@ -328,9 +337,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
     ) -> dict[str, ResourceNotApplicable]:
         return await self._load_active_marks(board_id, entity_type, entity_id)
 
-    async def hydrate_effective_resource(
-        self, **request: Any
-    ) -> dict[str, Any] | None:
+    async def hydrate_effective_resource(self, **request: Any) -> dict[str, Any] | None:
         return await self._hydrate_effective_resource(**request)
 
     async def load_spec_task_cards(self, spec_id: str) -> list[Any]:
@@ -382,21 +389,18 @@ class CommunitySqlAlchemyResourceGateAdapter:
         parent: LineageEntityRef,
     ) -> bool:
         if root.entity_type == "card":
-            return (
-                parent.entity_type == "spec"
-                and parent.entity_id == getattr(root.entity, "spec_id", None)
+            return parent.entity_type == "spec" and parent.entity_id == getattr(
+                root.entity, "spec_id", None
             )
         if root.entity_type != "spec":
             return False
         refinement_id = getattr(root.entity, "refinement_id", None)
         if refinement_id:
             return (
-                parent.entity_type == "refinement"
-                and parent.entity_id == refinement_id
+                parent.entity_type == "refinement" and parent.entity_id == refinement_id
             )
-        return (
-            parent.entity_type == "ideation"
-            and parent.entity_id == getattr(root.entity, "ideation_id", None)
+        return parent.entity_type == "ideation" and parent.entity_id == getattr(
+            root.entity, "ideation_id", None
         )
 
     def _assignment_ref(
@@ -454,6 +458,12 @@ class CommunitySqlAlchemyResourceGateAdapter:
             }
         )
         ref.update(_knowledge_stamp_aliases(item.revision_stamp))
+        # Override any physical-row metadata in ``base``. A reference projects
+        # the current source metadata, while a snapshot must keep its frozen
+        # metadata (including an explicit legacy ``None``).
+        ref["governance_metadata"] = copy.deepcopy(
+            getattr(item, "governance_metadata", None)
+        )
         if payload:
             self._knowledge_payload_cache[
                 (
@@ -489,16 +499,13 @@ class CommunitySqlAlchemyResourceGateAdapter:
             ref.update(_knowledge_stamp_aliases(local.revision_stamp))
             return ref
         legacy = {
-            item.source_knowledge_id: item
-            for item in read.history_legacy_attachments
+            item.source_knowledge_id: item for item in read.history_legacy_attachments
         }.get(source_id)
         ref.update(
             {
                 "effective": False,
                 "origin_class": (
-                    "legacy_all"
-                    if legacy is None
-                    else legacy.origin_class.value
+                    "legacy_all" if legacy is None else legacy.origin_class.value
                 ),
                 "knowledge_resolution": "history",
             }
@@ -516,7 +523,9 @@ class CommunitySqlAlchemyResourceGateAdapter:
     ) -> dict[str, Any] | None:
         return self._serialize_na_mark(mark, effective=effective, source=source)
 
-    async def _load_parent_refs(self, board_id: str, root: LineageEntityRef) -> list[LineageEntityRef]:
+    async def _load_parent_refs(
+        self, board_id: str, root: LineageEntityRef
+    ) -> list[LineageEntityRef]:
         entity = root.entity
         parents: list[LineageEntityRef] = []
         seen: set[tuple[str, str]] = set()
@@ -534,7 +543,11 @@ class CommunitySqlAlchemyResourceGateAdapter:
             await add_parent("refinement", getattr(entity, "refinement_id", None))
             await add_parent("ideation", getattr(entity, "ideation_id", None))
             if getattr(entity, "refinement_id", None):
-                refinement = parents[0].entity if parents and parents[0].entity_type == "refinement" else None
+                refinement = (
+                    parents[0].entity
+                    if parents and parents[0].entity_type == "refinement"
+                    else None
+                )
                 await add_parent("ideation", getattr(refinement, "ideation_id", None))
         elif root.entity_type == "card":
             await add_parent("spec", getattr(entity, "spec_id", None))
@@ -542,13 +555,17 @@ class CommunitySqlAlchemyResourceGateAdapter:
             spec = spec_ref.entity if spec_ref else None
             await add_parent("refinement", getattr(spec, "refinement_id", None))
             await add_parent("ideation", getattr(spec, "ideation_id", None))
-            refinement_ref = next((p for p in parents if p.entity_type == "refinement"), None)
+            refinement_ref = next(
+                (p for p in parents if p.entity_type == "refinement"), None
+            )
             refinement = refinement_ref.entity if refinement_ref else None
             await add_parent("ideation", getattr(refinement, "ideation_id", None))
 
         return parents
 
-    async def _collect_refs(self, ref: LineageEntityRef) -> dict[str, list[dict[str, Any]]]:
+    async def _collect_refs(
+        self, ref: LineageEntityRef
+    ) -> dict[str, list[dict[str, Any]]]:
         return {
             "architecture": await self._architecture_refs(ref),
             "mockup": self._mockup_refs(ref),
@@ -581,7 +598,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
 
         for card in cards:
             bucket = "cancelled" if card.status == CardStatus.CANCELLED else "eligible"
-            for item in (card.screen_mockups or []):
+            for item in card.screen_mockups or []:
                 coverage["mockup"][bucket].update(self._resource_identity_values(item))
             card_ref = LineageEntityRef(
                 entity_type="card",
@@ -591,7 +608,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
             )
             v2_read = await self._active_knowledge_read(card_ref)
             if v2_read is None:
-                for item in (card.knowledge_bases or []):
+                for item in card.knowledge_bases or []:
                     coverage["knowledge_base"][bucket].update(
                         self._resource_identity_values(item)
                     )
@@ -710,10 +727,8 @@ class CommunitySqlAlchemyResourceGateAdapter:
         v2_read = await self._active_knowledge_read(ref)
         if ref.entity_type == "card":
             refs: list[dict[str, Any]] = []
-            for item in (getattr(entity, "knowledge_bases", None) or []):
-                source_id = str(
-                    item.get("id") if isinstance(item, dict) else ""
-                )
+            for item in getattr(entity, "knowledge_bases", None) or []:
+                source_id = str(item.get("id") if isinstance(item, dict) else "")
                 item_ref = self._artifact_ref(
                     ref,
                     artifact_id=source_id or None,
@@ -729,9 +744,13 @@ class CommunitySqlAlchemyResourceGateAdapter:
                         "origin_ref",
                         "source_ref",
                         "source",
+                        "governance_metadata",
                     ):
-                        if item.get(key) not in (None, ""):
-                            item_ref[key] = item[key]
+                        if key == "governance_metadata" or item.get(key) not in (
+                            None,
+                            "",
+                        ):
+                            item_ref[key] = item.get(key)
                     item_ref.update(_knowledge_lineage_aliases(item))
                 item_ref = self._apply_physical_knowledge_authority(
                     item_ref,
@@ -743,7 +762,10 @@ class CommunitySqlAlchemyResourceGateAdapter:
 
         kb_model, fk_column = {
             "ideation": (IdeationKnowledgeBase, IdeationKnowledgeBase.ideation_id),
-            "refinement": (RefinementKnowledgeBase, RefinementKnowledgeBase.refinement_id),
+            "refinement": (
+                RefinementKnowledgeBase,
+                RefinementKnowledgeBase.refinement_id,
+            ),
             "spec": (SpecKnowledgeBase, SpecKnowledgeBase.spec_id),
         }[ref.entity_type]
         result = await self.db.execute(
@@ -760,6 +782,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 kb_model.content_hash,
                 kb_model.source_type,
                 kb_model.source_id,
+                kb_model.governance_metadata,
             )
             .where(fk_column == ref.entity_id)
             .order_by(kb_model.created_at.asc())
@@ -780,8 +803,12 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 "content_hash",
                 "source_type",
                 "source_id",
+                "governance_metadata",
             ):
-                if row.get(key) not in (None, ""):
+                if key == "governance_metadata" or row.get(key) not in (
+                    None,
+                    "",
+                ):
                     item_ref[key] = row[key]
             item_ref.update(_knowledge_lineage_aliases(row))
             item_ref = self._apply_physical_knowledge_authority(
@@ -807,7 +834,9 @@ class CommunitySqlAlchemyResourceGateAdapter:
             return await self._hydrate_knowledge_ref(board_id, ref)
         return None
 
-    async def _hydrate_architecture_ref(self, ref: dict[str, Any]) -> dict[str, Any] | None:
+    async def _hydrate_architecture_ref(
+        self, ref: dict[str, Any]
+    ) -> dict[str, Any] | None:
         design_id = str(ref.get("id") or "").strip()
         if not design_id:
             return None
@@ -882,7 +911,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
                         }
                     }
                 )
-                return with_knowledge_governance(hydrated, ref)
+                return with_knowledge_governance(hydrated, hydrated)
 
         source = await self._load_source_entity_ref(board_id, ref)
         if source is None:
@@ -999,9 +1028,21 @@ class CommunitySqlAlchemyResourceGateAdapter:
                     values.add(text)
                     if text.startswith("cardkb_") and len(text) > len("cardkb_"):
                         values.add(text[len("cardkb_") :])
-            values.update(CommunitySqlAlchemyResourceGateAdapter._source_ref_values(item.get("source_ref")))
-            values.update(CommunitySqlAlchemyResourceGateAdapter._source_ref_values(item.get("origin_ref")))
-            values.update(CommunitySqlAlchemyResourceGateAdapter._source_ref_values(item.get("source")))
+            values.update(
+                CommunitySqlAlchemyResourceGateAdapter._source_ref_values(
+                    item.get("source_ref")
+                )
+            )
+            values.update(
+                CommunitySqlAlchemyResourceGateAdapter._source_ref_values(
+                    item.get("origin_ref")
+                )
+            )
+            values.update(
+                CommunitySqlAlchemyResourceGateAdapter._source_ref_values(
+                    item.get("source")
+                )
+            )
         elif item:
             values.add(str(item))
         return values
@@ -1067,5 +1108,6 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 "invalid_entity_type",
                 f"Invalid entity_type '{entity_type}'. Expected one of: {', '.join(ENTITY_TYPES)}.",
             )
+
 
 __all__ = ["CommunitySqlAlchemyResourceGateAdapter"]

@@ -12,6 +12,7 @@ from okto_pulse.core.domain.enums import IdeationStatus, SpecStatus
 from okto_pulse.core.models import LookupItem, LookupResponse
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
+    PAGE_OFFSET_MAX,
     PageRequest,
 )
 
@@ -48,7 +49,9 @@ def _validate_common(request: Request, allowed_statuses: frozenset[str]) -> None
             value = _INTEGER_QUERY.validate_python(raw)
         except ValidationError:
             _error(f"{name}_invalid", value=raw)
-        if name == "offset" and value < 0:
+        if name == "offset" and (value < 0 or value > PAGE_OFFSET_MAX):
+            # An offset above int64 would overflow SQLite's OFFSET binding — reject
+            # it at the boundary with the same typed error as a negative offset.
             _error("offset_out_of_bounds", offset=value)
         if name == "limit" and not 1 <= value <= 50:
             _error("limit_out_of_bounds", limit=value, bounds="1..50")
@@ -70,10 +73,7 @@ def validate_spec_lookup_query(request: Request) -> None:
             _BOOLEAN_QUERY.validate_python(raw)
         except ValidationError:
             _error(f"{name}_invalid", value=raw)
-    if (
-        "include_archived_cards" in query
-        and "linked_to_cards" not in query
-    ):
+    if "include_archived_cards" in query and "linked_to_cards" not in query:
         _error("include_archived_cards_requires_linked_to_cards")
 
 
@@ -102,9 +102,7 @@ def lookup_page_request(
         filters.append(ApplicationFilter("title", "ilike", f"%{search}%"))
     if surface == "spec_lookup" and linked_to_cards:
         link_field = (
-            "linked_to_cards"
-            if include_archived_cards
-            else "linked_to_active_cards"
+            "linked_to_cards" if include_archived_cards else "linked_to_active_cards"
         )
         filters.append(ApplicationFilter(link_field, "is_true", None))
 

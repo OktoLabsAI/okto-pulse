@@ -3742,6 +3742,82 @@ class KGNodeSubtype(Base):
     )
 
 
+class BoardErasurePermit(Base):
+    """Transaction-local authorization for immutable board-data erasure.
+
+    Rows are inserted and removed by ``purge_board_metadata`` in the same
+    uncommitted transaction. SQLite immutable-history triggers consult this
+    table only for DELETE operations belonging to the authorized board. A row
+    that ever survives a transaction is treated as a conflict, never reused.
+    """
+
+    __tablename__ = "kg_board_erasure_permits"
+
+    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    permit_token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    authorized_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class BoardErasureJob(Base):
+    """Durable physical-erasure continuation independent of the Board row."""
+
+    __tablename__ = "kg_board_erasure_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status = 'pending'",
+            name="ck_kg_board_erasure_job_status",
+        ),
+        CheckConstraint(
+            "attempts >= 0",
+            name="ck_kg_board_erasure_job_attempts",
+        ),
+        Index(
+            "ix_kg_board_erasure_jobs_due",
+            "status",
+            "next_attempt_at",
+            "board_id",
+        ),
+    )
+
+    # Deliberately no FK to boards.id: this row is committed atomically with
+    # the Board DELETE and must remain available after every source row is gone.
+    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="pending",
+        server_default=text("'pending'"),
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class GlobalDiscoveryRecoveryAttempt(Base):
     """Durable fenced attempt history for Global Discovery recovery.
 
@@ -4078,9 +4154,11 @@ class KnowledgePropagationScopeRecord(Base):
     id: Mapped[str] = mapped_column(
         String(64), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    # Audit identity, intentionally not an FK. Board deletion must not erase
-    # or cascade into the append-only propagation cluster. The write adapter
-    # revalidates the live board-scoped spec/card immediately before its CAS.
+    # Audit identity, intentionally not an FK. Ordinary Board cascades must not
+    # silently erase append-only history. The explicit right-to-erasure path
+    # authorizes and verifies deletion of the complete propagation cluster in
+    # the same transaction. The write adapter revalidates the live
+    # board-scoped spec/card immediately before its CAS.
     board_id: Mapped[str] = mapped_column(
         String(36),
         nullable=False,
@@ -4295,6 +4373,7 @@ class KnowledgeSnapshotRecord(Base):
         ),
         nullable=True,
     )
+    governance_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class KnowledgeTombstoneRecord(Base):

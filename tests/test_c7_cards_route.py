@@ -104,14 +104,94 @@ async def _build_engine(path: Path) -> AsyncEngine:
 
         # Each row violates exactly one active filter of the full request.
         decoys = (
-            ("d-status", "s1", "sp1", "not_started", "high", "normal", "alice", ["blue"], "Needle"),
-            ("d-spec", "s3", "sp1", "in_progress", "high", "normal", "alice", ["blue"], "Needle"),
-            ("d-sprint", "s1", "sp2", "in_progress", "high", "normal", "alice", ["blue"], "Needle"),
-            ("d-priority", "s1", "sp1", "in_progress", "low", "normal", "alice", ["blue"], "Needle"),
-            ("d-type", "s1", "sp1", "in_progress", "high", "bug", "alice", ["blue"], "Needle"),
-            ("d-assignee", "s1", "sp1", "in_progress", "high", "normal", "bob", ["blue"], "Needle"),
-            ("d-label", "s1", "sp1", "in_progress", "high", "normal", "alice", ["red"], "Needle"),
-            ("d-search", "s1", "sp1", "in_progress", "high", "normal", "alice", ["blue"], "Other"),
+            (
+                "d-status",
+                "s1",
+                "sp1",
+                "not_started",
+                "high",
+                "normal",
+                "alice",
+                ["blue"],
+                "Needle",
+            ),
+            (
+                "d-spec",
+                "s3",
+                "sp1",
+                "in_progress",
+                "high",
+                "normal",
+                "alice",
+                ["blue"],
+                "Needle",
+            ),
+            (
+                "d-sprint",
+                "s1",
+                "sp2",
+                "in_progress",
+                "high",
+                "normal",
+                "alice",
+                ["blue"],
+                "Needle",
+            ),
+            (
+                "d-priority",
+                "s1",
+                "sp1",
+                "in_progress",
+                "low",
+                "normal",
+                "alice",
+                ["blue"],
+                "Needle",
+            ),
+            (
+                "d-type",
+                "s1",
+                "sp1",
+                "in_progress",
+                "high",
+                "bug",
+                "alice",
+                ["blue"],
+                "Needle",
+            ),
+            (
+                "d-assignee",
+                "s1",
+                "sp1",
+                "in_progress",
+                "high",
+                "normal",
+                "bob",
+                ["blue"],
+                "Needle",
+            ),
+            (
+                "d-label",
+                "s1",
+                "sp1",
+                "in_progress",
+                "high",
+                "normal",
+                "alice",
+                ["red"],
+                "Needle",
+            ),
+            (
+                "d-search",
+                "s1",
+                "sp1",
+                "in_progress",
+                "high",
+                "normal",
+                "alice",
+                ["blue"],
+                "Other",
+            ),
         )
         for position, decoy in enumerate(decoys, start=30):
             (
@@ -275,9 +355,7 @@ def test_complete_filter_set_is_pre_limit_and_pages_without_gaps(
 
 
 def test_archived_toggle_drives_both_totals(cards_client: TestClient) -> None:
-    response = cards_client.get(
-        "/api/v1/boards/b1/cards?status=in_progress&limit=25"
-    )
+    response = cards_client.get("/api/v1/boards/b1/cards?status=in_progress&limit=25")
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["total_filtered"] == 34
@@ -308,9 +386,9 @@ def test_missing_board_and_openapi_contract(cards_client: TestClient) -> None:
     assert missing.status_code == 404
     assert missing.json()["detail"]["error"] == "board_not_found"
 
-    operation = cards_client.app.openapi()["paths"][
-        "/api/v1/boards/{board_id}/cards"
-    ]["get"]
+    operation = cards_client.app.openapi()["paths"]["/api/v1/boards/{board_id}/cards"][
+        "get"
+    ]
     assert {item["name"] for item in operation["parameters"]} >= {
         "status",
         "spec_ids",
@@ -325,3 +403,99 @@ def test_missing_board_and_openapi_contract(cards_client: TestClient) -> None:
         "limit",
     }
     assert "200" in operation["responses"]
+
+
+async def _build_unicode_labels_engine(path: Path) -> AsyncEngine:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+        await connection.execute(
+            text(
+                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES "
+                "('bu', 'Unicode', 'owner', 'local')"
+            )
+        )
+        # Labels persist through the JSON column's default serializer. Exact
+        # membership must compare json_each() values, independent of the stored
+        # escaping and without treating SQL LIKE metacharacters as patterns.
+        rows = [
+            ("cu-cafe", ["café"]),
+            ("cu-emoji", ["🚀ship"]),
+            ("cu-quote", ['a"b']),
+            ("cu-backslash", ["a\\b"]),
+            ("cu-percent", ["a%b"]),
+            ("cu-percent-decoy", ["aXb"]),
+            ("cu-underscore", ["a_b"]),
+            ("cu-underscore-decoy", ["acb"]),
+            ("cu-plain", ["blue"]),
+        ]
+        await connection.execute(
+            text(
+                "INSERT INTO cards "
+                "(id, board_id, title, status, priority, card_type, position, "
+                "assignee_id, labels, archived, created_by, created_at, updated_at) "
+                "VALUES (:id, 'bu', 'T', 'in_progress', 'high', 'normal', :position, "
+                "'alice', :labels, 0, 'owner', '2026-07-20 10:00:00', "
+                "'2026-07-20 10:00:00')"
+            ),
+            [
+                {"id": card_id, "position": index, "labels": json.dumps(labels)}
+                for index, (card_id, labels) in enumerate(rows)
+            ],
+        )
+    return engine
+
+
+@pytest.mark.parametrize(
+    ("label", "expected_id"),
+    [
+        ("café", "cu-cafe"),
+        ("🚀ship", "cu-emoji"),
+        ('a"b', "cu-quote"),
+        ("a\\b", "cu-backslash"),
+        ("a%b", "cu-percent"),
+        ("a_b", "cu-underscore"),
+    ],
+)
+def test_labels_filter_matches_exact_json_member_for_tricky_characters(
+    tmp_path: Path, label: str, expected_id: str
+) -> None:
+    """Unicode and SQL LIKE metacharacters are exact JSON members, not patterns."""
+    from urllib.parse import urlencode
+
+    engine = asyncio.run(_build_unicode_labels_engine(tmp_path / "cu.db"))
+    adapter = CommunitySqlAlchemyApplicationPersistence()
+    try:
+        previous = get_application_persistence_port()
+    except Exception:  # noqa: BLE001 - unset is valid in isolated tests
+        previous = None
+    register_application_persistence_port(adapter)
+
+    app = FastAPI()
+    app.include_router(boards_router, prefix="/api/v1/boards")
+
+    async def _uow():
+        async with AsyncSession(engine) as session:
+            yield CommunityUnitOfWork(
+                session,
+                realm_scope=RealmScope.local(),
+                application_persistence=adapter,
+            )
+
+    app.dependency_overrides[require_user] = lambda: "owner"
+    app.dependency_overrides[get_realm_id] = lambda: None
+    app.dependency_overrides[get_unit_of_work] = _uow
+    try:
+        with TestClient(app, raise_server_exceptions=True) as client:
+            query = urlencode({"labels": label, "offset": 0, "limit": 25})
+            response = client.get(f"/api/v1/boards/bu/cards?{query}")
+            assert response.status_code == 200, response.text
+            returned = {item["id"] for item in response.json()["items"]}
+            # Exact membership: only the row carrying this label matches.
+            assert returned == {expected_id}
+    finally:
+        asyncio.run(engine.dispose())
+        if previous is None:
+            reset_application_persistence_port_for_tests()
+        else:
+            register_application_persistence_port(previous)

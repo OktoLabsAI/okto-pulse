@@ -125,6 +125,8 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "kg_takedown_state_events",
         "kg_cognitive_sources",
         "kg_cognitive_source_revisions",
+        "kg_board_erasure_jobs",
+        "kg_board_erasure_permits",
         "kg_curation_proposals",
         "kg_equivalence_ledger",
         "kg_node_subtypes",

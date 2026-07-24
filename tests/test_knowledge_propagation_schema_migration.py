@@ -11,6 +11,7 @@ from sqlalchemy import (
     Column,
     ForeignKeyConstraint,
     Index,
+    JSON,
     MetaData,
     String,
     Table,
@@ -23,6 +24,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 import okto_pulse.community.adapters.relational_schema_steps as schema_steps
 from okto_pulse.community.adapters.sqlalchemy_models import (
+    BoardErasurePermit,
     KnowledgeAssignmentRecord,
     KnowledgeMutationAttemptRecord,
     KnowledgeMutationLedgerRecord,
@@ -39,8 +41,88 @@ OWNED_MODELS = (
     KnowledgeTombstoneRecord,
     KnowledgeMutationLedgerRecord,
     KnowledgeMutationAttemptRecord,
+    BoardErasurePermit,
 )
 OWNED_TABLE_NAMES = {model.__tablename__ for model in OWNED_MODELS}
+
+
+async def _snapshot_metadata_predecessor_engine(
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncEngine:
+    """Build the exact schema immediately before snapshot metadata existed."""
+
+    engine = await _legacy_engine(database_path, monkeypatch)
+
+    def create_predecessor(sync_connection) -> None:
+        for model in OWNED_MODELS:
+            table = model.__table__
+            if table is KnowledgeSnapshotRecord.__table__:
+                ddl = str(
+                    CreateTable(table).compile(
+                        dialect=sync_connection.dialect,
+                    )
+                )
+                governance_column = "\n\tgovernance_metadata JSON, "
+                if ddl.count(governance_column) != 1:
+                    raise AssertionError(
+                        "could not derive snapshot metadata predecessor DDL"
+                    )
+                sync_connection.exec_driver_sql(ddl.replace(governance_column, "", 1))
+            else:
+                sync_connection.execute(CreateTable(table))
+            for index in sorted(table.indexes, key=lambda item: str(item.name)):
+                sync_connection.execute(CreateIndex(index))
+
+        predecessor_triggers = schema_steps._knowledge_propagation_v2_trigger_manifest(
+            include_snapshot_governance_metadata=False,
+        )
+        for _table_name, trigger_sql in predecessor_triggers.values():
+            sync_connection.exec_driver_sql(trigger_sql)
+
+    content = b"\x00immutable snapshot bytes\xff"
+    content_hash = "d" * 64
+    async with engine.begin() as connection:
+        await connection.run_sync(create_predecessor)
+        await connection.execute(
+            text(
+                "INSERT INTO knowledge_propagation_scopes "
+                "(id, board_id, target_type, target_id, scope_revision, "
+                "v2_active, selection_state, v2_activated_at) VALUES "
+                "('scope-metadata', 'board-1', 'card', 'card-1', 1, 1, "
+                "'explicit_ids', '2026-07-24 12:00:00')"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO knowledge_propagation_assignments "
+                "(assignment_id, scope_id, source_knowledge_id, root_id, "
+                "source_revision, source_content_sha256, mode, state, "
+                "origin_class, actor_id, revision, justification, "
+                "relevance_links, effective_from) VALUES "
+                "('assignment-metadata', 'scope-metadata', 'source-metadata', "
+                "'root-metadata', 'revision-1', :content_hash, 'snapshot', "
+                "'active', 'v2', 'actor-1', 1, 'preserve metadata source', "
+                "'[]', '2026-07-24 12:00:00')"
+            ),
+            {"content_hash": content_hash},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO knowledge_propagation_snapshots "
+                "(snapshot_id, scope_id, assignment_id, root_id, "
+                "source_revision, source_content_sha256, content_bytes, "
+                "effective_from) VALUES "
+                "('snapshot-metadata', 'scope-metadata', "
+                "'assignment-metadata', 'root-metadata', 'revision-1', "
+                ":content_hash, :content, '2026-07-24 12:00:00')"
+            ),
+            {
+                "content_hash": content_hash,
+                "content": content,
+            },
+        )
+    return engine
 
 
 async def _legacy_engine(
@@ -92,6 +174,7 @@ def test_models_expose_the_exact_additive_record_families() -> None:
         "knowledge_propagation_tombstones",
         "knowledge_mutation_ledger",
         "knowledge_mutation_attempts",
+        "kg_board_erasure_permits",
     }
     scope = KnowledgePropagationScopeRecord.__table__
     assert {
@@ -138,6 +221,12 @@ def test_models_expose_the_exact_additive_record_families() -> None:
         "uq_knowledge_mutation_ledger_scope_key",
     }
     assert KnowledgeSnapshotRecord.__table__.c.content_bytes.nullable is False
+    snapshot_metadata = KnowledgeSnapshotRecord.__table__.c.governance_metadata
+    assert list(KnowledgeSnapshotRecord.__table__.columns)[-1] is snapshot_metadata
+    assert isinstance(snapshot_metadata.type, JSON)
+    assert snapshot_metadata.nullable is True
+    assert snapshot_metadata.default is None
+    assert snapshot_metadata.server_default is None
     assert KnowledgeMutationAttemptRecord.__table__.c.scope_id.nullable is True
     assert KnowledgePropagationScopeRecord.__table__.c.v2_activated_at.nullable is True
     for model in (
@@ -202,6 +291,159 @@ async def test_migration_is_additive_replayable_and_preserves_legacy_json(
     assert {str(row["name"]): str(row["tbl_name"]) for row in trigger_rows} == {
         name: table_name for name, (table_name, _sql) in expected.items()
     }
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_migration_upgrades_exact_pre_erasure_delete_guards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = await _legacy_engine(
+        tmp_path / "propagation-erasure-guard-upgrade.sqlite3",
+        monkeypatch,
+    )
+    assert await schema_steps._migrate_knowledge_propagation_v2_schema() is None
+    current = schema_steps.knowledge_propagation_v2_trigger_manifest()
+    predecessor = schema_steps._knowledge_propagation_v2_trigger_manifest(
+        include_snapshot_governance_metadata=True,
+        allow_board_erasure=False,
+    )
+
+    async with engine.begin() as connection:
+        for trigger_name in current:
+            await connection.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+        for _table_name, trigger_sql in predecessor.values():
+            await connection.exec_driver_sql(trigger_sql)
+
+    assert await schema_steps._migrate_knowledge_propagation_v2_schema() is None
+    assert await schema_steps._migrate_knowledge_propagation_v2_schema() == "skipped"
+
+    async with engine.connect() as connection:
+        delete_guard_sql = (
+            (
+                await connection.execute(
+                    text(
+                        "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                        "AND name LIKE :prefix AND name LIKE '%_delete'"
+                    ),
+                    {
+                        "prefix": (
+                            f"{schema_steps.KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}%"
+                        )
+                    },
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(delete_guard_sql) == 5
+    assert all(
+        "kg_board_erasure_permits" in str(trigger_sql)
+        for trigger_sql in delete_guard_sql
+    )
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_metadata_upgrades_exact_predecessor_without_rewriting_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = await _snapshot_metadata_predecessor_engine(
+        tmp_path / "snapshot-metadata-predecessor.sqlite3",
+        monkeypatch,
+    )
+
+    assert await schema_steps._migrate_knowledge_propagation_v2_schema() is None
+    assert await schema_steps._migrate_knowledge_propagation_v2_schema() == "skipped"
+
+    async with engine.connect() as connection:
+        columns = await connection.run_sync(
+            lambda sync_connection: inspect(sync_connection).get_columns(
+                "knowledge_propagation_snapshots"
+            )
+        )
+        assert [str(column["name"]) for column in columns][-1] == (
+            "governance_metadata"
+        )
+        metadata_column = columns[-1]
+        assert str(metadata_column["type"]).upper() == "JSON"
+        assert bool(metadata_column["nullable"]) is True
+        assert metadata_column.get("default") is None
+        snapshot = (
+            await connection.execute(
+                text(
+                    "SELECT content_bytes, source_content_sha256, "
+                    "governance_metadata "
+                    "FROM knowledge_propagation_snapshots "
+                    "WHERE snapshot_id = 'snapshot-metadata'"
+                )
+            )
+        ).one()
+        assert snapshot == (
+            b"\x00immutable snapshot bytes\xff",
+            "d" * 64,
+            None,
+        )
+
+    await _assert_statement_rejected(
+        engine,
+        "UPDATE knowledge_propagation_snapshots "
+        'SET governance_metadata = \'{"retention":"legal_hold"}\' '
+        "WHERE snapshot_id = 'snapshot-metadata'",
+        match="snapshot_history_immutable",
+    )
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_metadata_upgrade_rejects_noncanonical_predecessor_trigger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = await _snapshot_metadata_predecessor_engine(
+        tmp_path / "snapshot-metadata-trigger-drift.sqlite3",
+        monkeypatch,
+    )
+    trigger_name = (
+        f"{schema_steps.KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_"
+        "knowledge_propagation_snapshots_content_update"
+    )
+    async with engine.begin() as connection:
+        await connection.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+        await connection.exec_driver_sql(
+            f'CREATE TRIGGER "{trigger_name}" '
+            "BEFORE UPDATE ON knowledge_propagation_snapshots "
+            "BEGIN SELECT RAISE(ABORT, 'wrong_guard'); END"
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match="non-canonical immutable trigger drift",
+    ):
+        await schema_steps._migrate_knowledge_propagation_v2_schema()
+
+    async with engine.connect() as connection:
+        columns = await connection.run_sync(
+            lambda sync_connection: inspect(sync_connection).get_columns(
+                "knowledge_propagation_snapshots"
+            )
+        )
+        assert "governance_metadata" not in {str(column["name"]) for column in columns}
+        snapshot = (
+            await connection.execute(
+                text(
+                    "SELECT content_bytes, source_content_sha256 "
+                    "FROM knowledge_propagation_snapshots "
+                    "WHERE snapshot_id = 'snapshot-metadata'"
+                )
+            )
+        ).one()
+        assert snapshot == (
+            b"\x00immutable snapshot bytes\xff",
+            "d" * 64,
+        )
     await engine.dispose()
 
 
@@ -530,9 +772,7 @@ async def test_activation_boundary_is_first_activation_only_and_immutable(
         if name.endswith("_activation_update")
     )
     async with engine.begin() as connection:
-        await connection.exec_driver_sql(
-            f'DROP TRIGGER "{activation_update_trigger}"'
-        )
+        await connection.exec_driver_sql(f'DROP TRIGGER "{activation_update_trigger}"')
         await connection.execute(
             text(
                 "UPDATE knowledge_propagation_scopes "

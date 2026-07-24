@@ -141,7 +141,9 @@ class CommunityBoardRebuildIngestionAdapter:
                 reason=reason,
             )
 
-        from okto_pulse.core.services.application_kg import get_current_provider_registry
+        from okto_pulse.core.services.application_kg import (
+            get_current_provider_registry,
+        )
 
         registry = get_current_provider_registry()
         report = run_async_blocking(
@@ -232,18 +234,37 @@ class CommunityBoardRebuildIngestionAdapter:
             conn.commit()
         return counts
 
-    def queue_depth(self, board_id: str) -> int:
-        """Return one technical queue observation for the Core state machine."""
+    def queue_observation(self, board_id: str) -> tuple[int, str | None]:
+        """Return queue depth plus a typed reason for an actively blocked row."""
 
         with sqlite3.connect(str(self._path()), timeout=5.0) as conn:
             row = conn.execute(
-                "SELECT COUNT(*) FROM consolidation_queue "
+                "SELECT COUNT(*), "
+                "MAX(CASE "
+                "WHEN status = 'pending' AND ("
+                "LOWER(TRIM(COALESCE(last_error, ''))) = "
+                "'graph_memory_pressure' "
+                "OR LOWER(TRIM(COALESCE(last_error, ''))) LIKE "
+                "'graph_memory_pressure:%') "
+                "THEN 1 ELSE 0 END) "
+                "FROM consolidation_queue "
                 "WHERE board_id=? AND status IN ('pending', 'claimed')",
                 (board_id,),
             ).fetchone()
-        return int(row[0]) if row else 0
+        depth = int(row[0]) if row else 0
+        blocking_reason = (
+            "graph_memory_pressure" if row is not None and bool(row[1]) else None
+        )
+        return depth, blocking_reason
 
-    def compensate_pending_sources(self, *, board_id: str, run_id: str) -> dict[str, int]:
+    def queue_depth(self, board_id: str) -> int:
+        """Return the queue depth while preserving the original adapter contract."""
+
+        return self.queue_observation(board_id)[0]
+
+    def compensate_pending_sources(
+        self, *, board_id: str, run_id: str
+    ) -> dict[str, int]:
         """Fail pending rows from this rebuild while preserving active claims."""
 
         with sqlite3.connect(str(self._path()), timeout=10.0) as conn:
@@ -295,6 +316,7 @@ class CommunityBoardRebuildIngestionAdapter:
                 source_rows=sources,
                 previous_generation_id=req.previous_kg_generation_id,
                 candidate_generation_id=req.candidate_kg_generation_id,
+                owner_token=req.owner_token,
                 salvage_pending=(
                     bool(self.salvage_pending_provider(req.board_id))
                     if self.salvage_pending_provider is not None
@@ -311,6 +333,8 @@ class CommunityBoardRebuildIngestionAdapter:
                     final_grace_seconds=self.drain_final_grace_seconds,
                     low_depth_threshold=self.drain_low_depth_threshold,
                 ),
+                cancel_requested=getattr(req, "cancel_requested", None),
+                lease_renew=getattr(req, "lease_renew", None),
             ).execute(command)
 
             by_effect = {receipt.effect: receipt for receipt in outcome.receipts}
@@ -389,9 +413,7 @@ class CommunityBoardRebuildIngestionAdapter:
                 ):
                     detail = "cognitive_preservation_integrity_error"
                 else:
-                    detail = f"{outcome.code.value}:{outcome.detail or ''}".rstrip(
-                        ":"
-                    )
+                    detail = f"{outcome.code.value}:{outcome.detail or ''}".rstrip(":")
                 return RebuildStepResult(
                     ok=False,
                     detail=detail,

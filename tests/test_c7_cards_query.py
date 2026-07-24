@@ -26,15 +26,16 @@ def _request(items: list[tuple[str, str]]) -> Request:
 @pytest.mark.parametrize(
     ("items", "code"),
     [
-        ([('offset', 'x')], "offset_invalid"),
-        ([('offset', '-1')], "offset_out_of_bounds"),
-        ([('limit', 'x')], "limit_invalid"),
-        ([('limit', '37')], "limit_not_allowed"),
-        ([('include_archived', 'wat')], "include_archived_invalid"),
-        ([('status', 'unknown')], "status_invalid"),
-        ([('priority', 'urgent')], "priority_invalid"),
-        ([('card_types', '')], "card_types_invalid"),
-        ([('card_types', 'normal,unknown')], "card_types_invalid"),
+        ([("offset", "x")], "offset_invalid"),
+        ([("offset", "-1")], "offset_out_of_bounds"),
+        ([("offset", str(1 << 63))], "offset_out_of_bounds"),
+        ([("limit", "x")], "limit_invalid"),
+        ([("limit", "37")], "limit_not_allowed"),
+        ([("include_archived", "wat")], "include_archived_invalid"),
+        ([("status", "unknown")], "status_invalid"),
+        ([("priority", "urgent")], "priority_invalid"),
+        ([("card_types", "")], "card_types_invalid"),
+        ([("card_types", "normal,unknown")], "card_types_invalid"),
     ],
 )
 def test_card_list_query_errors_are_typed_400(
@@ -81,9 +82,10 @@ def test_complete_filter_request_preserves_three_independent_or_dimensions() -> 
     # into six OR branches, each containing one predicate from each dimension.
     assert len(request.any_groups) == 6
     assert all(len(branch) == 2 for branch in request.any_groups)
+    assert {branch[0].operator for branch in request.any_groups} == {"json_member"}
     assert {branch[0].value for branch in request.any_groups} == {
-        '"blue"',
-        '"green"',
+        "blue",
+        "green",
     }
     assert {branch[1].field for branch in request.any_groups} == {
         "title",

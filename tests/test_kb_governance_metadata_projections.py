@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -70,9 +71,7 @@ def test_traceability_kb_artifacts_use_canonical_governance_projection(
     assert projected["governance"]["authority"] == "advisory"
     assert projected["governance"]["metadata_status"] == expected_status
     if raw_metadata is None:
-        assert projected["governance"]["missing_fields"] == [
-            "governance_metadata"
-        ]
+        assert projected["governance"]["missing_fields"] == ["governance_metadata"]
         assert projected["governance"]["metadata"] is None
     else:
         assert projected["governance"]["missing_fields"] == []
@@ -153,6 +152,79 @@ async def test_resource_gate_projects_card_snapshot_governance() -> None:
         "missing_fields": ["governance_metadata"],
         "metadata": None,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("snapshot_metadata", "expected_status"),
+    [(None, "legacy_incomplete"), (_valid_metadata(), "complete")],
+)
+async def test_resource_gate_v2_snapshot_uses_frozen_governance(
+    snapshot_metadata: dict[str, object] | None,
+    expected_status: str,
+) -> None:
+    current_physical_metadata = _valid_metadata()
+    current_physical_metadata["purpose"] = "new physical metadata"
+    assignment = SimpleNamespace(
+        assignment_id="assignment-1",
+        source_knowledge_id="kb-source",
+        mode=SimpleNamespace(value="snapshot"),
+        origin_class=SimpleNamespace(value="v2"),
+        revision=1,
+        relevance_links=(),
+    )
+    resolved = SimpleNamespace(
+        assignment=assignment,
+        state=SimpleNamespace(value="active"),
+        revision_stamp=SimpleNamespace(
+            root_id="kb-root",
+            immediate_parent_id=None,
+            source_revision="1",
+            source_content_sha256="a" * 64,
+        ),
+        resolved_source_knowledge_id="kb-source",
+        content_bytes=json.dumps(
+            {
+                "id": "kb-source",
+                "title": "Frozen snapshot",
+                "content": "body",
+                "mime_type": "text/markdown",
+            }
+        ).encode("utf-8"),
+        governance_metadata=snapshot_metadata,
+    )
+    root = SimpleNamespace(
+        entity_type="card",
+        entity_id="card-1",
+        entity=SimpleNamespace(board_id="board-1"),
+    )
+    parent = SimpleNamespace(
+        entity_type="spec",
+        entity_id="spec-1",
+        title="Parent spec",
+    )
+    adapter = CommunitySqlAlchemyResourceGateAdapter(object())
+
+    ref = adapter._assignment_ref(
+        root=root,
+        parent=parent,
+        item=resolved,
+        base={
+            "id": "kb-source",
+            "governance_metadata": current_physical_metadata,
+        },
+    )
+    projected = await adapter.hydrate_effective_resource(
+        board_id="board-1",
+        resource_type="knowledge_base",
+        ref=ref,
+    )
+
+    assert ref["governance_metadata"] == snapshot_metadata
+    assert projected is not None
+    assert projected["governance_metadata"] == snapshot_metadata
+    assert projected["governance"]["metadata_status"] == expected_status
+    assert projected["governance"]["metadata"] == snapshot_metadata
 
 
 class _ScalarResult:

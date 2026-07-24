@@ -92,10 +92,14 @@ COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX = "trg_kg_cognitive_source_immutabl
 KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX = "trg_knowledge_propagation_v2"
 
 
-def cognitive_source_immutability_trigger_manifest() -> dict[str, tuple[str, str]]:
+def cognitive_source_immutability_trigger_manifest(
+    *,
+    allow_board_erasure: bool = True,
+) -> dict[str, tuple[str, str]]:
     """Return the exact SQLite guard manifest for the append-only ledger."""
 
     from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
         KGCognitiveSource,
         KGCognitiveSourceRevision,
     )
@@ -110,8 +114,28 @@ def cognitive_source_immutability_trigger_manifest() -> dict[str, tuple[str, str
                 f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_"
                 f"{table_name}_{operation}"
             )
+            erasure_guard = ""
+            if allow_board_erasure and operation == "delete":
+                if table_name == KGCognitiveSource.__tablename__:
+                    erasure_guard = (
+                        "\nWHEN NOT EXISTS (\n"
+                        "    SELECT 1\n"
+                        f'    FROM "{BoardErasurePermit.__tablename__}" AS permit\n'
+                        "    WHERE permit.board_id = OLD.board_id\n"
+                        ")"
+                    )
+                else:
+                    erasure_guard = (
+                        "\nWHEN NOT EXISTS (\n"
+                        "    SELECT 1\n"
+                        f'    FROM "{BoardErasurePermit.__tablename__}" AS permit\n'
+                        f'    JOIN "{KGCognitiveSource.__tablename__}" AS source\n'
+                        "      ON source.board_id = permit.board_id\n"
+                        "    WHERE source.id = OLD.cognitive_source_id\n"
+                        ")"
+                    )
             trigger_sql = f'''CREATE TRIGGER "{trigger_name}"
-BEFORE {operation.upper()} ON "{table_name}"
+BEFORE {operation.upper()} ON "{table_name}"{erasure_guard}
 BEGIN
     SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');
 END'''
@@ -119,7 +143,11 @@ END'''
     return expected
 
 
-def knowledge_propagation_v2_trigger_manifest() -> dict[str, tuple[str, str]]:
+def _knowledge_propagation_v2_trigger_manifest(
+    *,
+    include_snapshot_governance_metadata: bool,
+    allow_board_erasure: bool = True,
+) -> dict[str, tuple[str, str]]:
     """Return SQLite guards owned by the selective-propagation schema.
 
     Canonical mutation results and attempt observations are append-only.
@@ -131,6 +159,7 @@ def knowledge_propagation_v2_trigger_manifest() -> dict[str, tuple[str, str]]:
     """
 
     from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
         KnowledgeAssignmentRecord,
         KnowledgeMutationAttemptRecord,
         KnowledgeMutationLedgerRecord,
@@ -140,6 +169,8 @@ def knowledge_propagation_v2_trigger_manifest() -> dict[str, tuple[str, str]]:
     )
 
     expected: dict[str, tuple[str, str]] = {}
+    permit_table = BoardErasurePermit.__tablename__
+    scope_table = KnowledgePropagationScopeRecord.__tablename__
     for table_name in (
         KnowledgeMutationLedgerRecord.__tablename__,
         KnowledgeMutationAttemptRecord.__tablename__,
@@ -148,17 +179,24 @@ def knowledge_propagation_v2_trigger_manifest() -> dict[str, tuple[str, str]]:
             trigger_name = (
                 f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{table_name}_{operation}"
             )
+            erasure_guard = ""
+            if allow_board_erasure and operation == "delete":
+                erasure_guard = (
+                    "\nWHEN NOT EXISTS (\n"
+                    "    SELECT 1\n"
+                    f'    FROM "{permit_table}" AS permit\n'
+                    "    WHERE permit.board_id = OLD.board_id\n"
+                    ")"
+                )
             trigger_sql = f'''CREATE TRIGGER "{trigger_name}"
-BEFORE {operation.upper()} ON "{table_name}"
+BEFORE {operation.upper()} ON "{table_name}"{erasure_guard}
 BEGIN
     SELECT RAISE(ABORT, 'knowledge_mutation_ledger_immutable');
 END'''
             expected[trigger_name] = (table_name, trigger_sql)
 
-    scope_table = KnowledgePropagationScopeRecord.__tablename__
     activation_insert = (
-        f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_"
-        f"{scope_table}_activation_insert"
+        f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{scope_table}_activation_insert"
     )
     expected[activation_insert] = (
         scope_table,
@@ -180,8 +218,7 @@ BEGIN
 END''',
     )
     activation_update = (
-        f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_"
-        f"{scope_table}_activation_update"
+        f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{scope_table}_activation_update"
     )
     expected[activation_update] = (
         scope_table,
@@ -286,7 +323,8 @@ END''',
         KnowledgeSnapshotRecord.__tablename__: (
             "snapshot_id, scope_id, assignment_id, root_id, "
             "immediate_parent_id, source_revision, source_content_sha256, "
-            "content_bytes, effective_from",
+            "content_bytes, effective_from"
+            + (", governance_metadata" if include_snapshot_governance_metadata else ""),
             (
                 "NEW.snapshot_id IS NOT OLD.snapshot_id\n"
                 "    OR NEW.scope_id IS NOT OLD.scope_id\n"
@@ -298,6 +336,11 @@ END''',
                 "OLD.source_content_sha256\n"
                 "    OR NEW.content_bytes IS NOT OLD.content_bytes\n"
                 "    OR NEW.effective_from IS NOT OLD.effective_from"
+                + (
+                    "\n    OR NEW.governance_metadata IS NOT OLD.governance_metadata"
+                    if include_snapshot_governance_metadata
+                    else ""
+                )
             ),
             "knowledge_propagation_snapshot_history_immutable",
         ),
@@ -320,10 +363,21 @@ BEGIN
 END''',
         )
         delete_name = f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{table_name}_delete"
+        erasure_guard = ""
+        if allow_board_erasure:
+            erasure_guard = (
+                "\nWHEN NOT EXISTS (\n"
+                "    SELECT 1\n"
+                f'    FROM "{permit_table}" AS permit\n'
+                f'    JOIN "{scope_table}" AS scope\n'
+                "      ON scope.board_id = permit.board_id\n"
+                "    WHERE scope.id = OLD.scope_id\n"
+                ")"
+            )
         expected[delete_name] = (
             table_name,
             f'''CREATE TRIGGER "{delete_name}"
-BEFORE DELETE ON "{table_name}"
+BEFORE DELETE ON "{table_name}"{erasure_guard}
 BEGIN
     SELECT RAISE(ABORT, '{error_code}');
 END''',
@@ -384,10 +438,21 @@ BEGIN
 END''',
     )
     tombstone_delete = f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_tombstone_delete"
+    erasure_guard = ""
+    if allow_board_erasure:
+        erasure_guard = (
+            "\nWHEN NOT EXISTS (\n"
+            "    SELECT 1\n"
+            f'    FROM "{permit_table}" AS permit\n'
+            f'    JOIN "{scope_table}" AS scope\n'
+            "      ON scope.board_id = permit.board_id\n"
+            "    WHERE scope.id = OLD.scope_id\n"
+            ")"
+        )
     expected[tombstone_delete] = (
         tombstone_table,
         f'''CREATE TRIGGER "{tombstone_delete}"
-BEFORE DELETE ON "{tombstone_table}"
+BEFORE DELETE ON "{tombstone_table}"{erasure_guard}
 BEGIN
     SELECT RAISE(
         ABORT,
@@ -396,6 +461,15 @@ BEGIN
 END''',
     )
     return expected
+
+
+def knowledge_propagation_v2_trigger_manifest() -> dict[str, tuple[str, str]]:
+    """Return the current selective-propagation SQLite trigger contract."""
+
+    return _knowledge_propagation_v2_trigger_manifest(
+        include_snapshot_governance_metadata=True,
+        allow_board_erasure=True,
+    )
 
 
 def _knowledge_propagation_migration_checkpoint(stage: str) -> None:
@@ -1375,6 +1449,9 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
             )
 
         expected_triggers = cognitive_source_immutability_trigger_manifest()
+        predecessor_triggers = cognitive_source_immutability_trigger_manifest(
+            allow_board_erasure=False,
+        )
         trigger_rows = (
             (
                 await conn.execute(
@@ -1401,11 +1478,23 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
                 await conn.execute(sa_text(trigger_sql))
                 changed = True
                 continue
-            if str(
-                existing["tbl_name"]
-            ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
+            observed_table = str(existing["tbl_name"])
+            observed_sql = normalize_global_discovery_source_revision_trigger_sql(
                 existing["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
+            )
+            if observed_table == table_name and observed_sql == (
+                normalize_global_discovery_source_revision_trigger_sql(trigger_sql)
+            ):
+                continue
+            predecessor_table, predecessor_sql = predecessor_triggers[trigger_name]
+            if observed_table == predecessor_table and observed_sql == (
+                normalize_global_discovery_source_revision_trigger_sql(predecessor_sql)
+            ):
+                await conn.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+                continue
+            else:
                 raise RuntimeError(
                     f"cognitive source immutability trigger {trigger_name} is corrupt"
                 )
@@ -3120,8 +3209,7 @@ async def _upgrade_knowledge_propagation_activation_boundary(
             )
             if observed_contract != expected_contract:
                 raise RuntimeError(
-                    "knowledge propagation activation boundary column "
-                    "is non-canonical"
+                    "knowledge propagation activation boundary column is non-canonical"
                 )
         return observed is not None, ledger_table.name in tables
 
@@ -3131,8 +3219,9 @@ async def _upgrade_knowledge_propagation_activation_boundary(
         await conn.exec_driver_sql("BEGIN IMMEDIATE")
         column_present, ledger_present = await conn.run_sync(_state)
         scope_present = await conn.run_sync(
-            lambda sync_conn: scope_table.name
-            in set(sa_inspect(sync_conn).get_table_names())
+            lambda sync_conn: (
+                scope_table.name in set(sa_inspect(sync_conn).get_table_names())
+            )
         )
         if not scope_present:
             return False
@@ -3365,6 +3454,192 @@ async def _upgrade_knowledge_propagation_relink_operation_kind(
     return True
 
 
+async def _upgrade_knowledge_snapshot_governance_metadata(
+    engine: object,
+) -> bool:
+    """Add immutable snapshot governance metadata from its exact predecessor.
+
+    The predecessor is the current snapshot table contract with only the final
+    nullable JSON column absent.  SQLite appends that column in place, which
+    preserves every existing row, blob, and content hash byte-for-byte.  The
+    sole trigger whose contract changes is accepted only in its exact previous
+    or current form; any other owned table/trigger drift fails before DDL.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        KnowledgeSnapshotRecord,
+    )
+
+    table = KnowledgeSnapshotRecord.__table__
+    column = table.c.governance_metadata
+    current_triggers = _knowledge_propagation_v2_trigger_manifest(
+        include_snapshot_governance_metadata=True,
+        allow_board_erasure=True,
+    )
+    predecessor_triggers = _knowledge_propagation_v2_trigger_manifest(
+        include_snapshot_governance_metadata=False,
+        allow_board_erasure=True,
+    )
+    legacy_current_triggers = _knowledge_propagation_v2_trigger_manifest(
+        include_snapshot_governance_metadata=True,
+        allow_board_erasure=False,
+    )
+    legacy_predecessor_triggers = _knowledge_propagation_v2_trigger_manifest(
+        include_snapshot_governance_metadata=False,
+        allow_board_erasure=False,
+    )
+    content_trigger_name = (
+        f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{table.name}_content_update"
+    )
+    current_content_trigger = current_triggers[content_trigger_name][1]
+
+    def _state(sync_conn: object) -> tuple[str, str]:
+        inspector = sa_inspect(sync_conn)
+        if table.name not in set(inspector.get_table_names()):
+            return "absent", "missing"
+
+        contract = _sqlite_owned_table_contract(sync_conn, table)
+        expected = dict(contract["expected"])
+        observed = contract["observed"]
+        expected_columns = tuple(expected["columns"])
+        expected_column = (
+            str(column.name),
+            _normalize_sqlite_contract_type(
+                column.type.compile(dialect=sync_conn.dialect)
+            ),
+            bool(column.nullable),
+            _expected_sqlite_server_default(sync_conn, column),
+        )
+        if not expected_columns or expected_columns[-1] != expected_column:
+            raise RuntimeError(
+                "knowledge snapshot governance metadata must be the final "
+                "canonical table column"
+            )
+        predecessor = dict(expected)
+        predecessor["columns"] = expected_columns[:-1]
+        if observed == expected:
+            table_state = "current"
+        elif observed == predecessor:
+            table_state = "predecessor"
+        else:
+            raise RuntimeError(
+                "knowledge snapshot governance metadata migration found "
+                "non-canonical table drift"
+            )
+
+        trigger_rows = tuple(
+            sync_conn.exec_driver_sql(
+                "SELECT name, tbl_name, sql FROM sqlite_master "
+                "WHERE type = 'trigger' AND name LIKE ?",
+                (f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}%",),
+            )
+            .mappings()
+            .all()
+        )
+        existing_triggers = {str(trigger["name"]): trigger for trigger in trigger_rows}
+        unexpected = set(existing_triggers) - set(current_triggers)
+        if unexpected:
+            raise RuntimeError(
+                "knowledge snapshot governance metadata migration found "
+                "unexpected owned triggers: " + ", ".join(sorted(unexpected))
+            )
+
+        content_trigger_state = "missing"
+        for trigger_name, trigger in existing_triggers.items():
+            expected_table, current_sql = current_triggers[trigger_name]
+            predecessor_table, predecessor_sql = predecessor_triggers[trigger_name]
+            observed_table = str(trigger["tbl_name"])
+            observed_sql = normalize_global_discovery_source_revision_trigger_sql(
+                trigger["sql"]
+            )
+            current_match = (
+                observed_table == expected_table
+                and observed_sql
+                == normalize_global_discovery_source_revision_trigger_sql(current_sql)
+            )
+            predecessor_match = (
+                observed_table == predecessor_table
+                and observed_sql
+                == normalize_global_discovery_source_revision_trigger_sql(
+                    predecessor_sql
+                )
+            )
+            legacy_current_table, legacy_current_sql = legacy_current_triggers[
+                trigger_name
+            ]
+            legacy_predecessor_table, legacy_predecessor_sql = (
+                legacy_predecessor_triggers[trigger_name]
+            )
+            legacy_current_match = (
+                observed_table == legacy_current_table
+                and observed_sql
+                == normalize_global_discovery_source_revision_trigger_sql(
+                    legacy_current_sql
+                )
+            )
+            legacy_predecessor_match = (
+                observed_table == legacy_predecessor_table
+                and observed_sql
+                == normalize_global_discovery_source_revision_trigger_sql(
+                    legacy_predecessor_sql
+                )
+            )
+            if trigger_name == content_trigger_name:
+                if current_match or legacy_current_match:
+                    content_trigger_state = "current"
+                elif predecessor_match or legacy_predecessor_match:
+                    content_trigger_state = "predecessor"
+                else:
+                    raise RuntimeError(
+                        "knowledge snapshot governance metadata migration found "
+                        "non-canonical immutable trigger drift"
+                    )
+            elif not (current_match or legacy_current_match):
+                raise RuntimeError(
+                    "knowledge propagation v2 trigger is corrupt: " + trigger_name
+                )
+
+        if table_state == "predecessor" and content_trigger_state == "current":
+            raise RuntimeError(
+                "knowledge snapshot governance metadata migration found a "
+                "current trigger on the predecessor table"
+            )
+        return table_state, content_trigger_state
+
+    async with engine.begin() as conn:
+        if conn.dialect.name != "sqlite":
+            return False
+        await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        table_state, trigger_state = await conn.run_sync(_state)
+        if table_state == "absent":
+            return False
+
+        changed = False
+        if table_state == "predecessor":
+            await conn.exec_driver_sql(
+                f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" JSON'
+            )
+            changed = True
+
+        if trigger_state == "predecessor":
+            await conn.exec_driver_sql(f'DROP TRIGGER "{content_trigger_name}"')
+            await conn.execute(sa_text(current_content_trigger))
+            changed = True
+
+        final_table_state, final_trigger_state = await conn.run_sync(_state)
+        if final_table_state != "current" or final_trigger_state not in {
+            "current",
+            "missing",
+        }:
+            raise RuntimeError(
+                "knowledge snapshot governance metadata migration postcondition failed"
+            )
+        return changed
+
+
 async def _migrate_knowledge_propagation_v2_schema() -> str | None:
     """Converge and prove the additive selective-propagation schema.
 
@@ -3381,6 +3656,7 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
     from sqlalchemy.schema import CreateIndex
 
     from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
         KnowledgeAssignmentRecord,
         KnowledgeMutationAttemptRecord,
         KnowledgeMutationLedgerRecord,
@@ -3390,6 +3666,7 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
     )
 
     stages = (
+        ("erasure_permit", BoardErasurePermit.__table__),
         ("scope", KnowledgePropagationScopeRecord.__table__),
         ("assignment", KnowledgeAssignmentRecord.__table__),
         ("snapshot", KnowledgeSnapshotRecord.__table__),
@@ -3437,6 +3714,7 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
     changed = (
         await _upgrade_knowledge_propagation_relink_operation_kind(engine) or changed
     )
+    changed = await _upgrade_knowledge_snapshot_governance_metadata(engine) or changed
     async with engine.begin() as conn:
         if conn.dialect.name != "sqlite":
             raise RuntimeError(
@@ -3500,6 +3778,10 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
                 )
 
         expected_triggers = knowledge_propagation_v2_trigger_manifest()
+        predecessor_triggers = _knowledge_propagation_v2_trigger_manifest(
+            include_snapshot_governance_metadata=True,
+            allow_board_erasure=False,
+        )
         trigger_rows = (
             (
                 await conn.execute(
@@ -3526,16 +3808,25 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
                 await conn.execute(sa_text(trigger_sql))
                 changed = True
                 continue
-            if str(
-                existing["tbl_name"]
-            ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
+            observed_table = str(existing["tbl_name"])
+            observed_sql = normalize_global_discovery_source_revision_trigger_sql(
                 existing["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(
-                trigger_sql
+            )
+            if observed_table == table_name and observed_sql == (
+                normalize_global_discovery_source_revision_trigger_sql(trigger_sql)
             ):
-                raise RuntimeError(
-                    "knowledge propagation v2 trigger is corrupt: " + trigger_name
-                )
+                continue
+            predecessor_table, predecessor_sql = predecessor_triggers[trigger_name]
+            if observed_table == predecessor_table and observed_sql == (
+                normalize_global_discovery_source_revision_trigger_sql(predecessor_sql)
+            ):
+                await conn.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+                continue
+            raise RuntimeError(
+                "knowledge propagation v2 trigger is corrupt: " + trigger_name
+            )
 
         final_trigger_rows = (
             (
@@ -3561,9 +3852,7 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
                 observed["tbl_name"]
             ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
                 observed["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(
-                trigger_sql
-            ):
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
                 raise RuntimeError(
                     "knowledge propagation v2 trigger postcondition failed: "
                     + trigger_name

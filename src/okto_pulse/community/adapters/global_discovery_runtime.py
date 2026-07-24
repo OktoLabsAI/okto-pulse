@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import json
 import logging
 import os
 import re
@@ -60,11 +61,24 @@ def _reset_global_open_memory_circuit_for_tests() -> None:
 
     reset_graph_open_memory_circuit_for_tests()
 
+
 _VECTOR_USE_PATTERN = re.compile(
     r"(?:VECTOR_INDEX|EMBEDDING)",
     re.IGNORECASE,
 )
 _DIGEST_REPAIR_MAX_PRIMARY_DRAINS = 32
+_PRIVACY_SNAPSHOT_VERSION = 3
+_PRIVACY_ROW_WIDTHS = {
+    "boards": 8,
+    "topics": 1,
+    "entities": 1,
+    "digests": 10,
+    "has_topic": 2,
+    "mentions_entity": 2,
+    "contains_decision": 2,
+    "decision_mentions_entity": 2,
+    "decision_derives_from": 2,
+}
 
 
 def _digest_repair_staging_id(
@@ -812,9 +826,7 @@ class CommunityGlobalDiscoveryRuntime:
             generation=None,
             observed_at=observed_at,
         )
-        return (
-            physical.state == GraphRuntimeObservationState.CONFIRMED_ABSENT
-        )
+        return physical.state == GraphRuntimeObservationState.CONFIRMED_ABSENT
 
     def _bootstrap_with_writer_lease(self) -> GraphHandle:
         from okto_pulse.community.adapters.global_discovery_schema import (
@@ -1041,10 +1053,7 @@ class CommunityGlobalDiscoveryRuntime:
         )
 
         observed_index_cells = {
-            str(cell)
-            for row in index_result.rows
-            for cell in row
-            if cell is not None
+            str(cell) for row in index_result.rows for cell in row if cell is not None
         }
         missing_indexes = [
             idx_name
@@ -1279,6 +1288,8 @@ class CommunityGlobalDiscoveryRuntime:
                     "WITH node, distance "
                     "MATCH (b:Board)-[:CONTAINS_DECISION]->(node) "
                     "WHERE b.board_id IN $boards "
+                    "AND (node.source_revoked IS NULL "
+                    "OR node.source_revoked = false) "
                     f"AND {tpl.layer_filter_clause('node')} "
                     "RETURN b.board_id, node.id, node.original_node_id, "
                     "node.title, node.one_line_summary, node.node_type, "
@@ -1316,6 +1327,7 @@ class CommunityGlobalDiscoveryRuntime:
             result = self.execute(
                 "MATCH (b:Board)-[:CONTAINS_DECISION]->(d:DecisionDigest) "
                 "WHERE b.board_id IN $boards AND d.embedding IS NOT NULL "
+                "AND (d.source_revoked IS NULL OR d.source_revoked = false) "
                 f"AND {tpl.layer_filter_clause('d')} "
                 "RETURN b.board_id, d.id, d.original_node_id, d.title, "
                 "d.one_line_summary, d.node_type, "
@@ -1530,7 +1542,7 @@ class CommunityGlobalDiscoveryRuntime:
                     "SET d.board_id = $board_id, "
                     "d.original_node_id = $original_node_id, d.title = $title, "
                     "d.one_line_summary = $summary, d.node_type = $node_type, "
-                    "d.graph_layer = $graph_layer",
+                    "d.graph_layer = $graph_layer, d.source_revoked = false",
                     values,
                 )
             except Exception as exc:
@@ -1562,7 +1574,8 @@ class CommunityGlobalDiscoveryRuntime:
                 "id: $digest_id, board_id: $board_id, "
                 "original_node_id: $original_node_id, title: $title, "
                 "one_line_summary: $summary, node_type: $node_type, "
-                "graph_layer: $graph_layer, embedding: $embedding, "
+                "graph_layer: $graph_layer, source_revoked: false, "
+                "embedding: $embedding, "
                 "created_at: timestamp($created_at)})",
                 {**values, "embedding": embedding, "created_at": created_at},
             )
@@ -1845,7 +1858,8 @@ class CommunityGlobalDiscoveryRuntime:
                         "id: $digest_id, board_id: $board_id, "
                         "original_node_id: $original_node_id, title: $title, "
                         "one_line_summary: $summary, node_type: $node_type, "
-                        "graph_layer: $graph_layer, embedding: $embedding, "
+                        "graph_layer: $graph_layer, source_revoked: false, "
+                        "embedding: $embedding, "
                         "created_at: timestamp($created_at)}) "
                         "CREATE (b)-[:CONTAINS_DECISION]->(replacement) "
                         "RETURN removed, replacement.id",
@@ -1885,7 +1899,8 @@ class CommunityGlobalDiscoveryRuntime:
                     "id: $staging_id, board_id: $board_id, "
                     "original_node_id: $original_node_id, title: $title, "
                     "one_line_summary: $summary, node_type: $node_type, "
-                    "graph_layer: $graph_layer, embedding: $embedding, "
+                    "graph_layer: $graph_layer, source_revoked: false, "
+                    "embedding: $embedding, "
                     "created_at: timestamp($created_at)}) "
                     "CREATE (b)-[:CONTAINS_DECISION]->(staging) "
                     "RETURN staging.id",
@@ -1962,7 +1977,8 @@ class CommunityGlobalDiscoveryRuntime:
             "id: $digest_id, board_id: $board_id, "
             "original_node_id: $original_node_id, title: $title, "
             "one_line_summary: $summary, node_type: $node_type, "
-            "graph_layer: $graph_layer, embedding: $embedding, "
+            "graph_layer: $graph_layer, source_revoked: false, "
+            "embedding: $embedding, "
             "created_at: timestamp($created_at)}) "
             "CREATE (b)-[:CONTAINS_DECISION]->(replacement) "
             "RETURN replacement.id"
@@ -2174,6 +2190,45 @@ class CommunityGlobalDiscoveryRuntime:
             )
         return int(result.rows[0][0] or 0) if result.rows else 0
 
+    def delete_decision_digests_for_absent_sources(
+        self,
+        *,
+        board_id: str,
+        original_node_ids: tuple[str, ...],
+        include_malformed: bool = False,
+    ) -> int:
+        """Atomically detach digests after Core proves source absence.
+
+        Derived MENTIONS/DERIVES edges are cache material whose owner has been
+        hard-deleted.  One ``DETACH DELETE`` statement removes the complete
+        lifecycle target set and its relationships atomically under the global
+        single-writer lease.
+        """
+
+        with ladybug_writer_scope(
+            scope="_global",
+            phase="delete_decision_digests_for_absent_sources",
+        ):
+            params = {
+                "board_id": board_id,
+                "original_node_ids": list(original_node_ids),
+            }
+            target_predicate = (
+                "d.board_id = $board_id AND (d.original_node_id IN $original_node_ids"
+            )
+            if include_malformed:
+                target_predicate += (
+                    " OR d.original_node_id IS NULL OR d.original_node_id = ''"
+                )
+            target_predicate += ")"
+            result = self.execute(
+                "MATCH (d:DecisionDigest) "
+                f"WHERE {target_predicate} "
+                "DETACH DELETE d WITH count(d) AS removed RETURN removed",
+                params,
+            )
+        return int(result.rows[0][0] or 0) if result.rows else 0
+
     def link_board_digest(self, *, board_id: str, digest_id: str) -> None:
         self.execute(
             "MATCH (b:Board {board_id: $board_id}), "
@@ -2337,6 +2392,774 @@ class CommunityGlobalDiscoveryRuntime:
         ):
             with self._lifecycle.exclusive():
                 return self._purge_with_writer_lease(reason=reason)
+
+    @staticmethod
+    def _privacy_snapshot_value(value: Any) -> Any:
+        if isinstance(value, (list, tuple)):
+            return [
+                CommunityGlobalDiscoveryRuntime._privacy_snapshot_value(item)
+                for item in value
+            ]
+        tolist = getattr(value, "tolist", None)
+        if callable(tolist):
+            return CommunityGlobalDiscoveryRuntime._privacy_snapshot_value(tolist())
+        isoformat = getattr(value, "isoformat", None)
+        if callable(isoformat):
+            return isoformat()
+        return value
+
+    def _capture_privacy_survivor_snapshot(
+        self,
+        *,
+        board_id: str,
+        survivor_board_ids: tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Capture a target-free, privacy-safe projection of live survivors."""
+
+        target = self.execute(
+            "MATCH (b:Board {board_id: $board_id}) RETURN count(b)",
+            {"board_id": board_id},
+        )
+        target_digests = self.execute(
+            "MATCH (d:DecisionDigest) WHERE d.board_id = $board_id RETURN count(d)",
+            {"board_id": board_id},
+        )
+        if (int(target.rows[0][0] or 0) if target.rows else 0) or (
+            int(target_digests.rows[0][0] or 0) if target_digests.rows else 0
+        ):
+            raise RuntimeError(
+                "global_discovery_privacy_snapshot_target_still_present "
+                f"board={board_id}"
+            )
+
+        statements = {
+            "boards": (
+                "MATCH (n:Board) RETURN n.board_id, n.name, n.summary, "
+                "n.summary_embedding, n.topic_count, n.entity_count, "
+                "n.decision_count, n.last_sync_at"
+            ),
+            "digests": (
+                "MATCH (n:DecisionDigest) RETURN n.id, n.board_id, "
+                "n.original_node_id, n.title, n.one_line_summary, n.node_type, "
+                "n.graph_layer, coalesce(n.source_revoked, false), "
+                "n.embedding, n.created_at"
+            ),
+            "topics": ("MATCH (b:Board)-[:HAS_TOPIC]->(n:Topic) RETURN DISTINCT n.id"),
+            "entities": (
+                "MATCH (b:Board)-[:MENTIONS_ENTITY]->(n:Entity) RETURN DISTINCT n.id"
+            ),
+            "decision_entities": (
+                "MATCH (d:DecisionDigest)-[:DECISION_MENTIONS_ENTITY]->"
+                "(n:Entity) RETURN DISTINCT n.id"
+            ),
+            "has_topic": (
+                "MATCH (a:Board)-[:HAS_TOPIC]->(b:Topic) RETURN a.board_id, b.id"
+            ),
+            "mentions_entity": (
+                "MATCH (a:Board)-[:MENTIONS_ENTITY]->(b:Entity) RETURN a.board_id, b.id"
+            ),
+            "contains_decision": (
+                "MATCH (a:Board)-[:CONTAINS_DECISION]->(b:DecisionDigest) "
+                "RETURN a.board_id, b.id"
+            ),
+            "decision_mentions_entity": (
+                "MATCH (a:DecisionDigest)-[:DECISION_MENTIONS_ENTITY]->"
+                "(b:Entity) RETURN a.id, b.id"
+            ),
+            "decision_derives_from": (
+                "MATCH (a:DecisionDigest)-[:DECISION_DERIVES_FROM]->"
+                "(b:DecisionDigest) RETURN a.id, b.id"
+            ),
+        }
+        rows: dict[str, list[list[Any]]] = {}
+        for name, statement in statements.items():
+            result = self.execute(statement)
+            rows[name] = [
+                [self._privacy_snapshot_value(value) for value in row]
+                for row in result.rows
+            ]
+        rows["entities"].extend(rows.pop("decision_entities"))
+        authoritative = (
+            set(survivor_board_ids)
+            if survivor_board_ids is not None
+            else {
+                str(row[0]) for row in rows["boards"] if row and str(row[0]) != board_id
+            }
+        )
+        authoritative.discard(board_id)
+        return self._build_privacy_survivor_snapshot(
+            board_id=board_id,
+            rows=rows,
+            survivor_board_ids=authoritative,
+        )
+
+    @staticmethod
+    def _privacy_row_sort_key(row: list[Any]) -> str:
+        return json.dumps(
+            row,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @classmethod
+    def _canonical_privacy_rows(
+        cls,
+        rows: dict[str, Any],
+        *,
+        survivor_board_ids: set[str],
+    ) -> dict[str, list[list[Any]]]:
+        """Validate, fence and canonicalize journal rows.
+
+        Topic and Entity aggregates intentionally retain only their stable IDs.
+        Their names, aliases, embeddings and counts are cross-board aggregates,
+        so copying those values could preserve a deleted board's contribution.
+        The topology is retained with redacted placeholders until normal
+        clustering rematerializes aggregate properties from survivor sources.
+        """
+
+        normalized: dict[str, list[list[Any]]] = {
+            key: [] for key in _PRIVACY_ROW_WIDTHS
+        }
+        for key, width in _PRIVACY_ROW_WIDTHS.items():
+            raw_rows = rows.get(key, [])
+            if not isinstance(raw_rows, list):
+                raise RuntimeError(
+                    f"global_discovery_privacy_survivor_snapshot_invalid rows={key}"
+                )
+            seen: set[str] = set()
+            for raw_row in raw_rows:
+                if not isinstance(raw_row, (list, tuple)):
+                    raise RuntimeError(
+                        f"global_discovery_privacy_survivor_snapshot_invalid row={key}"
+                    )
+                # Version-1 journals stored full Topic/Entity aggregates.
+                # Only the stable identity is safe to carry forward.
+                row = list(raw_row[:1] if key in {"topics", "entities"} else raw_row)
+                if len(row) != width:
+                    raise RuntimeError(
+                        "global_discovery_privacy_survivor_snapshot_invalid "
+                        f"shape={key}:{len(row)}"
+                    )
+                row = [cls._privacy_snapshot_value(value) for value in row]
+                identity = cls._privacy_row_sort_key(row)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                normalized[key].append(row)
+
+        board_rows: dict[str, list[Any]] = {}
+        for row in normalized["boards"]:
+            identity = str(row[0])
+            if identity not in survivor_board_ids:
+                continue
+            if identity in board_rows:
+                raise RuntimeError(
+                    "global_discovery_privacy_survivor_snapshot_invalid "
+                    f"duplicate_board={identity}"
+                )
+            board_rows[identity] = row
+        live_board_ids = set(board_rows)
+
+        digest_rows: dict[str, list[Any]] = {}
+        digest_owners: dict[str, str] = {}
+        for row in normalized["digests"]:
+            digest_id = str(row[0])
+            owner = str(row[1])
+            if owner not in live_board_ids:
+                continue
+            if digest_id in digest_rows:
+                raise RuntimeError(
+                    "global_discovery_privacy_survivor_snapshot_invalid "
+                    f"duplicate_digest={digest_id}"
+                )
+            digest_rows[digest_id] = row
+            digest_owners[digest_id] = owner
+        live_digest_ids = set(digest_rows)
+
+        def _relation_rows(
+            key: str,
+            predicate: Callable[[str, str], bool],
+        ) -> list[list[Any]]:
+            return [
+                row for row in normalized[key] if predicate(str(row[0]), str(row[1]))
+            ]
+
+        has_topic = _relation_rows(
+            "has_topic",
+            lambda board, _topic: board in live_board_ids,
+        )
+        mentions_entity = _relation_rows(
+            "mentions_entity",
+            lambda board, _entity: board in live_board_ids,
+        )
+        contains_decision = _relation_rows(
+            "contains_decision",
+            lambda board, digest: (
+                board in live_board_ids
+                and digest in live_digest_ids
+                and digest_owners[digest] == board
+            ),
+        )
+        decision_mentions_entity = _relation_rows(
+            "decision_mentions_entity",
+            lambda digest, _entity: digest in live_digest_ids,
+        )
+        decision_derives_from = _relation_rows(
+            "decision_derives_from",
+            lambda source, target: (
+                source in live_digest_ids and target in live_digest_ids
+            ),
+        )
+
+        topic_ids = {str(row[1]) for row in has_topic}
+        entity_ids = {
+            str(row[1]) for row in (*mentions_entity, *decision_mentions_entity)
+        }
+        declared_topic_ids = {str(row[0]) for row in normalized["topics"]}
+        declared_entity_ids = {str(row[0]) for row in normalized["entities"]}
+        if not topic_ids.issubset(declared_topic_ids):
+            raise RuntimeError(
+                "global_discovery_privacy_survivor_snapshot_invalid missing_topic"
+            )
+        if not entity_ids.issubset(declared_entity_ids):
+            raise RuntimeError(
+                "global_discovery_privacy_survivor_snapshot_invalid missing_entity"
+            )
+
+        topic_counts = {
+            board_id: len({str(row[1]) for row in has_topic if str(row[0]) == board_id})
+            for board_id in live_board_ids
+        }
+        entity_counts = {
+            board_id: len(
+                {str(row[1]) for row in mentions_entity if str(row[0]) == board_id}
+            )
+            for board_id in live_board_ids
+        }
+        decision_counts = {
+            board_id: sum(1 for owner in digest_owners.values() if owner == board_id)
+            for board_id in live_board_ids
+        }
+        for board_id, row in board_rows.items():
+            row[4] = topic_counts[board_id]
+            row[5] = entity_counts[board_id]
+            row[6] = decision_counts[board_id]
+
+        canonical = {
+            "boards": list(board_rows.values()),
+            "topics": [[identity] for identity in topic_ids],
+            "entities": [[identity] for identity in entity_ids],
+            "digests": list(digest_rows.values()),
+            "has_topic": has_topic,
+            "mentions_entity": mentions_entity,
+            "contains_decision": contains_decision,
+            "decision_mentions_entity": decision_mentions_entity,
+            "decision_derives_from": decision_derives_from,
+        }
+        for key, values in canonical.items():
+            canonical[key] = sorted(
+                values,
+                key=cls._privacy_row_sort_key,
+            )
+        return canonical
+
+    @classmethod
+    def _build_privacy_survivor_snapshot(
+        cls,
+        *,
+        board_id: str,
+        rows: dict[str, Any],
+        survivor_board_ids: set[str],
+    ) -> dict[str, Any]:
+        canonical = cls._canonical_privacy_rows(
+            rows,
+            survivor_board_ids=survivor_board_ids,
+        )
+        encoded_rows = json.dumps(
+            canonical,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return {
+            "version": _PRIVACY_SNAPSHOT_VERSION,
+            "target_board_id": board_id,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "survivor_board_ids": sorted(survivor_board_ids),
+            "rows": canonical,
+            "manifest": {
+                "counts": {key: len(value) for key, value in canonical.items()},
+                "sha256": hashlib.sha256(encoded_rows).hexdigest(),
+            },
+        }
+
+    @classmethod
+    def _validate_privacy_survivor_snapshot(
+        cls,
+        snapshot: dict[str, Any],
+        *,
+        board_id: str,
+    ) -> None:
+        if (
+            snapshot.get("version") != _PRIVACY_SNAPSHOT_VERSION
+            or snapshot.get("target_board_id") != board_id
+            or not isinstance(snapshot.get("rows"), dict)
+            or not isinstance(snapshot.get("manifest"), dict)
+        ):
+            raise RuntimeError(
+                f"global_discovery_privacy_survivor_snapshot_invalid board={board_id}"
+            )
+        declared_survivors = snapshot.get("survivor_board_ids")
+        if not isinstance(declared_survivors, list) or not all(
+            isinstance(value, str) for value in declared_survivors
+        ):
+            raise RuntimeError(
+                "global_discovery_privacy_survivor_snapshot_invalid "
+                f"authority={board_id}"
+            )
+        canonical = cls._canonical_privacy_rows(
+            snapshot["rows"],
+            survivor_board_ids=set(declared_survivors),
+        )
+        if canonical != snapshot["rows"]:
+            raise RuntimeError(
+                "global_discovery_privacy_survivor_snapshot_invalid "
+                f"canonical={board_id}"
+            )
+        encoded_rows = json.dumps(
+            canonical,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        expected_manifest = {
+            "counts": {key: len(value) for key, value in canonical.items()},
+            "sha256": hashlib.sha256(encoded_rows).hexdigest(),
+        }
+        if snapshot["manifest"] != expected_manifest:
+            raise RuntimeError(
+                "global_discovery_privacy_survivor_snapshot_invalid "
+                f"manifest={board_id}"
+            )
+
+    @classmethod
+    def _merge_privacy_survivor_rows(
+        cls,
+        *,
+        journal_rows: dict[str, list[list[Any]]],
+        current_rows: dict[str, list[list[Any]]],
+    ) -> dict[str, list[list[Any]]]:
+        """Prefer current rows for materialized boards, retain crash survivors."""
+
+        current_board_ids = {str(row[0]) for row in current_rows["boards"]}
+        journal_digest_owners = {
+            str(row[0]): str(row[1]) for row in journal_rows["digests"]
+        }
+
+        def _merge_owned(
+            key: str,
+            owner: Callable[[list[Any]], str | None],
+        ) -> list[list[Any]]:
+            retained = [
+                row for row in journal_rows[key] if owner(row) not in current_board_ids
+            ]
+            return [*retained, *current_rows[key]]
+
+        merged = {
+            "boards": _merge_owned("boards", lambda row: str(row[0])),
+            "digests": _merge_owned("digests", lambda row: str(row[1])),
+            "has_topic": _merge_owned("has_topic", lambda row: str(row[0])),
+            "mentions_entity": _merge_owned(
+                "mentions_entity",
+                lambda row: str(row[0]),
+            ),
+            "contains_decision": _merge_owned(
+                "contains_decision",
+                lambda row: str(row[0]),
+            ),
+            "decision_mentions_entity": _merge_owned(
+                "decision_mentions_entity",
+                lambda row: journal_digest_owners.get(str(row[0])),
+            ),
+            "decision_derives_from": [
+                row
+                for row in journal_rows["decision_derives_from"]
+                if (
+                    journal_digest_owners.get(str(row[0])) not in current_board_ids
+                    and journal_digest_owners.get(str(row[1])) not in current_board_ids
+                )
+            ]
+            + current_rows["decision_derives_from"],
+            # Aggregate identities are recomputed below from retained topology.
+            "topics": [
+                *journal_rows["topics"],
+                *current_rows["topics"],
+            ],
+            "entities": [
+                *journal_rows["entities"],
+                *current_rows["entities"],
+            ],
+        }
+        return merged
+
+    @staticmethod
+    def _privacy_snapshot_path(storage_root: Path, board_id: str) -> Path:
+        suffix = hashlib.sha256(board_id.encode("utf-8")).hexdigest()[:24]
+        return storage_root / f".global-privacy-survivors-{suffix}.json"
+
+    def _load_or_create_privacy_survivor_snapshot(
+        self,
+        *,
+        board_id: str,
+        storage_root: Path,
+        survivor_board_ids: tuple[str, ...] | None,
+    ) -> tuple[dict[str, Any], Path]:
+        from okto_pulse.community.adapters.filesystem_erasure import (
+            fsync_directory,
+        )
+
+        snapshot_path = self._privacy_snapshot_path(storage_root, board_id)
+
+        def _write_snapshot(snapshot: dict[str, Any]) -> None:
+            payload = json.dumps(
+                snapshot,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            temp_path = snapshot_path.with_name(
+                f"{snapshot_path.name}.tmp.{os.getpid()}.{threading.get_ident()}"
+            )
+            try:
+                with temp_path.open("xb") as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp_path, snapshot_path)
+                fsync_directory(storage_root)
+            finally:
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+        authoritative = (
+            set(survivor_board_ids) if survivor_board_ids is not None else None
+        )
+        if authoritative is not None:
+            authoritative.discard(board_id)
+
+        if snapshot_path.exists():
+            try:
+                snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    "global_discovery_privacy_survivor_snapshot_invalid "
+                    f"board={board_id}"
+                ) from exc
+            if not isinstance(snapshot, dict):
+                raise RuntimeError(
+                    "global_discovery_privacy_survivor_snapshot_invalid "
+                    f"board={board_id}"
+                )
+            version = snapshot.get("version")
+            if version == _PRIVACY_SNAPSHOT_VERSION:
+                self._validate_privacy_survivor_snapshot(
+                    snapshot,
+                    board_id=board_id,
+                )
+            elif version in {1, 2} and isinstance(snapshot.get("rows"), dict):
+                legacy_rows = {
+                    key: snapshot["rows"].get(key, []) for key in _PRIVACY_ROW_WIDTHS
+                }
+                legacy_authority = {
+                    str(row[0])
+                    for row in legacy_rows["boards"]
+                    if isinstance(row, (list, tuple)) and row
+                }
+                snapshot = self._build_privacy_survivor_snapshot(
+                    board_id=board_id,
+                    rows=legacy_rows,
+                    survivor_board_ids=legacy_authority,
+                )
+            else:
+                raise RuntimeError(
+                    "global_discovery_privacy_survivor_snapshot_invalid "
+                    f"board={board_id}"
+                )
+
+            if authoritative is None:
+                authoritative = set(snapshot["survivor_board_ids"])
+
+            global_root = self._legacy_global_graph_path().parent
+            if global_root.exists():
+                current = self._capture_privacy_survivor_snapshot(
+                    board_id=board_id,
+                    survivor_board_ids=tuple(sorted(authoritative)),
+                )
+                merged_rows = self._merge_privacy_survivor_rows(
+                    journal_rows=snapshot["rows"],
+                    current_rows=current["rows"],
+                )
+            else:
+                merged_rows = snapshot["rows"]
+            snapshot = self._build_privacy_survivor_snapshot(
+                board_id=board_id,
+                rows=merged_rows,
+                survivor_board_ids=authoritative,
+            )
+            _write_snapshot(snapshot)
+        else:
+            snapshot = self._capture_privacy_survivor_snapshot(
+                board_id=board_id,
+                survivor_board_ids=(
+                    tuple(sorted(authoritative)) if authoritative is not None else None
+                ),
+            )
+            _write_snapshot(snapshot)
+        self._validate_privacy_survivor_snapshot(
+            snapshot,
+            board_id=board_id,
+        )
+        return snapshot, snapshot_path
+
+    @staticmethod
+    def _timestamp_expression(value: Any, parameter_name: str) -> str:
+        return f"timestamp(${parameter_name})" if value not in (None, "") else "NULL"
+
+    def _restore_privacy_survivor_snapshot(
+        self,
+        snapshot: dict[str, Any],
+    ) -> dict[str, int]:
+        rows = snapshot["rows"]
+
+        for row in rows["boards"]:
+            params = {
+                "board_id": row[0],
+                "name": row[1],
+                "summary": row[2],
+                "summary_embedding": row[3],
+                "topic_count": row[4],
+                "entity_count": row[5],
+                "decision_count": row[6],
+                "last_sync_at": row[7],
+            }
+            last_sync = self._timestamp_expression(row[7], "last_sync_at")
+            self.execute(
+                "CREATE (n:Board {board_id: $board_id, name: $name, "
+                "summary: $summary, summary_embedding: $summary_embedding, "
+                "topic_count: $topic_count, entity_count: $entity_count, "
+                "decision_count: $decision_count, "
+                f"last_sync_at: {last_sync}}})",
+                params,
+            )
+        for row in rows["digests"]:
+            params = {
+                "id": row[0],
+                "board_id": row[1],
+                "original_node_id": row[2],
+                "title": row[3],
+                "summary": row[4],
+                "node_type": row[5],
+                "graph_layer": row[6],
+                "source_revoked": bool(row[7]),
+                "embedding": row[8],
+                "created_at": row[9],
+            }
+            created = self._timestamp_expression(row[9], "created_at")
+            self.execute(
+                "CREATE (n:DecisionDigest {id: $id, board_id: $board_id, "
+                "original_node_id: $original_node_id, title: $title, "
+                "one_line_summary: $summary, node_type: $node_type, "
+                "graph_layer: $graph_layer, source_revoked: $source_revoked, "
+                f"embedding: $embedding, created_at: {created}}})",
+                params,
+            )
+        for row in rows["topics"]:
+            # Aggregate properties are intentionally redacted.  The stable
+            # identity keeps survivor topology connected until clustering
+            # rematerializes names, centroids and counts from live sources.
+            self.execute(
+                "CREATE (n:Topic {id: $id})",
+                {"id": row[0]},
+            )
+        for row in rows["entities"]:
+            self.execute(
+                "CREATE (n:Entity {id: $id})",
+                {"id": row[0]},
+            )
+
+        relation_specs = (
+            (
+                "has_topic",
+                "Board",
+                "board_id",
+                "HAS_TOPIC",
+                "Topic",
+                "id",
+                False,
+            ),
+            (
+                "mentions_entity",
+                "Board",
+                "board_id",
+                "MENTIONS_ENTITY",
+                "Entity",
+                "id",
+                False,
+            ),
+            (
+                "contains_decision",
+                "Board",
+                "board_id",
+                "CONTAINS_DECISION",
+                "DecisionDigest",
+                "id",
+                False,
+            ),
+            (
+                "decision_mentions_entity",
+                "DecisionDigest",
+                "id",
+                "DECISION_MENTIONS_ENTITY",
+                "Entity",
+                "id",
+                False,
+            ),
+            (
+                "decision_derives_from",
+                "DecisionDigest",
+                "id",
+                "DECISION_DERIVES_FROM",
+                "DecisionDigest",
+                "id",
+                False,
+            ),
+        )
+        for (
+            row_key,
+            from_type,
+            from_key,
+            relation_type,
+            to_type,
+            to_key,
+            weighted,
+        ) in relation_specs:
+            for row in rows[row_key]:
+                relationship = (
+                    f"[:{relation_type} {{weight: $weight}}]"
+                    if weighted
+                    else f"[:{relation_type}]"
+                )
+                params = {"from_id": row[0], "to_id": row[1]}
+                if weighted:
+                    params["weight"] = row[2]
+                self.execute(
+                    f"MATCH (a:{from_type} {{{from_key}: $from_id}}), "
+                    f"(b:{to_type} {{{to_key}: $to_id}}) "
+                    f"CREATE (a)-{relationship}->(b)",
+                    params,
+                )
+
+        return {
+            "boards": len(rows["boards"]),
+            "topics": len(rows["topics"]),
+            "entities": len(rows["entities"]),
+            "digests": len(rows["digests"]),
+            "relationships": sum(
+                len(rows[key])
+                for key in (
+                    "has_topic",
+                    "mentions_entity",
+                    "contains_decision",
+                    "decision_mentions_entity",
+                    "decision_derives_from",
+                )
+            ),
+        }
+
+    def erase_storage_for_privacy(
+        self,
+        *,
+        board_id: str,
+        reason: str,
+        survivor_board_ids: tuple[str, ...] | None = None,
+    ) -> dict[str, object]:
+        """Physically rewrite Global Discovery while preserving live boards.
+
+        Ladybug deletion/checkpoint does not prove that removed values vanished
+        from reusable pages, and inactive generations/quarantines are full
+        snapshots. The runtime therefore captures the already-cascaded live
+        rows into a durable, target-free survivor journal, destroys every
+        global generation, bootstraps a fresh database and restores survivors
+        before returning a verified receipt. A retry after process death reuses
+        the survivor journal instead of accepting an empty partial rebuild.
+        """
+
+        self.require_write_token(operation="erase_storage_for_privacy")
+        from okto_pulse.community.adapters.filesystem_erasure import (
+            fsync_directory,
+            remove_contained_tree,
+            validate_scope_id,
+        )
+
+        safe_board_id = validate_scope_id(board_id)
+        global_root = self._legacy_global_graph_path().parent
+        storage_root = global_root.parent
+        if global_root.name != "global":
+            raise RuntimeError("global_discovery_privacy_erasure_root_invalid")
+        with ladybug_writer_scope(
+            scope="_global",
+            phase="privacy_erase_global_discovery",
+        ):
+            snapshot, snapshot_path = self._load_or_create_privacy_survivor_snapshot(
+                board_id=safe_board_id,
+                storage_root=storage_root,
+                survivor_board_ids=survivor_board_ids,
+            )
+            with self._lifecycle.exclusive():
+                self._close_with_writer_lease()
+                files_removed, directories_removed = remove_contained_tree(
+                    global_root,
+                    base_dir=storage_root,
+                )
+                fsync_directory(storage_root)
+                try:
+                    global_root.lstat()
+                except FileNotFoundError:
+                    verified_absent = True
+                else:
+                    verified_absent = False
+                if not verified_absent:
+                    raise RuntimeError(
+                        "global_discovery_physical_erasure_unverified "
+                        f"board={safe_board_id}"
+                    )
+            self.bootstrap()
+            restored = self._restore_privacy_survivor_snapshot(snapshot)
+            self.flush_after_write_batch()
+            observed = self._capture_privacy_survivor_snapshot(
+                board_id=safe_board_id,
+                survivor_board_ids=tuple(snapshot["survivor_board_ids"]),
+            )
+            if observed["manifest"] != snapshot["manifest"]:
+                raise RuntimeError(
+                    "global_discovery_privacy_survivor_verification_failed "
+                    f"board={safe_board_id}"
+                )
+            snapshot_path.unlink()
+            fsync_directory(storage_root)
+        return {
+            "board_id": safe_board_id,
+            "objects_removed": files_removed,
+            "directories_removed": directories_removed,
+            "verified_absent": True,
+            "survivors_restored": restored,
+            "status": (
+                "purged" if files_removed or directories_removed else "not_found"
+            ),
+        }
 
     def _purge_with_writer_lease(self, *, reason: str) -> GraphPurgeResult:
         from okto_pulse.core.kg.quarantine import QuarantineError

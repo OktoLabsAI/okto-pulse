@@ -141,6 +141,11 @@ def test_af29_s2_community_write_lock_manifest_is_human_readable_json(
         "expires_at",
     ):
         assert key in decoded
+    assert lock.release(
+        board_id="board-json",
+        owner_token=str(acquired.owner_token),
+    )
+    assert not manifest_path.parent.exists()
 
 
 def test_af29_s2_community_stale_recovery_cas_preserves_fresh_primary(

@@ -18,6 +18,7 @@ from okto_pulse.core.domain.enums import CardStatus, CardType
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     GroupCountRequest,
+    PAGE_OFFSET_MAX,
     PageRequest,
 )
 
@@ -113,6 +114,11 @@ def parse_columns_parameters(request: Request) -> ColumnsParameters | None:
     if offset_raw is not None and not offset_raw.isdigit():
         _error("offset_invalid")
     offset = int(offset_raw) if offset_raw is not None else 0
+    if offset > PAGE_OFFSET_MAX:
+        # A huge all-digit offset passes isdigit() but would overflow SQLite's
+        # signed 64-bit OFFSET binding — reject with this route's existing typed
+        # offset error instead of letting it reach the database.
+        _error("offset_invalid")
     if column is not None and column not in KANBAN_STATUSES:
         _error("unknown_column", column=column)
 
@@ -165,9 +171,7 @@ def _spec_disjunction(
     # A syntactically non-empty CSV that contains only separators intentionally
     # matches no rows, mirroring SQL's false empty-set clause.
     if not predicates:
-        predicates.append(
-            ApplicationFilter("spec_id", "eq", "__empty_spec_filter__")
-        )
+        predicates.append(ApplicationFilter("spec_id", "eq", "__empty_spec_filter__"))
     return tuple(predicates)
 
 
@@ -202,9 +206,7 @@ def column_page_request(
 
     filters: list[ApplicationFilter] = []
     if parameters.assignee_id:
-        filters.append(
-            ApplicationFilter("assignee_id", "eq", parameters.assignee_id)
-        )
+        filters.append(ApplicationFilter("assignee_id", "eq", parameters.assignee_id))
     if include_type_filter:
         allowed_types = parameters.card_types_by_status.get(card_status)
         if allowed_types:
@@ -227,9 +229,7 @@ def _aggregate_scope(
     *,
     card_status: str | None = None,
 ) -> tuple[ApplicationFilter, ...]:
-    scope: list[ApplicationFilter] = [
-        ApplicationFilter("board_id", "eq", board_id)
-    ]
+    scope: list[ApplicationFilter] = [ApplicationFilter("board_id", "eq", board_id)]
     if card_status is not None:
         scope.append(ApplicationFilter("status", "eq", card_status))
     if not parameters.include_archived:
@@ -242,9 +242,7 @@ def _aggregate_filters(
 ) -> tuple[ApplicationFilter, ...]:
     if not parameters.assignee_id:
         return ()
-    return (
-        ApplicationFilter("assignee_id", "eq", parameters.assignee_id),
-    )
+    return (ApplicationFilter("assignee_id", "eq", parameters.assignee_id),)
 
 
 def _aggregate_dimensions(
@@ -330,9 +328,7 @@ def card_summary(record: Any) -> dict[str, Any]:
     """Project the exact 22-field legacy card wire from a scalar record."""
 
     values = record.values
-    result = {
-        field: _wire_value(values.get(field)) for field in CARD_SUMMARY_FIELDS
-    }
+    result = {field: _wire_value(values.get(field)) for field in CARD_SUMMARY_FIELDS}
     result["priority"] = result["priority"] or "none"
     result["card_type"] = result["card_type"] or "normal"
     result["labels"] = result["labels"] or []
@@ -341,7 +337,9 @@ def card_summary(record: Any) -> dict[str, Any]:
     return result
 
 
-def page_meta(page: Any, card_type_facet: dict[str, int] | None = None) -> dict[str, Any]:
+def page_meta(
+    page: Any, card_type_facet: dict[str, int] | None = None
+) -> dict[str, Any]:
     return {
         "total_filtered": page.total_filtered,
         "total_overall": page.total_overall,

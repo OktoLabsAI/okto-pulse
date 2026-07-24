@@ -21,6 +21,7 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 )
 from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
     CommunitySqlAlchemyKnowledgePropagationStore,
+    _bound_assignment,
     _current_physical_source,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -245,6 +246,39 @@ def _omitted_plan() -> KnowledgeMutationPlan:
         next_scope_selection_state=KnowledgeSelectionState.OMITTED,
         ledger_entry=ledger,
     )
+
+
+def test_current_assignment_alias_ambiguity_fails_closed() -> None:
+    source_alias = "kb-binding-alias-collision"
+    first = _reference_plan(
+        operation_id="kbop-binding-first",
+        assignment_id="kbasg-binding-first",
+        source_id=source_alias,
+        root_id="root-binding-first",
+        idempotency_key="idem-binding-first",
+    ).assignments_to_open[0]
+    second = _reference_plan(
+        operation_id="kbop-binding-second",
+        assignment_id="kbasg-binding-second",
+        source_id="kb-binding-second",
+        root_id=source_alias,
+        idempotency_key="idem-binding-second",
+    ).assignments_to_open[0]
+
+    with pytest.raises(KnowledgePropagationPortError) as ambiguous:
+        _bound_assignment(
+            source_alias,
+            {
+                first.assignment.revision_stamp.root_id: first,
+                second.assignment.revision_stamp.root_id: second,
+            },
+        )
+
+    assert ambiguous.value.code == "knowledge_propagation_current_binding_ambiguous"
+    assert ambiguous.value.details["assignment_ids"] == [
+        "kbasg-binding-first",
+        "kbasg-binding-second",
+    ]
 
 
 async def test_stage_mutation_uses_caller_uow_and_exact_replay(
@@ -709,6 +743,370 @@ async def test_source_lookup_is_guarded_by_immediate_parent_for_spec_and_card(
     ]
 
 
+async def test_deleted_physical_source_can_only_be_dropped_from_durable_binding(
+    propagation_store,
+) -> None:
+    store, sessions = propagation_store
+    root_a = "root-deleted-selective-a"
+    root_b = "root-deleted-selective-b"
+    source_a = "kb-deleted-selective-a"
+    source_b = "kb-deleted-selective-b"
+    async with sessions() as session:
+        session.add(
+            Ideation(
+                id="ideation-deleted-selective",
+                board_id=BOARD_ID,
+                title="Deleted selective source parent",
+                created_by=ACTOR_ID,
+            )
+        )
+        target = await session.get(Spec, SPEC_ID)
+        assert target is not None
+        target.ideation_id = "ideation-deleted-selective"
+        session.add_all(
+            [
+                IdeationKnowledgeBase(
+                    id=source_a,
+                    ideation_id="ideation-deleted-selective",
+                    title="Source A",
+                    content="source-a-v1",
+                    root_source_kb_id=root_a,
+                    source_version=1,
+                    created_by=ACTOR_ID,
+                ),
+                IdeationKnowledgeBase(
+                    id=source_b,
+                    ideation_id="ideation-deleted-selective",
+                    title="Source B",
+                    content="source-b-v1",
+                    root_source_kb_id=root_b,
+                    source_version=1,
+                    created_by=ACTOR_ID,
+                ),
+            ]
+        )
+        await session.commit()
+
+    service = KnowledgePropagationService(port=store, now=lambda: NOW)
+    async with sessions() as session:
+        await service.mutate(
+            session,
+            KnowledgeMutationCommand(
+                target=_target(),
+                selection=KnowledgeSelection.explicit_ids(
+                    (source_a, source_b),
+                    mode=KnowledgePropagationMode.SNAPSHOT,
+                ),
+                actor_id=ACTOR_ID,
+                expected_revision=0,
+                idempotency_key="deleted-selective:initial",
+                justification="freeze both sources before one is deleted",
+            ),
+        )
+        await session.commit()
+
+    async with sessions() as session:
+        before = await service.read(session, _target())
+        source_row = await session.get(IdeationKnowledgeBase, source_a)
+        assert source_row is not None
+        await session.delete(source_row)
+        await session.commit()
+
+    before_by_root = {
+        item.assignment.revision_stamp.root_id: item
+        for item in before.resolved_assignments
+    }
+    deleted_assignment_id = before_by_root[root_a].assignment.assignment_id
+
+    for mode in (
+        KnowledgePropagationMode.REFERENCE,
+        KnowledgePropagationMode.SNAPSHOT,
+    ):
+        async with sessions() as session:
+            with pytest.raises(KnowledgePropagationServiceError) as rejected:
+                await service.mutate(
+                    session,
+                    KnowledgeMutationCommand(
+                        target=_target(),
+                        selection=KnowledgeSelection.explicit_ids(
+                            (source_a,),
+                            mode=mode,
+                        ),
+                        actor_id=ACTOR_ID,
+                        expected_revision=1,
+                        idempotency_key=f"deleted-selective:reject-{mode.value}",
+                        justification="deleted sources cannot be selected",
+                    ),
+                )
+            assert rejected.value.code == "knowledge_selection_invalid"
+            assert rejected.value.details["invalid"] == [source_a]
+            await session.rollback()
+
+    async with sessions() as session:
+        with pytest.raises(KnowledgePropagationServiceError) as refresh_rejected:
+            await service.refresh(
+                session,
+                KnowledgeRefreshCommand(
+                    target=_target(),
+                    assignment_ids=(deleted_assignment_id,),
+                    actor_id=ACTOR_ID,
+                    justification="deleted snapshots cannot be refreshed",
+                    expected_revision=1,
+                    idempotency_key="deleted-selective:reject-refresh",
+                ),
+            )
+        assert refresh_rejected.value.code == "knowledge_assignment_not_refreshable"
+        assert refresh_rejected.value.details["invalid"] == [deleted_assignment_id]
+        await session.rollback()
+
+    async with sessions() as session:
+        with pytest.raises(KnowledgePropagationServiceError) as arbitrary:
+            await service.mutate(
+                session,
+                KnowledgeMutationCommand(
+                    target=_target(),
+                    selection=KnowledgeSelection.explicit_ids(
+                        ("kb-never-assigned",),
+                        mode=KnowledgePropagationMode.DROP,
+                    ),
+                    actor_id=ACTOR_ID,
+                    expected_revision=1,
+                    idempotency_key="deleted-selective:reject-arbitrary-drop",
+                    justification="an arbitrary missing id has no durable binding",
+                ),
+            )
+        assert arbitrary.value.code == "knowledge_selection_invalid"
+        assert arbitrary.value.details["missing"] == ["kb-never-assigned"]
+        await session.rollback()
+
+    async with sessions() as session:
+        await service.mutate(
+            session,
+            KnowledgeMutationCommand(
+                target=_target(),
+                selection=KnowledgeSelection.explicit_ids(
+                    (source_a,),
+                    mode=KnowledgePropagationMode.DROP,
+                ),
+                actor_id=ACTOR_ID,
+                expected_revision=1,
+                idempotency_key="deleted-selective:drop-a",
+                justification="remove only the deleted source binding",
+            ),
+        )
+        await session.commit()
+    async with sessions() as session:
+        after = await service.read(session, _target())
+
+    after_by_root = {
+        item.assignment.revision_stamp.root_id: item
+        for item in after.resolved_assignments
+    }
+    assert after.scope_revision == 2
+    assert after_by_root[root_a].state is KnowledgeAssignmentState.DROPPED
+    assert after_by_root[root_a].effective is False
+    assert (
+        after_by_root[root_a].assignment.revision_stamp
+        == before_by_root[root_a].assignment.revision_stamp
+    )
+    assert after_by_root[root_b].state is KnowledgeAssignmentState.ACTIVE
+    assert after_by_root[root_b].effective is True
+    assert (
+        after_by_root[root_b].assignment.assignment_id
+        == before_by_root[root_b].assignment.assignment_id
+    )
+
+
+async def test_card_v2_parent_deleted_source_drop_uses_target_binding(
+    propagation_store,
+) -> None:
+    store, sessions = propagation_store
+    root_a = "root-card-v2-deleted-a"
+    root_b = "root-card-v2-deleted-b"
+    source_a = "kb-card-v2-deleted-a"
+    source_b = "kb-card-v2-deleted-b"
+    card_id = "card-v2-deleted-selective"
+    unbound_card_id = "card-v2-deleted-unbound"
+    async with sessions() as session:
+        session.add(
+            Ideation(
+                id="ideation-card-v2-deleted",
+                board_id=BOARD_ID,
+                title="Card v2 deleted source parent",
+                created_by=ACTOR_ID,
+            )
+        )
+        target = await session.get(Spec, SPEC_ID)
+        assert target is not None
+        target.ideation_id = "ideation-card-v2-deleted"
+        session.add_all(
+            [
+                IdeationKnowledgeBase(
+                    id=source_a,
+                    ideation_id="ideation-card-v2-deleted",
+                    title="Parent source A",
+                    content="parent-source-a",
+                    root_source_kb_id=root_a,
+                    source_version=1,
+                    created_by=ACTOR_ID,
+                ),
+                IdeationKnowledgeBase(
+                    id=source_b,
+                    ideation_id="ideation-card-v2-deleted",
+                    title="Parent source B",
+                    content="parent-source-b",
+                    root_source_kb_id=root_b,
+                    source_version=1,
+                    created_by=ACTOR_ID,
+                ),
+                Card(
+                    id=card_id,
+                    board_id=BOARD_ID,
+                    spec_id=SPEC_ID,
+                    title="Card consuming a v2 Spec",
+                    created_by=ACTOR_ID,
+                    knowledge_bases=[],
+                ),
+                Card(
+                    id=unbound_card_id,
+                    board_id=BOARD_ID,
+                    spec_id=SPEC_ID,
+                    title="Card with no durable source binding",
+                    created_by=ACTOR_ID,
+                    knowledge_bases=[],
+                ),
+            ]
+        )
+        await session.commit()
+
+    service = KnowledgePropagationService(port=store, now=lambda: NOW)
+    card_target = _target(
+        target_type=KnowledgeTargetType.CARD,
+        target_id=card_id,
+    )
+    async with sessions() as session:
+        await service.mutate(
+            session,
+            KnowledgeMutationCommand(
+                target=_target(),
+                selection=KnowledgeSelection.explicit_ids(
+                    (source_a, source_b),
+                    mode=KnowledgePropagationMode.REFERENCE,
+                ),
+                actor_id=ACTOR_ID,
+                expected_revision=0,
+                idempotency_key="card-v2-deleted:parent-select",
+                justification="expose both roots through the parent v2 scope",
+            ),
+        )
+        await session.commit()
+    async with sessions() as session:
+        await service.mutate(
+            session,
+            KnowledgeMutationCommand(
+                target=card_target,
+                selection=KnowledgeSelection.explicit_ids(
+                    (root_a, root_b),
+                    mode=KnowledgePropagationMode.REFERENCE,
+                ),
+                actor_id=ACTOR_ID,
+                expected_revision=0,
+                idempotency_key="card-v2-deleted:card-select",
+                justification="consume both effective parent roots",
+            ),
+        )
+        await session.commit()
+    async with sessions() as session:
+        before = await service.read(session, card_target)
+        source_row = await session.get(IdeationKnowledgeBase, source_a)
+        assert source_row is not None
+        await session.delete(source_row)
+        await session.commit()
+
+    before_by_root = {
+        item.assignment.revision_stamp.root_id: item
+        for item in before.resolved_assignments
+    }
+    async with sessions() as session:
+        with pytest.raises(KnowledgePropagationServiceError) as unbound:
+            await service.mutate(
+                session,
+                KnowledgeMutationCommand(
+                    target=_target(
+                        target_type=KnowledgeTargetType.CARD,
+                        target_id=unbound_card_id,
+                    ),
+                    selection=KnowledgeSelection.explicit_ids(
+                        (root_a,),
+                        mode=KnowledgePropagationMode.DROP,
+                    ),
+                    actor_id=ACTOR_ID,
+                    expected_revision=0,
+                    idempotency_key="card-v2-deleted:reject-unbound-root",
+                    justification="parent history cannot invent a target binding",
+                ),
+            )
+        assert unbound.value.code == "knowledge_selection_invalid"
+        assert unbound.value.details["missing"] == [root_a]
+        await session.rollback()
+
+    async with sessions() as session:
+        with pytest.raises(KnowledgePropagationServiceError) as arbitrary:
+            await service.mutate(
+                session,
+                KnowledgeMutationCommand(
+                    target=card_target,
+                    selection=KnowledgeSelection.explicit_ids(
+                        ("card-v2-unbound-missing",),
+                        mode=KnowledgePropagationMode.DROP,
+                    ),
+                    actor_id=ACTOR_ID,
+                    expected_revision=1,
+                    idempotency_key="card-v2-deleted:reject-arbitrary",
+                    justification="missing aliases must remain rejected",
+                ),
+            )
+        assert arbitrary.value.code == "knowledge_selection_invalid"
+        await session.rollback()
+
+    async with sessions() as session:
+        await service.mutate(
+            session,
+            KnowledgeMutationCommand(
+                target=card_target,
+                selection=KnowledgeSelection.explicit_ids(
+                    (root_a,),
+                    mode=KnowledgePropagationMode.DROP,
+                ),
+                actor_id=ACTOR_ID,
+                expected_revision=1,
+                idempotency_key="card-v2-deleted:drop-a",
+                justification="drop only the deleted parent root",
+            ),
+        )
+        await session.commit()
+    async with sessions() as session:
+        after = await service.read(session, card_target)
+
+    after_by_root = {
+        item.assignment.revision_stamp.root_id: item
+        for item in after.resolved_assignments
+    }
+    assert after.scope_revision == 2
+    assert after_by_root[root_a].state is KnowledgeAssignmentState.DROPPED
+    assert after_by_root[root_a].effective is False
+    assert (
+        after_by_root[root_a].assignment.revision_stamp
+        == before_by_root[root_a].assignment.revision_stamp
+    )
+    assert after_by_root[root_b].state is KnowledgeAssignmentState.ACTIVE
+    assert after_by_root[root_b].effective is True
+    assert (
+        after_by_root[root_b].assignment.assignment_id
+        == before_by_root[root_b].assignment.assignment_id
+    )
+
+
 async def test_current_assignment_tracks_one_linear_root_leaf_and_rejects_branches(
     propagation_store,
 ) -> None:
@@ -866,6 +1264,10 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
     propagation_store,
 ) -> None:
     store, sessions = propagation_store
+    reference_v1_governance = {"purpose": "reference governance v1"}
+    reference_v2_governance = {"purpose": "reference governance v2"}
+    snapshot_v1_governance = {"purpose": "snapshot governance v1"}
+    snapshot_v2_governance = {"purpose": "snapshot governance v2"}
     async with sessions() as session:
         session.add(
             Ideation(
@@ -884,6 +1286,7 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                     content="reference-v1",
                     root_source_kb_id="root-reference",
                     source_version=1,
+                    governance_metadata=reference_v1_governance,
                     created_by=ACTOR_ID,
                 ),
                 IdeationKnowledgeBase(
@@ -893,6 +1296,7 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                     content="snapshot-v1",
                     root_source_kb_id="root-snapshot",
                     source_version=1,
+                    governance_metadata=snapshot_v1_governance,
                     created_by=ACTOR_ID,
                 ),
                 IdeationKnowledgeBase(
@@ -1090,6 +1494,7 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                     immediate_parent_kb_id="kb-reference-v1",
                     source_kb_id="kb-reference-v1",
                     source_version=2,
+                    governance_metadata=reference_v2_governance,
                     created_by=ACTOR_ID,
                 ),
                 IdeationKnowledgeBase(
@@ -1101,6 +1506,7 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                     immediate_parent_kb_id="kb-snapshot-v1",
                     source_kb_id="kb-snapshot-v1",
                     source_version=2,
+                    governance_metadata=snapshot_v2_governance,
                     created_by=ACTOR_ID,
                 ),
             ]
@@ -1144,9 +1550,7 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                     select(func.count())
                     .select_from(SpecKnowledgeBase)
                     .where(
-                        SpecKnowledgeBase.spec_id.in_(
-                            (SPEC_ID, "spec-snapshot-parent")
-                        )
+                        SpecKnowledgeBase.spec_id.in_((SPEC_ID, "spec-snapshot-parent"))
                     )
                 )
             )
@@ -1164,7 +1568,19 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
         reference_read.effective_assignments[0].resolved_source_knowledge_id
         == "kb-reference-v2"
     )
+    assert (
+        reference_read.effective_assignments[0].governance_metadata
+        == reference_v2_governance
+    )
     assert snapshot_payload["content"] == "snapshot-v1"
+    assert (
+        snapshot_read.effective_assignments[0].governance_metadata
+        == snapshot_v1_governance
+    )
+    assert (
+        parent_snapshot_read.effective_assignments[0].governance_metadata
+        == snapshot_v1_governance
+    )
     assert snapshot_read.effective_assignments[0].state is (
         KnowledgeAssignmentState.ACTIVE
     )
@@ -1202,6 +1618,10 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
     assert (
         refreshed_child.effective_assignments[0].resolved_source_knowledge_id
         == "kb-snapshot-v2"
+    )
+    assert (
+        refreshed_child.effective_assignments[0].governance_metadata
+        == snapshot_v2_governance
     )
 
 
@@ -1372,6 +1792,7 @@ async def test_spec_physical_rows_are_local_only_strictly_after_activation(
                     spec_id=SPEC_ID,
                     title="After boundary",
                     content="target-local under v2",
+                    governance_metadata={"purpose": "local governance"},
                     created_by=ACTOR_ID,
                     created_at=NOW + timedelta(microseconds=1),
                 ),
@@ -1413,6 +1834,7 @@ async def test_spec_physical_rows_are_local_only_strictly_after_activation(
     )
     assert local.attached_at == NOW + timedelta(microseconds=1)
     assert local.content_bytes is not None
+    assert local.governance_metadata == {"purpose": "local governance"}
     assert {
         item.source_knowledge_id for item in result.effective_local_attachments
     } == {"kb-after-boundary", "kb-self-root-after-boundary"}
@@ -1462,9 +1884,9 @@ async def test_spec_local_default_preserves_microseconds_after_activation(
     if persisted_created_at.tzinfo is None:
         persisted_created_at = persisted_created_at.replace(tzinfo=timezone.utc)
     assert persisted_created_at > activation
-    assert [
-        item.source_knowledge_id for item in scope.local_attachments
-    ] == ["kb-local-default-timestamp"]
+    assert [item.source_knowledge_id for item in scope.local_attachments] == [
+        "kb-local-default-timestamp"
+    ]
     column = SpecKnowledgeBase.__table__.c.created_at
     assert column.default is not None
     assert column.server_default is not None
@@ -1631,12 +2053,10 @@ async def test_post_activation_physical_copy_cannot_resurrect_drop_after_restart
     assert restarted_scope.v2_activated_at == NOW
     assert restarted_scope.local_attachments == ()
     assert {
-        item.source_knowledge_id
-        for item in restarted_scope.legacy_attachments
+        item.source_knowledge_id for item in restarted_scope.legacy_attachments
     } == {"kb-forbidden-post-v2-copy"}
     assert any(
-        item.root_id == "root-drop-contamination"
-        and item.temporal.is_current
+        item.root_id == "root-drop-contamination" and item.temporal.is_current
         for item in restarted_scope.tombstones
     )
     assert restarted_read.effective_count == 0

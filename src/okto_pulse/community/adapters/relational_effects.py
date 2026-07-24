@@ -191,7 +191,14 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                     "claim_timeout_at": None,
                     "next_retry_at": None,
                 },
-                where=ConsolidationQueue.status.notin_(("pending", "claimed")),
+                # A duplicate while still pending is already represented by
+                # the durable row. A new semantic event racing an active
+                # worker is different: invalidate that exact claim and leave
+                # the row pending so the stale graph snapshot cannot ACK.
+                # The Core worker's final claim fence and compare-and-delete
+                # ACK then either abort before graph commit or compensate its
+                # deferred graph mutation after losing the ACK CAS.
+                where=ConsolidationQueue.status != "pending",
             )
             .returning(ConsolidationQueue.id)
         )

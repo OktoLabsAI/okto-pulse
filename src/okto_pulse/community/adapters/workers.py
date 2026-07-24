@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from okto_pulse.core.application.processors import (
+    BoardErasureProcessor,
     ConsolidationProcessor,
     GlobalOutboxProcessor,
     SessionCleanupProcessor,
@@ -30,6 +31,7 @@ from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
 
 COMMUNITY_WORKER_BASELINE_FAMILIES: tuple[str, ...] = (
     "event_dispatcher",
+    "board_erasure_worker",
     "cleanup_worker",
     "consolidation_worker",
     "outbox_worker",
@@ -98,6 +100,16 @@ def build_community_worker_registry(
         operation_name="process_once",
         final_iteration=True,
     )
+    board_erasure_runner = PollingRunner(
+        BoardErasureProcessor(
+            cancel_safe_relational_scope,
+            clock=clock,
+        ),
+        name="community.kg.board_erasure_runner",
+        interval_seconds=5.0,
+        operation_name="process_once",
+        final_iteration=True,
+    )
     consolidation_processor = ConsolidationProcessor(
         relational_scope_factory=cancel_safe_relational_scope,
         heartbeat_seconds=kg_queue_heartbeat_seconds,
@@ -132,6 +144,14 @@ def build_community_worker_registry(
             start=lambda: start_runner(event_runner),
             stop=stop_runner,
             stop_priority=300,
+        )
+    )
+    registry.register(
+        RuntimeWorkerSpec(
+            family="board_erasure_worker",
+            start=lambda: start_runner(board_erasure_runner),
+            stop=stop_runner,
+            stop_priority=275,
         )
     )
     if kg_cleanup_enabled:

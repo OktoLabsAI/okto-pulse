@@ -199,6 +199,7 @@ class CommunityKuzuGraphRuntimeStore:
         return self.graph_state(board_id).exists
 
     def purge_board_graph(self, board_id: str, *, reason: str) -> GraphPurgeResult:
+        before = self.graph_state(board_id)
         try:
             from okto_pulse.community.adapters.kg_runtime import (
                 purge_board_graph_storage,
@@ -215,11 +216,68 @@ class CommunityKuzuGraphRuntimeStore:
                 backend=self._BACKEND,
                 error_code=type(exc).__name__,
             )
+        after = self.graph_state(board_id)
+        if after.normalized_state is not GraphRuntimeObservationState.CONFIRMED_ABSENT:
+            return GraphPurgeResult(
+                board_id=board_id,
+                removed=False,
+                not_found=False,
+                status="failed",
+                reason=reason,
+                backend=self._BACKEND,
+                error_code=(
+                    "purge_did_not_remove_existing_graph"
+                    if before.exists
+                    else "purge_absence_unverified"
+                ),
+            )
         return GraphPurgeResult(
             board_id=board_id,
             removed=bool(affected),
             not_found=not bool(affected),
             status="purged" if affected else "not_found",
+            reason=reason,
+            backend=self._BACKEND,
+            error_code=None,
+        )
+
+    def erase_board_graph(self, board_id: str, *, reason: str) -> GraphPurgeResult:
+        before = self.graph_state(board_id)
+        try:
+            from okto_pulse.community.adapters.kg_runtime import (
+                erase_board_graph_storage_for_privacy,
+            )
+
+            affected = erase_board_graph_storage_for_privacy(
+                board_id,
+                reason=reason,
+            )
+        except Exception as exc:
+            return GraphPurgeResult(
+                board_id=board_id,
+                removed=False,
+                not_found=False,
+                status="failed",
+                reason=reason,
+                backend=self._BACKEND,
+                error_code=type(exc).__name__,
+            )
+        after = self.graph_state(board_id)
+        if after.normalized_state is not GraphRuntimeObservationState.CONFIRMED_ABSENT:
+            return GraphPurgeResult(
+                board_id=board_id,
+                removed=False,
+                not_found=False,
+                status="failed",
+                reason=reason,
+                backend=self._BACKEND,
+                error_code="physical_erasure_absence_unverified",
+            )
+        return GraphPurgeResult(
+            board_id=board_id,
+            removed=bool(affected),
+            not_found=not before.exists and not bool(affected),
+            status="erased" if before.exists or affected else "not_found",
             reason=reason,
             backend=self._BACKEND,
             error_code=None,

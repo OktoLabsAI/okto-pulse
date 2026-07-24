@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from okto_pulse.community.adapters.kuzu_graph_runtime_store import (
     CommunityKuzuGraphRuntimeStore,
 )
@@ -74,16 +76,24 @@ def test_af17_community_graph_runtime_store_footprint_handles_stat_error(
 
 
 def test_af17_community_graph_runtime_store_purge_delegates_to_local_runtime(
+    tmp_path,
     monkeypatch,
 ) -> None:
     calls: list[tuple[str, str]] = []
+    graph_file = tmp_path / "board.lbug"
+    wal_file = tmp_path / "board.lbug.wal"
+    graph_file.write_bytes(b"graph")
+    wal_file.write_bytes(b"wal")
 
     def fake_purge(board_id: str, *, reason: str) -> list[str]:
         calls.append((board_id, reason))
-        return ["board.lbug", "board.lbug.wal"]
+        graph_file.unlink()
+        wal_file.unlink()
+        return [str(graph_file), str(wal_file)]
 
     from okto_pulse.community.adapters import kg_runtime
 
+    monkeypatch.setattr(kg_runtime, "board_kuzu_path", lambda _board_id: graph_file)
     monkeypatch.setattr(kg_runtime, "purge_board_graph_storage", fake_purge)
 
     result = CommunityKuzuGraphRuntimeStore().purge_board_graph(
@@ -95,6 +105,66 @@ def test_af17_community_graph_runtime_store_purge_delegates_to_local_runtime(
     assert result.not_found is False
     assert result.status == "purged"
     assert result.backend == "community_local_graph"
+
+
+def test_af17_community_graph_runtime_store_refuses_false_not_found(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    graph_file = tmp_path / "board.lbug"
+    graph_file.write_bytes(b"graph")
+
+    from okto_pulse.community.adapters import kg_runtime
+
+    monkeypatch.setattr(kg_runtime, "board_kuzu_path", lambda _board_id: graph_file)
+    monkeypatch.setattr(
+        kg_runtime,
+        "purge_board_graph_storage",
+        lambda _board_id, *, reason: [],
+    )
+
+    result = CommunityKuzuGraphRuntimeStore().purge_board_graph(
+        "board-1",
+        reason="right_to_erasure",
+    )
+
+    assert result.removed is False
+    assert result.not_found is False
+    assert result.status == "failed"
+    assert result.error_code == "purge_did_not_remove_existing_graph"
+
+
+def test_af17_privacy_erasure_holds_storage_mutation_window(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    graph_file = tmp_path / "graph.lbug"
+    wal_file = tmp_path / "graph.lbug.wal"
+    graph_file.write_bytes(b"private graph")
+    wal_file.write_bytes(b"private wal")
+    events: list[str] = []
+
+    from okto_pulse.community.adapters import kg_runtime
+
+    @contextmanager
+    def _window(board_id: str, *, phase: str):
+        assert board_id == "board-privacy"
+        assert phase.startswith("privacy_erasure:")
+        events.append("enter")
+        yield
+        events.append("exit")
+
+    monkeypatch.setattr(kg_runtime, "board_kuzu_path", lambda _board_id: graph_file)
+    monkeypatch.setattr(kg_runtime, "board_storage_mutation_window", _window)
+
+    removed = kg_runtime.erase_board_graph_storage_for_privacy(
+        "board-privacy",
+    )
+
+    assert events == ["enter", "exit"]
+    assert set(removed) == {str(graph_file), str(wal_file)}
+    assert not graph_file.exists()
+    assert not wal_file.exists()
 
 
 def test_af17_community_graph_runtime_store_is_registered_as_provider() -> None:

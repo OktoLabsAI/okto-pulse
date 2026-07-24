@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -12,6 +11,7 @@ from okto_pulse.community.api.pagination import board_scope
 from okto_pulse.core.domain.enums import CardPriority, CardStatus, CardType
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
+    PAGE_OFFSET_MAX,
     PageRequest,
 )
 
@@ -51,7 +51,9 @@ def validate_card_list_query(request: Request) -> None:
             value = _INTEGER_QUERY.validate_python(raw)
         except ValidationError:
             _error(f"{name}_invalid", value=raw)
-        if name == "offset" and value < 0:
+        if name == "offset" and (value < 0 or value > PAGE_OFFSET_MAX):
+            # An offset above int64 would overflow SQLite's OFFSET binding — reject
+            # it at the boundary with the same typed error as a negative offset.
             _error("offset_out_of_bounds", offset=value)
         if name == "limit" and value not in {25, 50, 100}:
             _error(
@@ -94,9 +96,7 @@ def _spec_filters(raw: str | None) -> tuple[ApplicationFilter, ...]:
     if include_unlinked:
         predicates.append(ApplicationFilter("spec_id", "is_none", None))
     if not predicates:
-        predicates.append(
-            ApplicationFilter("spec_id", "eq", "__empty_spec_filter__")
-        )
+        predicates.append(ApplicationFilter("spec_id", "eq", "__empty_spec_filter__"))
     return tuple(predicates)
 
 
@@ -109,8 +109,8 @@ def _labels_and_search_groups(
     ``PageRequest.any_groups`` is one OR-of-AND dimension.  Expanding the two
     independent OR dimensions into their small Cartesian product preserves
     the exact predicate: ``(label A OR label B) AND (title OR description OR
-    labels search)``.  JSON-encoded label needles enforce exact membership
-    rather than substring matching between labels.
+    labels search)``.  The ``json_member`` predicate enforces decoded JSON
+    membership rather than substring or SQL LIKE-pattern matching.
     """
 
     labels = _csv_values(labels_raw)
@@ -121,15 +121,15 @@ def _labels_and_search_groups(
                 (
                     ApplicationFilter(
                         "labels",
-                        "contains",
-                        json.dumps(label, ensure_ascii=False),
+                        "json_member",
+                        label,
                     ),
                 )
                 for label in labels
             )
         else:
             label_branches = (
-                (ApplicationFilter("labels", "contains", '"__empty_label_filter__"'),),
+                (ApplicationFilter("labels", "json_member", "__empty_label_filter__"),),
             )
 
     search_branches: tuple[tuple[ApplicationFilter, ...], ...] = ()

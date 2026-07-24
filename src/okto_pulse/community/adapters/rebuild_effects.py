@@ -325,10 +325,12 @@ class CommunityRebuildEffects:
     ) -> QueueObservation:
         if max_wait_seconds > 0:
             time.sleep(max_wait_seconds)
+        depth, blocking_reason = self._owner.queue_observation(command.board_id)
         return QueueObservation(
-            depth=self._owner.queue_depth(command.board_id),
+            depth=depth,
             observed_at=datetime.now(timezone.utc),
             sequence=after_sequence + 1,
+            blocking_reason=blocking_reason,
         )
 
     def restore(
@@ -347,9 +349,7 @@ class CommunityRebuildEffects:
             restore_canonical_cognitive,
         )
 
-        snapshot_receipt = self._load_receipt(
-            command, f"{command.run_id}:snapshot"
-        )
+        snapshot_receipt = self._load_receipt(command, f"{command.run_id}:snapshot")
         if snapshot_receipt is None:
             return self._store_receipt(
                 command,
@@ -420,7 +420,9 @@ class CommunityRebuildEffects:
         existing = self._load_receipt(rebuild_command, effect_key)
         if existing is not None:
             return existing
-        details: dict[str, object] = {"actions": [action.value for action in command.actions]}
+        details: dict[str, object] = {
+            "actions": [action.value for action in command.actions]
+        }
         ok = True
         if CompensationAction.CANCEL_ENQUEUED_SOURCES in command.actions:
             details["queue"] = self._owner.compensate_pending_sources(
@@ -456,12 +458,8 @@ class CommunityRebuildEffects:
             raise RuntimeError(f"missing checkpoint for compensation: {run_id}")
         return checkpoint.command
 
-    def _restore_latest_quarantine(
-        self, command: RebuildCommand
-    ) -> dict[str, object]:
-        quarantine_receipt = self._load_receipt(
-            command, f"{command.run_id}:quarantine"
-        )
+    def _restore_latest_quarantine(self, command: RebuildCommand) -> dict[str, object]:
+        quarantine_receipt = self._load_receipt(command, f"{command.run_id}:quarantine")
         affected = list(
             dict(quarantine_receipt.details).get("affected_files", [])
             if quarantine_receipt is not None
@@ -507,15 +505,23 @@ class CommunityRebuildEffects:
         if self._quarantine_restore is None:
             return {"ok": False, "reason": "quarantine_restore_unavailable"}
         try:
-            from okto_pulse.core.kg.async_bridge import run_async_blocking
-            from okto_pulse.core.services.application_kg import (
-                get_current_provider_registry,
+            apply_compensation = getattr(
+                self._quarantine_restore,
+                "apply_rebuild_compensation",
+                None,
             )
-
-            lifecycle = get_current_provider_registry().graph_lifecycle
-            if lifecycle is not None:
-                run_async_blocking(lifecycle.close(command.board_id))
-            report = self._quarantine_restore.apply(quarantine_id)
+            if not callable(apply_compensation):
+                return {
+                    "ok": False,
+                    "reason": "governed_quarantine_restore_unavailable",
+                    "quarantine_id": quarantine_id,
+                }
+            report = apply_compensation(
+                quarantine_id,
+                expected_board_id=command.board_id,
+                run_id=command.run_id,
+                owner_token=command.owner_token,
+            )
         except Exception as exc:
             logger.exception(
                 "kg.rebuild.quarantine_restore_failed board=%s quarantine_id=%s",
@@ -546,13 +552,17 @@ class CommunityRebuildEffects:
     def record_audit(
         self, outcome: RebuildOutcome, *, effect_key: str
     ) -> RebuildEffectReceipt:
-        command = self._checkpoint_command(outcome.run_id) if outcome.run_id in self._owner._rebuild_checkpoint_cache else RebuildCommand(
-            run_id=outcome.run_id,
-            board_id=outcome.board_id,
-            manifest_ref="",
-            operation="rebuild",
-            actor_id="system",
-            reason="precondition",
+        command = (
+            self._checkpoint_command(outcome.run_id)
+            if outcome.run_id in self._owner._rebuild_checkpoint_cache
+            else RebuildCommand(
+                run_id=outcome.run_id,
+                board_id=outcome.board_id,
+                manifest_ref="",
+                operation="rebuild",
+                actor_id="system",
+                reason="precondition",
+            )
         )
         existing = self._load_receipt(command, effect_key)
         if existing is not None:

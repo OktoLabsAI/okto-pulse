@@ -7,6 +7,7 @@ import logging
 logger = logging.getLogger("okto_pulse.community.global_discovery_schema")
 
 DECISION_DIGEST_GRAPH_LAYER_COLUMN = ("graph_layer", "STRING")
+DECISION_DIGEST_SOURCE_REVOKED_COLUMN = ("source_revoked", "BOOLEAN")
 
 NODE_DDL = [
     """CREATE NODE TABLE IF NOT EXISTS Board (
@@ -43,6 +44,7 @@ NODE_DDL = [
         one_line_summary STRING,
         node_type STRING,
         graph_layer STRING,
+        source_revoked BOOLEAN,
         embedding DOUBLE[384],
         created_at TIMESTAMP
     )""",
@@ -91,23 +93,26 @@ def _table_column_names(native_scope, table_name: str) -> set[str]:
 
 
 def ensure_decision_digest_layer_column(native_scope) -> tuple[str, ...]:
-    """Converge the local graph schema without exposing DDL to Core."""
+    """Converge additive digest lifecycle columns without exposing DDL to Core."""
 
-    column_name, column_type = DECISION_DIGEST_GRAPH_LAYER_COLUMN
     added: list[str] = []
     try:
         columns = _table_column_names(native_scope, "DecisionDigest")
     except Exception:
         columns = set()
-    if column_name not in columns:
-        try:
-            native_scope.execute(
-                f"ALTER TABLE DecisionDigest ADD {column_name} {column_type}"
-            )
-            added.append(column_name)
-        except Exception as exc:
-            if not _is_duplicate_column_error(exc):
-                raise
+    for column_name, column_type in (
+        DECISION_DIGEST_GRAPH_LAYER_COLUMN,
+        DECISION_DIGEST_SOURCE_REVOKED_COLUMN,
+    ):
+        if column_name not in columns:
+            try:
+                native_scope.execute(
+                    f"ALTER TABLE DecisionDigest ADD {column_name} {column_type}"
+                )
+                added.append(column_name)
+            except Exception as exc:
+                if not _is_duplicate_column_error(exc):
+                    raise
     try:
         native_scope.execute(
             "MATCH (d:DecisionDigest) "
@@ -116,6 +121,14 @@ def ensure_decision_digest_layer_column(native_scope) -> tuple[str, ...]:
         )
     except Exception as exc:
         logger.debug("global_discovery.layer_backfill_skipped err=%s", exc)
+    try:
+        native_scope.execute(
+            "MATCH (d:DecisionDigest) "
+            "WHERE d.source_revoked IS NULL "
+            "SET d.source_revoked = false"
+        )
+    except Exception as exc:
+        logger.debug("global_discovery.lifecycle_backfill_skipped err=%s", exc)
     return tuple(added)
 
 

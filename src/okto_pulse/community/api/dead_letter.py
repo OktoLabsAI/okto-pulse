@@ -27,6 +27,7 @@ from okto_pulse.core.application.use_cases.list_dead_letter_rows import (
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 from okto_pulse.core.repositories import PulseUnitOfWork
 
 router = APIRouter()
@@ -57,7 +58,7 @@ class DeadLetterListResponse(BaseModel):
 async def get_dead_letter(
     board_id: str = Query(..., description="Board UUID (required)"),
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> DeadLetterListResponse:

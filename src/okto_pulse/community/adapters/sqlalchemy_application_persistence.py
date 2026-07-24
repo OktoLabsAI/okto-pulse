@@ -354,6 +354,15 @@ def _predicate(model: Any, item: ApplicationFilter):
         return column.is_not(None)
     if item.operator == "contains":
         return column.contains(item.value)
+    if item.operator == "json_member":
+        values = func.json_each(column).table_valued(
+            "key",
+            "value",
+            joins_implicitly=True,
+        )
+        return (
+            select(1).select_from(values).where(values.c.value == item.value).exists()
+        )
     if item.operator == "ilike":
         # Community persistence is SQLite-backed.  SQLite LIKE is already
         # ASCII case-insensitive by default, while SQLAlchemy's generic ILIKE
@@ -385,6 +394,15 @@ def _projection_expression(model: Any, field_name: str) -> Any:
         return func.coalesce(
             func.json_array_length(models.Story.screen_mockups), 0
         ).label(field_name)
+    if model is models.Story and field_name == "ideation_links_count":
+        return (
+            select(func.count())
+            .select_from(models.StoryIdeationLink)
+            .where(models.StoryIdeationLink.story_id == models.Story.id)
+            .correlate(models.Story)
+            .scalar_subquery()
+            .label(field_name)
+        )
     if model is models.Card and field_name == "open_qa_count":
         return (
             select(func.count())

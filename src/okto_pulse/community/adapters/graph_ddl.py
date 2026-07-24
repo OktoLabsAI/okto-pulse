@@ -18,6 +18,7 @@ COMMON_NODE_ATTRIBUTES = """
     created_by_agent STRING,
     source_confidence DOUBLE,
     relevance_score DOUBLE,
+    pre_cancellation_relevance_score DOUBLE,
     query_hits INT64,
     last_queried_at STRING,
     last_recomputed_at STRING,

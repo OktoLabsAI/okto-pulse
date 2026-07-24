@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -12,6 +11,7 @@ from okto_pulse.community.api.pagination import board_scope
 from okto_pulse.core.domain.enums import RefinementStatus
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
+    PAGE_OFFSET_MAX,
     PageRequest,
 )
 
@@ -50,7 +50,9 @@ def validate_board_refinement_query(request: Request) -> None:
             value = _INTEGER_QUERY.validate_python(raw)
         except ValidationError:
             _error(f"{name}_invalid", value=raw)
-        if name == "offset" and value < 0:
+        if name == "offset" and (value < 0 or value > PAGE_OFFSET_MAX):
+            # An offset above int64 would overflow SQLite's OFFSET binding — reject
+            # it at the boundary with the same typed error as a negative offset.
             _error("offset_out_of_bounds", offset=value)
         if name == "limit" and value not in REFINEMENT_PAGE_SIZES:
             _error(
@@ -87,8 +89,8 @@ def _labels_and_search_groups(
                 (
                     ApplicationFilter(
                         "labels",
-                        "contains",
-                        json.dumps(label, ensure_ascii=False),
+                        "json_member",
+                        label,
                     ),
                 )
                 for label in labels
@@ -98,8 +100,8 @@ def _labels_and_search_groups(
                 (
                     ApplicationFilter(
                         "labels",
-                        "contains",
-                        '"__empty_label_filter__"',
+                        "json_member",
+                        "__empty_label_filter__",
                     ),
                 ),
             )

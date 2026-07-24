@@ -89,6 +89,308 @@ def _digest_values(board_id: str, *, title: str) -> dict[str, object]:
     }
 
 
+def test_privacy_erasure_rewrites_global_and_removes_old_generations(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "global" / "discovery.lbug"
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_path_provider=lambda: graph_path,
+    )
+    _bootstrap(runtime, "privacy-bootstrap")
+    _seed_board(runtime, "board-privacy")
+    runtime.close()
+    inactive = (
+        graph_path.parent / "discovery.generations" / "gdr_inactive" / "discovery.lbug"
+    )
+    inactive.parent.mkdir(parents=True)
+    inactive.write_bytes(b"historical-board-content")
+    recovery_copy = (
+        graph_path.parent
+        / "quarantine"
+        / "global-discovery"
+        / "attempt-1"
+        / "original"
+        / "discovery.lbug"
+    )
+    recovery_copy.parent.mkdir(parents=True)
+    recovery_copy.write_bytes(b"quarantined-board-content")
+
+    with under_global_safe_write(
+        "privacy-erasure",
+        "test_global_discovery_privacy_erasure",
+    ):
+        runtime.execute(
+            "MATCH (b:Board {board_id: $board_id}) DETACH DELETE b",
+            {"board_id": "board-privacy"},
+        )
+        result = runtime.erase_storage_for_privacy(
+            board_id="board-privacy",
+            reason="right_to_erasure",
+        )
+
+    assert result["verified_absent"] is True
+    assert result["status"] == "purged"
+    assert result["survivors_restored"]["boards"] == 0
+    assert graph_path.exists()
+    assert not inactive.exists()
+    assert not recovery_copy.exists()
+    assert runtime.state().exists is True
+    assert not list(tmp_path.glob(".global-privacy-survivors-*.json"))
+
+
+def test_privacy_erasure_preserves_other_board_discovery_and_relations(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "global" / "discovery.lbug"
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_path_provider=lambda: graph_path,
+    )
+    target_board = "board-delete"
+    survivor_board = "board-survivor"
+    target_digest = _digest_values(target_board, title="delete me")
+    survivor_digest = _digest_values(survivor_board, title="keep me")
+    try:
+        _bootstrap(runtime, "privacy-survivor-bootstrap")
+        _seed_board(runtime, target_board)
+        _seed_board(runtime, survivor_board)
+        with under_global_safe_write(
+            "privacy-survivor-erasure",
+            "test_global_discovery_privacy_survivor",
+        ):
+            runtime.upsert_decision_digest(**target_digest)
+            runtime.upsert_decision_digest(**survivor_digest)
+            runtime.link_board_digest(
+                board_id=target_board,
+                digest_id=str(target_digest["digest_id"]),
+            )
+            runtime.link_board_digest(
+                board_id=survivor_board,
+                digest_id=str(survivor_digest["digest_id"]),
+            )
+            runtime.execute(
+                "CREATE (e:Entity {id: 'survivor-entity', "
+                "canonical_name: 'Survivor Entity', aliases: '', "
+                "embedding: $embedding, mention_count: 1})",
+                {"embedding": _EMBEDDING},
+            )
+            runtime.execute(
+                "MATCH (d:DecisionDigest {id: $digest_id}), "
+                "(e:Entity {id: 'survivor-entity'}) "
+                "CREATE (d)-[:DECISION_MENTIONS_ENTITY]->(e)",
+                {"digest_id": survivor_digest["digest_id"]},
+            )
+            # The Core cascade runs before physical privacy erasure.
+            runtime.execute(
+                "MATCH (d:DecisionDigest) WHERE d.board_id = $board_id DETACH DELETE d",
+                {"board_id": target_board},
+            )
+            runtime.execute(
+                "MATCH (b:Board {board_id: $board_id}) DETACH DELETE b",
+                {"board_id": target_board},
+            )
+
+            result = runtime.erase_storage_for_privacy(
+                board_id=target_board,
+                reason="right_to_erasure",
+            )
+            hits = runtime.search_decision_digests(
+                _EMBEDDING,
+                board_ids=(survivor_board,),
+                graph_layer="canonical",
+                top_k=10,
+                min_similarity=0.0,
+                exhaustive=True,
+            )
+            mentions = runtime.execute(
+                "MATCH (d:DecisionDigest {id: $digest_id})-"
+                "[r:DECISION_MENTIONS_ENTITY]->"
+                "(e:Entity {id: 'survivor-entity'}) RETURN count(r)",
+                {"digest_id": survivor_digest["digest_id"]},
+            ).rows
+            deleted = runtime.execute(
+                "MATCH (d:DecisionDigest) WHERE d.board_id = $board_id RETURN count(d)",
+                {"board_id": target_board},
+            ).rows
+
+        assert result["verified_absent"] is True
+        assert result["survivors_restored"]["boards"] == 1
+        assert result["survivors_restored"]["digests"] == 1
+        assert [row["board_id"] for row in hits] == [survivor_board]
+        assert mentions == ((1,),)
+        assert deleted == ((0,),)
+    finally:
+        runtime.close()
+
+
+def test_privacy_erasure_stale_journal_cannot_resurrect_deleted_board(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "global" / "discovery.lbug"
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_path_provider=lambda: graph_path,
+    )
+    try:
+        _bootstrap(runtime, "privacy-stale-journal-bootstrap")
+        _seed_board(runtime, "board-b")
+        _seed_board(runtime, "board-c")
+        with under_global_safe_write(
+            "privacy-stale-journal",
+            "test_privacy_stale_journal",
+        ):
+            snapshot, journal_path = runtime._load_or_create_privacy_survivor_snapshot(
+                board_id="board-a",
+                storage_root=tmp_path,
+                survivor_board_ids=("board-b", "board-c"),
+            )
+            assert snapshot["survivor_board_ids"] == ["board-b", "board-c"]
+            runtime.execute(
+                "MATCH (b:Board {board_id: $board_id}) DETACH DELETE b",
+                {"board_id": "board-b"},
+            )
+
+            result = runtime.erase_storage_for_privacy(
+                board_id="board-a",
+                reason="retry_after_board_b_erasure",
+                survivor_board_ids=("board-c",),
+            )
+            rows = runtime.execute(
+                "MATCH (b:Board) RETURN b.board_id ORDER BY b.board_id"
+            ).rows
+
+        assert rows == (("board-c",),)
+        assert result["survivors_restored"]["boards"] == 1
+        assert not journal_path.exists()
+    finally:
+        runtime.close()
+
+
+def test_privacy_erasure_redacts_shared_aggregate_properties(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "global" / "discovery.lbug"
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_path_provider=lambda: graph_path,
+    )
+    survivor = "board-survivor-redacted"
+    digest = _digest_values(survivor, title="safe survivor digest")
+    secret = "target-only-secret-alias"
+    try:
+        _bootstrap(runtime, "privacy-redaction-bootstrap")
+        _seed_board(runtime, survivor)
+        with under_global_safe_write(
+            "privacy-redaction",
+            "test_privacy_redaction",
+        ):
+            runtime.upsert_decision_digest(**digest)
+            runtime.link_board_digest(
+                board_id=survivor,
+                digest_id=str(digest["digest_id"]),
+            )
+            runtime.execute(
+                "CREATE (e:Entity {id: 'shared-entity', "
+                "canonical_name: 'Shared Entity', aliases: $aliases, "
+                "embedding: $embedding, mention_count: 9})",
+                {"aliases": secret, "embedding": _EMBEDDING},
+            )
+            runtime.execute(
+                "MATCH (d:DecisionDigest {id: $digest_id}), "
+                "(e:Entity {id: 'shared-entity'}) "
+                "CREATE (d)-[:DECISION_MENTIONS_ENTITY]->(e)",
+                {"digest_id": digest["digest_id"]},
+            )
+
+            runtime.erase_storage_for_privacy(
+                board_id="board-deleted",
+                reason="redact_cross_board_aggregates",
+                survivor_board_ids=(survivor,),
+            )
+            entity = runtime.execute(
+                "MATCH (e:Entity {id: 'shared-entity'}) "
+                "RETURN e.canonical_name, e.aliases, e.embedding, "
+                "e.mention_count"
+            ).rows
+            mentions = runtime.execute(
+                "MATCH (d:DecisionDigest {id: $digest_id})-"
+                "[r:DECISION_MENTIONS_ENTITY]->"
+                "(:Entity {id: 'shared-entity'}) RETURN count(r)",
+                {"digest_id": digest["digest_id"]},
+            ).rows
+
+        assert entity == ((None, None, None, None),)
+        assert mentions == ((1,),)
+        runtime.close()
+        assert all(
+            secret.encode("utf-8") not in path.read_bytes()
+            for path in graph_path.parent.rglob("*")
+            if path.is_file()
+        )
+    finally:
+        runtime.close()
+
+
+def test_privacy_erasure_rejects_corrupt_survivor_journal_without_rewrite(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "global" / "discovery.lbug"
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_path_provider=lambda: graph_path,
+    )
+    try:
+        _bootstrap(runtime, "privacy-corrupt-journal-bootstrap")
+        _seed_board(runtime, "board-safe")
+        journal_path = runtime._privacy_snapshot_path(
+            tmp_path,
+            "board-deleted",
+        )
+        journal_path.write_text('{"version":3,"rows":', encoding="utf-8")
+
+        with under_global_safe_write(
+            "privacy-corrupt-journal",
+            "test_privacy_corrupt_journal",
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="privacy_survivor_snapshot_invalid",
+            ):
+                runtime.erase_storage_for_privacy(
+                    board_id="board-deleted",
+                    reason="corrupt_journal",
+                    survivor_board_ids=("board-safe",),
+                )
+            rows = runtime.execute("MATCH (b:Board) RETURN b.board_id").rows
+
+        assert rows == (("board-safe",),)
+        assert journal_path.exists()
+        assert graph_path.exists()
+    finally:
+        runtime.close()
+
+
+def test_privacy_erasure_refuses_a_noncanonical_global_root(
+    tmp_path: Path,
+) -> None:
+    sentinel = tmp_path / "must-survive.txt"
+    sentinel.write_text("safe", encoding="utf-8")
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_path_provider=lambda: tmp_path / "discovery.lbug",
+    )
+
+    with under_global_safe_write(
+        "privacy-invalid-root",
+        "test_global_discovery_privacy_invalid_root",
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="global_discovery_privacy_erasure_root_invalid",
+        ):
+            runtime.erase_storage_for_privacy(
+                board_id="board-privacy",
+                reason="right_to_erasure",
+            )
+
+    assert sentinel.read_text(encoding="utf-8") == "safe"
+
+
 def _create_same_primary_key_rows_with_multi_writes(
     *,
     graph_path: Path,
@@ -187,10 +489,8 @@ class _SyntheticLiteralPrimaryRuntime(CommunityGlobalDiscoveryRuntime):
             self.relationship_preflights.append(relationship_kind)
             count = int(relationship_kind == self.relationship_kind)
             return GraphStatementResult(rows=((count,),))
-        if (
-            statement.startswith(
-                "MATCH (d:DecisionDigest {id: $digest_id}) DETACH DELETE d"
-            )
+        if statement.startswith(
+            "MATCH (d:DecisionDigest {id: $digest_id}) DETACH DELETE d"
         ):
             self.literal_deletes += 1
             raise AssertionError("literal PK ghosts require rebuild, not DELETE")
@@ -212,13 +512,11 @@ class _RecordingBoardGraphRuntime(CommunityBoardGraphRuntime):
         ("MATCH (d:DecisionDigest) RETURN d.id", False),
         ("MATCH (d:DecisionDigest) RETURN d.embedding", True),
         (
-            "CALL QUERY_VECTOR_INDEX('DecisionDigest', 'idx', $v, 1) "
-            "RETURN node.id",
+            "CALL QUERY_VECTOR_INDEX('DecisionDigest', 'idx', $v, 1) RETURN node.id",
             True,
         ),
         (
-            "MATCH (d:DecisionDigest) "
-            "WHERE d.title = 'embedding' RETURN d.id",
+            "MATCH (d:DecisionDigest) WHERE d.title = 'embedding' RETURN d.id",
             False,
         ),
         (
@@ -226,8 +524,7 @@ class _RecordingBoardGraphRuntime(CommunityBoardGraphRuntime):
             False,
         ),
         (
-            "MATCH (d:DecisionDigest) RETURN d.id "
-            "// QUERY_VECTOR_INDEX embedding",
+            "MATCH (d:DecisionDigest) RETURN d.id // QUERY_VECTOR_INDEX embedding",
             False,
         ),
         (
@@ -302,9 +599,7 @@ def test_open_native_loads_vector_without_install_after_bootstrap(
             "vector-load-after-bootstrap",
             "test-vector-load-after-bootstrap",
         ):
-            runtime.execute(
-                "MATCH (d:DecisionDigest) RETURN d.embedding LIMIT 1"
-            )
+            runtime.execute("MATCH (d:DecisionDigest) RETURN d.embedding LIMIT 1")
         assert graph_runtime.install_flags == [True, False]
     finally:
         runtime.close()
@@ -805,9 +1100,7 @@ def test_literal_pk_recovery_rejects_cross_identity_before_delete(
     graph_path = tmp_path / "global" / "discovery.lbug"
     board_id = f"board-literal-identity-{identity_mismatch}"
     values = _digest_values(board_id, title="must-preserve")
-    observed_board_id = (
-        "foreign-board" if identity_mismatch == "board" else board_id
-    )
+    observed_board_id = "foreign-board" if identity_mismatch == "board" else board_id
     observed_original_node_id = (
         "foreign-decision"
         if identity_mismatch == "original_node"
@@ -1240,9 +1533,7 @@ def test_staged_digest_replace_resumes_after_cleanup_crash(
     try:
         _bootstrap(runtime, "staged-recovery-bootstrap")
         _seed_board(runtime, board_id)
-        with under_global_safe_write(
-            "staged-recovery-seed", "test_staged_recovery"
-        ):
+        with under_global_safe_write("staged-recovery-seed", "test_staged_recovery"):
             runtime.upsert_decision_digest(**values)
             runtime.execute(
                 "CREATE (d:DecisionDigest {"
@@ -1308,9 +1599,7 @@ def test_staged_swap_duplicate_with_empty_scan_fails_irreparable(
                 and "CREATE (replacement:DecisionDigest" in statement
             ):
                 self.swap_attempts += 1
-                raise RuntimeError(
-                    "Found duplicated primary key value dd_ghost"
-                )
+                raise RuntimeError("Found duplicated primary key value dd_ghost")
             return super().execute(statement, params)
 
     runtime = _GhostPrimaryKeyRuntime()
@@ -1319,9 +1608,7 @@ def test_staged_swap_duplicate_with_empty_scan_fails_irreparable(
     try:
         _bootstrap(runtime, "ghost-primary-bootstrap")
         _seed_board(runtime, board_id)
-        with under_global_safe_write(
-            "ghost-primary-seed", "test_ghost_primary"
-        ):
+        with under_global_safe_write("ghost-primary-seed", "test_ghost_primary"):
             runtime.upsert_decision_digest(**values)
             runtime.execute(
                 "CREATE (d:DecisionDigest {"
@@ -1390,9 +1677,7 @@ def test_staged_swap_primary_drains_are_strictly_bounded() -> None:
             ):
                 self.swap_attempts += 1
                 self.awaiting_physical_probe = True
-                raise RuntimeError(
-                    "Found duplicated primary key value dd_persistent"
-                )
+                raise RuntimeError("Found duplicated primary key value dd_persistent")
             if (
                 self.awaiting_physical_probe
                 and "coalesce(d.id, '') = $digest_id RETURN d.id" in statement
@@ -1473,8 +1758,7 @@ def test_replace_decision_digest_identity_fails_before_erasing_derived_edges(
                 )
 
         rows = runtime.execute(
-            "MATCH (d:DecisionDigest {id: $digest_id}) "
-            "RETURN d.title",
+            "MATCH (d:DecisionDigest {id: $digest_id}) RETURN d.title",
             {"digest_id": values["digest_id"]},
         ).rows
         assert rows == (("preserve-me",),)
@@ -1584,9 +1868,7 @@ def test_guarded_prune_preflights_all_targets_before_first_delete(
     try:
         _bootstrap(runtime, "guarded-prune-bootstrap")
         _seed_board(runtime, board_id)
-        with under_global_safe_write(
-            "guarded-prune-seed", "test_guarded_prune"
-        ):
+        with under_global_safe_write("guarded-prune-seed", "test_guarded_prune"):
             runtime.upsert_decision_digest(**protected)
             runtime.upsert_decision_digest(**unprotected)
             runtime.execute(
@@ -1635,6 +1917,146 @@ def test_guarded_prune_preflights_all_targets_before_first_delete(
         runtime.close()
 
 
+def test_absent_source_prune_atomically_detaches_derived_relationships(
+    tmp_path: Path,
+) -> None:
+    """Lifecycle-authorized hard delete removes the digest and every cache edge."""
+
+    graph_path = tmp_path / "global" / "discovery.lbug"
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_path_provider=lambda: graph_path,
+    )
+    board_id = "board-absent-source-prune"
+    removed_values = _digest_values(board_id, title="removed")
+    peer_values = {
+        **_digest_values(board_id, title="peer"),
+        "digest_id": f"dd_{board_id[:8]}_decision-b",
+        "original_node_id": "decision-b",
+    }
+    try:
+        _bootstrap(runtime, "absent-source-prune-bootstrap")
+        _seed_board(runtime, board_id)
+        with under_global_safe_write(
+            "absent-source-prune-seed",
+            "test_absent_source_prune",
+        ):
+            runtime.upsert_decision_digest(**removed_values)
+            runtime.upsert_decision_digest(**peer_values)
+            runtime.link_board_digest(
+                board_id=board_id,
+                digest_id=str(removed_values["digest_id"]),
+            )
+            runtime.link_board_digest(
+                board_id=board_id,
+                digest_id=str(peer_values["digest_id"]),
+            )
+            runtime.execute(
+                "CREATE (e:Entity {id: $id, canonical_name: $name, "
+                "aliases: '', embedding: $embedding, mention_count: 1})",
+                {"id": "entity-absent", "name": "Entity", "embedding": _EMBEDDING},
+            )
+            runtime.execute(
+                "MATCH (d:DecisionDigest {id: $digest_id}), "
+                "(e:Entity {id: $entity_id}), "
+                "(peer:DecisionDigest {id: $peer_id}) "
+                "CREATE (d)-[:DECISION_MENTIONS_ENTITY]->(e) "
+                "CREATE (d)-[:DECISION_DERIVES_FROM]->(peer) "
+                "CREATE (peer)-[:DECISION_DERIVES_FROM]->(d)",
+                {
+                    "digest_id": removed_values["digest_id"],
+                    "entity_id": "entity-absent",
+                    "peer_id": peer_values["digest_id"],
+                },
+            )
+
+            removed = runtime.delete_decision_digests_for_absent_sources(
+                board_id=board_id,
+                original_node_ids=("decision-a",),
+            )
+
+        rows = runtime.execute(
+            "MATCH (d:DecisionDigest) WHERE d.board_id = $board_id "
+            "RETURN d.original_node_id ORDER BY d.original_node_id",
+            {"board_id": board_id},
+        ).rows
+        mentions = runtime.execute(
+            "MATCH (:DecisionDigest)-[r:DECISION_MENTIONS_ENTITY]->"
+            "(:Entity) RETURN count(r)"
+        ).rows
+        derives = runtime.execute(
+            "MATCH (:DecisionDigest)-[r:DECISION_DERIVES_FROM]->"
+            "(:DecisionDigest) RETURN count(r)"
+        ).rows
+        assert removed == 1
+        assert rows == (("decision-b",),)
+        assert mentions == ((0,),)
+        assert derives == ((0,),)
+    finally:
+        runtime.close()
+
+
+def test_search_hides_revoked_digest_and_restore_republishes(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "global" / "discovery.lbug"
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_path_provider=lambda: graph_path,
+    )
+    board_id = "board-search-lifecycle"
+    values = _digest_values(board_id, title="reversible search")
+    try:
+        _bootstrap(runtime, "search-lifecycle-bootstrap")
+        _seed_board(runtime, board_id)
+        with under_global_safe_write(
+            "search-lifecycle-seed",
+            "test_search_lifecycle",
+        ):
+            runtime.upsert_decision_digest(**values)
+            runtime.link_board_digest(
+                board_id=board_id,
+                digest_id=str(values["digest_id"]),
+            )
+            before = runtime.search_decision_digests(
+                _EMBEDDING,
+                board_ids=(board_id,),
+                graph_layer="canonical",
+                top_k=10,
+                min_similarity=0.0,
+                exhaustive=True,
+            )
+            runtime.execute(
+                "MATCH (d:DecisionDigest {id: $digest_id}) SET d.source_revoked = true",
+                {"digest_id": values["digest_id"]},
+            )
+            hidden = runtime.search_decision_digests(
+                _EMBEDDING,
+                board_ids=(board_id,),
+                graph_layer="canonical",
+                top_k=10,
+                min_similarity=0.0,
+                exhaustive=True,
+            )
+            runtime.execute(
+                "MATCH (d:DecisionDigest {id: $digest_id}) "
+                "SET d.source_revoked = false",
+                {"digest_id": values["digest_id"]},
+            )
+            restored = runtime.search_decision_digests(
+                _EMBEDDING,
+                board_ids=(board_id,),
+                graph_layer="canonical",
+                top_k=10,
+                min_similarity=0.0,
+                exhaustive=True,
+            )
+
+        assert [row["id"] for row in before] == ["decision-a"]
+        assert hidden == []
+        assert [row["id"] for row in restored] == ["decision-a"]
+    finally:
+        runtime.close()
+
+
 def test_normalize_duplicate_contains_preserves_derived_relationships(
     tmp_path: Path,
 ) -> None:
@@ -1652,9 +2074,7 @@ def test_normalize_duplicate_contains_preserves_derived_relationships(
     try:
         _bootstrap(runtime, "normalize-links-bootstrap")
         _seed_board(runtime, board_id)
-        with under_global_safe_write(
-            "normalize-links-seed", "test_normalize_links"
-        ):
+        with under_global_safe_write("normalize-links-seed", "test_normalize_links"):
             runtime.upsert_decision_digest(**values)
             runtime.upsert_decision_digest(**peer)
             runtime.execute(
@@ -1685,10 +2105,13 @@ def test_normalize_duplicate_contains_preserves_derived_relationships(
                 "CREATE (b)-[:DECISION_DERIVES_FROM]->(a)",
                 {"a": values["digest_id"], "b": peer["digest_id"]},
             )
-            assert runtime.normalize_board_digest_link(
-                board_id=board_id,
-                digest_id=str(values["digest_id"]),
-            ) == 2
+            assert (
+                runtime.normalize_board_digest_link(
+                    board_id=board_id,
+                    digest_id=str(values["digest_id"]),
+                )
+                == 2
+            )
 
         contains = runtime.execute(
             "MATCH (:Board)-[r:CONTAINS_DECISION]->"
@@ -1725,9 +2148,7 @@ def test_delete_invalid_outgoing_board_link_preserves_foreign_digest(
         _bootstrap(runtime, "invalid-link-bootstrap")
         _seed_board(runtime, board_id)
         _seed_board(runtime, foreign_board_id)
-        with under_global_safe_write(
-            "invalid-link-seed", "test_invalid_link_cleanup"
-        ):
+        with under_global_safe_write("invalid-link-seed", "test_invalid_link_cleanup"):
             runtime.upsert_decision_digest(**foreign)
             runtime.execute(
                 "MATCH (b:Board {board_id: $board_id}), "

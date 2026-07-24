@@ -318,6 +318,43 @@ async def test_atomic_admission_coalesces_active_work_and_reopens_terminal_work(
         assert active.status == "pending"
 
         async with factory() as session:
+            claimed = await session.get(ConsolidationQueue, original_id)
+            assert claimed is not None
+            claimed.status = "claimed"
+            claimed.attempts = 2
+            claimed.claim_token = "stale-claim-token"
+            claimed.claimed_by_session_id = "stale-session"
+            claimed.worker_id = "stale-worker"
+            claimed.last_error = "prior-attempt"
+            await session.commit()
+
+        async with factory() as session:
+            invalidated = await adapter.upsert_consolidation_queue_unless_tombstoned(
+                session,
+                _upsert(
+                    "card-1",
+                    priority="high",
+                    source="event-during-claim",
+                    triggered_by_event="card.cancelled",
+                ),
+            )
+            await session.commit()
+
+        assert invalidated is True
+        async with factory() as session:
+            pending_after_race = await session.get(ConsolidationQueue, original_id)
+        assert pending_after_race is not None
+        assert pending_after_race.status == "pending"
+        assert pending_after_race.attempts == 0
+        assert pending_after_race.claim_token is None
+        assert pending_after_race.claimed_by_session_id is None
+        assert pending_after_race.worker_id is None
+        assert pending_after_race.last_error is None
+        assert pending_after_race.priority == "high"
+        assert pending_after_race.source == "event-during-claim"
+        assert pending_after_race.triggered_by_event == "card.cancelled"
+
+        async with factory() as session:
             terminal = await session.get(ConsolidationQueue, original_id)
             assert terminal is not None
             terminal.status = "failed"
@@ -461,10 +498,8 @@ async def test_concurrent_enqueue_and_governed_delete_converge_under_wal(tmp_pat
     async def enqueue() -> bool:
         await start.wait()
         async with factory() as session:
-            changed = (
-                await admission.upsert_consolidation_queue_unless_tombstoned(
-                    session, _upsert(artifact_id)
-                )
+            changed = await admission.upsert_consolidation_queue_unless_tombstoned(
+                session, _upsert(artifact_id)
             )
             await session.commit()
             return changed
@@ -509,14 +544,18 @@ async def test_concurrent_enqueue_and_governed_delete_converge_under_wal(tmp_pat
 
         async with factory() as session:
             rows = (
-                await session.execute(
-                    select(ConsolidationQueue).where(
-                        ConsolidationQueue.board_id == "board-1",
-                        ConsolidationQueue.artifact_type == "card",
-                        ConsolidationQueue.artifact_id == artifact_id,
+                (
+                    await session.execute(
+                        select(ConsolidationQueue).where(
+                            ConsolidationQueue.board_id == "board-1",
+                            ConsolidationQueue.artifact_type == "card",
+                            ConsolidationQueue.artifact_id == artifact_id,
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
         assert [
             (row.work_kind, row.generation, row.delete_event_id) for row in rows

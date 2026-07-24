@@ -36,6 +36,7 @@ from okto_pulse.core.application.use_cases.architecture_crud import (
     ValidateArchitecturePayloadUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models.schemas import (
@@ -70,7 +71,9 @@ class DiagramPayloadUpdate(BaseModel):
     payload: dict[str, Any] | list[Any] | str
     format: ArchitectureDiagramFormat | None = None
     change_summary: str | None = None
-    architecture_warning_acknowledgement: ArchitectureWarningAcknowledgementRequest | None = None
+    architecture_warning_acknowledgement: (
+        ArchitectureWarningAcknowledgementRequest | None
+    ) = None
 
 
 class ExcalidrawImportRequest(BaseModel):
@@ -83,14 +86,18 @@ class ExcalidrawImportRequest(BaseModel):
     order_index: int = 0
     replace_diagram_id: str | None = None
     change_summary: str | None = None
-    architecture_warning_acknowledgement: ArchitectureWarningAcknowledgementRequest | None = None
+    architecture_warning_acknowledgement: (
+        ArchitectureWarningAcknowledgementRequest | None
+    ) = None
 
 
 class CopyArchitectureRequest(BaseModel):
     """Optional filter for copy architecture operations."""
 
     design_ids: list[str] | None = None
-    architecture_warning_acknowledgement: ArchitectureWarningAcknowledgementRequest | None = None
+    architecture_warning_acknowledgement: (
+        ArchitectureWarningAcknowledgementRequest | None
+    ) = None
 
 
 class ArchitecturePayloadValidationRequest(BaseModel):
@@ -118,7 +125,9 @@ class ArchitecturePayloadValidationResponse(BaseModel):
 
 def _http_error_from_value(error: ValueError) -> HTTPException:
     if isinstance(error, ArchitectureWarningAcknowledgementRequired):
-        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=error.to_payload())
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=error.to_payload()
+        )
     if isinstance(error, ArchitecturePropagationBlocked):
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -209,7 +218,10 @@ async def _create_architecture(
     return result.response
 
 
-@router.get("/ideations/{ideation_id}/architecture", response_model=list[ArchitectureDesignSummary])
+@router.get(
+    "/ideations/{ideation_id}/architecture",
+    response_model=list[ArchitectureDesignSummary],
+)
 async def list_ideation_architecture(
     ideation_id: str,
     user_id: str = Depends(require_user),
@@ -232,7 +244,10 @@ async def create_ideation_architecture(
     return await _create_architecture("ideation", ideation_id, data, user_id, uow)
 
 
-@router.get("/refinements/{refinement_id}/architecture", response_model=list[ArchitectureDesignSummary])
+@router.get(
+    "/refinements/{refinement_id}/architecture",
+    response_model=list[ArchitectureDesignSummary],
+)
 async def list_refinement_architecture(
     refinement_id: str,
     user_id: str = Depends(require_user),
@@ -255,7 +270,9 @@ async def create_refinement_architecture(
     return await _create_architecture("refinement", refinement_id, data, user_id, uow)
 
 
-@router.get("/specs/{spec_id}/architecture", response_model=list[ArchitectureDesignSummary])
+@router.get(
+    "/specs/{spec_id}/architecture", response_model=list[ArchitectureDesignSummary]
+)
 async def list_spec_architecture(
     spec_id: str,
     user_id: str = Depends(require_user),
@@ -278,7 +295,9 @@ async def create_spec_architecture(
     return await _create_architecture("spec", spec_id, data, user_id, uow)
 
 
-@router.get("/cards/{card_id}/architecture", response_model=list[ArchitectureDesignSummary])
+@router.get(
+    "/cards/{card_id}/architecture", response_model=list[ArchitectureDesignSummary]
+)
 async def list_card_architecture(
     card_id: str,
     user_id: str = Depends(require_user),
@@ -301,7 +320,9 @@ async def create_card_architecture(
     return await _create_architecture("card", card_id, data, user_id, uow)
 
 
-@router.post("/architecture/validate", response_model=ArchitecturePayloadValidationResponse)
+@router.post(
+    "/architecture/validate", response_model=ArchitecturePayloadValidationResponse
+)
 async def validate_architecture_payload(
     data: ArchitecturePayloadValidationRequest,
     user_id: str = Depends(require_user),
@@ -322,7 +343,7 @@ async def validate_architecture_payload(
 async def architecture_propagation_legacy_report(
     board_id: str = Query(...),
     limit: int = Query(100),
-    offset: int = Query(0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     include_clean: bool = Query(False),
     parent_type_filter: str = Query(""),
     user_id: str = Depends(require_user),
@@ -448,7 +469,10 @@ async def get_architecture_diagram_payload(
     return result.response
 
 
-@router.put("/architecture/{design_id}/diagrams/{diagram_id}/payload", response_model=ArchitectureDesignResponse)
+@router.put(
+    "/architecture/{design_id}/diagrams/{diagram_id}/payload",
+    response_model=ArchitectureDesignResponse,
+)
 async def update_architecture_diagram_payload(
     design_id: str,
     diagram_id: str,
@@ -485,7 +509,10 @@ async def update_architecture_diagram_payload(
     return result.response
 
 
-@router.post("/architecture/{design_id}/diagrams/import-excalidraw", response_model=ArchitectureDesignResponse)
+@router.post(
+    "/architecture/{design_id}/diagrams/import-excalidraw",
+    response_model=ArchitectureDesignResponse,
+)
 async def import_excalidraw_architecture_diagram(
     design_id: str,
     data: ExcalidrawImportRequest,
@@ -552,7 +579,10 @@ async def get_architecture_diff(
     return result.response
 
 
-@router.post("/cards/{card_id}/copy-architecture-from-spec/{spec_id}", response_model=list[ArchitectureDesignResponse])
+@router.post(
+    "/cards/{card_id}/copy-architecture-from-spec/{spec_id}",
+    response_model=list[ArchitectureDesignResponse],
+)
 async def copy_architecture_from_spec_to_card(
     card_id: str,
     spec_id: str,

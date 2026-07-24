@@ -14,6 +14,7 @@ from okto_pulse.core.application.rebuild_processor import (
     CompensationCommand,
     RebuildCheckpoint,
     RebuildCommand,
+    RebuildEffectReceipt,
     RebuildState,
 )
 from okto_pulse.core.kg.interfaces.rebuild_audit_storage import RebuildAuditKey
@@ -40,7 +41,9 @@ class DictArtifactStore:
 
     def list_json(self, prefix: RebuildAuditKey):  # noqa: ANN201
         marker = prefix.to_ref()
-        return [dict(value) for key, value in self.rows.items() if key.startswith(marker)]
+        return [
+            dict(value) for key, value in self.rows.items() if key.startswith(marker)
+        ]
 
     def replace_json(self, key: RebuildAuditKey, transform):  # noqa: ANN001, ANN201
         value = transform(self.read_json(key))
@@ -102,6 +105,7 @@ def _command() -> RebuildCommand:
         reason="test",
         source_rows=({"artifact_type": "story", "id": "story-1"},),
         candidate_generation_id="gen-2",
+        owner_token="owner-token",
     )
 
 
@@ -284,6 +288,100 @@ def test_f06_compensation_preserves_claims_and_stops_pending_rows(
     assert rows == {"claimed": "claimed", "pending": "failed"}
 
 
+def test_f06_queue_observation_surfaces_graph_memory_pressure(
+    tmp_path: Path,
+) -> None:
+    db_path = _queue_db(tmp_path)
+    with sqlite3.connect(str(db_path)) as connection:
+        connection.execute(
+            "INSERT INTO consolidation_queue "
+            "(id,board_id,artifact_type,artifact_id,priority,source,status,"
+            "attempts,last_error) "
+            "VALUES ('blocked','board-1','story','s1','high',"
+            "'rebuild:manifest-1','pending',1,"
+            "'graph_memory_pressure:capacity exceeded')"
+        )
+
+    store = DictArtifactStore()
+    effects = CommunityRebuildEffects(
+        CommunityBoardRebuildIngestionAdapter(
+            db_path=db_path,
+            artifact_store=store,
+        ),
+        artifact_store=store,
+    )
+    observation = effects.wait_for_queue_observation(
+        _command(),
+        after_sequence=7,
+        max_wait_seconds=0,
+    )
+
+    assert observation.depth == 1
+    assert observation.sequence == 8
+    assert observation.blocking_reason == "graph_memory_pressure"
+
+
+def test_f06_quarantine_compensation_uses_governed_restore_capability(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str, str, str | None]] = []
+
+    class _Restore:
+        def apply(self, _quarantine_id: str) -> object:
+            raise AssertionError("manual restore must not run inside server")
+
+        def apply_rebuild_compensation(
+            self,
+            quarantine_id: str,
+            *,
+            expected_board_id: str,
+            run_id: str,
+            owner_token: str | None,
+        ) -> object:
+            calls.append((quarantine_id, expected_board_id, run_id, owner_token))
+            return SimpleNamespace(
+                applied=True,
+                open_validated=True,
+                quarantine_id=quarantine_id,
+            )
+
+    store = DictArtifactStore()
+    owner = CommunityBoardRebuildIngestionAdapter(
+        db_path=_queue_db(tmp_path),
+        artifact_store=store,
+    )
+    command = _command()
+    effects = CommunityRebuildEffects(
+        owner,
+        artifact_store=store,
+        quarantine_restore=_Restore(),
+    )
+    effects._store_receipt(
+        command,
+        RebuildEffectReceipt(
+            effect_key=f"{command.run_id}:quarantine",
+            effect="quarantine",
+            ok=True,
+            details={
+                "affected_files": ["graph.lbug"],
+                "quarantine_ref": "q-rebuild-1",
+            },
+        ),
+    )
+
+    result = effects._restore_latest_quarantine(command)
+
+    assert result["ok"] is True
+    assert calls == [
+        (
+            "q-rebuild-1",
+            command.board_id,
+            command.run_id,
+            command.owner_token,
+        )
+    ]
+
+
 def test_f06_build_step_uses_core_processor_and_typed_effects(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -310,8 +408,8 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
     )
     monkeypatch.setattr(
         CommunityBoardRebuildIngestionAdapter,
-        "queue_depth",
-        lambda self, board_id: 0,
+        "queue_observation",
+        lambda self, board_id: (0, None),
     )
 
     store = DictArtifactStore()
@@ -394,3 +492,45 @@ def test_f06_salvage_pending_blocks_before_quarantine(
     assert result.ok is False
     assert result.detail is not None and result.detail.startswith("salvage_pending")
     assert called["quarantine"] == 0
+
+
+def test_f06_build_step_honors_cooperative_cancellation_before_mutation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    called = {"quarantine": 0, "renew": 0}
+
+    def quarantine(self, *, board_id, reason):  # noqa: ANN001
+        del self, board_id, reason
+        called["quarantine"] += 1
+        return ()
+
+    def renew() -> bool:
+        called["renew"] += 1
+        return True
+
+    monkeypatch.setattr(
+        CommunityBoardRebuildIngestionAdapter,
+        "prepare_board_graph_storage",
+        quarantine,
+    )
+    adapter = CommunityBoardRebuildIngestionAdapter(
+        db_path=_queue_db(tmp_path),
+        artifact_store=DictArtifactStore(),
+    )
+
+    result = adapter.build_step_adapter(lambda _request: ())(
+        RebuildStepInput(
+            board_id="board-1",
+            manifest_ref="manifest-cancelled",
+            source_set_hash="hash",
+            actor_id="operator",
+            operation="rebuild",
+            owner_token="token",
+            cancel_requested=lambda: True,
+            lease_renew=renew,
+        )
+    )
+
+    assert result.ok is False
+    assert result.detail == "cancelled:cancellation requested"
+    assert called == {"quarantine": 0, "renew": 1}

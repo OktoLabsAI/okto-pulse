@@ -319,22 +319,17 @@ class CommunityLocalWriteLockPort(WriteLockPort):
             return LockAcquisition(
                 acquired=False,
                 owner_token=None,
-                expires_at=(
-                    self._iso(current.expires_at_epoch) if current else None
-                ),
+                expires_at=(self._iso(current.expires_at_epoch) if current else None),
                 current_owner=current.owner_id if current else None,
                 admin_lane=current.admin_lane if current else False,
             )
 
         try:
             revalidated = self._read_single_writer_manifest(path)
-            if (
-                revalidated is not None
-                and (
-                    revalidated.owner_token != manifest.owner_token
-                    or revalidated.expires_at_epoch != manifest.expires_at_epoch
-                    or revalidated.owner_id != manifest.owner_id
-                )
+            if revalidated is not None and (
+                revalidated.owner_token != manifest.owner_token
+                or revalidated.expires_at_epoch != manifest.expires_at_epoch
+                or revalidated.owner_id != manifest.owner_id
             ):
                 return LockAcquisition(
                     acquired=False,
@@ -415,9 +410,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                         "operation": "release",
                         "board_id": board_id,
                         "acquired_at_epoch": time.time(),
-                        "expires_at_epoch": (
-                            time.time() + RECOVERY_LOCK_TTL_SECONDS
-                        ),
+                        "expires_at_epoch": (time.time() + RECOVERY_LOCK_TTL_SECONDS),
                     },
                     stream,
                 )
@@ -437,6 +430,16 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                 recovery_path.unlink()
             except FileNotFoundError:
                 pass
+            try:
+                board_dir.rmdir()
+            except OSError:
+                pass
+            else:
+                from okto_pulse.community.adapters.filesystem_erasure import (
+                    fsync_directory,
+                )
+
+                fsync_directory(board_dir.parent)
 
     def renew_single_writer_sync(
         self,
@@ -531,9 +534,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                 expires_at_epoch=now + ttl_seconds,
                 admin_lane=manifest.admin_lane,
             )
-            temporary = path.with_name(
-                f".{path.name}.{uuid.uuid4().hex}.renewing"
-            )
+            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.renewing")
             with temporary.open("x", encoding="utf-8") as stream:
                 json.dump(renewed.to_disk_dict(), stream, indent=2)
                 stream.flush()
@@ -790,8 +791,7 @@ def community_global_discovery_writer_fence(operation: str):
         current_owner = getattr(acquisition, "current_owner", None)
     if not acquired or not isinstance(owner_token, str) or not owner_token:
         raise RuntimeError(
-            "global_discovery_writer_contention:"
-            f"owner={current_owner or 'unknown'}"
+            f"global_discovery_writer_contention:owner={current_owner or 'unknown'}"
         )
     try:
         yield owner_token

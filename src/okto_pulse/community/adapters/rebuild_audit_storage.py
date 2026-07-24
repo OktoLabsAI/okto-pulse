@@ -27,6 +27,12 @@ from okto_pulse.core.kg.interfaces.rebuild_audit_storage import (
 )
 from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 
+from .filesystem_erasure import (
+    contained_lexical_path,
+    contained_resolved_path,
+    remove_contained_tree,
+    validate_scope_id,
+)
 from .local_storage_ref import resolve_local_storage_ref
 
 
@@ -138,6 +144,31 @@ def _replace_write_through(source: Path, destination: Path) -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
+def _payload_mentions_board(payload: object, board_id: str) -> bool:
+    """Match only semantically board-scoped JSON fields, recursively."""
+
+    if isinstance(payload, Mapping):
+        for raw_key, value in payload.items():
+            key = str(raw_key)
+            if key == board_id:
+                return True
+            if (
+                (key == "board_id" or key.endswith("_board_id"))
+                and isinstance(value, str)
+                and value == board_id
+            ):
+                return True
+            if key == "board_ids" and isinstance(value, (list, tuple)):
+                if any(isinstance(item, str) and item == board_id for item in value):
+                    return True
+            if _payload_mentions_board(value, board_id):
+                return True
+        return False
+    if isinstance(payload, (list, tuple)):
+        return any(_payload_mentions_board(value, board_id) for value in payload)
+    return False
+
+
 class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
     """Preserve the current local-first rebuild/audit directory layout."""
 
@@ -183,9 +214,7 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
         elif key.namespace == "rebaseline_audit":
             candidate = self._base_dir / "rebuild" / "rebaseline_audit"
         elif key.namespace == "global_discovery_reindex":
-            candidate = (
-                self._base_dir / "rebuild" / "discovery_reindex" / key.board_id
-            )
+            candidate = self._base_dir / "rebuild" / "discovery_reindex" / key.board_id
         elif key.namespace == "global_discovery_recovery":
             candidate = self._base_dir / "rebuild" / "global_discovery_recovery"
         elif key.namespace == "contingency":
@@ -337,6 +366,233 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             _fsync_directory(path.parent)
             return True
 
+    def purge_board_artifacts(self, board_id: str) -> dict[str, object]:
+        """Physically erase one board's rebuild, audit and quarantine state.
+
+        Board-partitioned directories are removed directly. Shared namespaces
+        are preflighted under the artifact-store lock and only documents with an
+        explicit semantic board field are selected. A malformed document or a
+        linked scan root fails closed before any governed artifact is removed.
+        """
+
+        safe_board_id = validate_scope_id(board_id)
+        if safe_board_id == "_global":
+            raise ValueError("board_id is reserved for global rebuild artifacts")
+
+        with self._exclusive():
+            direct_targets = self._board_partition_targets(safe_board_id)
+            file_targets, tree_targets = self._shared_board_artifact_targets(
+                safe_board_id
+            )
+
+            files_removed = 0
+            directories_removed = 0
+            removed_targets: set[Path] = set()
+            all_targets = [
+                *direct_targets,
+                *tree_targets,
+                *file_targets,
+            ]
+            for target in sorted(
+                set(all_targets),
+                key=lambda value: len(value.parts),
+                reverse=True,
+            ):
+                if any(
+                    target == parent or parent in target.parents
+                    for parent in removed_targets
+                ):
+                    continue
+                removed_files, removed_directories = remove_contained_tree(
+                    target,
+                    base_dir=self._base_dir,
+                )
+                if removed_files or removed_directories:
+                    files_removed += removed_files
+                    directories_removed += removed_directories
+                    removed_targets.add(target)
+                    if target.parent.exists():
+                        _fsync_directory(target.parent)
+
+            remaining_selected = [
+                target for target in set(all_targets) if self._entry_exists(target)
+            ]
+            remaining_direct = [
+                target for target in direct_targets if self._entry_exists(target)
+            ]
+            remaining_files, remaining_trees = self._shared_board_artifact_targets(
+                safe_board_id
+            )
+            if (
+                remaining_selected
+                or remaining_direct
+                or remaining_files
+                or remaining_trees
+            ):
+                raise RuntimeError(
+                    "board rebuild artifacts remained after physical erasure: "
+                    f"{safe_board_id}"
+                )
+
+        return {
+            "board_id": safe_board_id,
+            "files_removed": files_removed,
+            "directories_removed": directories_removed,
+            "verified_absent": True,
+            "status": (
+                "purged" if files_removed or directories_removed else "not_found"
+            ),
+        }
+
+    @staticmethod
+    def _entry_exists(path: Path) -> bool:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        return True
+
+    def _board_partition_targets(self, board_id: str) -> list[Path]:
+        base = self._base_dir
+        candidates = [
+            base / "rebuild" / "audit" / "events" / board_id,
+            base / "rebuild" / "audit" / "cognitive_pending" / board_id,
+            base / "rebuild" / "audit" / "confirmation" / board_id,
+            base / "rebuild" / "generations" / board_id,
+            base / "candidate_decisions" / board_id,
+            base / "rebuild" / "discovery_reindex" / board_id,
+            # Global recovery journals/snapshots contain cross-board hashes and
+            # full copies. They cannot be selectively redacted with a
+            # board-local proof, so any board privacy erasure invalidates them.
+            base / "rebuild" / "global_discovery_recovery",
+        ]
+        return [contained_lexical_path(base, candidate) for candidate in candidates]
+
+    def _safe_scan_root(self, candidate: Path) -> Path | None:
+        root = contained_lexical_path(self._base_dir, candidate)
+        if not root.exists():
+            return None
+        resolved = contained_resolved_path(self._base_dir, root)
+        if resolved != root:
+            raise RuntimeError(f"rebuild artifact scan root is linked: {root}")
+        if not root.is_dir():
+            raise RuntimeError(f"rebuild artifact scan root is not a directory: {root}")
+        return root
+
+    def _safe_artifact_document(self, candidate: Path, *, root: Path) -> Path:
+        path = contained_lexical_path(root, candidate)
+        resolved = contained_resolved_path(self._base_dir, path)
+        if resolved != path or path.is_symlink():
+            raise RuntimeError(f"rebuild artifact document is linked: {path}")
+        if not path.is_file():
+            raise RuntimeError(f"rebuild artifact is not a regular file: {path}")
+        return path
+
+    @staticmethod
+    def _load_erasure_document(path: Path) -> dict[str, Any]:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"rebuild artifact board scope is unreadable: {path}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"rebuild artifact board scope is not an object: {path}")
+        return payload
+
+    def _shared_board_artifact_targets(
+        self,
+        board_id: str,
+    ) -> tuple[list[Path], list[Path]]:
+        file_targets: list[Path] = []
+        tree_targets: list[Path] = []
+        shared_roots = [
+            self._base_dir / "rebuild" / "audit",
+            self._base_dir / "rebuild" / "manifests",
+            self._base_dir / "rebuild" / "confirmations",
+            self._base_dir / "rebuild" / "reports",
+            self._base_dir / "rebuild" / "rebaseline_audit",
+            self._base_dir / "rebuild" / "global_discovery_recovery",
+        ]
+        for candidate_root in shared_roots:
+            root = self._safe_scan_root(candidate_root)
+            if root is None:
+                continue
+            for candidate in sorted(root.glob("*.json")):
+                path = self._safe_artifact_document(candidate, root=root)
+                self._cleanup_orphan_temps(path)
+                payload = self._load_erasure_document(path)
+                if _payload_mentions_board(payload, board_id):
+                    file_targets.append(path)
+
+        for candidate_root, filename in (
+            (self._base_dir / "contingency", "contingency.json"),
+            (self._base_dir / "stress", "evidence.json"),
+        ):
+            root = self._safe_scan_root(candidate_root)
+            if root is None:
+                continue
+            for entry in sorted(root.iterdir()):
+                entry = contained_lexical_path(root, entry)
+                if entry.is_symlink() or entry.resolve(strict=False) != entry:
+                    raise RuntimeError(f"rebuild artifact container is linked: {entry}")
+                if not entry.is_dir():
+                    continue
+                candidate = entry / filename
+                if not candidate.exists():
+                    continue
+                path = self._safe_artifact_document(candidate, root=entry)
+                payload = self._load_erasure_document(path)
+                if _payload_mentions_board(payload, board_id):
+                    tree_targets.append(entry)
+
+        quarantine_root = self._safe_scan_root(self._base_dir / "quarantine")
+        if quarantine_root is not None:
+            for entry in sorted(quarantine_root.iterdir()):
+                entry = contained_lexical_path(quarantine_root, entry)
+                if entry.is_symlink() or entry.resolve(strict=False) != entry:
+                    raise RuntimeError(f"quarantine container is linked: {entry}")
+                if not entry.is_dir():
+                    continue
+                manifest_path = entry / "manifest.json"
+                if manifest_path.exists():
+                    manifest = self._load_erasure_document(
+                        self._safe_artifact_document(
+                            manifest_path,
+                            root=entry,
+                        )
+                    )
+                    original = manifest.get("original_board_dir")
+                    original_board_id = (
+                        Path(original).name if isinstance(original, str) else None
+                    )
+                    if (
+                        _payload_mentions_board(manifest, board_id)
+                        or original_board_id == board_id
+                        or (
+                            manifest.get("board_id") == "_global"
+                            and manifest.get("graph_type")
+                            in {"global_discovery", "global"}
+                        )
+                    ):
+                        tree_targets.append(entry)
+                    continue
+                if (
+                    entry.name.startswith(f"interrupted-checkpoint-{board_id}-")
+                    or entry.name.startswith(f"kg-wal-{board_id}-")
+                    or entry.name.startswith(f"wal-only-{board_id}-")
+                ):
+                    tree_targets.append(entry)
+                    continue
+                if entry.name.startswith("q_"):
+                    raise RuntimeError(
+                        "quarantine board scope is unverifiable without manifest: "
+                        f"{entry}"
+                    )
+
+        return file_targets, tree_targets
+
     def list_json(self, prefix: RebuildAuditKey) -> Sequence[dict[str, Any]]:
         with self._exclusive():
             directory = self._namespace_dir(prefix)
@@ -451,9 +707,7 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             current_target = self._read_path_unlocked(target_path)
             current_revision = self._read_path_unlocked(revision_path)
             next_target = dict(transform(current_target))
-            pending_revision, committed_revision = revision_transition(
-                current_revision
-            )
+            pending_revision, committed_revision = revision_transition(current_revision)
             pending = dict(pending_revision)
             committed = dict(committed_revision)
             self._write_json_atomic_unlocked(revision_key, pending)

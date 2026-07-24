@@ -38,7 +38,7 @@ import shutil
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from okto_pulse.core.kg.interfaces.quarantine_restore import (
     QuarantineRestoreError,
@@ -98,10 +98,12 @@ class CommunityQuarantineRestore:
         base_dir: Path | str | None = None,
         extra_serve_lock_dirs: tuple[Path, ...] = (),
         retention_days: int = BACKUP_RETENTION_DAYS,
+        lock_owner_probe: Callable[[str, str], bool] | None = None,
     ) -> None:
         self._base_dir_override = Path(base_dir) if base_dir is not None else None
         self._extra_serve_lock_dirs = tuple(Path(p) for p in extra_serve_lock_dirs)
         self._retention_days = retention_days
+        self._lock_owner_probe = lock_owner_probe
 
     # ------------------------------------------------------------------ port
 
@@ -130,11 +132,76 @@ class CommunityQuarantineRestore:
 
     def apply(self, quarantine_id: str) -> RestoreReport:
         plan = self._build_plan(quarantine_id)
+        return self._apply_plan(plan)
+
+    def apply_rebuild_compensation(
+        self,
+        quarantine_id: str,
+        *,
+        expected_board_id: str,
+        run_id: str,
+        owner_token: str | None,
+    ) -> RestoreReport:
+        """Restore under the live server's governed recovery fence.
+
+        This concrete-only capability is deliberately absent from the public
+        ``QuarantineRestore`` port. Manual/operator ``apply`` keeps requiring
+        a stopped server; rebuild compensation proves reader/writer quiescence
+        through the Community runtime before replacing graph files.
+        """
+        if not expected_board_id or not run_id or not owner_token:
+            raise ValueError("rebuild_compensation_restore_identity_invalid")
+        plan = self._build_plan(quarantine_id)
+        if plan.board_id != expected_board_id:
+            raise ValueError("rebuild_compensation_restore_board_mismatch")
+        owner_probe = self._lock_owner_probe
+        if owner_probe is None:
+            from okto_pulse.core.kg.single_writer_lock import KGSingleWriterLock
+
+            owner_probe = KGSingleWriterLock().is_owner
+        if not owner_probe(plan.board_id, owner_token):
+            raise ValueError("rebuild_compensation_restore_fence_lost")
+
+        from okto_pulse.community.adapters.kg_runtime import (
+            board_storage_mutation_window,
+        )
+
+        with board_storage_mutation_window(
+            plan.board_id,
+            phase=f"rebuild_compensation_restore:{run_id}",
+        ):
+            # Entering the writer window may wait for the gate/readers. The
+            # lease can expire during that wait, so the pre-window proof is
+            # insufficient by itself.
+            if not owner_probe(plan.board_id, owner_token):
+                raise ValueError("rebuild_compensation_restore_fence_lost")
+            return self._apply_plan(
+                plan,
+                allow_owned_serve_lock=True,
+                compensation_run_id=run_id,
+                mutation_fence=lambda: bool(owner_probe(plan.board_id, owner_token)),
+            )
+
+    def _apply_plan(
+        self,
+        plan: RestorePlan,
+        *,
+        allow_owned_serve_lock: bool = False,
+        compensation_run_id: str | None = None,
+        mutation_fence: Callable[[], bool] | None = None,
+    ) -> RestoreReport:
         board_dir = Path(plan.board_dir)
-        quarantine_dir = self._quarantine_dir(quarantine_id)
+        quarantine_dir = self._quarantine_dir(plan.quarantine_id)
 
         live_files = self._live_board_files(board_dir)
-        self._ensure_board_not_live(plan.board_id, board_dir, live_files)
+        self._ensure_board_not_live(
+            plan.board_id,
+            board_dir,
+            live_files,
+            allow_owned_serve_lock=allow_owned_serve_lock,
+        )
+        if mutation_fence is not None and not mutation_fence():
+            raise ValueError("rebuild_compensation_restore_fence_lost")
 
         backup_quarantine_id = f"q_{secrets.token_urlsafe(16)}"
         backup_dir = self._quarantine_root() / backup_quarantine_id
@@ -150,6 +217,7 @@ class CommunityQuarantineRestore:
         op_path = backup_dir / OPERATION_MANIFEST
         state: dict[str, Any] = {
             "operation": "quarantine_restore",
+            "compensation_run_id": compensation_run_id,
             "source_quarantine_id": plan.quarantine_id,
             "source_quarantine_dir": str(quarantine_dir),
             "backup_quarantine_id": backup_quarantine_id,
@@ -172,6 +240,15 @@ class CommunityQuarantineRestore:
         # -- backup-swap: move the board's live files into the NEW quarantine.
         gc.collect()  # TR6: drop lingering C++ handles before NTFS moves.
         for live in live_files:
+            if mutation_fence is not None and not mutation_fence():
+                self._fail_partial(
+                    state,
+                    op_path,
+                    RuntimeError("rebuild_compensation_restore_fence_lost"),
+                    step=f"fence_lost:backup_swap:{live.name}",
+                    board_dir=board_dir,
+                    backup_dir=backup_dir,
+                )
             try:
                 self._move_with_retry(live, backup_dir / live.name)
             except OSError as exc:
@@ -193,15 +270,21 @@ class CommunityQuarantineRestore:
             "board_id": plan.board_id,
             "graph_type": "board_graph",
             "reason": f"restore_backup_swap:{plan.quarantine_id}",
-            "reason_bucket": "operator_manual",
-            "correlation_ids": [plan.quarantine_id],
+            "reason_bucket": (
+                "rebuild_compensation"
+                if compensation_run_id is not None
+                else "operator_manual"
+            ),
+            "correlation_ids": [
+                value
+                for value in (plan.quarantine_id, compensation_run_id)
+                if value is not None
+            ],
             "affected_paths_relative": list(state["moved_to_backup"]),
             "kg_generation_id": None,
             "software_version": _software_version(),
             "quarantined_at": now.isoformat(),
-            "retention_until": (
-                now + timedelta(days=self._retention_days)
-            ).isoformat(),
+            "retention_until": (now + timedelta(days=self._retention_days)).isoformat(),
             "files_moved": len(state["moved_to_backup"]),
         }
         try:
@@ -221,6 +304,15 @@ class CommunityQuarantineRestore:
         self._write_json(op_path, state)
         board_dir.mkdir(parents=True, exist_ok=True)
         for entry in plan.files:
+            if mutation_fence is not None and not mutation_fence():
+                self._fail_partial(
+                    state,
+                    op_path,
+                    RuntimeError("rebuild_compensation_restore_fence_lost"),
+                    step=f"fence_lost:copy_snapshot:{entry.name}",
+                    board_dir=board_dir,
+                    backup_dir=backup_dir,
+                )
             try:
                 shutil.copy2(entry.source_path, entry.destination_path)
             except OSError as exc:
@@ -415,10 +507,17 @@ class CommunityQuarantineRestore:
     # ------------------------------------------------------------ apply bits
 
     def _ensure_board_not_live(
-        self, board_id: str, board_dir: Path, live_files: list[Path]
+        self,
+        board_id: str,
+        board_dir: Path,
+        live_files: list[Path],
+        *,
+        allow_owned_serve_lock: bool = False,
     ) -> None:
         """Refuse apply while a live server/process holds the board (BR4)."""
-        lock_owner = self._live_serve_lock()
+        lock_owner = self._live_serve_lock(
+            allow_owned_serve_lock=allow_owned_serve_lock
+        )
         if lock_owner is not None:
             raise QuarantineRestoreError(
                 QuarantineRestoreErrorCode.BOARD_LOCKED,
@@ -436,16 +535,37 @@ class CommunityQuarantineRestore:
         for live in live_files:
             self._probe_exclusive(board_id, live)
 
-    def _live_serve_lock(self) -> dict[str, Any] | None:
+    def _live_serve_lock(
+        self,
+        *,
+        allow_owned_serve_lock: bool = False,
+    ) -> dict[str, Any] | None:
         from okto_pulse.community import serve_lock as _serve_lock
 
         candidates = {self._resolved_base_dir(), *self._extra_serve_lock_dirs}
-        for directory in candidates:
+        active_lock = _serve_lock.get_active_lock() if allow_owned_serve_lock else None
+        active_path = (
+            active_lock.lock_path.resolve() if active_lock is not None else None
+        )
+        for directory in sorted(candidates, key=lambda item: str(item.resolve())):
             lock_path = Path(directory) / _serve_lock.LOCK_FILENAME
             if not lock_path.is_file():
                 continue
             payload = _serve_lock._read_lock_payload(lock_path)
             if _serve_lock._owner_is_live(payload):
+                try:
+                    lock_pid = int(payload.get("pid") or 0)
+                except (TypeError, ValueError):
+                    lock_pid = 0
+                if (
+                    active_path is not None
+                    and lock_path.resolve() == active_path
+                    and lock_pid == os.getpid()
+                ):
+                    # Governed rebuild compensation owns the process lock and
+                    # is already inside the writer+reader mutation window.
+                    # Continue scanning: any second live lock still blocks.
+                    continue
                 return {
                     "lock_path": str(lock_path),
                     "pid": payload.get("pid"),

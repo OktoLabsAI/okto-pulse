@@ -25,7 +25,13 @@ def test_rebuild_ingestion_enqueue_preserves_adapter_coverage(tmp_path: Path) ->
     assert counts == {"inserted": 2, "reset_to_pending": 0, "left_alone": 0}
     rows = _queue_rows(db_path)
     assert {
-        (row["artifact_type"], row["artifact_id"], row["status"], row["priority"], row["source"])
+        (
+            row["artifact_type"],
+            row["artifact_id"],
+            row["status"],
+            row["priority"],
+            row["source"],
+        )
         for row in rows
     } == {
         ("story", "story-new", "pending", "high", "rebuild:run-1"),
@@ -61,10 +67,7 @@ def test_rebuild_ingestion_leaves_active_rows_and_resets_terminal_rows(
     )
 
     assert counts == {"inserted": 0, "reset_to_pending": 1, "left_alone": 1}
-    rows = {
-        row["artifact_id"]: row
-        for row in _queue_rows(db_path)
-    }
+    rows = {row["artifact_id"]: row for row in _queue_rows(db_path)}
     assert rows["story-active"]["status"] == "pending"
     assert rows["story-active"]["attempts"] == 4
     assert rows["story-active"]["last_error"] == "keep"
@@ -79,6 +82,108 @@ def test_rebuild_ingestion_leaves_active_rows_and_resets_terminal_rows(
     assert reset["worker_id"] is None
     assert reset["priority"] == "high"
     assert reset["source"] == "rebuild:run-2"
+
+
+def test_queue_observation_scopes_depth_to_active_rows_and_board(
+    tmp_path: Path,
+) -> None:
+    db_path = _queue_db(tmp_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.executemany(
+            "INSERT INTO consolidation_queue "
+            "(id, board_id, artifact_type, artifact_id, priority, source, status, "
+            "attempts, last_error) VALUES (?, ?, 'story', ?, 'high', 'test', ?, 0, ?)",
+            (
+                ("board-1-pending", "board-1", "story-1", "pending", None),
+                ("board-1-claimed", "board-1", "story-2", "claimed", "retryable"),
+                (
+                    "board-1-done",
+                    "board-1",
+                    "story-3",
+                    "done",
+                    "graph_memory_pressure: ignored terminal row",
+                ),
+                (
+                    "board-2-pending",
+                    "board-2",
+                    "story-4",
+                    "pending",
+                    "graph_memory_pressure: ignored other board",
+                ),
+            ),
+        )
+        conn.commit()
+
+    adapter = CommunityBoardRebuildIngestionAdapter(db_path=db_path)
+
+    assert adapter.queue_observation("board-1") == (2, None)
+    assert adapter.queue_depth("board-1") == 2
+    assert type(adapter.queue_depth("board-1")) is int
+
+
+def test_queue_observation_reports_active_graph_memory_pressure(
+    tmp_path: Path,
+) -> None:
+    db_path = _queue_db(tmp_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO consolidation_queue "
+            "(id, board_id, artifact_type, artifact_id, priority, source, status, "
+            "attempts, last_error) VALUES "
+            "('blocked', 'board-1', 'story', 'story-1', 'high', 'test', "
+            "'pending', 0, 'graph_memory_pressure')"
+        )
+        conn.commit()
+
+    adapter = CommunityBoardRebuildIngestionAdapter(db_path=db_path)
+
+    assert adapter.queue_observation("board-1") == (
+        1,
+        "graph_memory_pressure",
+    )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE consolidation_queue SET "
+            "last_error='  Graph_Memory_Pressure: allocator exhausted  ' "
+            "WHERE id='blocked'"
+        )
+        conn.commit()
+
+    assert adapter.queue_observation("board-1") == (
+        1,
+        "graph_memory_pressure",
+    )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE consolidation_queue SET last_error='transient graph error' "
+            "WHERE id='blocked'"
+        )
+        conn.commit()
+
+    assert adapter.queue_observation("board-1") == (1, None)
+
+
+def test_queue_observation_does_not_abort_for_claimed_retry_in_progress(
+    tmp_path: Path,
+) -> None:
+    db_path = _queue_db(tmp_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO consolidation_queue "
+            "(id, board_id, artifact_type, artifact_id, priority, source, status, "
+            "attempts, last_error) VALUES "
+            "('retrying', 'board-1', 'story', 'story-1', 'high', 'test', "
+            "'claimed', 1, 'graph_memory_pressure: previous attempt')"
+        )
+        conn.commit()
+
+    adapter = CommunityBoardRebuildIngestionAdapter(db_path=db_path)
+
+    # The row still contributes to depth, but a live claim is making progress;
+    # only a pending backoff row is a deterministic blocker.
+    assert adapter.queue_observation("board-1") == (1, None)
 
 
 def _queue_db(tmp_path: Path) -> Path:

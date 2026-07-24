@@ -346,6 +346,7 @@ def test_route_preserves_typed_400_error_envelopes(
         ("per_column_limit=101", "per_column_limit_out_of_bounds"),
         ("per_column_limit=25&offset=1", "offset_requires_column"),
         ("per_column_limit=25&column=done&offset=-1", "offset_invalid"),
+        (f"per_column_limit=25&column=done&offset={1 << 63}", "offset_invalid"),
         ("per_column_limit=25&column=wat", "unknown_column"),
         ("per_column_limit=25&card_types=done", "card_types_malformed"),
         ("per_column_limit=25&card_types=done:wat", "card_types_invalid"),

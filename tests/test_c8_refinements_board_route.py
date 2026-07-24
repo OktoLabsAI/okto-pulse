@@ -331,6 +331,47 @@ def test_labels_are_any_exact_and_all_four_search_fields_participate(
     assert {"r000", "r008", "r016", "r024"} <= ids
 
 
+def test_labels_match_exact_json_members_for_unicode_and_like_metacharacters(
+    refinements_client: TestClient,
+) -> None:
+    from urllib.parse import urlencode
+
+    rows = [
+        {"id": "r-cafe", "labels": json.dumps(["café"])},
+        {"id": "r-emoji", "labels": json.dumps(["🚀ship"])},
+        {"id": "r-percent", "labels": json.dumps(["a%b"])},
+        {"id": "r-percent-decoy", "labels": json.dumps(["aXb"])},
+        {"id": "r-underscore", "labels": json.dumps(["a_b"])},
+        {"id": "r-underscore-decoy", "labels": json.dumps(["acb"])},
+    ]
+
+    async def _insert_rows() -> None:
+        async with refinements_client.app.state.test_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO refinements "
+                    "(id, ideation_id, board_id, title, status, version, created_by, "
+                    "labels, archived, created_at, updated_at) "
+                    "VALUES (:id, 'i-main', 'b1', :id, 'done', 1, 'owner', "
+                    ":labels, 0, '2026-07-20 10:00:00', '2026-07-20 10:00:00')"
+                ),
+                rows,
+            )
+
+    asyncio.run(_insert_rows())
+    expected = {
+        "café": "r-cafe",
+        "🚀ship": "r-emoji",
+        "a%b": "r-percent",
+        "a_b": "r-underscore",
+    }
+    for label, expected_id in expected.items():
+        query = urlencode({"labels": label, "limit": 25})
+        response = refinements_client.get(f"/api/v1/boards/b1/refinements?{query}")
+        assert response.status_code == 200, response.text
+        assert {item["id"] for item in response.json()["items"]} == {expected_id}
+
+
 def test_derivation_pending_counts_only_active_child_specs(
     refinements_client: TestClient,
 ) -> None:

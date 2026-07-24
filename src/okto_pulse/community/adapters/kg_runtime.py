@@ -9,8 +9,10 @@ records the schema version on a Board meta node.
 from __future__ import annotations
 
 import gc
+import json
 import logging
 import os
+import shutil
 import threading
 import time
 from collections import OrderedDict
@@ -30,8 +32,12 @@ from okto_pulse.community.adapters.graph_memory_pressure import (
     is_graph_memory_pressure_error,
     run_graph_database_open,
 )
+from okto_pulse.community.adapters.filesystem_erasure import fsync_directory
 from okto_pulse.core.kg import schema_contract as _schema_contract
-from okto_pulse.core.kg.interfaces.graph_errors import GraphUnavailable
+from okto_pulse.core.kg.interfaces.graph_errors import (
+    GraphLockContention,
+    GraphUnavailable,
+)
 
 logger = logging.getLogger("okto_pulse.kg.schema")
 
@@ -46,7 +52,6 @@ CORRUPT_DB_ERROR_MARKERS = (
     "unreachable_code",
 )
 CAPI_SHARED_LIB_MISSING_MARKER = "could not find lbug c api shared library"
-
 
 
 @dataclass(frozen=True)
@@ -291,9 +296,7 @@ _BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV = (
     "OKTO_PULSE_COMMUNITY_KG_BOARD_BUFFER_POOL_CAP_MB"
 )
 _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT = 2
-_GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV = (
-    "OKTO_PULSE_COMMUNITY_KG_MAX_DB_SIZE_CAP_GB"
-)
+_GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV = "OKTO_PULSE_COMMUNITY_KG_MAX_DB_SIZE_CAP_GB"
 _GRAPH_MAX_DB_SIZE_ALLOWED_GB = frozenset({2, 4, 8, 16, 32, 64})
 
 
@@ -330,8 +333,7 @@ def _board_buffer_pool_operational_cap_mb() -> int:
         except ValueError:
             pass
         logger.warning(
-            "kg.db_open.invalid_board_buffer_pool_cap var=%s value=%r "
-            "falling_back=%d",
+            "kg.db_open.invalid_board_buffer_pool_cap var=%s value=%r falling_back=%d",
             _BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV,
             raw,
             _BOARD_BUFFER_POOL_OPERATIONAL_CAP_MB_DEFAULT,
@@ -365,8 +367,7 @@ def _graph_max_db_size_operational_cap_gb() -> int:
         except ValueError:
             pass
         logger.warning(
-            "kg.db_open.invalid_max_db_size_cap var=%s value=%r "
-            "falling_back=%d",
+            "kg.db_open.invalid_max_db_size_cap var=%s value=%r falling_back=%d",
             _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV,
             raw,
             _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT,
@@ -374,9 +375,7 @@ def _graph_max_db_size_operational_cap_gb() -> int:
                 "event": "kg.db_open.invalid_max_db_size_cap",
                 "var": _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV,
                 "configured_value": raw,
-                "effective_cap_gb": (
-                    _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT
-                ),
+                "effective_cap_gb": (_GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT),
             },
         )
     return _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT
@@ -386,9 +385,7 @@ def _effective_graph_max_db_size_gb(configured_gb: int) -> tuple[int, int]:
     """Return ``(effective, operational_cap)`` for constructor telemetry."""
 
     if configured_gb not in _GRAPH_MAX_DB_SIZE_ALLOWED_GB:
-        raise ValueError(
-            "kg_kuzu_max_db_size_gb must be one of 2, 4, 8, 16, 32, 64 GB"
-        )
+        raise ValueError("kg_kuzu_max_db_size_gb must be one of 2, 4, 8, 16, 32, 64 GB")
     operational_cap_gb = _graph_max_db_size_operational_cap_gb()
     return min(configured_gb, operational_cap_gb), operational_cap_gb
 
@@ -401,9 +398,7 @@ def _raise_board_db_cache_admission_pressure(
 ) -> None:
     """Reject a cold open when every resident Database remains pinned."""
 
-    resident_boards = [
-        Path(cache_key).parent.name for cache_key in _board_db_cache
-    ]
+    resident_boards = [Path(cache_key).parent.name for cache_key in _board_db_cache]
     logger.warning(
         "kg.db_cache.admission_rejected path=%s cache_size=%d cache_cap=%d "
         "reason=resident_databases_pinned",
@@ -530,7 +525,8 @@ def _evict_board_db(key: str) -> bool:
             return False
         logger.info(
             "kg.db_cache.lru_evicted board=%s cache_cap=%d",
-            Path(key).parent.name, _board_db_cache_cap(),
+            Path(key).parent.name,
+            _board_db_cache_cap(),
             extra={
                 "event": "kg.db_cache.lru_evicted",
                 "board_id": Path(key).parent.name,
@@ -540,7 +536,9 @@ def _evict_board_db(key: str) -> bool:
             db.close()
         except Exception as exc:
             logger.warning(
-                "kg.db_cache.close_failed key=%s err=%s", key, exc,
+                "kg.db_cache.close_failed key=%s err=%s",
+                key,
+                exc,
                 extra={"event": "kg.db_cache.close_failed", "key": key},
             )
         del db
@@ -588,6 +586,53 @@ def _close_cached_db_unguarded(board_id: str) -> None:
     gc.collect()  # Windows: libera handles C++ antes do próximo open
 
 
+@contextmanager
+def board_storage_mutation_window(
+    board_id: str,
+    *,
+    phase: str,
+    drain_timeout: float = 30.0,
+):
+    """Hold the writer fence and close guard across a filesystem mutation.
+
+    This is stricter than ``try_close_board_db``: new graph connections stay
+    fenced for the entire caller-controlled swap, rather than only while the
+    cached Database is being closed. It is reserved for governed recovery
+    paths that must replace board graph files in a live server process.
+    """
+    if not board_id or not phase or drain_timeout <= 0:
+        raise ValueError("board_storage_mutation_window_invalid")
+
+    from okto_pulse.community.adapters.graph_connection_pool import (
+        close_board_connection,
+    )
+    from okto_pulse.community.adapters.ladybug_writer import (
+        ladybug_writer_scope,
+    )
+
+    with ladybug_writer_scope(scope=board_id, phase=phase):
+        # Idle pooled BoardConnections are registered readers. Evict them
+        # before opening the exclusive close window so they cannot pin it.
+        close_board_connection(board_id)
+        guard = _get_close_guard(board_id)
+        with guard.closing(timeout=drain_timeout) as (drained, stuck):
+            if not drained:
+                raise GraphLockContention(
+                    "board storage mutation timed out draining graph readers",
+                    details={
+                        "board_id": board_id,
+                        "phase": phase,
+                        "stuck_readers": stuck,
+                        "timeout_ms": int(drain_timeout * 1000),
+                        "error_code": GraphLockContention.code,
+                        "retryable": GraphLockContention.retryable,
+                    },
+                )
+            _close_cached_db_unguarded(board_id)
+            gc.collect()
+            yield
+
+
 def try_close_board_db(
     board_id: str,
     *,
@@ -607,7 +652,9 @@ def try_close_board_db(
     quando o Database foi liberado (ou já não estava aberto).
     """
     try:
-        from okto_pulse.community.adapters.graph_connection_pool import close_board_connection
+        from okto_pulse.community.adapters.graph_connection_pool import (
+            close_board_connection,
+        )
     except ImportError:
         close_board_connection = None  # type: ignore[assignment]
     if close_board_connection is not None:
@@ -615,7 +662,9 @@ def try_close_board_db(
             close_board_connection(board_id)
         except Exception as exc:
             logger.warning(
-                "kg.hygiene.pool_close_failed board=%s err=%s", board_id, exc,
+                "kg.hygiene.pool_close_failed board=%s err=%s",
+                board_id,
+                exc,
                 extra={
                     "event": "kg.hygiene.pool_close_failed",
                     "board_id": board_id,
@@ -636,7 +685,8 @@ def try_close_board_db(
             logger.info(
                 "kg.hygiene.close_skipped_active_readers board=%s "
                 "stuck_readers=%d — higiene adiada para o próximo commit",
-                board_id, active,
+                board_id,
+                active,
                 extra={
                     "event": "kg.hygiene.close_skipped_active_readers",
                     "board_id": board_id,
@@ -652,7 +702,8 @@ def try_close_board_db(
             logger.warning(
                 "kg.hygiene.close_skipped_active_readers board=%s "
                 "stuck_readers=%d — higiene adiada para o próximo commit",
-                board_id, stuck,
+                board_id,
+                stuck,
                 extra={
                     "event": "kg.hygiene.close_skipped_active_readers",
                     "board_id": board_id,
@@ -724,7 +775,9 @@ def close_board_db_cache(
             close_board_connection(board_id)
     except Exception as exc:
         logger.warning(
-            "kg.close_guard.pool_close_failed board=%s err=%s", board_id, exc,
+            "kg.close_guard.pool_close_failed board=%s err=%s",
+            board_id,
+            exc,
             extra={
                 "event": "kg.close_guard.pool_close_failed",
                 "board_id": board_id,
@@ -765,7 +818,9 @@ def close_board_db_cache(
                         "kg.close_guard.deferred board=%s stuck_readers=%d "
                         "timeout_s=%.1f (fail-closed: Database NÃO fechado "
                         "com leitores ativos — close adiado)",
-                        guard_board_id, stuck, drain_timeout,
+                        guard_board_id,
+                        stuck,
+                        drain_timeout,
                         extra={
                             "event": "kg.close_guard.deferred",
                             "board_id": guard_board_id,
@@ -781,7 +836,9 @@ def close_board_db_cache(
                     "kg.close_guard.forced_on_shutdown board=%s "
                     "stuck_readers=%d timeout_s=%.1f (shutdown: fechando com "
                     "leitor vazado após o dreno — investigar leitor vazado)",
-                    guard_board_id, stuck, drain_timeout,
+                    guard_board_id,
+                    stuck,
+                    drain_timeout,
                     extra={
                         "event": "kg.close_guard.forced_on_shutdown",
                         "board_id": guard_board_id,
@@ -798,7 +855,9 @@ def close_board_db_cache(
                 db.close()
             except Exception as exc:
                 logger.warning(
-                    "kg.db_cache.close_failed key=%s err=%s", key, exc,
+                    "kg.db_cache.close_failed key=%s err=%s",
+                    key,
+                    exc,
                     extra={"event": "kg.db_cache.close_failed", "key": key},
                 )
             del db
@@ -870,7 +929,9 @@ class BoardConnection:
         self._close_guard.reader_enter()
         try:
             path = board_kuzu_path(board_id)
-            logger.debug("[KG] BoardConnection.__init__ board_id=%s path=%s", board_id, path)
+            logger.debug(
+                "[KG] BoardConnection.__init__ board_id=%s path=%s", board_id, path
+            )
             self.db = _open_kuzu_db_cached(board_id, path)
             logger.debug("[KG] Kùzu database (cached) for board_id=%s", board_id)
             self.conn = kuzu.Connection(self.db)  # type: ignore[attr-defined]
@@ -884,7 +945,9 @@ class BoardConnection:
         except BaseException:
             self._close_guard.reader_exit()
             raise
-        logger.debug("[KG] Kùzu connection created successfully for board_id=%s", board_id)
+        logger.debug(
+            "[KG] Kùzu connection created successfully for board_id=%s", board_id
+        )
 
     def __enter__(self) -> tuple[Any, Any]:
         return self.db, self.conn
@@ -919,7 +982,8 @@ class BoardConnection:
         except Exception as exc:
             logger.debug(
                 "[KG] BoardConnection.close conn_close_failed board_id=%s err=%s",
-                self._board_id, exc,
+                self._board_id,
+                exc,
             )
         try:
             del self.conn
@@ -991,7 +1055,10 @@ def _raise_existing_graph_open_failed(
     logger.error(
         "kg.schema.existing_graph_open_failed_preserved "
         "board=%s operation=%s path=%s err=%s",
-        board_id, operation, path, exc,
+        board_id,
+        operation,
+        path,
+        exc,
         extra={
             "event": "kg.schema.existing_graph_open_failed_preserved",
             "board_id": board_id,
@@ -1025,9 +1092,7 @@ def _ladybug_open_error_context(
     """Build an operator-facing error with the active Graph DB settings."""
     msg = str(exc)
     lower = msg.lower()
-    effective_buffer_pool_mb = int(
-        buffer_pool_mb or settings.kg_kuzu_buffer_pool_mb
-    )
+    effective_buffer_pool_mb = int(buffer_pool_mb or settings.kg_kuzu_buffer_pool_mb)
     configured_buffer_pool_mb = int(
         configured_buffer_pool_mb
         if configured_buffer_pool_mb is not None
@@ -1147,7 +1212,10 @@ def purge_board_graph_storage_with_receipt(
         logger.error(
             "kg.schema.graph_purge_blocked_quarantine_failed "
             "board=%s reason=%s code=%s err=%s",
-            board_id, reason, exc.code.value, exc.reason,
+            board_id,
+            reason,
+            exc.code.value,
+            exc.reason,
             extra={
                 "event": "kg.schema.graph_purge_blocked_quarantine_failed",
                 "board_id": board_id,
@@ -1175,8 +1243,11 @@ def purge_board_graph_storage_with_receipt(
     logger.warning(
         "kg.schema.graph_purged board=%s reason=%s removed=%d "
         "quarantine_id=%s manifest=%s",
-        board_id, reason, moved_count,
-        response.quarantine_id, response.manifest_ref,
+        board_id,
+        reason,
+        moved_count,
+        response.quarantine_id,
+        response.manifest_ref,
         extra={
             "event": "kg.schema.graph_purged",
             "board_id": board_id,
@@ -1197,6 +1268,63 @@ def purge_board_graph_storage(board_id: str, *, reason: str = "manual") -> list[
         reason=reason,
     )
     return affected
+
+
+def erase_board_graph_storage_for_privacy(
+    board_id: str,
+    *,
+    reason: str = "right_to_erasure",
+) -> list[str]:
+    """Irreversibly remove active graph files under an exclusive close window."""
+
+    path = board_kuzu_path(board_id)
+    removed: list[str] = []
+    with board_storage_mutation_window(
+        board_id,
+        phase=f"privacy_erasure:{reason}",
+    ):
+        targets: list[Path] = []
+        if path.exists():
+            targets.append(path)
+        if path.parent.exists():
+            targets.extend(
+                candidate
+                for candidate in sorted(path.parent.glob(path.name + ".*"))
+                if candidate not in targets
+            )
+        for target in targets:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+            removed.append(str(target))
+        if path.parent.exists() and not any(path.parent.iterdir()):
+            path.parent.rmdir()
+            fsync_directory(path.parent.parent)
+        elif path.parent.exists():
+            fsync_directory(path.parent)
+
+    if path.exists() or (
+        path.parent.exists() and any(path.parent.glob(path.name + ".*"))
+    ):
+        raise RuntimeError(f"board_graph_physical_erasure_unverified board={board_id}")
+    if "_BOOTSTRAPPED_BOARDS" in globals():
+        _BOOTSTRAPPED_BOARDS.discard(board_id)
+    if "_MIGRATED_BOARDS" in globals():
+        _MIGRATED_BOARDS.discard(board_id)
+    logger.warning(
+        "kg.schema.graph_privacy_erased board=%s reason=%s removed=%d",
+        board_id,
+        reason,
+        len(removed),
+        extra={
+            "event": "kg.schema.graph_privacy_erased",
+            "board_id": board_id,
+            "reason": reason,
+            "removed": len(removed),
+        },
+    )
+    return removed
 
 
 def _fsync_if_file(path: Path) -> None:
@@ -1381,7 +1509,8 @@ def apply_ladybug_lifecycle_step(
                 logger.info(
                     "kg.lifecycle.checkpoint_skipped_active_readers board=%s "
                     "readers=%d — checkpoint adiado (durabilidade via WAL)",
-                    board_id, guard.readers,
+                    board_id,
+                    guard.readers,
                     extra={
                         "event": "kg.lifecycle.checkpoint_skipped_active_readers",
                         "board_id": board_id,
@@ -1397,7 +1526,8 @@ def apply_ladybug_lifecycle_step(
                         "kg.lifecycle.checkpoint_skipped_active_readers "
                         "board=%s readers=%d — checkpoint adiado "
                         "(durabilidade via WAL)",
-                        board_id, stuck,
+                        board_id,
+                        stuck,
                         extra={
                             "event": "kg.lifecycle.checkpoint_skipped_active_readers",
                             "board_id": board_id,
@@ -1417,7 +1547,8 @@ def apply_ladybug_lifecycle_step(
                         "kg.lifecycle.checkpoint_statement_failed board=%s "
                         "err=%s — fallback: close do Database (flush via "
                         "close)",
-                        board_id, exc,
+                        board_id,
+                        exc,
                         extra={
                             "event": "kg.lifecycle.checkpoint_statement_failed",
                             "board_id": board_id,
@@ -1631,7 +1762,10 @@ def _try_open_with_wal_salvage(
     if db is None:
         logger.warning(
             "kg.wal.salvage_failed board=%s path=%s original_err=%s salvage_err=%s",
-            path.parent.name, path, original_error, salvage_exc,
+            path.parent.name,
+            path,
+            original_error,
+            salvage_exc,
             extra={
                 "event": "kg.wal.salvage_failed",
                 "board_id": path.parent.name,
@@ -1646,7 +1780,11 @@ def _try_open_with_wal_salvage(
     logger.warning(
         "kg.wal.salvage_applied board=%s path=%s wal_bytes_before=%s "
         "wal_bytes_after=%s original_err=%s",
-        path.parent.name, path, wal_bytes_before, wal_bytes_after, original_error,
+        path.parent.name,
+        path,
+        wal_bytes_before,
+        wal_bytes_after,
+        original_error,
         extra={
             "event": "kg.wal.salvage_applied",
             "board_id": path.parent.name,
@@ -1693,7 +1831,9 @@ def _try_open_with_wal_only_recovery(
     except Exception as q_exc:
         logger.warning(
             "kg.recovery.wal_only_quarantine_error board=%s path=%s err=%s",
-            board_id, path, q_exc,
+            board_id,
+            path,
+            q_exc,
             extra={
                 "event": "kg.recovery.wal_only_quarantine_error",
                 "board_id": board_id,
@@ -1732,7 +1872,11 @@ def _try_open_with_wal_only_recovery(
         logger.warning(
             "kg.recovery.wal_only_reopen_failed board=%s path=%s "
             "quarantine_id=%s original_err=%s reopen_err=%s",
-            board_id, path, result.quarantine_id, original_error, reopen_exc,
+            board_id,
+            path,
+            result.quarantine_id,
+            original_error,
+            reopen_exc,
             extra={
                 "event": "kg.recovery.wal_only_reopen_failed",
                 "board_id": board_id,
@@ -1744,8 +1888,11 @@ def _try_open_with_wal_only_recovery(
     logger.warning(
         "kg.recovery.wal_only_recovered board=%s path=%s quarantine_id=%s "
         "files=%s original_err=%s",
-        board_id, path, result.quarantine_id,
-        list(result.files_moved), original_error,
+        board_id,
+        path,
+        result.quarantine_id,
+        list(result.files_moved),
+        original_error,
         extra={
             "event": "kg.recovery.wal_only_recovered",
             "board_id": board_id,
@@ -1957,8 +2104,7 @@ def _open_kuzu_db_unserialized(
                         on_corruption(e)
                     except Exception as observer_exc:
                         logger.warning(
-                            "kg.db_open.corruption_observer_failed "
-                            "error_type=%s",
+                            "kg.db_open.corruption_observer_failed error_type=%s",
                             type(observer_exc).__name__,
                             extra={
                                 "event": "kg.db_open.corruption_observer_failed",
@@ -1979,7 +2125,8 @@ def _open_kuzu_db_unserialized(
             ):
                 logger.warning(
                     "kg.db_open.interrupted_checkpoint_recovered path=%s err=%s",
-                    path, e,
+                    path,
+                    e,
                     extra={
                         "event": "kg.db_open.interrupted_checkpoint_recovered",
                         "path": str(path),
@@ -2029,12 +2176,17 @@ def _open_kuzu_db_unserialized(
                 )
                 if recovered is not None:
                     return recovered
-            is_lock_contention = "Could not set lock" in msg or "lock contention" in msg.lower()
+            is_lock_contention = (
+                "Could not set lock" in msg or "lock contention" in msg.lower()
+            )
             if is_lock_contention and attempt < 5:
                 sleep_s = 0.2 * (2 ** (attempt - 1))
                 logger.warning(
                     "kg.db_open.lock_retry path=%s attempt=%d/5 sleep=%.2fs err=%s",
-                    path, attempt, sleep_s, e,
+                    path,
+                    attempt,
+                    sleep_s,
+                    e,
                     extra={
                         "event": "kg.db_open.lock_retry",
                         "path": str(path),
@@ -2050,7 +2202,9 @@ def _open_kuzu_db_unserialized(
     e = last_exc  # type: ignore[assignment]
     logger.error(
         "[KG] Failed to open LadybugDB database at %s: %s: %s",
-        path, type(e).__name__, e,
+        path,
+        type(e).__name__,
+        e,
     )
     context = _ladybug_open_error_context(
         path,
@@ -2183,7 +2337,8 @@ def _quarantine_interrupted_checkpoint_sidecars(path: Path) -> bool:
     except OSError as exc:
         logger.warning(
             "kg.db_open.sidecar_quarantine_failed path=%s err=%s",
-            path, exc,
+            path,
+            exc,
             extra={
                 "event": "kg.db_open.sidecar_quarantine_failed",
                 "path": str(path),
@@ -2202,8 +2357,12 @@ def verify_kuzu_db_health(board_id: str) -> dict[str, Any]:
     """
     path = board_kuzu_path(board_id)
     if not path.exists():
-        return {"ok": True, "node_count": 0, "error": None,
-                "note": f"{GRAPH_DB_FILENAME} does not exist yet — will be created on first access"}
+        return {
+            "ok": True,
+            "node_count": 0,
+            "error": None,
+            "note": f"{GRAPH_DB_FILENAME} does not exist yet — will be created on first access",
+        }
     try:
         with open_board_connection(board_id) as (db, conn):
             res = conn.execute("MATCH (n) RETURN count(n) AS cnt")
@@ -2272,8 +2431,7 @@ class SupersedesPairsIncompleteError(RuntimeError):
             "(KGD-01 flow) to re-create the rel table with the full pair set."
         )
         super().__init__(
-            f"kg_supersedes_pairs_incomplete {board_hint} "
-            f"missing={missing_pairs}"
+            f"kg_supersedes_pairs_incomplete {board_hint} missing={missing_pairs}"
         )
 
 
@@ -2309,8 +2467,7 @@ def _probe_supersedes_pairs(conn) -> list[tuple[str, str]]:
         for from_type, to_type in expected:
             try:
                 res = conn.execute(
-                    f"MATCH (:{from_type})-[e:supersedes]->(:{to_type}) "
-                    "RETURN count(e)"
+                    f"MATCH (:{from_type})-[e:supersedes]->(:{to_type}) RETURN count(e)"
                 )
                 res.get_next()
                 try:
@@ -2372,9 +2529,12 @@ def _backfill_legacy_edge_metadata(conn, rel_name: str) -> int:
     except Exception as exc:
         logger.warning(
             "migrate_edge_metadata.backfill_failed rel=%s err=%s",
-            rel_name, exc,
-            extra={"event": "migrate_edge_metadata.backfill_failed",
-                   "rel_name": rel_name},
+            rel_name,
+            exc,
+            extra={
+                "event": "migrate_edge_metadata.backfill_failed",
+                "rel_name": rel_name,
+            },
         )
         return 0
     return 0
@@ -2411,9 +2571,13 @@ def migrate_edge_metadata(board_id: str) -> dict[str, Any]:
 
     logger.info(
         "migrate_edge_metadata.done board=%s summary=%s",
-        board_id, summary,
-        extra={"event": "migrate_edge_metadata.done", "board_id": board_id,
-               "summary": summary},
+        board_id,
+        summary,
+        extra={
+            "event": "migrate_edge_metadata.done",
+            "board_id": board_id,
+            "summary": summary,
+        },
     )
     return summary
 
@@ -2445,7 +2609,10 @@ def _ensure_board_meta_embedding_columns(conn) -> list[str]:
     """
     added: list[str] = []
     for col_name, col_type in BOARD_META_EMBEDDING_COLUMNS:
-        if _alter_add_column_with_retry(conn, "BoardMeta", col_name, col_type) == "added":
+        if (
+            _alter_add_column_with_retry(conn, "BoardMeta", col_name, col_type)
+            == "added"
+        ):
             added.append(col_name)
     return added
 
@@ -2508,9 +2675,7 @@ def _enforce_embedding_guard(board_id: str) -> None:
     effective = _effective_embedding_meta()
     try:
         with registered_raw_connection(board_id) as (_db, conn):
-            persisted_model, persisted_dim = _read_board_meta_embedding(
-                conn, board_id
-            )
+            persisted_model, persisted_dim = _read_board_meta_embedding(conn, board_id)
             verdict = compare_embedding_compat(
                 persisted_model,
                 persisted_dim,
@@ -2554,8 +2719,7 @@ def _enforce_embedding_guard(board_id: str) -> None:
 
     if verdict == VERDICT_MISMATCH:
         logger.error(
-            "kg.embedding_guard.mismatch board=%s persisted=%s/%s "
-            "effective=%s/%s",
+            "kg.embedding_guard.mismatch board=%s persisted=%s/%s effective=%s/%s",
             board_id,
             persisted_model,
             persisted_dim,
@@ -2595,9 +2759,7 @@ def _is_duplicate_column_error(exc: BaseException) -> bool:
     contention, permission, etc.)."""
     msg = str(exc).lower()
     return (
-        "already exists" in msg
-        or "duplicate" in msg
-        or "already has property" in msg
+        "already exists" in msg or "duplicate" in msg or "already has property" in msg
     )
 
 
@@ -2609,16 +2771,17 @@ def _is_retryable_kuzu_error(exc: BaseException) -> bool:
     reader fails with ``IO exception: Could not set lock on file``.
     """
     msg = str(exc).lower()
-    return (
-        "could not set lock" in msg
-        or "io exception" in msg
-        or "timeout" in msg
-    )
+    return "could not set lock" in msg or "io exception" in msg or "timeout" in msg
 
 
 def _alter_add_column_with_retry(
-    conn, node_type: str, col_name: str, col_type: str,
-    *, max_attempts: int = 5, base_sleep: float = 0.2,
+    conn,
+    node_type: str,
+    col_name: str,
+    col_type: str,
+    *,
+    max_attempts: int = 5,
+    base_sleep: float = 0.2,
 ) -> str:
     """ALTER TABLE ADD with retry on lock contention.
 
@@ -2642,14 +2805,22 @@ def _alter_add_column_with_retry(
                 sleep_s = base_sleep * (2 ** (attempt - 1))
                 logger.info(
                     "kg.schema.alter_retry node=%s col=%s attempt=%d/%d sleep=%.2fs err=%s",
-                    node_type, col_name, attempt, max_attempts, sleep_s, exc,
+                    node_type,
+                    col_name,
+                    attempt,
+                    max_attempts,
+                    sleep_s,
+                    exc,
                 )
                 time.sleep(sleep_s)
                 continue
             break
     logger.warning(
         "kg.schema.alter_failed node=%s col=%s attempts=%d err=%s",
-        node_type, col_name, max_attempts, last_err,
+        node_type,
+        col_name,
+        max_attempts,
+        last_err,
     )
     return "failed"
 
@@ -2707,6 +2878,28 @@ def _ensure_last_recomputed_at_columns(conn, node_type: str) -> list[str]:
     for col_name, col_type in LAST_RECOMPUTED_COLUMNS:
         if _alter_add_column_with_retry(conn, node_type, col_name, col_type) == "added":
             added.append(col_name)
+    return added
+
+
+def _ensure_cancellation_columns(conn, node_type: str) -> list[str]:
+    """ALTER TABLE ADD for the v0.3.11 reversible-cancellation snapshot."""
+    added: list[str] = []
+    for col_name, col_type in CANCELLATION_COLUMNS:
+        outcome = _alter_add_column_with_retry(
+            conn,
+            node_type,
+            col_name,
+            col_type,
+        )
+        if outcome == "added":
+            added.append(col_name)
+        elif outcome == "failed":
+            # Unlike optional historical columns, this field is required for
+            # exact cancellation rollback. Never let a partial ALTER pass be
+            # cached as a completed board migration.
+            raise RuntimeError(
+                f"kg_schema_cancellation_column_migration_failed:{node_type}.{col_name}"
+            )
     return added
 
 
@@ -2786,7 +2979,8 @@ def _backfill_kg_layer_defaults(conn, node_type: str) -> None:
     except Exception as exc:
         logger.warning(
             "migrate_kg_layer.backfill_failed node=%s col=graph_layer err=%s",
-            node_type, exc,
+            node_type,
+            exc,
         )
     try:
         conn.execute(
@@ -2797,7 +2991,8 @@ def _backfill_kg_layer_defaults(conn, node_type: str) -> None:
     except Exception as exc:
         logger.warning(
             "migrate_kg_layer.backfill_failed node=%s col=maturity_status err=%s",
-            node_type, exc,
+            node_type,
+            exc,
         )
 
 
@@ -2817,18 +3012,18 @@ def _backfill_relevance_defaults(conn, node_type: str) -> None:
     except Exception as exc:
         logger.warning(
             "migrate_relevance.backfill_failed node=%s col=relevance_score err=%s",
-            node_type, exc,
+            node_type,
+            exc,
         )
     try:
         conn.execute(
-            f"MATCH (n:{node_type}) "
-            f"WHERE n.query_hits IS NULL "
-            f"SET n.query_hits = 0"
+            f"MATCH (n:{node_type}) WHERE n.query_hits IS NULL SET n.query_hits = 0"
         )
     except Exception as exc:
         logger.warning(
             "migrate_relevance.backfill_failed node=%s col=query_hits err=%s",
-            node_type, exc,
+            node_type,
+            exc,
         )
 
 
@@ -2918,26 +3113,29 @@ def _migrate_node_table_v030(conn, node_type: str) -> int:
         while res.has_next():
             row = res.get_next()
             # Row is positional — map to column names in the SELECT order.
-            dumped.append({
-                "id": row[0],
-                "title": row[1],
-                "content": row[2],
-                "context": row[3],
-                "justification": row[4],
-                "source_artifact_ref": row[5],
-                "source_session_id": row[6],
-                "created_at": row[7],
-                "created_by_agent": row[8],
-                "source_confidence": row[9],
-                "superseded_by": row[10],
-                "superseded_at": row[11],
-                "revocation_reason": row[12],
-                "embedding": row[13],
-            })
+            dumped.append(
+                {
+                    "id": row[0],
+                    "title": row[1],
+                    "content": row[2],
+                    "context": row[3],
+                    "justification": row[4],
+                    "source_artifact_ref": row[5],
+                    "source_session_id": row[6],
+                    "created_at": row[7],
+                    "created_by_agent": row[8],
+                    "source_confidence": row[9],
+                    "superseded_by": row[10],
+                    "superseded_at": row[11],
+                    "revocation_reason": row[12],
+                    "embedding": row[13],
+                }
+            )
     except Exception as exc:
         logger.warning(
             "migrate_v030.dump_failed node=%s err=%s — skipping table",
-            node_type, exc,
+            node_type,
+            exc,
         )
         return 0
     finally:
@@ -2952,7 +3150,8 @@ def _migrate_node_table_v030(conn, node_type: str) -> int:
     except Exception as exc:
         logger.warning(
             "migrate_v030.drop_failed node=%s err=%s — table may be in use",
-            node_type, exc,
+            node_type,
+            exc,
         )
         return 0
 
@@ -2961,7 +3160,8 @@ def _migrate_node_table_v030(conn, node_type: str) -> int:
     except Exception as exc:
         logger.error(
             "migrate_v030.create_failed node=%s err=%s — data loss risk",
-            node_type, exc,
+            node_type,
+            exc,
         )
         raise
 
@@ -2988,14 +3188,22 @@ def _migrate_node_table_v030(conn, node_type: str) -> int:
         except Exception as exc:
             logger.warning(
                 "migrate_v030.restore_failed node=%s id=%s err=%s",
-                node_type, row.get("id"), exc,
+                node_type,
+                row.get("id"),
+                exc,
             )
 
     logger.info(
         "migrate_v030.table_done node=%s dumped=%d restored=%d",
-        node_type, len(dumped), restored,
-        extra={"event": "migrate_v030.table_done", "node_type": node_type,
-               "dumped": len(dumped), "restored": restored},
+        node_type,
+        len(dumped),
+        restored,
+        extra={
+            "event": "migrate_v030.table_done",
+            "node_type": node_type,
+            "dumped": len(dumped),
+            "restored": restored,
+        },
     )
     return restored
 
@@ -3059,8 +3267,7 @@ def migrate_board_to_v030(board_id: str) -> dict[str, Any]:
 
         try:
             conn.execute(
-                "MATCH (m:BoardMeta {board_id: $bid}) "
-                "SET m.schema_version = $v",
+                "MATCH (m:BoardMeta {board_id: $bid}) SET m.schema_version = $v",
                 {"bid": board_id, "v": SCHEMA_VERSION},
             )
             # Spec MKG-D-S1 (FR1): the migrate path also stamps the
@@ -3069,9 +3276,11 @@ def migrate_board_to_v030(board_id: str) -> dict[str, Any]:
             # evaporate on the other).
             _ensure_board_meta_embedding_columns(conn)
             _meta = _effective_embedding_meta()
-            if not _meta.get("is_stub") and _meta.get("model_name") and int(
-                _meta.get("embedding_dimension") or 0
-            ) > 0:
+            if (
+                not _meta.get("is_stub")
+                and _meta.get("model_name")
+                and int(_meta.get("embedding_dimension") or 0) > 0
+            ):
                 conn.execute(
                     "MATCH (m:BoardMeta {board_id: $bid}) "
                     "SET m.embedding_model = $model, "
@@ -3085,7 +3294,8 @@ def migrate_board_to_v030(board_id: str) -> dict[str, Any]:
         except Exception as exc:
             logger.warning(
                 "migrate_v030.meta_update_failed board=%s err=%s",
-                board_id, exc,
+                board_id,
+                exc,
             )
     finally:
         # Fecha a Connection e desregistra o leitor no guard. Bug d0f6bab2:
@@ -3098,9 +3308,9 @@ def migrate_board_to_v030(board_id: str) -> dict[str, Any]:
 
     logger.info(
         "migrate_v030.done board=%s summary=%s",
-        board_id, summary,
-        extra={"event": "migrate_v030.done", "board_id": board_id,
-               "summary": summary},
+        board_id,
+        summary,
+        extra={"event": "migrate_v030.done", "board_id": board_id, "summary": summary},
     )
     return summary
 
@@ -3116,6 +3326,7 @@ REL_TYPES = _schema_contract.REL_TYPES
 MULTI_REL_TYPES = _schema_contract.MULTI_REL_TYPES
 STABLE_NODE_PROPERTIES = _schema_contract.STABLE_NODE_PROPERTIES
 RELEVANCE_COLUMNS = _schema_contract.RELEVANCE_COLUMNS
+CANCELLATION_COLUMNS = _schema_contract.CANCELLATION_COLUMNS
 PRIORITY_BOOST_COLUMNS = _schema_contract.PRIORITY_BOOST_COLUMNS
 HUMAN_CURATED_COLUMNS = _schema_contract.HUMAN_CURATED_COLUMNS
 LAST_RECOMPUTED_COLUMNS = _schema_contract.LAST_RECOMPUTED_COLUMNS
@@ -3214,17 +3425,13 @@ def _board_needs_migration(board_id: str) -> bool:
         with registered_raw_connection(board_id) as (_db, conn):
             res = None
             try:
-                res = conn.execute(
-                    "CALL show_tables() WHERE type='REL' RETURN name"
-                )
+                res = conn.execute("CALL show_tables() WHERE type='REL' RETURN name")
                 existing = set()
                 while res.has_next():
                     existing.add(res.get_next()[0])
                 res.close()
                 res = None
-                expected = (
-                    {r[0] for r in REL_TYPES} | {m[0] for m in MULTI_REL_TYPES}
-                )
+                expected = {r[0] for r in REL_TYPES} | {m[0] for m in MULTI_REL_TYPES}
                 if not expected.issubset(existing):
                     return True
                 for rel_name, pairs in MULTI_REL_TYPES:
@@ -3244,6 +3451,26 @@ def _board_needs_migration(board_id: str) -> bool:
         return True
 
 
+def _probe_node_type_columns(conn: Any, node_type: str) -> set[str]:
+    """Return the TABLE_INFO column set for one node type."""
+
+    res = None
+    try:
+        res = conn.execute(f"CALL TABLE_INFO('{node_type}') RETURN *")
+        existing_cols: set[str] = set()
+        while res.has_next():
+            row = res.get_next()
+            # TABLE_INFO row: [index, name, type, default, pk]
+            existing_cols.add(str(row[1]))
+        return existing_cols
+    finally:
+        if res is not None:
+            try:
+                res.close()
+            except Exception:
+                pass
+
+
 def _probe_first_node_type_columns(board_id: str) -> set[str]:
     """TABLE_INFO no primeiro node type — retorna as colunas existentes.
 
@@ -3256,22 +3483,23 @@ def _probe_first_node_type_columns(board_id: str) -> set[str]:
     probes chamadores mantêm seus try/except (BR6).
     """
     with registered_raw_connection(board_id) as (_db, conn):
-        res = None
-        try:
-            probe_node = NODE_TYPES[0]
-            res = conn.execute(f"CALL TABLE_INFO('{probe_node}') RETURN *")
-            existing_cols: set[str] = set()
-            while res.has_next():
-                row = res.get_next()
-                # TABLE_INFO row: [index, name, type, default, pk]
-                existing_cols.add(str(row[1]))
-            return existing_cols
-        finally:
-            if res is not None:
-                try:
-                    res.close()
-                except Exception:
-                    pass
+        return _probe_node_type_columns(conn, NODE_TYPES[0])
+
+
+def _assert_cancellation_columns_complete(conn: Any) -> None:
+    """Fail closed unless every node table has the cancellation snapshot."""
+
+    expected = {name for name, _col_type in CANCELLATION_COLUMNS}
+    missing: dict[str, list[str]] = {}
+    for node_type in NODE_TYPES:
+        absent = sorted(expected - _probe_node_type_columns(conn, node_type))
+        if absent:
+            missing[node_type] = absent
+    if missing:
+        raise RuntimeError(
+            "kg_schema_cancellation_columns_incomplete:"
+            f"{json.dumps(missing, sort_keys=True)}"
+        )
 
 
 def _board_needs_priority_boost_migration(board_id: str) -> bool:
@@ -3359,6 +3587,24 @@ def _board_needs_last_recomputed_migration(board_id: str) -> bool:
         return False
 
 
+def _board_needs_cancellation_migration(board_id: str) -> bool:
+    """Return True if any node type lacks the cancellation snapshot.
+
+    This probe intentionally differs from older first-table probes: a failed
+    partial ALTER can leave only later node tables behind, so all types are
+    authoritative. Probe failures also require migration (fail closed).
+    """
+    try:
+        expected = {c for c, _ in CANCELLATION_COLUMNS}
+        with registered_raw_connection(board_id) as (_db, conn):
+            return any(
+                not expected.issubset(_probe_node_type_columns(conn, node_type))
+                for node_type in NODE_TYPES
+            )
+    except Exception:
+        return True
+
+
 def _board_needs_post_v030_migration(board_id: str) -> bool:
     """Compose probe — True iff any v0.3.1+ column is missing on the board.
 
@@ -3376,6 +3622,7 @@ def _board_needs_post_v030_migration(board_id: str) -> bool:
         _board_needs_priority_boost_migration(board_id)
         or _board_needs_human_curated_migration(board_id)
         or _board_needs_last_recomputed_migration(board_id)
+        or _board_needs_cancellation_migration(board_id)
     )
 
 
@@ -3394,7 +3641,8 @@ def _migrate_board_schema(board_id: str) -> bool:
         _MIGRATED_BOARDS.discard(board_id)
         logger.warning(
             "board_migrate.apply_failed board=%s err=%s",
-            board_id, exc,
+            board_id,
+            exc,
         )
         return False
 
@@ -3434,9 +3682,7 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
     try:
         path = board_kuzu_path(board_id)
         if not path.exists():
-            errors.append(
-                f"board_not_found: {GRAPH_DB_FILENAME} missing at {path}"
-            )
+            errors.append(f"board_not_found: {GRAPH_DB_FILENAME} missing at {path}")
             return {
                 "board_id": board_id,
                 "migrated": False,
@@ -3467,37 +3713,28 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
                     added_for_type.extend(
                         _ensure_last_recomputed_at_columns(conn, node_type)
                     )
-                    added_for_type.extend(
-                        _ensure_kg_layer_columns(conn, node_type)
-                    )
-                    added_for_type.extend(
-                        _ensure_generation_columns(conn, node_type)
-                    )
-                    added_for_type.extend(
-                        _ensure_provenance_columns(conn, node_type)
-                    )
-                    added_for_type.extend(
-                        _ensure_attestation_columns(conn, node_type)
-                    )
-                    added_for_type.extend(
-                        _ensure_subtype_columns(conn, node_type)
-                    )
+                    added_for_type.extend(_ensure_cancellation_columns(conn, node_type))
+                    added_for_type.extend(_ensure_kg_layer_columns(conn, node_type))
+                    added_for_type.extend(_ensure_generation_columns(conn, node_type))
+                    added_for_type.extend(_ensure_provenance_columns(conn, node_type))
+                    added_for_type.extend(_ensure_attestation_columns(conn, node_type))
+                    added_for_type.extend(_ensure_subtype_columns(conn, node_type))
                     _backfill_kg_layer_defaults(conn, node_type)
                 except Exception as nt_exc:
-                    errors.append(
-                        f"node_type_failed: {node_type}: {nt_exc}"
-                    )
+                    errors.append(f"node_type_failed: {node_type}: {nt_exc}")
                 if added_for_type:
                     columns_added[node_type] = added_for_type
+            try:
+                _assert_cancellation_columns_complete(conn)
+            except Exception as cancellation_exc:
+                errors.append(f"cancellation_columns_incomplete: {cancellation_exc}")
             for rel_name, from_type, to_type in REL_TYPES:
                 try:
                     conn.execute(_build_rel_ddl(rel_name, from_type, to_type))
                     _ensure_edge_metadata_columns(conn, rel_name)
                     _backfill_legacy_edge_metadata(conn, rel_name)
                 except Exception as rel_exc:
-                    errors.append(
-                        f"rel_failed: {rel_name}: {rel_exc}"
-                    )
+                    errors.append(f"rel_failed: {rel_name}: {rel_exc}")
             for rel_name, pairs in MULTI_REL_TYPES:
                 try:
                     conn.execute(_build_multi_rel_ddl(rel_name, pairs))
@@ -3505,9 +3742,7 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
                     _ensure_edge_metadata_columns(conn, rel_name)
                     _backfill_legacy_edge_metadata(conn, rel_name)
                 except Exception as mrel_exc:
-                    errors.append(
-                        f"multi_rel_failed: {rel_name}: {mrel_exc}"
-                    )
+                    errors.append(f"multi_rel_failed: {rel_name}: {mrel_exc}")
             try:
                 _ensure_vector_indexes(conn)
             except Exception as vector_exc:
@@ -3530,7 +3765,8 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
         migrated = False
         logger.warning(
             "kg.migrate_schema.failed board=%s err=%s",
-            board_id, exc,
+            board_id,
+            exc,
             extra={
                 "event": "kg.migrate_schema.failed",
                 "board_id": board_id,
@@ -3542,7 +3778,11 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
     logger.info(
         "kg.migrate_schema.done board=%s migrated=%s columns_added=%s "
         "errors=%d duration_ms=%d",
-        board_id, migrated, columns_added, len(errors), duration_ms,
+        board_id,
+        migrated,
+        columns_added,
+        len(errors),
+        duration_ms,
         extra={
             "event": "kg.migrate_schema.done",
             "board_id": board_id,
@@ -3590,6 +3830,8 @@ def apply_schema_to_connection(conn) -> None:
         # ISO timestamp of the last relevance_score persist. Read by the
         # daily decay tick and kg_health for observability.
         _ensure_last_recomputed_at_columns(conn, node_type)
+        # v0.3.11: exact score restoration after a clamped cancellation.
+        _ensure_cancellation_columns(conn, node_type)
         # v0.3.6: graph partition metadata for canonical-only query surfaces.
         _ensure_kg_layer_columns(conn, node_type)
         # v0.3.8 (spec MKG-A-S1): supersedence generation for deterministic
@@ -3603,6 +3845,10 @@ def apply_schema_to_connection(conn) -> None:
         # v0.3.10 (spec MKG-E-S1): declarative subtyping column.
         _ensure_subtype_columns(conn, node_type)
         _backfill_kg_layer_defaults(conn, node_type)
+    # Validate every node type before any caller can cache this schema pass.
+    # A first-table-only probe cannot detect a partial ALTER failure later in
+    # the NODE_TYPES loop.
+    _assert_cancellation_columns_complete(conn)
     for rel_name, from_type, to_type in REL_TYPES:
         conn.execute(_build_rel_ddl(rel_name, from_type, to_type))
         # v0.1.0 → v0.2.0 backfill: ALTER ADD the metadata cols on legacy
@@ -3663,7 +3909,8 @@ def bootstrap_board_graph(board_id: str) -> BoardGraphHandle:
             "kg.bootstrap.fresh_graph_created board=%s path=%s "
             "(se um grafo anterior existia e foi removido manualmente, "
             "re-materialize via historical consolidation/rebuild)",
-            board_id, path,
+            board_id,
+            path,
             extra={
                 "event": "kg.bootstrap.fresh_graph_created",
                 "board_id": board_id,
@@ -3691,9 +3938,12 @@ def bootstrap_board_graph(board_id: str) -> BoardGraphHandle:
         # the DELETE+CREATE (risk R4 — fields must survive re-bootstrap).
         prior_model, prior_dim = _read_board_meta_embedding(conn, board_id)
         _meta = _effective_embedding_meta()
-        if not _meta.get("is_stub") and _meta.get("model_name") and int(
-            _meta.get("embedding_dimension") or 0
-        ) > 0 and not prior_model:
+        if (
+            not _meta.get("is_stub")
+            and _meta.get("model_name")
+            and int(_meta.get("embedding_dimension") or 0) > 0
+            and not prior_model
+        ):
             prior_model = _meta.get("model_name")
             prior_dim = int(_meta.get("embedding_dimension") or 0)
         conn.execute(
@@ -3802,19 +4052,20 @@ def ensure_board_graph_bootstrapped(board_id: str) -> None:
         if _graph_needs_bootstrap(board_id):
             logger.info(
                 "kg.schema.autobootstrap board=%s path=%s",
-                board_id, board_kuzu_path(board_id),
+                board_id,
+                board_kuzu_path(board_id),
                 extra={"event": "kg.schema.autobootstrap", "board_id": board_id},
             )
             bootstrap_board_graph(board_id)
             _MIGRATED_BOARDS.add(board_id)
             bootstrapped = True
-        elif (
-            _board_needs_migration(board_id)
-            or _board_needs_post_v030_migration(board_id)
+        elif _board_needs_migration(board_id) or _board_needs_post_v030_migration(
+            board_id
         ):
             logger.info(
                 "kg.schema.auto_migrate_post_v030 board=%s path=%s",
-                board_id, board_kuzu_path(board_id),
+                board_id,
+                board_kuzu_path(board_id),
                 extra={
                     "event": "kg.schema.auto_migrate_post_v030",
                     "board_id": board_id,
@@ -3913,7 +4164,9 @@ def close_all_connections(board_id: str | None = None) -> None:
                 close_board_connection(board_id)
             except Exception as exc:
                 logger.warning(
-                    "close_all.board_failed board=%s err=%s", board_id, exc,
+                    "close_all.board_failed board=%s err=%s",
+                    board_id,
+                    exc,
                     extra={
                         "event": "close_all.board_failed",
                         "board_id": board_id,
@@ -3929,7 +4182,8 @@ def close_all_connections(board_id: str | None = None) -> None:
             close_all_board_connections()
         except Exception as exc:
             logger.warning(
-                "close_all.pool_failed err=%s", exc,
+                "close_all.pool_failed err=%s",
+                exc,
                 extra={"event": "close_all.pool_failed"},
             )
 

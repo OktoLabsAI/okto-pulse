@@ -22,6 +22,7 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
 )
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
+    PAGE_OFFSET_MAX,
     PageRequest,
     PageResult,
 )
@@ -134,7 +135,7 @@ def resolve_window(offset: int | None, limit: int | None) -> tuple[int, int]:
     """Validate the REST window (typed 400s) and fill the defaults."""
     resolved_offset = 0 if offset is None else offset
     resolved_limit = 25 if limit is None else limit
-    if resolved_offset < 0:
+    if resolved_offset < 0 or resolved_offset > PAGE_OFFSET_MAX:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "offset_out_of_bounds", "offset": resolved_offset},

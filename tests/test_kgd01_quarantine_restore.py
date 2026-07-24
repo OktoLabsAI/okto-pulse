@@ -164,7 +164,12 @@ def restore_env(tmp_path):
         "base": base,
         "quarantine_dir": quarantine_dir,
         "board_dir": board_dir,
-        "adapter": CommunityQuarantineRestore(base_dir=base),
+        "adapter": CommunityQuarantineRestore(
+            base_dir=base,
+            lock_owner_probe=lambda board_id, owner_token: (
+                board_id == BOARD_ID and owner_token == "owner-token"
+            ),
+        ),
     }
 
 
@@ -220,7 +225,8 @@ def test_plan_dry_run_full_plan_and_zero_mutation(restore_env, caplog):
     # Auditoria TR4.
     assert "kg.quarantine.restore_dry_run" in _events(caplog)
     rec = next(
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if getattr(r, "event", None) == "kg.quarantine.restore_dry_run"
     )
     assert rec.quarantine_id == QUARANTINE_ID
@@ -266,7 +272,8 @@ def test_apply_backup_swap_restores_and_validates_open(restore_env, caplog):
     assert backup_manifest["board_id"] == BOARD_ID
     assert backup_manifest["reason"] == f"restore_backup_swap:{QUARANTINE_ID}"
     assert sorted(backup_manifest["affected_paths_relative"]) == [
-        "graph.lbug", "graph.lbug.wal",
+        "graph.lbug",
+        "graph.lbug.wal",
     ]
     assert backup_manifest["files_moved"] == 2
     assert (backup_dir / "graph.lbug").read_bytes() == LIVE_MAIN_BYTES
@@ -291,7 +298,8 @@ def test_apply_backup_swap_restores_and_validates_open(restore_env, caplog):
     # Auditoria TR4 no caplog.
     assert "kg.quarantine.restored" in _events(caplog)
     rec = next(
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if getattr(r, "event", None) == "kg.quarantine.restored"
     )
     assert rec.quarantine_id == QUARANTINE_ID
@@ -300,14 +308,130 @@ def test_apply_backup_swap_restores_and_validates_open(restore_env, caplog):
     assert rec.open_validated is True
 
     # Manifest da operação registra o fluxo completo até phase=done.
-    op = json.loads(
-        (backup_dir / "restore_operation.json").read_text(encoding="utf-8")
-    )
+    op = json.loads((backup_dir / "restore_operation.json").read_text(encoding="utf-8"))
     assert op["phase"] == "done"
     assert op["open_validated"] is True
     assert sorted(op["moved_to_backup"]) == ["graph.lbug", "graph.lbug.wal"]
     assert sorted(op["copied_from_snapshot"]) == ["graph.lbug", "graph.lbug.wal"]
     assert op["pending_backup"] == [] and op["pending_copy"] == []
+
+
+def test_live_server_manual_restore_stays_blocked_but_compensation_is_fenced(
+    restore_env,
+    monkeypatch,
+):
+    from okto_pulse.community.serve_lock import acquire_serve_lock
+    from okto_pulse.community.adapters import kg_runtime
+
+    base: Path = restore_env["base"]
+    adapter: CommunityQuarantineRestore = restore_env["adapter"]
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: base)
+
+    with acquire_serve_lock(base):
+        before = _disk_state(base)
+        with pytest.raises(QuarantineRestoreError) as exc_info:
+            adapter.apply(QUARANTINE_ID)
+        assert exc_info.value.code is QuarantineRestoreErrorCode.BOARD_LOCKED
+        assert _disk_state(base) == before
+
+        report = adapter.apply_rebuild_compensation(
+            QUARANTINE_ID,
+            expected_board_id=BOARD_ID,
+            run_id="rebuild-run-1",
+            owner_token="owner-token",
+        )
+
+    assert report.applied is True
+    assert report.open_validated is True
+    assert report.board_id == BOARD_ID
+    backup_dir = base / "quarantine" / str(report.backup_quarantine_id)
+    operation = json.loads(
+        (backup_dir / "restore_operation.json").read_text(encoding="utf-8")
+    )
+    manifest = json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert operation["compensation_run_id"] == "rebuild-run-1"
+    assert manifest["reason_bucket"] == "rebuild_compensation"
+    assert "rebuild-run-1" in manifest["correlation_ids"]
+
+
+def test_compensation_rejects_board_manifest_mismatch_without_mutation(
+    restore_env,
+):
+    adapter: CommunityQuarantineRestore = restore_env["adapter"]
+    base: Path = restore_env["base"]
+    before = _disk_state(base)
+
+    with pytest.raises(
+        ValueError,
+        match="rebuild_compensation_restore_board_mismatch",
+    ):
+        adapter.apply_rebuild_compensation(
+            QUARANTINE_ID,
+            expected_board_id="different-board",
+            run_id="rebuild-run-2",
+            owner_token="owner-token",
+        )
+
+    assert _disk_state(base) == before
+
+
+def test_compensation_rejects_stale_owner_token_without_mutation(restore_env):
+    adapter: CommunityQuarantineRestore = restore_env["adapter"]
+    base: Path = restore_env["base"]
+    before = _disk_state(base)
+
+    with pytest.raises(
+        ValueError,
+        match="rebuild_compensation_restore_fence_lost",
+    ):
+        adapter.apply_rebuild_compensation(
+            QUARANTINE_ID,
+            expected_board_id=BOARD_ID,
+            run_id="rebuild-run-3",
+            owner_token="stale-token",
+        )
+
+    assert _disk_state(base) == before
+
+
+def test_compensation_revalidates_owner_after_writer_window_without_mutation(
+    restore_env,
+    monkeypatch,
+):
+    from okto_pulse.community.adapters import kg_runtime
+
+    base: Path = restore_env["base"]
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: base)
+    probes = 0
+
+    def owner_probe(board_id: str, owner_token: str) -> bool:
+        nonlocal probes
+        probes += 1
+        assert board_id == BOARD_ID
+        assert owner_token == "owner-token"
+        # Initial proof succeeds; the lease is lost while the writer window
+        # is being acquired.
+        return probes == 1
+
+    adapter = CommunityQuarantineRestore(
+        base_dir=base,
+        lock_owner_probe=owner_probe,
+    )
+    before = _disk_state(base)
+
+    with pytest.raises(
+        ValueError,
+        match="rebuild_compensation_restore_fence_lost",
+    ):
+        adapter.apply_rebuild_compensation(
+            QUARANTINE_ID,
+            expected_board_id=BOARD_ID,
+            run_id="rebuild-run-fence-race",
+            owner_token="owner-token",
+        )
+
+    assert probes == 2
+    assert _disk_state(base) == before
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +534,7 @@ def test_cli_restore_dry_run_json(restore_env, monkeypatch, capsys):
     assert exc_info.value.code == 0
 
     out = capsys.readouterr().out
-    payload = json.loads(out[out.index("{"):])
+    payload = json.loads(out[out.index("{") :])
     assert payload["applied"] is False
     assert payload["quarantine_id"] == QUARANTINE_ID
     assert payload["board_id"] == BOARD_ID

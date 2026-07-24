@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from urllib.parse import urlencode
 
 import pytest
@@ -48,8 +47,9 @@ def test_board_refinement_query_errors_are_typed_400(
     assert caught.value.detail["error"] == code
 
 
-def test_complete_request_preserves_label_and_search_as_independent_or_dimensions(
-) -> None:
+def test_complete_request_preserves_label_and_search_as_independent_or_dimensions() -> (
+    None
+):
     request = refinement_board_page_request(
         "b1",
         status_value="done",
@@ -75,10 +75,10 @@ def test_complete_request_preserves_label_and_search_as_independent_or_dimension
     assert len(request.any_groups) == 8
     assert all(len(branch) == 2 for branch in request.any_groups)
     assert {branch[0].field for branch in request.any_groups} == {"labels"}
-    assert {branch[0].operator for branch in request.any_groups} == {"contains"}
+    assert {branch[0].operator for branch in request.any_groups} == {"json_member"}
     assert {branch[0].value for branch in request.any_groups} == {
-        json.dumps("blue"),
-        json.dumps("green"),
+        "blue",
+        "green",
     }
     assert {branch[1].field for branch in request.any_groups} == {
         "title",
@@ -112,8 +112,9 @@ def test_default_scope_excludes_archived_and_has_no_discretionary_filters() -> N
     assert request.any_groups == ()
 
 
-def test_false_derivation_filter_is_explicit_and_search_has_all_consumer_fields(
-) -> None:
+def test_false_derivation_filter_is_explicit_and_search_has_all_consumer_fields() -> (
+    None
+):
     request = refinement_board_page_request(
         "b1",
         status_value=None,
@@ -135,9 +136,7 @@ def test_false_derivation_filter_is_explicit_and_search_has_all_consumer_fields(
         "labels",
         "ideation_title",
     }
-    assert {branch[0].value for branch in request.any_groups} == {
-        "%Idea TITLE%"
-    }
+    assert {branch[0].value for branch in request.any_groups} == {"%Idea TITLE%"}
 
 
 def test_label_filter_uses_exact_json_membership_not_substring_matching() -> None:
@@ -157,6 +156,6 @@ def test_label_filter_uses_exact_json_membership_not_substring_matching() -> Non
     predicate = request.any_groups[0][0]
     assert (predicate.field, predicate.operator, predicate.value) == (
         "labels",
-        "contains",
-        '"blue"',
+        "json_member",
+        "blue",
     )
