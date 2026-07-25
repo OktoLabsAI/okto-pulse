@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import logging
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -216,6 +217,128 @@ def test_ts_87cf9551_preload_noop_for_stub_provider(monkeypatch):
     asyncio.run(main._preload_embedding_model(_Settings()))
     # stub provider -> nothing to preload -> unchanged.
     assert registry.embedding_provider is original
+
+
+def test_ts_87cf9551_preload_budget_defers_blocking_warmup(caplog, monkeypatch):
+    import okto_pulse.community.main as main
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingProvider:
+        loaded = False
+
+        def embedding_metadata(self):
+            return {
+                "model_name": "slow/model",
+                "embedding_dimension": 13,
+                "is_loaded": self.loaded,
+                "is_stub": False,
+            }
+
+        def preload(self):
+            entered.set()
+            release.wait(timeout=1)
+            self.loaded = True
+
+    class _Settings:
+        kg_embedding_dim = 384
+
+    provider = _BlockingProvider()
+    registry = SimpleNamespace(embedding_provider=provider)
+    monkeypatch.setattr(main, "get_current_provider_registry", lambda: registry)
+    monkeypatch.setattr(main, "_EMBEDDING_PRELOAD_BUDGET_S", 0.02)
+
+    async def _exercise() -> None:
+        preload = asyncio.create_task(main._preload_embedding_model(_Settings()))
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            await preload
+            assert registry.embedding_provider is provider
+        finally:
+            release.set()
+        for _ in range(100):
+            if not main._EMBEDDING_PRELOAD_TASKS:
+                break
+            await asyncio.sleep(0.01)
+        assert provider.loaded is True
+        assert not main._EMBEDDING_PRELOAD_TASKS
+
+    with caplog.at_level(logging.INFO, logger="okto_pulse.community.embedding"):
+        asyncio.run(_exercise())
+
+    deferred = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "kg.embedding.load_deferred"
+    ]
+    loaded = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "kg.embedding.loaded"
+        and getattr(record, "deferred", False)
+    ]
+    assert deferred
+    assert loaded
+
+
+def test_ts_87cf9551_deferred_preload_failure_degrades_to_stub(caplog, monkeypatch):
+    import okto_pulse.community.main as main
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingFailingProvider:
+        def embedding_metadata(self):
+            return {
+                "model_name": "slow/broken-model",
+                "embedding_dimension": 17,
+                "is_loaded": False,
+                "is_stub": False,
+            }
+
+        def preload(self):
+            entered.set()
+            release.wait(timeout=1)
+            raise OSError("deferred model failure")
+
+    class _Settings:
+        kg_embedding_dim = 384
+
+    provider = _BlockingFailingProvider()
+    registry = SimpleNamespace(embedding_provider=provider)
+    monkeypatch.setattr(main, "get_current_provider_registry", lambda: registry)
+    monkeypatch.setattr(main, "_EMBEDDING_PRELOAD_BUDGET_S", 0.02)
+
+    async def _exercise() -> None:
+        preload = asyncio.create_task(main._preload_embedding_model(_Settings()))
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            await preload
+            assert registry.embedding_provider is provider
+        finally:
+            release.set()
+        for _ in range(100):
+            if not main._EMBEDDING_PRELOAD_TASKS:
+                break
+            await asyncio.sleep(0.01)
+        assert type(registry.embedding_provider).__name__ == (
+            "CommunityStubEmbeddingProvider"
+        )
+        assert registry.embedding_provider.dim == 17
+        assert not main._EMBEDDING_PRELOAD_TASKS
+
+    with caplog.at_level(logging.WARNING, logger="okto_pulse.community.embedding"):
+        asyncio.run(_exercise())
+
+    failed = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "kg.embedding.load_failed"
+        and getattr(record, "deferred", False)
+    ]
+    assert failed
+    assert failed[0].reason == "deferred_load_failed"
 
 
 # ===========================================================================

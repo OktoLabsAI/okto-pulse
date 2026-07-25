@@ -80,6 +80,7 @@ _METRICS_LOG_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 _EMBEDDING_PRELOAD_ATTEMPTS = 3
 _EMBEDDING_PRELOAD_BACKOFF_S = (2.0, 4.0, 8.0)
 _EMBEDDING_PRELOAD_BUDGET_S = 30.0
+_EMBEDDING_PRELOAD_TASKS: set[asyncio.Task[None]] = set()
 
 
 def _enable_native_crash_diagnostics() -> None:
@@ -298,6 +299,58 @@ def _is_transient_network_error(exc: BaseException) -> bool:
     return isinstance(exc, (requests.ConnectionError, requests.Timeout))
 
 
+def _track_deferred_embedding_preload(
+    task: asyncio.Task[None],
+    *,
+    registry,
+    provider,
+    model_name: str | None,
+    dim: int,
+    started: float,
+    attempt: int,
+) -> None:
+    """Keep a timed-out warm-up alive and publish its eventual outcome."""
+
+    _EMBEDDING_PRELOAD_TASKS.add(task)
+
+    def _on_done(completed: asyncio.Task[None]) -> None:
+        _EMBEDDING_PRELOAD_TASKS.discard(completed)
+        if completed.cancelled():
+            return
+        try:
+            completed.result()
+        except Exception as exc:
+            if registry.embedding_provider is provider:
+                registry.embedding_provider = CommunityStubEmbeddingProvider(dim=dim)
+            _EMBEDDING_LOGGER.warning(
+                "kg.embedding.load_failed",
+                extra={
+                    "event": "kg.embedding.load_failed",
+                    "reason": "deferred_load_failed",
+                    "model": model_name,
+                    "error": repr(exc),
+                    "fallback": "CommunityStubEmbeddingProvider",
+                    "deferred": True,
+                },
+            )
+            return
+
+        duration_ms = int((time.monotonic() - started) * 1000)
+        _EMBEDDING_LOGGER.info(
+            "kg.embedding.loaded",
+            extra={
+                "event": "kg.embedding.loaded",
+                "model": model_name,
+                "dimension": dim,
+                "duration_ms": duration_ms,
+                "attempt": attempt,
+                "deferred": True,
+            },
+        )
+
+    task.add_done_callback(_on_done)
+
+
 async def _preload_embedding_model(settings: CommunitySettings) -> None:
     """Preload the sentence-transformers model at startup.
 
@@ -322,11 +375,16 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
 
     last_exc: Exception | None = None
     for attempt in range(1, _EMBEDDING_PRELOAD_ATTEMPTS + 1):
-        if time.monotonic() - started >= _EMBEDDING_PRELOAD_BUDGET_S:
+        remaining = _EMBEDDING_PRELOAD_BUDGET_S - (time.monotonic() - started)
+        if remaining <= 0:
             last_exc = last_exc or TimeoutError("embedding preload budget exhausted")
             break
+        preload_task = asyncio.create_task(
+            asyncio.to_thread(provider.preload),
+            name=f"community.embedding.preload.{attempt}",
+        )
         try:
-            provider.preload()
+            await asyncio.wait_for(asyncio.shield(preload_task), timeout=remaining)
             duration_ms = int((time.monotonic() - started) * 1000)
             _EMBEDDING_LOGGER.info(
                 "kg.embedding.loaded",
@@ -339,17 +397,41 @@ async def _preload_embedding_model(settings: CommunitySettings) -> None:
                 },
             )
             return
+        except TimeoutError as exc:
+            if not preload_task.done():
+                _track_deferred_embedding_preload(
+                    preload_task,
+                    registry=registry,
+                    provider=provider,
+                    model_name=model_name,
+                    dim=dim,
+                    started=started,
+                    attempt=attempt,
+                )
+                _EMBEDDING_LOGGER.warning(
+                    "kg.embedding.load_deferred",
+                    extra={
+                        "event": "kg.embedding.load_deferred",
+                        "reason": "startup_budget_exhausted",
+                        "model": model_name,
+                        "dimension": dim,
+                        "budget_ms": int(_EMBEDDING_PRELOAD_BUDGET_S * 1000),
+                        "attempt": attempt,
+                    },
+                )
+                return
+            last_exc = exc
         except Exception as exc:
             last_exc = exc
-            if not _is_transient_network_error(exc):
-                # ImportError, OSError, ValueError, etc. — fail fast.
+        if not _is_transient_network_error(last_exc):
+            # ImportError, OSError, ValueError, etc. — fail fast.
+            break
+        if attempt < _EMBEDDING_PRELOAD_ATTEMPTS:
+            backoff = _EMBEDDING_PRELOAD_BACKOFF_S[attempt - 1]
+            remaining = _EMBEDDING_PRELOAD_BUDGET_S - (time.monotonic() - started)
+            if remaining <= 0:
                 break
-            if attempt < _EMBEDDING_PRELOAD_ATTEMPTS:
-                backoff = _EMBEDDING_PRELOAD_BACKOFF_S[attempt - 1]
-                remaining = _EMBEDDING_PRELOAD_BUDGET_S - (time.monotonic() - started)
-                if remaining <= 0:
-                    break
-                await asyncio.sleep(min(backoff, remaining))
+            await asyncio.sleep(min(backoff, remaining))
 
     # Degrade to the deterministic stub, preserving the dimension + event.
     registry.embedding_provider = CommunityStubEmbeddingProvider(dim=dim)
