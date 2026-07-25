@@ -40,7 +40,6 @@ from okto_pulse.core.application.use_cases import (
     AddCardDependencyCommand,
     AddCardDependencyUseCase,
     CommandValidationError,
-    ConflictError,
     DeleteCardCommand,
     DeleteCardUseCase,
     DeleteTaskValidationCommand,
@@ -347,10 +346,10 @@ async def add_dependency(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
-    except ConflictError:
+    except CardOperationError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Dependência circular detectada ou auto-referência",
+            detail=exc.to_dict(),
         )
     except EntityNotFoundError:
         raise HTTPException(

@@ -17,7 +17,10 @@ from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models import QACreate, QAAnswer, QAResponse
 from okto_pulse.core.repositories import PulseUnitOfWork
-from okto_pulse.core.application.errors import QASelfAnsweringNotAllowedError
+from okto_pulse.core.application.errors import (
+    QASelfAnsweringNotAllowedError,
+    QASelectionError,
+)
 
 router = APIRouter()
 
@@ -59,6 +62,11 @@ async def answer_question(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"reason": exc.reason, "message": str(exc)},
+        ) from exc
+    except QASelectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.to_error_dict(),
         ) from exc
     except QuestionNotFoundError as exc:
         raise RESTAdapterContract.http_error(exc, not_found_detail="Q&A item not found")

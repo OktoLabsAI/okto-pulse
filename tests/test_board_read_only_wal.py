@@ -120,3 +120,52 @@ def test_vector_board_read_hot_loads_without_install(
         assert install_flags == [False]
     finally:
         kg_runtime.close_all_connections(board_id)
+
+
+def test_paired_read_reports_columns_and_both_bounded_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = "board-read-only-pair"
+    graph_base = tmp_path / "kg"
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: graph_base)
+    kg_runtime.reset_bootstrap_cache_for_tests()
+
+    try:
+        kg_runtime.bootstrap_board_graph(board_id)
+        with kg_runtime.open_board_connection(board_id) as (_db, conn):
+            for node_id, layer in (
+                ("decision-canonical", "canonical"),
+                ("decision-working", "working"),
+            ):
+                result = conn.execute(
+                    "CREATE (:Decision {id: $id, title: $title, "
+                    "graph_layer: $layer})",
+                    {"id": node_id, "title": node_id, "layer": layer},
+                )
+                result.close()
+
+        response = CommunityKuzuCypherExecutor().execute_read_only_pair(
+            board_id,
+            (
+                "MATCH (n:Decision) WHERE n.graph_layer = 'canonical' "
+                "RETURN n.id AS id, n.graph_layer AS layer ORDER BY id"
+            ),
+            (
+                "MATCH (n:Decision) "
+                "RETURN n.id AS id, n.graph_layer AS layer ORDER BY id"
+            ),
+            max_rows=10,
+        )
+
+        assert response["primary"]["columns"] == ["id", "layer"]
+        assert response["primary"]["rows"] == [
+            ["decision-canonical", "canonical"]
+        ]
+        assert response["comparison"]["columns"] == ["id", "layer"]
+        assert response["comparison"]["rows"] == [
+            ["decision-canonical", "canonical"],
+            ["decision-working", "working"],
+        ]
+    finally:
+        kg_runtime.close_all_connections(board_id)

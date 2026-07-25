@@ -70,6 +70,9 @@ from okto_pulse.core.application.use_cases import (
     UpdateIdeationCommand,
     UpdateIdeationUseCase,
 )
+from okto_pulse.core.application.ideation_scope import (
+    IdeationScopeValidationError,
+)
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.models.schemas import (
@@ -96,6 +99,7 @@ from okto_pulse.core.models.schemas import (
 from okto_pulse.core.application.errors import (
     AmbiguityGateError,
     CancellationReasonRequiredError,
+    QASelectionError,
     QASelfAnsweringNotAllowedError,
 )
 from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
@@ -396,6 +400,11 @@ async def evaluate_complexity(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+    except IdeationScopeValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.to_error_dict(),
+        ) from exc
     return result.ideation
 
 
@@ -627,6 +636,11 @@ async def answer_ideation_question(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"reason": exc.reason, "message": str(exc)},
+        ) from exc
+    except QASelectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.to_error_dict(),
         ) from exc
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found")

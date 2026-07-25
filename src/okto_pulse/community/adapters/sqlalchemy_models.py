@@ -40,6 +40,7 @@ from okto_pulse.core.domain.enums import (
     SprintStatus,
     StoryStatus,
 )
+from okto_pulse.core.domain.datetime_utils import normalize_utc_datetime
 from okto_pulse.community.adapters.sqlalchemy_base import Base
 
 if TYPE_CHECKING:
@@ -75,6 +76,28 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID = "_global"
 GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION = "gdsr-fence-v2"
 GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v3"
 GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX = "trg_global_discovery_source_revision"
+
+
+class UTCDateTime(TypeDecorator):
+    """Timezone-preserving datetime for dialects that return naive values.
+
+    SQLite drops timezone information even for ``DateTime(timezone=True)``.
+    Normalize on both sides so the application and KG always observe aware UTC
+    cancellation instants without changing the physical SQL column type.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return normalize_utc_datetime(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return normalize_utc_datetime(value)
 
 
 class CardTypeType(TypeDecorator):
@@ -597,7 +620,7 @@ class Ideation(Base):
     # reopening (cancelled -> any other status) clears all three fields.
     cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime(), nullable=True
     )
     cancelled_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
@@ -832,7 +855,7 @@ class Refinement(Base):
     # reopening (cancelled -> any other status) clears all three fields.
     cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime(), nullable=True
     )
     cancelled_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
@@ -1135,7 +1158,7 @@ class Spec(Base):
     # reopening (cancelled -> any other status) clears all three fields.
     cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime(), nullable=True
     )
     cancelled_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[SpecStatus] = mapped_column(
@@ -1398,7 +1421,7 @@ class Sprint(Base):
     # reopening (cancelled -> any other status) clears all three fields.
     cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime(), nullable=True
     )
     cancelled_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -1591,7 +1614,7 @@ class Card(Base):
     # reopening (cancelled -> any other status) clears all three fields.
     cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime(), nullable=True
     )
     cancelled_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

@@ -121,6 +121,7 @@ from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.architecture import ArchitectureDesignSelectionError
 from okto_pulse.core.application.errors import (
     CancellationReasonRequiredError,
+    QASelectionError,
     QASelfAnsweringNotAllowedError,
 )
 from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
@@ -561,6 +562,11 @@ async def answer_refinement_question(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"reason": exc.reason, "message": str(exc)},
+        ) from exc
+    except QASelectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.to_error_dict(),
         ) from exc
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))

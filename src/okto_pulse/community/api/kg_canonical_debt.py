@@ -20,6 +20,7 @@ from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.application.errors import CanonicalDebtFilterError
 
 router = APIRouter(prefix="/kg/canonical-debt")
 
@@ -65,6 +66,11 @@ async def get_canonical_debt(
         raise HTTPException(status_code=404, detail="Board not found") from exc
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=403, detail=exc.message) from exc
+    except CanonicalDebtFilterError as exc:
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail=exc.to_dict(),
+        ) from exc
     result = use_case_result.data
     return CanonicalDebtListResponse(
         board_id=board_id,

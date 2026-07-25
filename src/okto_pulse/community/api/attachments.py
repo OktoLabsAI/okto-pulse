@@ -11,12 +11,14 @@ from starlette.responses import StreamingResponse
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases.card_collaboration import (
     AttachmentNotFoundError,
+    AttachmentStorageError,
     CardNotFoundError,
     CardNotFoundInBoardError,
     DeleteCardAttachmentCommand,
     DeleteCardAttachmentUseCase,
     GetCardAttachmentCommand,
     GetCardAttachmentUseCase,
+    InvalidAttachmentFilenameError,
     UploadCardAttachmentCommand,
     UploadCardAttachmentUseCase,
 )
@@ -31,6 +33,19 @@ router = APIRouter()
 #: Streamed-download chunk size — mirrors Starlette's file-download chunk size so
 #: the provider-backed response chunks identically to the prior filesystem response.
 _DOWNLOAD_CHUNK_SIZE = 64 * 1024
+
+
+def _attachment_http_error(
+    error: InvalidAttachmentFilenameError | AttachmentStorageError,
+    *,
+    status_code: int,
+) -> HTTPException:
+    """Return a typed public envelope without adapter or local-path details."""
+
+    return HTTPException(
+        status_code=status_code,
+        detail={"error": error.code, "message": str(error)},
+    )
 
 
 def _content_disposition(filename: str) -> str:
@@ -187,6 +202,16 @@ async def upload_attachment(
         )
     except CardNotFoundError as exc:
         raise RESTAdapterContract.http_error(exc, not_found_detail="Card not found")
+    except InvalidAttachmentFilenameError as exc:
+        raise _attachment_http_error(
+            exc,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        ) from exc
+    except AttachmentStorageError as exc:
+        raise _attachment_http_error(
+            exc,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
     return result.attachment
 
 
@@ -329,3 +354,8 @@ async def delete_attachment(
         )
     except AttachmentNotFoundError as exc:
         raise RESTAdapterContract.http_error(exc, not_found_detail="Attachment not found")
+    except AttachmentStorageError as exc:
+        raise _attachment_http_error(
+            exc,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc

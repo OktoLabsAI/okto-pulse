@@ -6,6 +6,7 @@ import asyncio
 import logging
 import threading
 import time
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -57,6 +58,173 @@ def test_statement_observability_is_low_cardinality() -> None:
     assert _statement_kind("CREATE (n:Decision)") == "CREATE"
     assert _statement_kind("CALL SHOW_TABLES() RETURN name") == "CALL"
     assert _statement_kind("unrecognized private payload") == "OTHER"
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_replacement_removes_indexed_semantic_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = f"source-delete-{uuid4().hex}"
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: tmp_path / "kg")
+    kg_runtime.reset_bootstrap_cache_for_tests()
+
+    try:
+        kg_runtime.bootstrap_board_graph(board_id)
+        with kg_runtime.open_board_connection(board_id) as (_db, conn):
+            created = conn.execute(
+                "CREATE (:Requirement {"
+                "id: $id, title: $title, content: $content, "
+                "context: $context, justification: $justification, "
+                "source_artifact_ref: $source_ref, "
+                "source_session_id: $session_id, "
+                "graph_layer: $graph_layer, maturity_status: $maturity, "
+                "created_by_agent: $agent, relevance_score: $relevance, "
+                "source_span_quote: $quote, embedding: $embedding, "
+                "source_content_hash: $source_hash})",
+                {
+                    "id": "requirement-to-erase",
+                    "title": "Readable private title",
+                    "content": "Readable private body",
+                    "context": "Readable private context",
+                    "justification": "Readable private justification",
+                    "source_ref": "spec:deleted-spec:fr:fr_private",
+                    "session_id": "source-session",
+                    "graph_layer": "working",
+                    "maturity": "working_immature",
+                    "agent": "system:deterministic",
+                    "relevance": 0.8,
+                    "quote": "Readable source quote",
+                    "embedding": [0.01] * 384,
+                    "source_hash": "legacy-private-content-hash",
+                },
+            )
+            created.close()
+
+        scope = await CommunityKuzuGraphTransaction().begin(board_id)
+        assert scope.replace_with_source_deleted_tombstone(
+            "Requirement",
+            "requirement-to-erase",
+            graph_layer="working",
+            maturity_status="working_stale",
+            revocation_reason="source_deleted",
+            relevance_score=0.0,
+        )
+        await scope.commit()
+
+        with kg_runtime.open_board_connection(board_id) as (_db, conn):
+            result = conn.execute(
+                "MATCH (n:Requirement {id: $id}) "
+                "RETURN n.title, n.content, n.context, n.justification, "
+                "n.source_span_quote, n.embedding IS NULL, "
+                "n.source_content_hash IS NULL, "
+                "n.source_artifact_ref, n.graph_layer, n.maturity_status, "
+                "n.revocation_reason, n.relevance_score",
+                {"id": "requirement-to-erase"},
+            )
+            assert result.get_next() == [
+                "",
+                "",
+                "",
+                "",
+                "",
+                True,
+                True,
+                "spec:deleted-spec:fr:fr_private",
+                "working",
+                "working_stale",
+                "source_deleted",
+                0.0,
+            ]
+            result.close()
+
+        retry_scope = await CommunityKuzuGraphTransaction().begin(board_id)
+        assert retry_scope.replace_with_source_deleted_tombstone(
+            "Requirement",
+            "requirement-to-erase",
+            graph_layer="working",
+            maturity_status="working_stale",
+            revocation_reason="source_deleted",
+            relevance_score=0.0,
+        )
+        await retry_scope.commit()
+    finally:
+        kg_runtime.close_all_connections(board_id)
+
+
+@pytest.mark.asyncio
+async def test_payload_empty_node_is_not_converged_until_state_and_edges_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = f"source-delete-false-convergence-{uuid4().hex}"
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: tmp_path / "kg")
+    kg_runtime.reset_bootstrap_cache_for_tests()
+
+    try:
+        kg_runtime.bootstrap_board_graph(board_id)
+        async with await CommunityKuzuGraphTransaction().begin(board_id) as scope:
+            scope.create_node(
+                "Requirement",
+                "empty-but-canonical",
+                {
+                    "title": "",
+                    "content": "",
+                    "context": "",
+                    "justification": "",
+                    "source_span_quote": "",
+                    "source_content_hash": "",
+                    "source_artifact_ref": "spec:deleted:fr:empty",
+                    "graph_layer": "canonical",
+                    "maturity_status": "canonical_mature",
+                    "revocation_reason": "",
+                    "relevance_score": 0.8,
+                },
+                source_session_id="source-session",
+            )
+            scope.create_node(
+                "Entity",
+                "former-parent",
+                {"title": "Former parent"},
+                source_session_id="parent-session",
+            )
+            assert scope.create_edge(
+                "belongs_to",
+                "Requirement",
+                "Entity",
+                "empty-but-canonical",
+                "former-parent",
+                {
+                    "confidence": 1.0,
+                    "created_by_session_id": "edge-session",
+                    "layer": "deterministic",
+                    "rule_id": "test/source-deleted",
+                    "created_by": "system:test",
+                    "fallback_reason": "",
+                },
+            )
+
+            assert scope.replace_with_source_deleted_tombstone(
+                "Requirement",
+                "empty-but-canonical",
+                graph_layer="working",
+                maturity_status="working_stale",
+                revocation_reason="source_deleted",
+                relevance_score=0.0,
+            )
+            after = scope._snapshot_node_before_image(
+                "Requirement",
+                "empty-but-canonical",
+                include_incident_edges=True,
+            )
+            assert after is not None
+            assert after.attrs["graph_layer"] == "working"
+            assert after.attrs["maturity_status"] == "working_stale"
+            assert after.attrs["revocation_reason"] == "source_deleted"
+            assert after.attrs["relevance_score"] == 0.0
+            assert after.incident_edges == ()
+    finally:
+        kg_runtime.close_all_connections(board_id)
 
 
 def test_native_single_writer_error_maps_to_retryable_lock_contention() -> None:
@@ -141,7 +309,9 @@ async def test_direct_scope_construction_acquires_and_releases_writer_lease(
 
 
 @pytest.mark.asyncio
-async def test_open_and_close_failures_cannot_strand_writer_lease(monkeypatch) -> None:
+async def test_open_failure_releases_but_transaction_close_failure_poison_holds_writer(
+    monkeypatch,
+) -> None:
     attempts = 0
 
     def fake_open(_board_id: str) -> _FakeBoardConnection:
@@ -164,9 +334,56 @@ async def test_open_and_close_failures_cannot_strand_writer_lease(monkeypatch) -
     with pytest.raises(RuntimeError, match="close failed"):
         await close_fails.commit()
 
+    try:
+        assert close_fails._finished is True
+        assert close_fails._writer_lease._released is False
+        with pytest.raises(RuntimeError, match="scope_close_failed"):
+            await close_fails.commit()
+        with pytest.raises(GraphLockContention):
+            blocked = await tx.begin(board_id)
+            await blocked.commit()
+    finally:
+        # A poisoned transactional close intentionally requires explicit
+        # operator/process cleanup. Do not strand the process-global test gate.
+        close_fails._writer_lease.release()
+
     final = await tx.begin(board_id)
     await final.commit()
     assert attempts == 3
+
+
+def test_strict_close_surfaces_native_failure_without_reader_exit() -> None:
+    class _NativeConnection:
+        close_count = 0
+
+        def close(self) -> None:
+            self.close_count += 1
+            raise RuntimeError("native close unconfirmed")
+
+    class _CloseGuard:
+        exit_count = 0
+
+        def reader_exit(self) -> None:
+            self.exit_count += 1
+
+    connection = object.__new__(kg_runtime.BoardConnection)
+    connection._board_id = "strict-close-board"
+    connection._closed = False
+    connection.conn = _NativeConnection()
+    connection._close_guard = _CloseGuard()
+
+    with pytest.raises(RuntimeError, match="native close unconfirmed"):
+        connection.close_strict()
+
+    assert connection._closed is False
+    assert connection.conn.close_count == 1
+    assert connection._close_guard.exit_count == 0
+
+    # Ordinary context-manager cleanup remains best-effort and releases its
+    # reader registration even when the same native close keeps failing.
+    connection.close()
+    assert connection._closed is True
+    assert connection._close_guard.exit_count == 1
 
 
 @pytest.mark.asyncio

@@ -756,16 +756,13 @@ async def test_stale_sweep_keyset_query_executes_on_ladybug_016(monkeypatch) -> 
     import ladybug
     from types import SimpleNamespace
 
+    from okto_pulse.community.adapters.graph_ddl import build_node_ddl
     from okto_pulse.core.kg import canonical_stale_reconciler as reconciler
 
     database = ladybug.Database(":memory:")
     connection = ladybug.Connection(database)
     for node_type in ("Decision", "Requirement"):
-        connection.execute(
-            f"CREATE NODE TABLE {node_type}("
-            "id STRING, source_artifact_ref STRING, graph_layer STRING, "
-            "PRIMARY KEY(id))"
-        )
+        connection.execute(build_node_ddl(node_type))
     rows = (
         ("Decision", "d1", "card:b"),
         ("Decision", "d2", "test:a:scenario:1"),

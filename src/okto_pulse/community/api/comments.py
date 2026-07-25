@@ -19,6 +19,7 @@ from okto_pulse.core.application.use_cases.card_collaboration import (
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.core.application.errors import QASelectionError
 from okto_pulse.core.models import CommentCreate, CommentUpdate, CommentResponse
 from okto_pulse.core.repositories import PulseUnitOfWork
 
@@ -87,6 +88,11 @@ async def respond_to_choice(
         raise RESTAdapterContract.http_error(exc, not_found_detail="Comment not found")
     except InvalidChoiceResponseError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except QASelectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.to_error_dict(),
+        ) from exc
     return result.comment
 
 

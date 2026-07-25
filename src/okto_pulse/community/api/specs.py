@@ -122,8 +122,11 @@ from okto_pulse.core.models.schemas import SpecHistoryResponse, SpecQAAnswer, Sp
 from okto_pulse.core.application.errors import (
     CancellationReasonRequiredError,
     CardOperationError,
+    QASelectionError,
     QASelfAnsweringNotAllowedError,
     ResourceGateError,
+    ResourceLineageResolutionError,
+    SpecLineagePreflightError,
     SprintOperationError,
 )
 from okto_pulse.core.services.gate_contracts import (
@@ -338,6 +341,14 @@ async def create_spec(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Board not found or not owned by user",
         )
+    except (
+        ResourceLineageResolutionError,
+        SpecLineagePreflightError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.to_error_dict(),
+        ) from exc
     return result.spec
 
 
@@ -532,6 +543,11 @@ async def update_spec(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message)
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+    except SpecLineagePreflightError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.to_error_dict(),
+        ) from exc
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e),
@@ -1138,6 +1154,11 @@ async def answer_spec_question(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"reason": exc.reason, "message": str(exc)},
+        ) from exc
+    except QASelectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.to_error_dict(),
         ) from exc
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found")

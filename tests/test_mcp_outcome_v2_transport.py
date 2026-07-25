@@ -136,7 +136,7 @@ async def test_optional_non_nullable_envelope_distinguishes_omission_from_null()
         ("validation", "validation_failed", False),
         ("nested", "invalid_artifact_ref", False),
         ("not_found", "not_found", False),
-        ("lock", "resource_locked", True),
+        ("lock", "spec_locked", True),
         ("gate", "gate_blocked", False),
         ("conflict", "version_conflict", True),
     ],

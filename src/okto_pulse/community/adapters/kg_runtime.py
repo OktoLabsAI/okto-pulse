@@ -967,10 +967,24 @@ class BoardConnection:
         :func:`close_board_db_cache` (or the higher-level
         :func:`close_all_connections`) instead.
         """
+        self._close_native(raise_on_error=False)
+
+    def close_strict(self) -> None:
+        """Close transactionally, surfacing an unconfirmed native close.
+
+        Ordinary read/context-manager cleanup preserves the historical
+        best-effort ``close()`` behavior. A graph transaction cannot do that:
+        if the native handle rejects close while a transaction may still be
+        open, its process-wide writer lease must remain held and the failure
+        must reach the caller.
+        """
+
+        self._close_native(raise_on_error=True)
+
+    def _close_native(self, *, raise_on_error: bool) -> None:
         if self._closed:
             return
         logger.debug("[KG] BoardConnection.close board_id=%s", self._board_id)
-        self._closed = True
         # File-handle leak fix (test_kg_file_handles::test_close_releases_handles):
         # `del self.conn` confiava no refcount para destruir o handle C++ —
         # qualquer QueryResult vivo segurava a Connection (e os handles de
@@ -980,11 +994,24 @@ class BoardConnection:
         try:
             self.conn.close()
         except Exception as exc:
+            if raise_on_error:
+                logger.error(
+                    "kg.board_connection.strict_close_failed board=%s error_type=%s",
+                    self._board_id,
+                    type(exc).__name__,
+                    extra={
+                        "event": "kg.board_connection.strict_close_failed",
+                        "board_id": self._board_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
             logger.debug(
                 "[KG] BoardConnection.close conn_close_failed board_id=%s err=%s",
                 self._board_id,
                 exc,
             )
+        self._closed = True
         try:
             del self.conn
         except Exception:
@@ -3635,6 +3662,7 @@ def _migrate_board_schema(board_id: str) -> bool:
         # KGD-01 C6 (item 4): DDL de migração registrado no close guard.
         with registered_raw_connection(board_id) as (_db, conn):
             apply_schema_to_connection(conn)
+            _stamp_board_schema_version(conn, board_id)
         _MIGRATED_BOARDS.add(board_id)
         return True
     except Exception as exc:
@@ -3747,6 +3775,11 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
                 _ensure_vector_indexes(conn)
             except Exception as vector_exc:
                 errors.append(f"vector_indexes_failed: {vector_exc}")
+            if not errors:
+                try:
+                    _stamp_board_schema_version(conn, board_id)
+                except Exception as version_exc:
+                    errors.append(f"schema_version_stamp_failed: {version_exc}")
         finally:
             # Bug d0f6bab2: db is process-cached; NÃO fechar o Database aqui.
             raw_ctx.__exit__(None, None, None)
@@ -3799,6 +3832,37 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
         "errors": errors,
         "duration_ms": duration_ms,
     }
+
+
+def _stamp_board_schema_version(conn: Any, board_id: str) -> None:
+    """Persist and verify the version only after an additive migration succeeds."""
+
+    update_result = conn.execute(
+        "MATCH (m:BoardMeta {board_id: $bid}) SET m.schema_version = $v",
+        {"bid": board_id, "v": SCHEMA_VERSION},
+    )
+    try:
+        close = getattr(update_result, "close", None)
+        if callable(close):
+            close()
+    finally:
+        del update_result
+
+    probe = conn.execute(
+        "MATCH (m:BoardMeta {board_id: $bid}) RETURN m.schema_version",
+        {"bid": board_id},
+    )
+    try:
+        persisted = str(probe.get_next()[0]) if probe.has_next() else ""
+    finally:
+        close = getattr(probe, "close", None)
+        if callable(close):
+            close()
+    if persisted != SCHEMA_VERSION:
+        raise RuntimeError(
+            "board_meta_schema_version_not_persisted "
+            f"expected={SCHEMA_VERSION!r} actual={persisted!r}"
+        )
 
 
 def apply_schema_to_connection(conn) -> None:

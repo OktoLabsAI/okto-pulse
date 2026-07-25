@@ -27,9 +27,8 @@ from okto_pulse.core.kg import cypher_templates as tpl
 
 logger = logging.getLogger("okto_pulse.kg.kuzu_graph_store")
 
-_TEMPORAL_PROPERTIES = frozenset(
-    {"created_at", "last_attested_at", "superseded_at"}
-)
+_TEMPORAL_PROPERTIES = frozenset({"created_at", "last_attested_at", "superseded_at"})
+_SOURCE_DELETED_REVOCATION_REASON = "source_deleted"
 
 
 def _property_binding(name: str, value: Any) -> str:
@@ -61,6 +60,19 @@ def _materialize_native_rows(result: Any) -> list[list[Any]]:
     return rows
 
 
+def _row_is_source_deleted_tombstone(
+    row: list[Any],
+    *,
+    revocation_reason_index: int,
+) -> bool:
+    """Keep governed-deletion tombstones out of every active lookup path."""
+
+    return (
+        len(row) > revocation_reason_index
+        and str(row[revocation_reason_index] or "") == _SOURCE_DELETED_REVOCATION_REASON
+    )
+
+
 class CommunityKuzuGraphStore:
     """Embedded Kuzu implementation of SemanticGraphStore."""
 
@@ -87,7 +99,11 @@ class CommunityKuzuGraphStore:
             conn.execute(f"CREATE (n:{node_type} {{{columns}}})", params)
 
     def create_edge(
-        self, board_id: str, edge_type: str, from_id: str, to_id: str,
+        self,
+        board_id: str,
+        edge_type: str,
+        from_id: str,
+        to_id: str,
         attrs: dict[str, Any] | None = None,
         *,
         from_type: str | None = None,
@@ -232,7 +248,8 @@ class CommunityKuzuGraphStore:
                 except Exception as exc:
                     logger.warning(
                         "delete_nodes_by_session failed type=%s err=%s",
-                        node_type, exc,
+                        node_type,
+                        exc,
                     )
         return count
 
@@ -263,7 +280,8 @@ class CommunityKuzuGraphStore:
                 except Exception as exc:
                     logger.warning(
                         "delete_edges_by_session failed rel=%s err=%s",
-                        rel_name, exc,
+                        rel_name,
+                        exc,
                     )
         return count
 
@@ -298,7 +316,9 @@ class CommunityKuzuGraphStore:
             apply_decay_reorder,
         )
 
-        pool_size = max(filters.max_rows, filters.max_rows * DECAY_REORDER_POOL_MULTIPLIER)
+        pool_size = max(
+            filters.max_rows, filters.max_rows * DECAY_REORDER_POOL_MULTIPLIER
+        )
         from okto_pulse.core.kg.cypher_templates import superseded_filter_clause
 
         cypher = (
@@ -309,22 +329,28 @@ class CommunityKuzuGraphStore:
             f"AND {superseded_filter_clause('n')} "
             f"RETURN n.id, n.title, n.content, n.created_at, n.source_confidence, "
             f"n.relevance_score, n.superseded_by, n.query_hits, n.last_queried_at, "
-            f"n.attestation_count "
+            f"n.attestation_count, n.source_artifact_ref "
             f"ORDER BY n.relevance_score DESC, n.created_at DESC "
             f"LIMIT $max_rows"
         )
-        rows = self._exec(board_id, cypher, {
-            "topic": topic,
-            "min_confidence": filters.min_confidence,
-            "min_relevance": filters.min_relevance,
-            "max_rows": pool_size,
-            "include_superseded": bool(getattr(filters, "include_superseded", False)),
-        })
+        rows = self._exec(
+            board_id,
+            cypher,
+            {
+                "topic": topic,
+                "min_confidence": filters.min_confidence,
+                "min_relevance": filters.min_relevance,
+                "max_rows": pool_size,
+                "include_superseded": bool(
+                    getattr(filters, "include_superseded", False)
+                ),
+            },
+        )
         if not rows:
             return rows
 
         # Map Kùzu rows to dicts for the reorder helper, then back to the
-        # 7-column legacy row shape that downstream callers expect.
+        # decision-history row shape, including source provenance.
         enriched = [
             {
                 "node_id": r[0],
@@ -339,6 +365,7 @@ class CommunityKuzuGraphStore:
                 # Spec MKG-B-S1 (FR6): feeds the attestation factor of the
                 # on-read reorder; NULL (legacy rows) is the neutral 1.
                 "attestation_count": r[9],
+                "source_artifact_ref": r[10],
             }
             for r in rows
         ]
@@ -352,6 +379,7 @@ class CommunityKuzuGraphStore:
                 row["source_confidence"],
                 row["relevance_score"],
                 row["superseded_by"],
+                row["source_artifact_ref"],
             ]
             for row in reordered
         ]
@@ -365,7 +393,8 @@ class CommunityKuzuGraphStore:
         min_similarity: float = 0.3,
     ) -> list[list]:
         """Vector-search over a node type, reshaped into the find_by_topic row
-        shape so ``get_decision_history`` can merge semantic + title hits.
+        eight-column shape so ``get_decision_history`` can merge semantic +
+        title hits without dropping source provenance.
 
         Uses this adapter's public ``vector_search`` port; pulls
         full node attributes (content, created_at, source_confidence,
@@ -379,9 +408,7 @@ class CommunityKuzuGraphStore:
             query_vec,
             filters.max_rows,
             min_similarity,
-            include_superseded=bool(
-                getattr(filters, "include_superseded", False)
-            ),
+            include_superseded=bool(getattr(filters, "include_superseded", False)),
         )
         if not raw:
             return []
@@ -393,7 +420,8 @@ class CommunityKuzuGraphStore:
             f"AND n.source_confidence >= $min_confidence "
             f"AND n.relevance_score >= $min_relevance "
             f"RETURN n.id, n.title, n.content, n.created_at, "
-            f"n.source_confidence, n.relevance_score, n.superseded_by",
+            f"n.source_confidence, n.relevance_score, n.superseded_by, "
+            f"n.source_artifact_ref",
             {
                 "ids": ids_in_order,
                 "min_confidence": filters.min_confidence,
@@ -415,18 +443,26 @@ class CommunityKuzuGraphStore:
         return [by_id[nid] for nid in ids_in_order if nid in by_id]
 
     def find_by_artifact(
-        self, board_id: str, artifact_id: str, filters: QueryFilters,
-        *, graph_layer: str = "all",
+        self,
+        board_id: str,
+        artifact_id: str,
+        filters: QueryFilters,
+        *,
+        graph_layer: str = "all",
     ) -> list[list]:
-        return self._exec(board_id, tpl.GET_RELATED_CONTEXT, {
-            "artifact_id": artifact_id,
-            "min_confidence": filters.min_confidence,
-            "max_rows": filters.max_rows,
-            "graph_layer": graph_layer,
-            "include_superseded": bool(
-                getattr(filters, "include_superseded", False)
-            ),
-        })
+        return self._exec(
+            board_id,
+            tpl.GET_RELATED_CONTEXT,
+            {
+                "artifact_id": artifact_id,
+                "min_confidence": filters.min_confidence,
+                "max_rows": filters.max_rows,
+                "graph_layer": graph_layer,
+                "include_superseded": bool(
+                    getattr(filters, "include_superseded", False)
+                ),
+            },
+        )
 
     def find_by_artifact_filtered(
         self,
@@ -462,9 +498,7 @@ class CommunityKuzuGraphStore:
             "min_confidence": filters.min_confidence,
             "max_rows": filters.max_rows,
             "graph_layer": graph_layer,
-            "include_superseded": bool(
-                getattr(filters, "include_superseded", False)
-            ),
+            "include_superseded": bool(getattr(filters, "include_superseded", False)),
         }
         # Layer scoping clauses (spec 849d6292). The center is the explicitly
         # requested anchor and is always returned; only the EXPANDED neighbors
@@ -535,25 +569,41 @@ class CommunityKuzuGraphStore:
     ) -> list[list]:
         # Spec MKG-D-S1 (FR6): label-parametrized via allowlisted template
         # (Decision keeps the byte-identical legacy template).
-        return self._exec(board_id, tpl.supersedence_chain_template(node_type), {
-            "decision_id": decision_id,
-        })
+        return self._exec(
+            board_id,
+            tpl.supersedence_chain_template(node_type),
+            {
+                "decision_id": decision_id,
+            },
+        )
 
     def find_contradictions(
         self, board_id: str, node_id: str | None, limit: int
     ) -> list[list]:
         if node_id:
-            return self._exec(board_id, tpl.FIND_CONTRADICTIONS_BY_NODE, {
-                "node_id": node_id,
+            return self._exec(
+                board_id,
+                tpl.FIND_CONTRADICTIONS_BY_NODE,
+                {
+                    "node_id": node_id,
+                    "max_rows": limit,
+                },
+            )
+        return self._exec(
+            board_id,
+            tpl.FIND_CONTRADICTIONS_ALL,
+            {
                 "max_rows": limit,
-            })
-        return self._exec(board_id, tpl.FIND_CONTRADICTIONS_ALL, {
-            "max_rows": limit,
-        })
+            },
+        )
 
     def vector_search(
-        self, board_id: str, node_type: str, query_vec: list[float],
-        top_k: int, min_similarity: float,
+        self,
+        board_id: str,
+        node_type: str,
+        query_vec: list[float],
+        top_k: int,
+        min_similarity: float,
         *,
         include_superseded: bool = False,
         graph_layer: str = "all",
@@ -568,9 +618,13 @@ class CommunityKuzuGraphStore:
             return []
         if graph_layer not in {"canonical", "working", "all"}:
             raise ValueError("invalid_graph_layer")
-        fetch_k = top_k if include_superseded else max(
-            top_k,
-            top_k * DECAY_REORDER_POOL_MULTIPLIER,
+        fetch_k = (
+            top_k
+            if include_superseded
+            else max(
+                top_k,
+                top_k * DECAY_REORDER_POOL_MULTIPLIER,
+            )
         )
         indexed_rows: list[list[Any]] = []
         try:
@@ -579,7 +633,9 @@ class CommunityKuzuGraphStore:
                     f"CALL QUERY_VECTOR_INDEX("
                     f"'{node_type}', '{vector_index_name(node_type)}', $vec, $k) "
                     "RETURN node.id, node.title, node.source_artifact_ref, "
-                    "distance, node.superseded_by, node.graph_layer",
+                    "distance, node.superseded_by, node.graph_layer, "
+                    "node.content, node.context, node.justification, "
+                    "node.revocation_reason",
                     {"vec": query_vec, "k": fetch_k},
                 )
                 indexed_rows = _materialize_native_rows(result)
@@ -595,6 +651,11 @@ class CommunityKuzuGraphStore:
 
         hits: list[dict[str, Any]] = []
         for row in indexed_rows:
+            if _row_is_source_deleted_tombstone(
+                row,
+                revocation_reason_index=9,
+            ):
+                continue
             if row[4] and not include_superseded:
                 continue
             if graph_layer != "all" and row[5] != graph_layer:
@@ -608,6 +669,9 @@ class CommunityKuzuGraphStore:
                     "node_type": node_type,
                     "title": row[1],
                     "source_artifact_ref": row[2],
+                    "content": row[6] if len(row) > 6 else None,
+                    "context": row[7] if len(row) > 7 else None,
+                    "justification": row[8] if len(row) > 8 else None,
                     "similarity": similarity,
                 }
             )
@@ -627,7 +691,8 @@ class CommunityKuzuGraphStore:
                 result = conn.execute(
                     f"MATCH (n:{node_type}) WHERE n.embedding IS NOT NULL "
                     "RETURN n.id, n.title, n.source_artifact_ref, n.embedding, "
-                    "n.superseded_by, n.graph_layer LIMIT 500"
+                    "n.superseded_by, n.graph_layer, n.content, n.context, "
+                    "n.justification, n.revocation_reason LIMIT 500"
                 )
                 fallback_rows = _materialize_native_rows(result)
         except Exception as exc:
@@ -642,6 +707,11 @@ class CommunityKuzuGraphStore:
             return []
 
         for row in fallback_rows:
+            if _row_is_source_deleted_tombstone(
+                row,
+                revocation_reason_index=9,
+            ):
+                continue
             if row[4] and not include_superseded:
                 continue
             if graph_layer != "all" and row[5] != graph_layer:
@@ -660,11 +730,51 @@ class CommunityKuzuGraphStore:
                         "node_type": node_type,
                         "title": row[1],
                         "source_artifact_ref": row[2],
+                        "content": row[6] if len(row) > 6 else None,
+                        "context": row[7] if len(row) > 7 else None,
+                        "justification": row[8] if len(row) > 8 else None,
                         "similarity": similarity,
                     }
                 )
         hits.sort(key=lambda item: item["similarity"], reverse=True)
         return hits[:top_k]
+
+    def find_active_by_source_ref(
+        self,
+        board_id: str,
+        node_type: str,
+        source_artifact_ref: str,
+    ) -> dict[str, Any] | None:
+        rows = self._exec(
+            board_id,
+            (
+                f"MATCH (n:{node_type}) "
+                "WHERE n.source_artifact_ref = $source_artifact_ref "
+                "AND n.superseded_by IS NULL "
+                "AND coalesce(n.revocation_reason, '') "
+                "<> $source_deleted_reason "
+                "RETURN n.id, n.title, n.source_artifact_ref, n.content, "
+                "n.context, n.justification, coalesce(n.generation, 0) "
+                "ORDER BY coalesce(n.generation, 0) DESC, n.id DESC LIMIT 1"
+            ),
+            {
+                "source_artifact_ref": source_artifact_ref,
+                "source_deleted_reason": (_SOURCE_DELETED_REVOCATION_REASON),
+            },
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "node_id": row[0],
+            "node_type": node_type,
+            "title": row[1] or "",
+            "source_artifact_ref": row[2],
+            "content": row[3],
+            "context": row[4],
+            "justification": row[5],
+            "generation": int(row[6] or 0),
+        }
 
     def get_constraint_detail(
         self, board_id: str, constraint_id: str
@@ -678,20 +788,28 @@ class CommunityKuzuGraphStore:
     def get_alternatives(
         self, board_id: str, decision_id: str, limit: int
     ) -> list[list]:
-        return self._exec(board_id, tpl.LIST_ALTERNATIVES, {
-            "decision_id": decision_id,
-            "max_rows": limit,
-        })
+        return self._exec(
+            board_id,
+            tpl.LIST_ALTERNATIVES,
+            {
+                "decision_id": decision_id,
+                "max_rows": limit,
+            },
+        )
 
     def get_learnings_for_area(
         self, board_id: str, area: str, filters: QueryFilters
     ) -> list[list]:
-        return self._exec(board_id, tpl.GET_LEARNING_FROM_BUGS, {
-            "area": area,
-            "min_confidence": filters.min_confidence,
-            "min_relevance": filters.min_relevance,
-            "max_rows": filters.max_rows,
-        })
+        return self._exec(
+            board_id,
+            tpl.GET_LEARNING_FROM_BUGS,
+            {
+                "area": area,
+                "min_confidence": filters.min_confidence,
+                "min_relevance": filters.min_relevance,
+                "max_rows": filters.max_rows,
+            },
+        )
 
     def get_schema_version(self, board_id: str) -> str | None:
         rows = self._exec(

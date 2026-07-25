@@ -206,6 +206,7 @@ def _client(uow: _Uow, *, claims=None) -> TestClient:
 
 
 FOREIGN_BOARD = SimpleNamespace(id="board-b", owner_id="user-b")
+OWN_BOARD = SimpleNamespace(id="board-b", owner_id="user-a")
 
 BOARD_SURFACES = [
     ("GET", "/api/v1/kg/board-b/cognitive-readiness/items", None),
@@ -471,6 +472,99 @@ def test_board_surface_returns_same_404_before_downstream_access(
     if board is FOREIGN_BOARD:
         expected.append("share:board-b:user-a")
     assert uow.events == expected
+
+
+@pytest.mark.parametrize(
+    ("params", "invalid_field"),
+    [
+        ({"artifact_type": "bogus_artifact"}, "artifact_type"),
+        ({"artifact_type": "SPEC"}, "artifact_type"),
+        ({"artifact_type": " spec "}, "artifact_type"),
+        ({"state": "bogus_state"}, "state"),
+        ({"state": "FAILED"}, "state"),
+        ({"state": " failed "}, "state"),
+        (
+            {"artifact_type": "SPEC", "state": "FAILED"},
+            "artifact_type",
+        ),
+    ],
+)
+def test_canonical_debt_invalid_filters_return_typed_422_before_uow_access(
+    params: dict[str, str],
+    invalid_field: str,
+) -> None:
+    uow = _Uow(board=None)
+
+    response = _client(uow).get(
+        "/api/v1/kg/canonical-debt",
+        params={"board_id": "board-b", **params},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["error"] == detail["code"] == "invalid_filter"
+    assert detail["field"] == invalid_field
+    assert detail["value"] == params[invalid_field]
+    assert isinstance(detail["allowed"], list)
+    assert uow.events == []
+
+
+def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
+    uow = _Uow(board=OWN_BOARD)
+    captured: list[dict[str, object]] = []
+
+    class _CanonicalDebtReader:
+        async def list_canonical_debt(self, **kwargs):
+            captured.append(kwargs)
+            return SimpleNamespace(
+                items=[
+                    {
+                        "artifact_type": "spec",
+                        "artifact_id": "spec-page-3",
+                        "canonical_state": "failed",
+                    }
+                ],
+                counts={"open_count": 3},
+                total=3,
+            )
+
+    uow.services.kg = _CanonicalDebtReader()
+    response = _client(uow).get(
+        "/api/v1/kg/canonical-debt",
+        params={
+            "board_id": "board-b",
+            "artifact_type": "spec",
+            "state": "failed",
+            "limit": 1,
+            "offset": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "board_id": "board-b",
+        "items": [
+            {
+                "artifact_type": "spec",
+                "artifact_id": "spec-page-3",
+                "canonical_state": "failed",
+            }
+        ],
+        "counts": {"open_count": 3},
+        "total": 3,
+        "limit": 1,
+        "offset": 2,
+    }
+    assert captured == [
+        {
+            "board_id": "board-b",
+            "artifact_type": "spec",
+            "state": "failed",
+            "limit": 1,
+            "offset": 2,
+        }
+    ]
+    assert uow.events == ["board:board-b"]
 
 
 @pytest.mark.parametrize(

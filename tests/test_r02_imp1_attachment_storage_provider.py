@@ -23,6 +23,7 @@ import os
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 # Registers every ORM model on Base.metadata so init_db builds the full schema.
 import okto_pulse.community.app as _core_app  # noqa: F401
@@ -43,6 +44,9 @@ from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
 from okto_pulse.core.runtime_registry import register_unit_of_work_factory
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
+from okto_pulse.core.application.use_cases.card_collaboration import (
+    MAX_ATTACHMENT_FILENAME_BYTES,
+)
 
 USER = "r02-imp1-user"
 PREFIX = "/api/v1/attachments"
@@ -158,6 +162,27 @@ def _upload(
     return resp.json()["id"]
 
 
+def _attachment_activity_actions(board_id: str, card_id: str) -> list[str]:
+    from okto_pulse.community.adapters.sqlalchemy_models import ActivityLog
+
+    async def _read() -> list[str]:
+        async with get_session_factory()() as db:
+            rows = await db.execute(
+                select(ActivityLog.action)
+                .where(
+                    ActivityLog.board_id == board_id,
+                    ActivityLog.card_id == card_id,
+                    ActivityLog.action.in_(
+                        ("attachment_uploaded", "attachment_deleted")
+                    ),
+                )
+                .order_by(ActivityLog.created_at, ActivityLog.id)
+            )
+            return list(rows.scalars().all())
+
+    return asyncio.run(_read())
+
+
 def test_download_serves_through_storage_provider_preserving_contract(env):
     """AC1: body, original filename, media type and Content-Length preserved;
     the bytes flow through the registered StorageProvider, not FileResponse(path)."""
@@ -212,6 +237,41 @@ def test_upload_download_delete_roundtrip_real_adapter(env):
     assert client.delete(f"{PREFIX}/{bid}/{cid}/{aid}").status_code == 204
     assert not (upload_dir / bid).exists() or not list((upload_dir / bid).iterdir())
     assert client.get(f"{PREFIX}/{bid}/{cid}/{aid}").status_code == 404
+    actions = _attachment_activity_actions(bid, cid)
+    assert sorted(actions) == ["attachment_deleted", "attachment_uploaded"]
+    assert actions.count("attachment_uploaded") == 1
+    assert actions.count("attachment_deleted") == 1
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "x" * (MAX_ATTACHMENT_FILENAME_BYTES + 1),
+        "bad:name.txt",
+    ],
+)
+def test_invalid_filename_is_rejected_before_filesystem_with_typed_envelope(
+    env,
+    filename: str,
+):
+    client = env["client"]
+    upload_dir = env["upload_dir"]
+    bid, cid = _seed_board_card()
+
+    response = client.post(
+        f"{PREFIX}/{bid}/{cid}",
+        files={"file": (filename, b"must-not-write", "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "invalid_attachment_filename"
+    assert "Invalid attachment filename" in response.json()["detail"]["message"]
+    assert filename not in response.text
+    assert str(upload_dir) not in response.text
+    assert "OSError" not in response.text
+    assert "[Errno" not in response.text
+    assert not (upload_dir / bid).exists()
+    assert _attachment_activity_actions(bid, cid) == []
 
 
 def test_card_not_in_board_returns_404(env):

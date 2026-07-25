@@ -336,6 +336,13 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
     async def get_agent():
         return SimpleNamespace(id="agent-reflective-e2e")
 
+    async def get_board_agent(requested_board_id: str):
+        assert requested_board_id == board_id
+        return SimpleNamespace(
+            agent_id="agent-reflective-e2e",
+            permissions=None,
+        )
+
     settings = CommunitySettings(
         data_dir=str(tmp_path / "data"),
         kg_embedding_mode="stub",
@@ -362,7 +369,11 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
             name="reflective-e2e",
             version="0.3.0",
         )
-        register_kg_power_tools(catalog, get_agent=get_agent)
+        register_kg_power_tools(
+            catalog,
+            get_agent=get_agent,
+            get_board_agent=get_board_agent,
+        )
         from okto_pulse.core.ports.mcp_resources import (
             StaticMcpResourceCatalog,
             freeze_mcp_resource_catalog,
