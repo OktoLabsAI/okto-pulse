@@ -40,6 +40,7 @@ from okto_pulse.core.ports.delivery_ledger import (
     DeliveryAttemptResult,
     DeliveryState,
     DeliveryTransferRequest,
+    build_delivery_key,
 )
 from okto_pulse.core.ports.reconcile_intent import ReconcileIntentCreate
 from okto_pulse.core.ports.takedown_telemetry import (
@@ -232,10 +233,33 @@ async def test_reconcile_intent_uses_the_controlled_delete_timestamp(
             f"takedown:{DELETE_EVENT_ID}:intent_created",
         )
     expected = occurred_at.replace(tzinfo=None)
+    expected_delivery_key = build_delivery_key(
+        board_id=BOARD_ID,
+        artifact_type="spec",
+        artifact_id=ARTIFACT_ID,
+        generation=1,
+    )
     assert queue is not None
     assert queue.triggered_at == expected
     assert event_row is not None
     assert event_row.occurred_at == expected
+    assert event_row.delivery_key == expected_delivery_key
+
+    async with telemetry_store.sessions() as session:
+        immediate = await telemetry_store.telemetry.query_takedown_telemetry(
+            session,
+            TakedownTelemetryQuery(
+                board_id=BOARD_ID,
+                delivery_key=expected_delivery_key,
+                now=occurred_at,
+            ),
+        )
+    assert immediate is not None
+    assert immediate.delete_event_id == DELETE_EVENT_ID
+    assert immediate.delivery_key == expected_delivery_key
+    assert [state.state for state in immediate.states] == [
+        TakedownState.INTENT_CREATED
+    ]
 
 
 @pytest.mark.asyncio

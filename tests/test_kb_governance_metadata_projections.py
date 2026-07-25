@@ -294,3 +294,91 @@ async def test_resource_gate_projects_relational_kb_governance(
     assert projected["governance"]["metadata"] == raw_metadata
     assert projected["content_hash"] == knowledge_content_sha256(kb)
     assert projected["source_content_sha256"] == projected["content_hash"]
+
+
+def _governed_relational_kb() -> SimpleNamespace:
+    timestamp = datetime(2026, 7, 22, 20, 0, tzinfo=timezone.utc)
+    return SimpleNamespace(
+        id="kb-1",
+        title="Reference",
+        description="A reference artifact",
+        content="Body",
+        mime_type="text/markdown",
+        source_type=None,
+        source_id=None,
+        source_title=None,
+        source_version=None,
+        source_kb_id=None,
+        root_source_kb_id=None,
+        immediate_parent_kb_id=None,
+        governance_metadata=_valid_metadata(),
+        created_by="agent",
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+
+
+async def _hydrate_relational_kb() -> dict[str, object]:
+    adapter = CommunitySqlAlchemyResourceGateAdapter(_StubDb(_governed_relational_kb()))
+
+    async def load_source(*_args: object) -> object:
+        return SimpleNamespace(
+            entity_type="spec",
+            entity_id="spec-1",
+            entity=SimpleNamespace(),
+        )
+
+    adapter._load_source_entity_ref = load_source  # type: ignore[method-assign]
+    projected = await adapter.hydrate_effective_resource(
+        board_id="board-1",
+        resource_type="knowledge_base",
+        ref={"id": "kb-1"},
+    )
+    assert projected is not None
+    return projected
+
+
+@pytest.mark.asyncio
+async def test_relational_kb_hydration_preserves_raw_governance_metadata() -> None:
+    """DIRECT: the hydrated payload must carry the RAW ``governance_metadata``.
+
+    Regression for the E2E finding where a governed Spec KB read through the v2
+    effective path projected ``legacy_incomplete``/``metadata: null`` while the
+    ``*_knowledge_bases.governance_metadata`` row was intact. The adapter derived
+    the ``governance`` envelope from the ORM row but dropped the raw field from
+    the payload it returned, so this assertion — not the envelope one above —
+    is what pins the defect.
+    """
+
+    projected = await _hydrate_relational_kb()
+
+    assert projected["governance_metadata"] == _valid_metadata()
+
+
+@pytest.mark.asyncio
+async def test_relational_kb_survives_downstream_reprojection() -> None:
+    """PROPAGATED: re-projecting the hydrated payload must stay ``complete``.
+
+    Every public reader (``okto_pulse_get_spec_knowledge`` /
+    ``okto_pulse_list_knowledge``) re-projects through core's canonical
+    ``serialize_knowledge_base``, which recomputes ``governance`` from the
+    payload it is handed. Without the raw field that recomputation resolved to
+    ``legacy_incomplete`` and OVERWROTE the correct envelope — the actual
+    user-visible bug. This is the end-to-end guard.
+    """
+
+    from okto_pulse.core.services.knowledge_governance_projection import (
+        serialize_knowledge_base,
+    )
+
+    projected = await _hydrate_relational_kb()
+    reprojected = serialize_knowledge_base(projected)
+
+    assert reprojected["governance"]["metadata_status"] == "complete"
+    assert reprojected["governance"]["metadata"] == _valid_metadata()
+    assert reprojected["governance"]["missing_fields"] == []
+
+    # The bounded listing projection must keep governance while dropping content.
+    listed = serialize_knowledge_base(projected, include_content=False)
+    assert listed["governance"]["metadata_status"] == "complete"
+    assert "content" not in listed

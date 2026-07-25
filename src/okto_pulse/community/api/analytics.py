@@ -40,6 +40,7 @@ from okto_pulse.core.application.use_cases import (
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.analytics_contract import parse_analytics_datetime
 
@@ -542,7 +543,7 @@ implementers and validators show up. Emits:
 async def board_entities(
     board_id: str,
     type: str = Query(..., description="Entity type: ideation, spec, or card"),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     limit: int = Query(50, ge=1, le=200),
     search: str = Query("", description="Search by title (case-insensitive)"),
     date_from: str | None = Query(None, alias="from"),

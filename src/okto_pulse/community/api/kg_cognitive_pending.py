@@ -65,6 +65,7 @@ from okto_pulse.core.kg.rebuild_audit import (
     require_rebuild_audit_artifact_store,
 )
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
 
 router = APIRouter()
@@ -121,7 +122,7 @@ async def get_cognitive_pending(
     kg_generation_id: str | None = Query(default=None),
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=PAGE_OFFSET_MAX),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> CognitivePendingResponse:

@@ -47,6 +47,7 @@ from okto_pulse.core.kg.cognitive_readiness import (
     CognitiveReadinessError,
 )
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
 router = APIRouter()
 
@@ -99,7 +100,7 @@ async def list_cognitive_readiness_items(
     status: str | None = Query(None),
     search: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     kg_generation_id: str | None = Query(None),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),

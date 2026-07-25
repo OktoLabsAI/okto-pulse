@@ -49,6 +49,7 @@ from okto_pulse.core.application.use_cases.import_export import (
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 from okto_pulse.core.models.schemas import (
     BoardGuidelineLinkRequest,
     GuidelineCreate,
@@ -80,7 +81,11 @@ def _not_found(exc: EntityNotFoundError) -> str:
 
 @router.get("/guidelines", response_model=list[GuidelineResponse])
 async def list_guidelines(
-    offset: int = Query(0, ge=0),
+    # ``le=PAGE_OFFSET_MAX``: see kg_canonical_debt — an offset above SQLite's
+    # signed 64-bit INTEGER reached the SQL OFFSET bind and surfaced as an
+    # uncaught OverflowError (HTTP 500 text/plain). Bounded here it becomes the
+    # canonical typed 422 JSON.
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     limit: int = Query(50, ge=1, le=200),
     tag: str | None = Query(None),
     user_id: str = Depends(require_user),

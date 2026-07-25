@@ -967,6 +967,19 @@ class CommunitySqlAlchemyResourceGateAdapter:
             "created_by": kb.created_by,
             "created_at": self._isoformat(kb.created_at),
             "updated_at": self._isoformat(kb.updated_at),
+            # Carry the RAW governance evidence, not only the projected envelope.
+            # ``with_knowledge_governance`` below derives ``governance`` from the
+            # ORM row, but every downstream reader (core's
+            # ``serialize_knowledge_base``) re-projects from the payload it
+            # receives. Without the raw field that re-projection resolves to
+            # ``legacy_incomplete`` and OVERWRITES the correct envelope, so a
+            # governed KB read through the v2 effective path looked ungoverned
+            # while the row in ``*_knowledge_bases.governance_metadata`` was
+            # intact. Same contract as the legacy branch in
+            # ``sqlalchemy_effective_resource.load_knowledge_bases``.
+            "governance_metadata": copy.deepcopy(
+                getattr(kb, "governance_metadata", None)
+            ),
         }
         payload.update(_knowledge_lineage_aliases(payload))
         return with_knowledge_governance(payload, kb)

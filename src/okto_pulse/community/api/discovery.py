@@ -58,6 +58,7 @@ from okto_pulse.core.services.discovery_selector_catalog import (
     DiscoverySelectorSpecNotFound,
     DiscoverySelectorUnsafeProjection,
 )
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -157,7 +158,7 @@ async def list_discovery_selector_options(
     status_filter: str | None = Query("active", alias="status"),
     q: str | None = Query(None, max_length=200),
     limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     include_superseded: bool = Query(False),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),

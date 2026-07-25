@@ -98,6 +98,7 @@ from okto_pulse.core.application.errors import (
     CancellationReasonRequiredError,
     QASelfAnsweringNotAllowedError,
 )
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
 router = APIRouter()
 
@@ -237,7 +238,7 @@ async def lookup_ideations(
     search: str | None = Query(None),
     status_filter: str | None = Query(None, alias="status"),
     limit: int = Query(20),
-    offset: int = Query(0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):

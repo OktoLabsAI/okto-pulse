@@ -162,6 +162,8 @@ async def _stage_intent_created_transition(
     *,
     occurred_at: Any,
 ) -> None:
+    from okto_pulse.core.ports.delivery_ledger import build_delivery_key
+
     await stage_takedown_transition(
         context,
         TakedownTransition(
@@ -172,6 +174,16 @@ async def _stage_intent_created_transition(
             generation=request.generation,
             state=TakedownState.INTENT_CREATED,
             occurred_at=occurred_at,
+            # The delivery identity is deterministic from the immutable
+            # deletion tuple and exists before worker pickup. Persist it on the
+            # first transition so the receipt's delivery_key is immediately
+            # queryable after the caller commits.
+            delivery_key=build_delivery_key(
+                board_id=request.board_id,
+                artifact_type=request.artifact_type,
+                artifact_id=request.artifact_id,
+                generation=request.generation,
+            ),
             details={
                 "source": (
                     "stale_sweep_catchup"

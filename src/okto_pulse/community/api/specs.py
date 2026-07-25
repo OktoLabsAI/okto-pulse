@@ -133,6 +133,7 @@ from okto_pulse.core.services.spec_structured_entities import (
     StructuredSpecEntityErrorCode,
 )
 from okto_pulse.core.services.test_scenario_lifecycle import StatusNotMutableError
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
 router = APIRouter()
 
@@ -438,7 +439,7 @@ async def lookup_specs(
     search: str | None = Query(None),
     status_filter: str | None = Query(None, alias="status"),
     limit: int = Query(20),
-    offset: int = Query(0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     linked_to_cards: bool = Query(False),
     include_archived_cards: bool = Query(False),
     user_id: str = Depends(require_user),

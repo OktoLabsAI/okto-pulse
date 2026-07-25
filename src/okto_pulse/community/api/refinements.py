@@ -123,6 +123,7 @@ from okto_pulse.core.application.errors import (
     CancellationReasonRequiredError,
     QASelfAnsweringNotAllowedError,
 )
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
 router = APIRouter()
 
@@ -287,7 +288,7 @@ async def list_board_refinements(
         None,
         description="CSV labels with ANY semantics and exact membership.",
     ),
-    offset: int = Query(0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     limit: int = Query(25),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),

@@ -25,6 +25,7 @@ from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.kg.cognitive_readiness import CognitiveReadinessError
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
 router = APIRouter()
 
@@ -41,7 +42,7 @@ async def list_canonical_partition_integrity_endpoint(
     node_id: str | None = Query(None),
     status: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     user_id: str = Depends(require_user),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> dict[str, Any]:

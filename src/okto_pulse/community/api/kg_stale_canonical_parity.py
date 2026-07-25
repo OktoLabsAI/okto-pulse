@@ -24,6 +24,7 @@ from okto_pulse.core.application.use_cases.operational_rest import BoardNotFound
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
 router = APIRouter()
 
@@ -35,7 +36,7 @@ router = APIRouter()
 async def list_stale_canonical_parity_endpoint(
     board_id: str,
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> dict[str, Any]:

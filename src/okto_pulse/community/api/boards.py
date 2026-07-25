@@ -94,6 +94,7 @@ from okto_pulse.core.ports.knowledge_propagation import (
 from okto_pulse.core.models.schemas import PageEnvelope
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.application.errors import CardOperationError
+from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
 router = APIRouter()
 
@@ -122,7 +123,7 @@ async def create_board(
 
 @router.get("", response_model=list[BoardSummary])
 async def list_boards(
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     limit: int = Query(20, ge=1, le=100),
     view: Literal["my", "shared", "all"] = Query("my"),
     user_id: str = Depends(require_user),
@@ -236,7 +237,7 @@ async def list_board_cards(
         description="Server-side search across title, description and labels.",
     ),
     include_archived: bool = Query(False),
-    offset: int = Query(0),
+    offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     limit: int = Query(25),
     user_id: str = Depends(require_user),
     realm_id: str | None = Depends(get_realm_id),
