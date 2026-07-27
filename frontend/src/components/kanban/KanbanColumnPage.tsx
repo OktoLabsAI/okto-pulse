@@ -43,7 +43,7 @@ export function KanbanColumnPage({
   const api = useDashboardApi();
   const apiRef = useRef(api);
   apiRef.current = api;
-  const pagination = usePersistedPagination(`kanban-column-${status}`);
+  const pagination = usePersistedPagination(`kanban-column-${status}`, boardId);
   const beginColumnPage = useDashboardStore((state) => state.beginColumnPage);
   const applyColumnPage = useDashboardStore((state) => state.applyColumnPage);
   const failColumnPage = useDashboardStore((state) => state.failColumnPage);

@@ -41,7 +41,7 @@ export function SprintsPanel({ boardId }: SprintsPanelProps) {
   const [createSpecId, setCreateSpecId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('sprints');
+  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('sprints', boardId);
 
   useEffect(() => {
     let active = true;

@@ -7,12 +7,10 @@ import { useDashboardStore } from '@/store/dashboard';
 import { Header, Sidebar, CreateBoardModal, AgentsModal } from '@/components/layout';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { MetricsSettingsPanel } from '@/components/layout/MetricsSettingsPanel';
-import { KanbanBoard } from '@/components/kanban';
-import { StoriesPanel } from '@/components/stories';
-import { IdeationsPanel } from '@/components/ideations';
-import { RefinementsPanel } from '@/components/refinements';
-import { SpecsPanel } from '@/components/specs';
-import { SprintsPanel } from '@/components/sprints';
+import {
+  BoardStageContent,
+  type StageTabId,
+} from '@/components/board/BoardStageContent';
 import { AnalyticsPage } from '@/components/analytics';
 import { GlobalKGActivityIndicator } from '@/components/knowledge/GlobalKGActivityIndicator';
 import { KGHealthView } from '@/components/knowledge/KGHealthView';
@@ -78,8 +76,6 @@ function GuidedHelpRoot({
     </GuidedHelpProvider>
   );
 }
-
-type StageTabId = 'stories' | 'ideations' | 'refinements' | 'specs' | 'sprints' | 'tasks';
 
 interface StageTab {
   id: StageTabId;
@@ -540,14 +536,11 @@ function App() {
 
               {/* Content */}
               <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-                {activeTab === 'stories' && <StoriesPanel boardId={currentBoard.id} refreshKey={refreshKey} />}
-                {activeTab === 'ideations' && <IdeationsPanel key={refreshKey} boardId={currentBoard.id} />}
-                {activeTab === 'refinements' && <RefinementsPanel key={refreshKey} boardId={currentBoard.id} />}
-                {activeTab === 'specs' && <SpecsPanel key={refreshKey} boardId={currentBoard.id} />}
-                {activeTab === 'sprints' && <SprintsPanel key={refreshKey} boardId={currentBoard.id} />}
-                {activeTab === 'tasks' && (
-                  <KanbanBoard boardId={currentBoard.id} refreshKey={refreshKey} />
-                )}
+                <BoardStageContent
+                  activeTab={activeTab}
+                  boardId={currentBoard.id}
+                  refreshKey={refreshKey}
+                />
               </div>
             </>
           ) : (

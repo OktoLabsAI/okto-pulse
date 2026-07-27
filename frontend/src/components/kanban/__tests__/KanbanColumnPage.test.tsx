@@ -164,6 +164,11 @@ describe('KanbanColumnPage', () => {
     expect(screen.getByTestId('kanban-column-not_started-paginator-status')).toHaveTextContent(
       'Showing 26–26 of 26 matching. 26 overall. Page 2 of 2.',
     );
+    expect(JSON.parse(
+      window.localStorage.getItem(
+        'okto.pagination.kanban-column-not_started.scope.board-1',
+      ) ?? '{}',
+    )).toEqual({ page: 2, pageSize: 25 });
     await waitFor(() => expect(mocks.getBoardColumnPage).toHaveBeenNthCalledWith(
       2,
       'board-1',

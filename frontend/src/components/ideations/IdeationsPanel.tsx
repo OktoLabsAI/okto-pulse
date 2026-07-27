@@ -104,7 +104,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
   const [showArchived, setShowArchived] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('ideations');
+  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('ideations', boardId);
 
   const { viewMode, setViewMode } = useViewMode('ideations', 'list');
 

@@ -123,7 +123,7 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
   const canRestoreTopic = permissions.has('topic.entity.restore');
   const canDeleteTopic = permissions.has('topic.entity.delete');
   const canMergeTopic = permissions.has('topic.entity.merge');
-  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('stories');
+  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('stories', boardId);
 
   const canChangeTopicLifecycle = (topic: TopicSummary) => (topic.archived ? canRestoreTopic : canArchiveTopic);
   const hasTopicActions = (topic: TopicSummary) =>
@@ -212,6 +212,7 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
       setTopicDescription('');
       setTopicFormOpen(false);
       setTopicFilter(topic.id);
+      resetPage();
       toast.success('Topic created');
       await load();
     } catch (err) {
@@ -287,7 +288,10 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
     setTopicActionError('');
     try {
       await api.deleteTopic(editingTopic.id);
-      if (topicFilter === editingTopic.id) setTopicFilter('');
+      if (topicFilter === editingTopic.id) {
+        setTopicFilter('');
+        resetPage();
+      }
       toast.success('Topic deleted');
       await load();
       setEditingTopic(null);
@@ -323,7 +327,10 @@ export function StoriesPanel({ boardId, refreshKey = 0 }: StoriesPanelProps) {
     setTopicActionError('');
     try {
       const result = await api.mergeTopics(mergeSourceTopic.id, mergeTargetId);
-      if (topicFilter === mergeSourceTopic.id) setTopicFilter(result.target.id);
+      if (topicFilter === mergeSourceTopic.id) {
+        setTopicFilter(result.target.id);
+        resetPage();
+      }
       toast.success(`Merged ${result.moved_count} Stories`);
       await load();
       setMergeSourceTopic(null);

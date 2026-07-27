@@ -5,6 +5,7 @@ import {
   paginationUrlKeys,
   persistPaginationState,
   readPaginationState,
+  scopedPaginationKey,
   usePersistedPagination,
 } from '../usePersistedPagination';
 
@@ -60,6 +61,12 @@ describe('usePersistedPagination helpers', () => {
       limit: 50,
     });
   });
+
+  it('creates independent persistence keys for each scope', () => {
+    expect(scopedPaginationKey('specs', 'board-1')).toBe('specs.scope.board-1');
+    expect(scopedPaginationKey('specs', 'board-2')).toBe('specs.scope.board-2');
+    expect(scopedPaginationKey('specs')).toBe('specs');
+  });
 });
 describe('usePersistedPagination', () => {
   beforeEach(() => {
@@ -93,5 +100,37 @@ describe('usePersistedPagination', () => {
     rerender({ listKey: 'specs' });
 
     expect(result.current).toMatchObject({ page: 3, pageSize: 100 });
+  });
+
+  it('restores pagination independently when the active scope changes', () => {
+    const boardOneKey = scopedPaginationKey('ideations', 'board-1');
+    const boardTwoKey = scopedPaginationKey('ideations', 'board-2');
+    window.localStorage.setItem(
+      `okto.pagination.${boardOneKey}`,
+      JSON.stringify({ page: 4, pageSize: 50 }),
+    );
+    window.localStorage.setItem(
+      `okto.pagination.${boardTwoKey}`,
+      JSON.stringify({ page: 2, pageSize: 100 }),
+    );
+    const { result, rerender } = renderHook(
+      ({ boardId }) => usePersistedPagination('ideations', boardId),
+      { initialProps: { boardId: 'board-1' } },
+    );
+
+    expect(result.current).toMatchObject({ page: 4, pageSize: 50 });
+
+    rerender({ boardId: 'board-2' });
+
+    expect(result.current).toMatchObject({
+      page: 2,
+      pageSize: 100,
+      requestIntent: { page: 2, pageSize: 100, offset: 100, limit: 100 },
+    });
+
+    act(() => result.current.setPagination((current) => ({ ...current, page: 3 })));
+
+    expect(readPaginationState(boardTwoKey)).toEqual({ page: 3, pageSize: 100 });
+    expect(readPaginationState(boardOneKey)).toEqual({ page: 4, pageSize: 50 });
   });
 });

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IdeationsPanel } from '@/components/ideations/IdeationsPanel';
 import { RefinementsPanel } from '@/components/refinements/RefinementsPanel';
 import { SprintsPanel } from '@/components/sprints/SprintsPanel';
+import { scopedPaginationKey } from '@/hooks/usePersistedPagination';
 
 const apiMock = vi.hoisted(() => ({
   listIdeationsPage: vi.fn(),
@@ -124,6 +125,31 @@ describe('paginated entity panels', () => {
     );
   });
 
+  it('does not carry an ideation page into another board', async () => {
+    const boardOneKey = scopedPaginationKey('ideations', 'board-1');
+    window.localStorage.setItem(
+      `okto.pagination.${boardOneKey}`,
+      JSON.stringify({ page: 2, pageSize: 25 }),
+    );
+    const { rerender } = render(<IdeationsPanel boardId="board-1" />);
+    await waitFor(() => expect(apiMock.listIdeationsPage).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({ offset: 25, limit: 25 }),
+    ));
+    apiMock.listIdeationsPage.mockClear();
+
+    rerender(<IdeationsPanel boardId="board-2" />);
+
+    await waitFor(() => expect(apiMock.listIdeationsPage).toHaveBeenCalledWith(
+      'board-2',
+      expect.objectContaining({ offset: 0, limit: 25 }),
+    ));
+    expect(apiMock.listIdeationsPage).not.toHaveBeenCalledWith(
+      'board-2',
+      expect.objectContaining({ offset: 25 }),
+    );
+  });
+
   it('uses the board-wide refinement endpoint and debounces server search', async () => {
     render(<RefinementsPanel boardId="board-1" />);
     await waitFor(() => expect(apiMock.listBoardRefinementsPage).toHaveBeenCalledTimes(1));
@@ -157,6 +183,9 @@ describe('paginated entity panels', () => {
       'board-1',
       expect.objectContaining({ offset: 25, limit: 25 }),
     );
+    const sprintKey = scopedPaginationKey('sprints', 'board-1');
+    expect(JSON.parse(window.localStorage.getItem(`okto.pagination.${sprintKey}`) ?? '{}'))
+      .toEqual({ page: 2, pageSize: 25 });
 
     fireEvent.change(screen.getByTestId('sprints-search'), { target: { value: 'server sprint' } });
 

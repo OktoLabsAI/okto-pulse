@@ -7,7 +7,7 @@
  * react-router.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { SetStateAction } from 'react';
 
 export const PAGINATION_PAGE_SIZES = [25, 50, 100] as const;
@@ -82,6 +82,12 @@ export function paginationUrlKeys(listKey: string): { page: string; pageSize: st
     page: `${URL_PREFIX}${listKey}.page`,
     pageSize: `${URL_PREFIX}${listKey}.page_size`,
   };
+}
+
+export function scopedPaginationKey(listKey: string, scopeKey?: string): string {
+  return scopeKey === undefined
+    ? listKey
+    : `${listKey}.scope.${encodeURIComponent(scopeKey)}`;
 }
 
 function browserStorage(): Storage | null {
@@ -180,33 +186,54 @@ export interface UsePersistedPaginationResult extends PaginationState {
  * single component interaction therefore becomes one state update and one
  * request intent (`offset`/`limit`).
  */
-export function usePersistedPagination(listKey: string): UsePersistedPaginationResult {
-  const [state, setState] = useState<PaginationState>(() => readPaginationState(listKey));
+export function usePersistedPagination(
+  listKey: string,
+  scopeKey?: string,
+): UsePersistedPaginationResult {
+  const persistedListKey = scopedPaginationKey(listKey, scopeKey);
+  const [keyedState, setKeyedState] = useState<{
+    listKey: string;
+    state: PaginationState;
+  }>(() => ({
+    listKey: persistedListKey,
+    state: readPaginationState(persistedListKey),
+  }));
+  const state = keyedState.listKey === persistedListKey
+    ? keyedState.state
+    : readPaginationState(persistedListKey);
   const stateRef = useRef(state);
 
+  // A board can change without unmounting its active panel. Return the new
+  // key's snapshot during that very render so consumers never issue one stale
+  // request with the previous board's offset.
+  useLayoutEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
   useEffect(() => {
-    const next = readPaginationState(listKey);
+    if (keyedState.listKey === persistedListKey) return;
+    const next = readPaginationState(persistedListKey);
     stateRef.current = next;
-    setState(next);
-  }, [listKey]);
+    setKeyedState({ listKey: persistedListKey, state: next });
+  }, [keyedState.listKey, persistedListKey]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const handlePopState = () => {
-      const next = readPaginationState(listKey);
+      const next = readPaginationState(persistedListKey);
       stateRef.current = next;
-      setState(next);
+      setKeyedState({ listKey: persistedListKey, state: next });
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [listKey]);
+  }, [persistedListKey]);
 
   const setPagination = useCallback((next: SetStateAction<PaginationState>) => {
     const resolved = typeof next === 'function' ? next(stateRef.current) : next;
-    const persisted = persistPaginationState(listKey, resolved);
+    const persisted = persistPaginationState(persistedListKey, resolved);
     stateRef.current = persisted;
-    setState(persisted);
-  }, [listKey]);
+    setKeyedState({ listKey: persistedListKey, state: persisted });
+  }, [persistedListKey]);
 
   return {
     ...state,

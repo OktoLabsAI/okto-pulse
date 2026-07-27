@@ -78,7 +78,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
   const [showArchived, setShowArchived] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('refinements');
+  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('refinements', boardId);
 
   useEffect(() => {
     const controller = new AbortController();

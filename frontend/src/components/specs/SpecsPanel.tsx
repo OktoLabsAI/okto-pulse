@@ -119,7 +119,7 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
   const [showArchived, setShowArchived] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('specs');
+  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('specs', boardId);
   const { viewMode, setViewMode } = useViewMode('specs', 'list');
   const [groupMode, setGroupModeState] = useState<SpecGroupMode>(() => loadSpecGroupMode(boardId));
   const [parentTitleById, setParentTitleById] = useState<Record<string, string>>({});
