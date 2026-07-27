@@ -22,6 +22,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     StoryIdeationLink,
     Topic,
 )
+from okto_pulse.community.sql_like import SQL_LIKE_ESCAPE, literal_contains_pattern
 from okto_pulse.core.ports.analytics_read import (
     AnalyticsFact,
     AnalyticsFilter,
@@ -100,10 +101,16 @@ def _apply_query(statement: Any, model: Any, query: AnalyticsQuery) -> Any:
             *(_predicate(model, item) for item in query.filters)
         )
     if query.search and query.search_fields:
-        needle = f"%{query.search.lower()}%"
+        needle = literal_contains_pattern(query.search.lower())
         statement = statement.where(
             or_(
-                *(func.lower(getattr(model, field)).like(needle) for field in query.search_fields)
+                *(
+                    func.lower(getattr(model, field)).like(
+                        needle,
+                        escape=SQL_LIKE_ESCAPE,
+                    )
+                    for field in query.search_fields
+                )
             )
         )
     if query.order_by:

@@ -1528,6 +1528,7 @@ def test_delayed_claim_passes_only_original_deadline_remainder(
     _admit(store, run_id, budget_ms=1_000)
     clock.advance(0.9)
     observed_remaining: list[float] = []
+    monotonic_now = 1_000.0
 
     def prepare(
         *,
@@ -1537,7 +1538,7 @@ def test_delayed_claim_passes_only_original_deadline_remainder(
         checkpoint,
         **_kwargs,
     ) -> RecoveryPreparedResult:
-        observed_remaining.append(deadline_at_monotonic - time.monotonic())
+        observed_remaining.append(deadline_at_monotonic - monotonic_now)
         counts = RecoveryProgressCounts(
             boards_total=1,
             boards_scanned=1,
@@ -1564,6 +1565,7 @@ def test_delayed_claim_passes_only_original_deadline_remainder(
         store=store,
         operation=prepare,
         wall_clock=clock,
+        monotonic_clock=lambda: monotonic_now,
         heartbeat_interval_ms=25,
     )
     try:

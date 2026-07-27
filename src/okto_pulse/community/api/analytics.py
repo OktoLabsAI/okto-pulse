@@ -52,6 +52,20 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
+_CSV_FORMULA_PREFIXES = frozenset("=+-@")
+
+
+def _neutralize_csv_formula_cell(value):
+    """Prevent spreadsheet formula execution without changing non-strings."""
+    if isinstance(value, str) and value[:1] in _CSV_FORMULA_PREFIXES:
+        return f"'{value}"
+    return value
+
+
+def _write_csv_row(writer, values) -> None:
+    writer.writerow([_neutralize_csv_formula_cell(value) for value in values])
+
+
 def _parse_date(value: str | None, end_of_day: bool = False) -> datetime | None:
     """Compatibility name for the Core UTC half-open temporal contract.
 
@@ -628,31 +642,44 @@ async def analytics_overview_export(
     writer = csv.writer(output)
 
     # Summary row
-    writer.writerow(["Metric", "Value"])
-    writer.writerow(["Total Ideations", data["total_ideations"]])
-    writer.writerow(["Total Specs", data["total_specs"]])
-    writer.writerow(["Total Cards (Impl)", data["total_cards_impl"]])
-    writer.writerow(["Total Cards (Test)", data["total_cards_test"]])
-    writer.writerow(["Avg Completeness", data["avg_completeness"]])
-    writer.writerow(["Avg Drift", data["avg_drift"]])
+    _write_csv_row(writer, ["Metric", "Value"])
+    _write_csv_row(writer, ["Total Ideations", data["total_ideations"]])
+    _write_csv_row(writer, ["Total Specs", data["total_specs"]])
+    _write_csv_row(writer, ["Total Cards (Impl)", data["total_cards_impl"]])
+    _write_csv_row(writer, ["Total Cards (Test)", data["total_cards_test"]])
+    _write_csv_row(writer, ["Avg Completeness", data["avg_completeness"]])
+    _write_csv_row(writer, ["Avg Drift", data["avg_drift"]])
 
     # Funnel
-    writer.writerow([])
-    writer.writerow(["Funnel Stage", "Count"])
+    _write_csv_row(writer, [])
+    _write_csv_row(writer, ["Funnel Stage", "Count"])
     for stage, count in data["funnel"].items():
-        writer.writerow([stage, count])
+        _write_csv_row(writer, [stage, count])
 
     # Velocity
-    writer.writerow([])
-    writer.writerow(["Week", "Impl", "Test"])
+    _write_csv_row(writer, [])
+    _write_csv_row(writer, ["Week", "Impl", "Test"])
     for v in data["velocity"]:
-        writer.writerow([v["week"], v["impl"], v["test"]])
+        _write_csv_row(writer, [v["week"], v["impl"], v["test"]])
 
     # Board stats
-    writer.writerow([])
-    writer.writerow(["Board ID", "Board Name", "Ideations", "Specs", "Cards", "Cards Done"])
+    _write_csv_row(writer, [])
+    _write_csv_row(
+        writer,
+        ["Board ID", "Board Name", "Ideations", "Specs", "Cards", "Cards Done"],
+    )
     for b in data["boards"]:
-        writer.writerow([b["board_id"], b["board_name"], b["ideations"], b["specs"], b["cards"], b["cards_done"]])
+        _write_csv_row(
+            writer,
+            [
+                b["board_id"],
+                b["board_name"],
+                b["ideations"],
+                b["specs"],
+                b["cards"],
+                b["cards_done"],
+            ],
+        )
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return StreamingResponse(
@@ -750,22 +777,22 @@ async def board_entity_detail_export(
     output = io.StringIO()
     writer = csv.writer(output)
 
-    writer.writerow(["Field", "Value"])
+    _write_csv_row(writer, ["Field", "Value"])
     for key, value in data.items():
         if isinstance(value, list):
             # Write list items as sub-table
-            writer.writerow([])
+            _write_csv_row(writer, [])
             if value and isinstance(value[0], dict):
                 headers = list(value[0].keys())
-                writer.writerow([key] + headers)
+                _write_csv_row(writer, [key] + headers)
                 for item in value:
-                    writer.writerow([""] + [item.get(h, "") for h in headers])
+                    _write_csv_row(writer, [""] + [item.get(h, "") for h in headers])
             else:
-                writer.writerow([key, str(value)])
+                _write_csv_row(writer, [key, str(value)])
         elif isinstance(value, dict):
-            writer.writerow([key, str(value)])
+            _write_csv_row(writer, [key, str(value)])
         else:
-            writer.writerow([key, value])
+            _write_csv_row(writer, [key, value])
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return StreamingResponse(

@@ -172,3 +172,77 @@ async def test_analytics_half_open_day_uses_sqlite_temporal_normalization(tmp_pa
         assert [row.id for row in rows] == ["start", "middle"]
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("search", "expected_ids"),
+    (
+        ("%", ("percent-alpha", "percent-beta")),
+        ("_", ("underscore-alpha", "underscore-beta")),
+        ("\\", ("backslash-alpha", "backslash-beta")),
+    ),
+)
+@pytest.mark.asyncio
+async def test_analytics_search_treats_like_metacharacters_as_literals(
+    tmp_path,
+    search: str,
+    expected_ids: tuple[str, str],
+):
+    engine, factory = await _runtime(
+        tmp_path,
+        f"analytics-literal-{expected_ids[0]}.db",
+    )
+    reader = CommunitySqlAlchemyAnalyticsReader()
+    try:
+        async with factory() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO boards (id, name, owner_id) "
+                    "VALUES ('board-literals', 'Literal search', 'owner')"
+                )
+            )
+            for row_id, title in (
+                ("percent-alpha", "Percent % alpha"),
+                ("percent-beta", "Percent % beta"),
+                ("underscore-alpha", "Underscore _ alpha"),
+                ("underscore-beta", "Underscore _ beta"),
+                ("backslash-alpha", "Backslash \\ alpha"),
+                ("backslash-beta", "Backslash \\ beta"),
+                ("decoy", "Plain wildcard decoy"),
+            ):
+                await session.execute(
+                    text(
+                        "INSERT INTO ideations "
+                        "(id, board_id, title, status, version, created_by) "
+                        "VALUES (:id, 'board-literals', :title, 'draft', 1, 'owner')"
+                    ),
+                    {"id": row_id, "title": title},
+                )
+            await session.commit()
+
+        base_query = {
+            "entity": "ideation",
+            "filters": (AnalyticsFilter("board_id", "eq", "board-literals"),),
+            "search": search,
+            "search_fields": ("title",),
+            "order_by": "title",
+            "limit": 1,
+        }
+        async with factory() as session:
+            first_page = await reader.list(
+                session,
+                AnalyticsQuery(**base_query, offset=0),
+            )
+            second_page = await reader.list(
+                session,
+                AnalyticsQuery(**base_query, offset=1),
+            )
+            total = await reader.count(
+                session,
+                AnalyticsQuery(**base_query, offset=1),
+            )
+
+        assert [row.id for row in (*first_page, *second_page)] == list(expected_ids)
+        assert total == 2
+    finally:
+        await engine.dispose()
