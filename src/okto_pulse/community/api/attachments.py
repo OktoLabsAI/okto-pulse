@@ -3,12 +3,14 @@
 import hashlib
 import secrets
 from email.utils import formatdate
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from starlette.responses import StreamingResponse
 
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.download_headers import (
+    attachment_content_disposition,
+)
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.core.application.use_cases.card_collaboration import (
     AttachmentNotFoundError,
@@ -99,16 +101,6 @@ async def _read_upload_content(
         if len(chunk) > remaining:
             raise _attachment_too_large_http_error(max_upload_size)
         content.extend(chunk)
-
-
-def _content_disposition(filename: str) -> str:
-    """Replicate Starlette's file-download Content-Disposition encoding so the
-    StorageProvider-backed download preserves the EXACT header the filesystem
-    bypass produced (ASCII -> quoted filename; non-ASCII -> RFC 5987 filename*)."""
-    quoted = quote(filename)
-    if quoted != filename:
-        return f"attachment; filename*=utf-8''{quoted}"
-    return f'attachment; filename="{filename}"'
 
 
 def _content_type(media_type: str) -> str:
@@ -346,7 +338,9 @@ async def download_attachment(
 
     base_headers = {
         "content-type": _content_type(attachment.mime_type),
-        "content-disposition": _content_disposition(attachment.original_filename),
+        "content-disposition": attachment_content_disposition(
+            attachment.original_filename
+        ),
         "accept-ranges": "bytes",
     }
     stat_headers = _stat_headers(meta)

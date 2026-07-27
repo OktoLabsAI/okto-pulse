@@ -9,6 +9,7 @@ no database session, engine or repository implementation crosses this boundary.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 
 from fastapi import HTTPException, Request
 
@@ -31,21 +32,24 @@ async def get_unit_of_work(
     request: Request,
 ) -> AsyncIterator[PulseUnitOfWork]:
     """Yield one edition-owned UoW for the complete HTTP request."""
-    try:
-        factory = get_unit_of_work_factory(request)
-        realm_scope = factory.resolve_realm_scope()
-        async with factory(realm_scope=realm_scope) as uow:
-            yield uow
-    except HTTPException:
-        raise
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "persistence_provider_not_configured",
-                "message": str(exc),
-            },
-        ) from exc
+    factory = get_unit_of_work_factory(request)
+    async with AsyncExitStack() as stack:
+        try:
+            realm_scope = factory.resolve_realm_scope()
+            uow = await stack.enter_async_context(factory(realm_scope=realm_scope))
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "persistence_provider_not_configured",
+                    "message": str(exc),
+                },
+            ) from exc
+
+        # Exceptions raised by the route are injected at this yield point.
+        # Keep them outside the provider-opening translation above so a domain
+        # RuntimeError cannot be mislabeled as missing persistence wiring.
+        yield uow
 
 
 def get_unit_of_work_factory(request: Request) -> UnitOfWorkFactory:

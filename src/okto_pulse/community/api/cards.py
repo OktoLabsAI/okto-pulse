@@ -7,6 +7,9 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.download_headers import (
+    attachment_content_disposition,
+)
 from okto_pulse.community.api.knowledge_propagation import (
     KnowledgePropagationContractError,
     KnowledgePropagationServiceError,
@@ -898,5 +901,10 @@ async def download_card_knowledge(
     return Response(
         content=body,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": attachment_content_disposition(
+                filename,
+                fallback_filename="knowledge.md",
+            )
+        },
     )
