@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMock = vi.hoisted(() => ({
   listDesignSystems: vi.fn(),
+  getDesignSystem: vi.fn(),
   getBoardDesignSystem: vi.fn(),
   getActiveDefaultBoardConfig: vi.fn(),
   createDesignSystem: vi.fn(),
@@ -18,6 +19,24 @@ const apiMock = vi.hoisted(() => ({
   createDefaultBoardConfigVersion: vi.fn(),
 }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
+// The Export/Import buttons pull the import-export service through the API
+// context; stub the hook so this panel test does not need an ApiProvider.
+vi.mock('@/services/import-export-api', () => ({
+  useImportExportApi: () => ({
+    exportGuidelines: vi.fn(),
+    importGuidelines: vi.fn(),
+    exportDesignSystems: vi.fn(),
+    exportDesignSystem: vi.fn(),
+    importDesignSystems: vi.fn(),
+    exportPresets: vi.fn(),
+    importPresets: vi.fn(),
+    exportBoardConfig: vi.fn(),
+    importBoardConfig: vi.fn(),
+  }),
+  importExportFilename: (kind: string) => `${kind}-00000000.json`,
+  downloadJsonFile: vi.fn(),
+}));
+
 
 import { DesignSystemPanel } from '../DesignSystemPanel';
 
@@ -56,6 +75,9 @@ describe('DesignSystemPanel', () => {
       },
     });
     apiMock.createDesignSystem.mockResolvedValue(ds());
+    apiMock.getDesignSystem.mockResolvedValue(
+      ds({ id: 'g1', payload: { content: 'Use compact controls.' } }),
+    );
     apiMock.updateDesignSystem.mockResolvedValue(ds());
     apiMock.deleteDesignSystem.mockResolvedValue(undefined);
     apiMock.linkBoardDesignSystem.mockResolvedValue({});
@@ -145,6 +167,24 @@ describe('DesignSystemPanel', () => {
         payload: { content: 'Updated assistant context.' },
       }),
     );
+  });
+
+  it('hydrates a summary item only when opening it for editing', async () => {
+    apiMock.listDesignSystems.mockImplementation((scope: string) =>
+      scope === 'global'
+        ? Promise.resolve([ds({ id: 'g1', title: 'DS1', payload: undefined, payload_available: true })])
+        : Promise.resolve([]),
+    );
+    apiMock.getDesignSystem.mockResolvedValue(
+      ds({ id: 'g1', title: 'DS1', payload: { content: 'Hydrated body.' } }),
+    );
+
+    render(<DesignSystemPanel boardId="b1" onClose={() => {}} />);
+    fireEvent.click(await screen.findByTestId('dsp-edit-g1'));
+
+    await screen.findByTestId('dsp-save-edit');
+    expect(apiMock.getDesignSystem).toHaveBeenCalledWith('g1', 'full', undefined);
+    expect(screen.getByTestId('dsp-new-content')).toHaveValue('Hydrated body.');
   });
 
   it('links a non-effective global Design System to the board', async () => {

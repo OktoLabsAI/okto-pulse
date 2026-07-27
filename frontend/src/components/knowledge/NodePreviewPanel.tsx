@@ -13,6 +13,7 @@
 import { useMemo } from 'react';
 import type { KGNode } from '@/types/knowledge-graph';
 import { NODE_TYPE_CONFIG } from '@/types/knowledge-graph';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { RelevanceBadge } from './RelevanceBadge';
 
 interface Props {
@@ -27,6 +28,8 @@ interface Props {
 const SPEC_REF_PATTERN = /^spec:/i;
 
 export function NodePreviewPanel({ node, onClose, onOpenSpec, onShowDetails }: Props) {
+  useEscapeToClose(onClose, { enabled: Boolean(node), priority: 10 });
+
   const specRef = useMemo(() => {
     if (!node?.source_artifact_ref) return null;
     return SPEC_REF_PATTERN.test(node.source_artifact_ref)

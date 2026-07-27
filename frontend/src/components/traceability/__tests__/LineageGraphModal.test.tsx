@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LineageGraphModal } from '../LineageGraphModal';
 import { openLineageGraph } from '../lineageGraphEvents';
@@ -37,18 +37,26 @@ vi.mock('@xyflow/react', () => ({
     children,
     nodes = [],
     edges = [],
+    onNodeClick,
   }: {
     children: ReactNode;
     nodes?: Array<{ id: string; position: { x: number; y: number } }>;
     edges?: Array<{ id: string; source: string; target: string; label?: string }>;
+    onNodeClick?: (
+      event: MouseEvent,
+      node: { id: string; position: { x: number; y: number } },
+    ) => void;
   }) => (
     <div data-testid="lineage-flow">
       {nodes.map((node) => (
-        <div
+        <button
+          type="button"
           key={node.id}
           data-testid={`flow-node-${node.id}`}
           data-x={node.position.x}
           data-y={node.position.y}
+          aria-label={`Select node ${node.id}`}
+          onClick={(event) => onNodeClick?.(event, node)}
         />
       ))}
       {edges.map((edge) => (
@@ -85,10 +93,22 @@ const graph: LineageGraphResponse = {
       label: 'Root Ideation',
       status: 'done',
       stage: 0,
+      resource_counts: {
+        unique_effective_count: 3,
+        raw_attachment_count: 8,
+        workspace_item_count: 5,
+        unique_root_version_count: 4,
+      },
     },
   ],
   edges: [],
   summary: { ideations: 1 },
+  resource_counts: {
+    unique_effective_count: 3,
+    raw_attachment_count: 8,
+    workspace_item_count: 5,
+    unique_root_version_count: 4,
+  },
   warnings: [],
 };
 
@@ -206,6 +226,40 @@ describe('LineageGraphModal', () => {
     expect(pushMock).toHaveBeenCalledWith({ type: 'ideation', id: 'ideation-1' });
     expect(screen.getByText('SDLC Lineage')).toBeInTheDocument();
     expect(screen.getAllByText('Root Ideation').length).toBeGreaterThan(0);
+    const counts = screen.getByTestId('lineage-resource-counts');
+    expect(counts).toHaveTextContent('Roots3');
+    expect(counts).toHaveTextContent('Physical8');
+    expect(counts).toHaveTextContent('Versions4');
+  });
+
+  it('does not attribute requested-entity counts to another selected node', async () => {
+    apiMock.getLineageGraph.mockResolvedValue({
+      ...graph,
+      nodes: [
+        ...graph.nodes,
+        {
+          id: 'node-spec-2',
+          entity_type: 'spec',
+          entity_id: 'spec-2',
+          title: 'Another spec',
+          label: 'Another spec',
+          status: 'approved',
+          stage: 2,
+        },
+      ],
+    });
+
+    render(<LineageGraphModal boardId="board-1" />);
+
+    act(() => {
+      openLineageGraph('ideation', 'ideation-1');
+    });
+
+    expect(await screen.findByTestId('lineage-resource-counts')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Select node node-spec-2' }));
+
+    expect(screen.queryByTestId('lineage-resource-counts')).not.toBeInTheDocument();
+    expect(screen.getByText('Another spec')).toBeInTheDocument();
   });
 
   it('shows details for a selected Story node', async () => {

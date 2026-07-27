@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge } from 'lucide-react';
+import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportCard, downloadMarkdown, markdownFilenameForCard } from '@/lib/exportMarkdown';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
@@ -18,6 +18,7 @@ import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEV
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { ActivityLogList } from '@/components/shared/ActivityLogList';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
@@ -27,6 +28,8 @@ import { ArchitectureTab } from '@/components/architecture';
 import { openLineageGraph } from '@/components/traceability';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 import { usePermissions } from '@/hooks/usePermissions';
+import { SettingsToggle } from '@/components/board/BoardSettingsForm';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -60,7 +63,8 @@ type CardModalTab =
   | 'validations'
   | 'qa'
   | 'comments'
-  | 'activity';
+  | 'activity'
+  | 'cancellation';
 
 const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
   'test_file_path',
@@ -74,6 +78,8 @@ const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
   'evidence_class',
   'replay_command',
   'mcp_replay_manifest',
+  'manifest_ref',
+  'execution_attestation',
   'manual_checklist_ref',
   'expected_output_snapshot',
   'non_replayable_justification',
@@ -248,9 +254,10 @@ function BugWorkflowRemediationPanel({
 interface CardModalProps {
   boardId: string;
   onClose?: () => void;
+  onEscape?: () => void;
 }
 
-export function CardModal({ boardId, onClose }: CardModalProps) {
+export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const api = useDashboardApi();
   const perms = usePermissions(boardId);
   const selectedCardId = useSelectedCard();
@@ -280,9 +287,11 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   const [bugRegressionPreview, setBugRegressionPreview] = useState<BugRegressionScenarioPreview | null>(null);
   const [amendmentRevisions, setAmendmentRevisions] = useState<AmendmentRevisionListResponse | null>(null);
   const [amendmentBusy, setAmendmentBusy] = useState(false);
+  const [knowledgeMutationBusy, setKnowledgeMutationBusy] = useState(false);
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
+  const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [conclusionTargetStatus, setConclusionTargetStatus] = useState<CardStatus>('done');
   const [conclusionDraft, setConclusionDraft] = useState('');
   const [conclusionCompleteness, setConclusionCompleteness] = useState(100);
@@ -463,7 +472,11 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
     if (activeTab === 'evidence' && card?.card_type !== 'test') {
       setActiveTab('details');
     }
-  }, [activeTab, card?.card_type]);
+    // The Cancellation tab only exists while the card is cancelled.
+    if (activeTab === 'cancellation' && card && card.status !== 'cancelled') {
+      setActiveTab('details');
+    }
+  }, [activeTab, card?.card_type, card?.status]);
 
   // Auto-refresh every 10s while modal is open
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -483,12 +496,30 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
   };
 
   const handleClose = () => {
+    if (knowledgeMutationBusy) return;
     closeCardModal();
     onClose?.();
   };
 
-  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }) => {
+  useEscapeToClose(
+    () => {
+      if (onEscape) onEscape();
+      else handleClose();
+    },
+    {
+      enabled: isOpen,
+      canClose: !knowledgeMutationBusy,
+    },
+  );
+
+  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string) => {
     if (!card) return;
+
+    // ITEM 17: cancelling requires a justification — intercept with the dialog.
+    if (status === 'cancelled' && !cancellationReason) {
+      setShowCancelDialog(true);
+      return;
+    }
 
     // Intercept Validation/Done — require executor report
     if (requiresExecutionReport(status) && !conclusion) {
@@ -506,6 +537,7 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
         completeness_justification: metrics?.completeness_justification,
         drift: metrics?.drift,
         drift_justification: metrics?.drift_justification,
+        ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
       });
       updateCardInColumn({
         id: updated.id,
@@ -690,7 +722,12 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
-                if (e.key === 'Escape') { e.currentTarget.textContent = card?.title || ''; e.currentTarget.blur(); }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.currentTarget.textContent = card?.title || '';
+                  e.currentTarget.blur();
+                }
               }}
             >
               {isLoading ? 'Loading...' : card?.title}
@@ -766,7 +803,12 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
             <button onClick={() => setExpanded(!expanded)} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title={expanded ? 'Collapse' : 'Expand'}>
               {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
-            <button onClick={handleClose} className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded">
+            <button
+              onClick={handleClose}
+              disabled={knowledgeMutationBusy}
+              aria-label="Close card dialog"
+              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded disabled:cursor-not-allowed disabled:opacity-50"
+            >
               <X size={20} />
             </button>
           </div>
@@ -779,20 +821,23 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
           <>
             {/* Tabs */}
             <div className="flex border-b border-gray-200 dark:border-gray-700 px-6">
-              {(card.card_type === 'bug'
-                ? ['details', 'tests', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
-                : card.card_type === 'test'
-                  ? ['details', 'evidence', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
-                  : ['details', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity'] as const
-              ).map((tab) => (
+              {([
+                ...(card.card_type === 'bug'
+                  ? ['details', 'tests', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity']
+                  : card.card_type === 'test'
+                    ? ['details', 'evidence', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity']
+                    : ['details', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity']),
+                ...(card.status === 'cancelled' ? ['cancellation'] : []),
+              ] as CardModalTab[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
+                  disabled={knowledgeMutationBusy}
                   className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px relative ${
                     activeTab === tab
                       ? 'border-blue-500 text-blue-600 dark:text-blue-400'
                       : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'
-                  }`}
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   {tab === 'details' && 'Details'}
                   {tab === 'tests' && (
@@ -840,7 +885,13 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                   )}
                   {tab === 'qa' && `Q&A (${card.qa_items.length})`}
                   {tab === 'comments' && `Comments (${card.comments.length})`}
-                  {tab === 'activity' && 'Activity'}
+                  {tab === 'activity' && (
+                    <>
+                      <History size={13} className="inline mr-1" />
+                      Activity
+                    </>
+                  )}
+                  {tab === 'cancellation' && 'Cancellation'}
                 </button>
               ))}
             </div>
@@ -854,6 +905,28 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                     entityType="card"
                     entityId={card.id}
                   />
+                  {(card.card_type ?? 'normal') === 'normal' && (
+                    <div className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-800/60 dark:bg-amber-950/20">
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Skip task requirement link gate</h3>
+                        <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">
+                          Allow this task to start without a direct FR/TR/BR/IR/OR link.
+                        </p>
+                      </div>
+                      <SettingsToggle
+                        checked={card.skip_task_requirement_link_gate ?? false}
+                        onChange={async () => {
+                          const updated = await api.updateCard(card.id, {
+                            skip_task_requirement_link_gate: !(card.skip_task_requirement_link_gate ?? false),
+                          });
+                          setCard(updated);
+                          updateCardInColumn(updated);
+                        }}
+                        ariaLabel="Skip task requirement link gate for this card"
+                        activeColor="amber"
+                      />
+                    </div>
+                  )}
                   <div>
                     <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Description</h3>
                     <EditableField
@@ -1428,6 +1501,7 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
                     const updated = await api.updateCard(card.id, { knowledge_bases: kbs } as any);
                     setCard(updated);
                   }}
+                  onBusyChange={setKnowledgeMutationBusy}
                 />
               )}
 
@@ -1510,6 +1584,16 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
               {/* Activity Tab */}
               {activeTab === 'activity' && (
                 <ActivityTab cardId={card.id} api={api} />
+              )}
+
+              {/* Cancellation Tab (ITEM 17) — only while status === cancelled */}
+              {activeTab === 'cancellation' && card.status === 'cancelled' && (
+                <CancellationDetails
+                  reason={card.cancellation_reason}
+                  cancelledBy={card.cancelled_by}
+                  cancelledAt={card.cancelled_at}
+                  resolveActorName={(id) => resolveActorName(id, boardMembers)}
+                />
               )}
             </div>
           </>
@@ -1623,6 +1707,20 @@ export function CardModal({ boardId, onClose }: CardModalProps) {
           onChanged={() => { if (selectedCardId) loadCard(selectedCardId); }}
         />
       )}
+
+      {/* Cancellation justification (ITEM 17). stopPropagation keeps clicks
+          inside the dialog from bubbling to the overlay's close handler. */}
+      <div onClick={(e) => e.stopPropagation()}>
+        <CancellationReasonDialog
+          open={showCancelDialog}
+          entityLabel="card"
+          onConfirm={(reason) => {
+            setShowCancelDialog(false);
+            handleStatusChange('cancelled', undefined, undefined, reason);
+          }}
+          onCancel={() => setShowCancelDialog(false)}
+        />
+      </div>
     </div>
   );
 }
@@ -1678,7 +1776,23 @@ export function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
             { label: 'Test file', value: evidence?.test_file_path, mono: true },
             { label: 'Function', value: evidence?.test_function, mono: true },
             { label: 'Replay command', value: evidence?.replay_command, mono: true },
-            { label: 'MCP replay manifest', value: evidence?.mcp_replay_manifest, mono: true },
+            { label: 'Manifest (V2)', value: evidence?.manifest_ref, mono: true },
+            {
+              label: 'Execution attestation',
+              value: evidence?.execution_attestation
+                ? `v${evidence.execution_attestation.schema_version} · ${evidence.execution_attestation.run_id} · runtime ${evidence.execution_attestation.product_runtime_exercised ? 'exercised' : 'NOT exercised'}`
+                : null,
+              mono: true,
+            },
+            {
+              label: 'Legacy MCP manifest',
+              value: typeof evidence?.mcp_replay_manifest === 'string'
+                ? evidence.mcp_replay_manifest
+                : evidence?.mcp_replay_manifest
+                  ? 'embedded object (unverified)'
+                  : null,
+              mono: true,
+            },
             { label: 'Manual checklist', value: evidence?.manual_checklist_ref, mono: true },
             { label: 'Last run', value: formatEvidenceTimestamp(evidence?.last_run_at), mono: false },
             { label: 'Run ID', value: evidence?.test_run_id, mono: true },
@@ -2506,9 +2620,7 @@ function ActivityTab({ cardId, api }: { cardId: string; api: ReturnType<typeof u
       .finally(() => setLoading(false));
   }, [cardId]);
 
-  if (loading) return <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>;
-
-  return <ActivityLogList entries={logs} />;
+  return <ActivityLogList entries={logs} loading={loading} />;
 }
 
 // Markdown renderer with prose styling

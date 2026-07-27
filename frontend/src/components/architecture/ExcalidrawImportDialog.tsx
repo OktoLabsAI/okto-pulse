@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { FileUp, X, AlertTriangle, Info } from 'lucide-react';
 import type { ArchitectureDiagramType } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 export interface ExcalidrawImportPreflight {
   valid: boolean;
@@ -46,6 +47,8 @@ export function ExcalidrawImportDialog({
   const [issues, setIssues] = useState<string[]>([]);
   const [suggestedFixes, setSuggestedFixes] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+
+  useEscapeToClose(onClose, { enabled: open, priority: 10 });
 
   if (!open) return null;
 

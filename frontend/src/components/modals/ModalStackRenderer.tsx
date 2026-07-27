@@ -107,7 +107,12 @@ export function ModalStackRenderer({ boardId }: Props) {
           same type — otherwise the modal's internal useEffect that
           fetches by id might keep stale state. */}
       {top.type === 'card' && (
-        <CardModal key={`card-${top.id}`} boardId={boardId} onClose={handleClose} />
+        <CardModal
+          key={`card-${top.id}`}
+          boardId={boardId}
+          onClose={handleClose}
+          onEscape={stack.length > 1 ? handleBack : handleClose}
+        />
       )}
       {top.type === 'story' && (
         <StoryModal
@@ -116,6 +121,7 @@ export function ModalStackRenderer({ boardId }: Props) {
           storyId={top.id}
           topics={storyTopics}
           onClose={handleClose}
+          onEscape={stack.length > 1 ? handleBack : handleClose}
           onChanged={() => {
             /* drill-down is read-only from here */
           }}
@@ -127,6 +133,7 @@ export function ModalStackRenderer({ boardId }: Props) {
           specId={top.id}
           boardId={boardId}
           onClose={handleClose}
+          onEscape={stack.length > 1 ? handleBack : handleClose}
           onChanged={() => {
             /* drill-down is read-only from here */
           }}
@@ -138,6 +145,7 @@ export function ModalStackRenderer({ boardId }: Props) {
           ideationId={top.id}
           boardId={boardId}
           onClose={handleClose}
+          onEscape={stack.length > 1 ? handleBack : handleClose}
           onChanged={() => {
             /* drill-down is read-only from here */
           }}
@@ -149,6 +157,7 @@ export function ModalStackRenderer({ boardId }: Props) {
           refinementId={top.id}
           boardId={boardId}
           onClose={handleClose}
+          onEscape={stack.length > 1 ? handleBack : handleClose}
           onChanged={() => {
             /* drill-down is read-only from here */
           }}
@@ -159,6 +168,7 @@ export function ModalStackRenderer({ boardId }: Props) {
           key={`sprint-${top.id}`}
           sprintId={top.id}
           onClose={handleClose}
+          onEscape={stack.length > 1 ? handleBack : handleClose}
         />
       )}
       {top.type === 'kg_node' && (
@@ -167,6 +177,7 @@ export function ModalStackRenderer({ boardId }: Props) {
           boardId={boardId}
           nodeId={top.id}
           onClose={handleClose}
+          onEscape={stack.length > 1 ? handleBack : handleClose}
         />
       )}
     </>

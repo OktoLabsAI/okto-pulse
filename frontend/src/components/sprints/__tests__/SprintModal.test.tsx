@@ -266,7 +266,10 @@ describe('SprintModal read-first inline editing', () => {
     fireEvent.blur(textbox);
 
     await waitFor(() =>
-      expect(apiMock.updateSprint).toHaveBeenCalledWith('sprint-1', { objective: 'New objective' }),
+      expect(apiMock.updateSprint).toHaveBeenCalledWith('sprint-1', {
+        objective: 'New objective',
+        expected_version: 1,
+      }),
     );
     expect(apiMock.updateSprint.mock.calls[0][1]).not.toHaveProperty('expected_outcome');
     await waitFor(() => expect(apiMock.getSprint).toHaveBeenCalledTimes(2));
@@ -283,7 +286,10 @@ describe('SprintModal read-first inline editing', () => {
     fireEvent.blur(textbox);
 
     await waitFor(() =>
-      expect(apiMock.updateSprint).toHaveBeenCalledWith('sprint-1', { expected_outcome: 'New outcome' }),
+      expect(apiMock.updateSprint).toHaveBeenCalledWith('sprint-1', {
+        expected_outcome: 'New outcome',
+        expected_version: 1,
+      }),
     );
     expect(apiMock.updateSprint.mock.calls[0][1]).not.toHaveProperty('objective');
     await waitFor(() => expect(apiMock.getSprint).toHaveBeenCalledTimes(2));

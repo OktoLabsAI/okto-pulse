@@ -18,11 +18,6 @@ for p in (str(REPO_SRC), str(CORE_SRC)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-for mod in list(sys.modules):
-    if mod.startswith("okto_pulse.community"):
-        del sys.modules[mod]
-
-
 # ---------------------------------------------------------------------------
 # Argparse wiring
 # ---------------------------------------------------------------------------

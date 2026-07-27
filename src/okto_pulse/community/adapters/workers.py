@@ -1,0 +1,191 @@
+"""Community composition for application-scoped runtime runners."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from okto_pulse.core.application.processors import (
+    BoardErasureProcessor,
+    ConsolidationProcessor,
+    GlobalOutboxProcessor,
+    SessionCleanupProcessor,
+)
+from okto_pulse.core.application.domain_event_delivery import (
+    DomainEventDeliveryProcessor,
+)
+from okto_pulse.core.ports.runtime_workers import (
+    RuntimeWorkerRegistry,
+    RuntimeWorkerSpec,
+)
+from okto_pulse.community.adapters.worker_runners import (
+    ConsolidationRunner,
+    PollingRunner,
+    TrackedBlockingExecution,
+    UtcWorkerClock,
+    start_runner,
+    stop_runner,
+)
+from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
+    CommunitySqlAlchemyDomainEventDeliveryStore,
+)
+
+COMMUNITY_WORKER_BASELINE_FAMILIES: tuple[str, ...] = (
+    "event_dispatcher",
+    "board_erasure_worker",
+    "cleanup_worker",
+    "consolidation_worker",
+    "outbox_worker",
+)
+
+COMMUNITY_WORKER_CAPABLE_FAMILIES: tuple[str, ...] = (
+    *COMMUNITY_WORKER_BASELINE_FAMILIES,
+    "daily_tick",
+    "cognitive_closeout_worker",
+    "schema_sweep",
+)
+
+
+def _cancel_safe_scope_factory(session_factory: Any):
+    def open_scope():
+        from okto_pulse.community.adapters.sqlalchemy_database import (
+            resolve_community_database_runtime,
+        )
+
+        return resolve_community_database_runtime().cancel_safe_session_scope(
+            session_factory
+        )
+
+    return open_scope
+
+
+def build_community_worker_registry(
+    session_factory: Any,
+    *,
+    kg_cleanup_enabled: bool = True,
+    kg_cleanup_interval_seconds: int = 60,
+    kg_queue_heartbeat_seconds: int = 30,
+    kg_queue_recovery_scan_interval_seconds: int = 60,
+    kg_queue_max_concurrent_workers: int = 1,
+) -> RuntimeWorkerRegistry:
+    """Build all runners before app construction and register their lifecycle."""
+
+    cancel_safe_relational_scope = _cancel_safe_scope_factory(session_factory)
+    clock = UtcWorkerClock()
+    # Keep shutdown ownership disjoint. Consolidation must prove its own native
+    # operations quiescent before the outbox performs its final iteration; a
+    # shared task set could otherwise miss late submissions from either family.
+    consolidation_blocking_execution = TrackedBlockingExecution()
+    outbox_blocking_execution = TrackedBlockingExecution()
+    event_processor = DomainEventDeliveryProcessor(
+        CommunitySqlAlchemyDomainEventDeliveryStore(
+            session_factory,
+            session_scope_factory=cancel_safe_relational_scope,
+        ),
+        clock=clock.now,
+    )
+    event_runner = PollingRunner(
+        event_processor,
+        name="community.event_dispatcher",
+        interval_seconds=5.0,
+        operation_name="process_batch",
+        recover=event_processor.recover_orphans,
+    )
+    cleanup_runner = PollingRunner(
+        SessionCleanupProcessor(
+            interval_seconds=kg_cleanup_interval_seconds,
+            clock=clock,
+        ),
+        name="community.kg.cleanup_runner",
+        interval_seconds=float(kg_cleanup_interval_seconds),
+        operation_name="process_once",
+        final_iteration=True,
+    )
+    board_erasure_runner = PollingRunner(
+        BoardErasureProcessor(
+            cancel_safe_relational_scope,
+            clock=clock,
+        ),
+        name="community.kg.board_erasure_runner",
+        interval_seconds=5.0,
+        operation_name="process_once",
+        final_iteration=True,
+    )
+    consolidation_processor = ConsolidationProcessor(
+        relational_scope_factory=cancel_safe_relational_scope,
+        heartbeat_seconds=kg_queue_heartbeat_seconds,
+        clock=clock,
+        blocking_execution=consolidation_blocking_execution,
+    )
+    consolidation_runner = ConsolidationRunner(
+        consolidation_processor,
+        blocking_execution=consolidation_blocking_execution,
+        heartbeat_seconds=float(kg_queue_heartbeat_seconds),
+        recovery_interval_seconds=float(kg_queue_recovery_scan_interval_seconds),
+        max_concurrent_workers=kg_queue_max_concurrent_workers,
+    )
+    outbox_runner = PollingRunner(
+        GlobalOutboxProcessor(
+            cancel_safe_relational_scope,
+            interval_seconds=5,
+            clock=clock,
+            blocking_execution=outbox_blocking_execution,
+        ),
+        name="community.kg.outbox_runner",
+        interval_seconds=5.0,
+        operation_name="process_once",
+        final_iteration=True,
+        blocking_execution=outbox_blocking_execution,
+        final_iteration_guard=lambda: consolidation_runner.shutdown_drained,
+    )
+    registry = RuntimeWorkerRegistry()
+    registry.register(
+        RuntimeWorkerSpec(
+            family="event_dispatcher",
+            start=lambda: start_runner(event_runner),
+            stop=stop_runner,
+            stop_priority=300,
+        )
+    )
+    registry.register(
+        RuntimeWorkerSpec(
+            family="board_erasure_worker",
+            start=lambda: start_runner(board_erasure_runner),
+            stop=stop_runner,
+            stop_priority=275,
+        )
+    )
+    if kg_cleanup_enabled:
+        registry.register(
+            RuntimeWorkerSpec(
+                family="cleanup_worker",
+                start=lambda: start_runner(cleanup_runner),
+                stop=stop_runner,
+                stop_priority=100,
+            )
+        )
+    registry.register(
+        RuntimeWorkerSpec(
+            family="consolidation_worker",
+            start=lambda: start_runner(consolidation_runner),
+            stop=stop_runner,
+            # Join every in-flight consolidation/native graph write before
+            # the outbox runner performs its shutdown final iteration.
+            stop_priority=250,
+        )
+    )
+    registry.register(
+        RuntimeWorkerSpec(
+            family="outbox_worker",
+            start=lambda: start_runner(outbox_runner),
+            stop=stop_runner,
+            stop_priority=200,
+        )
+    )
+    return registry
+
+
+__all__ = [
+    "COMMUNITY_WORKER_BASELINE_FAMILIES",
+    "COMMUNITY_WORKER_CAPABLE_FAMILIES",
+    "build_community_worker_registry",
+]

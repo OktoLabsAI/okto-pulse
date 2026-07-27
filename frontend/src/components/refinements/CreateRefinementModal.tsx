@@ -7,6 +7,7 @@ import { X, Plus, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { Refinement, IdeationSummary } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface CreateRefinementModalProps {
   boardId: string;
@@ -96,6 +97,8 @@ export function CreateRefinementModal({ boardId, ideationId: preselectedIdeation
   const [labels, setLabels] = useState('');
   const [saving, setSaving] = useState(false);
   const [loadingIdeations, setLoadingIdeations] = useState(!preselectedIdeationId);
+
+  useEscapeToClose(onClose);
 
   useEffect(() => {
     if (!preselectedIdeationId) {

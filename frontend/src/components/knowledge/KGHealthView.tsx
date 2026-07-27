@@ -156,7 +156,8 @@ export function KGHealthView({
     [data?.decay_scheduler_diagnostics, data?.last_decay_tick_at],
   );
 
-  const schemaMismatch = data && data.schema_version !== EXPECTED_KG_HEALTH_SCHEMA_VERSION;
+  const schemaMismatch = data
+    && data.health_schema_version !== EXPECTED_KG_HEALTH_SCHEMA_VERSION;
 
   if (!boardId) {
     return <EmptyState onClose={onClose} />;
@@ -178,7 +179,7 @@ export function KGHealthView({
         {schemaMismatch && (
           <SchemaBanner
             expected={EXPECTED_KG_HEALTH_SCHEMA_VERSION}
-            received={data!.schema_version}
+            received={data!.health_schema_version}
           />
         )}
 
@@ -228,6 +229,11 @@ export function KGHealthView({
                 queueDepth={data.queue_depth}
                 oldestPendingAgeS={data.oldest_pending_age_s}
                 deadLetterCount={data.dead_letter_count}
+                globalOutboxDeadLetterCount={
+                  data.operational_domains?.global_outbox_dead_letter?.count
+                  ?? data.global_outbox_dead_letter_count
+                  ?? 0
+                }
               />
               <KGHealthCard
                 totalNodes={data.total_nodes}
@@ -696,13 +702,23 @@ function SchemaTickCard({
 
 interface QueueDeadLetterCardProps {
   queueDepth: number;
-  oldestPendingAgeS: number;
+  oldestPendingAgeS: number | null;
   deadLetterCount: number;
+  globalOutboxDeadLetterCount: number;
 }
 
-function QueueDeadLetterCard({ queueDepth, oldestPendingAgeS, deadLetterCount }: QueueDeadLetterCardProps) {
+function QueueDeadLetterCard({
+  queueDepth,
+  oldestPendingAgeS,
+  deadLetterCount,
+  globalOutboxDeadLetterCount,
+}: QueueDeadLetterCardProps) {
   const dlClass =
     deadLetterCount === 0
+      ? 'text-emerald-600 dark:text-emerald-400'
+      : 'text-amber-600 dark:text-amber-400';
+  const globalOutboxClass =
+    globalOutboxDeadLetterCount === 0
       ? 'text-emerald-600 dark:text-emerald-400'
       : 'text-amber-600 dark:text-amber-400';
   return (
@@ -717,8 +733,13 @@ function QueueDeadLetterCard({ queueDepth, oldestPendingAgeS, deadLetterCount }:
           {formatAgeSeconds(oldestPendingAgeS)}
         </span>
       </Row>
-      <Row label="Dead letter">
+      <Row label="Consolidation dead letter">
         <span className={`text-2xl font-bold ${dlClass}`}>{deadLetterCount.toLocaleString()}</span>
+      </Row>
+      <Row label="Global outbox terminal">
+        <span className={`text-2xl font-bold ${globalOutboxClass}`}>
+          {globalOutboxDeadLetterCount.toLocaleString()}
+        </span>
       </Row>
     </Card>
   );
@@ -1089,7 +1110,8 @@ function Row({ label, children }: RowProps) {
   );
 }
 
-function formatAgeSeconds(seconds: number): string {
+function formatAgeSeconds(seconds: number | null): string {
+  if (seconds === null) return '—';
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
   if (seconds < 3600) return `${(seconds / 60).toFixed(1)}m`;
   return `${(seconds / 3600).toFixed(1)}h`;

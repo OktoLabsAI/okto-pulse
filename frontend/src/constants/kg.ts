@@ -17,4 +17,4 @@
  */
 export const SCHEMA_VERSION = '0.3.3';
 
-export const EXPECTED_KG_HEALTH_SCHEMA_VERSION = '1.0';
+export const EXPECTED_KG_HEALTH_SCHEMA_VERSION = '1.1';

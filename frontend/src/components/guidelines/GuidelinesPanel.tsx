@@ -9,9 +9,12 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
+import { useImportExportApi } from '@/services/import-export-api';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
 import toast from 'react-hot-toast';
 import type { BoardGuidelineEntry, DefaultGuidelineCandidatesResponse, Guideline } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface GuidelinesPanelProps {
   boardId: string;
@@ -21,7 +24,9 @@ interface GuidelinesPanelProps {
 type Tab = 'board' | 'global';
 
 export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
+  useEscapeToClose(onClose);
   const api = useDashboardApi();
+  const importExportApi = useImportExportApi();
   const [activeTab, setActiveTab] = useState<Tab>('global');
 
   // Board tab state
@@ -309,6 +314,14 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Guidelines</h2>
           </div>
           <div className="flex items-center gap-2">
+            <ImportExportButtons
+              kind="guidelines"
+              onExport={() => importExportApi.exportGuidelines(boardId)}
+              onImport={(envelope) => importExportApi.importGuidelines(envelope, { boardId })}
+              onImported={async () => {
+                await Promise.all([fetchBoard(), fetchGlobals(), fetchDefaults()]);
+              }}
+            />
             <button
               type="button"
               onClick={() => setShowHelp((value) => !value)}

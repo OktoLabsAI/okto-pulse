@@ -15,7 +15,7 @@ const getMcpBaseUrl = () => {
 };
 const MCP_BASE_URL = getMcpBaseUrl();
 const MCP_URL_EXAMPLE = `${MCP_BASE_URL}?api_key=dash_your_key_here`;
-const MCP_URL_EXAMPLE_KEY = `${MCP_BASE_URL}?api_key=dash_a1b2c3d4...`;
+const MCP_URL_EXAMPLE_KEY = `${MCP_BASE_URL}?api_key=dash_your_key_here`;
 
 // Helper to extract port from MCP URL for display
 const getMcpPort = () => {
@@ -32,6 +32,7 @@ import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { useOptionalGuidedHelp, type GuidedHelpSurface, type GuidedHelpTourProgressStatus } from '@/components/guided-help';
 import pulseIcon from '@/assets/pulse-icon.svg';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface HelpPanelProps {
   onClose: () => void;
@@ -314,7 +315,7 @@ The output will show something like:
 \`\`\`
 Board created: My Board
 Agent created: Local Agent
-API Key: dash_a1b2c3d4...
+API Key: dash_your_key_here
 MCP URL: ${MCP_URL_EXAMPLE_KEY}
 
 .mcp.json generated at: /your/project/.mcp.json
@@ -362,7 +363,7 @@ Evaluate the ideation → refine if needed → write a spec with acceptance crit
 ### Managing agents
 
 To create additional agents or manage board access, open **Menu** (☰) → **Agents**:
-- **My Agents** tab — create, view API keys, regenerate keys, delete agents
+- **My Agents** tab — create agents, copy reveal-once API keys, regenerate keys, delete agents
 - **Board Access** tab — grant or revoke agent access to the current board
 
 ### Custom ports
@@ -542,7 +543,7 @@ In **Menu** (☰) → **Agents** → **"Board Access"** tab:
 
 ### API key management
 
-- **View key** — In the Agents panel, your key is visible (copy it)
+- **Reveal key** — New and regenerated keys are shown once in the Agents panel
 - **Regenerate key** — If compromised, click **Regenerate**. The old key stops working immediately.
 - **Lost key** — Keys are hashed in the database. If lost, regenerate a new one.
 
@@ -1038,13 +1039,15 @@ Specs and refinements cannot transition to \`done\` while they (or their decisio
 
 Boards can set \`skip_cognitive_consolidation\` to allow \`done\` transitions anyway — badges and the KG Health pending list **remain visible** so the debt is never silently hidden.
 
-### Resource Gate (Architecture / Mockups / Knowledge)
+### Resource Gate (Architecture / Mockups blocking; Knowledge advisory)
 
-Task cards must account for the spec's attached resources before completing: each resource type (architecture designs, screen mockups, knowledge-base entries) must be either **covered** (copied/linked to the card) or **explicitly marked N/A** with a justification (\`mark_resource_not_applicable\`). Notes:
+Resource Gate tracks all three resource types, but their authority is different:
 
-- N/A is **per level** — marking a resource N/A on the ideation does *not* propagate to refinement/spec/card (only KB inherits); each level declares its own
-- The gate is **completion-only**: cards move freely through \`started\`/\`in_progress\`/\`validation\`, but \`validation → done\` is blocked until every resource is covered or N/A
-- The **Resource Gate Summary** panel on the card shows the per-resource status
+- **Architecture designs and screen mockups are blocking.** Before entity completion, each must be present or explicitly marked N/A with a real justification. At \`spec_validation\` and \`spec_done\`, every effective Architecture/Mockup root must also be covered by a non-cancelled task.
+- **Knowledge Base entries are advisory.** They remain visible with lineage, relevance and provenance, but a missing or uncovered KB never blocks entity completion, spec validation or spec completion. Attach or copy a KB when it materially improves implementation context; do not create filler solely to satisfy a gate.
+- Effective N/A marks and resources inherit down the ideation → refinement → spec → card chain. Clear an inherited or local N/A only when the resource becomes applicable.
+- Cards move freely through \`started\`/\`in_progress\`/\`validation\`; \`validation → done\` enforces the blocking Architecture/Mockup policy and architecture findings.
+- The **Resource Gate Summary** shows each resource's \`blocking\` or \`advisory\` authority instead of treating all three as peers.
 
 ### Architecture Finding Done Gate
 
@@ -1295,6 +1298,7 @@ These flags bypass specific coverage checks for the entire board:
 | \`skip_rules_coverage_global\` | Business rules → functional requirements coverage |
 | \`skip_trs_coverage_global\` | Technical requirements → task card linkage |
 | \`skip_contract_coverage_global\` | API contract → task card linkage |
+| \`skip_task_requirement_link_gate_global\` | Task start gate requiring a direct FR/TR/BR/IR/OR link |
 | \`skip_test_evidence_global\` | **Test Evidence Gate** (NC-9) — when ON, test scenarios can be marked \`automated/passed/failed\` without proof of execution. A persistent amber banner appears app-wide until disabled. |
 
 ### Task Validation Gate thresholds
@@ -1438,6 +1442,7 @@ Both appear in the sidebar for quick switching.
 }
 
 export function HelpPanel({ onClose }: HelpPanelProps) {
+  useEscapeToClose(onClose);
   const sections = getSections();
   const [activeSection, setActiveSection] = useState(() => sections[0]?.id ?? 'quickstart');
 

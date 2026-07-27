@@ -1,6 +1,6 @@
 [project]
 name = "okto-pulse"
-version = "0.2.6"
+version = "0.3.0"
 description = "Okto Pulse — spec-driven project management with AI agents via MCP. Local-first, single command setup."
 requires-python = ">=3.11"
 license = {text = "Elastic-2.0"}
@@ -26,7 +26,26 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "okto-pulse-core>=0.2.6,<1.0.0",
+    "okto-pulse-core>=0.3.0,<1.0.0",
+    # 0.137.0 regressed include_router for empty collection paths; 0.137.1 fixed it.
+    "fastapi>=0.109.0,!=0.137.0,<1.0.0",
+    "starlette>=0.35.0,<1.0.0",
+    "pydantic>=2.5.0,<2.14",
+    "pydantic-settings>=2.1.0,<3.0.0",
+    "python-multipart>=0.0.6,<1.0.0",
+    "sqlalchemy[asyncio]>=2.0.0,<3.0.0",
+    "aiosqlite>=0.19.0,<1.0.0",
+    "anyio>=4.0.0,<5.0.0",
+    "httpx>=0.27.0,<1.0.0",
+    "fastmcp>=2.0.0,<3.0.0",
+    "mcp>=1.20.0,<2.0.0",
+    "uvicorn[standard]>=0.27.0,<1.0.0",
+    "wsproto>=1.2.0,<2.0.0",
+    "apscheduler>=3.10.0,<4.0.0",
+    "ladybug>=0.16.0,<0.17.0",
+    "requests>=2.32.0,<3.0.0",
+    "filelock>=3.16.0,<4.0.0",
+    "chardet>=3.0.2,<6.0.0",
     "sentence-transformers>=2.5.0,<6.0.0",
 ]
 
@@ -43,6 +62,7 @@ content-type = "text/markdown"
 
 [project.scripts]
 okto-pulse = "okto_pulse.community.cli:main"
+okto-pulse-saas-closure = "okto_pulse.community.saas_closure:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -64,3 +84,12 @@ include = [
     "TRADEMARKS.md",
 ]
 artifacts = ["src/okto_pulse/community/frontend_dist/assets/*.png"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+markers = [
+    "e2e: end-to-end integration tests excluded from the fast suite",
+    "slow: long-running local runtime tests",
+    "stress: destructive or high-volume stress tests",
+]

@@ -1,0 +1,168 @@
+{
+  "schema_version": "1.0",
+  "harness": "test_global_discovery_recovery_installed_e2e.py",
+  "transport": "real-streamable-http",
+  "direct_fastmcp_fn_calls": [],
+  "runtime_injections": [
+    {
+      "id": "pause-preparation-consumer",
+      "kind": "installed-process-test-monkeypatch",
+      "target": "okto_pulse.community.adapters.global_discovery_recovery_worker.CommunityRecoveryPreparationPoller.start",
+      "scope": "first server lifecycle only",
+      "justification": "Expose the committed queued control-plane state long enough to exercise public HTTP queued replay and cancellation without racing the owned preparation consumer."
+    },
+    {
+      "id": "confirmation-clock-offset",
+      "kind": "installed-process-clock-injection",
+      "target": "okto_pulse.core.kg.rebuild_confirmation.datetime",
+      "scope": "confirmation-token issue and consume only",
+      "justification": "Advance the confirmation-token clock by 600 seconds to exercise the public expired-token start refusal without a five-minute wall-clock sleep."
+    },
+    {
+      "id": "preparation-observation-gate",
+      "kind": "installed-process-test-monkeypatch",
+      "target": "okto_pulse.community.adapters.global_discovery_recovery_preparation.CommunityGlobalDiscoveryRecoveryPreparationOperation.__call__",
+      "scope": "normal preparation server lifecycle",
+      "justification": "Hold the already-durable first preparing phase behind a bounded cross-process release file until the second public HTTP actor observes and replays it; after release the unmodified real 1500-board preparation proceeds. The wrapper prints a chained traceback only when that production operation unexpectedly fails."
+    },
+    {
+      "id": "fail-once-recovery-dispatcher",
+      "kind": "installed-process-test-monkeypatch",
+      "target": "okto_pulse.community.adapters.global_discovery_recovery_worker.CommunityDurableRecoveryDispatcher.dispatch",
+      "scope": "first recovery dispatch in the controlled-clock lifecycle only",
+      "justification": "Raise once after the real dispatcher has durably enqueued recovery work, then prove an identical public HTTP start retry rediscovers the committed attempt without creating another run."
+    },
+    {
+      "id": "building-gate-hard-kill",
+      "kind": "installed-process-test-monkeypatch",
+      "target": "okto_pulse.community.adapters.global_discovery_recovery.write_json_atomic",
+      "scope": "building-gate server lifecycle only (hard-kill adoption test)",
+      "justification": "After production's REAL atomic journal write whose payload carries phase='building' has returned durable, record the journal path in a signal file and block the native worker thread forever so the test can hard-kill the exact child process at a durably persisted building journal. Nothing is skipped or mocked; the write itself is the unmodified production write."
+    },
+    {
+      "id": "writer-fence-loss-at-durable-building",
+      "kind": "installed-process-test-monkeypatch",
+      "target": "okto_pulse.community.adapters.global_discovery_recovery_worker.GlobalDiscoveryWriterLease.acquire + okto_pulse.community.adapters.global_discovery_recovery.write_json_atomic",
+      "scope": "controlled-clock-fence-loss server lifecycle only; exact run_id+epoch target file; one-shot",
+      "justification": "Deterministic REAL writer-fence loss for the A5 INV-F4 installed proof: the acquire wrapper only records the productive lease instance unchanged; after production's real atomic journal write with phase='building' for the exact targeted run/epoch has returned durable, that exact lease is released exactly once through its OFFICIAL release path (no artificial exception, no SQL, no fabricated terminal). The very next productive fence check raises GlobalDiscoveryWriterFenceLost and the productive worker alone persists PARTIAL/recovery_physical_reconciliation_pending; the test awaits that terminal inside the same server so shutdown stays clean and bounded, and captures the frozen durable-building N journal bytes as evidence."
+    },
+    {
+      "id": "resume-native-gate",
+      "kind": "installed-process-test-monkeypatch",
+      "target": "okto_pulse.community.adapters.global_discovery_recovery_worker.CommunityGlobalDiscoveryRecoveryNativeOperation.__call__",
+      "scope": "resume-gate restart lifecycle only; exact run_id+epoch target file, one-shot",
+      "justification": "Cooperative hold of the REAL native operation for the exact resumed run/epoch N+1 written by the test BEFORE the restart server exists, so the canonical public resume replay (same actor, same reason, strictly before terminal) can be proven to preserve the exact persisted N+1 identity and exactly one recovery dispatch with zero epoch N+2, while its documented live projection (state/phase/reason_code/progress_seq/heartbeat_at/updated_at/active_elapsed_ms) legitimately advances under the native gate — total payload identity is NOT claimed. Claim/heartbeat stay fully productive during the hold; the release file is written unconditionally in the test's finally, and a 120s deadline proceeds WITHOUT fabricating any error while leaving a timeout marker the test must prove absent."
+    },
+    {
+      "id": "z2-worker-inputs-tamper",
+      "kind": "installed-process-test-monkeypatch",
+      "target": "okto_pulse.core.kg.global_discovery_recovery.GlobalDiscoveryRecoveryWorkerInputStore.put + okto_pulse.community.adapters.global_discovery_recovery_worker.GlobalDiscoveryWriterLease.acquire (tripwire)",
+      "scope": "z2-tamper server lifecycle only; exact run_id+epoch+variant target file written by the test after prepare+confirm and before the MCP run; one-shot",
+      "justification": "Production creates the durable worker-inputs artifact INSIDE prepare_durable_start, so no confirm-to-start tamper window exists. The wrapper calls the REAL put first; for the exact targeted run/epoch it then locates the hash-keyed artifact (worker_inputs_<SHA256(run_id)>__attempt-N), records a signal with run/epoch/variant/path/original SHA256, and unlinks it (missing) or truncates it to invalid JSON (corrupt) strictly before the put returns — therefore strictly before the recovery dispatch exists. A test-only tripwire on GlobalDiscoveryWriterLease.acquire writes a marker and fails if the targeted run's owner ever reaches the writer lane; the test must prove the marker ABSENT. The correct zero-work claim is: zero writer lease, zero reconcile/cutover, zero physical mutation of the observed global tree — the input READ itself legitimately happens inside the native wrapper, which fails typed."
+    },
+    {
+      "id": "adoption-restart-poll-signal",
+      "kind": "installed-process-test-monkeypatch",
+      "target": "okto_pulse.community.adapters.global_discovery_recovery_worker.CommunityRecoveryWorker._poll",
+      "scope": "adoption-restart server lifecycle only (hard-kill restart); single signal",
+      "justification": "Writes ONE UTC timestamp at the restarted recovery poller's first entry and then delegates to the REAL _poll unchanged. The bounded-takeover proof anchors on persisted ground truth: adopted claimed_at must be >= the old claim expiry and <= max(old claim expiry, this first-poll signal) + poll interval + fixed margin — never on a wall-clock observation that includes installed boot/readiness time."
+    },
+    {
+      "id": "adoption-submit-claim-gate",
+      "kind": "installed-process-test-monkeypatch",
+      "target": "okto_pulse.community.adapters.global_discovery_recovery_worker.CommunityRecoveryWorker._submit_claim",
+      "scope": "adoption-restart server lifecycle only (hard-kill restart); exact run_id+epoch target file, one-shot",
+      "justification": "Cooperative hold positioned AFTER the adopting claim transaction (which carries the A5R2 exactly-once crash charge) has durably COMMITTED and BEFORE _run_attempt starts any physical operation. At the gate the test proves the EXACT settled accounting from the SQL ground truth: active == pre_active + gap and cumulative == pre_cumulative + gap with gap = min(old claim expiry, active deadline) - pre heartbeat, plus heartbeat_at/updated_at rebased to the adopting claim's own claimed_at — before releasing any new work. The release file is written unconditionally in the test's finally; a 120s deadline proceeds WITHOUT fabricating any error while leaving a timeout marker the test must prove absent. The wrapper delegates to the REAL _submit_claim unchanged."
+    }
+  ],
+  "fixture_mutations": [
+    {
+      "id": "second-global-admin-credential",
+      "surface": "Installed-package credential helper plus stopped-server SQLite fixture",
+      "justification": "Create a second reveal-once API secret whose hash and non-recoverable marker are computed by the isolated venv-installed Core package, enabling two independently authenticated real-HTTP global-admin actors."
+    },
+    {
+      "id": "authoritative-board-census",
+      "surface": "SQLite fixture setup while server is stopped",
+      "justification": "Seed exactly 1500 authoritative zero-source boards; production schema, triggers, and runtime consume them unchanged."
+    },
+    {
+      "id": "kg-daily-tick-quiescent-baseline",
+      "surface": "Stopped-server kg_tick_runs fixture setup",
+      "justification": "Persist one recent completed operational tick so the real scheduler consumes its normal durable history and schedules the next run at the configured interval, rather than emitting an unrelated 1500-board first-install catch-up wave at +120 seconds. No scheduler code, clock, handler, or source-revision fence is patched; the explicit authoritative-board mutation scenarios continue to prove real snapshot-drift refusal."
+    },
+    {
+      "id": "global-discovery-total-loss",
+      "surface": "Stopped-server filesystem relocation of the observed KG storage tree",
+      "justification": "A5 cmd_init always materializes the Global Discovery graph, so a fresh `okto-pulse init` first PROVES bootstrap (asserting the exact '  Global Discovery: materialized' evidence). Then, while the server is stopped and all CLI handles are closed, the COMPLETE `data_dir/global` directory is moved to a backup path inside the isolated runtime root and recreated empty, simulating physical total loss so the observed primary is CONFIRMED_ABSENT and production preparation legitimately admits recovery. The whole directory is relocated (never just discovery.lbug) so no residual discovery.lbug.* sidecars remain; admission logic, wait semantics, census size, and ports are unchanged."
+    },
+    {
+      "id": "snapshot-fingerprint-drift",
+      "surface": "SQLite board update",
+      "justification": "Advance the production relational source-revision trigger to prove public confirm/start fail closed on a stale snapshot fingerprint."
+    },
+    {
+      "id": "terminal-global-outbox-row",
+      "surface": "SQLite outbox fixture setup",
+      "justification": "Create one terminal delivery for public DLQ list/reprocess/verify; application mutations remain exclusively public HTTP MCP calls."
+    },
+    {
+      "id": "global-discovery-total-loss-reapplied",
+      "surface": "Stopped-server filesystem relocation of the observed KG storage tree",
+      "justification": "The Z2 and hard-kill tests each need a fresh legitimate recovery admission after an earlier successful recovery, so the SAME declared total-loss relocation is reapplied per test with the server stopped: the complete data_dir/global tree moves to a unique backup inside the isolated root and is recreated empty (CONFIRMED_ABSENT). Nothing is deleted."
+    },
+    {
+      "id": "final-wheel-pair-override",
+      "surface": "Harness environment (OKTO_E2E_FINAL_WHEEL_DIR + optional expected SHA256 pins)",
+      "justification": "When set, the module fixture consumes EXACTLY the frozen FINAL wheel pair (fail-closed: exactly one Core + one Community wheel, expected names/version, optional SHA256 pins asserted) and never rebuilds, so every installed proof runs against the governed FINAL artifacts. Unset preserves the historical build-from-live-tree behavior."
+    }
+  ],
+  "ac_matrix": {
+    "description": "Declarative AC-to-evidence matrix for scenario ts_3e1a5d4e (spec dd4c477e). Source-tree nodeids are current evidence on the A5-frozen amended tree; installed entries are FUTURE work and carry no pass claim and no artifact hashes until the Seq4 FINAL wheel pair exists.",
+    "ac_4f852af3": {
+      "criterion": "AC14 — controlled E2E proves start/progress/cancel-partial/resume/success, crash/lease takeover, timeouts, and list/reprocess/verify without an unbounded MCP call",
+      "source_evidence": [
+        "tests/test_global_discovery_recovery_runtime_composition.py::test_durable_input_provider_maps_missing_artifact_to_typed_failure",
+        "tests/test_global_discovery_recovery_runtime_composition.py::test_durable_input_provider_maps_corrupt_artifact_to_typed_failure",
+        "tests/test_global_discovery_recovery_runtime_composition.py::test_worker_terminalizes_unusable_worker_inputs_without_native_operation[missing-recovery_worker_inputs_missing]",
+        "tests/test_global_discovery_recovery_runtime_composition.py::test_worker_terminalizes_unusable_worker_inputs_without_native_operation[corrupt-recovery_worker_inputs_invalid]",
+        "tests/test_global_discovery_recovery_worker_chain.py::test_r6_worker_chain_writer_fence_lost_partial_then_epoch2_reconciles",
+        "tests/test_global_discovery_recovery_worker_timeout.py::test_expired_physical_attempt_requires_same_epoch_journal_reconciliation",
+        "tests/test_global_discovery_recovery_worker_timeout.py::test_owned_worker_terminalizes_deadline_and_fences_draining_native_work",
+        "tests/test_global_discovery_recovery_r5_budget_cancel_truth.py::test_backward_wall_jump_does_not_extend_attempt_budget_and_cap_is_exact",
+        "tests/test_global_discovery_recovery_r5_budget_cancel_truth.py::test_late_cancel_cannot_rewrite_completed_or_rolled_back_physical_truth"
+      ],
+      "installed_evidence": "pending_seq4_final_wheels"
+    },
+    "ac_556ba68e": {
+      "criterion": "AC15 — focused suites, architecture import scans, wheel-content scans and installed-wheel smokes pass against the rebuilt artifacts",
+      "source_evidence": [
+        "tests/test_af21_core_import_boundary.py::test_ts_33e252d6_current_private_core_reach_ins_are_ledgered",
+        "tests/test_f13_adapter_provenance.py::test_f13_full_inventory_contains_only_public_core_contracts",
+        "tests/test_f16_saas_closure.py::test_f16_real_core_community_closure_is_terminal"
+      ],
+      "installed_evidence": "pending_seq4_final_wheels"
+    }
+  },
+  "future_installed_inventory": {
+    "description": "Installed proofs that REQUIRE the Seq4 FINAL wheel pair. None has run; no pass, duration, or artifact hash may be recorded here until Seq4 executes them on the rebuilt pair.",
+    "status": "pending_seq4_final_wheels",
+    "items": [
+      {
+        "id": "z2-installed-worker-inputs-missing",
+        "surface": "Installed HTTP E2E over the FINAL wheel pair",
+        "proves": "A dispatched attempt whose durable worker inputs artifact is absent terminalizes FAILED with reason_code recovery_worker_inputs_missing, retryable=false, zero native operation/cutover/physical mutation."
+      },
+      {
+        "id": "z2-installed-worker-inputs-corrupt",
+        "surface": "Installed HTTP E2E over the FINAL wheel pair",
+        "proves": "A dispatched attempt whose durable worker inputs artifact is unreadable/corrupt terminalizes FAILED with reason_code recovery_worker_inputs_invalid, retryable=false, zero native operation/cutover/physical mutation."
+      },
+      {
+        "id": "hard-kill-adoption",
+        "surface": "Installed HTTP E2E over the FINAL wheel pair",
+        "proves": "A real child process.kill() at an atomically written phase=building journal is adopted on restart with the same wheels/data: attempt_count +1, changed worker/token, bounded lease takeover on persisted ground truth (adopted claimed_at >= old claim expiry and <= max(old claim expiry, restarted poller first entry) + poll interval + fixed margin), typed orphan isolation, and cumulative_active_ms crash charge."
+      }
+    ]
+  }
+}

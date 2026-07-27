@@ -7,6 +7,7 @@ import { X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { Ideation } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface CreateIdeationModalProps {
   boardId: string;
@@ -22,6 +23,8 @@ export function CreateIdeationModal({ boardId, onClose, onCreated }: CreateIdeat
   const [proposedApproach, setProposedApproach] = useState('');
   const [labels, setLabels] = useState('');
   const [saving, setSaving] = useState(false);
+
+  useEscapeToClose(onClose);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

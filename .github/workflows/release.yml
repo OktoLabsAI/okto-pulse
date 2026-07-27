@@ -15,7 +15,6 @@ name: Release
 # This workflow runs on step 4 and:
 #   - Verifies okto-pulse-core has a matching tag (preflight, fails fast if not)
 #   - Verifies pyproject.toml version matches the git tag
-#   - Runs the kg pytest suite (excluding e2e)
 #   - Builds the Docker image (target=local-runtime) into the local daemon
 #   - Spins up the container, waits healthy, runs the MCP replay smoke test
 #   - Gates on container health + log scan (no SIGBUS/SIGSEGV/ResourceWarning)
@@ -200,11 +199,23 @@ jobs:
 
       - name: Spin up container
         run: |
+          # Pre-initialize explicitly so the freshly generated reveal-once key
+          # can cross into the replay step without ever being recovered from
+          # agents.api_key (which stores only a marker/hash). The handoff lives
+          # on a private tmpfs and `serve` starts only after init succeeds.
           docker run -d \
             --name okto-pulse-ci \
-            -p 8100:8100 \
-            -p 8101:8101 \
-            "${{ env.IMAGE }}:${{ steps.version.outputs.version }}"
+            -e HOST=0.0.0.0 \
+            -e MCP_HOST=0.0.0.0 \
+            -e DATA_DIR=/data \
+            -e KG_BASE_DIR=/data \
+            -p 127.0.0.1:8100:8100 \
+            -p 127.0.0.1:8101:8101 \
+            --tmpfs /run/okto-pulse-release:rw,noexec,nosuid,nodev,mode=0700 \
+            "${{ env.IMAGE }}:${{ steps.version.outputs.version }}" \
+            sh -ec 'okto-pulse init \
+              --bootstrap-key-handoff /run/okto-pulse-release/bootstrap-api-key; \
+              exec okto-pulse serve'
 
       - name: Wait for container to become healthy
         run: |
@@ -229,21 +240,27 @@ jobs:
       - name: Extract API key from container
         id: apikey
         run: |
-          # Read the bootstrap key directly from the seeded DB inside the
-          # running container via the dedicated CLI subcommand. More
-          # robust than grepping logs (which is sensitive to log-format
-          # changes). Banner is printed to stderr so 2>/dev/null leaves
-          # only the key on stdout.
-          API_KEY=$(docker exec okto-pulse-ci okto-pulse api-key 2>/dev/null | tr -d '\r\n')
-          if [ -z "$API_KEY" ] || ! echo "$API_KEY" | grep -qE '^dash_[a-f0-9]+$'; then
-            echo "::error::okto-pulse api-key did not return a valid dash_<hex> key"
-            echo "::error::Got: '$API_KEY'"
+          # Atomically claim and delete the reveal-once tmpfs handoff. The
+          # command never queries the database and a second read must fail.
+          API_KEY=$(docker exec okto-pulse-ci okto-pulse api-key \
+            --handoff-file /run/okto-pulse-release/bootstrap-api-key \
+            2>/dev/null | tr -d '\r\n')
+          if [ -n "$API_KEY" ]; then
+            echo "::add-mask::$API_KEY"
+          fi
+          if [ -z "$API_KEY" ] || ! echo "$API_KEY" | grep -qE '^dash_[a-f0-9]{48}$'; then
+            echo "::error::okto-pulse api-key did not return a valid reveal-once key"
             docker logs okto-pulse-ci | tail -30
             exit 1
           fi
-          echo "::add-mask::$API_KEY"
+          if docker exec okto-pulse-ci okto-pulse api-key \
+            --handoff-file /run/okto-pulse-release/bootstrap-api-key \
+            >/dev/null 2>&1; then
+            echo "::error::bootstrap API key handoff was readable more than once"
+            exit 1
+          fi
           echo "key=$API_KEY" >> "$GITHUB_OUTPUT"
-          echo "API key extracted (masked)"
+          echo "Reveal-once API key consumed (masked)"
 
       - name: Checkout mcp-replay-test (replay tool + trace fixtures)
         # The replay script and the 2.6 MB long trace live in their own repo
@@ -257,8 +274,8 @@ jobs:
       - name: Run MCP replay smoke test
         # Behavioral mode = compare only success/failure, not response content.
         # No-strict = ignore dynamic field mismatches.
-        # The replay tool exits 0 unless trace is unparseable. The actual gate
-        # is the log + health check below; this step exercises the server.
+        # Any replay failure blocks publication; the log + health gate below
+        # adds crash/file-handle diagnostics rather than replacing this gate.
         env:
           API_KEY: ${{ steps.apikey.outputs.key }}
         run: |
@@ -268,7 +285,7 @@ jobs:
             --host 127.0.0.1 \
             --port 8101 \
             --behavioral \
-            --no-strict || echo "Replay tool exited non-zero — gate decision deferred to log scan"
+            --no-strict
 
       - name: Replay gate (logs + container health)
         run: |

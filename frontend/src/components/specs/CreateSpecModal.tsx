@@ -7,6 +7,7 @@ import { X, Plus, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { Spec, Decision } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface CreateSpecModalProps {
   boardId: string;
@@ -94,6 +95,8 @@ export function CreateSpecModal({ boardId, onClose, onCreated }: CreateSpecModal
   const [decisionEntries, setDecisionEntries] = useState<string[]>([]);
   const [labels, setLabels] = useState('');
   const [saving, setSaving] = useState(false);
+
+  useEscapeToClose(onClose);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

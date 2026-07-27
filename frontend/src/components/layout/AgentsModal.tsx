@@ -10,6 +10,7 @@ import { useCurrentBoard } from '@/store/dashboard';
 import { PermissionFlagsEditor, PermissionDiffView } from '@/components/permissions';
 import type { FlagsMap } from '@/components/permissions';
 import type { Agent, AgentSummary, PermissionPreset } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 type McpFormat = 'claude' | 'cursor' | 'vscode' | 'windsurf' | 'claude-cli' | 'okto-cli';
 type Tab = 'my-agents' | 'board-access';
@@ -73,12 +74,18 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   const [expandedAgentId, setExpandedAgentId] = useState<string | null>(null);
   const [grantAgentId, setGrantAgentId] = useState('');
   const [presets, setPresets] = useState<PermissionPreset[]>([]);
+  const [revealedAgentKeys, setRevealedAgentKeys] = useState<Record<string, string>>({});
+
+  useEscapeToClose(onClose, { enabled: isOpen });
 
   // Load my agents and presets on open
   useEffect(() => {
     if (isOpen) {
       loadMyAgents();
       loadPresets();
+    } else {
+      setRevealedAgentKeys({});
+      setExpandedAgentId(null);
     }
   }, [isOpen]);
 
@@ -126,26 +133,34 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
     if (!newAgentName.trim()) return;
 
     try {
-      const agent = await api.createAgent({
+      const result = await api.createAgent({
         name: newAgentName.trim(),
         description: newAgentDescription.trim() || undefined,
         objective: newAgentObjective.trim() || undefined,
         preset_id: newAgentPresetId || undefined,
       });
-      setMyAgents((prev) => [...prev, agent]);
-      setExpandedAgentId(agent.id);
+      setMyAgents((prev) => [...prev, result.agent]);
+      setRevealedAgentKeys((prev) => ({
+        ...prev,
+        [result.agent.id]: result.reveal_once_secret,
+      }));
+      setExpandedAgentId(result.agent.id);
       setNewAgentName('');
       setNewAgentDescription('');
       setNewAgentObjective('');
       setNewAgentPresetId('');
       setShowCreateForm(false);
-      toast.success('Agent created!');
+      toast.success('Agent created. Copy the key now.');
     } catch {
       toast.error('Failed to create agent');
     }
   };
 
-  const handleCopy = (text: string, label: string) => {
+  const handleCopy = (text: string | undefined, label: string) => {
+    if (!text) {
+      toast.error(`${label} is hidden. Regenerate to reveal a new one.`);
+      return;
+    }
     navigator.clipboard.writeText(text);
     toast.success(`${label} copied!`);
   };
@@ -154,8 +169,13 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
     if (!confirm('Are you sure? The old key will stop working.')) return;
     try {
       const result = await api.regenerateAgentKey(agentId);
-      setMyAgents((prev) => prev.map((a) => (a.id === agentId ? { ...a, api_key: result.api_key } : a)));
-      toast.success('Key regenerated!');
+      setMyAgents((prev) => prev.map((a) => (a.id === agentId ? result.agent : a)));
+      setRevealedAgentKeys((prev) => ({
+        ...prev,
+        [agentId]: result.reveal_once_secret,
+      }));
+      setExpandedAgentId(agentId);
+      toast.success('Key regenerated. Copy it now.');
     } catch {
       toast.error('Failed to regenerate key');
     }
@@ -166,6 +186,11 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
     try {
       await api.deleteAgent(agentId);
       setMyAgents((prev) => prev.filter((a) => a.id !== agentId));
+      setRevealedAgentKeys((prev) => {
+        const next = { ...prev };
+        delete next[agentId];
+        return next;
+      });
       toast.success('Agent deleted');
     } catch {
       toast.error('Failed to delete agent');
@@ -330,6 +355,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                 <div className="space-y-2">
                   {myAgents.map((agent) => {
                     const isExpanded = expandedAgentId === agent.id;
+                    const revealedKey = revealedAgentKeys[agent.id];
                     return (
                       <div key={agent.id} className="bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-lg overflow-hidden">
                         {/* Agent header */}
@@ -348,9 +374,10 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                           </button>
                           <div className="flex items-center gap-1 shrink-0">
                             <button
-                              onClick={() => handleCopy(agent.api_key, 'Key')}
-                              className="p-1.5 text-gray-400 dark:text-gray-500 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 rounded"
-                              title="Copy API key"
+                              onClick={() => handleCopy(revealedKey, 'Key')}
+                              disabled={!revealedKey}
+                              className="p-1.5 text-gray-400 dark:text-gray-500 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 rounded disabled:opacity-40 disabled:hover:text-gray-400 disabled:hover:bg-transparent"
+                              title={revealedKey ? 'Copy API key' : 'Key hidden; regenerate to reveal a new key'}
                             >
                               <Copy size={14} />
                             </button>
@@ -378,15 +405,23 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                             <div className="mt-3">
                               <label className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">API Key</label>
                               <div className="flex items-center gap-2 mt-1">
-                                <code className="flex-1 bg-white dark:bg-gray-900 px-3 py-1.5 rounded text-xs font-mono break-all border border-gray-200 dark:border-gray-700">
-                                  {agent.api_key}
-                                </code>
-                                <button
-                                  onClick={() => handleCopy(agent.api_key, 'Key')}
-                                  className="p-1.5 bg-green-600 text-white rounded hover:bg-green-700 shrink-0"
-                                >
-                                  <Copy size={12} />
-                                </button>
+                                {revealedKey ? (
+                                  <>
+                                    <code className="flex-1 bg-white dark:bg-gray-900 px-3 py-1.5 rounded text-xs font-mono break-all border border-gray-200 dark:border-gray-700">
+                                      {revealedKey}
+                                    </code>
+                                    <button
+                                      onClick={() => handleCopy(revealedKey, 'Key')}
+                                      className="p-1.5 bg-green-600 text-white rounded hover:bg-green-700 shrink-0"
+                                    >
+                                      <Copy size={12} />
+                                    </button>
+                                  </>
+                                ) : (
+                                  <div className="flex-1 bg-white dark:bg-gray-900 px-3 py-1.5 rounded text-xs text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700">
+                                    Hidden. Regenerate to reveal a new key.
+                                  </div>
+                                )}
                               </div>
                             </div>
 
@@ -452,11 +487,16 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                   <button
                                     key={format}
                                     onClick={() => {
-                                      navigator.clipboard.writeText(getMcpConfigJson(format, agent.api_key));
+                                      if (!revealedKey) {
+                                        toast.error('Key is hidden. Regenerate to reveal a new one.');
+                                        return;
+                                      }
+                                      navigator.clipboard.writeText(getMcpConfigJson(format, revealedKey));
                                       toast.success('Configuration copied!');
                                     }}
-                                    className="flex items-center gap-2 px-3 py-2 text-xs bg-white dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-left text-gray-700 dark:text-gray-300"
-                                    title={icon === 'terminal' ? 'Terminal command' : file}
+                                    disabled={!revealedKey}
+                                    className="flex items-center gap-2 px-3 py-2 text-xs bg-white dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-left text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:hover:bg-white dark:disabled:hover:bg-gray-900"
+                                    title={revealedKey ? (icon === 'terminal' ? 'Terminal command' : file) : 'Key hidden; regenerate to copy config'}
                                   >
                                     {icon === 'terminal' ? (
                                       <Terminal size={14} className="shrink-0 text-gray-500 dark:text-gray-400" />

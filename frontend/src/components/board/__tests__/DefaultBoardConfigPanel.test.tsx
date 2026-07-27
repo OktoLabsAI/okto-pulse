@@ -16,6 +16,24 @@ const apiMock = vi.hoisted(() => ({
   updateDefaultGuidelineRefs: vi.fn(),
 }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
+// The Export/Import buttons pull the import-export service through the API
+// context; stub the hook so this panel test does not need an ApiProvider.
+vi.mock('@/services/import-export-api', () => ({
+  useImportExportApi: () => ({
+    exportGuidelines: vi.fn(),
+    importGuidelines: vi.fn(),
+    exportDesignSystems: vi.fn(),
+    exportDesignSystem: vi.fn(),
+    importDesignSystems: vi.fn(),
+    exportPresets: vi.fn(),
+    importPresets: vi.fn(),
+    exportBoardConfig: vi.fn(),
+    importBoardConfig: vi.fn(),
+  }),
+  importExportFilename: (kind: string) => `${kind}-00000000.json`,
+  downloadJsonFile: vi.fn(),
+}));
+
 
 import { DefaultBoardConfigPanel } from '../DefaultBoardConfigPanel';
 
@@ -240,6 +258,22 @@ describe('DefaultBoardConfigPanel', () => {
     }));
   });
 
+  it('stages task requirement link gate skip in the default board config payload', async () => {
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    fireEvent.click(await screen.findByRole('switch', { name: 'Skip task requirement link gate' }));
+
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(expect.objectContaining({
+      activate: true,
+      settings_payload: expect.objectContaining({
+        skip_task_requirement_link_gate_global: true,
+      }),
+    }));
+  });
+
   it('discards staged gate edits without creating a version', async () => {
     render(<DefaultBoardConfigPanel boardId="b1" />);
     fireEvent.click(await screen.findByRole('switch', { name: 'Require task validation' }));
@@ -269,6 +303,8 @@ describe('DefaultBoardConfigPanel', () => {
         require_task_validation: true,
       }),
     }));
+    const payload = apiMock.createDefaultBoardConfigVersion.mock.calls[0][0].settings_payload;
+    expect(Object.prototype.hasOwnProperty.call(payload, 'skip_task_requirement_link_gate_global')).toBe(false);
   });
 
   it('keeps the Design System default ref gate mirrored when the default gate mode changes', async () => {

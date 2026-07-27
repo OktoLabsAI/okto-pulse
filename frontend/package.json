@@ -1,12 +1,13 @@
 {
   "name": "omni-flow-project-dashboard",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "build": "tsc -b && vite build && node scripts/sync-frontend-dist.mjs",
+    "verify:frontend-dist": "node scripts/sync-frontend-dist.mjs --verify-only",
+    "lint": "node scripts/lint-ratchet.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -2,7 +2,7 @@
  * SpecsPanel - List of specs for the current board
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Plus,
   FileText,
@@ -21,7 +21,6 @@ import { useDashboardApi } from '@/services/api';
 import type { SpecSummary, SpecStatus } from '@/types';
 import { SPEC_STATUS_LABELS } from '@/types';
 import { sanitizePreview } from '@/lib/sanitizePreview';
-import { useListSearch } from '@/hooks/useListSearch';
 import { SearchInput } from '@/components/shared/SearchInput';
 import { useViewMode } from '@/hooks/useViewMode';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
@@ -33,6 +32,8 @@ import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBa
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { QABadge } from '@/components/shared/QABadge';
 import { PulseLoader } from '@/components/shared/PulseLoader';
+import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
+import { usePersistedPagination } from '@/hooks/usePersistedPagination';
 
 interface SpecsPanelProps {
   boardId: string;
@@ -104,24 +105,68 @@ const STATUS_COLORS: Record<SpecStatus, string> = {
 
 export function SpecsPanel({ boardId }: SpecsPanelProps) {
   const api = useDashboardApi();
+  const apiRef = useRef(api);
+  apiRef.current = api;
   const [specs, setSpecs] = useState<SpecSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [totalFiltered, setTotalFiltered] = useState(0);
+  const [totalOverall, setTotalOverall] = useState(0);
+  const [reloadKey, setReloadKey] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedSpecId, setSelectedSpecId] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('');
   const [showArchived, setShowArchived] = useState(false);
-
-  const search = useListSearch<SpecSummary>(specs, {
-    fields: ['title', 'description', 'labels'],
-    urlParam: 'q_specs',
-  });
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('specs', boardId);
   const { viewMode, setViewMode } = useViewMode('specs', 'list');
   const [groupMode, setGroupModeState] = useState<SpecGroupMode>(() => loadSpecGroupMode(boardId));
   const [parentTitleById, setParentTitleById] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    loadSpecs();
-  }, [boardId, filterStatus, showArchived]);
+    const controller = new AbortController();
+    setLoading(true);
+    setLoadError(null);
+    void apiRef.current.listSpecsPage(boardId, {
+      status: filterStatus || undefined,
+      search: debouncedSearch || undefined,
+      includeArchived: showArchived,
+      offset: requestIntent.offset,
+      limit: requestIntent.limit,
+      signal: controller.signal,
+    }).then((page) => {
+      if (controller.signal.aborted) return;
+      setSpecs(page.items);
+      setTotalFiltered(page.total_filtered);
+      setTotalOverall(page.total_overall);
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      setLoadError(error instanceof Error ? error.message : 'Failed to load specs');
+      toast.error('Failed to load specs');
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false);
+    });
+    return () => controller.abort();
+  }, [
+    boardId,
+    filterStatus,
+    debouncedSearch,
+    showArchived,
+    reloadKey,
+    requestIntent.offset,
+    requestIntent.limit,
+  ]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const next = searchQuery.trim();
+      if (next === debouncedSearch) return;
+      setDebouncedSearch(next);
+      setPagination({ page: 1, pageSize });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery, debouncedSearch, pageSize, setPagination]);
 
   useEffect(() => {
     setGroupModeState(loadSpecGroupMode(boardId));
@@ -133,39 +178,37 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
   };
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     const loadParents = async () => {
       try {
-        const ideations = await api.listIdeations(boardId);
-        if (cancelled) return;
+        const [ideations, refinements] = await Promise.all([
+          apiRef.current.lookupIdeations(boardId, { limit: 50, signal: controller.signal }),
+          apiRef.current.listBoardRefinementsPage(boardId, {
+            offset: 0,
+            limit: 100,
+            includeArchived: true,
+            signal: controller.signal,
+          }),
+        ]);
+        if (controller.signal.aborted) return;
         const map: Record<string, string> = {};
-        for (const i of ideations) map[i.id] = i.title;
-        const details = await Promise.all(ideations.map((i) => api.getIdeation(i.id).catch(() => null)));
-        if (cancelled) return;
-        for (const d of details) {
-          if (d?.refinements) {
-            for (const r of d.refinements as { id: string; title: string }[]) map[r.id] = r.title;
-          }
-        }
+        for (const ideation of ideations.items) map[ideation.id] = ideation.title;
+        for (const refinement of refinements.items) map[refinement.id] = refinement.title;
         setParentTitleById(map);
       } catch {
         // best-effort lookup; group titles fall back to ID when missing
       }
     };
-    loadParents();
-    return () => { cancelled = true; };
+    void loadParents();
+    return () => controller.abort();
   }, [boardId]);
 
   const loadSpecs = async () => {
-    setLoading(true);
-    try {
-      const data = await api.listSpecs(boardId, filterStatus || undefined, showArchived);
-      setSpecs(data);
-    } catch {
-      toast.error('Failed to load specs');
-    } finally {
-      setLoading(false);
-    }
+    setReloadKey((value) => value + 1);
+  };
+
+  const resetPage = () => {
+    setPagination({ page: 1, pageSize });
   };
 
   const statusFilters = [
@@ -181,7 +224,7 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
   // KG-03.6 — batch cognitive pending badges for the visible specs.
   // ONE HTTP request per (boardId, visible spec ids) change; never one
   // request per card (api_28a22fec batch semantics).
-  const visibleSpecSourceRefs = search.filtered.map((spec) => `spec:${spec.id}`);
+  const visibleSpecSourceRefs = specs.map((spec) => `spec:${spec.id}`);
   const { badges: cognitiveBadges } = useCognitivePendingBadges(
     boardId,
     visibleSpecSourceRefs,
@@ -211,18 +254,17 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4 flex shrink-0 items-center justify-between">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Specifications</h2>
           <span className="text-sm text-gray-400">
-            ({search.filtered.length}
-            {search.query ? ` of ${specs.length}` : ''})
+            ({totalFiltered} of {totalOverall})
           </span>
         </div>
         <div className="flex items-center gap-2">
           <SearchInput
-            value={search.query}
-            onChange={search.setQuery}
+            value={searchQuery}
+            onChange={setSearchQuery}
             placeholder="Search specs…"
             testId="specs-search"
           />
@@ -256,11 +298,14 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
       </div>
 
       {/* Status filter pills */}
-      <div className="flex gap-1.5 mb-4 flex-wrap">
+      <div className="mb-4 flex shrink-0 flex-wrap gap-1.5">
         {statusFilters.map((f) => (
           <button
             key={f.value}
-            onClick={() => setFilterStatus(f.value)}
+            onClick={() => {
+              setFilterStatus(f.value);
+              resetPage();
+            }}
             className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
               filterStatus === f.value
                 ? 'bg-accent-500 text-white shadow-sm'
@@ -271,7 +316,10 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
           </button>
         ))}
         <button
-          onClick={() => setShowArchived(!showArchived)}
+          onClick={() => {
+            setShowArchived(!showArchived);
+            resetPage();
+          }}
           className={`text-xs px-2.5 py-1 rounded-full transition-colors ml-2 ${
             showArchived
               ? 'bg-amber-500 text-white'
@@ -283,14 +331,22 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
       </div>
 
       {/* Spec list */}
-      <div className="flex-1 overflow-y-auto" data-testid={`specs-${viewMode}`}>
+      <div className="min-h-0 flex-1 overflow-y-auto" data-testid={`specs-${viewMode}`}>
         {loading ? (
           <PulseLoader size="sm" label="Loading specs..." />
+        ) : loadError ? (
+          <div className="py-12 text-center text-sm text-red-600" role="alert">
+            Could not load specs.
+          </div>
         ) : specs.length === 0 ? (
           <div className="text-center py-12">
             <FileText size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
             <p className="text-gray-500 dark:text-gray-400 mb-2">
-              {filterStatus ? 'No specs with this status' : 'No specs yet'}
+              {totalFiltered > 0
+                ? `Page ${page} is out of range`
+                : debouncedSearch
+                  ? `No results for “${searchQuery}”`
+                  : filterStatus ? 'No specs with this status' : 'No specs yet'}
             </p>
             <p className="text-sm text-gray-400 dark:text-gray-500 mb-4">
               Specs define requirements before creating tasks
@@ -302,18 +358,9 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
               Create your first spec
             </button>
           </div>
-        ) : search.filtered.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-gray-500 dark:text-gray-400 mb-2">
-              No results for “{search.query}”
-            </p>
-            <button onClick={search.clear} className="btn btn-ghost text-sm">
-              Clear search
-            </button>
-          </div>
         ) : (
           <HierarchicalList<SpecSummary>
-            items={search.filtered}
+            items={specs}
             viewMode={viewMode}
             groupingEnabled={groupMode !== 'none'}
             ungroupedMode="flat"
@@ -411,6 +458,21 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
           />
         )}
       </div>
+      <AccessiblePaginator
+        page={page}
+        pageSize={pageSize}
+        totalFiltered={totalFiltered}
+        totalOverall={totalOverall}
+        itemCount={specs.length}
+        loading={loading}
+        error={loadError}
+        onRetry={loadSpecs}
+        onPaginationChange={setPagination}
+        ariaLabel="Specifications pagination"
+        emptyMessage="No specifications match the active filters."
+        className="mt-3 shrink-0"
+        testId="specs-pagination"
+      />
 
       {/* Modals */}
       {createOpen && (

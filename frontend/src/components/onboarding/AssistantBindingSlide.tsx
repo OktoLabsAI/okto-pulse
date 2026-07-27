@@ -21,7 +21,7 @@ interface AssistantBindingSlideProps {
   onCopyError?: () => void;
 }
 
-const FALLBACK_URL = 'http://127.0.0.1:8101/mcp?api_key=dash_…';
+const FALLBACK_URL = 'http://127.0.0.1:8101/mcp?api_key=dash_...';
 
 export function AssistantBindingSlide({
   mcpUrl,

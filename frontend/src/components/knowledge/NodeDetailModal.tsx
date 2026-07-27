@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react';
 import type { KGNode } from '@/types/knowledge-graph';
 import { NodeDetailPanel } from './NodeDetailPanel';
 import * as kgApi from '@/services/kg-api';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface Props {
   /** When provided, the modal renders this node immediately. */
@@ -24,12 +25,15 @@ interface Props {
   nodeId?: string;
   boardId: string;
   onClose: () => void;
+  onEscape?: () => void;
 }
 
-export function NodeDetailModal({ node, nodeId, boardId, onClose }: Props) {
+export function NodeDetailModal({ node, nodeId, boardId, onClose, onEscape }: Props) {
   const [hydrated, setHydrated] = useState<KGNode | null>(node ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEscapeToClose(onEscape ?? onClose);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,14 +61,6 @@ export function NodeDetailModal({ node, nodeId, boardId, onClose }: Props) {
   }, [node, nodeId, boardId]);
 
   // Close on ESC for parity with the sidebar panel.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"

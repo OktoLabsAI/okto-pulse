@@ -1,0 +1,1449 @@
+"""Embedded GraphTransaction over kg.schema.open_board_connection (spec #06).
+
+Adapter-internal (kg/providers/embedded/): wraps a single BoardConnection as a
+staged-write scope. The live Kùzu/Ladybug path auto-commits each statement, so
+commit() finalizes by closing the connection and rollback() is best-effort (it
+closes but cannot undo auto-committed statements — the documented embedded
+limitation, identical to the current direct open_board_connection usage).
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from dataclasses import dataclass
+import logging
+import re
+from typing import Any
+
+from okto_pulse.community.adapters.graph_error_mapping import (
+    map_graph_error,
+)
+from okto_pulse.community.adapters.ladybug_writer import (
+    DEFAULT_WRITER_TIMEOUT_S,
+    LadybugWriterLease,
+    acquire_ladybug_writer,
+    acquire_ladybug_writer_async,
+    activate_ladybug_writer_lease,
+)
+from okto_pulse.core.services.application_kg import (
+    revalidate_board_graph_write_lease,
+)
+from okto_pulse.core.kg.interfaces.graph_transaction import (
+    GraphStatementResult,
+    SpecLineageEdgeSnapshot,
+    SpecLineageReconciliationError,
+    SpecLineageReconciliationReceipt,
+    is_spec_lineage_rule_id,
+)
+from okto_pulse.core.kg.schema_contract import (
+    EDGE_METADATA_COLUMNS,
+    MULTI_REL_TYPES,
+    REL_TYPES,
+    STABLE_NODE_PROPERTIES,
+)
+from okto_pulse.core.kg.tier_power import validate_cypher_read_only
+
+logger = logging.getLogger(__name__)
+
+
+_MUTATING_MATCH_KEYWORDS = ("CREATE", "DELETE", "MERGE", "REMOVE", "SET")
+_TOMBSTONE_NODE_PROPERTIES = tuple(
+    property_name
+    for property_name in STABLE_NODE_PROPERTIES
+    if property_name not in {"id", "source_session_id"}
+) + ("embedding",)
+_TOMBSTONE_EDGE_PROPERTIES = (
+    "confidence",
+    "created_by_session_id",
+    "created_at",
+    *(name for name, _data_type in EDGE_METADATA_COLUMNS),
+)
+_TOMBSTONE_RELATIONSHIP_PAIRS = tuple(
+    dict.fromkeys(
+        (
+            *REL_TYPES,
+            *(
+                (edge_type, from_type, to_type)
+                for edge_type, endpoint_pairs in MULTI_REL_TYPES
+                for from_type, to_type in endpoint_pairs
+            ),
+        )
+    )
+)
+_TOMBSTONE_COMPENSATION_ATTEMPTS = 2
+_PROVEN_READ_ONLY_CALLS = frozenset(
+    {
+        "QUERY_VECTOR_INDEX",
+        "SHOW_CONNECTION",
+        "SHOW_INDEXES",
+        "SHOW_TABLES",
+        "TABLE_INFO",
+    }
+)
+_POTENTIALLY_MUTATING_TOKENS = frozenset(
+    {
+        "ALTER",
+        "ATTACH",
+        "BEGIN",
+        "CHECKPOINT",
+        "COMMIT",
+        "COMMENT",
+        "COPY",
+        "CREATE",
+        "DELETE",
+        "DETACH",
+        "DROP",
+        "EXPORT",
+        "IMPORT",
+        "INSTALL",
+        "LOAD",
+        "MERGE",
+        "REMOVE",
+        "RENAME",
+        "ROLLBACK",
+        "SET",
+        "TRUNCATE",
+        "USE",
+        "VACUUM",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _IncidentEdgeBeforeImage:
+    edge_type: str
+    from_type: str
+    to_type: str
+    from_id: str
+    to_id: str
+    attrs: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _NodeBeforeImage:
+    node_type: str
+    node_id: str
+    source_session_id: Any
+    attrs: dict[str, Any]
+    incident_edges: tuple[_IncidentEdgeBeforeImage, ...]
+
+
+class TombstoneReplacementCompensationError(RuntimeError):
+    """The destructive swap failed and its before-image could not be restored."""
+
+
+def _statement_kind(statement: str) -> str:
+    """Return a low-cardinality statement class without exposing its text."""
+
+    normalized = statement.lstrip().upper()
+    match = re.match(r"(?:EXPLAIN\s+|PROFILE\s+)?([A-Z_]+)", normalized)
+    if match is None:
+        return "UNKNOWN"
+    first = match.group(1)
+    if first == "CALL":
+        for operation in (
+            "CREATE_VECTOR_INDEX",
+            "DROP_VECTOR_INDEX",
+        ):
+            if operation in normalized:
+                return f"CALL_{operation}"
+        return "CALL"
+    if first != "MATCH":
+        return (
+            first
+            if first
+            in {
+                "ALTER",
+                "BEGIN",
+                "CHECKPOINT",
+                "COMMIT",
+                "CREATE",
+                "DROP",
+                "INSTALL",
+                "LOAD",
+                "MERGE",
+                "ROLLBACK",
+            }
+            else "OTHER"
+        )
+    for keyword in _MUTATING_MATCH_KEYWORDS:
+        if re.search(rf"\b{keyword}\b", normalized):
+            return f"MATCH_{keyword}"
+    return "MATCH_READ"
+
+
+def _statement_is_write(statement: str) -> bool:
+    """Fail closed unless the statement is proven to be read-only.
+
+    ``GraphTransactionScope.execute`` is a generic backend contract, so a
+    leading-token denylist is not a sufficient final writer fence: comments,
+    ``WITH``/``UNWIND`` pipelines and newly-supported backend statements can
+    all hide mutations behind a token the adapter does not know yet.
+    """
+
+    without_comments = re.sub(
+        r"//[^\n]*|/\*.*?\*/",
+        " ",
+        statement,
+        flags=re.DOTALL,
+    )
+    without_literals = re.sub(
+        r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"",
+        " ",
+        without_comments,
+    )
+    normalized = without_literals.strip()
+    if normalized.endswith(";"):
+        normalized = normalized[:-1].rstrip()
+    if not normalized or ";" in normalized:
+        return True
+
+    tokens = re.findall(r"[A-Z_]+", normalized.upper())
+    if any(token in _POTENTIALLY_MUTATING_TOKENS for token in tokens):
+        return True
+
+    # CALL is outside Core's general read-only grammar because procedures can
+    # mutate. Keep a deliberately small allowlist for the introspection/vector
+    # readers used by the embedded adapters, and fence every other procedure.
+    if "CALL" in tokens:
+        call_match = re.match(r"(?is)^\s*CALL\s+([A-Z_]+)", normalized)
+        return not (
+            call_match is not None
+            and tokens.count("CALL") == 1
+            and call_match.group(1).upper() in _PROVEN_READ_ONLY_CALLS
+        )
+
+    try:
+        validate_cypher_read_only(statement)
+    except Exception:
+        return True
+    return False
+
+
+def _materialize(result: Any) -> GraphStatementResult:
+    if result is None:
+        return GraphStatementResult()
+    columns: tuple[str, ...] = ()
+    rows: list[list[Any]] = []
+    try:
+        get_columns = getattr(result, "get_column_names", None)
+        if callable(get_columns):
+            columns = tuple(str(item) for item in get_columns())
+        has_next = getattr(result, "has_next", None)
+        get_next = getattr(result, "get_next", None)
+        if callable(has_next) and callable(get_next):
+            while has_next():
+                rows.append(list(get_next()))
+        elif isinstance(result, (list, tuple)):
+            rows.extend(
+                list(row) if isinstance(row, (list, tuple)) else [row] for row in result
+            )
+    finally:
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
+    return GraphStatementResult.from_rows(rows, columns=columns)
+
+
+class _KuzuTransactionScope:
+    def __init__(
+        self,
+        board_id: str,
+        *,
+        writer_lease: LadybugWriterLease | None = None,
+    ) -> None:
+        self._board_id = board_id
+        if writer_lease is None:
+            writer_lease = acquire_ladybug_writer(
+                scope=board_id,
+                phase="graph_transaction",
+            )
+        self._writer_lease = writer_lease
+        self._finished = False
+        self._close_failure: BaseException | None = None
+        try:
+            from okto_pulse.community.adapters.kg_runtime import open_board_connection
+
+            with activate_ladybug_writer_lease(writer_lease):
+                self._connection = open_board_connection(board_id)
+            self._db = self._connection.db
+            self._conn = self._connection.conn
+        except BaseException as exc:
+            writer_lease.release()
+            logger.warning(
+                "kg.graph_transaction.open_failed board=%s phase=open "
+                "statement_kind=none error_type=%s",
+                board_id,
+                type(exc).__name__,
+                extra={
+                    "event": "kg.graph_transaction.open_failed",
+                    "board_id": board_id,
+                    "phase": "open",
+                    "statement_kind": "none",
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+
+    def execute(
+        self,
+        cypher: str,
+        params: dict[str, Any] | None = None,
+    ) -> GraphStatementResult:
+        if self._finished:
+            raise RuntimeError("graph_transaction_scope_finished")
+        if _statement_is_write(cypher):
+            revalidate_board_graph_write_lease(
+                self._board_id,
+                failure_phase="graph_statement_precommit",
+            )
+        try:
+            if params:
+                return _materialize(self._conn.execute(cypher, params))
+            return _materialize(self._conn.execute(cypher))
+        except Exception as exc:
+            mapped = map_graph_error(exc, operation="graph_statement")
+            kind = _statement_kind(cypher)
+            mapped.details.setdefault("phase", "execute")
+            mapped.details.setdefault("statement_kind", kind)
+            mapped.details.setdefault("error_code", mapped.code)
+            mapped.details.setdefault("retryable", mapped.retryable)
+            logger.warning(
+                "kg.graph_transaction.statement_failed board=%s "
+                "phase=execute statement_kind=%s error_code=%s",
+                self._board_id,
+                kind,
+                mapped.code,
+                extra={
+                    "event": "kg.graph_transaction.statement_failed",
+                    "board_id": self._board_id,
+                    "phase": "execute",
+                    "statement_kind": kind,
+                    "error_code": mapped.code,
+                },
+            )
+            raise mapped from exc
+
+    @staticmethod
+    def _property_binding(name: str, value: Any) -> str:
+        if (
+            name in {"created_at", "last_attested_at", "superseded_at"}
+            and isinstance(value, str)
+            and value
+        ):
+            return f"{name}: timestamp(${name})"
+        return f"{name}: ${name}"
+
+    def create_node(
+        self,
+        node_type: str,
+        node_id: str,
+        attrs: dict[str, Any],
+        *,
+        source_session_id: str | None,
+    ) -> None:
+        params = dict(attrs)
+        params["id"] = node_id
+        if source_session_id is not None:
+            params["source_session_id"] = source_session_id
+        columns = ", ".join(
+            self._property_binding(key, value) for key, value in params.items()
+        )
+        self.execute(f"CREATE (n:{node_type} {{{columns}}})", params)
+
+    def update_node(
+        self,
+        node_type: str,
+        node_id: str,
+        attrs: dict[str, Any],
+    ) -> None:
+        values = {key: value for key, value in attrs.items() if key != "id"}
+        if not values:
+            return
+        assignments = ", ".join(f"n.{key} = ${key}" for key in values)
+        self.execute(
+            f"MATCH (n:{node_type} {{id: $id}}) SET {assignments}",
+            {"id": node_id, **values},
+        )
+
+    @staticmethod
+    def _canonical_snapshot_value(value: Any) -> Any:
+        to_list = getattr(value, "tolist", None)
+        if callable(to_list):
+            value = to_list()
+        if isinstance(value, dict):
+            return tuple(
+                sorted(
+                    (
+                        str(key),
+                        _KuzuTransactionScope._canonical_snapshot_value(item),
+                    )
+                    for key, item in value.items()
+                )
+            )
+        if isinstance(value, (list, tuple)):
+            return tuple(
+                _KuzuTransactionScope._canonical_snapshot_value(item)
+                for item in value
+            )
+        try:
+            hash(value)
+        except TypeError:
+            return repr(value)
+        return value
+
+    @classmethod
+    def _node_state_signature(cls, snapshot: _NodeBeforeImage) -> tuple[Any, ...]:
+        return (
+            snapshot.node_type,
+            snapshot.node_id,
+            cls._canonical_snapshot_value(snapshot.source_session_id),
+            *(
+                cls._canonical_snapshot_value(snapshot.attrs[property_name])
+                for property_name in _TOMBSTONE_NODE_PROPERTIES
+            ),
+        )
+
+    @classmethod
+    def _edge_state_signature(
+        cls,
+        snapshot: _IncidentEdgeBeforeImage,
+    ) -> tuple[Any, ...]:
+        return (
+            snapshot.edge_type,
+            snapshot.from_type,
+            snapshot.to_type,
+            snapshot.from_id,
+            snapshot.to_id,
+            *(
+                cls._canonical_snapshot_value(snapshot.attrs[property_name])
+                for property_name in _TOMBSTONE_EDGE_PROPERTIES
+            ),
+        )
+
+    def _snapshot_incident_edges(
+        self,
+        node_type: str,
+        node_id: str,
+    ) -> tuple[_IncidentEdgeBeforeImage, ...]:
+        snapshots: list[_IncidentEdgeBeforeImage] = []
+        edge_return = ", ".join(
+            f"r.{property_name}"
+            for property_name in _TOMBSTONE_EDGE_PROPERTIES
+        )
+        for edge_type, from_type, to_type in _TOMBSTONE_RELATIONSHIP_PAIRS:
+            if from_type == node_type:
+                outgoing = self.execute(
+                    f"MATCH (n:{node_type} {{id: $node_id}})"
+                    f"-[r:{edge_type}]->(other:{to_type}) "
+                    f"RETURN other.id, {edge_return}",
+                    {"node_id": node_id},
+                )
+                snapshots.extend(
+                    _IncidentEdgeBeforeImage(
+                        edge_type=edge_type,
+                        from_type=from_type,
+                        to_type=to_type,
+                        from_id=node_id,
+                        to_id=str(row[0]),
+                        attrs={
+                            property_name: row[index + 1]
+                            for index, property_name in enumerate(
+                                _TOMBSTONE_EDGE_PROPERTIES
+                            )
+                        },
+                    )
+                    for row in outgoing.rows
+                )
+
+            if to_type != node_type:
+                continue
+            exclude_self_loop = (
+                "WHERE other.id <> $node_id " if from_type == node_type else ""
+            )
+            incoming = self.execute(
+                f"MATCH (other:{from_type})-[r:{edge_type}]->"
+                f"(n:{node_type} {{id: $node_id}}) "
+                f"{exclude_self_loop}RETURN other.id, {edge_return}",
+                {"node_id": node_id},
+            )
+            snapshots.extend(
+                _IncidentEdgeBeforeImage(
+                    edge_type=edge_type,
+                    from_type=from_type,
+                    to_type=to_type,
+                    from_id=str(row[0]),
+                    to_id=node_id,
+                    attrs={
+                        property_name: row[index + 1]
+                        for index, property_name in enumerate(
+                            _TOMBSTONE_EDGE_PROPERTIES
+                        )
+                    },
+                )
+                for row in incoming.rows
+            )
+        return tuple(snapshots)
+
+    def _snapshot_node_before_image(
+        self,
+        node_type: str,
+        node_id: str,
+        *,
+        include_incident_edges: bool,
+    ) -> _NodeBeforeImage | None:
+        node_return = ", ".join(
+            (
+                "n.source_session_id",
+                *(
+                    f"n.{property_name}"
+                    for property_name in _TOMBSTONE_NODE_PROPERTIES
+                ),
+            )
+        )
+        current = self.execute(
+            f"MATCH (n:{node_type} {{id: $node_id}}) "
+            f"RETURN {node_return} LIMIT 1",
+            {"node_id": node_id},
+        )
+        if not current.rows:
+            return None
+        row = current.rows[0]
+        return _NodeBeforeImage(
+            node_type=node_type,
+            node_id=node_id,
+            source_session_id=row[0],
+            attrs={
+                property_name: row[index + 1]
+                for index, property_name in enumerate(
+                    _TOMBSTONE_NODE_PROPERTIES
+                )
+            },
+            incident_edges=(
+                self._snapshot_incident_edges(node_type, node_id)
+                if include_incident_edges
+                else ()
+            ),
+        )
+
+    def _restore_incident_edges(
+        self,
+        before_image: _NodeBeforeImage,
+    ) -> None:
+        desired = Counter(
+            self._edge_state_signature(edge)
+            for edge in before_image.incident_edges
+        )
+        last_error: BaseException | None = None
+        for _attempt in range(_TOMBSTONE_COMPENSATION_ATTEMPTS):
+            current = Counter(
+                self._edge_state_signature(edge)
+                for edge in self._snapshot_incident_edges(
+                    before_image.node_type,
+                    before_image.node_id,
+                )
+            )
+            if current == desired:
+                return
+
+            available = current.copy()
+            missing: list[_IncidentEdgeBeforeImage] = []
+            for edge in before_image.incident_edges:
+                signature = self._edge_state_signature(edge)
+                if available[signature] > 0:
+                    available[signature] -= 1
+                else:
+                    missing.append(edge)
+            for edge in missing:
+                try:
+                    self.create_edge(
+                        edge.edge_type,
+                        edge.from_type,
+                        edge.to_type,
+                        edge.from_id,
+                        edge.to_id,
+                        {
+                            key: value
+                            for key, value in edge.attrs.items()
+                            if value is not None
+                        },
+                    )
+                except BaseException as exc:
+                    last_error = exc
+
+        restored = Counter(
+            self._edge_state_signature(edge)
+            for edge in self._snapshot_incident_edges(
+                before_image.node_type,
+                before_image.node_id,
+            )
+        )
+        if restored != desired:
+            error = RuntimeError(
+                "source_deleted_tombstone_edge_restore_incomplete"
+            )
+            if last_error is not None:
+                raise error from last_error
+            raise error
+
+    def _restore_node_before_image(
+        self,
+        before_image: _NodeBeforeImage,
+    ) -> None:
+        current = self._snapshot_node_before_image(
+            before_image.node_type,
+            before_image.node_id,
+            include_incident_edges=False,
+        )
+        original_is_present = (
+            current is not None
+            and self._node_state_signature(current)
+            == self._node_state_signature(before_image)
+        )
+        if not original_is_present:
+            if current is not None:
+                try:
+                    self.execute(
+                        f"MATCH (n:{before_image.node_type} "
+                        "{id: $node_id}) DETACH DELETE n",
+                        {"node_id": before_image.node_id},
+                    )
+                except BaseException:
+                    current = self._snapshot_node_before_image(
+                        before_image.node_type,
+                        before_image.node_id,
+                        include_incident_edges=False,
+                    )
+                    if current is not None:
+                        raise
+
+            restore_attrs = {
+                key: value
+                for key, value in before_image.attrs.items()
+                if value is not None
+            }
+            try:
+                self.create_node(
+                    before_image.node_type,
+                    before_image.node_id,
+                    restore_attrs,
+                    source_session_id=before_image.source_session_id,
+                )
+            except BaseException:
+                current = self._snapshot_node_before_image(
+                    before_image.node_type,
+                    before_image.node_id,
+                    include_incident_edges=False,
+                )
+                if (
+                    current is None
+                    or self._node_state_signature(current)
+                    != self._node_state_signature(before_image)
+                ):
+                    raise
+
+        restored_node = self._snapshot_node_before_image(
+            before_image.node_type,
+            before_image.node_id,
+            include_incident_edges=False,
+        )
+        if (
+            restored_node is None
+            or self._node_state_signature(restored_node)
+            != self._node_state_signature(before_image)
+        ):
+            raise RuntimeError("source_deleted_tombstone_node_restore_incomplete")
+        self._restore_incident_edges(before_image)
+
+    def replace_with_source_deleted_tombstone(
+        self,
+        node_type: str,
+        node_id: str,
+        *,
+        graph_layer: str,
+        maturity_status: str,
+        revocation_reason: str,
+        relevance_score: float,
+    ) -> bool:
+        """Replace an indexed semantic node with a payload-free tombstone.
+
+        Ladybug/Kuzu does not allow an indexed vector property to be SET to
+        null, and the node primary key prevents a create-first replacement.
+        The supported operation is therefore an explicit native transaction:
+        capture the complete node and every incident edge, atomically swap and
+        verify, then commit only while the board lease is still valid.  A lost
+        lease rolls the uncommitted delete back without bypassing fencing.  The
+        complete before-image remains a fallback for a post-commit driver
+        failure while the same lease is held.
+        """
+
+        before_image = self._snapshot_node_before_image(
+            node_type,
+            node_id,
+            include_incident_edges=True,
+        )
+        if before_image is None:
+            return False
+        source_ref = str(before_image.attrs["source_artifact_ref"] or "")
+        source_session_id = str(
+            before_image.source_session_id or "source-deletion-tombstone"
+        )
+        attrs: dict[str, Any] = {
+            "title": "",
+            "content": "",
+            "context": "",
+            "justification": "",
+            "source_artifact_ref": source_ref,
+            "graph_layer": graph_layer,
+            "maturity_status": maturity_status,
+            "created_by_agent": str(
+                before_image.attrs["created_by_agent"]
+                or "system:source-deletion"
+            ),
+            "source_confidence": 0.0,
+            "relevance_score": relevance_score,
+            "query_hits": 0,
+            "priority_boost": 0.0,
+            "revocation_reason": revocation_reason,
+            "human_curated": False,
+            "generation": int(before_image.attrs["generation"] or 0),
+            "source_span_quote": "",
+        }
+        if before_image.attrs["created_at"] is not None:
+            attrs["created_at"] = before_image.attrs["created_at"]
+
+        expected_attrs = {
+            property_name: None
+            for property_name in _TOMBSTONE_NODE_PROPERTIES
+        }
+        expected_attrs.update(attrs)
+        expected_tombstone = _NodeBeforeImage(
+            node_type=node_type,
+            node_id=node_id,
+            source_session_id=source_session_id,
+            attrs=expected_attrs,
+            incident_edges=(),
+        )
+        if (
+            self._node_state_signature(before_image)
+            == self._node_state_signature(expected_tombstone)
+            and not before_image.incident_edges
+        ):
+            return True
+
+        transaction_open = False
+        try:
+            # The indexed primary-key replacement must be one native atomic
+            # unit.  In particular, a Core lease can expire after DELETE and
+            # before CREATE; the next statement must fail its fence check, but
+            # that must not expose a committed missing-node interval.
+            # Set the flag first: the driver can accept BEGIN and then fail
+            # while materializing/closing its result.
+            transaction_open = True
+            self.execute("BEGIN TRANSACTION")
+            self.execute(
+                f"MATCH (n:{node_type} {{id: $node_id}}) DETACH DELETE n",
+                {"node_id": node_id},
+            )
+            self.create_node(
+                node_type,
+                node_id,
+                attrs,
+                source_session_id=source_session_id,
+            )
+            created = self._snapshot_node_before_image(
+                node_type,
+                node_id,
+                include_incident_edges=False,
+            )
+            if (
+                created is None
+                or self._node_state_signature(created)
+                != self._node_state_signature(expected_tombstone)
+                or self._snapshot_incident_edges(node_type, node_id)
+            ):
+                raise RuntimeError(
+                    "source_deleted_tombstone_replacement_unconfirmed"
+                )
+            # execute() revalidates the active Core lease immediately before
+            # the native commit.  A lost lease therefore reaches the exception
+            # path while the destructive swap is still rollback-safe.
+            self.execute("COMMIT")
+            transaction_open = False
+        except BaseException as replacement_error:
+            rollback_error: BaseException | None = None
+            if transaction_open:
+                rollback_confirmed = False
+                # ROLLBACK is cleanup, not a stale-writer mutation.  It only
+                # discards this connection's uncommitted changes, so it must
+                # remain available after the lease check that rejected
+                # CREATE/COMMIT. Retry once because a driver/result wrapper can
+                # raise either immediately before or immediately after native
+                # execution.
+                for _attempt in range(2):
+                    try:
+                        _materialize(self._conn.execute("ROLLBACK"))
+                    except BaseException as exc:
+                        rollback_error = exc
+                        if "NO ACTIVE TRANSACTION" in str(exc).upper():
+                            rollback_confirmed = True
+                            break
+                    else:
+                        rollback_confirmed = True
+                        break
+                if not rollback_confirmed:
+                    # Snapshot equality cannot prove that a native transaction
+                    # is closed. Poison the scope so the reconciler cannot
+                    # continue issuing writes that would later disappear on
+                    # connection close.
+                    self._close(
+                        phase="tombstone_transaction_cleanup_unconfirmed"
+                    )
+                    raise TombstoneReplacementCompensationError(
+                        "source_deleted_tombstone_transaction_cleanup_"
+                        "unconfirmed"
+                    ) from rollback_error
+                transaction_open = False
+                restored = self._snapshot_node_before_image(
+                    node_type,
+                    node_id,
+                    include_incident_edges=True,
+                )
+                if (
+                    restored is not None
+                    and self._node_state_signature(restored)
+                    == self._node_state_signature(before_image)
+                    and Counter(
+                        self._edge_state_signature(edge)
+                        for edge in restored.incident_edges
+                    )
+                    == Counter(
+                        self._edge_state_signature(edge)
+                        for edge in before_image.incident_edges
+                    )
+                ):
+                    logger.warning(
+                        "kg.source_deleted_tombstone."
+                        "replacement_failed_rolled_back "
+                        "board=%s node_type=%s error_type=%s",
+                        self._board_id,
+                        node_type,
+                        type(replacement_error).__name__,
+                        extra={
+                            "event": (
+                                "kg.source_deleted_tombstone."
+                                "replacement_failed_rolled_back"
+                            ),
+                            "board_id": self._board_id,
+                            "node_type": node_type,
+                            "error_type": type(
+                                replacement_error
+                            ).__name__,
+                        },
+                    )
+                    raise
+                if rollback_error is None:
+                    rollback_error = RuntimeError(
+                        "source_deleted_tombstone_rollback_unconfirmed"
+                    )
+            try:
+                self._restore_node_before_image(before_image)
+            except BaseException as restore_error:
+                logger.error(
+                    "kg.source_deleted_tombstone.compensation_failed "
+                    "board=%s node_type=%s replacement_error_type=%s "
+                    "restore_error_type=%s",
+                    self._board_id,
+                    node_type,
+                    type(replacement_error).__name__,
+                    type(restore_error).__name__,
+                    extra={
+                        "event": (
+                            "kg.source_deleted_tombstone.compensation_failed"
+                        ),
+                        "board_id": self._board_id,
+                        "node_type": node_type,
+                        "replacement_error_type": type(
+                            replacement_error
+                        ).__name__,
+                        "restore_error_type": type(restore_error).__name__,
+                        "rollback_error_type": (
+                            type(rollback_error).__name__
+                            if rollback_error is not None
+                            else None
+                        ),
+                    },
+                )
+                raise TombstoneReplacementCompensationError(
+                    "source_deleted_tombstone_compensation_failed"
+                ) from restore_error
+            logger.warning(
+                "kg.source_deleted_tombstone.replacement_failed_restored "
+                "board=%s node_type=%s error_type=%s",
+                self._board_id,
+                node_type,
+                type(replacement_error).__name__,
+                extra={
+                    "event": (
+                        "kg.source_deleted_tombstone."
+                        "replacement_failed_restored"
+                    ),
+                    "board_id": self._board_id,
+                    "node_type": node_type,
+                    "error_type": type(replacement_error).__name__,
+                },
+            )
+            raise
+        return True
+
+    def mark_superseded(
+        self,
+        node_type: str,
+        node_id: str,
+        *,
+        superseded_by: str,
+        superseded_at: str,
+        revocation_reason: str,
+    ) -> None:
+        self.execute(
+            f"MATCH (n:{node_type} {{id: $node_id}}) "
+            "SET n.superseded_by = $superseded_by, "
+            "n.superseded_at = timestamp($superseded_at), "
+            "n.revocation_reason = $revocation_reason",
+            {
+                "node_id": node_id,
+                "superseded_by": superseded_by,
+                "superseded_at": superseded_at,
+                "revocation_reason": revocation_reason,
+            },
+        )
+
+    def edge_exists(
+        self,
+        edge_type: str,
+        from_type: str,
+        to_type: str,
+        from_id: str,
+        to_id: str,
+    ) -> bool:
+        result = self.execute(
+            f"MATCH (a:{from_type} {{id: $from_id}})-[r:{edge_type}]->"
+            f"(b:{to_type} {{id: $to_id}}) RETURN r LIMIT 1",
+            {"from_id": from_id, "to_id": to_id},
+        )
+        return bool(result.rows)
+
+    def create_edge(
+        self,
+        edge_type: str,
+        from_type: str,
+        to_type: str,
+        from_id: str,
+        to_id: str,
+        attrs: dict[str, Any],
+    ) -> bool:
+        columns = ", ".join(
+            self._property_binding(key, value) for key, value in attrs.items()
+        )
+        result = self.execute(
+            f"MATCH (a:{from_type} {{id: $from_id}}), "
+            f"(b:{to_type} {{id: $to_id}}) "
+            f"CREATE (a)-[r:{edge_type} {{{columns}}}]->(b) RETURN r",
+            {"from_id": from_id, "to_id": to_id, **attrs},
+        )
+        return bool(result.rows)
+
+    def _spec_lineage_edges(
+        self,
+        source_id: str,
+    ) -> tuple[SpecLineageEdgeSnapshot, ...]:
+        result = self.execute(
+            "MATCH (source:Entity {id: $source_id})"
+            "-[r:belongs_to]->(target:Entity) "
+            "RETURN target.id, r.confidence, r.created_by_session_id, "
+            "r.created_at, r.layer, r.rule_id, r.created_by, "
+            "r.fallback_reason",
+            {"source_id": source_id},
+        )
+        snapshots: list[SpecLineageEdgeSnapshot] = []
+        for row in result.rows:
+            rule_id = str(row[5] or "")
+            snapshots.append(
+                SpecLineageEdgeSnapshot(
+                    source_id=source_id,
+                    target_id=str(row[0]),
+                    rule_id=rule_id,
+                    attrs={
+                        "confidence": row[1],
+                        "created_by_session_id": row[2],
+                        "created_at": row[3],
+                        "layer": row[4],
+                        "rule_id": rule_id,
+                        "created_by": row[6],
+                        "fallback_reason": row[7],
+                    },
+                )
+            )
+        return tuple(snapshots)
+
+    def _delete_spec_lineage_edge(
+        self,
+        snapshot: SpecLineageEdgeSnapshot,
+    ) -> None:
+        self.execute(
+            "MATCH (source:Entity {id: $source_id})"
+            "-[r:belongs_to]->(target:Entity {id: $target_id}) "
+            "WHERE r.rule_id = $rule_id DELETE r",
+            {
+                "source_id": snapshot.source_id,
+                "target_id": snapshot.target_id,
+                "rule_id": snapshot.rule_id,
+            },
+        )
+
+    def reconcile_spec_lineage_parent(
+        self,
+        source_id: str,
+        target_id: str,
+        attrs: dict[str, Any],
+    ) -> SpecLineageReconciliationReceipt:
+        """Atomically-safe saga for the exclusive deterministic Spec parent.
+
+        The embedded backend auto-commits each statement.  This method
+        therefore confirms/creates the replacement first and only then removes
+        old edges in the narrowly identified rule family.  A mid-cleanup
+        failure can temporarily leave two parents, but never zero; retrying
+        converges by observing the already-created replacement.
+        """
+
+        rule_id = str(attrs.get("rule_id") or "")
+        if not is_spec_lineage_rule_id(rule_id):
+            raise SpecLineageReconciliationError(
+                "spec_lineage_rule_out_of_scope",
+                f"Rule {rule_id!r} is outside the exclusive Spec-parent family.",
+            )
+
+        endpoints = self.execute(
+            "MATCH (source:Entity {id: $source_id}), "
+            "(target:Entity {id: $target_id}) "
+            "RETURN source.id, target.id LIMIT 1",
+            {"source_id": source_id, "target_id": target_id},
+        )
+        if not endpoints.rows:
+            raise SpecLineageReconciliationError(
+                "spec_lineage_endpoint_not_found",
+                "Both the Spec source and its new parent must exist as Entity "
+                "nodes before lineage reconciliation.",
+            )
+
+        existing = self._spec_lineage_edges(source_id)
+        exact_exists = any(
+            edge.target_id == target_id and edge.rule_id == rule_id
+            for edge in existing
+        )
+        old_edges = tuple(
+            edge
+            for edge in existing
+            if is_spec_lineage_rule_id(edge.rule_id)
+            and not (edge.target_id == target_id and edge.rule_id == rule_id)
+        )
+        ambiguous_legacy_edges = sum(
+            1
+            for edge in existing
+            if str(edge.attrs.get("layer") or "") == "legacy"
+            or edge.rule_id in {"", "legacy_pre_v2"}
+        )
+
+        new_edge_created = False
+        if not exact_exists:
+            new_edge_created = self.create_edge(
+                "belongs_to",
+                "Entity",
+                "Entity",
+                source_id,
+                target_id,
+                dict(attrs),
+            )
+            replacement_exists = any(
+                edge.target_id == target_id and edge.rule_id == rule_id
+                for edge in self._spec_lineage_edges(source_id)
+            )
+            if not new_edge_created or not replacement_exists:
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_new_parent_create_failed",
+                    "The new Spec-parent edge could not be confirmed; old "
+                    "parents were preserved.",
+                )
+
+        receipt = SpecLineageReconciliationReceipt(
+            source_id=source_id,
+            target_id=target_id,
+            target_rule_id=rule_id,
+            target_attrs=dict(attrs),
+            new_edge_created=new_edge_created,
+            removed_edges=old_edges,
+            ambiguous_legacy_edges=ambiguous_legacy_edges,
+        )
+        try:
+            for snapshot in old_edges:
+                self._delete_spec_lineage_edge(snapshot)
+
+            remaining_old = tuple(
+                edge
+                for edge in self._spec_lineage_edges(source_id)
+                if is_spec_lineage_rule_id(edge.rule_id)
+                and not (
+                    edge.target_id == target_id and edge.rule_id == rule_id
+                )
+            )
+            if remaining_old:
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_old_parent_cleanup_incomplete",
+                    "The replacement parent exists, but one or more old Spec "
+                    "parents remain; retry reconciliation to converge.",
+                    receipt=receipt,
+                )
+        except Exception as exc:
+            try:
+                self.compensate_spec_lineage_parent(receipt)
+            except Exception as restore_exc:
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_partial_cleanup_restore_failed",
+                    "Old-parent cleanup and restore-first compensation both "
+                    "failed; the replacement edge was preserved.",
+                    receipt=receipt,
+                ) from restore_exc
+            raise SpecLineageReconciliationError(
+                "spec_lineage_old_parent_cleanup_failed",
+                "Old-parent cleanup failed and was restored before the "
+                "replacement edge was removed.",
+                receipt=receipt,
+            ) from exc
+        return receipt
+
+    def clear_spec_lineage_parent(
+        self,
+        source_id: str,
+    ) -> SpecLineageReconciliationReceipt:
+        """Clear only explicit deterministic Spec-parent edges."""
+
+        source = self.execute(
+            "MATCH (source:Entity {id: $source_id}) "
+            "RETURN source.id LIMIT 1",
+            {"source_id": source_id},
+        )
+        if not source.rows:
+            raise SpecLineageReconciliationError(
+                "spec_lineage_source_not_found",
+                "The Spec source must exist as an Entity node before lineage "
+                "can be cleared.",
+            )
+
+        existing = self._spec_lineage_edges(source_id)
+        old_edges = tuple(
+            edge for edge in existing if is_spec_lineage_rule_id(edge.rule_id)
+        )
+        ambiguous_legacy_edges = sum(
+            1
+            for edge in existing
+            if str(edge.attrs.get("layer") or "") == "legacy"
+            or edge.rule_id in {"", "legacy_pre_v2"}
+        )
+        receipt = SpecLineageReconciliationReceipt(
+            source_id=source_id,
+            target_id=None,
+            target_rule_id=None,
+            target_attrs={},
+            new_edge_created=False,
+            removed_edges=old_edges,
+            ambiguous_legacy_edges=ambiguous_legacy_edges,
+        )
+        try:
+            for snapshot in old_edges:
+                self._delete_spec_lineage_edge(snapshot)
+            if any(
+                is_spec_lineage_rule_id(edge.rule_id)
+                for edge in self._spec_lineage_edges(source_id)
+            ):
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_clear_incomplete",
+                    "One or more deterministic Spec parents remain; retry "
+                    "the explicit clear to converge.",
+                    receipt=receipt,
+                )
+        except Exception as exc:
+            try:
+                self.compensate_spec_lineage_parent(receipt)
+            except Exception as restore_exc:
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_clear_restore_failed",
+                    "Spec-parent clear failed and its before-image could not "
+                    "be fully restored.",
+                    receipt=receipt,
+                ) from restore_exc
+            raise SpecLineageReconciliationError(
+                "spec_lineage_clear_failed",
+                "Spec-parent clear failed and its before-image was restored.",
+                receipt=receipt,
+            ) from exc
+        return receipt
+
+    def compensate_spec_lineage_parent(
+        self,
+        receipt: SpecLineageReconciliationReceipt,
+    ) -> None:
+        """Restore the before-image before removing this attempt's new edge."""
+
+        for snapshot in receipt.removed_edges:
+            restored = any(
+                edge.target_id == snapshot.target_id
+                and edge.rule_id == snapshot.rule_id
+                for edge in self._spec_lineage_edges(snapshot.source_id)
+            )
+            if restored:
+                continue
+            created = self.create_edge(
+                "belongs_to",
+                "Entity",
+                "Entity",
+                snapshot.source_id,
+                snapshot.target_id,
+                dict(snapshot.attrs),
+            )
+            restored = any(
+                edge.target_id == snapshot.target_id
+                and edge.rule_id == snapshot.rule_id
+                for edge in self._spec_lineage_edges(snapshot.source_id)
+            )
+            if not created or not restored:
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_old_parent_restore_failed",
+                    "An old Spec parent could not be restored; the replacement "
+                    "edge was preserved.",
+                )
+
+        if (
+            receipt.new_edge_created
+            and receipt.target_id is not None
+            and receipt.target_rule_id is not None
+        ):
+            self._delete_spec_lineage_edge(
+                SpecLineageEdgeSnapshot(
+                    source_id=receipt.source_id,
+                    target_id=receipt.target_id,
+                    rule_id=receipt.target_rule_id,
+                    attrs=dict(receipt.target_attrs),
+                )
+            )
+
+    def find_node_types(self, node_id: str) -> tuple[str, ...]:
+        from okto_pulse.community.adapters.kg_runtime import NODE_TYPES
+
+        found: list[str] = []
+        for node_type in NODE_TYPES:
+            result = self.execute(
+                f"MATCH (n:{node_type} {{id: $node_id}}) RETURN n.id LIMIT 1",
+                {"node_id": node_id},
+            )
+            if result.rows:
+                found.append(node_type)
+        return tuple(found)
+
+    def delete_edges_by_session(self, session_id: str) -> None:
+        from okto_pulse.community.adapters.kg_runtime import (
+            MULTI_REL_TYPES,
+            REL_TYPES,
+        )
+
+        pairs = list(REL_TYPES)
+        for rel_name, endpoint_pairs in MULTI_REL_TYPES:
+            pairs.extend(
+                (rel_name, from_type, to_type) for from_type, to_type in endpoint_pairs
+            )
+        for rel_name, from_type, to_type in pairs:
+            self.execute(
+                f"MATCH (a:{from_type})-[r:{rel_name}]->(b:{to_type}) "
+                "WHERE r.created_by_session_id = $session_id DELETE r",
+                {"session_id": session_id},
+            )
+
+    def delete_edges_by_session_preserving_spec_lineage(
+        self,
+        session_id: str,
+        preserved_edges: tuple[SpecLineageEdgeSnapshot, ...],
+    ) -> None:
+        """Compensate a session without erasing restore-first lineage edges."""
+
+        from okto_pulse.community.adapters.kg_runtime import (
+            MULTI_REL_TYPES,
+            REL_TYPES,
+        )
+
+        pairs = list(REL_TYPES)
+        for rel_name, endpoint_pairs in MULTI_REL_TYPES:
+            pairs.extend(
+                (rel_name, from_type, to_type)
+                for from_type, to_type in endpoint_pairs
+            )
+        for rel_name, from_type, to_type in pairs:
+            params: dict[str, Any] = {"session_id": session_id}
+            preservation = ""
+            if (
+                rel_name == "belongs_to"
+                and from_type == "Entity"
+                and to_type == "Entity"
+            ):
+                predicates: list[str] = []
+                for index, snapshot in enumerate(preserved_edges):
+                    params[f"preserved_source_{index}"] = snapshot.source_id
+                    params[f"preserved_target_{index}"] = snapshot.target_id
+                    params[f"preserved_rule_{index}"] = snapshot.rule_id
+                    predicates.append(
+                        "(a.id = $preserved_source_"
+                        f"{index} AND b.id = $preserved_target_{index} "
+                        f"AND r.rule_id = $preserved_rule_{index})"
+                    )
+                if predicates:
+                    preservation = " AND NOT (" + " OR ".join(predicates) + ")"
+            self.execute(
+                f"MATCH (a:{from_type})-[r:{rel_name}]->(b:{to_type}) "
+                "WHERE r.created_by_session_id = $session_id"
+                f"{preservation} DELETE r",
+                params,
+            )
+
+    def delete_nodes_by_session(
+        self,
+        session_id: str,
+        node_types: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        failed: list[str] = []
+        for node_type in node_types:
+            try:
+                self.execute(
+                    f"MATCH (n:{node_type}) "
+                    "WHERE n.source_session_id = $session_id DETACH DELETE n",
+                    {"session_id": session_id},
+                )
+            except Exception:
+                failed.append(node_type)
+        return tuple(failed)
+
+    def increment_attestation(
+        self,
+        node_type: str,
+        node_id: str,
+        *,
+        attested_at: str,
+    ) -> None:
+        self.execute(
+            f"MATCH (n:{node_type} {{id: $node_id}}) "
+            "SET n.attestation_count = coalesce(n.attestation_count, 1) + 1, "
+            "n.last_attested_at = timestamp($attested_at)",
+            {"node_id": node_id, "attested_at": attested_at},
+        )
+
+    async def commit(self) -> None:
+        self._close(phase="commit")
+
+    async def rollback(self) -> None:
+        if not self._finished:
+            logger.warning(
+                "kg.graph_transaction.rollback_best_effort board=%s — embedded "
+                "Kùzu auto-commits per statement; staged writes are not undone.",
+                self._board_id,
+            )
+        self._close(phase="rollback")
+
+    def _close(self, *, phase: str) -> None:
+        if self._finished:
+            if self._close_failure is not None:
+                raise RuntimeError(
+                    "graph_transaction_scope_close_failed"
+                ) from self._close_failure
+            return
+        self._finished = True
+        release_writer = True
+        try:
+            strict_close = getattr(self._connection, "close_strict", None)
+            if callable(strict_close):
+                strict_close()
+            else:
+                self._connection.close()
+        except BaseException as exc:
+            self._close_failure = exc
+            release_writer = False
+            logger.error(
+                "kg.graph_transaction.close_failed board=%s phase=%s "
+                "statement_kind=none writer_retained=true error_type=%s",
+                self._board_id,
+                phase,
+                type(exc).__name__,
+                extra={
+                    "event": "kg.graph_transaction.close_failed",
+                    "board_id": self._board_id,
+                    "phase": phase,
+                    "statement_kind": "none",
+                    "writer_retained": True,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+        finally:
+            if release_writer:
+                self._writer_lease.release()
+                logger.debug(
+                    "kg.graph_transaction.writer_released board=%s phase=%s "
+                    "statement_kind=none wait_ms=%d",
+                    self._board_id,
+                    phase,
+                    self._writer_lease.wait_ms,
+                    extra={
+                        "event": "kg.graph_transaction.writer_released",
+                        "board_id": self._board_id,
+                        "phase": phase,
+                        "statement_kind": "none",
+                        "wait_ms": self._writer_lease.wait_ms,
+                    },
+                )
+
+    async def __aenter__(self) -> "_KuzuTransactionScope":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if exc_type is not None:
+            await self.rollback()
+        else:
+            await self.commit()
+
+
+class CommunityKuzuGraphTransaction:
+    """GraphTransaction adapter: begin(board_id) opens a BoardConnection scope."""
+
+    def __init__(
+        self,
+        *,
+        writer_lock_timeout_s: float = DEFAULT_WRITER_TIMEOUT_S,
+    ) -> None:
+        if writer_lock_timeout_s <= 0:
+            raise ValueError("writer_lock_timeout_s must be positive")
+        self._writer_lock_timeout_s = float(writer_lock_timeout_s)
+
+    async def begin(self, board_id: str) -> _KuzuTransactionScope:
+        writer_lease = await acquire_ladybug_writer_async(
+            scope=board_id,
+            phase="graph_transaction",
+            timeout_s=self._writer_lock_timeout_s,
+        )
+        return _KuzuTransactionScope(
+            board_id,
+            writer_lease=writer_lease,
+        )
+
+
+__all__ = [
+    "CommunityKuzuGraphTransaction",
+    "_materialize",
+    "_statement_is_write",
+    "_statement_kind",
+]

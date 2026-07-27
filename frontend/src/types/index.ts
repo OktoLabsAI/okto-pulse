@@ -85,6 +85,15 @@ export interface LineageGraphNode {
   source_entity_type?: string;
   source_entity_id?: string;
   summary?: Record<string, unknown>;
+  resource_counts?: LineageResourceCounts;
+}
+
+export interface LineageResourceCounts {
+  unique_effective_count: number;
+  raw_attachment_count: number;
+  workspace_item_count: number;
+  /** Distinct root/version projections; absent on rolling-upgrade servers. */
+  unique_root_version_count?: number;
 }
 
 export interface LineageGraphEdge {
@@ -109,7 +118,30 @@ export interface LineageGraphResponse {
   nodes: LineageGraphNode[];
   edges: LineageGraphEdge[];
   summary: Record<string, number>;
+  resource_counts?: LineageResourceCounts;
   warnings: string[];
+}
+
+export type AllowedTransitionEntityType = 'story' | 'ideation' | 'refinement' | 'spec' | 'card' | 'sprint';
+
+export interface AllowedTransition {
+  to_status: string;
+  label: string;
+  gate: string;
+  blocked_reason?: string | null;
+  preconditions?: string[];
+  capabilities?: string[];
+  effects?: string[];
+  reason_codes?: string[];
+}
+
+export interface AllowedTransitionsResponse {
+  board_id: string;
+  entity_type: AllowedTransitionEntityType;
+  entity_id: string | null;
+  current_status: string;
+  allowed_transitions: AllowedTransition[];
+  source: string;
 }
 
 export type ResourceGateEntityType = 'ideation' | 'refinement' | 'spec' | 'card';
@@ -138,6 +170,8 @@ export interface ResourceGateNaMark {
 export interface ResourceGateResource {
   resource_type: ResourceGateResourceType;
   state: ResourceGateState;
+  authority?: 'blocking' | 'advisory';
+  blocking?: boolean;
   direct_count: number;
   inherited_count: number;
   direct_refs?: ResourceGateRef[];
@@ -154,6 +188,14 @@ export interface ResourceGateSummary {
   resources: ResourceGateResource[];
   blocking: boolean;
   missing_resources: ResourceGateResource[];
+  advisory_resources?: ResourceGateResource[];
+  advisory_missing_resources?: ResourceGateResource[];
+  authority_policy?: {
+    policy_version?: number;
+    context?: string;
+    blocking_resource_types?: ResourceGateResourceType[];
+    advisory_resource_types?: ResourceGateResourceType[];
+  };
   warnings: Array<{ code?: string; message: string; resource_type?: string }>;
 }
 
@@ -171,13 +213,90 @@ export interface EffectiveResourceItem extends ResourceGateRef {
     source_entity_title?: string | null;
     resource_id?: string | null;
   };
+  ref?: {
+    root_resource_id?: string | null;
+    knowledge_assignment_id?: string | null;
+    knowledge_assignment_mode?: KnowledgePropagationMode | null;
+    knowledge_assignment_state?: KnowledgeAssignmentState | null;
+    knowledge_assignment_stale?: boolean | null;
+    origin_class?: KnowledgeOriginClass | null;
+    [key: string]: unknown;
+  };
   resource?: Record<string, unknown> | ArchitectureDesign | ScreenMockup | null;
 }
 
+export type KnowledgeWorkspaceProfile = 'summary' | 'detail' | 'full' | 'legacy';
+
+export interface KnowledgeWorkspacePhysicalAttachment {
+  resource_id: string | null;
+  attachment_kind: string | null;
+  inherited: boolean;
+  source_entity_type: string | null;
+  source_entity_id: string | null;
+  source_entity_title: string | null;
+  effective: boolean;
+  resource_version: string | null;
+  revision_stamp: Record<string, unknown> | null;
+}
+
+export interface KnowledgeWorkspaceItem {
+  resource_type: ResourceGateResourceType;
+  canonical_unique_resource_id: string;
+  versioned_projection_id: string;
+  root_id: string;
+  resource_version: string | null;
+  representative_resource_id: string | null;
+  title: string | null;
+  attachment_kind: string | null;
+  inherited: boolean;
+  grandfathered: boolean;
+  stale: boolean;
+  superseded: boolean;
+  provenance: {
+    source_entity_type: string | null;
+    source_entity_id: string | null;
+    source_entity_title: string | null;
+    origin_class: string | null;
+    source_revision: string | null;
+    source_content_sha256: string | null;
+  };
+  physical_attachments: KnowledgeWorkspacePhysicalAttachment[];
+  detail_cursor: string;
+  relevance_links: Array<Record<string, unknown>>;
+  body?: unknown;
+  body_omitted_reason?: 'profile_summary' | 'body_unavailable' | 'body_size_limit' | 'response_budget' | string;
+  body_ref?: {
+    resource_type: ResourceGateResourceType;
+    resource_id: string | null;
+  };
+}
+
+export interface EffectiveResourcesOptions {
+  profile?: KnowledgeWorkspaceProfile;
+  cursor?: string | null;
+  limit?: number;
+}
+
 export interface EffectiveResourcesResponse {
+  contract_version?: number;
   board_id: string;
   entity_type: ResourceGateEntityType;
   entity_id: string;
+  profile?: KnowledgeWorkspaceProfile;
+  items?: KnowledgeWorkspaceItem[];
+  count?: number;
+  total_count?: number;
+  next_cursor?: string | null;
+  truncated?: boolean;
+  unique_effective_count?: number;
+  raw_attachment_count?: number;
+  workspace_item_count?: number;
+  unique_root_version_count?: number;
+  response_bytes?: number;
+  /**
+   * Populated by the explicit `legacy` profile. Kept mandatory in the
+   * normalized client result so rolling upgrades do not break older callers.
+   */
   resources: Record<ResourceGateResourceType, EffectiveResourceItem[]>;
   lineage_counts?: Record<string, unknown>;
   resource_lineage?: Record<string, unknown>;
@@ -338,6 +457,10 @@ export interface Sprint {
   version: number;
   labels: string[] | null;
   archived: boolean;
+  // Cancellation justification (set only while status === 'cancelled')
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -352,6 +475,8 @@ export interface SprintSummary {
   board_id: string;
   title: string;
   description: string | null;
+  objective?: string | null;
+  expected_outcome?: string | null;
   status: SprintStatus;
   lane_type: SprintLaneType;
   origin_sprint_id: string | null;
@@ -368,6 +493,9 @@ export interface SprintSummary {
   created_at: string;
   updated_at: string;
   archived: boolean;
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
 }
 
 export interface SprintQAItem {
@@ -388,6 +516,8 @@ export interface SprintQAItem {
 export interface CreateSprintRequest {
   title: string;
   description?: string;
+  objective?: string;
+  expected_outcome?: string;
   spec_id: string;
   lane_type?: SprintLaneType;
   origin_sprint_id?: string | null;
@@ -401,6 +531,8 @@ export interface CreateSprintRequest {
 
 export interface MoveSprintRequest {
   status: SprintStatus;
+  cancellation_reason?: string;
+  expected_version?: number;
 }
 
 // Ideation Status
@@ -536,6 +668,11 @@ export interface IdeationKnowledge {
   source_title?: string | null;
   source_version?: number | null;
   source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -552,6 +689,11 @@ export interface IdeationKnowledgeSummary {
   source_title?: string | null;
   source_version?: number | null;
   source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_at: string;
 }
 
@@ -588,6 +730,16 @@ export interface RefinementKnowledge {
   description: string | null;
   content: string;
   mime_type: string;
+  source_type?: string;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -599,6 +751,16 @@ export interface RefinementKnowledgeSummary {
   title: string;
   description: string | null;
   mime_type: string;
+  source_type?: string;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_at: string;
 }
 
@@ -606,6 +768,7 @@ export interface RefinementKnowledgeSummary {
 export interface RefinementSummary {
   id: string;
   open_qa_count?: number;
+  active_spec_count?: number;
   ideation_id: string;
   board_id: string;
   title: string;
@@ -806,6 +969,34 @@ export type EvidenceClass =
   | 'run_log'
   | 'non_replayable_justified';
 
+export interface TestEvidenceAssertionV2 {
+  name: string;
+  expected: unknown;
+  observed: unknown;
+  status: 'passed' | 'failed';
+  message?: string | null;
+}
+
+export interface TestEvidenceProvenanceV2 {
+  producer: string;
+  producer_version: string;
+  adapter: string;
+  environment: string;
+}
+
+export interface TestExecutionAttestationV2 {
+  schema_version: 2;
+  run_id: string;
+  executed_at: string;
+  scenario_id: string;
+  outcome: 'passed' | 'failed';
+  product_runtime_exercised: boolean;
+  manifest_sha256: string;
+  assertions: TestEvidenceAssertionV2[];
+  provenance: TestEvidenceProvenanceV2;
+  attestation_sha256: string;
+}
+
 export interface TestScenarioEvidence {
   // Legacy / minimal fields (NC-9).
   test_file_path?: string | null;
@@ -817,7 +1008,12 @@ export interface TestScenarioEvidence {
   // evidence simply omits them.
   evidence_class?: EvidenceClass | null;
   replay_command?: string | null;
-  mcp_replay_manifest?: string | null;
+  /** @deprecated Reader-only legacy alias; it never satisfies Evidence V2. */
+  mcp_replay_manifest?: string | Record<string, unknown> | null;
+  manifest_ref?: string | null;
+  execution_attestation?: TestExecutionAttestationV2 | null;
+  /** Opaque receipt authenticated by the local installation at write time. */
+  execution_receipt?: string | null;
   manual_checklist_ref?: string | null;
   expected_output_snapshot?: string | null;
   replay_should_exist?: boolean | null;
@@ -1114,6 +1310,139 @@ export interface CardKnowledgeBase {
   source_id?: string;
 }
 
+// Selective Knowledge Base propagation v2
+export type KnowledgeSelectionState = 'omitted' | 'explicit_empty' | 'explicit_ids';
+export type KnowledgePropagationMode = 'reference' | 'snapshot' | 'drop';
+export type KnowledgeAssignmentState =
+  | 'active'
+  | 'stale'
+  | 'source_deleted'
+  | 'dropped'
+  | 'inactive';
+export type KnowledgeOriginClass =
+  | 'v2'
+  | 'legacy_all'
+  | 'selected_legacy'
+  | 'legacy_unresolved';
+export type KnowledgeRelevanceEntityType =
+  | 'functional_requirement'
+  | 'acceptance_criterion'
+  | 'test_scenario';
+
+export interface KnowledgeRelevanceLinkRequest {
+  entity_type: KnowledgeRelevanceEntityType;
+  entity_id: string;
+}
+
+/**
+ * Authoritative v2 selection envelope. Omitting the envelope itself preserves
+ * the legacy v1 path; `selection_state: 'omitted'` is a distinct persisted v2
+ * decision.
+ */
+export interface KnowledgePropagationEnvelopeV2 {
+  contract_version?: 2;
+  selection_state: KnowledgeSelectionState;
+  mode?: KnowledgePropagationMode | null;
+  knowledge_ids?: string[];
+  justification?: string | null;
+  idempotency_key: string;
+  expected_revision?: 0 | null;
+  relevance_links?: KnowledgeRelevanceLinkRequest[];
+}
+
+export interface DeriveSpecKnowledgeRequest {
+  knowledge_propagation: KnowledgePropagationEnvelopeV2;
+}
+
+export interface KnowledgeAssignmentReplaceRequest {
+  contract_version?: 2;
+  knowledge_ids: string[];
+  mode: Extract<KnowledgePropagationMode, 'reference' | 'snapshot'>;
+  justification: string;
+  idempotency_key: string;
+  expected_revision: number;
+  linkage?: KnowledgeRelevanceLinkRequest[];
+}
+
+export interface KnowledgeAssignmentDropRequest {
+  contract_version?: 2;
+  knowledge_ids?: string[];
+  justification: string;
+  idempotency_key: string;
+  expected_revision: number;
+}
+
+export interface KnowledgeAssignmentRefreshRequest {
+  contract_version?: 2;
+  knowledge_ids: string[];
+  idempotency_key: string;
+  expected_revision: number;
+}
+
+export interface KnowledgeMutationAssignmentResponse {
+  root_knowledge_id: string;
+  source_knowledge_id: string;
+  mode: KnowledgePropagationMode;
+  state: KnowledgeAssignmentState;
+  stale: boolean;
+}
+
+export interface KnowledgeMutationResponse {
+  contract_version: 2;
+  target_type: 'spec' | 'card';
+  target_id: string;
+  operation_id: string;
+  revision: number;
+  replayed: boolean;
+  selection_state: KnowledgeSelectionState;
+  assignments: KnowledgeMutationAssignmentResponse[];
+}
+
+export interface DeriveSpecKnowledgeResponse extends KnowledgeMutationResponse {
+  target_type: 'spec';
+  spec_id: string;
+}
+
+export interface CardCreateKnowledgeMutationResponse {
+  contract_version: 2;
+  card: Card;
+  operation_id: string;
+  revision: number;
+  replayed: boolean;
+  selection_state: KnowledgeSelectionState;
+  assignments: KnowledgeMutationAssignmentResponse[];
+}
+
+export interface KnowledgeRefreshItemResponse {
+  root_knowledge_id: string;
+  source_revision: string;
+  source_content_sha256: string;
+  stale: false;
+}
+
+export interface KnowledgeRefreshResponse {
+  contract_version: 2;
+  operation_id: string;
+  revision: number;
+  replayed: boolean;
+  refreshed: KnowledgeRefreshItemResponse[];
+}
+
+export interface KnowledgeAssignmentTechnicalProjection {
+  root_knowledge_id: string;
+  mode: KnowledgePropagationMode;
+  origin_class: KnowledgeOriginClass;
+  state: KnowledgeAssignmentState;
+  stale: boolean;
+}
+
+export interface KnowledgeTechnicalReadResponse {
+  contract_version: 2;
+  revision: number;
+  selection_state: KnowledgeSelectionState | null;
+  assignments: KnowledgeAssignmentTechnicalProjection[];
+}
+
 // Spec History
 export interface SpecHistoryChange {
   field: string;
@@ -1163,6 +1492,16 @@ export interface SpecKnowledge {
   description: string | null;
   content: string;
   mime_type: string;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -1174,6 +1513,16 @@ export interface SpecKnowledgeSummary {
   title: string;
   description: string | null;
   mime_type: string;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_title?: string | null;
+  source_version?: number | null;
+  source_kb_id?: string | null;
+  root_source_kb_id?: string | null;
+  immediate_parent_kb_id?: string | null;
+  content_hash?: string | null;
+  governance_metadata?: unknown | null;
+  governance?: Record<string, unknown>;
   created_at: string;
 }
 
@@ -1207,6 +1556,10 @@ export interface Spec {
   validation_threshold?: number;
   archived?: boolean;
   pre_archive_status?: string | null;
+  // Cancellation justification (set only while status === 'cancelled')
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
   status: SpecStatus;
   version: number;
   assignee_id: string | null;
@@ -1262,6 +1615,10 @@ export interface Ideation {
   pre_archive_status?: string | null;
   // Per-ideation opt-out of the board Max ambiguity gate (spec 2485780b).
   skip_ambiguity_gate?: boolean;
+  // Cancellation justification (set only while status === 'cancelled')
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
   refinements: RefinementSummary[];
   stories: StorySummary[];
   specs: SpecSummary[];
@@ -1275,6 +1632,10 @@ export interface IdeationSummary {
   scope_assessment?: { domains: number; ambiguity: number; dependencies: number } | null;
   // Unanswered Q&A count (answered_at IS NULL) — drives the "open Q&A" badge.
   open_qa_count?: number;
+  // Non-archived, non-cancelled child refinements — drives the "No refinement" badge.
+  active_refinement_count?: number;
+  // Non-archived, non-cancelled direct specs — drives the "No spec" badge for small ideations.
+  active_spec_count?: number;
   board_id: string;
   title: string;
   description: string | null;
@@ -1313,6 +1674,10 @@ export interface Refinement {
   labels: string[] | null;
   archived?: boolean;
   pre_archive_status?: string | null;
+  // Cancellation justification (set only while status === 'cancelled')
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
   specs: SpecSummary[];
   qa_items: RefinementQAItem[];
   knowledge_bases: RefinementKnowledgeSummary[];
@@ -1353,7 +1718,12 @@ export interface Card {
   steps_to_reproduce?: string | null;
   action_plan?: string | null;
   linked_test_task_ids?: string[] | null;
+  skip_task_requirement_link_gate?: boolean;
   validations?: ValidationEntry[] | null;
+  // Cancellation justification (set only while status === 'cancelled')
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
 }
 
 // Validation entry (from backend validation lifecycle)
@@ -1389,12 +1759,59 @@ export interface CardSummary {
   conclusions: ConclusionEntry[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   validations?: ValidationEntry[] | null;
-  // Bug card fields (for kanban display — optional for backwards compat)
+  // Projection fields are present on paginated responses but remain optional
+  // so full Card records and legacy fixtures can share the display surface.
   card_type?: CardType;
   origin_task_id?: string | null;
   severity?: BugSeverity | null;
   linked_test_task_ids?: string[] | null;
+  skip_task_requirement_link_gate?: boolean;
   archived?: boolean;
+}
+
+export interface KanbanColumnMeta {
+  total_filtered: number;
+  total_overall: number;
+  has_more: boolean;
+  facets: {
+    card_type: Partial<Record<CardType, number>>;
+  };
+}
+
+export interface KanbanColumnsMeta {
+  columns: Record<CardStatus, KanbanColumnMeta>;
+  facets: {
+    assignee: Array<{ value: string | null; count: number }>;
+  };
+}
+
+export interface ColumnsOptInResponse {
+  board_id: string;
+  columns: Record<CardStatus, CardSummary[]>;
+  columns_meta: KanbanColumnsMeta;
+}
+
+export interface ColumnPageResponse {
+  board_id: string;
+  column: CardStatus;
+  items: CardSummary[];
+  meta: KanbanColumnMeta;
+  offset: number;
+  limit: number;
+  next_offset: number | null;
+}
+
+export interface LookupOption {
+  id: string;
+  title: string;
+  status: string;
+}
+
+export interface LookupPage {
+  items: LookupOption[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 // Permission Preset
@@ -1407,13 +1824,12 @@ export interface PermissionPreset {
   created_at: string;
 }
 
-// Agent (global, always includes api_key)
+// Agent (global, secret-free; credentials are reveal-once responses)
 export interface Agent {
   id: string;
   name: string;
   description: string | null;
   objective: string | null;
-  api_key: string;
   is_active: boolean;
   permissions: string[] | null;
   permission_flags: Record<string, Record<string, Record<string, boolean>>> | null;
@@ -1421,6 +1837,12 @@ export interface Agent {
   created_by: string;
   created_at: string;
   last_used_at: string | null;
+}
+
+export interface AgentRevealResponse {
+  agent: Agent;
+  reveal_once_secret: string;
+  message: string | null;
 }
 
 // Agent summary (without sensitive data, used in board context)
@@ -1454,6 +1876,7 @@ export interface BoardSettings {
   skip_contract_coverage_global: boolean;
   skip_ir_coverage_global: boolean;
   skip_or_coverage_global: boolean;
+  skip_task_requirement_link_gate_global?: boolean;
   skip_decisions_coverage_global: boolean;
   skip_cognitive_consolidation?: boolean;
   allow_agent_self_answering?: boolean;
@@ -1583,7 +2006,7 @@ export interface CreateBoardRequest {
 export interface UpdateBoardRequest {
   name?: string;
   description?: string;
-  settings?: BoardSettings;
+  settings?: Partial<BoardSettings>;
 }
 
 export interface CreateCardRequest {
@@ -1604,6 +2027,7 @@ export interface CreateCardRequest {
   observed_behavior?: string;
   steps_to_reproduce?: string;
   action_plan?: string;
+  knowledge_propagation?: KnowledgePropagationEnvelopeV2;
 }
 
 export interface UpdateCardRequest {
@@ -1627,6 +2051,7 @@ export interface UpdateCardRequest {
   steps_to_reproduce?: string;
   action_plan?: string;
   linked_test_task_ids?: string[];
+  skip_task_requirement_link_gate?: boolean;
 }
 
 export interface ConclusionEntry {
@@ -1643,12 +2068,17 @@ export interface ConclusionEntry {
 
 export interface MoveCardRequest {
   status: CardStatus;
-  position?: number;
+  position?: number | null;
+  before_id?: string | null;
+  after_id?: string | null;
+  placement?: 'start' | 'end' | null;
   conclusion?: string;
   completeness?: number;
   completeness_justification?: string;
   drift?: number;
   drift_justification?: string;
+  /** Required when status === 'cancelled'; ignored otherwise. */
+  cancellation_reason?: string;
 }
 
 export type BugWorkflowRemediationPath =
@@ -1891,12 +2321,22 @@ export interface DesignSystem {
   scope: string;
   board_id: string | null;
   title: string;
-  payload: Record<string, unknown> | null;
+  /** Present only on detail/full projections. Catalog summary pages omit it. */
+  payload?: Record<string, unknown> | null;
+  payload_available?: boolean;
   version: number;
   status: string;
   owner_id: string;
   created_at: string | null;
   updated_at: string | null;
+  profile?: 'summary' | 'detail' | 'full' | 'legacy';
+}
+
+export interface DesignSystemListPage {
+  items: DesignSystem[];
+  count: number;
+  next_cursor: string | null;
+  profile: 'summary';
 }
 
 export interface BoardDesignSystemEffective {
@@ -1908,11 +2348,18 @@ export interface BoardDesignSystemEffective {
   scope?: string | null;
   gate_mode?: string | null;
   exists?: boolean;
+  configured?: boolean;
+  resolvable?: boolean;
+  mandate?: boolean;
 }
 
 export interface BoardDesignSystemEffectiveResponse {
   board_id: string;
   effective: BoardDesignSystemEffective | null;
+  configured?: boolean;
+  resolvable?: boolean;
+  mandate?: boolean;
+  gate_mode?: string;
 }
 
 export interface CreateDesignSystemRequest {
@@ -2037,6 +2484,8 @@ export interface UpdateSpecRequest {
 
 export interface MoveSpecRequest {
   status: SpecStatus;
+  /** Required when status === 'cancelled'; ignored otherwise. */
+  cancellation_reason?: string;
 }
 
 // Story request types

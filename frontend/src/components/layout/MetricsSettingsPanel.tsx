@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Info, RotateCcw, Save, X } from 'lucide-react';
+import { Info, RotateCcw, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import {
@@ -10,6 +10,7 @@ import {
   type MetricsMode,
   type MetricsSummary,
 } from '@/services/metrics-api';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface MetricsSettingsPanelProps {
   onClose: () => void;
@@ -56,13 +57,12 @@ function modeLabel(mode: MetricsMode): string {
 }
 
 export function MetricsSettingsPanel({ onClose, initialPrompt = false }: MetricsSettingsPanelProps) {
+  useEscapeToClose(onClose);
   const [data, setData] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [draftMode, setDraftMode] = useState<MetricsMode>('disabled');
   const shownMigrationNotices = useRef<Set<string>>(new Set());
-
-  const hasUnsavedChanges = Boolean(data && draftMode !== data.mode);
 
   const refresh = async () => {
     setLoading(true);
@@ -93,15 +93,18 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
     });
   }, [data?.migration_notice]);
 
-  const saveSettings = async () => {
-    if (!data) return;
+  const saveSettings = async (nextMode: MetricsMode) => {
+    if (!data || saving) return;
+    const previousMode = data.ui_mode === 'on' ? 'anonymous_beacon' : 'disabled';
+    setDraftMode(nextMode);
     setSaving(true);
     try {
-      await updateMetricsMode(draftMode, draftMode === 'anonymous_beacon' ? ACK_IDS : []);
+      await updateMetricsMode(nextMode, nextMode === 'anonymous_beacon' ? ACK_IDS : []);
       await refresh();
       toast.success('Metrics settings saved');
       if (initialPrompt) onClose();
     } catch (err: any) {
+      setDraftMode(previousMode);
       toast.error(err?.message ?? 'Failed to update metrics');
     } finally {
       setSaving(false);
@@ -122,7 +125,7 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
             </h2>
             <p className="text-xs text-gray-500 dark:text-gray-400">
               {data
-                ? `Current setting: ${modeLabel(data.mode)}${hasUnsavedChanges ? ` · selected: ${modeLabel(draftMode)}` : ''}`
+                ? `Current setting: ${modeLabel(draftMode)}${saving ? ' · saving...' : ''}`
                 : 'Loading'}
             </p>
           </div>
@@ -159,7 +162,7 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
                 data-testid="metrics-on-off-toggle"
                 onClick={() => {
                   const nextMode = draftMode === 'anonymous_beacon' ? 'disabled' : 'anonymous_beacon';
-                  setDraftMode(nextMode);
+                  saveSettings(nextMode);
                 }}
                 className={`relative h-7 w-12 rounded-full transition ${
                   draftMode === 'anonymous_beacon'
@@ -229,16 +232,6 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
               <button type="button" onClick={refresh} className="btn btn-secondary flex items-center gap-1 text-xs">
                 <RotateCcw size={14} />
                 Refresh
-              </button>
-              <button
-                type="button"
-                onClick={saveSettings}
-                disabled={saving || !hasUnsavedChanges}
-                data-testid="metrics-save"
-                className="btn btn-primary flex items-center gap-1 text-xs"
-              >
-                <Save size={14} />
-                {saving ? 'Saving...' : 'Save'}
               </button>
               {initialPrompt && (
                 <button type="button" onClick={onClose} className="btn btn-secondary text-xs">

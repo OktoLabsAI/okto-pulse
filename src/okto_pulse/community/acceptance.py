@@ -16,7 +16,7 @@ from typing import Optional
 
 # These two constants must stay in sync with ``frontend/src/constants/terms.ts``.
 TERMS_VERSION = "0.2.0"
-TERMS_HASH = "tos-2026-04-28-elastic2-trademark"
+TERMS_HASH = "tos-2026-04-29-elv2-addendum-trademark-cla-cr2026"
 
 
 def _state_path() -> Path:

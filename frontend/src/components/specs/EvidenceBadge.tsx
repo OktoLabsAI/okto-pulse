@@ -48,7 +48,21 @@ function buildTooltip(evidence: TestScenarioEvidence | null): string {
   if (evidence.test_file_path) parts.push(`file: ${evidence.test_file_path}`);
   if (evidence.test_function) parts.push(`function: ${evidence.test_function}`);
   if (evidence.replay_command) parts.push(`replay: ${evidence.replay_command}`);
-  if (evidence.mcp_replay_manifest) parts.push(`manifest: ${evidence.mcp_replay_manifest}`);
+  if (evidence.manifest_ref) parts.push(`manifest: ${evidence.manifest_ref}`);
+  if (evidence.execution_attestation) {
+    parts.push(`attestation: v${evidence.execution_attestation.schema_version}`);
+    parts.push(`run: ${evidence.execution_attestation.run_id}`);
+    parts.push(
+      `product runtime: ${evidence.execution_attestation.product_runtime_exercised ? 'exercised' : 'NOT exercised'}`,
+    );
+    parts.push(
+      evidence.execution_receipt
+        ? 'installation receipt: attached'
+        : 'installation receipt: MISSING (unverified)',
+    );
+  } else if (evidence.mcp_replay_manifest) {
+    parts.push('legacy manifest: unverified');
+  }
   if (evidence.manual_checklist_ref) parts.push(`checklist: ${evidence.manual_checklist_ref}`);
   if (evidence.last_run_at) parts.push(`last run: ${evidence.last_run_at}`);
   if (evidence.test_run_id) parts.push(`run id: ${evidence.test_run_id}`);
@@ -84,6 +98,9 @@ function hasAnyEvidence(evidence: TestScenarioEvidence | null): boolean {
         evidence.evidence_class ||
         evidence.replay_command ||
         evidence.mcp_replay_manifest ||
+        evidence.manifest_ref ||
+        evidence.execution_attestation ||
+        evidence.execution_receipt ||
         evidence.manual_checklist_ref ||
         evidence.expected_output_snapshot ||
         evidence.non_replayable_justification),
@@ -99,6 +116,30 @@ export function EvidenceBadge({ scenario }: EvidenceBadgeProps) {
   const hasEvidence = hasAnyEvidence(evidence);
   const tooltip = buildTooltip(evidence);
   const evidenceClass = evidence?.evidence_class ?? null;
+
+  // Historical manifest strings/objects remain readable, but they are not a
+  // verified execution and must never look green in the UI.
+  const unverifiedManifest = Boolean(
+    evidence &&
+      (evidence.mcp_replay_manifest || evidenceClass === 'mcp_replay_manifest') &&
+      (!evidence.manifest_ref ||
+        !evidence.execution_attestation ||
+        !evidence.execution_receipt),
+  );
+  if (hasEvidence && unverifiedManifest) {
+    return (
+      <span
+        title={tooltip}
+        data-testid="evidence-badge-legacy-unverified"
+        data-evidence-class="mcp_replay_manifest"
+        data-replayable="false"
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/50"
+      >
+        <HelpCircle size={10} aria-hidden="true" />
+        {evidence?.mcp_replay_manifest ? 'legacy unverified' : 'manifest unverified'}
+      </span>
+    );
+  }
 
   // Re-executable contract: reflect the real class + replayability when set.
   if (hasEvidence && evidenceClass) {
