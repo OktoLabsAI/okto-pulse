@@ -86,18 +86,34 @@ export interface RebuildDiagnostics {
   operator_action: string;
 }
 
+export interface KGOperationalDomain {
+  domain?: string;
+  semantics?: string;
+  count: number;
+  classification?: string;
+  oldest_age_seconds?: number;
+  drill_down_tool?: string;
+  drill_down_signal?: string;
+}
+
 export interface KGHealth {
+  health_schema_version: string;
+  materialization_state: 'not_materialized' | 'materialized' | 'unknown';
+  materialization_generation: string | null;
+  probe_reason_codes: Record<string, string>;
   queue_depth: number;
-  oldest_pending_age_s: number;
+  oldest_pending_age_s: number | null;
   dead_letter_count: number;
+  global_outbox_dead_letter_count: number;
+  operational_domains?: Record<string, KGOperationalDomain>;
   total_nodes: number;
   default_score_count: number;
   default_score_ratio: number;
   avg_relevance: number;
   top_disconnected_nodes: TopDisconnectedNode[];
   schema_version: string;
-  health_schema_version?: string;
   graph_schema_version?: string | null;
+  source_count?: number | null;
   contradict_warn_count: number;
   last_decay_tick_at: string | null;
   last_tick_status?: 'running' | 'completed' | 'failed' | string | null;

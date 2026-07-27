@@ -240,26 +240,54 @@ def _payload_ttl(payload: dict[str, Any]) -> float:
 def _owner_is_live(payload: dict[str, Any]) -> bool:
     """Decide whether the lock payload represents a real running owner.
 
-    A payload is treated as live ONLY if both signals agree:
-    - the recorded PID still belongs to a running process, AND
-    - the `heartbeat_at` stamp is within the configured TTL.
+    KGD-01 C6 (takeover fail-closed): um lock só é considerado órfão quando
+    o PID registrado está COMPROVADAMENTE morto (OpenProcess no Windows /
+    kill-0 no POSIX). PID vivo — mesmo com heartbeat stale — é RECUSA: um
+    servidor travado (mas vivo) ainda segura os handles do Ladybug, e um
+    takeover nesse estado cria o duplo-escritor no mesmo ``graph.lbug`` (o
+    "escritor stale" que zera páginas interiores do WAL — KB1/H3).
 
-    If `heartbeat_at` is missing (legacy lock written by a pre-heartbeat
-    version) we fall back to the PID-only liveness check — the operator
-    can still recover by deleting the file manually, same as today.
-
-    A stale heartbeat is sufficient to declare the lock orphaned even when
-    the PID is alive: that's how a recycled PID (chrome.exe inherited the
-    old number after a reboot) stops blocking startup."""
+    O contrato anterior aceitava heartbeat stale como suficiente para
+    takeover (cobria PID reciclado após reboot, ao custo do fail-open). No
+    cenário raro de PID reciclado o operador remove o lock manualmente —
+    ver a mensagem de erro em :func:`_format_lock_error`. O heartbeat segue
+    no payload para diagnóstico e para o fast-fail da CLI
+    (:func:`assert_no_live_server`)."""
     pid = _payload_pid(payload)
     if not pid:
         return False
-    if not _pid_is_running(pid):
-        return False
+    return _pid_is_running(pid)
+
+
+def assert_no_live_server(
+    data_dir: str | Path, *, operation: str = "cli"
+) -> None:
+    """Fast-fail guard da CLI (KGD-01 C6/S10) — nunca bloqueia (<5s).
+
+    Entrypoints que abrem grafos de board (``init``, ``kg backfill --apply``,
+    ``kg dedup-entities``, ``verify-pipeline``, scripts de operador) chamam
+    isto ANTES de tocar em qualquer Database. Levanta
+    :class:`ServeAlreadyRunningError` quando o serve-lock de ``data_dir``
+    tem heartbeat fresco OU um PID comprovadamente vivo. Prossegue apenas
+    quando não há lock, ou quando o heartbeat está stale E o PID está morto
+    (mesma regra de takeover de :func:`_owner_is_live`, com o heartbeat
+    fresco como sinal adicional de recusa — um servidor que acabou de
+    morrer pode ter deixado WAL/handles em estado transitório).
+    """
+    resolved = Path(data_dir).expanduser().resolve()
+    lock_path = resolved / LOCK_FILENAME
+    if not lock_path.exists():
+        return
+    payload = _read_lock_payload(lock_path)
+    pid = _payload_pid(payload)
     age = _payload_heartbeat_age_seconds(payload)
-    if age is None:
-        return True
-    return age <= _payload_ttl(payload)
+    heartbeat_fresh = age is not None and age <= _payload_ttl(payload)
+    pid_alive = bool(pid) and _pid_is_running(pid)
+    if heartbeat_fresh or pid_alive:
+        raise ServeAlreadyRunningError(
+            f"serve-lock: refusing '{operation}' — "
+            + _format_lock_error(resolved, lock_path, payload)
+        )
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -277,12 +305,16 @@ def _pid_is_running(pid: int) -> bool:
 
 
 def _windows_pid_is_running(pid: int) -> bool:
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     process_query_limited_information = 0x1000
     still_active = 259
+    error_access_denied = 5
     handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
     if not handle:
-        return False
+        # KGD-01 C6: ACCESS_DENIED significa que o processo EXISTE (só não
+        # podemos abri-lo) — fail-closed: tratar como vivo. Qualquer outro
+        # erro (INVALID_PARAMETER etc.) = PID inexistente.
+        return ctypes.get_last_error() == error_access_denied
     try:
         exit_code = ctypes.c_ulong()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
@@ -311,10 +343,12 @@ def _format_lock_error(data_dir: Path, lock_path: Path, payload: dict[str, Any])
         f"  Last heartbeat: {heartbeat_at}\n"
         f"  Lock file: {lock_path}\n"
         "Stop the existing server before starting a second one, otherwise the "
-        "local Knowledge Graph can be read as empty or lose semantic links.\n"
-        f"If you are sure no server is running, wait at least {HEARTBEAT_TTL_SECONDS}s "
-        "for the heartbeat to expire (the next start will take the lock over "
-        "automatically) or remove the lock file manually."
+        "local Knowledge Graph can be read as empty, lose semantic links or "
+        "corrupt the board graph WAL (two writers on the same graph.lbug).\n"
+        f"Takeover is automatic only when the heartbeat is stale (>{HEARTBEAT_TTL_SECONDS}s) "
+        "AND the PID above is provably dead. If the process is alive but "
+        "stuck, stop it first; if you are sure no server is running, remove "
+        "the lock file manually."
     )
 
 

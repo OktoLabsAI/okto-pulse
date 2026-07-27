@@ -7,6 +7,7 @@ import { X, Trash2, UserPlus } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { BoardShare } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface ShareBoardModalProps {
   isOpen: boolean;
@@ -21,6 +22,8 @@ export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBo
   const [userId, setUserId] = useState('');
   const [permission, setPermission] = useState<'viewer' | 'editor' | 'admin'>('viewer');
   const [isLoading, setIsLoading] = useState(false);
+
+  useEscapeToClose(onClose, { enabled: isOpen });
 
   useEffect(() => {
     if (isOpen && boardId) {

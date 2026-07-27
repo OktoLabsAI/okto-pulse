@@ -35,6 +35,22 @@ afterEach(() => {
 });
 
 describe('TermsAcceptanceModal — TC-1 + TC-2', () => {
+  it('consumes Escape without dismissing the required acceptance dialog', () => {
+    const onAccept = vi.fn();
+    render(<TermsAcceptanceModal onAccept={onAccept} />);
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    });
+
+    document.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onAccept).not.toHaveBeenCalled();
+    expect(screen.getByTestId('terms-acceptance-modal')).toBeInTheDocument();
+  });
+
   it('TC-1: renders the modal with title and disabled accept button', () => {
     render(<TermsAcceptanceModal onAccept={() => {}} />);
     expect(screen.getByTestId('terms-acceptance-modal')).toBeTruthy();

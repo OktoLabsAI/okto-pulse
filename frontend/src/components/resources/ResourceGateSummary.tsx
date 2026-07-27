@@ -155,7 +155,9 @@ export function ResourceGateSummary({
       <div className="flex items-center justify-between gap-3 border-b border-gray-100 dark:border-gray-700 px-3 py-2.5">
         <div>
           <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-100">Resource Gate</h4>
-          <p className="text-xs text-gray-500 dark:text-gray-400">Architecture, Mockup and Knowledge Base readiness</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Architecture and Mockup are blocking; Knowledge Base is advisory
+          </p>
         </div>
         <button
           type="button"
@@ -172,6 +174,7 @@ export function ResourceGateSummary({
           const resource = byType.get(resourceType);
           if (!resource) return null;
           const meta = STATE_META[resource.state];
+          const advisory = resource.authority === 'advisory' || resourceType === 'knowledge_base';
           const disabled = busyType === resourceType;
           return (
             <div
@@ -187,11 +190,24 @@ export function ResourceGateSummary({
                     <div className="text-xs text-gray-500 dark:text-gray-400">{resourceCounts(resource)}</div>
                   </div>
                 </div>
-                <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${meta.badge}`}>
-                  {meta.icon}
-                  {meta.label}
-                </span>
+                <div className="flex shrink-0 items-center gap-1">
+                  {advisory && (
+                    <span className="inline-flex items-center rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-200">
+                      Advisory
+                    </span>
+                  )}
+                  <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${meta.badge}`}>
+                    {meta.icon}
+                    {meta.label}
+                  </span>
+                </div>
               </div>
+
+              {advisory && resource.state === 'missing' && (
+                <p className="text-xs text-violet-600 dark:text-violet-300">
+                  Optional context only — this absence does not block the transition.
+                </p>
+              )}
 
               {resource.state === 'missing' && (
                 <div className="flex flex-col gap-2 sm:flex-row">

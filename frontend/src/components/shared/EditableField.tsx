@@ -63,6 +63,8 @@ export function EditableField({
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
         handleCancel();
         return;
       }

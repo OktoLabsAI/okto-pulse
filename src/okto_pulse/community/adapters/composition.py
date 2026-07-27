@@ -1,0 +1,362 @@
+"""Community KG composition helper (spec R05-B, IMP1) — the SINGLE source that
+builds the edition's storage + embedding + base registry + reranker wiring.
+
+``main.py`` / ``cli.py`` / ``seed.py`` consume THIS module and the Community
+adapters — never the core Onda A concretes (FileSystemStorageProvider /
+InMemory* / SentenceTransformer* / CrossEncoder). The base registry supplies the
+Onda A slots so ``configure_kg_registry(base_registry=...)`` does NOT instantiate
+core embedded defaults; Community also fills the Ladybug/Kuzu graph slots before
+the registry is exposed to core consumers.
+
+R05-D (Onda B): the composition now ALSO supplies the three DATA providers —
+``event_bus`` (CommunityOutboxEventBus), ``audit_repo`` (CommunityAuditRepository)
+and ``config`` (CommunityKGConfig) — EXPLICITLY via ``_apply_data_providers``
+(register-before-fail-closed). R-P2-02 retired the core ``session_factory``
+auto-wire for relational data providers; the Community adapters are now required
+composition input, not a way to beat a fallback.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from okto_pulse.community.adapters.embedding import (
+    COMMUNITY_DEFAULT_EMBEDDING_DIM,
+    COMMUNITY_DEFAULT_EMBEDDING_MODEL,
+    build_community_embedding_provider,
+)
+from okto_pulse.community.adapters.memory import (
+    CommunityInMemoryCache,
+    CommunityInMemoryRateLimiter,
+    CommunityInMemorySessionStore,
+)
+from okto_pulse.community.adapters.rerank import register_community_reranker
+from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
+
+
+@dataclass(frozen=True)
+class CommunityKgComposition:
+    """The Community-owned KG pieces, built once from settings."""
+
+    storage: CommunityFileSystemStorage
+    embedding: Any
+    base_registry: Any
+
+
+def community_storage_provider(upload_dir: str) -> CommunityFileSystemStorage:
+    """The edition StorageProvider (replaces FileSystemStorageProvider)."""
+    return CommunityFileSystemStorage(upload_dir)
+
+
+def build_community_embedding(*, settings: Any | None = None):
+    """Build the edition embedding provider from settings (no model load)."""
+    s = settings if settings is not None else _core_settings()
+    return build_community_embedding_provider(
+        mode=getattr(s, "kg_embedding_mode", "stub"),
+        model_name=getattr(s, "kg_embedding_model", COMMUNITY_DEFAULT_EMBEDDING_MODEL),
+        dim=getattr(s, "kg_embedding_dim", COMMUNITY_DEFAULT_EMBEDDING_DIM),
+    )
+
+
+def build_community_base_registry(
+    *, embedding: Any | None = None, settings: Any | None = None
+):
+    """Build a ``KGProviderRegistry`` whose Onda A slots (cache / rate_limiter /
+    session_store / embedding) are the Community adapters. Graph, data and auth
+    slots are filled by the composition root before the registry is configured."""
+    from okto_pulse.core.services.application_kg import create_provider_registry
+
+    s = settings if settings is not None else _core_settings()
+    emb = embedding if embedding is not None else build_community_embedding(settings=s)
+    return create_provider_registry(
+        cache_backend=CommunityInMemoryCache(),
+        rate_limiter=CommunityInMemoryRateLimiter(),
+        session_store=CommunityInMemorySessionStore(
+            default_ttl_seconds=getattr(s, "kg_session_ttl_seconds", 3600),
+        ),
+        embedding_provider=emb,
+    )
+
+
+def _apply_graph_providers(base: Any) -> None:
+    """(R05-C) Fill the base registry's six #06 graph slots with the Community
+    Kùzu adapters. Lazy-imported so importing this module never eager-loads
+    Ladybug; loaded only when the KG registry is actually configured (the same
+    point the core already loaded it)."""
+    from okto_pulse.community.adapters.kg import build_community_graph_providers
+
+    for key, value in build_community_graph_providers().items():
+        setattr(base, key, value)
+    from okto_pulse.community.adapters.reflective_query import (
+        build_community_reflective_providers,
+    )
+
+    for key, value in build_community_reflective_providers(
+        graph_store=base.graph_store,
+        embedding_provider=base.embedding_provider,
+        cypher_executor=base.cypher_executor,
+    ).items():
+        setattr(base, key, value)
+
+
+def _apply_data_providers(
+    base: Any,
+    session_factory: Any,
+    *,
+    settings: Any,
+) -> None:
+    """(R05-D) Fill the base registry's three DATA slots (event_bus / audit_repo /
+    config) with the Community adapters, REGISTER-BEFORE-FAIL-CLOSED — supplied
+    EXPLICITLY here because the core registry no longer creates relational
+    fallbacks. Lazy-imported so importing this module never eager-loads the
+    SQLAlchemy ORM."""
+    from okto_pulse.community.adapters.data import build_community_data_providers
+
+    for key, value in build_community_data_providers(
+        session_factory,
+        settings=settings,
+    ).items():
+        setattr(base, key, value)
+
+
+def _apply_source_reader(base: Any) -> None:
+    """Fill the board source read port with the Community SQLite adapter."""
+    from okto_pulse.community.adapters.board_source_reader import (
+        CommunityBoardSourceReader,
+        resolve_pulse_db_path,
+    )
+
+    base.board_source_reader = CommunityBoardSourceReader(
+        db_path_provider=resolve_pulse_db_path
+    )
+
+
+def _apply_rebuild_ingestion(base: Any) -> None:
+    """Fill the rebuild ingestion port with the Community SQLite adapter."""
+    from okto_pulse.community.adapters.board_rebuild_ingestion import (
+        CommunityBoardRebuildIngestionAdapter,
+    )
+    from okto_pulse.community.adapters.board_source_reader import resolve_pulse_db_path
+
+    base.rebuild_ingestion_port = CommunityBoardRebuildIngestionAdapter(
+        db_path_provider=resolve_pulse_db_path,
+        artifact_store=base.rebuild_audit_artifact_store,
+        quarantine_restore=getattr(base, "quarantine_restore", None),
+    )
+
+
+def _apply_rebuild_audit_storage(base: Any, *, kg_base_dir: str) -> None:
+    """Fill rebuild/audit JSON artifact storage with the Community filesystem adapter."""
+    from okto_pulse.community.adapters.rebuild_audit_storage import (
+        CommunityFileSystemCognitivePendingWorkProvider,
+        CommunityFileSystemRebuildAuditArtifactStore,
+        CommunityRebuildAuditArtifactStoreResolver,
+        default_community_rebuild_base_dir,
+    )
+
+    base_dir = default_community_rebuild_base_dir(Path(kg_base_dir))
+    base.rebuild_audit_artifact_store = CommunityFileSystemRebuildAuditArtifactStore(
+        base_dir
+    )
+    base.rebuild_audit_artifact_store_resolver = (
+        CommunityRebuildAuditArtifactStoreResolver()
+    )
+    base.cognitive_pending_work_provider = (
+        CommunityFileSystemCognitivePendingWorkProvider(base_dir)
+    )
+
+
+def _apply_quarantine_restore(base: Any) -> None:
+    """(KGD-01 FR4) Fill the quarantine-restore port slot with the Community
+    filesystem adapter. Lazy-imported; the adapter itself only touches
+    Ladybug inside ``apply`` (open validation), never at import time."""
+    from okto_pulse.community.adapters.quarantine_restore import (
+        CommunityQuarantineRestore,
+    )
+
+    base.quarantine_restore = CommunityQuarantineRestore()
+
+
+def build_community_kg_composition(
+    *,
+    upload_dir: str,
+    settings: Any | None = None,
+    include_graph: bool = True,
+) -> CommunityKgComposition:
+    """Build the full Community KG composition (single source): storage +
+    embedding + base registry (Onda A in-memory + Onda C graph adapters) and
+    register the Community CrossEncoder factory with the core rerank registry."""
+    s = _community_settings_snapshot(settings)
+    embedding = build_community_embedding(settings=s)
+    base = build_community_base_registry(embedding=embedding, settings=s)
+    _apply_source_reader(base)
+    _apply_rebuild_audit_storage(base, kg_base_dir=str(s.kg_base_dir))
+    _apply_quarantine_restore(base)
+    _apply_rebuild_ingestion(base)
+    if include_graph:
+        _apply_graph_providers(base)
+    register_community_reranker()
+    return CommunityKgComposition(
+        storage=community_storage_provider(upload_dir),
+        embedding=embedding,
+        base_registry=base,
+    )
+
+
+def configure_community_kg_registry(
+    session_factory: Any,
+    *,
+    settings: Any | None = None,
+    include_graph: bool = True,
+    auth_context_factory: Any | None = None,
+) -> None:
+    """Configure the core KG registry with the Community base registry +
+    reranker. Replaces ``configure_kg_registry(session_factory=...)`` at the
+    Community call sites. (R05-C) Also supplies the six #06 graph slots from the
+    Community Kùzu adapters so the KG runtime is registered behind the ports
+    (register-before-remove; the core embedded stays as a ledgered exception).
+
+    R06/R08-B: when ``auth_context_factory`` is provided, the composition root
+    registers it on the registry's ``auth_context_factory`` slot. The factory is
+    built by the Community MCP auth adapter and bound to the current agent/db
+    providers. The KG query tools then resolve agent_id + accessible boards via
+    the AuthContext port. When omitted, the slot stays ``None`` and KG query
+    tools fail closed instead of using a local relational ACL fallback."""
+    from okto_pulse.core.services.application_kg import (
+        configure_commit_coordinator,
+        configure_provider_registry,
+        configure_write_barrier,
+    )
+
+    from okto_pulse.community.adapters.telemetry_composition import (
+        register_community_telemetry_runtime,
+    )
+    from okto_pulse.community.adapters.kg_operational import (
+        register_community_kg_operational_ports,
+    )
+
+    effective_settings = _community_settings_snapshot(settings)
+    configure_commit_coordinator()
+    configure_write_barrier(
+        getattr(effective_settings, "kg_write_barrier_mode", "soft")
+    )
+    register_community_telemetry_runtime()
+    # AF35-S2: register Community SQLAlchemy KG operational read/worker adapters
+    # so Core KG modules resolve concrete persistence through ports.
+    register_community_kg_operational_ports()
+
+    register_community_reranker()
+    # MKG-C-S1 (FR1): off-graph equivalence ledger — registered here so BOTH
+    # the server wiring and offline CLI curation commands resolve the same
+    # fail-closed port.
+    from okto_pulse.community.adapters.sqlalchemy_kg_equivalence_ledger import (
+        CommunitySqlAlchemyEquivalenceLedger,
+    )
+    from okto_pulse.core.ports.kg_equivalence_ledger import (
+        register_equivalence_ledger,
+    )
+
+    register_equivalence_ledger(CommunitySqlAlchemyEquivalenceLedger(session_factory))
+    from okto_pulse.community.adapters.sqlalchemy_kg_curation_proposals import (
+        CommunitySqlAlchemyCurationProposalStore,
+    )
+    from okto_pulse.core.ports.kg_curation_proposals import (
+        register_curation_proposal_store,
+    )
+
+    register_curation_proposal_store(
+        CommunitySqlAlchemyCurationProposalStore(session_factory)
+    )
+    # MKG-E-S1 (FR3): declarative subtype vocabulary.
+    from okto_pulse.community.adapters.sqlalchemy_kg_subtype_registry import (
+        CommunitySqlAlchemyNodeSubtypeRegistry,
+    )
+    from okto_pulse.core.ports.kg_subtype_registry import (
+        register_node_subtype_registry,
+    )
+
+    register_node_subtype_registry(
+        CommunitySqlAlchemyNodeSubtypeRegistry(session_factory)
+    )
+    base = build_community_base_registry(settings=effective_settings)
+    _apply_source_reader(base)
+    _apply_rebuild_audit_storage(
+        base,
+        kg_base_dir=str(effective_settings.kg_base_dir),
+    )
+    _apply_quarantine_restore(base)
+    _apply_rebuild_ingestion(base)
+    if include_graph:
+        _apply_graph_providers(base)
+    # R05-D/R-P2-02: supply event_bus / audit_repo / config from the Community
+    # adapters EXPLICITLY so the core fail-closed registry validation can pass
+    # without any relational fallback.
+    _apply_data_providers(base, session_factory, settings=effective_settings)
+    if include_graph:
+        from okto_pulse.community.adapters.materialization_health import (
+            CommunityMaterializationEvidenceProbe,
+            CommunityMaterializationGenerationStore,
+            CommunitySqlAlchemyMaterializationCensus,
+        )
+        from okto_pulse.community.adapters.materialization_health_observability import (
+            CommunityFilesystemMutationGuard,
+        )
+        from okto_pulse.core.ports.materialization_health import (
+            register_materialization_evidence_port,
+        )
+
+        generation_store = CommunityMaterializationGenerationStore(session_factory)
+        register_materialization_evidence_port(
+            CommunityMaterializationEvidenceProbe(
+                board_store=base.graph_runtime_store,
+                census=CommunitySqlAlchemyMaterializationCensus(session_factory),
+                discovery_store=base.global_discovery_runtime,
+                generation_store=generation_store,
+                mutation_guard=CommunityFilesystemMutationGuard.from_runtime_stores(
+                    board_store=base.graph_runtime_store,
+                    discovery_store=base.global_discovery_runtime,
+                ),
+            )
+        )
+    overrides: dict[str, Any] = {}
+    if auth_context_factory is not None:
+        overrides["auth_context_factory"] = auth_context_factory
+    configure_provider_registry(base_registry=base, **overrides)
+
+
+def _core_settings():
+    from okto_pulse.core import get_settings
+
+    return get_settings()
+
+
+def _community_settings_snapshot(settings: Any | None = None) -> Any:
+    """Return the edition-owned settings snapshot used by every KG provider.
+
+    Older Community callers can still have a ``CoreSettings`` snapshot in the
+    shared settings registry.  Core intentionally does not own physical storage
+    fields such as ``kg_base_dir``, so normalize Pydantic snapshots through the
+    Community settings model instead of adding edition state back to Core.
+    """
+
+    snapshot = settings if settings is not None else _core_settings()
+    from okto_pulse.community.config import CommunitySettings
+
+    if isinstance(snapshot, CommunitySettings):
+        return snapshot
+    model_dump = getattr(snapshot, "model_dump", None)
+    if callable(model_dump):
+        return CommunitySettings(**model_dump())
+    return snapshot
+
+
+__all__ = [
+    "CommunityKgComposition",
+    "community_storage_provider",
+    "build_community_embedding",
+    "build_community_base_registry",
+    "build_community_kg_composition",
+    "configure_community_kg_registry",
+]

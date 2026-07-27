@@ -20,7 +20,6 @@ import type {
   ScreenMockup,
   Story,
   TechnicalRequirement,
-  SpecKnowledgeSummary,
   ConclusionEntry,
   ValidationEntry,
   ArchitectureWarningRecord,
@@ -1585,15 +1584,257 @@ function renderResolvedReferences(refs: any | null | undefined): string {
 // Knowledge Bases
 // ---------------------------------------------------------------------------
 
-function renderKnowledgeBases(kbs: (SpecKnowledgeSummary | { title: string; content?: string; source_type?: string })[]): string {
+type KnowledgeExportRecord = Record<string, unknown> & {
+  title?: string;
+  content?: string;
+  source_type?: string;
+};
+
+type KnowledgeResourceCounts = {
+  unique_effective_count?: number;
+  raw_attachment_count?: number;
+  workspace_item_count?: number;
+};
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function countValue(value: unknown): number | undefined {
+  if (value == null || value === '') return undefined;
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? Math.trunc(count) : undefined;
+}
+
+function knowledgeResourceCounts(entity: unknown): KnowledgeResourceCounts {
+  const record = objectRecord(entity);
+  if (!record) return {};
+  const resourceGate = objectRecord(record.resource_gate_summary);
+  const resourceLineage = objectRecord(record.resource_lineage);
+  const gateLineage = objectRecord(resourceGate?.resource_lineage);
+  const traceability = objectRecord(record.traceability);
+  const candidates = [
+    objectRecord(record.knowledge_workspace),
+    objectRecord(record.effective_resources),
+    objectRecord(record.resource_counts),
+    objectRecord(traceability?.resource_counts),
+    objectRecord(record.lineage_counts),
+    objectRecord(resourceLineage?.counts),
+    objectRecord(resourceGate?.lineage_counts),
+    objectRecord(gateLineage?.counts),
+    record,
+  ].filter(Boolean) as Record<string, unknown>[];
+  const counts: KnowledgeResourceCounts = {};
+  for (const key of [
+    'unique_effective_count',
+    'raw_attachment_count',
+    'workspace_item_count',
+  ] as const) {
+    for (const candidate of candidates) {
+      const value = countValue(candidate[key]);
+      if (value !== undefined) {
+        counts[key] = value;
+        break;
+      }
+    }
+  }
+  return counts;
+}
+
+function renderKnowledgeResourceCounts(entity: unknown): string {
+  const counts = knowledgeResourceCounts(entity);
+  const rows: Array<[string, number | undefined]> = [
+    ['Canonical roots (`unique_effective_count`)', counts.unique_effective_count],
+    ['Physical attachments (`raw_attachment_count`)', counts.raw_attachment_count],
+    ['Root/version items (`workspace_item_count`)', counts.workspace_item_count],
+  ];
+  const available = rows.filter((row): row is [string, number] => row[1] !== undefined);
+  if (!available.length) return '';
+  return `## Knowledge Resource Counts\n\n${available
+    .map(([label, value]) => `- **${label}:** ${value}`)
+    .join('\n')}\n\n`;
+}
+
+function knowledgeWorkspaceItems(entity: unknown): KnowledgeExportRecord[] {
+  const record = objectRecord(entity);
+  if (!record) return [];
+  const candidates = [
+    objectRecord(record.knowledge_workspace),
+    objectRecord(record.effective_resources),
+    record.contract_version === 2 ? record : undefined,
+  ].filter(Boolean) as Record<string, unknown>[];
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate.items)) continue;
+    return candidate.items
+      .filter((item) => objectRecord(item)?.resource_type === 'knowledge_base')
+      .map((item) => objectRecord(item) as KnowledgeExportRecord);
+  }
+  return [];
+}
+
+function legacyKnowledgeBases(entity: unknown): unknown[] {
+  const record = objectRecord(entity);
+  return Array.isArray(record?.knowledge_bases) ? record.knowledge_bases : [];
+}
+
+function nestedText(record: Record<string, unknown>, container: string, key: string): string | undefined {
+  return cleanString(objectRecord(record[container])?.[key]);
+}
+
+function canonicalKnowledgeRoot(record: KnowledgeExportRecord): string | undefined {
+  const canonicalId = cleanString(record.canonical_unique_resource_id || record.unique_resource_id);
+  return cleanString(record.root_id)
+    || nestedText(record, 'revision_stamp', 'root_id')
+    || cleanString(record.root_source_kb_id)
+    || cleanString(objectRecord(record.ref)?.root_resource_id)
+    || (canonicalId?.startsWith('knowledge_base:') ? canonicalId.slice('knowledge_base:'.length) : undefined);
+}
+
+function explicitKnowledgeVersion(record: KnowledgeExportRecord): string | undefined {
+  return cleanString(record.resource_version)
+    || cleanString(record.source_revision)
+    || nestedText(record, 'revision_stamp', 'source_revision')
+    || cleanString(record.source_version)
+    || cleanString(record.content_hash);
+}
+
+function knowledgePhysicalId(record: KnowledgeExportRecord): string | undefined {
+  return cleanString(record.representative_resource_id || record.resource_id || record.id);
+}
+
+function knowledgeParentId(record: KnowledgeExportRecord): string | undefined {
+  return cleanString(
+    record.immediate_parent_kb_id
+    || record.source_kb_id
+    || record.source_id,
+  );
+}
+
+function knowledgeBody(record: KnowledgeExportRecord): string | undefined {
+  const direct = cleanString(record.content);
+  if (direct) return direct;
+  const body = record.body;
+  if (typeof body === 'string') return cleanString(body);
+  const bodyRecord = objectRecord(body);
+  if (bodyRecord) {
+    for (const field of ['content', 'html_content', 'global_description', 'description']) {
+      const value = cleanString(bodyRecord[field]);
+      if (value) return value;
+    }
+    return `\`\`\`json\n${readableValue(bodyRecord)}\n\`\`\``;
+  }
+  const resource = objectRecord(record.resource);
+  if (resource) {
+    for (const field of ['content', 'html_content', 'global_description', 'description']) {
+      const value = cleanString(resource[field]);
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
+
+function knowledgeAttachmentIds(record: KnowledgeExportRecord): string[] {
+  const attachments = Array.isArray(record.physical_attachments)
+    ? record.physical_attachments
+    : [];
+  const ids = attachments
+    .map((item) => {
+      const attachment = objectRecord(item);
+      return cleanString(attachment?.resource_id || attachment?.id);
+    })
+    .filter(Boolean) as string[];
+  const physicalId = knowledgePhysicalId(record);
+  if (physicalId) ids.push(physicalId);
+  return ids;
+}
+
+function renderKnowledgeBases(
+  kbs: unknown[],
+  heading = 'Knowledge Base',
+): string {
   if (!kbs?.length) return '';
-  const items = kbs.map((kb, i) => {
-    let entry = `### ${i + 1}. ${kb.title}\n\n`;
-    if ('source_type' in kb && kb.source_type) entry += `**Source:** ${kb.source_type}\n\n`;
-    if ('content' in kb && kb.content) entry += `${kb.content}\n\n`;
+  const records = kbs
+    .map(objectRecord)
+    .filter(Boolean) as KnowledgeExportRecord[];
+  const rootByPhysicalId = new Map<string, string>();
+  const versionByPhysicalId = new Map<string, string>();
+  for (const record of records) {
+    const physicalId = knowledgePhysicalId(record);
+    const root = canonicalKnowledgeRoot(record);
+    const version = explicitKnowledgeVersion(record);
+    if (physicalId && root) rootByPhysicalId.set(physicalId, root);
+    if (physicalId && version) versionByPhysicalId.set(physicalId, version);
+  }
+
+  const groups = new Map<string, {
+    root: string;
+    version: string;
+    records: KnowledgeExportRecord[];
+  }>();
+  records.forEach((record, index) => {
+    const physicalId = knowledgePhysicalId(record);
+    const parentId = knowledgeParentId(record);
+    const root = canonicalKnowledgeRoot(record)
+      || (physicalId ? rootByPhysicalId.get(physicalId) : undefined)
+      || (parentId ? rootByPhysicalId.get(parentId) : undefined)
+      || physicalId
+      || `legacy-item-${index + 1}`;
+    const version = explicitKnowledgeVersion(record)
+      || (physicalId ? versionByPhysicalId.get(physicalId) : undefined)
+      || (parentId ? versionByPhysicalId.get(parentId) : undefined)
+      || 'legacy';
+    if (physicalId) {
+      rootByPhysicalId.set(physicalId, root);
+      versionByPhysicalId.set(physicalId, version);
+    }
+    const key = `${root}\u0000${version}`;
+    const group = groups.get(key) || { root, version, records: [] };
+    group.records.push(record);
+    groups.set(key, group);
+  });
+
+  const logicalItems = Array.from(groups.values()).sort((left, right) => (
+    `${left.root}\u0000${left.version}`.localeCompare(`${right.root}\u0000${right.version}`)
+  ));
+  const items = logicalItems.map((group, i) => {
+    const representative = group.records.find((record) => knowledgeBody(record))
+      || group.records[0];
+    const title = cleanString(representative.title)
+      || cleanString(representative.versioned_projection_id)
+      || group.root;
+    const attachmentIds = Array.from(new Set(group.records.flatMap(knowledgeAttachmentIds)));
+    const declaredCounts = group.records
+      .map((record) => countValue(record.attachment_count))
+      .filter((value): value is number => value !== undefined);
+    const physicalCount = Math.max(
+      attachmentIds.length,
+      1,
+      ...declaredCounts,
+    );
+    let entry = `### ${i + 1}. ${title}\n\n`;
+    entry += `- **Canonical root:** \`${group.root}\`\n`;
+    entry += `- **Resource version:** \`${group.version}\`\n`;
+    entry += `- **Physical attachments:** ${physicalCount}\n`;
+    if (attachmentIds.length) {
+      entry += `- **Attachment refs:** ${attachmentIds.map((id) => `\`${id}\``).join(', ')}\n`;
+    }
+    const sources = Array.from(new Set(group.records
+      .map((record) => cleanString(
+        record.source_entity_title
+        || record.source_title
+        || record.source_type
+        || record.source_entity_type,
+      ))
+      .filter(Boolean) as string[]));
+    if (sources.length) entry += `- **Sources:** ${sources.join(', ')}\n`;
+    entry += '\n';
+    const body = knowledgeBody(representative);
+    if (body) entry += `${body}\n\n`;
     return entry;
   }).join('');
-  return `## Knowledge Base\n\n${items}`;
+  return `## ${heading}\n\n${items}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1702,6 +1943,7 @@ export function exportIdeation(ideation: Ideation): string {
   md += section('Description', ideation.description);
   md += section('Problem Statement', ideation.problem_statement);
   md += section('Proposed Approach', ideation.proposed_approach);
+  md += renderKnowledgeResourceCounts(ideation);
 
   // Scope assessment
   if (ideation.scope_assessment) {
@@ -1715,6 +1957,10 @@ export function exportIdeation(ideation: Ideation): string {
     md += `## Scope Assessment\n\n${table}\n`;
   }
 
+  md += renderKnowledgeBases([
+    ...knowledgeWorkspaceItems(ideation),
+    ...legacyKnowledgeBases(ideation),
+  ]);
   md += renderMockups(ideation.screen_mockups);
   md += renderArchitectureDesigns(ideation.architecture_designs);
   md += renderQA(ideation.qa_items || []);
@@ -1736,6 +1982,7 @@ export function exportRefinement(refinement: Refinement): string {
   ]);
 
   md += section('Description', refinement.description);
+  md += renderKnowledgeResourceCounts(refinement);
 
   if (refinement.in_scope?.length) {
     md += `## In Scope\n\n${bulletList(refinement.in_scope)}\n\n`;
@@ -1750,7 +1997,10 @@ export function exportRefinement(refinement: Refinement): string {
     md += `## Decisions\n\n${numberedList(refinement.decisions)}\n\n`;
   }
 
-  md += renderKnowledgeBases(refinement.knowledge_bases || []);
+  md += renderKnowledgeBases([
+    ...knowledgeWorkspaceItems(refinement),
+    ...(refinement.knowledge_bases || []),
+  ]);
   md += renderMockups(refinement.screen_mockups);
   md += renderArchitectureDesigns(refinement.architecture_designs);
   md += renderQA(refinement.qa_items || []);
@@ -1854,6 +2104,7 @@ export function exportSpec(spec: Spec): string {
 
   md += section('Description', spec.description);
   md += section('Context', spec.context);
+  md += renderKnowledgeResourceCounts(spec);
 
   let body = '';
 
@@ -1872,7 +2123,10 @@ export function exportSpec(spec: Spec): string {
   body += renderIntegrationRequirements(spec.integration_requirements, refs);
   body += renderObservabilityRequirements(spec.observability_requirements, refs);
   body += renderDecisions(spec.decisions, refs);
-  body += renderKnowledgeBases(spec.knowledge_bases || []);
+  body += renderKnowledgeBases([
+    ...knowledgeWorkspaceItems(spec),
+    ...(spec.knowledge_bases || []),
+  ]);
   body += renderMockups(spec.screen_mockups, warningCollector);
   body += renderArchitectureDesigns(spec.architecture_designs, warningCollector);
   body += renderQA(spec.qa_items || []);
@@ -1904,8 +2158,12 @@ export function exportCard(card: Card, spec?: Spec | null): string {
 
   md += section('Description', card.description);
   md += section('Details', card.details);
+  md += renderKnowledgeResourceCounts(card);
 
   let body = '';
+  const cardKnowledgeForExport: unknown[] = [
+    ...knowledgeWorkspaceItems(card),
+  ];
 
   body += renderCardDependencies(card);
   body += renderTestCardDetails(card);
@@ -2020,19 +2278,20 @@ export function exportCard(card: Card, spec?: Spec | null): string {
     body += renderIntegrationRequirements(linkedIRs.length ? linkedIRs : spec.integration_requirements, refs);
     body += renderObservabilityRequirements(linkedORs.length ? linkedORs : spec.observability_requirements, refs);
     body += renderDecisions(linkedDecisions.length ? linkedDecisions : spec.decisions, refs);
-    body += renderKnowledgeBases(spec.knowledge_bases || []);
+    cardKnowledgeForExport.push(
+      ...knowledgeWorkspaceItems(spec),
+      ...(spec.knowledge_bases || []),
+    );
     body += renderMockups(spec.screen_mockups, warningCollector);
     body += renderArchitectureDesigns(spec.architecture_designs, warningCollector);
   }
 
-  // Card-own knowledge bases
-  if (card.knowledge_bases?.length) {
-    body += `## Card Knowledge Bases\n\n`;
-    for (const kb of card.knowledge_bases) {
-      body += `### ${kb.title}${kb.source === 'spec' ? ' (from spec)' : ''}\n\n`;
-      body += `${kb.content}\n\n`;
-    }
-  }
+  // Render the parent and card snapshots as logical root/version items. This
+  // retains every physical reference while printing each body only once.
+  cardKnowledgeForExport.push(
+    ...(card.knowledge_bases || []),
+  );
+  body += renderKnowledgeBases(cardKnowledgeForExport, 'Card Knowledge Bases');
 
   body += renderMockups(card.screen_mockups, warningCollector);
   body += renderArchitectureDesigns(card.architecture_designs, warningCollector);

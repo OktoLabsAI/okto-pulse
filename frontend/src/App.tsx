@@ -18,6 +18,7 @@ import { GlobalKGActivityIndicator } from '@/components/knowledge/GlobalKGActivi
 import { KGHealthView } from '@/components/knowledge/KGHealthView';
 import { CognitiveActionCenterView } from '@/components/knowledge/CognitiveActionCenterView';
 import { ModalStackProvider, useOptionalModalStack } from '@/contexts/ModalStackContext';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { ModalStackRenderer } from '@/components/modals/ModalStackRenderer';
 import { LineageGraphModal } from '@/components/traceability';
 import { EvidenceGateSkipBanner } from '@/components/banners/EvidenceGateSkipBanner';
@@ -357,6 +358,10 @@ function App() {
     setShowCognitiveActionCenter(false);
   };
 
+  useEscapeToClose(closeAnalytics, { enabled: showAnalytics });
+  useEscapeToClose(closeKGHealth, { enabled: showKGHealth });
+  useEscapeToClose(closeCognitiveActionCenter, { enabled: showCognitiveActionCenter });
+
   useEffect(() => {
     if (isLoaded && isSignedIn) {
       loadBoards();
@@ -389,8 +394,6 @@ function App() {
     try {
       const board = await api.getBoard(boardId);
       setCurrentBoard(board);
-      const columns = await api.getBoardColumns(boardId);
-      setColumns(columns);
     } catch {
       setError('Failed to load board');
       toast.error('Failed to load board');
@@ -405,8 +408,6 @@ function App() {
     try {
       const board = await api.getBoard(currentBoard.id);
       setCurrentBoard(board);
-      const columns = await api.getBoardColumns(currentBoard.id);
-      setColumns(columns);
       setRefreshKey((k) => k + 1);
       toast.success('Board refreshed!');
     } catch {
@@ -469,7 +470,7 @@ function App() {
     {metricsPromptOpen && !terms.needsAcceptance && !onboardingOpen && (
       <MetricsSettingsPanel initialPrompt onClose={closeMetricsPrompt} />
     )}
-    <div className={`min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950 ${terms.needsAcceptance ? 'pointer-events-none select-none' : ''}`}>
+    <div className={`flex h-screen min-h-0 flex-col overflow-hidden bg-surface-50 dark:bg-surface-950 ${terms.needsAcceptance ? 'pointer-events-none select-none' : ''}`}>
       {portalAdapter.PortalBar && (
         <portalAdapter.PortalBar
           visible={portalBarVisible}
@@ -498,14 +499,14 @@ function App() {
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
       />
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
           isOpen={sidebarOpen}
           onSelectBoard={selectBoard}
           onCreateBoard={() => setCreateBoardOpen(true)}
         />
 
-        <main className="flex-1 min-w-0 overflow-auto p-4 flex flex-col">
+        <main className="flex min-h-0 flex-1 min-w-0 flex-col overflow-hidden p-4">
           {currentBoard ? (
             <>
               {/* Tab switcher */}
@@ -538,13 +539,15 @@ function App() {
               </div>
 
               {/* Content */}
-              <div className="flex-1 min-h-0 min-w-0">
+              <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                 {activeTab === 'stories' && <StoriesPanel boardId={currentBoard.id} refreshKey={refreshKey} />}
                 {activeTab === 'ideations' && <IdeationsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'refinements' && <RefinementsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'specs' && <SpecsPanel key={refreshKey} boardId={currentBoard.id} />}
                 {activeTab === 'sprints' && <SprintsPanel key={refreshKey} boardId={currentBoard.id} />}
-                {activeTab === 'tasks' && <KanbanBoard boardId={currentBoard.id} />}
+                {activeTab === 'tasks' && (
+                  <KanbanBoard boardId={currentBoard.id} refreshKey={refreshKey} />
+                )}
               </div>
             </>
           ) : (

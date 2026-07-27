@@ -1,96 +1,130 @@
-import { ChevronDown, Clock } from 'lucide-react';
 import type { ActivityLogEntry } from '@/services/api';
+import {
+  ActivityHistoryList,
+  type ActivityHistoryChange,
+  type ActivityHistoryEntry,
+} from './ActivityHistoryList';
 
 interface ActivityLogListProps {
-  entries: ActivityLogEntry[];
-  emptyMessage?: string;
+  entries: readonly ActivityLogEntry[];
+  loading?: boolean;
 }
 
-function formatActivityTimestamp(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString('en-US', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+const CARD_ACTION_LABELS: Readonly<Record<string, string>> = {
+  card_created: 'Created',
+  card_updated: 'Updated',
+  card_moved: 'Status changed',
+  card_deleted: 'Deleted',
+  validation_submitted: 'Validation submitted',
+  task_validated: 'Validated',
+};
+
+const CARD_ACTION_COLORS: Readonly<Record<string, string>> = {
+  card_created: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+  card_updated: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  card_moved: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
+  card_deleted: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  validation_submitted: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  task_validated: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+};
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
 }
 
-function safeJson(details: Record<string, unknown>): string {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function activityChanges(details: Record<string, unknown> | null | undefined): ActivityHistoryChange[] {
+  if (!details) return [];
+
+  if (Array.isArray(details.changes)) {
+    const changes = details.changes.flatMap((value): ActivityHistoryChange[] => {
+      if (!isRecord(value) || typeof value.field !== 'string') return [];
+      if (!hasOwn(value, 'old') && !hasOwn(value, 'new')) return [];
+      return [{ field: value.field, old: value.old, new: value.new }];
+    });
+    if (changes.length > 0) return changes;
+  }
+
+  if (hasOwn(details, 'from_status') || hasOwn(details, 'to_status')) {
+    return [{ field: 'status', old: details.from_status, new: details.to_status }];
+  }
+
+  if (hasOwn(details, 'before') && hasOwn(details, 'after')) {
+    return [{
+      field: typeof details.field === 'string' ? details.field : 'change',
+      old: details.before,
+      new: details.after,
+    }];
+  }
+
+  if (hasOwn(details, 'old') && hasOwn(details, 'new')) {
+    return [{
+      field: typeof details.field === 'string' ? details.field : 'change',
+      old: details.old,
+      new: details.new,
+    }];
+  }
+
+  return [];
+}
+
+function inlineValue(value: unknown): string {
+  if (value === null || value === undefined) return '(empty)';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   try {
-    return JSON.stringify(details, null, 2) ?? '{}';
+    return JSON.stringify(value);
   } catch {
-    return JSON.stringify({ error: 'Activity details could not be serialized' }, null, 2);
+    return String(value);
   }
 }
 
-function displayAction(action: string, trigger?: string | null): string {
-  if (trigger && trigger !== action) return `${action} / ${trigger}`;
-  return action;
-}
+function activitySummary(entry: ActivityLogEntry, changes: readonly ActivityHistoryChange[]): string {
+  if (entry.action === 'card_moved') {
+    const statusChange = changes.find((change) => change.field === 'status');
+    if (statusChange) {
+      return `Status: ${inlineValue(statusChange.old)} → ${inlineValue(statusChange.new)}`;
+    }
 
-export function ActivityLogList({
-  entries,
-  emptyMessage = 'No activity recorded',
-}: ActivityLogListProps) {
-  if (entries.length === 0) {
-    return (
-      <p className="text-gray-400 dark:text-gray-500 text-sm text-center py-4">
-        {emptyMessage}
-      </p>
-    );
+    const legacyTransition = entry.summary?.match(/^\s*(.+?)\s*->\s*(.+?)\s*$/);
+    if (legacyTransition) {
+      return `Status: ${legacyTransition[1]} → ${legacyTransition[2]}`;
+    }
   }
 
+  if (entry.action === 'card_updated' && changes.length > 0) {
+    return `Updated: ${changes.map((change) => change.field).join(', ')}`;
+  }
+
+  return entry.summary || entry.action;
+}
+
+function normalizeEntry(entry: ActivityLogEntry): ActivityHistoryEntry {
+  const changes = activityChanges(entry.details);
+  return {
+    id: entry.id,
+    action: entry.action,
+    actor_type: entry.actor_type,
+    actor_name: entry.actor_name,
+    created_at: entry.created_at,
+    changes,
+    summary: activitySummary(entry, changes),
+    version: null,
+  };
+}
+
+export function ActivityLogList({ entries, loading = false }: ActivityLogListProps) {
   return (
-    <div className="space-y-2" data-testid="activity-log-list">
-      {entries.map((entry) => (
-        <article
-          key={entry.id}
-          className="flex gap-3 py-3 border-b border-gray-100 dark:border-gray-700 last:border-0"
-          data-testid="activity-log-entry"
-        >
-          <Clock size={14} className="mt-0.5 text-gray-400 dark:text-gray-500 shrink-0" />
-          <div className="flex-1 min-w-0 space-y-2">
-            <div className="min-w-0">
-              <p className="text-sm text-gray-800 dark:text-gray-200 break-words">
-                {entry.summary || entry.action}
-              </p>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                <span className="font-medium text-gray-600 dark:text-gray-300">
-                  {entry.actor_name}
-                </span>
-                <span>{formatActivityTimestamp(entry.created_at)}</span>
-                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                  {displayAction(entry.action, entry.trigger)}
-                </span>
-                {entry.actor_type === 'agent' && (
-                  <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[11px] text-purple-600 dark:bg-purple-900/40 dark:text-purple-300">
-                    agent
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {entry.details && (
-              <details className="group rounded-md border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-900">
-                <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-300">
-                  <ChevronDown
-                    size={14}
-                    className="transition-transform group-open:rotate-180"
-                    aria-hidden
-                  />
-                  Details
-                </summary>
-                <pre className="max-h-72 overflow-auto border-t border-gray-200 px-3 py-2 text-xs leading-relaxed text-gray-700 dark:border-gray-700 dark:text-gray-200">
-                  {safeJson(entry.details)}
-                </pre>
-              </details>
-            )}
-          </div>
-        </article>
-      ))}
+    <div data-testid="activity-log-list">
+      <ActivityHistoryList
+        entries={entries.map(normalizeEntry)}
+        loading={loading}
+        actionLabels={CARD_ACTION_LABELS}
+        actionColors={CARD_ACTION_COLORS}
+      />
     </div>
   );
 }

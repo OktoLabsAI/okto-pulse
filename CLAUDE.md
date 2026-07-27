@@ -18,7 +18,7 @@ plus the `okto-pulse-core` sibling.
 ### Multi-stage Dockerfile
 
 ```
-python:3.14-slim (digest-pinned)
+python:3.12-slim
     │
     ├─ base                  apt deps + python env
     │
@@ -29,7 +29,7 @@ python:3.14-slim (digest-pinned)
     │                        --frozen → /wheels/*.whl on top
     │   ↓
     └─ local-runtime         pre-download all-MiniLM-L6-v2,
-                             verify HF_MODEL_SHA256, EXPOSE 8100/8101,
+                             verify model cache presence, EXPOSE 8100/8101,
                              HEALTHCHECK, CMD ["okto-pulse", "serve"]
     │
     ├─ pypi-install          uv pip install okto-pulse==${OKTO_PULSE_VERSION}
@@ -76,6 +76,7 @@ NOT control which core source is built into the local-runtime image.
 | `HF_HOME` | `~/.cache/huggingface` | Pre-warmed to `/opt/hf-cache` in the image. |
 | `MCP_PORT` / API port | from CLI flags or `settings.mcp_port` / `settings.port` | Override port numbers without remapping in compose. |
 | `MCP_TRACE_ENABLED` | unset | `=1` records every MCP call to `${MCP_TRACE_DIR}/session_*.jsonl`. |
+| `MCP_TRACE_DIR` | `${KG_BASE_DIR}/mcp_traces` | Trace output directory when tracing is enabled; falls back to `./mcp_traces` when `KG_BASE_DIR` is unset. |
 
 **MCP_HOST runtime path gotcha:** there are TWO uvicorn callers in the codebase.
 `okto-pulse-core/.../mcp/server.py:run_mcp_server()` is only used when running

@@ -2,7 +2,7 @@
  * KanbanBoard - Main board component with drag and drop
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
   type DragEndEvent,
@@ -16,32 +16,72 @@ import {
 } from '@dnd-kit/core';
 import { Filter, Search, X, Check } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { useDashboardApi } from '@/services/api';
+import { type BoardColumnsQuery, useDashboardApi } from '@/services/api';
 import {
   useDashboardStore,
   useColumns,
+  useColumnsMeta,
   useCurrentBoard,
 } from '@/store/dashboard';
-import { CARD_STATUSES, STATUS_LABELS, type CardStatus, type CardSummary, type SpecSummary } from '@/types';
-import { useListSearch } from '@/hooks/useListSearch';
+import {
+  CARD_STATUSES,
+  STATUS_LABELS,
+  type CardStatus,
+  type CardSummary,
+  type CardType,
+  type LookupOption,
+} from '@/types';
 import { SearchInput } from '@/components/shared/SearchInput';
-import { KanbanColumn } from './KanbanColumn';
+import { KanbanColumn, type KanbanCardFilterType } from './KanbanColumn';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { CardModal } from './CardModal';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { CreateCardModal } from './CreateCardModal';
+import { CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
+import {
+  resolveKanbanDropDestination,
+  type KanbanDropDestination,
+} from './kanbanDnd';
+import { KanbanColumnPage } from './KanbanColumnPage';
 
 interface KanbanBoardProps {
   boardId: string;
+  /** Requests a server refresh without remounting or clearing active filters. */
+  refreshKey?: number;
 }
 
-export function KanbanBoard({ boardId }: KanbanBoardProps) {
+const CARD_TYPE_FILTERS: KanbanCardFilterType[] = ['task', 'test', 'bug'];
+const KANBAN_COLUMN_LIMIT = 10;
+
+type CardTypeFiltersByStatus = Record<CardStatus, Set<KanbanCardFilterType>>;
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function apiCardType(type: KanbanCardFilterType): CardType {
+  return type === 'task' ? 'normal' : type;
+}
+
+function createDefaultCardTypeFilters(): CardTypeFiltersByStatus {
+  return CARD_STATUSES.reduce<CardTypeFiltersByStatus>((acc, status) => {
+    acc[status] = new Set(CARD_TYPE_FILTERS);
+    return acc;
+  }, {} as CardTypeFiltersByStatus);
+}
+
+export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   const api = useDashboardApi();
+  const apiRef = useRef(api);
+  apiRef.current = api;
   const columns = useColumns();
+  const columnsMeta = useColumnsMeta();
   const currentBoard = useCurrentBoard();
   const {
     openCardModal,
     optimisticMoveCard,
-    setColumns,
+    beginColumnsGeneration,
+    applyColumnsBatch,
   } = useDashboardStore();
 
   // Build id→name map from board agents + owner
@@ -60,7 +100,15 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
   const [dragFromStatus, setDragFromStatus] = useState<CardStatus | null>(null);
   const [createCardStatus, setCreateCardStatus] = useState<CardStatus | null>(null);
   // Execution report modal for Validation/Done moves
-  const [conclusionPending, setConclusionPending] = useState<{ cardId: string; targetStatus: CardStatus; targetPosition: number } | null>(null);
+  const [conclusionPending, setConclusionPending] = useState<{
+    cardId: string;
+    destination: KanbanDropDestination;
+  } | null>(null);
+  // Cancellation justification modal for drops on the Cancelled column (ITEM 17)
+  const [cancelPending, setCancelPending] = useState<{
+    cardId: string;
+    destination: KanbanDropDestination;
+  } | null>(null);
   const [conclusionText, setConclusionText] = useState('');
   const [conclusionCompleteness, setConclusionCompleteness] = useState(100);
   const [conclusionCompletenessJustification, setConclusionCompletenessJustification] = useState('');
@@ -68,11 +116,24 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
   const [conclusionDriftJustification, setConclusionDriftJustification] = useState('');
   const [showArchived, setShowArchived] = useState(false);
   const [specFilter, setSpecFilter] = useState<Set<string>>(new Set());
-  const specFilterRef = useRef(specFilter);
-  specFilterRef.current = specFilter;
-  const [specs, setSpecs] = useState<SpecSummary[]>([]);
+  const [cardTypeFilters, setCardTypeFilters] = useState<CardTypeFiltersByStatus>(
+    createDefaultCardTypeFilters,
+  );
+  const [specs, setSpecs] = useState<LookupOption[]>([]);
   const [specSearchOpen, setSpecSearchOpen] = useState(false);
   const [specSearchQuery, setSpecSearchQuery] = useState('');
+  const [debouncedSpecSearch, setDebouncedSpecSearch] = useState('');
+  const [cardSearchQuery, setCardSearchQuery] = useState('');
+  const [debouncedCardSearch, setDebouncedCardSearch] = useState('');
+  const [columnsLoading, setColumnsLoading] = useState(false);
+  const [columnsError, setColumnsError] = useState<string | null>(null);
+  const [columnsReloadToken, setColumnsReloadToken] = useState(0);
+  const [viewAllStatus, setViewAllStatus] = useState<CardStatus | null>(null);
+  const [columnPageView, setColumnPageView] = useState<{
+    status: CardStatus;
+    items: CardSummary[];
+  } | null>(null);
+  const [viewAllContextKey, setViewAllContextKey] = useState<string | null>(null);
   const specDropdownRef = useRef<HTMLDivElement>(null);
 
   const resetConclusionFields = () => {
@@ -104,26 +165,149 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     return () => document.removeEventListener('mousedown', handler);
   }, [specSearchOpen]);
 
-  // Load specs for filter dropdown
   useEffect(() => {
-    if (boardId) {
-      api.listSpecs(boardId).then(setSpecs).catch(() => {});
-    }
-  }, [boardId]);
+    const timer = window.setTimeout(() => setDebouncedCardSearch(cardSearchQuery), 250);
+    return () => window.clearTimeout(timer);
+  }, [cardSearchQuery]);
 
-  // Reload columns when showArchived toggle changes
   useEffect(() => {
-    if (currentBoard) {
-      api.getBoardColumns(currentBoard.id, showArchived).then(setColumns).catch(() => {});
-    }
-  }, [showArchived]);
+    const timer = window.setTimeout(() => setDebouncedSpecSearch(specSearchQuery), 250);
+    return () => window.clearTimeout(timer);
+  }, [specSearchQuery]);
 
-  // Collect unique spec_ids from all cards
-  const linkedSpecIds = useMemo(() => {
-    const ids = new Set<string>();
-    Object.values(columns).flat().forEach((c) => { if (c.spec_id) ids.add(c.spec_id); });
-    return ids;
-  }, [columns]);
+  const columnsQuery = useMemo<BoardColumnsQuery>(() => {
+    const cardTypesByStatus: Partial<Record<CardStatus, CardType[]>> = {};
+    for (const status of CARD_STATUSES) {
+      const active = cardTypeFilters[status] ?? new Set(CARD_TYPE_FILTERS);
+      if (active.size < CARD_TYPE_FILTERS.length) {
+        cardTypesByStatus[status] = [...active].map(apiCardType);
+      }
+    }
+    return {
+      perColumnLimit: KANBAN_COLUMN_LIMIT,
+      specIds: [...specFilter].filter((id) => id !== '__unlinked__'),
+      includeUnlinked: specFilter.has('__unlinked__'),
+      cardTypesByStatus,
+      search: debouncedCardSearch,
+      includeArchived: showArchived,
+    };
+  }, [cardTypeFilters, debouncedCardSearch, showArchived, specFilter]);
+
+  const visibleColumns = useMemo(
+    () => CARD_STATUSES.reduce<Record<CardStatus, CardSummary[]>>((result, status) => {
+      result[status] = (columns[status] ?? []).slice(0, KANBAN_COLUMN_LIMIT);
+      return result;
+    }, {} as Record<CardStatus, CardSummary[]>),
+    [columns],
+  );
+
+  const columnsQueryKey = useMemo(
+    () => JSON.stringify(columnsQuery),
+    [columnsQuery],
+  );
+  const columnViewContextKey = useMemo(
+    () => JSON.stringify([boardId, columnsQueryKey, columnsReloadToken, refreshKey]),
+    [boardId, columnsQueryKey, columnsReloadToken, refreshKey],
+  );
+  const activeViewAllStatus = viewAllContextKey === columnViewContextKey
+    ? viewAllStatus
+    : null;
+  const renderedColumns = useMemo(() => {
+    if (!activeViewAllStatus || columnPageView?.status !== activeViewAllStatus) {
+      return visibleColumns;
+    }
+    return {
+      ...visibleColumns,
+      [activeViewAllStatus]: columnPageView.items,
+    };
+  }, [activeViewAllStatus, columnPageView, visibleColumns]);
+
+  const refreshColumns = useCallback(() => {
+    setColumnsReloadToken((value) => value + 1);
+  }, []);
+
+  const handleViewAll = useCallback((status: CardStatus) => {
+    setColumnPageView(null);
+    setViewAllStatus(status);
+    setViewAllContextKey(columnViewContextKey);
+  }, [columnViewContextKey]);
+
+  const handleColumnPageItems = useCallback((status: CardStatus, items: CardSummary[]) => {
+    setColumnPageView({ status, items });
+  }, []);
+
+  const collapseColumnPage = useCallback(() => {
+    setViewAllStatus(null);
+    setColumnPageView(null);
+    setViewAllContextKey(null);
+  }, []);
+
+  useEffect(() => {
+    setViewAllStatus(null);
+    setColumnPageView(null);
+    setViewAllContextKey(null);
+  }, [boardId, columnsQueryKey, columnsReloadToken, refreshKey]);
+
+  // The generation belongs to this exact request closure. Abort is best-effort;
+  // stale responses are still rejected by applyColumnsBatch.
+  useEffect(() => {
+    if (!boardId) return undefined;
+    const controller = new AbortController();
+    const generation = beginColumnsGeneration();
+    setColumnsLoading(true);
+    setColumnsError(null);
+
+    void apiRef.current.getBoardColumns(boardId, {
+      ...columnsQuery,
+      signal: controller.signal,
+    }).then((response) => {
+      if (applyColumnsBatch(generation, response)) setColumnsLoading(false);
+    }).catch((error: unknown) => {
+      if (isAbortError(error)) return;
+      if (generation === useDashboardStore.getState().columnsGeneration) {
+        setColumnsLoading(false);
+        setColumnsError(error instanceof Error ? error.message : 'Failed to load cards');
+      }
+    });
+
+    return () => controller.abort();
+  }, [
+    applyColumnsBatch,
+    beginColumnsGeneration,
+    boardId,
+    columnsQuery,
+    columnsQueryKey,
+    columnsReloadToken,
+    refreshKey,
+  ]);
+
+  // Lookup is intentionally independent from loaded Kanban pages, so options
+  // remain complete even when only the first card page is visible.
+  useEffect(() => {
+    if (!boardId || !specSearchOpen) return undefined;
+    const controller = new AbortController();
+    void apiRef.current.lookupSpecs(boardId, {
+      search: debouncedSpecSearch,
+      limit: 50,
+      linkedToCards: true,
+      includeArchivedCards: showArchived,
+      signal: controller.signal,
+    }).then((response) => {
+      setSpecs((previous) => {
+        const merged = new Map<string, LookupOption>();
+        for (const option of previous) {
+          if (specFilter.has(option.id)) merged.set(option.id, option);
+        }
+        for (const option of response.items) merged.set(option.id, option);
+        return [...merged.values()];
+      });
+    }).catch((error: unknown) => {
+      if (!isAbortError(error)) {
+        toast.error(error instanceof Error ? error.message : 'Failed to load spec options');
+      }
+    });
+    return () => controller.abort();
+  }, [boardId, debouncedSpecSearch, showArchived, specFilter, specSearchOpen]);
 
   const toggleSpecFilter = (id: string) => {
     setSpecFilter((prev) => {
@@ -133,41 +317,28 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     });
   };
 
-  // Filter columns by spec
-  const specFilteredColumns = useMemo(() => {
-    if (specFilter.size === 0) return columns;
-    const hasUnlinked = specFilter.has('__unlinked__');
-    const specIds = new Set([...specFilter].filter((s) => s !== '__unlinked__'));
-    const filtered: Record<CardStatus, CardSummary[]> = {} as any;
-    for (const status of CARD_STATUSES) {
-      filtered[status] = (columns[status] || []).filter((c) => {
-        if (hasUnlinked && !c.spec_id) return true;
-        if (specIds.size > 0 && c.spec_id && specIds.has(c.spec_id)) return true;
-        return false;
-      });
-    }
-    return filtered;
-  }, [columns, specFilter]);
+  const toggleCardTypeFilter = (status: CardStatus, type: KanbanCardFilterType) => {
+    setCardTypeFilters((prev) => {
+      const next = new Set(prev[status] ?? CARD_TYPE_FILTERS);
+      if (next.has(type)) {
+        // The transport omits an empty type set, which means "all". Keep at
+        // least one type selected so the UI never sends a misleading filter.
+        if (next.size === 1) return prev;
+        next.delete(type);
+      } else {
+        next.add(type);
+      }
+      return {
+        ...prev,
+        [status]: next,
+      };
+    });
+  };
 
-  // Universal search across cards (title/description/labels). Applied on top
-  // of the spec filter so users can combine both.
-  const flatCards = useMemo(
-    () => Object.values(specFilteredColumns).flat(),
-    [specFilteredColumns],
-  );
-  const cardSearch = useListSearch<CardSummary>(flatCards, {
-    fields: ['title', 'description', 'labels'],
-    urlParam: 'q_cards',
-  });
-  const filteredColumns = useMemo(() => {
-    if (!cardSearch.query) return specFilteredColumns;
-    const allowed = new Set(cardSearch.filtered.map((c) => c.id));
-    const next: Record<CardStatus, CardSummary[]> = {} as any;
-    for (const status of CARD_STATUSES) {
-      next[status] = (specFilteredColumns[status] || []).filter((c) => allowed.has(c.id));
-    }
-    return next;
-  }, [specFilteredColumns, cardSearch.query, cardSearch.filtered]);
+  useEscapeToClose(() => {
+    setConclusionPending(null);
+    resetConclusionFields();
+  }, { enabled: Boolean(conclusionPending) });
 
   // KG-03.6 — batch cognitive pending badges for visible task/test/bug
   // surfaces. ONE HTTP request per (board, visible card-id) change;
@@ -175,7 +346,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
   const visibleCardSourceRefs = useMemo(() => {
     const refs: string[] = [];
     for (const status of CARD_STATUSES) {
-      for (const card of filteredColumns[status] || []) {
+      for (const card of renderedColumns[status] || []) {
         if (card.card_type === 'test') {
           refs.push(`test:${card.id}`);
         } else if (card.card_type === 'bug') {
@@ -187,7 +358,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
       }
     }
     return refs;
-  }, [filteredColumns]);
+  }, [renderedColumns]);
   const { badges: cognitiveBadges } = useCognitivePendingBadges(
     boardId,
     visibleCardSourceRefs,
@@ -207,7 +378,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
 
     // Find the card being dragged and remember its origin
     for (const status of CARD_STATUSES) {
-      const card = (columns[status] || []).find((c) => c.id === cardId);
+      const card = (renderedColumns[status] || []).find((c) => c.id === cardId);
       if (card) {
         setActiveCard(card);
         setDragFromStatus(status);
@@ -227,60 +398,49 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     const fromStatus = dragFromStatus;
     setDragFromStatus(null);
 
-    if (!over || !fromStatus) return;
+    if (!over) return;
+    if (!fromStatus) {
+      refreshColumns();
+      return;
+    }
 
     const cardId = active.id as string;
     const overId = over.id as string;
-
-    // Determine target status and position
-    let targetStatus: CardStatus | undefined;
-    let targetPosition: number | undefined;
-
-    if (CARD_STATUSES.includes(overId as CardStatus)) {
-      // Dropped on a column header/empty area
-      targetStatus = overId as CardStatus;
-      targetPosition = (columns[targetStatus] || []).length;
-    } else {
-      // Dropped on another card — find which column it's in
-      for (const status of CARD_STATUSES) {
-        const columnCards = columns[status] || [];
-        const overIndex = columnCards.findIndex((c) => c.id === overId);
-        if (overIndex !== -1) {
-          targetStatus = status;
-          targetPosition = overIndex;
-          break;
-        }
-      }
+    const destination = resolveKanbanDropDestination(renderedColumns, cardId, overId);
+    if (!destination) {
+      // The rendered page may have changed while dragging. Fail closed and
+      // refetch instead of ever deriving a sentinel/negative position.
+      refreshColumns();
+      return;
     }
+    const { targetStatus, targetIndex } = destination;
 
-    if (targetStatus === undefined || targetPosition === undefined) return;
-    if (targetStatus === fromStatus && cardId === overId) return;
+    const card = Object.values(renderedColumns).flat().find((c) => c.id === cardId);
 
-    const card = Object.values(columns).flat().find((c) => c.id === cardId);
+    // ITEM 17: cancelling requires a justification — intercept the drop.
+    if (targetStatus === 'cancelled' && fromStatus !== 'cancelled') {
+      setCancelPending({ cardId, destination });
+      return;
+    }
 
     // Require the executor's report before a reviewer sees the card in Validation.
     if (requiresExecutionReport(card, targetStatus, fromStatus)) {
-      setConclusionPending({ cardId, targetStatus, targetPosition });
+      setConclusionPending({ cardId, destination });
       resetConclusionFields();
       return;
     }
 
     // Optimistic update
-    optimisticMoveCard(cardId, targetStatus, targetPosition);
+    optimisticMoveCard(cardId, targetStatus, targetIndex);
 
-    // API call + refresh from server
+    // API call + refresh from server. Paginated DnD is always anchor-based;
+    // position is deliberately absent from the wire request.
     try {
-      await api.moveCard(cardId, {
-        status: targetStatus,
-        position: targetPosition,
-      });
+      await apiRef.current.moveCard(cardId, destination.request);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to move card');
-    }
-    // Always refresh to ensure sync
-    if (currentBoard) {
-      const freshColumns = await api.getBoardColumns(currentBoard.id, showArchived);
-      setColumns(freshColumns);
+    } finally {
+      refreshColumns();
     }
   };
 
@@ -290,15 +450,15 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
 
   const handleConclusionSubmit = async () => {
     if (!conclusionPending || !conclusionText.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()) return;
-    const { cardId, targetStatus, targetPosition } = conclusionPending;
+    const { cardId, destination } = conclusionPending;
+    const { targetStatus, targetIndex } = destination;
 
-    optimisticMoveCard(cardId, targetStatus, targetPosition);
+    optimisticMoveCard(cardId, targetStatus, targetIndex);
     setConclusionPending(null);
 
     try {
-      await api.moveCard(cardId, {
-        status: targetStatus,
-        position: targetPosition,
+      await apiRef.current.moveCard(cardId, {
+        ...destination.request,
         conclusion: conclusionText.trim(),
         completeness: conclusionCompleteness,
         completeness_justification: conclusionCompletenessJustification.trim(),
@@ -308,10 +468,27 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
       toast.success(`Card moved to ${STATUS_LABELS[targetStatus]}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : `Failed to move card to ${STATUS_LABELS[targetStatus]}`);
+    } finally {
+      refreshColumns();
     }
-    if (currentBoard) {
-      const freshColumns = await api.getBoardColumns(currentBoard.id, showArchived);
-      setColumns(freshColumns);
+  };
+
+  const handleCancelSubmit = async (reason: string) => {
+    if (!cancelPending) return;
+    const { cardId, destination } = cancelPending;
+    setCancelPending(null);
+
+    optimisticMoveCard(cardId, 'cancelled', destination.targetIndex);
+    try {
+      await apiRef.current.moveCard(cardId, {
+        ...destination.request,
+        cancellation_reason: reason,
+      });
+      toast.success(`Card moved to ${STATUS_LABELS.cancelled}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to cancel card');
+    } finally {
+      refreshColumns();
     }
   };
 
@@ -319,22 +496,32 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
     openCardModal(cardId);
   };
 
-  const conclusionTargetLabel = conclusionPending ? STATUS_LABELS[conclusionPending.targetStatus] : 'target column';
+  const conclusionTargetLabel = conclusionPending
+    ? STATUS_LABELS[conclusionPending.destination.targetStatus]
+    : 'target column';
+  const totalFilteredCards = CARD_STATUSES.reduce(
+    (total, status) => total + (columnsMeta[status]?.total_filtered ?? (columns[status] ?? []).length),
+    0,
+  );
+  const totalOverallCards = CARD_STATUSES.reduce(
+    (total, status) => total + (columnsMeta[status]?.total_overall ?? (columns[status] ?? []).length),
+    0,
+  );
 
   return (
-    <>
+    <div className="flex h-full min-h-0 flex-col">
       {/* Spec filter bar */}
-      <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+      <div className="mb-3 flex shrink-0 flex-wrap items-center gap-1.5">
         <SearchInput
-          value={cardSearch.query}
-          onChange={cardSearch.setQuery}
+          value={cardSearchQuery}
+          onChange={setCardSearchQuery}
           placeholder="Search cards…"
           testId="cards-search"
           className="mr-2"
         />
-        {cardSearch.query && (
+        {cardSearchQuery && (
           <span className="text-[10px] text-gray-400">
-            {cardSearch.filtered.length} of {flatCards.length} cards
+            {totalFilteredCards} of {totalOverallCards} cards
           </span>
         )}
         <Filter size={14} className="text-gray-400 shrink-0" />
@@ -390,8 +577,6 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
               </div>
               <div className="max-h-48 overflow-y-auto">
                 {specs
-                  .filter((s) => linkedSpecIds.has(s.id))
-                  .filter((s) => !specSearchQuery || s.title.toLowerCase().includes(specSearchQuery.toLowerCase()))
                   .map((s) => {
                     const isSelected = specFilter.has(s.id);
                     return (
@@ -414,7 +599,7 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
                       </button>
                     );
                   })}
-                {specs.filter((s) => linkedSpecIds.has(s.id)).filter((s) => !specSearchQuery || s.title.toLowerCase().includes(specSearchQuery.toLowerCase())).length === 0 && (
+                {specs.length === 0 && (
                   <p className="px-3 py-4 text-xs text-gray-400 text-center">No matching specs</p>
                 )}
               </div>
@@ -448,35 +633,79 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
         </button>
       </div>
 
-      <DndContext
-        sensors={sensors}
-        collisionDetection={rectIntersection}
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDragEnd={handleDragEnd}
-      >
-        <div className="flex gap-4 overflow-x-auto pb-4 h-full">
-          {CARD_STATUSES.map((status) => (
-            <KanbanColumn
-              key={status}
-              status={status}
-              cards={filteredColumns[status] || []}
-              onCardClick={handleCardClick}
-              onAddCard={handleAddCard}
-              nameMap={nameMap}
-              cognitiveBadges={cognitiveBadges}
-            />
-          ))}
+      {columnsError && (
+        <div role="alert" className="mb-3 flex shrink-0 items-center justify-between rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
+          <span>{columnsError}</span>
+          <button type="button" onClick={refreshColumns} className="font-medium underline underline-offset-2">
+            Retry
+          </button>
         </div>
+      )}
+      {columnsLoading && (
+        <p role="status" aria-live="polite" className="mb-2 shrink-0 text-xs text-gray-500">
+          Loading cards…
+        </p>
+      )}
 
-        <DragOverlay>
-          {activeCard && (
-            <div className="kanban-card shadow-lg rotate-2">
-              <h4 className="font-medium text-sm">{activeCard.title}</h4>
-            </div>
-          )}
-        </DragOverlay>
-      </DndContext>
+      <div className="min-h-0 flex-1 overflow-hidden" aria-busy={columnsLoading}>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={rectIntersection}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+        >
+          <div className="flex h-full gap-4 overflow-x-auto overflow-y-hidden pb-4">
+            {CARD_STATUSES.map((status) => {
+              const initialCards = visibleColumns[status] || [];
+              const totalCount = columnsMeta[status]?.total_filtered;
+              const sharedProps = {
+                status,
+                totalCount,
+                cardTypeFacets: columnsMeta[status]?.facets.card_type,
+                activeCardTypes: cardTypeFilters[status],
+                onToggleCardType: (type: KanbanCardFilterType) => toggleCardTypeFilter(status, type),
+                onCardClick: handleCardClick,
+                onAddCard: handleAddCard,
+                nameMap,
+                cognitiveBadges,
+              };
+
+              if (activeViewAllStatus === status) {
+                return (
+                  <KanbanColumnPage
+                    key={status}
+                    {...sharedProps}
+                    boardId={boardId}
+                    query={columnsQuery}
+                    initialCards={initialCards}
+                    onItemsChange={handleColumnPageItems}
+                    onCollapse={collapseColumnPage}
+                  />
+                );
+              }
+
+              return (
+                <KanbanColumn
+                  key={status}
+                  {...sharedProps}
+                  cards={initialCards}
+                  canViewAll={(totalCount ?? initialCards.length) > initialCards.length}
+                  onViewAll={() => handleViewAll(status)}
+                />
+              );
+            })}
+          </div>
+
+          <DragOverlay>
+            {activeCard && (
+              <div className="kanban-card shadow-lg rotate-2">
+                <h4 className="font-medium text-sm">{activeCard.title}</h4>
+              </div>
+            )}
+          </DragOverlay>
+        </DndContext>
+      </div>
 
       {/* Card Detail Modal */}
       <CardModal boardId={boardId} />
@@ -489,6 +718,14 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
           onClose={() => setCreateCardStatus(null)}
         />
       )}
+
+      {/* Cancellation justification modal (ITEM 17) — drop on the Cancelled column */}
+      <CancellationReasonDialog
+        open={!!cancelPending}
+        entityLabel="card"
+        onConfirm={handleCancelSubmit}
+        onCancel={() => setCancelPending(null)}
+      />
 
       {/* Execution report modal — shown when moving execution work to Validation/Done */}
       {conclusionPending && (
@@ -585,6 +822,6 @@ export function KanbanBoard({ boardId }: KanbanBoardProps) {
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }

@@ -27,9 +27,11 @@
 - [Platform Surface](#platform-surface)
 - [Get Started](#get-started)
 - [Connect an AI Coding Agent](#connect-an-ai-coding-agent)
+- [Token Usage](#token-usage)
 - [Core Workflow](#core-workflow)
 - [Governance Gates](#governance-gates)
 - [Knowledge Graph](#knowledge-graph)
+- [Architecture](#architecture)
 - [CLI Reference](#cli-reference)
 - [Run with Docker](#run-with-docker)
 - [Data Storage](#data-storage)
@@ -37,6 +39,15 @@
 - [Troubleshooting](#troubleshooting)
 - [Release Notes](#release-notes)
 - [License](#license)
+
+**Reference documents**
+
+| Document | Contents |
+| --- | --- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Dependency owner matrix, adapter source map and the **port → adapter matrix** |
+| [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md) | Full changeset per version |
+| [`docs/TOKEN-USAGE.md`](docs/TOKEN-USAGE.md) | Measured MCP context cost for agents |
+| [`docs/kg-health.md`](docs/kg-health.md) | Knowledge Graph health signals and triage |
 
 ## What is Okto Pulse?
 
@@ -52,16 +63,22 @@ Every stage has structured artifacts, lineage, status transitions and validation
 
 ## Platform Surface
 
-Current 0.2.6 surface:
+Current 0.3.0 surface:
 
 | Surface | Count |
 | --- | ---: |
 | Governance gates | 17 |
-| Core MCP tools | 215 |
+| Core MCP tools | 281 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 215 |
+| MCP tools exposed by `okto-pulse serve` | 281 |
 
-The community package mounts the full `okto-pulse-core` MCP server. That means installed community runtimes expose the complete core tool catalog while keeping the CLI, frontend and packaging layer separate from the core engine.
+The community package materializes the full `okto-pulse-core` command catalog in
+its FastMCP host. That means installed community runtimes expose the complete
+core tool catalog while keeping the CLI, frontend and packaging layer separate
+from the core engine. The MCP count is measured from the transport-neutral Core
+catalog at implementation time;
+Community adds operational resources and adapters, not extra community-only MCP
+tools.
 
 ## Get Started
 
@@ -142,6 +159,15 @@ If you change the MCP port, regenerate the file:
 okto-pulse init --agents
 ```
 
+## Token Usage
+
+Connecting an agent over MCP has a fixed context cost (the tool catalogue) plus a variable cost
+(tool responses). Response projections — `summary`, `detail`, `full` — let you trade detail for
+tokens.
+
+**→ [Measured token usage](docs/TOKEN-USAGE.md)** — fixed cost per connection, on-demand resources,
+variable response cost and ballpark session profiles.
+
 ## Core Workflow
 
 Okto Pulse is intentionally workflow-first. Each stage answers a different question.
@@ -199,6 +225,29 @@ Operational health is visible through:
 - MCP health tools
 - dead-letter and queue metrics
 - graph database runtime settings in the board settings panel
+
+`GET /health` is a liveness endpoint: it always keeps the backward-compatible
+HTTP 200 and `status: "healthy"` contract while the process can answer requests.
+Relational readiness/integrity is reported separately through
+`integrity_status` and `findings.sprint_origin_integrity`. A missing sprint
+lineage foreign key with clean data is `degraded`; an invalid lineage row or a
+probe failure is `critical`. The finding is diagnostic and read-only. Direct SQL
+repair is unsupported; use application workflows or a verified backup/restore
+procedure.
+
+## Architecture
+
+Okto Pulse ships as two packages: **`okto-pulse-core`** owns the SDLC domain, the governance gates
+and the Knowledge Graph contracts as pure `Protocol` seams; **`okto-pulse`** (this package) owns
+every concrete mechanism — SQLite, Kùzu/LadybugDB, the filesystem, the scheduler, telemetry state,
+the REST app and the MCP host.
+
+Core never imports Community. Community fills the ports at startup, and an unfilled slot **fails
+closed** rather than falling back to a silent default.
+
+**→ [Architecture in full](docs/ARCHITECTURE.md)** — dependency owner matrix (AF-05/AF40),
+registration flow, the adapter source map, and the **port → adapter matrix** showing which core
+contract each of the 115 adapter modules implements.
 
 ## CLI Reference
 
@@ -260,7 +309,7 @@ docker compose up -d
 | `KG_BASE_DIR` | derived from `DATA_DIR` | Per-board graph database location. |
 | `HF_HOME` | `~/.cache/huggingface` | Sentence-transformers model cache. |
 | `MCP_TRACE_ENABLED` | unset | Set to `1` to record MCP calls for replay testing. |
-| `MCP_TRACE_DIR` | `${DATA_DIR}/mcp_traces` | Trace output directory when tracing is enabled. |
+| `MCP_TRACE_DIR` | `${KG_BASE_DIR}/mcp_traces` | Trace output directory when tracing is enabled; falls back to `./mcp_traces` when `KG_BASE_DIR` is unset. |
 
 ## Data Storage
 
@@ -358,90 +407,42 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-### 0.2.6 - current
+**Current: 0.3.0** — Community absorbed every concrete adapter the core shed during its hexagonal
+decontamination, and became the sole owner of mechanism. 63 commits over `v0.2.6`.
 
-Changeset:
+**→ [Full release notes](docs/RELEASE-NOTES.md)** — 0.3.0 changeset in detail, plus 0.2.6, 0.2.5,
+0.2.3, 0.2.2, 0.2.1 and 0.2.0.
 
-- **Packages `okto-pulse-core` 0.2.6** — the community runtime carries the hardened Architecture Design propagation contract: active critic findings, unavailable verdicts and revalidation blockers fail closed; acknowledgement remains audit-only; legacy propagation diagnostics stay read-only.
-- **Packaged runtime exposes the canonical architecture critic** — `okto-pulse serve` ships the `0.2.6` API surface where `/api/v1/architecture/validate` returns structured warnings used by the propagation/resource-gate policy, so UI and MCP clients see the same blocking decision as the backend.
-- **Architecture UI keeps entity authoring available** — selecting an inherited read-only architecture no longer hides `New` or Excalidraw import for editable ideations/refinements/specs. The inherited design remains read-only, while users can create direct architecture for the current entity.
-- **Card Knowledge snapshots no longer duplicate inherited context** — the card Knowledge tab de-duplicates effective inherited KBs against already-copied card snapshots using source ids, not only card-local ids.
-- **Release pins are aligned to 0.2.6** — `Dockerfile`, `docker-compose.prod.yml` and `uv.lock` now point to `okto-pulse`/`okto-pulse-core` 0.2.6 so prod compose and locked installs do not accidentally serve 0.2.5.
-- **Runtime and regression coverage** — focused frontend tests cover inherited architecture authoring availability and card Knowledge de-duplication, alongside the core 0.2.6 propagation/resource-gate tests. The installed package was smoke-tested with API `0.2.6`, MCP listening on the configured port and the rebuilt frontend bundle served by the local runtime.
+## SaaS Closure Audit
 
-### 0.2.5
+The executable ownership matrix is generated by `okto-pulse-saas-closure`. Every transitional budget must remain zero; the command fails closed on import, dependency, adapter, wheel, or documentation drift.
 
-Scope is taken from the finalized specs on the **Okto Pulse 0.2.5** board and the `feature/0.2.5` branch diff over `feature/0.2.3`: `182 files changed, +16,113 / -10,922`. This release packages the 0.2.5 core engine and adds the UI needed to operate its new governance, KG, metrics and Design System surfaces.
+<!-- AF33-CAPSTONE-MATRIX:BEGIN -->
+| Surface | Core contract | Community/local adapter | SaaS swap target | Executable gates |
+| --- | --- | --- | --- | --- |
+| Relational runtime | repository/UoW and schema lifecycle ports; no ad-hoc dialect or engine/session factory bypass | SQLite/SQLAlchemy adapters in community.adapters.sqlalchemy_* and relational_schema_lifecycle | SQLite -> Aurora/Postgres | run_relational_residue_gate, audit_dependency_conformance, audit_community_core_import_boundary |
+| KG graph runtime | KG interfaces, policies and adapter-neutral schema compatibility helpers | LadybugDB/Kuzu adapters in community.adapters.kuzu_* and global_discovery_runtime | LadybugDB/Kuzu -> Neptune | audit_dependency_conformance, ImportBoundaryGate, audit_community_core_import_boundary |
+| Durable files and artifacts | StorageProvider, RebuildAuditArtifactStore and CognitivePendingWorkProvider contracts | filesystem storage, upload_dir, rebuild audit storage and cognitive-pending providers | filesystem -> S3 | run_rebuild_audit_storage_gate, run_core_settings_defaults_gate, run_public_config_stability_gate |
+| Telemetry effects | TelemetryPort contracts, event schema and privacy policy | local JSONL store, state files, beacon sender and product telemetry adapters | local telemetry files/API -> AWS telemetry API | run_telemetry_store_ownership_gate, run_telemetry_sender_ownership_gate, run_telemetry_product_ownership_gate |
+| Scheduler/runtime effects | JobSpec, SchedulerControl and KG daily tick policy | APScheduler-backed SingletonSchedulerControl | APScheduler local runtime -> runtime scheduler adapter | SchedulerControlSymbolGate, scheduler_signal_conformance |
+| MCP resources and versions | MCP instruction/resource/version provider ports and stable public catalog | Community resource catalog, capability descriptors and package version wiring | local catalog/version reads -> deployment provider | run_public_config_stability_gate, register_instruction_provider, register_package_version_provider |
+<!-- AF33-CAPSTONE-MATRIX:END -->
 
-- **Board settings were split into clearer ownership boundaries** — the Board menu now separates current-board configuration from Global Default configuration, with shared board-gate controls and a dedicated default-template panel for activation, version review, diffs and forward-only application to new boards.
-- **Guidelines defaults and Global Catalog linking** — the Guidelines modal keeps board-local content separate from Global Catalog actions, moves Link/Unlink to catalog rows, surfaces default indicators, supports default guideline template updates and includes contextual help/examples for agent-facing guideline content.
-- **Design System became a first-class surface** — the new Design System menu mirrors the Guidelines pattern with global/inline records, editable content, board Link/Unlink, default selection, count refresh, help/examples and board-level gate configuration instead of hiding the gate in create flows.
-- **Mockups consume Design System evidence** — the Spec mockups tab sends Design System reference/version/evidence to the server so blocking/advisory `MockupDesignSystemGate` results are visible at save time instead of appearing later as opaque resource-gate failures.
-- **KG operations moved from raw health to actionable UI** — KG Health now includes canonical-debt diagnostics, graph controls, canonical partition integrity drilldown and clearer failure states for layer/canonical issues inherited from the core.
-- **Cognitive Action Center** — a new operational view exposes cognitive readiness items, human-only skip/clear actions, bounded metrics and blocker context so closeout work can be handled without reading raw KG internals.
-- **Metrics Publish Health panel** — the Header exposes a redacted health panel for local producer state, publish status, reason codes and AWS/reporting gap visibility, aligned with the new core publish-health DTO.
-- **Bug regression and validation UX polish** — Path B remediation is visible in card modals, test evidence is shown with replayable-evidence fields, unsupported scenario types are flagged explicitly, validation errors explain the relevant gate/scale, and test-card scenario limits are covered before operators hit hidden API failures.
-- **Packaged runtime refreshed** — `okto-pulse serve` now ships the rebuilt frontend bundle for these screens and the community package pulls in the full `okto-pulse-core` 0.2.5 engine changes: KG canonical maturity, canonical debt, cognitive readiness, default board configuration, Design System gates, Path B amendments, metrics publish health and MCP contract hardening.
-
-### 0.2.3
-
-The UI side of the **53-spec 0.2.3 board** — the KG resilience, governance, cognitive and projection work surfaced in the web app. `155 files changed, +19,162 / −4,510` over `0.2.2`, with 13 new frontend modules and the embedded `frontend_dist/` rebuilt to match. Highlights:
-
-- **Knowledge Graph rendering migrated to Sigma.js / WebGL.** `GraphCanvas` drops React Flow + d3-force for the Marginalia stack (Sigma 3 + graphology + ForceAtlas2 in a Web Worker), so the graph stays fluid and responsive into the thousands of nodes. Full parity with the previous canvas (client-side filters and empty states, AC-4 selection matrix, hover tooltip + preview panels, node drag with persisted positions, refit-on-data, dark/light theme, minimap and zoom controls, always-prominent `contradicts` edges) plus new capabilities: animated ForceAtlas2 layout with a "settling" indicator and a Re-run layout button, hover dimming of non-neighbours, and an accessible no-WebGL fallback list that keeps the same selection semantics. The default graph page size was raised from 100 to 500.
-- **KG health view + controls reflecting the signal-clarity model** (`KGHealthView`, `GraphControlsPanel`, `KGHelpContent`), including a Recovery panel for the ceremonial rebuild (preflight → confirm → run, progress-aware drain), orphan integrity, and DLQ with reprocess.
-- **Cognitive consolidation UI (KG-03/03A)** — `CandidateDecisionPanel`, `CognitivePendingBadge` and `KGHealthCognitivePendingPanel` surface pending cognitive items and candidate-decision promotion, with their hooks (`useCandidateDecisions`, `useCognitivePendingBadges`) and telemetry.
-- **Governance-aware board creation** (`CreateBoardModal`, Header board settings) exposing `skip_cognitive_consolidation` and `dlq_auto_drain_enabled`, plus **Q&A badges with role separation** (`QABadge`) and open-Q&A counts across panels.
-- **Analytics IR/OR coverage drilldown UI** with header-metric help, **Metrics On/Off settings UX** (beacon-off modes), and **structured editing for spec entities** (FR/AC/BR/contract structured links).
-- **Sprint & activity consistency** — sprint details counters with inline-editing parity (`sprintDisplayCounts`), readable activity updates for structured objects (`ActivityLogList`), and architecture-diagram connectivity/coverage validation in the editor.
-- **Markdown export fixes** — Architecture design summaries are hydrated into full designs before export in the Ideation/Refinement/Spec/Card modals, so Mermaid diagrams render instead of `architecture_not_renderable`; export also handles structured entities and revoked content. The Discovery FR selector now shows the requirement text rather than just "FR N".
-- **`PulseLoader`** — screen loading now uses the landing-page hero animation.
-- **Serve lifespan self-heals** — `combined_lifespan` (which replaces the core default) now runs the Q&A `answered_at` backfill, the decay-tick catch-up, and the architecture-finding-runs backfill on boot, so fixes that live in the core lifespan actually run in the deployed runtime. `SPAMiddleware` became pure ASGI, removing a cancel scope over SSE.
-- **License** — the internal-platform large-scale exposure threshold drops from 500 to 200 users (clause I(d)(ii)), reflected in `LICENSE`, the About modal Terms of Use and `terms.ts`. The in-product Help was reviewed end-to-end against the current product state.
-- Pulls in all `okto-pulse-core` 0.2.3 engine changes (KG durability lifecycle, recovery & deterministic rebuild, zero-orphan integrity, cognitive consolidation, health honesty + degraded-mode resilience, governance/lineage/gates, the MCP token-budget/projection layer to 215 tools, the bug-regression workflow, structured spec entities and analytics IR/OR coverage). See the `okto-pulse-core` CHANGELOG for engine-level detail.
-
-### 0.2.2
-
-Patch release rolling up four targeted fixes on top of `0.2.1`. Same surface, no migration needed.
-
-- **Sprint Scope tab now renders Integration Requirements and Observability Requirements alongside FR/TR/AC/BR/contracts/scenarios.** The `SprintModal.tsx` source already had the two `ScopeSection` blocks for IR and OR, but the published `0.2.1` bundle had been built before that change reached the source tree — so the two sections were silently missing from the UI even though the backend was returning them. `feature/0.2.2` ships a rebuilt `frontend_dist/` and verifies the parity in the Sprint Scope tab via a live Playwright check on `[E2E-IR-OR-PARITY] Sprint 1`.
-- **`okto-pulse serve` no longer gets stuck behind a stale lock after a crash or reboot.** `ServeInstanceLock` now stamps a periodic `heartbeat_at` (every 30s by default, TTL 120s) and accepts the lock as orphaned when the heartbeat is stale — even if the recorded PID is still alive, since the operating system may have recycled that PID after a hard restart. Legacy lock files written by a pre-heartbeat version fall back to the existing PID-only liveness check, so upgrading is safe. The operator-facing error message now tells you to wait for the TTL to elapse instead of having to delete the file manually.
-- **Inherited `okto-pulse-core` SDLC E2E gate polish from `feature/0.2.2`** — `submit_spec_validation` now runs the AC → test-scenario coverage gate as a pre-requisite (so uncovered ACs no longer trap a spec inside a successful validation lock); the "FR has no business rule" error message uses an `[i]` index marker instead of the duplicated `FR1: FR2:` label; `okto_pulse_link_task target_type='decision'` returns the `saturation` envelope like the other six target types; and `okto_pulse_evaluate_ideation` documents the `status='evaluating'` pre-requisite up front.
-- **Guided help follow-ups + sprint modal touch-ups** — refinements to the guided help engine (skip-all clearing, restart flow, anchoring inside modals and overlays), small SprintModal additions, knowledge empty-state polish, header/agents-modal tweaks. The packaged `frontend_dist/` was rebuilt to ship all of the above together.
-
-### 0.2.1
-
-Branch changelog for `feature/0.2.1`:
-
-- Bumps the community package to `0.2.1` and refreshes the embedded frontend bundle so `okto-pulse serve` ships the current UI directly from the Python package.
-- Adds local-first product metrics: opt-in prompt, Metrics settings panel, local-only/disabled/anonymous-beacon modes, local event storage, export/purge/status CLI commands and an hourly anonymous beacon path guarded by explicit consent.
-- Adds a serve lock for the local data directory. `okto-pulse serve` now detects an existing server for the same `DATA_DIR` and refuses to start a second process that could make the embedded Knowledge Graph look empty or lose semantic links.
-- Extends board settings with spec resource automation controls, including explicit toggles for auto-deriving Knowledge Base, Architecture and Mockup resources from specs into downstream work.
-- Adds first-class Integration Requirements (IR) and Observability Requirements (OR) to the spec UI, including dedicated tabs, markdown export, REST client types, permission-aware display and task coverage/linking surfaces.
-- Hardens the Architecture editor with a visual registry, semantic normalization, Excalidraw import preflight, payload validation, light/dark visual regression snapshots and safer diagram rendering.
-- Adds the guided help engine: tour registry, contextual popovers, anchor positioning, persistent progress, telemetry events and the Help -> Guided tours surface for Replay, Reset, Skip step and Skip all flows.
-- Fixes the guided help restart and anchoring path after validation: the Help panel now opens directly on Guided tours, `Restart all` is visible, Skip all can be cleared globally, and popovers anchor correctly inside modals, overlays and dynamic or empty-state surfaces.
-- Adds verified tours for Board navigation, Spec resources, Task validation, Metrics, Agents, Knowledge Graph and Help. The final served bundle was checked with Playwright screenshots under `.codex-artifacts/guided-help/`.
-- Updates the packaged frontend assets again after the guided-help fixes so the installed `frontend_dist` and the source build are aligned.
-- Pulls in the `okto-pulse-core` 0.2.1 engine changes: first-class IR/OR data model and permissions, service-layer spec resource propagation, local-first telemetry, consolidated MCP list handlers, lazy MCP resources, schema-generation pilot, activity-log cursor pagination and regression coverage.
-- Inherits the `okto-pulse-core` SDLC E2E gate polish from the same branch: `submit_spec_validation` now runs the AC → test-scenario coverage gate as a pre-requisite (so uncovered ACs no longer trap a spec inside a successful validation lock); the "FR has no business rule" error message uses an `[i]` index marker instead of the duplicated `FR1: FR2:` label; `okto_pulse_link_task target_type='decision'` returns the `saturation` envelope like the other six target types; and `okto_pulse_evaluate_ideation` documents the `status='evaluating'` pre-requisite up front. See `okto-pulse-core` CHANGELOG for details.
-- Hardens the `okto-pulse serve` single-instance guard against stale lock files left by abrupt shutdowns. The lock now writes a periodic `heartbeat_at` timestamp (every 30s by default) and a fresh acquirer treats a lock with a heartbeat older than the TTL (120s by default) as orphaned — even if the recorded PID is still alive, since the operating system may have recycled that PID after a reboot. Legacy locks without a heartbeat fall back to the previous PID-only check, so upgrading from an older version is safe. Operators who run into the error now see the heartbeat TTL in the message and can wait it out instead of having to delete the lock file manually.
-
-### 0.2.0
-
-Branch changelog for `feature/0.2.0`:
-
-- Adds Stories and Topics as optional pre-ideation intake, with topic filtering, lifecycle actions, Story modals, topic selection persistence across refreshes and Story-to-Ideation linking.
-- Adds Resource Gate UI coverage for Architecture, Mockups and Knowledge Base readiness, including N/A/provided states, clear actions, validation feedback and modal refresh parity.
-- Expands Ideation modals with Knowledge Base and Stories tabs, while preserving linked Refinements and lineage navigation.
-- Improves lineage handling for Story, Ideation, Refinement, Spec, Sprint, Task, Test and Bug flows, including rootless Spec-started flows that do not have an Ideation ancestor.
-- Fixes inline guideline creation paths that could surface 422 responses from `/boards/{board_id}/guidelines`.
-- Hardens bug/test traceability in the UI and bundled API contracts, including Bug origin and regression coverage relationships produced by the deterministic KG worker.
-- Adds an Evidence tab to Test card modals so users can audit linked scenario evidence, coverage gaps and `latest_evidence` fallback data directly from the card.
-- Updates the Knowledge Graph view so node filters can request a server-side `type` filtered graph page, edge filters include `originates_from` and `covered_by`, and node counters distinguish visible, loaded and total KG nodes.
-- Adds graph/runtime settings surfaces and diagnostics for KG health, graph database sizing, queue/dead-letter state and historical consolidation.
-- Rebuilds and embeds the current frontend assets in the Python package so `okto-pulse serve` ships the updated 0.2.0 UI.
-
-For a complete history, see the GitHub releases for this repository and `okto-pulse-core`.
+<!-- F16-SAAS-CLOSURE:BEGIN -->
+| F16 executable surface | Owner | Observed | Terminal target |
+| --- | --- | ---: | ---: |
+| Core import rows | Core | 5344 | classified |
+| Community-to-Core import rows | Community | 723 | classified |
+| Direct dependency rows | Distribution owner | 23 | classified |
+| `import_boundary_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `singleton_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `dependency_temporary_exceptions` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `graph_runtime_compatibility` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `rebuild_artifact_compatibility` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `community_private_reach_ins` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `community_adapter_bridges` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+| `af35_relational_residue` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
+<!-- F16-SAAS-CLOSURE:END -->
 
 ## License
 

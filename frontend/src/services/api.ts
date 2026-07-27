@@ -12,7 +12,6 @@ import type {
   ShareBoardRequest,
   UpdateShareRequest,
   Card,
-  CardSummary,
   CreateCardRequest,
   UpdateCardRequest,
   MoveCardRequest,
@@ -29,11 +28,13 @@ import type {
   BoardDesignSystemEffectiveResponse,
   CreateDesignSystemRequest,
   DesignSystem,
+  DesignSystemListPage,
   SetDefaultDesignSystemRequest,
   UpdateDesignSystemRequest,
   CreateAmendmentRevisionRequest,
   AssociateAmendmentArtifactsRequest,
   Agent,
+  AgentRevealResponse,
   AgentSummary,
   AgentBoardGrant,
   CreateAgentRequest,
@@ -46,6 +47,12 @@ import type {
   CreateCommentRequest,
   UpdateCommentRequest,
   CardStatus,
+  CardType,
+  ColumnPageResponse,
+  ColumnsOptInResponse,
+  LookupPage,
+  AllowedTransitionEntityType,
+  AllowedTransitionsResponse,
   Spec,
   SpecStructuredEntityMutationRequest,
   SpecStructuredEntityMutationResult,
@@ -110,10 +117,107 @@ import type {
   ResourceGateEntityType,
   ResourceGateResourceType,
   ResourceGateSummary,
+  EffectiveResourcesOptions,
   EffectiveResourcesResponse,
   MarkResourceNotApplicableRequest,
   ClearResourceNotApplicableRequest,
+  CardCreateKnowledgeMutationResponse,
+  DeriveSpecKnowledgeRequest,
+  DeriveSpecKnowledgeResponse,
+  KnowledgeAssignmentDropRequest,
+  KnowledgeAssignmentRefreshRequest,
+  KnowledgeAssignmentReplaceRequest,
+  KnowledgeMutationResponse,
+  KnowledgeRefreshResponse,
+  KnowledgeTechnicalReadResponse,
 } from '@/types';
+
+export interface BoardColumnsQuery {
+  perColumnLimit?: number;
+  specIds?: string[];
+  includeUnlinked?: boolean;
+  cardTypesByStatus?: Partial<Record<CardStatus, CardType[]>>;
+  search?: string;
+  assigneeId?: string;
+  includeArchived?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface PageEnvelope<T> {
+  items: T[];
+  total_filtered: number;
+  total_overall: number;
+  offset: number;
+  limit: number;
+}
+
+export interface PageWindow {
+  offset: number;
+  limit: 25 | 50 | 100;
+  signal?: AbortSignal;
+}
+
+export type StoryPageItem = Omit<
+  StorySummary,
+  'pre_archive_status' | 'screen_mockups' | 'ideation_links'
+> & {
+  screen_mockups_count: number;
+};
+
+export type BoardRefinementPageItem = RefinementSummary & {
+  ideation_title: string;
+};
+
+export interface SprintPageItem {
+  id: string;
+  spec_id: string;
+  board_id: string;
+  title: string;
+  description: string | null;
+  objective: string | null;
+  expected_outcome: string | null;
+  status: 'draft' | 'active' | 'review' | 'closed' | 'cancelled';
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  archived: boolean;
+}
+
+function isCardCreateKnowledgeMutationResponse(
+  response: Card | CardCreateKnowledgeMutationResponse,
+): response is CardCreateKnowledgeMutationResponse {
+  return (
+    typeof response === 'object'
+    && response !== null
+    && 'contract_version' in response
+    && response.contract_version === 2
+    && 'card' in response
+  );
+}
+
+function boardColumnsParams(
+  options: BoardColumnsQuery,
+  column?: CardStatus,
+  offset?: number,
+): URLSearchParams {
+  const params = new URLSearchParams({
+    per_column_limit: String(options.perColumnLimit ?? 10),
+  });
+  const specIds = [...(options.specIds ?? [])];
+  if (options.includeUnlinked) specIds.push('__unlinked__');
+  if (specIds.length > 0) params.set('spec_ids', specIds.join(','));
+  for (const [status, types] of Object.entries(options.cardTypesByStatus ?? {})) {
+    if (types && types.length > 0) {
+      params.append('card_types', `${status}:${types.join(',')}`);
+    }
+  }
+  if (options.search?.trim()) params.set('search', options.search.trim());
+  if (options.assigneeId) params.set('assignee_id', options.assigneeId);
+  if (options.includeArchived) params.set('include_archived', 'true');
+  if (column) params.set('column', column);
+  if (offset !== undefined) params.set('offset', String(offset));
+  return params;
+}
 
 type StructuredSpecItemField =
   | 'business_rules'
@@ -190,14 +294,47 @@ export function useDashboardApi() {
       await apiClient.fetch(`/boards/${boardId}`, { method: 'DELETE' });
     },
 
-    async getBoardColumns(boardId: string, includeArchived?: boolean): Promise<Record<CardStatus, CardSummary[]>> {
-      const p = new URLSearchParams();
-      if (includeArchived) p.set('include_archived', 'true');
-      const qs = p.toString() ? `?${p.toString()}` : '';
-      const response = await apiClient.fetchJson<{ board_id: string; columns: Record<CardStatus, CardSummary[]> }>(
-        `/boards/${boardId}/columns${qs}`
+    async getBoardColumns(
+      boardId: string,
+      options: BoardColumnsQuery | boolean = {},
+    ): Promise<ColumnsOptInResponse> {
+      const normalized = typeof options === 'boolean'
+        ? { includeArchived: options }
+        : options;
+      const params = boardColumnsParams(normalized);
+      return apiClient.fetchJson<ColumnsOptInResponse>(
+        `/boards/${boardId}/columns?${params.toString()}`,
+        { signal: normalized.signal },
       );
-      return response.columns;
+    },
+
+    async getBoardColumnPage(
+      boardId: string,
+      column: CardStatus,
+      offset: number,
+      options: BoardColumnsQuery = {},
+    ): Promise<ColumnPageResponse> {
+      const params = boardColumnsParams(options, column, offset);
+      return apiClient.fetchJson<ColumnPageResponse>(
+        `/boards/${boardId}/columns?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async getAllowedTransitions(
+      boardId: string,
+      params: {
+        entity_type: AllowedTransitionEntityType;
+        entity_id?: string;
+        current_status?: string;
+      },
+    ): Promise<AllowedTransitionsResponse> {
+      const p = new URLSearchParams({ entity_type: params.entity_type });
+      if (params.entity_id) p.set('entity_id', params.entity_id);
+      if (params.current_status) p.set('current_status', params.current_status);
+      return apiClient.fetchJson<AllowedTransitionsResponse>(
+        `/boards/${boardId}/allowed-transitions?${p.toString()}`
+      );
     },
 
     async getLineageGraph(
@@ -231,11 +368,40 @@ export function useDashboardApi() {
       boardId: string,
       entityType: ResourceGateEntityType,
       entityId: string,
+      options: EffectiveResourcesOptions = {},
     ): Promise<EffectiveResourcesResponse> {
-      const p = new URLSearchParams({ board_id: boardId });
-      return apiClient.fetchJson<EffectiveResourcesResponse>(
+      // Existing feature surfaces still consume the historical hydrated map.
+      // Request it explicitly during rolling upgrades; the shared Knowledge
+      // Workspace opts into the bounded v2 projections below.
+      const profile = options.profile || 'legacy';
+      const p = new URLSearchParams({ board_id: boardId, profile });
+      if (options.cursor) p.set('cursor', options.cursor);
+      if (options.limit !== undefined) p.set('limit', String(options.limit));
+      const response = await apiClient.fetchJson<Partial<EffectiveResourcesResponse>>(
         `/resource-gate/${entityType}/${entityId}/effective-resources?${p.toString()}`
       );
+      const hasBoundedItems = Array.isArray(response.items);
+      const hasLegacyResources = Boolean(
+        response.resources
+        && typeof response.resources === 'object',
+      );
+      // An older server ignores the bounded profile parameters and returns the
+      // historical hydrated map without a profile discriminator. Preserve that
+      // truth instead of labelling the eager response as summary/detail.
+      const responseProfile = response.profile
+        || (hasLegacyResources && !hasBoundedItems ? 'legacy' : profile);
+      return {
+        ...response,
+        board_id: response.board_id || boardId,
+        entity_type: response.entity_type || entityType,
+        entity_id: response.entity_id || entityId,
+        profile: responseProfile,
+        resources: response.resources || {
+          architecture: [],
+          mockup: [],
+          knowledge_base: [],
+        },
+      };
     },
 
     async markResourceNotApplicable(
@@ -292,10 +458,15 @@ export function useDashboardApi() {
     // ==================== CARDS ====================
 
     async createCard(boardId: string, data: CreateCardRequest): Promise<Card> {
-      return apiClient.fetchJson<Card>(`/boards/${boardId}/cards`, {
+      const response = await apiClient.fetchJson<
+        Card | CardCreateKnowledgeMutationResponse
+      >(`/boards/${boardId}/cards`, {
         method: 'POST',
         body: JSON.stringify(data),
       });
+      return isCardCreateKnowledgeMutationResponse(response)
+        ? response.card
+        : response;
     },
 
     async getCard(cardId: string): Promise<Card> {
@@ -322,6 +493,53 @@ export function useDashboardApi() {
 
     async getCardActivity(cardId: string): Promise<ActivityLogEntry[]> {
       return apiClient.fetchJson<ActivityLogEntry[]>(`/cards/${cardId}/activity`);
+    },
+
+    async getCardKnowledgeAssignments(
+      cardId: string,
+    ): Promise<KnowledgeTechnicalReadResponse> {
+      return apiClient.fetchJson<KnowledgeTechnicalReadResponse>(
+        `/cards/${cardId}/knowledge-assignments`,
+      );
+    },
+
+    async replaceCardKnowledgeAssignments(
+      cardId: string,
+      data: KnowledgeAssignmentReplaceRequest,
+    ): Promise<KnowledgeMutationResponse> {
+      return apiClient.fetchJson<KnowledgeMutationResponse>(
+        `/cards/${cardId}/knowledge-assignments`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(data),
+        },
+      );
+    },
+
+    async dropCardKnowledgeAssignments(
+      cardId: string,
+      data: KnowledgeAssignmentDropRequest,
+    ): Promise<KnowledgeMutationResponse> {
+      return apiClient.fetchJson<KnowledgeMutationResponse>(
+        `/cards/${cardId}/knowledge-assignments/drop`,
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+        },
+      );
+    },
+
+    async refreshCardKnowledgeAssignments(
+      cardId: string,
+      data: KnowledgeAssignmentRefreshRequest,
+    ): Promise<KnowledgeRefreshResponse> {
+      return apiClient.fetchJson<KnowledgeRefreshResponse>(
+        `/cards/${cardId}/knowledge-assignments/refresh`,
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+        },
+      );
     },
 
     async getCardDependencies(cardId: string): Promise<{ id: string; title: string; status: string }[]> {
@@ -496,13 +714,44 @@ export function useDashboardApi() {
     // ==================== DESIGN SYSTEM (spec 3a006f65) ====================
 
     async listDesignSystems(scope = 'global', boardId?: string): Promise<DesignSystem[]> {
-      const params = new URLSearchParams({ scope });
-      if (boardId) params.set('board_id', boardId);
-      return apiClient.fetchJson<DesignSystem[]>(`/design-systems?${params.toString()}`);
+      const items: DesignSystem[] = [];
+      const seenCursors = new Set<string>();
+      let cursor: string | null = null;
+
+      do {
+        const params = new URLSearchParams({ scope, profile: 'summary', limit: '100' });
+        if (boardId) params.set('board_id', boardId);
+        if (cursor) params.set('cursor', cursor);
+        const response = await apiClient.fetchJson<DesignSystemListPage | DesignSystem[]>(
+          `/design-systems?${params.toString()}`,
+        );
+        // Rolling upgrades may briefly pair the new client with the legacy REST
+        // array. Keep the UI compatible while the canonical server contract is
+        // the bounded summary envelope.
+        if (Array.isArray(response)) return response;
+        items.push(...response.items);
+        cursor = response.next_cursor;
+        if (cursor) {
+          if (seenCursors.has(cursor)) {
+            throw new Error('Design System catalog returned a repeated cursor.');
+          }
+          seenCursors.add(cursor);
+        }
+      } while (cursor);
+
+      return items;
     },
 
-    async getDesignSystem(designSystemId: string): Promise<DesignSystem> {
-      return apiClient.fetchJson<DesignSystem>(`/design-systems/${designSystemId}`);
+    async getDesignSystem(
+      designSystemId: string,
+      profile: 'summary' | 'detail' | 'full' = 'full',
+      boardId?: string,
+    ): Promise<DesignSystem> {
+      const params = new URLSearchParams({ profile });
+      if (boardId) params.set('board_id', boardId);
+      return apiClient.fetchJson<DesignSystem>(
+        `/design-systems/${designSystemId}?${params.toString()}`,
+      );
     },
 
     async createDesignSystem(payload: CreateDesignSystemRequest): Promise<DesignSystem> {
@@ -564,6 +813,49 @@ export function useDashboardApi() {
       if (includeArchived) p.set('include_archived', 'true');
       const qs = p.toString() ? `?${p.toString()}` : '';
       return apiClient.fetchJson<SpecSummary[]>(`/boards/${boardId}/specs${qs}`);
+    },
+
+    async listSpecsPage(
+      boardId: string,
+      options: PageWindow & { status?: string; search?: string; includeArchived?: boolean },
+    ): Promise<PageEnvelope<SpecSummary>> {
+      const params = new URLSearchParams({
+        offset: String(options.offset),
+        limit: String(options.limit),
+      });
+      if (options.status) params.set('status', options.status);
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.includeArchived) params.set('include_archived', 'true');
+      return apiClient.fetchJson<PageEnvelope<SpecSummary>>(
+        `/boards/${boardId}/specs?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async lookupSpecs(
+      boardId: string,
+      options: {
+        search?: string;
+        statuses?: string[];
+        offset?: number;
+        limit?: number;
+        linkedToCards?: boolean;
+        includeArchivedCards?: boolean;
+        signal?: AbortSignal;
+      } = {},
+    ): Promise<LookupPage> {
+      const params = new URLSearchParams({
+        offset: String(options.offset ?? 0),
+        limit: String(options.limit ?? 20),
+      });
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.statuses?.length) params.set('status', options.statuses.join(','));
+      if (options.linkedToCards) params.set('linked_to_cards', 'true');
+      if (options.includeArchivedCards) params.set('include_archived_cards', 'true');
+      return apiClient.fetchJson<LookupPage>(
+        `/boards/${boardId}/specs/lookup?${params.toString()}`,
+        { signal: options.signal },
+      );
     },
 
     async getSpec(specId: string): Promise<Spec> {
@@ -866,6 +1158,30 @@ export function useDashboardApi() {
       return apiClient.fetchJson<StorySummary[]>(`/boards/${boardId}/stories${qs}`);
     },
 
+    async listStoriesPage(boardId: string, options: PageWindow & {
+      status?: string;
+      topicId?: string;
+      search?: string;
+      linked?: boolean;
+      converted?: boolean;
+      includeArchived?: boolean;
+    }): Promise<PageEnvelope<StoryPageItem>> {
+      const params = new URLSearchParams({
+        offset: String(options.offset),
+        limit: String(options.limit),
+      });
+      if (options.status) params.set('status', options.status);
+      if (options.topicId) params.set('topic_id', options.topicId);
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.linked !== undefined) params.set('linked', String(options.linked));
+      if (options.converted !== undefined) params.set('converted', String(options.converted));
+      if (options.includeArchived) params.set('include_archived', 'true');
+      return apiClient.fetchJson<PageEnvelope<StoryPageItem>>(
+        `/boards/${boardId}/stories?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
     async getStory(storyId: string): Promise<Story> {
       return apiClient.fetchJson<Story>(`/stories/${storyId}`);
     },
@@ -923,6 +1239,53 @@ export function useDashboardApi() {
       return apiClient.fetchJson<IdeationSummary[]>(`/boards/${boardId}/ideations${qs}`);
     },
 
+    async listIdeationsPage(
+      boardId: string,
+      options: PageWindow & {
+        status?: string;
+        search?: string;
+        derivationPending?: boolean;
+        includeArchived?: boolean;
+      },
+    ): Promise<PageEnvelope<IdeationSummary>> {
+      const params = new URLSearchParams({
+        offset: String(options.offset),
+        limit: String(options.limit),
+      });
+      if (options.status) params.set('status', options.status);
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.derivationPending !== undefined) {
+        params.set('derivation_pending', String(options.derivationPending));
+      }
+      if (options.includeArchived) params.set('include_archived', 'true');
+      return apiClient.fetchJson<PageEnvelope<IdeationSummary>>(
+        `/boards/${boardId}/ideations?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async lookupIdeations(
+      boardId: string,
+      options: {
+        search?: string;
+        statuses?: string[];
+        offset?: number;
+        limit?: number;
+        signal?: AbortSignal;
+      } = {},
+    ): Promise<LookupPage> {
+      const params = new URLSearchParams({
+        offset: String(options.offset ?? 0),
+        limit: String(options.limit ?? 20),
+      });
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.statuses?.length) params.set('status', options.statuses.join(','));
+      return apiClient.fetchJson<LookupPage>(
+        `/boards/${boardId}/ideations/lookup?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
     async getIdeation(ideationId: string): Promise<Ideation> {
       return apiClient.fetchJson<Ideation>(`/ideations/${ideationId}`);
     },
@@ -934,7 +1297,7 @@ export function useDashboardApi() {
       });
     },
 
-    async moveIdeation(ideationId: string, data: { status: IdeationStatus }): Promise<Ideation> {
+    async moveIdeation(ideationId: string, data: { status: IdeationStatus; cancellation_reason?: string }): Promise<Ideation> {
       return apiClient.fetchJson<Ideation>(`/ideations/${ideationId}/move`, {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1048,6 +1411,30 @@ export function useDashboardApi() {
       return apiClient.fetchJson<RefinementSummary[]>(`/ideations/${ideationId}/refinements`);
     },
 
+    async listBoardRefinementsPage(boardId: string, options: PageWindow & {
+      status?: string;
+      search?: string;
+      derivationPending?: boolean;
+      includeArchived?: boolean;
+      labels?: string[];
+    }): Promise<PageEnvelope<BoardRefinementPageItem>> {
+      const params = new URLSearchParams({
+        offset: String(options.offset),
+        limit: String(options.limit),
+      });
+      if (options.status) params.set('status', options.status);
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.derivationPending !== undefined) {
+        params.set('derivation_pending', String(options.derivationPending));
+      }
+      if (options.includeArchived) params.set('include_archived', 'true');
+      if (options.labels?.length) params.set('labels', options.labels.join(','));
+      return apiClient.fetchJson<PageEnvelope<BoardRefinementPageItem>>(
+        `/boards/${boardId}/refinements?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
     async getRefinement(refinementId: string): Promise<Refinement> {
       return apiClient.fetchJson<Refinement>(`/refinements/${refinementId}`);
     },
@@ -1059,7 +1446,7 @@ export function useDashboardApi() {
       });
     },
 
-    async moveRefinement(refinementId: string, data: { status: RefinementStatus }): Promise<Refinement> {
+    async moveRefinement(refinementId: string, data: { status: RefinementStatus; cancellation_reason?: string }): Promise<Refinement> {
       return apiClient.fetchJson<Refinement>(`/refinements/${refinementId}/move`, {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1070,10 +1457,27 @@ export function useDashboardApi() {
       await apiClient.fetch(`/refinements/${refinementId}`, { method: 'DELETE' });
     },
 
-    async deriveSpecFromRefinement(refinementId: string): Promise<Spec> {
-      return apiClient.fetchJson<Spec>(`/refinements/${refinementId}/derive-spec`, {
-        method: 'POST',
-      });
+    async deriveSpecFromRefinement<
+      TRequest extends DeriveSpecKnowledgeRequest | undefined = undefined,
+    >(
+      refinementId: string,
+      data?: TRequest,
+    ): Promise<
+      TRequest extends DeriveSpecKnowledgeRequest
+        ? DeriveSpecKnowledgeResponse
+        : Spec
+    > {
+      type Response = TRequest extends DeriveSpecKnowledgeRequest
+        ? DeriveSpecKnowledgeResponse
+        : Spec;
+      const options: RequestInit = { method: 'POST' };
+      if (data !== undefined) {
+        options.body = JSON.stringify(data);
+      }
+      return apiClient.fetchJson<Response>(
+        `/refinements/${refinementId}/derive-spec`,
+        options,
+      );
     },
 
     async listRefinementHistory(refinementId: string, limit = 50): Promise<RefinementHistoryEntry[]> {
@@ -1212,8 +1616,8 @@ export function useDashboardApi() {
 
     // ==================== AGENTS ====================
 
-    async createAgent(data: CreateAgentRequest): Promise<Agent> {
-      return apiClient.fetchJson<Agent>('/agents', {
+    async createAgent(data: CreateAgentRequest): Promise<AgentRevealResponse> {
+      return apiClient.fetchJson<AgentRevealResponse>('/agents', {
         method: 'POST',
         body: JSON.stringify(data),
       });
@@ -1238,8 +1642,8 @@ export function useDashboardApi() {
       });
     },
 
-    async regenerateAgentKey(agentId: string): Promise<{ message: string; api_key: string }> {
-      return apiClient.fetchJson(`/agents/${agentId}/regenerate-key`, {
+    async regenerateAgentKey(agentId: string): Promise<AgentRevealResponse> {
+      return apiClient.fetchJson<AgentRevealResponse>(`/agents/${agentId}/regenerate-key`, {
         method: 'POST',
       });
     },
@@ -1588,6 +1992,26 @@ export function useDashboardApi() {
       return apiClient.fetchJson(`/boards/${boardId}/sprints${qs ? `?${qs}` : ''}`);
     },
 
+    async listBoardSprintsPage(boardId: string, options: PageWindow & {
+      status?: string;
+      specId?: string;
+      search?: string;
+      includeArchived?: boolean;
+    }): Promise<PageEnvelope<SprintPageItem>> {
+      const params = new URLSearchParams({
+        offset: String(options.offset),
+        limit: String(options.limit),
+      });
+      if (options.status) params.set('status', options.status);
+      if (options.specId) params.set('spec_id', options.specId);
+      if (options.search?.trim()) params.set('search', options.search.trim());
+      if (options.includeArchived) params.set('include_archived', 'true');
+      return apiClient.fetchJson<PageEnvelope<SprintPageItem>>(
+        `/boards/${boardId}/sprints?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
     async createSprint(boardId: string, specId: string, data: any): Promise<any> {
       return apiClient.fetchJson(`/boards/${boardId}/specs/${specId}/sprints`, {
         method: 'POST', body: JSON.stringify(data),
@@ -1616,7 +2040,7 @@ export function useDashboardApi() {
       });
     },
 
-    async moveSprint(sprintId: string, data: { status: string }): Promise<any> {
+    async moveSprint(sprintId: string, data: { status: string; cancellation_reason?: string; expected_version?: number }): Promise<any> {
       return apiClient.fetchJson(`/sprints/${sprintId}/move`, {
         method: 'POST', body: JSON.stringify(data),
       });

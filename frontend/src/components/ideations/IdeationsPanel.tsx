@@ -2,7 +2,7 @@
  * IdeationsPanel - List of ideations for the current board
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Plus,
   Lightbulb,
@@ -20,15 +20,21 @@ import { useDashboardApi } from '@/services/api';
 import type { IdeationSummary, IdeationStatus, IdeationComplexity } from '@/types';
 import { IDEATION_STATUS_LABELS } from '@/types';
 import { sanitizePreview } from '@/lib/sanitizePreview';
-import { useListSearch } from '@/hooks/useListSearch';
 import { SearchInput } from '@/components/shared/SearchInput';
 import { QABadge } from '@/components/shared/QABadge';
+import {
+  DerivationPendingBadge,
+  IDEATION_PENDING_REFINEMENT_LABEL,
+  REFINEMENT_PENDING_SPEC_LABEL,
+} from '@/components/shared/DerivationPendingBadge';
 import { useViewMode } from '@/hooks/useViewMode';
 import { ViewModeToggle } from '@/components/shared/ViewModeToggle';
 import { openLineageGraph } from '@/components/traceability';
 import { CreateIdeationModal } from './CreateIdeationModal';
 import { IdeationModal } from './IdeationModal';
 import { PulseLoader } from '@/components/shared/PulseLoader';
+import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
+import { usePersistedPagination } from '@/hooks/usePersistedPagination';
 
 interface IdeationsPanelProps {
   boardId: string;
@@ -83,33 +89,77 @@ function ScopeBadge({ label, value }: { label: string; value: number }) {
 
 export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
   const api = useDashboardApi();
+  const apiRef = useRef(api);
+  apiRef.current = api;
   const [ideations, setIdeations] = useState<IdeationSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [totalFiltered, setTotalFiltered] = useState(0);
+  const [totalOverall, setTotalOverall] = useState(0);
+  const [reloadKey, setReloadKey] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedIdeationId, setSelectedIdeationId] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('');
+  const [showWithoutDerivation, setShowWithoutDerivation] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const { page, pageSize, setPagination, requestIntent } = usePersistedPagination('ideations');
 
-  const search = useListSearch<IdeationSummary>(ideations, {
-    fields: ['title', 'description', 'problem_statement', 'labels'],
-    urlParam: 'q_ideations',
-  });
   const { viewMode, setViewMode } = useViewMode('ideations', 'list');
 
   useEffect(() => {
-    loadIdeations();
-  }, [boardId, filterStatus, showArchived]);
+    const controller = new AbortController();
+    setLoading(true);
+    setLoadError(null);
+    void apiRef.current.listIdeationsPage(boardId, {
+      status: filterStatus || undefined,
+      search: debouncedSearch || undefined,
+      derivationPending: showWithoutDerivation ? true : undefined,
+      includeArchived: showArchived,
+      offset: requestIntent.offset,
+      limit: requestIntent.limit,
+      signal: controller.signal,
+    }).then((page) => {
+      if (controller.signal.aborted) return;
+      setIdeations(page.items);
+      setTotalFiltered(page.total_filtered);
+      setTotalOverall(page.total_overall);
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      setLoadError(error instanceof Error ? error.message : 'Failed to load ideations');
+      toast.error('Failed to load ideations');
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false);
+    });
+    return () => controller.abort();
+  }, [
+    boardId,
+    filterStatus,
+    debouncedSearch,
+    showWithoutDerivation,
+    showArchived,
+    reloadKey,
+    requestIntent.offset,
+    requestIntent.limit,
+  ]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const next = searchQuery.trim();
+      if (next === debouncedSearch) return;
+      setDebouncedSearch(next);
+      setPagination({ page: 1, pageSize });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery, debouncedSearch, pageSize, setPagination]);
 
   const loadIdeations = async () => {
-    setLoading(true);
-    try {
-      const data = await api.listIdeations(boardId, filterStatus || undefined, showArchived);
-      setIdeations(data);
-    } catch {
-      toast.error('Failed to load ideations');
-    } finally {
-      setLoading(false);
-    }
+    setReloadKey((value) => value + 1);
+  };
+
+  const resetPage = () => {
+    setPagination({ page: 1, pageSize });
   };
 
   const statusFilters = [
@@ -124,18 +174,17 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4 flex shrink-0 items-center justify-between">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Ideations</h2>
           <span className="text-sm text-gray-400">
-            ({search.filtered.length}
-            {search.query ? ` of ${ideations.length}` : ''})
+            ({totalFiltered} of {totalOverall})
           </span>
         </div>
         <div className="flex items-center gap-2">
           <SearchInput
-            value={search.query}
-            onChange={search.setQuery}
+            value={searchQuery}
+            onChange={setSearchQuery}
             placeholder="Search ideations…"
             testId="ideations-search"
           />
@@ -151,11 +200,14 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
       </div>
 
       {/* Status filter pills */}
-      <div className="flex gap-1.5 mb-4 flex-wrap">
+      <div className="mb-4 flex shrink-0 flex-wrap gap-1.5">
         {statusFilters.map((f) => (
           <button
             key={f.value}
-            onClick={() => setFilterStatus(f.value)}
+            onClick={() => {
+              setFilterStatus(f.value);
+              resetPage();
+            }}
             className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
               filterStatus === f.value
                 ? 'bg-accent-500 text-white shadow-sm'
@@ -166,8 +218,26 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
           </button>
         ))}
         <button
-          onClick={() => setShowArchived(!showArchived)}
-          className={`text-xs px-2.5 py-1 rounded-full transition-colors ml-2 ${
+          onClick={() => {
+            setShowWithoutDerivation(!showWithoutDerivation);
+            resetPage();
+          }}
+          className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full transition-colors ml-2 ${
+            showWithoutDerivation
+              ? 'bg-cyan-600 text-white shadow-sm'
+              : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400'
+          }`}
+          data-testid="ideations-no-derivation-filter"
+        >
+          <GitBranch size={12} />
+          No derivation
+        </button>
+        <button
+          onClick={() => {
+            setShowArchived(!showArchived);
+            resetPage();
+          }}
+          className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
             showArchived
               ? 'bg-amber-500 text-white'
               : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400'
@@ -179,7 +249,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
 
       {/* Ideation list */}
       <div
-        className={`flex-1 overflow-y-auto animate-list ${
+        className={`min-h-0 flex-1 overflow-y-auto animate-list ${
           viewMode === 'grid'
             ? 'grid gap-3 grid-cols-1 sm:grid-cols-2 md:grid-cols-3'
             : 'space-y-2'
@@ -188,11 +258,21 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
       >
         {loading ? (
           <PulseLoader size="sm" label="Loading ideations..." />
+        ) : loadError ? (
+          <div className="py-12 text-center text-sm text-red-600" role="alert">
+            Could not load ideations.
+          </div>
         ) : ideations.length === 0 ? (
           <div className="text-center py-12">
             <Lightbulb size={40} className="mx-auto text-gray-300 dark:text-gray-600 mb-3" />
             <p className="text-gray-500 dark:text-gray-400 mb-2">
-              {filterStatus ? 'No ideations with this status' : 'No ideations yet'}
+              {totalFiltered > 0
+                ? `Page ${page} is out of range`
+                : debouncedSearch
+                  ? `No results for “${searchQuery}”`
+                  : showWithoutDerivation
+                    ? 'No ideations without derivation'
+                    : filterStatus ? 'No ideations with this status' : 'No ideations yet'}
             </p>
             <p className="text-sm text-gray-400 dark:text-gray-500 mb-4">
               Ideations are the starting point of your development pipeline
@@ -204,17 +284,8 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
               Create your first ideation
             </button>
           </div>
-        ) : search.filtered.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-gray-500 dark:text-gray-400 mb-2">
-              No results for “{search.query}”
-            </p>
-            <button onClick={search.clear} className="btn btn-ghost text-sm">
-              Clear search
-            </button>
-          </div>
         ) : (
-          search.filtered.map((ideation) => (
+          ideations.map((ideation) => (
             <div
               key={ideation.id}
               onClick={() => setSelectedIdeationId(ideation.id)}
@@ -233,6 +304,15 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
                         {ideation.complexity.charAt(0).toUpperCase() + ideation.complexity.slice(1)}
                       </span>
                     )}
+                    <DerivationPendingBadge
+                      label={showWithoutDerivation
+                        ? ideation.complexity === 'small'
+                          ? REFINEMENT_PENDING_SPEC_LABEL
+                          : ideation.complexity === 'medium' || ideation.complexity === 'large'
+                            ? IDEATION_PENDING_REFINEMENT_LABEL
+                            : null
+                        : null}
+                    />
                     <span className="text-xs text-gray-400">v{ideation.version}</span>
                   </div>
                   <h3 className="font-medium text-gray-900 dark:text-white text-sm truncate">
@@ -314,6 +394,21 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
           ))
         )}
       </div>
+      <AccessiblePaginator
+        page={page}
+        pageSize={pageSize}
+        totalFiltered={totalFiltered}
+        totalOverall={totalOverall}
+        itemCount={ideations.length}
+        loading={loading}
+        error={loadError}
+        onRetry={loadIdeations}
+        onPaginationChange={setPagination}
+        ariaLabel="Ideations pagination"
+        emptyMessage="No ideations match the active filters."
+        className="mt-3 shrink-0"
+        testId="ideations-pagination"
+      />
 
       {/* Modals */}
       {createOpen && (

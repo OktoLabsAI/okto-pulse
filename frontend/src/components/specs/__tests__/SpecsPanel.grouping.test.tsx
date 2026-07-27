@@ -5,7 +5,10 @@ import type { IdeationSummary, SpecSummary } from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   listSpecs: vi.fn(),
+  listSpecsPage: vi.fn(),
   listIdeations: vi.fn(),
+  lookupIdeations: vi.fn(),
+  listBoardRefinementsPage: vi.fn(),
   getIdeation: vi.fn(),
   archiveTree: vi.fn(),
   restoreTree: vi.fn(),
@@ -107,8 +110,44 @@ describe('SpecsPanel grouping modes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    window.history.replaceState({}, '', '/');
     apiMock.listSpecs.mockResolvedValue(specs);
+    apiMock.listSpecsPage.mockResolvedValue({
+      items: specs,
+      total_filtered: specs.length,
+      total_overall: specs.length,
+      offset: 0,
+      limit: 25,
+    });
     apiMock.listIdeations.mockResolvedValue(ideations);
+    apiMock.lookupIdeations.mockResolvedValue({
+      items: ideations.map(({ id, title, status }) => ({ id, title, status })),
+      total: ideations.length,
+      offset: 0,
+      limit: 50,
+    });
+    apiMock.listBoardRefinementsPage.mockResolvedValue({
+      items: [{
+        id: 'ref-1',
+        ideation_id: 'idea-1',
+        ideation_title: 'Ideation Alpha',
+        board_id: 'board-1',
+        title: 'Refinement Alpha',
+        description: null,
+        status: 'approved',
+        version: 1,
+        assignee_id: null,
+        created_by: 'user-1',
+        created_at: '2026-05-04T00:00:00Z',
+        updated_at: '2026-05-04T00:00:00Z',
+        labels: null,
+        archived: false,
+      }],
+      total_filtered: 1,
+      total_overall: 1,
+      offset: 0,
+      limit: 100,
+    });
     apiMock.getIdeation.mockImplementation((id: string) => Promise.resolve({
       id,
       title: id === 'idea-1' ? 'Ideation Alpha' : 'Ideation Beta',
@@ -209,5 +248,34 @@ describe('SpecsPanel grouping modes', () => {
 
     expect(screen.getByTestId('specs-group-mode')).toHaveValue('parents');
     expect(localStorage.getItem(groupModeKey('board-1'))).toBeNull();
+  });
+
+  it('requests one new server page per paginator interaction', async () => {
+    apiMock.listSpecsPage.mockImplementation(async (_boardId: string, options: { offset: number; limit: number }) => ({
+      items: options.offset === 0 ? specs : [],
+      total_filtered: 51,
+      total_overall: 51,
+      offset: options.offset,
+      limit: options.limit,
+    }));
+
+    render(<SpecsPanel boardId="board-1" />);
+    await waitFor(() => expect(apiMock.listSpecsPage).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+
+    await waitFor(() => expect(apiMock.listSpecsPage).toHaveBeenCalledTimes(2));
+    expect(apiMock.listSpecsPage).toHaveBeenLastCalledWith(
+      'board-1',
+      expect.objectContaining({ offset: 25, limit: 25 }),
+    );
+
+    fireEvent.change(screen.getByTestId('specs-search'), { target: { value: 'server spec' } });
+
+    await waitFor(() => expect(apiMock.listSpecsPage).toHaveBeenCalledTimes(3));
+    expect(apiMock.listSpecsPage).toHaveBeenLastCalledWith(
+      'board-1',
+      expect.objectContaining({ search: 'server spec', offset: 0, limit: 25 }),
+    );
   });
 });

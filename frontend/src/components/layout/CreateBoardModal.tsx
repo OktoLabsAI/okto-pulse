@@ -8,6 +8,7 @@ import toast from 'react-hot-toast';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface CreateBoardModalProps {
   isOpen: boolean;
@@ -21,6 +22,8 @@ export function CreateBoardModal({ isOpen, onClose }: CreateBoardModalProps) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  useEscapeToClose(onClose, { enabled: isOpen });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

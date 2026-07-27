@@ -40,6 +40,7 @@ import {
   type ArchitectureVisualIcon,
   type ArchitectureVisualTheme,
 } from './architectureVisualRegistry';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 type DiagramMode = 'visual' | 'raw';
 type ConnectionType = 'direct' | 'elbow';
@@ -449,6 +450,11 @@ export function ArchitectureDiagramEditor({
   const [isPanning, setIsPanning] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [detailsElementId, setDetailsElementId] = useState('');
+
+  useEscapeToClose(() => setDetailsElementId(''), {
+    enabled: Boolean(detailsElementId),
+    priority: 10,
+  });
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);

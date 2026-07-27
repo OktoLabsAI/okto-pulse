@@ -45,6 +45,10 @@ const markdownMock = vi.hoisted(() => ({
   markdownFilenameForCard: vi.fn(() => 'bug_bug-traceability-is-hidden.md'),
 }));
 
+const cardKnowledgeTabMock = vi.hoisted(() => ({
+  render: vi.fn(),
+}));
+
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
@@ -92,7 +96,28 @@ vi.mock('@/components/specs/SpecModal', () => ({
 }));
 
 vi.mock('../CardKnowledgeTab', () => ({
-  CardKnowledgeTab: () => <div />,
+  CardKnowledgeTab: (props: { onBusyChange?: (busy: boolean) => void }) => {
+    cardKnowledgeTabMock.render(props);
+    return (
+      <div data-testid="card-knowledge-tab">
+        {(['assign', 'drop', 'refresh'] as const).map((operation) => (
+          <button
+            key={operation}
+            type="button"
+            onClick={() => props.onBusyChange?.(true)}
+          >
+            Begin {operation}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => props.onBusyChange?.(false)}
+        >
+          Finish knowledge operation
+        </button>
+      </div>
+    );
+  },
 }));
 
 vi.mock('@/components/architecture', () => ({
@@ -272,6 +297,42 @@ describe('CardModal', () => {
     expect(within(panel).getByText('Started')).toBeInTheDocument();
   });
 
+  it('toggles the human task requirement link skip from card details', async () => {
+    const taskCard: Card = {
+      ...bugCard,
+      id: 'task-skip-1',
+      title: 'Task: implement requirement gate',
+      card_type: 'normal',
+      origin_task_id: null,
+      severity: null,
+      expected_behavior: null,
+      observed_behavior: null,
+      linked_test_task_ids: null,
+      skip_task_requirement_link_gate: false,
+    };
+    storeMock.selectedCardId = 'task-skip-1';
+    apiMock.getCard.mockResolvedValue(taskCard);
+    apiMock.updateCard.mockResolvedValue({
+      ...taskCard,
+      skip_task_requirement_link_gate: true,
+    });
+
+    render(<CardModal boardId="board-1" />);
+
+    const toggle = await screen.findByRole('switch', {
+      name: 'Skip task requirement link gate for this card',
+    });
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(apiMock.updateCard).toHaveBeenCalledWith('task-skip-1', {
+      skip_task_requirement_link_gate: true,
+    }));
+    expect(storeMock.updateCardInColumn).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'task-skip-1',
+      skip_task_requirement_link_gate: true,
+    }));
+  });
+
   it('shows a dedicated evidence tab for test cards', async () => {
     storeMock.selectedCardId = 'test-1';
     const testCard: Card = {
@@ -445,19 +506,88 @@ describe('CardModal', () => {
 
     expect(await screen.findByTestId('activity-log-list')).toBeInTheDocument();
     expect(
-      screen.getByText('structured_entity updated type=functional_requirement field=description'),
+      await screen.findByText('structured_entity updated type=functional_requirement field=description'),
     ).toBeInTheDocument();
-    expect(screen.getByText('Validator Agent')).toBeInTheDocument();
+    expect(await screen.findByText('Validator Agent')).toBeInTheDocument();
     expect(document.body.textContent ?? '').not.toContain('[object Object]');
     expect(document.body.textContent ?? '').not.toContain('[object: object]');
+  });
+
+  it('shows task status activity as a Before to After transition', async () => {
+    apiMock.getCardActivity.mockResolvedValue([{
+      id: 'act-move',
+      action: 'card_moved',
+      actor_type: 'user',
+      actor_id: 'user-1',
+      actor_name: 'Task Owner',
+      created_at: '2026-07-22T10:15:00Z',
+      summary: 'not_started->started',
+      trigger: null,
+      details: {
+        from_status: 'not_started',
+        to_status: 'started',
+        from_position: 0,
+        to_position: 1,
+      },
+    }]);
+
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
+    fireEvent.click(await screen.findByRole('button', {
+      name: /Status changed.*Status: not_started → started/i,
+    }));
+
+    const before = await screen.findByRole('region', { name: 'status before value' });
+    const after = await screen.findByRole('region', { name: 'status after value' });
+    expect(within(before).getByText('Before')).toBeInTheDocument();
+    expect(within(before).getByText('not_started')).toBeInTheDocument();
+    expect(within(before).queryByText('started')).not.toBeInTheDocument();
+    expect(within(after).getByText('After')).toBeInTheDocument();
+    expect(within(after).getByText('started')).toBeInTheDocument();
+    expect(within(after).queryByText('not_started')).not.toBeInTheDocument();
   });
 
   it('preserves the no-activity empty state through the shared renderer', async () => {
     render(<CardModal boardId="board-1" />);
     fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
 
-    expect(await screen.findByText('No activity recorded')).toBeInTheDocument();
+    expect(await screen.findByText('No history yet')).toBeInTheDocument();
   });
+
+  it.each(['assign', 'drop', 'refresh'] as const)(
+    'keeps the Knowledge tab mounted and ignores Escape, backdrop, and tab changes during %s',
+    async (operation) => {
+      render(<CardModal boardId="board-1" />);
+      fireEvent.click(await screen.findByRole('button', { name: /^Knowledge/ }));
+      expect(await screen.findByTestId('card-knowledge-tab')).toBeInTheDocument();
+      expect(cardKnowledgeTabMock.render).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          onBusyChange: expect.any(Function),
+        }),
+      );
+
+      fireEvent.click(
+        screen.getByRole('button', { name: `Begin ${operation}` }),
+      );
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(storeMock.closeCardModal).not.toHaveBeenCalled();
+
+      const backdrop = document.querySelector('.modal-overlay');
+      expect(backdrop).not.toBeNull();
+      fireEvent.click(backdrop!);
+      expect(storeMock.closeCardModal).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: /^Details$/ }));
+      expect(screen.getByTestId('card-knowledge-tab')).toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Finish knowledge operation' }),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /^Details$/ }));
+      expect(screen.queryByTestId('card-knowledge-tab')).not.toBeInTheDocument();
+    },
+  );
 });
 
 describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)', () => {

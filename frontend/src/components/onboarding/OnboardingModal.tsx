@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { Sun, Moon, X } from 'lucide-react';
 import { useTheme } from '@/hooks/useTheme';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { markCompleted } from './onboardingStorage';
 import { WelcomeSlide, WELCOME_SLIDE_TITLE_ID } from './WelcomeSlide';
 import { QuickStartSlide, QUICK_START_SLIDE_TITLE_ID } from './QuickStartSlide';
@@ -84,15 +85,13 @@ export function OnboardingModal({ mcpUrl, onClose }: OnboardingModalProps) {
     onClose();
   }, [onClose]);
 
-  // Keyboard contract: Esc closes; Left/Right navigate slides (when focus is
-  // not in an input/textarea); Tab/Shift-Tab focus-trap inside the modal.
+  useEscapeToClose(close);
+
+  // Keyboard contract: Left/Right navigate slides (when focus is not in an
+  // input/textarea); Tab/Shift-Tab focus-trap inside the modal. Escape is
+  // handled by the shared modal-layer stack above.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        close();
-        return;
-      }
       const target = e.target as HTMLElement | null;
       const inEditable =
         target?.tagName === 'INPUT' ||

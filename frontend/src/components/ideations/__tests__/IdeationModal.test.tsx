@@ -6,10 +6,12 @@ import type { Ideation } from '@/types';
 const apiMock = vi.hoisted(() => ({
   getIdeation: vi.fn(),
   getArchitectureDesign: vi.fn(),
+  getEffectiveResources: vi.fn(),
   listIdeationSnapshots: vi.fn(),
   listIdeationKnowledge: vi.fn(),
   listIdeationHistory: vi.fn(),
   listIdeationQA: vi.fn(),
+  getAllowedTransitions: vi.fn(),
   moveIdeation: vi.fn(),
   deleteIdeation: vi.fn(),
   updateIdeation: vi.fn(),
@@ -106,8 +108,29 @@ describe('IdeationModal Markdown export', () => {
     apiMock.getIdeation.mockResolvedValue(baseIdeation);
     apiMock.listIdeationSnapshots.mockResolvedValue([]);
     apiMock.listIdeationKnowledge.mockResolvedValue([]);
+    apiMock.getEffectiveResources.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'ideation',
+      entity_id: 'ideation-1',
+      profile: 'summary',
+      items: [],
+      next_cursor: null,
+      resources: { architecture: [], mockup: [], knowledge_base: [] },
+    });
     apiMock.listIdeationHistory.mockResolvedValue([]);
     apiMock.listIdeationQA.mockResolvedValue([]);
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'ideation',
+      entity_id: 'ideation-1',
+      current_status: 'review',
+      source: 'programmatic_backend_transition_authority',
+      allowed_transitions: [
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
+      ],
+    });
     apiMock.getArchitectureDesign.mockImplementation((id: string) =>
       Promise.resolve({ id, title: `${id} full`, entities: [{ id: `${id}-e`, name: 'E' }], interfaces: [], diagrams: [] }),
     );
@@ -151,5 +174,56 @@ describe('IdeationModal Markdown export', () => {
     expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
     const arg = ((markdownMock.exportIdeation.mock.calls.at(-1) ?? []) as any[])[0];
     expect(arg.architecture_designs).toEqual([]);
+  });
+
+  it('renders move actions from the allowed_transitions contract', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValueOnce({
+      board_id: 'board-1',
+      entity_type: 'ideation',
+      entity_id: 'ideation-1',
+      current_status: 'review',
+      source: 'programmatic_backend_transition_authority',
+      allowed_transitions: [
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
+      ],
+    });
+
+    render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
+
+    await screen.findByText('My Ideation');
+    await waitFor(() =>
+      expect(apiMock.getAllowedTransitions).toHaveBeenCalledWith('board-1', {
+        entity_type: 'ideation',
+        entity_id: 'ideation-1',
+      }),
+    );
+
+    expect(screen.getByRole('button', { name: /Draft/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Approved/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Cancelled/ })).toBeNull();
+  });
+
+  it('opens Knowledge through the bounded Workspace without eager listing', async () => {
+    render(
+      <IdeationModal
+        ideationId="ideation-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('My Ideation');
+    fireEvent.click(screen.getByText('Knowledge'));
+
+    await waitFor(() => {
+      expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
+        'board-1',
+        'ideation',
+        'ideation-1',
+        { profile: 'summary', limit: 25 },
+      );
+    });
+    expect(apiMock.listIdeationKnowledge).not.toHaveBeenCalled();
   });
 });

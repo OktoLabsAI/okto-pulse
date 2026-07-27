@@ -35,6 +35,7 @@ import { useModalStack } from '@/contexts/ModalStackContext';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
 import type { LineageGraphNode, LineageGraphResponse } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import {
   LINEAGE_GRAPH_EVENT,
   type OpenLineageGraphDetail,
@@ -332,6 +333,8 @@ export function LineageGraphModal({ boardId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
 
+  useEscapeToClose(() => setRequest(null), { enabled: Boolean(request) });
+
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<OpenLineageGraphDetail>).detail;
@@ -406,6 +409,15 @@ export function LineageGraphModal({ boardId }: Props) {
     () => graph?.nodes.find((node) => node.id === selectedNodeId) || null,
     [graph, selectedNodeId],
   );
+  const selectedResourceCounts = useMemo(() => {
+    if (!graph || !selectedNode) return undefined;
+    if (selectedNode.resource_counts) return selectedNode.resource_counts;
+    const graphCountsBelongToSelectedNode = (
+      graph.selected.entity_type === selectedNode.entity_type
+      && graph.selected.entity_id === selectedNode.entity_id
+    );
+    return graphCountsBelongToSelectedNode ? graph.resource_counts : undefined;
+  }, [graph, selectedNode]);
 
   const handleNodeDoubleClick: NodeMouseHandler<LineageFlowNode> = (_, node) => {
     if (!graph) return;
@@ -532,6 +544,27 @@ export function LineageGraphModal({ boardId }: Props) {
                     {selectedNode.entity_type}
                     {selectedNode.status ? ` / ${selectedNode.status}` : ''}
                   </div>
+                  {selectedResourceCounts && (
+                    <div
+                      className="mt-2 grid grid-cols-3 gap-1.5"
+                      data-testid="lineage-resource-counts"
+                    >
+                      {[
+                        ['Roots', selectedResourceCounts.unique_effective_count],
+                        ['Physical', selectedResourceCounts.raw_attachment_count],
+                        [
+                          'Versions',
+                          selectedResourceCounts.unique_root_version_count
+                            ?? selectedResourceCounts.workspace_item_count,
+                        ],
+                      ].map(([label, value]) => (
+                        <div key={String(label)} className="rounded bg-gray-100 px-1.5 py-1 text-center dark:bg-gray-800">
+                          <div className="text-[9px] uppercase tracking-wide text-gray-400">{label}</div>
+                          <div className="text-xs font-semibold text-gray-700 dark:text-gray-200">{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {canOpenDetails(selectedNode) && (
                     <button
                       type="button"

@@ -10,6 +10,7 @@ const apiMock = vi.hoisted(() => ({
   listIdeationKnowledge: vi.fn(),
   listIdeationHistory: vi.fn(),
   listIdeationQA: vi.fn(),
+  getAllowedTransitions: vi.fn(),
   moveIdeation: vi.fn(),
   deleteIdeation: vi.fn(),
   updateIdeation: vi.fn(),
@@ -88,6 +89,18 @@ describe('IdeationModal Max ambiguity gate panel', () => {
     apiMock.listIdeationKnowledge.mockResolvedValue([]);
     apiMock.listIdeationHistory.mockResolvedValue([]);
     apiMock.listIdeationQA.mockResolvedValue([]);
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'ideation',
+      entity_id: 'ideation-1',
+      current_status: 'evaluating',
+      source: 'programmatic_backend_transition_authority',
+      allowed_transitions: [
+        { to_status: 'done', label: 'Done', gate: 'ambiguity_resource_cognitive', blocked_reason: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
+      ],
+    });
   });
 
   it('shows gate status, current ambiguity, threshold and skip control when the board gate is enabled', async () => {

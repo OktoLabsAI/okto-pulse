@@ -86,12 +86,19 @@ def test_acquire_writes_heartbeat_fields(tmp_path: Path) -> None:
         lock.release()
 
 
-def test_pid_recycle_with_stale_heartbeat_is_taken_over(tmp_path: Path, monkeypatch) -> None:
-    """The bug we are fixing: chrome.exe inherited the old PID after a reboot.
+def test_live_pid_with_stale_heartbeat_is_refused(tmp_path: Path, monkeypatch) -> None:
+    """KGD-01 FR6 — mudança de contrato intencional (C6, takeover fail-closed).
 
-    The recorded PID *is* running (it points at the unrelated process now),
-    but the heartbeat timestamp is older than the TTL, so we treat the lock
-    as orphaned and take it over."""
+    Contrato ANTIGO (este teste assertava o fail-open): heartbeat stale era
+    suficiente para takeover mesmo com o PID vivo — cobria PID reciclado
+    (chrome.exe herdou o número após reboot) ao custo de permitir takeover
+    sobre um servidor travado-mas-vivo que ainda segura handles do Ladybug
+    (duplo-escritor => "escritor stale" que zera páginas do WAL — KB1/H3).
+
+    Contrato NOVO: PID vivo = recusa, mesmo com heartbeat stale. Takeover
+    implícito só quando o PID está comprovadamente morto (ver teste abaixo).
+    No cenário raro de PID reciclado, o operador remove o lock manualmente
+    (a mensagem de erro orienta)."""
     data_dir = tmp_path / "pulse-data"
     data_dir.mkdir()
     lock_path = data_dir / serve_lock.LOCK_FILENAME
@@ -107,6 +114,31 @@ def test_pid_recycle_with_stale_heartbeat_is_taken_over(tmp_path: Path, monkeypa
         },
     )
     monkeypatch.setattr(serve_lock, "_pid_is_running", lambda pid: True)
+
+    with pytest.raises(serve_lock.ServeAlreadyRunningError):
+        serve_lock.acquire_serve_lock(data_dir)
+    # O lock original permanece intocado (nenhum takeover parcial).
+    payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert payload["pid"] == 424242
+
+
+def test_stale_heartbeat_with_dead_pid_is_taken_over(tmp_path: Path, monkeypatch) -> None:
+    """KGD-01 FR6: heartbeat stale + PID comprovadamente morto => takeover."""
+    data_dir = tmp_path / "pulse-data"
+    data_dir.mkdir()
+    lock_path = data_dir / serve_lock.LOCK_FILENAME
+    stale_heartbeat = datetime.now(timezone.utc) - timedelta(
+        seconds=serve_lock.HEARTBEAT_TTL_SECONDS + 60
+    )
+    _write_lock(
+        lock_path,
+        {
+            "pid": 424242,
+            "created_at": "2026-05-14T00:00:00+00:00",
+            "heartbeat_at": _iso(stale_heartbeat),
+        },
+    )
+    monkeypatch.setattr(serve_lock, "_pid_is_running", lambda pid: False)
 
     lock = serve_lock.acquire_serve_lock(data_dir)
     try:

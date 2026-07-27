@@ -282,6 +282,14 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             activeColor="amber"
           />
         </SettingRow>
+        <SettingRow label="Skip task requirement link gate" description="Allow task cards to start without a direct FR/TR/BR/IR/OR link.">
+          <SettingsToggle
+            checked={settings.skip_task_requirement_link_gate_global ?? false}
+            onChange={() => onChange({ skip_task_requirement_link_gate_global: !(settings.skip_task_requirement_link_gate_global ?? false) })}
+            ariaLabel="Skip task requirement link gate"
+            activeColor="amber"
+          />
+        </SettingRow>
         <SettingRow label="Skip decisions coverage" description="Bypass active Decision to Task linkage for all specs.">
           <SettingsToggle
             checked={settings.skip_decisions_coverage_global}

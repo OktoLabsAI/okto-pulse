@@ -6,10 +6,13 @@ import { useEffect, useState } from 'react';
 import { X, Plus, Shield, Copy, Pencil, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
+import { useImportExportApi } from '@/services/import-export-api';
+import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
 import { countPerEntity, ENTITY_LABELS, countAllFlags } from './PermissionFlagsEditor';
 import { PresetEditorModal } from './PresetEditorModal';
 import type { FlagsMap } from './PermissionFlagsEditor';
 import type { PermissionPreset } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface PresetListModalProps {
   onClose: () => void;
@@ -30,9 +33,12 @@ const ENTITY_BG: Record<string, string> = {
 
 export function PresetListModal({ onClose }: PresetListModalProps) {
   const api = useDashboardApi();
+  const importExportApi = useImportExportApi();
   const [presets, setPresets] = useState<PermissionPreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [editorPreset, setEditorPreset] = useState<PermissionPreset | null | 'new'>(null);
+
+  useEscapeToClose(onClose);
 
   useEffect(() => { loadPresets(); }, []);
 
@@ -85,6 +91,12 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
               <span className="text-xs text-gray-400">({presets.length})</span>
             </div>
             <div className="flex items-center gap-2">
+              <ImportExportButtons
+                kind="presets"
+                onExport={() => importExportApi.exportPresets()}
+                onImport={(envelope) => importExportApi.importPresets(envelope)}
+                onImported={() => loadPresets()}
+              />
               <button
                 onClick={() => setEditorPreset('new')}
                 className="px-3 py-1.5 bg-violet-500 text-white rounded-lg text-sm font-medium hover:bg-violet-600 flex items-center gap-1"

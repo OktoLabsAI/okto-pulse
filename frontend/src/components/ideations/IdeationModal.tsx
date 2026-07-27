@@ -45,12 +45,10 @@ import type {
   IdeationStatus,
   IdeationQAItem,
   IdeationHistoryEntry,
-  IdeationKnowledgeSummary,
   IdeationSnapshot,
   IdeationSnapshotSummary,
   RefinementSummary,
   StorySummary,
-  EffectiveResourceItem,
 } from '@/types';
 import {
   IDEATION_STATUSES,
@@ -60,20 +58,28 @@ import {
 } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { ContextSelector, buildIdeationItems, compileSelectedContext, type SelectableItem } from '@/components/shared/ContextSelector';
+import {
+  DerivationPendingBadge,
+  getIdeationPendingDerivationLabel,
+} from '@/components/shared/DerivationPendingBadge';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { ArchitectureTab } from '@/components/architecture';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
+import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface IdeationModalProps {
   ideationId: string;
   boardId: string;
   onClose: () => void;
+  onEscape?: () => void;
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'stories' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'refinements' | 'versions' | 'history';
+type ModalTab = 'details' | 'stories' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'refinements' | 'versions' | 'history' | 'cancellation';
 
 const STATUS_ICON: Record<IdeationStatus, React.ReactNode> = {
   draft: <Lightbulb size={14} />,
@@ -271,79 +277,16 @@ function VersionsTab({ ideationId }: { ideationId: string }) {
   );
 }
 
-type IdeationKnowledgeListItem = IdeationKnowledgeSummary & {
-  inherited?: boolean;
-  read_only?: boolean;
-  source_entity_type?: string | null;
-  source_entity_id?: string | null;
-  source_entity_title?: string | null;
-  content?: string;
-};
-
-function effectiveKnowledgeToIdeationItem(item: EffectiveResourceItem): IdeationKnowledgeListItem | null {
-  const resource = item.resource && typeof item.resource === 'object'
-    ? item.resource as Partial<IdeationKnowledgeListItem>
-    : item as Partial<IdeationKnowledgeListItem>;
-  const id = String(item.id || resource.id || '');
-  if (!id) return null;
-  return {
-    id,
-    ideation_id: String(resource.ideation_id || item.source_entity_id || ''),
-    title: String(resource.title || item.title || 'Inherited knowledge'),
-    description: typeof resource.description === 'string' ? resource.description : null,
-    mime_type: String(resource.mime_type || 'text/markdown'),
-    created_at: String(resource.created_at || ''),
-    content: typeof resource.content === 'string' ? resource.content : '',
-    inherited: item.inherited,
-    read_only: item.read_only,
-    source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
-    source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
-    source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
-  };
-}
-
-function knowledgeSourceLabel(item: IdeationKnowledgeListItem): string {
-  const type = item.source_entity_type || 'source';
-  const title = item.source_entity_title || item.source_entity_id || 'parent';
-  return `${type}: ${title}`;
-}
-
 function KnowledgeTab({ ideationId, boardId }: { ideationId: string; boardId: string }) {
   const api = useDashboardApi();
-  const [items, setItems] = useState<IdeationKnowledgeSummary[]>([]);
-  const [effectiveItems, setEffectiveItems] = useState<EffectiveResourceItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [refreshGeneration, setRefreshGeneration] = useState(0);
   const [adding, setAdding] = useState(false);
-  const [viewingId, setViewingId] = useState<string | null>(null);
-  const [viewContent, setViewContent] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newContent, setNewContent] = useState('');
 
-  useEffect(() => { load(); }, [ideationId]);
-
-  const visibleItems: IdeationKnowledgeListItem[] = [
-    ...items,
-    ...effectiveItems
-      .filter((item) => item.inherited && !items.some((direct) => direct.id === item.id))
-      .map(effectiveKnowledgeToIdeationItem)
-      .filter((item): item is IdeationKnowledgeListItem => Boolean(item)),
-  ];
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [direct, effective] = await Promise.all([
-        api.listIdeationKnowledge(ideationId),
-        api.getEffectiveResources(boardId, 'ideation', ideationId).catch(() => null),
-      ]);
-      setItems(direct);
-      setEffectiveItems(effective?.resources.knowledge_base || []);
-    } catch {
-      toast.error('Failed to load knowledge base');
-    } finally {
-      setLoading(false);
-    }
+  const refreshWorkspace = () => {
+    setRefreshGeneration((current) => current + 1);
   };
 
   const handleAdd = async () => {
@@ -359,95 +302,33 @@ function KnowledgeTab({ ideationId, boardId }: { ideationId: string; boardId: st
       setNewTitle('');
       setNewDesc('');
       setNewContent('');
-      await load();
+      refreshWorkspace();
     } catch {
       toast.error('Failed to add knowledge');
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this knowledge base item?')) return;
+    if (!confirm('Delete this knowledge base item?')) return false;
     try {
       await api.deleteIdeationKnowledge(ideationId, id);
-      if (viewingId === id) {
-        setViewingId(null);
-        setViewContent('');
-      }
-      await load();
+      return true;
     } catch {
       toast.error('Failed to delete knowledge');
+      return false;
     }
   };
-
-  const handleView = async (id: string) => {
-    if (viewingId === id) {
-      setViewingId(null);
-      setViewContent('');
-      return;
-    }
-    const inherited = visibleItems.find((item) => item.id === id && item.inherited);
-    if (inherited) {
-      setViewingId(id);
-      setViewContent(inherited.content || '');
-      return;
-    }
-    try {
-      const kb = await api.getIdeationKnowledge(ideationId, id);
-      setViewingId(id);
-      setViewContent(kb.content);
-    } catch {
-      toast.error('Failed to load knowledge');
-    }
-  };
-
-  if (loading) {
-    return <div className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Loading knowledge base...</div>;
-  }
 
   return (
     <div className="space-y-3">
-      {visibleItems.length === 0 && !adding && (
-        <div className="text-center py-6">
-          <BookOpen size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-          <p className="text-sm text-gray-500 dark:text-gray-400">No knowledge base items</p>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Attach reference documents, discovery notes, or context docs</p>
-        </div>
-      )}
-      {visibleItems.map((item) => (
-        <div key={item.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-          <div
-            className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-700/50 cursor-pointer"
-            onClick={() => handleView(item.id)}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <BookOpen size={14} className="text-amber-500 shrink-0" />
-              <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{item.title}</span>
-              {item.inherited && (
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
-                  from {knowledgeSourceLabel(item)}
-                </span>
-              )}
-              <span className="text-[10px] px-1 py-0.5 rounded bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400">{item.mime_type}</span>
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
-              {!item.read_only && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
-                  className="p-1 text-gray-400 hover:text-red-500"
-                >
-                  <Trash2 size={14} />
-                </button>
-              )}
-              {viewingId === item.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            </div>
-          </div>
-          {viewingId === item.id && viewContent && (
-            <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700">
-              <pre className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">{viewContent}</pre>
-            </div>
-          )}
-        </div>
-      ))}
+      <KnowledgeWorkspace
+        boardId={boardId}
+        entityType="ideation"
+        entityId={ideationId}
+        refreshKey={refreshGeneration}
+        loadFallbackDetail={(id) => api.getIdeationKnowledge(ideationId, id)}
+        onDelete={handleDelete}
+      />
       {adding ? (
         <div className="border border-amber-200 dark:border-amber-700 rounded-lg p-3 space-y-2 bg-amber-50/50 dark:bg-amber-900/10">
           <input
@@ -993,16 +874,27 @@ function ScopeGauge({ label, value }: { label: string; value: number }) {
    Main IdeationModal
    ============================================================ */
 
-export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChanged }: IdeationModalProps) {
+export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape, onChanged }: IdeationModalProps) {
   const api = useDashboardApi();
   const currentBoard = useCurrentBoard();
   const [ideation, setIdeation] = useState<Ideation | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<IdeationStatus | null>(null);
+  const [nextStatuses, setNextStatuses] = useState<IdeationStatus[]>([]);
   const [savingSkip, setSavingSkip] = useState(false);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [expanded, setExpanded] = useState(false);
   const [derivingSpec, setDerivingSpec] = useState(false);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
+  useEscapeToClose(onEscape ?? onClose);
+
+  // The Cancellation tab only exists while the ideation is cancelled.
+  useEffect(() => {
+    if (activeTab === 'cancellation' && ideation && ideation.status !== 'cancelled') {
+      setActiveTab('details');
+    }
+  }, [activeTab, ideation?.status]);
 
   // Evaluate form
   const [showEvalForm, setShowEvalForm] = useState(false);
@@ -1029,23 +921,54 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
 
   useEffect(() => { loadIdeation(); }, [ideationId]);
 
+  const loadAllowedTransitions = async (data: Ideation) => {
+    try {
+      const response = await api.getAllowedTransitions(data.board_id || _boardId, {
+        entity_type: 'ideation',
+        entity_id: data.id,
+      });
+      setNextStatuses(
+        response.allowed_transitions
+          .map((item) => item.to_status)
+          .filter((status): status is IdeationStatus => IDEATION_STATUSES.includes(status as IdeationStatus))
+      );
+    } catch {
+      setNextStatuses([]);
+    }
+  };
+
   const loadIdeation = async () => {
     setLoading(true);
     try {
       const data = await api.getIdeation(ideationId);
       setIdeation(data);
+      await loadAllowedTransitions(data);
     } catch { toast.error('Failed to load ideation'); } finally { setLoading(false); }
+  };
+
+  const performMove = async (status: IdeationStatus, cancellationReason?: string) => {
+    if (!ideation) return;
+    setMovingTo(status);
+    try {
+      const updated = await api.moveIdeation(ideationId, {
+        status,
+        ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
+      });
+      setIdeation(updated);
+      await loadAllowedTransitions(updated);
+      onChanged();
+      toast.success(`Ideation moved to ${IDEATION_STATUS_LABELS[status]}`);
+    } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
   };
 
   const handleMove = async (status: IdeationStatus) => {
     if (!ideation) return;
-    setMovingTo(status);
-    try {
-      const updated = await api.moveIdeation(ideationId, { status });
-      setIdeation(updated);
-      onChanged();
-      toast.success(`Ideation moved to ${IDEATION_STATUS_LABELS[status]}`);
-    } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
+    // ITEM 17: cancelling requires a justification — intercept with the dialog.
+    if (status === 'cancelled') {
+      setCancelDialogOpen(true);
+      return;
+    }
+    await performMove(status);
   };
 
   // Persist the per-ideation Max ambiguity gate skip via the dedicated endpoint
@@ -1057,6 +980,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
     try {
       const updated = await api.setIdeationAmbiguityGateSkip(ideationId, next);
       setIdeation(updated);
+      await loadAllowedTransitions(updated);
       onChanged();
       toast.success(next ? 'Max ambiguity gate will be skipped for this ideation' : 'Max ambiguity gate re-enabled for this ideation');
     } catch (err) { toast.error(getErrorMessage(err)); } finally { setSavingSkip(false); }
@@ -1085,6 +1009,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
         dependencies_justification: evalDependenciesJust.trim(),
       });
       setIdeation(updated);
+      await loadAllowedTransitions(updated);
       setShowEvalForm(false);
       onChanged();
       toast.success('Ideation evaluated');
@@ -1125,18 +1050,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
     setSelectorTarget(null);
   };
 
-  const getNextStatuses = (current: IdeationStatus): IdeationStatus[] => {
-    const flow: Record<IdeationStatus, IdeationStatus[]> = {
-      draft: ['review', 'cancelled'],
-      review: ['approved', 'draft', 'cancelled'],
-      approved: ['evaluating', 'review', 'cancelled'],
-      evaluating: ['done', 'approved', 'cancelled'],
-      done: ['draft'],
-      cancelled: [],
-    };
-    return (flow[current] || []).filter((s) => IDEATION_STATUSES.includes(s));
-  };
-
   if (loading) {
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -1149,7 +1062,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
 
   if (!ideation) return null;
 
-  const nextStatuses = getNextStatuses(ideation.status);
   const canEvaluate = ideation.status === 'evaluating';
   const canDeriveSpec = ideation.status === 'done' && ideation.complexity === 'small';
   const needsRefinements = ideation.status === 'done' && ideation.complexity && ideation.complexity !== 'small';
@@ -1157,6 +1069,9 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
   const unansweredQA = ideation.qa_items?.filter((q) => !q.answer).length || 0;
   const tabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
+    ...(ideation.status === 'cancelled'
+      ? [{ id: 'cancellation' as ModalTab, label: 'Cancellation', icon: <Ban size={14} /> }]
+      : []),
     { id: 'stories', label: 'Stories', icon: <BookOpen size={14} />, count: ideation.stories?.length || 0 },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: ideation.screen_mockups?.length || 0 },
     { id: 'architecture', label: 'Architecture', icon: <GitBranch size={14} />, count: ideation.architecture_designs?.length || 0 },
@@ -1177,6 +1092,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
               {STATUS_ICON[ideation.status]}
               {IDEATION_STATUS_LABELS[ideation.status]}
             </span>
+            <DerivationPendingBadge label={getIdeationPendingDerivationLabel(ideation)} />
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{ideation.title}</h2>
             <span className="text-xs text-gray-400 shrink-0">v{ideation.version}</span>
           </div>
@@ -1463,6 +1379,14 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
           {activeTab === 'versions' && <VersionsTab ideationId={ideationId} />}
           {activeTab === 'history' && <HistoryTab ideationId={ideationId} />}
 
+          {activeTab === 'cancellation' && ideation.status === 'cancelled' && (
+            <CancellationDetails
+              reason={ideation.cancellation_reason}
+              cancelledBy={ideation.cancelled_by}
+              cancelledAt={ideation.cancelled_at}
+            />
+          )}
+
           {activeTab === 'stories' && (
             <div className="space-y-3">
               {(!ideation.stories || ideation.stories.length === 0) && (
@@ -1656,6 +1580,18 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onChange
           onCancel={() => setSelectorTarget(null)}
         />
       )}
+
+      {/* Cancellation justification (ITEM 17) */}
+      <CancellationReasonDialog
+        open={cancelDialogOpen}
+        entityLabel="ideation"
+        submitting={movingTo === 'cancelled'}
+        onConfirm={async (reason) => {
+          setCancelDialogOpen(false);
+          await performMove('cancelled', reason);
+        }}
+        onCancel={() => setCancelDialogOpen(false)}
+      />
     </div>
   );
 }

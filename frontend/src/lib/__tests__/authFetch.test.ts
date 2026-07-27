@@ -137,6 +137,59 @@ describe('authFetch – status-agnostic 4xx (AC3)', () => {
   });
 });
 
+describe('authFetch – typed HTTP error metadata', () => {
+  it('preserves the HTTP status, machine code, and structured detail for a 409', async () => {
+    const detail = {
+      code: 'knowledge_propagation_preflight_stale',
+      message: 'The source changed after preflight',
+      details: {
+        expected_revision: 7,
+        actual_revision: 8,
+      },
+    };
+    const response = fakeResponse(409, { detail });
+    const client = makeClient(response);
+
+    let caught: unknown;
+    try {
+      await client.fetchJson('/api/cards/c1/knowledge-assignments');
+      expect.fail('should have thrown');
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).toMatchObject({
+      message: 'The source changed after preflight',
+      status: 409,
+      code: 'knowledge_propagation_preflight_stale',
+      details: detail.details,
+    });
+  });
+
+  it('preserves a top-level machine code even when a human message is preferred', async () => {
+    const response = fakeResponse(409, {
+      code: 'knowledge_propagation_idempotency_conflict',
+      message: 'The key belongs to a different request',
+    });
+    const client = makeClient(response);
+
+    let caught: unknown;
+    try {
+      await client.fetchJson('/api/cards/c1/knowledge-assignments');
+      expect.fail('should have thrown');
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      message: 'The key belongs to a different request',
+      status: 409,
+      code: 'knowledge_propagation_idempotency_conflict',
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // BFF backend_error proxy pattern
 // ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ jobs:
   build-verify:
     name: docker build verify
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout okto-pulse
@@ -58,6 +58,106 @@ jobs:
           ref: ${{ steps.core_ref.outputs.ref }}
           path: okto-pulse-core
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            okto-pulse-core/pyproject.toml
+            okto-pulse/pyproject.toml
+
+      - name: F16 SaaS closure ratchet
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e okto-pulse-core -e okto-pulse pytest pytest-asyncio build
+          pytest --noconftest -q okto-pulse-core/tests/test_f16_saas_closure_report.py okto-pulse/tests/test_f16_saas_closure.py
+          okto-pulse-saas-closure --core-repo okto-pulse-core --community-repo okto-pulse --format text
+
+      - name: Full Community suite
+        run: pytest -q -m "not e2e and not stress" okto-pulse/tests
+
+      - name: Build isolated wheels
+        run: |
+          python -m build --wheel --outdir /tmp/f16-dist/core okto-pulse-core
+          python -m build --wheel --outdir /tmp/f16-dist/community okto-pulse
+
+      - name: Verify Core wheel without Community
+        run: |
+          python -m venv /tmp/f16-core
+          /tmp/f16-core/bin/pip install /tmp/f16-dist/core/*.whl pytest pytest-asyncio
+          cd /tmp
+          /tmp/f16-core/bin/python - <<'PY'
+          import importlib
+          import pkgutil
+          import sys
+          import okto_pulse.core
+
+          forbidden = ("fastapi", "starlette", "sqlalchemy", "aiosqlite", "okto_pulse.community")
+          modules = []
+          for item in pkgutil.walk_packages(
+              okto_pulse.core.__path__, okto_pulse.core.__name__ + "."
+          ):
+              importlib.import_module(item.name)
+              modules.append(item.name)
+          bad = sorted(
+              name for name in sys.modules
+              if any(name == token or name.startswith(token + ".") for token in forbidden)
+          )
+          assert not bad, bad
+          print(f"core-wheel-imports={len(modules)} forbidden-loaded=0")
+          PY
+          /tmp/f16-core/bin/python -m pytest --noconftest -q \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f01_repository_domain_ports.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f02_fake_saas_uow.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f02_uow_session_boundary.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f03_realm_scope_contract.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f05_card_transition_policy.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f05_domain_event_delivery.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f05_queue_health_policy.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f05_service_ownership.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f05_spec_materialization_policy.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f06_rebuild_processor.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f09_graph_neutral_ports.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f10_worker_processor_boundary.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f11_telemetry_edition_boundary.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f12_thin_inbound_boundaries.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f15_persistence_edition_gate.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f16_saas_closure_report.py"
+
+      - name: Verify Community wheel and closure report
+        run: |
+          python -m venv /tmp/f16-community
+          /tmp/f16-community/bin/pip install /tmp/f16-dist/core/*.whl /tmp/f16-dist/community/*.whl
+          /tmp/f16-community/bin/pip check
+          cd /tmp
+          /tmp/f16-community/bin/python - <<'PY'
+          from pathlib import Path
+
+          import okto_pulse.community
+          from okto_pulse.community.main import app
+          from okto_pulse.community.adapters.core_import_boundary import (
+              audit_community_core_import_boundary,
+          )
+
+          paths = app.openapi().get("paths", {})
+          assert len(paths) >= 240, len(paths)
+          installed_root = Path(okto_pulse.community.__file__).resolve().parent
+          boundary = audit_community_core_import_boundary(installed_root)
+          assert boundary["ok"], boundary
+          print(f"community-wheel-openapi-paths={len(paths)}")
+          print(
+              "community-wheel-core-boundary="
+              f"{boundary['inventory_count']} imports, 0 violations"
+          )
+          PY
+          /tmp/f16-community/bin/okto-pulse-saas-closure \
+            --core-repo "$GITHUB_WORKSPACE/okto-pulse-core" \
+            --community-repo "$GITHUB_WORKSPACE/okto-pulse" \
+            --core-wheel /tmp/f16-dist/core/*.whl \
+            --community-wheel /tmp/f16-dist/community/*.whl \
+            --format text
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

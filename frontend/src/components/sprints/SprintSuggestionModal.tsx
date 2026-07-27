@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { X, Layers, Pencil, Check, SkipForward } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface Suggestion {
   title: string;
@@ -33,6 +34,8 @@ export function SprintSuggestionModal({
   const [suggestions, setSuggestions] = useState<Suggestion[]>(initialSuggestions);
   const [creating, setCreating] = useState(false);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
+
+  useEscapeToClose(onClose, { priority: 10 });
 
   const handleTitleChange = (idx: number, title: string) => {
     const updated = [...suggestions];

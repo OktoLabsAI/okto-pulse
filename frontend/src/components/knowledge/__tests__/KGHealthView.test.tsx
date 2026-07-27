@@ -15,14 +15,24 @@ import { KGHealthView } from '../KGHealthView';
 import * as kgHealthApi from '@/services/kg-health-api';
 import * as dashboardStore from '@/store/dashboard';
 import type { KGHealth, KGCognitivePendingCounts } from '@/services/kg-health-api';
+import { EXPECTED_KG_HEALTH_SCHEMA_VERSION } from '@/constants/kg';
 
 vi.mock('@/services/kg-health-api');
 vi.mock('@/store/dashboard');
 
 const baseHealth: KGHealth = {
+  health_schema_version: '1.1',
+  materialization_state: 'materialized',
+  materialization_generation: 'generation-1',
+  probe_reason_codes: {
+    board_graph: 'board_graph_present',
+    board_census: 'board_census_available',
+    global_discovery: 'global_discovery_present',
+  },
   queue_depth: 3,
   oldest_pending_age_s: 12.4,
   dead_letter_count: 0,
+  global_outbox_dead_letter_count: 0,
   total_nodes: 1847,
   default_score_count: 39,
   default_score_ratio: 0.021,
@@ -156,6 +166,24 @@ afterEach(() => {
 });
 
 describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', () => {
+  it('fixa o contrato frontend em health schema 1.1', () => {
+    expect(EXPECTED_KG_HEALTH_SCHEMA_VERSION).toBe('1.1');
+  });
+
+  it('aceita health schema 1.1 sem comparar o alias legado schema_version', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({
+      ...baseHealth,
+      schema_version: '1.0',
+      health_schema_version: '1.1',
+    }));
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    await screen.findByText('Decay Scheduler');
+    expect(screen.queryByText('Schema outdated')).not.toBeInTheDocument();
+  });
+
   it('faz 1 fetch e mostra Scheduler/Queue/Health/Footprint/Debt', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve(baseHealth));
@@ -173,13 +201,36 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
       expect(screen.getByText('Canonical Debt')).toBeInTheDocument();
     });
   });
+
+  it('mantém consolidation DLQ e global outbox terminal em linhas separadas', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({
+      ...baseHealth,
+      dead_letter_count: 2,
+      global_outbox_dead_letter_count: 99,
+      operational_domains: {
+        dead_letter: { count: 2 },
+        global_outbox_dead_letter: { count: 7 },
+      },
+    }));
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    const consolidationLabel = await screen.findByText(
+      'Consolidation dead letter',
+    );
+    const globalOutboxLabel = screen.getByText('Global outbox terminal');
+    expect(consolidationLabel.parentElement).toHaveTextContent('2');
+    expect(globalOutboxLabel.parentElement).toHaveTextContent('7');
+    expect(globalOutboxLabel.parentElement).not.toHaveTextContent('99');
+  });
 });
 
 describe('TS2 — polling dispara fetches periódicos', () => {
   it('dispara 5 fetches em 1.05s com pollIntervalMs=200', async () => {
     vi.useFakeTimers();
     mockBoard('b1');
-    let resolves: Array<() => void> = [];
+    const resolves: Array<() => void> = [];
     mockApi(
       () =>
         new Promise<KGHealth>((resolve) => {
@@ -208,7 +259,7 @@ describe('TS3 — visibility hidden suspende polling, visible retoma com catch-u
   it('zero novos fetches durante hidden + 1 catch-up imediato ao voltar visible', async () => {
     vi.useFakeTimers();
     mockBoard('b1');
-    let pending: Array<() => void> = [];
+    const pending: Array<() => void> = [];
     mockApi(
       () =>
         new Promise<KGHealth>((resolve) => {
@@ -325,9 +376,13 @@ describe('TS5 — scheduler diagnostics and legacy tick fallback', () => {
 });
 
 describe('TS6 — schema banner', () => {
-  it('match (1.0) → no banner', async () => {
+  it('health match (1.1) → no banner', async () => {
     mockBoard('b1');
-    mockApi(() => Promise.resolve({ ...baseHealth, schema_version: '1.0' }));
+    mockApi(() => Promise.resolve({
+      ...baseHealth,
+      schema_version: '1.0',
+      health_schema_version: '1.1',
+    }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText('Decay Scheduler')).toBeInTheDocument());
@@ -336,14 +391,17 @@ describe('TS6 — schema banner', () => {
 
   it('mismatch (2.0) → red full-width banner with exact text', async () => {
     mockBoard('b1');
-    mockApi(() => Promise.resolve({ ...baseHealth, schema_version: '2.0' }));
+    mockApi(() => Promise.resolve({
+      ...baseHealth,
+      health_schema_version: '2.0',
+    }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
     await waitFor(() => {
       const alert = screen.getByRole('alert');
       expect(alert).toBeInTheDocument();
       expect(alert).toHaveTextContent(/Schema outdated/);
-      expect(alert).toHaveTextContent(/1\.0/);
+      expect(alert).toHaveTextContent(/1\.1/);
       expect(alert).toHaveTextContent(/2\.0/);
     });
   });

@@ -108,15 +108,16 @@ describe('MetricsSettingsPanel', () => {
     });
   });
 
-  it('renders only the On/Off toggle and saves the full anonymous metrics package', async () => {
+  it('renders only the On/Off toggle and saves the full anonymous metrics package when toggled', async () => {
     metricsApi.getMetricsSummary.mockResolvedValue(summary());
 
     render(<MetricsSettingsPanel onClose={() => {}} />);
 
-    await screen.findByTestId('metrics-save');
+    await screen.findByTestId('metrics-on-off-toggle');
     expect(screen.queryByTestId('metrics-mode-local_only')).not.toBeInTheDocument();
     expect(screen.queryByTestId('metrics-mode-anonymous_beacon')).not.toBeInTheDocument();
     expect(screen.queryByTestId('metrics-mode-disabled')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('metrics-save')).not.toBeInTheDocument();
     expect(screen.getByTestId('metrics-on-off-toggle')).toHaveAttribute('aria-checked', 'false');
     expect(screen.getByText('Anonymous metrics included')).toBeInTheDocument();
     expect(screen.getByText(/Telemetry schema 1.1.0 reviewed/)).toBeInTheDocument();
@@ -125,10 +126,6 @@ describe('MetricsSettingsPanel', () => {
 
     fireEvent.click(screen.getByTestId('metrics-on-off-toggle'));
     expect(screen.getByTestId('metrics-on-off-toggle')).toHaveAttribute('aria-checked', 'true');
-
-    expect(metricsApi.updateMetricsMode).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByTestId('metrics-save'));
 
     await waitFor(() =>
       expect(metricsApi.updateMetricsMode).toHaveBeenCalledWith('anonymous_beacon', ACK_IDS),
@@ -148,13 +145,13 @@ describe('MetricsSettingsPanel', () => {
 
     render(<MetricsSettingsPanel onClose={() => {}} />);
 
-    await screen.findByTestId('metrics-save');
+    await screen.findByTestId('metrics-on-off-toggle');
     expect(screen.getByTestId('metrics-on-off-toggle')).toHaveAttribute('aria-checked', 'true');
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
+    expect(screen.queryByTestId('metrics-save')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('metrics-on-off-toggle'));
     expect(screen.getByTestId('metrics-on-off-toggle')).toHaveAttribute('aria-checked', 'false');
-    fireEvent.click(screen.getByTestId('metrics-save'));
 
     await waitFor(() =>
       expect(metricsApi.updateMetricsMode).toHaveBeenCalledWith('disabled', []),
@@ -211,7 +208,7 @@ describe('MetricsSettingsPanel', () => {
 
     render(<MetricsSettingsPanel onClose={() => {}} />);
 
-    await screen.findByTestId('metrics-save');
+    await screen.findByTestId('metrics-on-off-toggle');
 
     await waitFor(() => expect(toastMock).toHaveBeenCalledWith('Metrics were turned off'));
     expect(metricsApi.markMetricsMigrationNoticeSeen).toHaveBeenCalledTimes(1);

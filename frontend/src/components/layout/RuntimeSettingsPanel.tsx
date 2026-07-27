@@ -22,7 +22,10 @@ import toast from 'react-hot-toast';
 import {
   getRuntimeSettings,
   putRuntimeSettings,
+  MIGRATION_PLAN_KEYS,
   type RuntimeSettings,
+  type RuntimeSettingsPatch,
+  type RuntimeSettingsValues,
 } from '@/services/runtime-settings-api';
 import {
   getQueueHealth,
@@ -32,6 +35,7 @@ import { triggerKGTick } from '@/services/kg-tick-api';
 import { getKGHealth } from '@/services/kg-health-api';
 import { DeadLetterInspectorModal } from '@/components/knowledge/DeadLetterInspectorModal';
 import { useDashboardStore } from '@/store/dashboard';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface RuntimeSettingsPanelProps {
   onClose: () => void;
@@ -46,7 +50,7 @@ type ActiveTab = 'graphdb' | 'eventqueue' | 'decaytick';
 
 const GRAPH_DB_MAX_SIZE_GB_OPTIONS = [2, 4, 8, 16, 32, 64] as const;
 
-const RANGES: Record<keyof Omit<RuntimeSettings, 'restart_required'>, { min: number; max: number }> = {
+const RANGES: Record<keyof RuntimeSettingsValues, { min: number; max: number }> = {
   // Graph DB tab
   kg_kuzu_buffer_pool_mb: { min: 128, max: 512 },
   kg_kuzu_max_db_size_gb: { min: 2, max: 64 },
@@ -68,7 +72,7 @@ const RANGES: Record<keyof Omit<RuntimeSettings, 'restart_required'>, { min: num
 const BUDGET_BASELINE_MB = 620;
 const HEALTH_POLL_INTERVAL_MS = 2000;
 
-type DraftState = Omit<RuntimeSettings, 'restart_required'>;
+type DraftState = RuntimeSettingsValues;
 
 const ZERO_DRAFT: DraftState = {
   kg_kuzu_buffer_pool_mb: 0,
@@ -86,9 +90,13 @@ const ZERO_DRAFT: DraftState = {
 };
 
 function snapshotDraft(data: RuntimeSettings): DraftState {
+  const editableValues = {
+    ...data,
+    ...(data.desired_values ?? {}),
+  };
   const out: DraftState = { ...ZERO_DRAFT };
   for (const key of Object.keys(ZERO_DRAFT) as Array<keyof DraftState>) {
-    out[key] = data[key];
+    out[key] = editableValues[key];
   }
   return out;
 }
@@ -97,10 +105,11 @@ export function RuntimeSettingsPanel({
   onClose,
   initialTab = 'graphdb',
 }: RuntimeSettingsPanelProps) {
+  useEscapeToClose(onClose);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [values, setValues] = useState<RuntimeSettings | null>(null);
+  const [values, setValues] = useState<DraftState | null>(null);
   // Draft state lets the user type freely without triggering saves;
   // shared across both tabs so Save persists partial PUTs in one shot.
   const [draft, setDraft] = useState<DraftState>(ZERO_DRAFT);
@@ -108,6 +117,11 @@ export function RuntimeSettingsPanel({
   // key (graph database startup-time). Event Queue mutations never set this.
   const [restartRequired, setRestartRequired] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab);
+  // KG-01.5 (KGConfigChangeGuard): mudar um setting do grupo storage
+  // (kg_kuzu_max_db_size_gb) exige um migration_plan_ref no PUT — sem ele o
+  // backend responde 400 migration_plan_required. O campo só aparece quando
+  // um setting guarded diverge do valor carregado.
+  const [migrationPlanRef, setMigrationPlanRef] = useState('');
   // Spec ed17b1fe (Wave 2 NC 1ede3471) — DLQ Inspector modal state.
   const [showDeadLetter, setShowDeadLetter] = useState(false);
   const currentBoard = useDashboardStore((s) => s.currentBoard);
@@ -122,8 +136,9 @@ export function RuntimeSettingsPanel({
     getRuntimeSettings()
       .then((data) => {
         if (!active) return;
-        setValues(data);
-        setDraft(snapshotDraft(data));
+        const editableValues = snapshotDraft(data);
+        setValues(editableValues);
+        setDraft(editableValues);
         setRestartRequired(data.restart_required);
       })
       .catch((err) => {
@@ -195,9 +210,29 @@ export function RuntimeSettingsPanel({
     }));
   };
 
+  const migrationPlanRequired = useMemo(() => {
+    if (!values) return false;
+    return MIGRATION_PLAN_KEYS.some((key) => draft[key] !== values[key]);
+  }, [draft, values]);
+  const migrationPlanMissing =
+    migrationPlanRequired && migrationPlanRef.trim() === '';
+
+  const buildPatch = (): RuntimeSettingsPatch => {
+    const patch = Object.fromEntries(
+      (Object.keys(ZERO_DRAFT) as Array<keyof DraftState>)
+        .filter((key) => values === null || draft[key] !== values[key])
+        .map((key) => [key, draft[key]]),
+    ) as RuntimeSettingsPatch;
+    if (migrationPlanRequired) {
+      patch.migration_plan_ref = migrationPlanRef.trim();
+    }
+    return patch;
+  };
+
   const onReset = () => {
     if (!values) return;
-    setDraft(snapshotDraft(values));
+    setDraft({ ...values });
+    setMigrationPlanRef('');
   };
 
   // Bug fix (Playwright E2E reproduzido):
@@ -212,13 +247,16 @@ export function RuntimeSettingsPanel({
   const inFlightRef = useRef(false);
 
   const onSave = async () => {
-    if (outOfRange || inFlightRef.current) return;
+    if (outOfRange || migrationPlanMissing || inFlightRef.current) return;
     inFlightRef.current = true;
     setSaving(true);
     try {
-      const resp = await putRuntimeSettings(draft);
-      setValues(resp);
+      const resp = await putRuntimeSettings(buildPatch());
+      const editableValues = snapshotDraft(resp);
+      setValues(editableValues);
+      setDraft(editableValues);
       setRestartRequired(resp.restart_required);
+      setMigrationPlanRef('');
       if (resp.restart_required) {
         toast.success('Settings saved — restart required for Graph DB changes');
       } else {
@@ -239,16 +277,19 @@ export function RuntimeSettingsPanel({
   const onSaveAndRunNow = async () => {
     // tickInProgress vem do polling KG health (5s) e cobre cross-mount/
     // cross-tab. inFlightRef cobre clique-rápido na mesma sessão.
-    if (outOfRange || inFlightRef.current || tickInProgress) return;
+    if (outOfRange || migrationPlanMissing || inFlightRef.current || tickInProgress) return;
     inFlightRef.current = true;
     setSaving(true);
     // Cooldown lock — mantém o guard por 3s além do fetch para cobrir o
     // gap entre o 202 do tick e o próximo poll do health (5s).
     setTimeout(() => { inFlightRef.current = false; }, 3000);
     try {
-      const resp = await putRuntimeSettings(draft);
-      setValues(resp);
+      const resp = await putRuntimeSettings(buildPatch());
+      const editableValues = snapshotDraft(resp);
+      setValues(editableValues);
+      setDraft(editableValues);
       setRestartRequired(resp.restart_required);
+      setMigrationPlanRef('');
       try {
         await triggerKGTick();
         toast.success('Settings saved. Tick started.');
@@ -340,6 +381,9 @@ export function RuntimeSettingsPanel({
             draft={draft}
             onChange={onInputChange}
             budgetMb={budgetMb}
+            migrationPlanRequired={migrationPlanRequired}
+            migrationPlanRef={migrationPlanRef}
+            onMigrationPlanRefChange={setMigrationPlanRef}
           />
         ) : activeTab === 'eventqueue' ? (
           <EventQueueTab
@@ -362,16 +406,21 @@ export function RuntimeSettingsPanel({
           </button>
           <button
             onClick={onSave}
-            disabled={loading || saving || outOfRange}
+            disabled={loading || saving || outOfRange || migrationPlanMissing}
             className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
             data-testid="save-runtime-settings"
+            title={
+              migrationPlanMissing
+                ? 'Changing the max DB size requires a migration plan (Graph DB tab)'
+                : undefined
+            }
           >
             {saving ? 'Saving…' : 'Save'}
           </button>
           {activeTab === 'decaytick' && (
             <button
               onClick={onSaveAndRunNow}
-              disabled={loading || saving || outOfRange || tickInProgress}
+              disabled={loading || saving || outOfRange || migrationPlanMissing || tickInProgress}
               className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 inline-flex items-center gap-1"
               data-testid="save-and-run-now"
               title={tickInProgress && !saving ? 'Tick is already running globally (cron, MCP or another tab)' : undefined}
@@ -521,9 +570,19 @@ interface GraphDBTabProps {
   draft: DraftState;
   onChange: (key: keyof DraftState, raw: string) => void;
   budgetMb: number;
+  migrationPlanRequired: boolean;
+  migrationPlanRef: string;
+  onMigrationPlanRefChange: (raw: string) => void;
 }
 
-function GraphDBTab({ draft, onChange, budgetMb }: GraphDBTabProps) {
+function GraphDBTab({
+  draft,
+  onChange,
+  budgetMb,
+  migrationPlanRequired,
+  migrationPlanRef,
+  onMigrationPlanRefChange,
+}: GraphDBTabProps) {
   return (
     <div className="px-6 py-5 space-y-4">
       <SettingField
@@ -541,6 +600,31 @@ function GraphDBTab({ draft, onChange, budgetMb }: GraphDBTabProps) {
         onChange={(v) => onChange('kg_kuzu_max_db_size_gb', v)}
         testId="input-max-db-size-gb"
       />
+      {migrationPlanRequired && (
+        <div
+          className="px-3 py-2.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-lg space-y-1.5"
+          data-testid="migration-plan-field"
+        >
+          <label className="text-xs font-medium text-amber-900 dark:text-amber-200 block">
+            Migration plan (required)
+          </label>
+          <p className="text-[10px] text-amber-800/80 dark:text-amber-300/80">
+            Changing the max database size is a storage-group change guarded
+            by KGConfigChangeGuard: describe or reference the migration plan
+            (ticket, doc or a short justification). Sent as
+            migration_plan_ref and recorded in the audit log.
+          </p>
+          <input
+            type="text"
+            maxLength={256}
+            value={migrationPlanRef}
+            onChange={(e) => onMigrationPlanRefChange(e.target.value)}
+            placeholder="e.g. board X growth plan — approved 2026-07-10"
+            data-testid="input-migration-plan-ref"
+            className="w-full text-xs px-2 py-1 border rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border-amber-300 dark:border-amber-700 placeholder:text-gray-400"
+          />
+        </div>
+      )}
       <SettingField
         label="Connection pool cap (simultaneous boards)"
         description="Boards kept alive in the LRU cache."
@@ -667,17 +751,26 @@ function LiveQueueHealthPanel({ health }: LiveQueueHealthPanelProps) {
           refresh {HEALTH_POLL_INTERVAL_MS / 1000}s · /api/v1/kg/queue/health
         </span>
       </div>
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <Metric label="Depth" value={health?.queue_depth ?? '—'} />
         <Metric
           label="Oldest pending"
           value={health ? `${health.oldest_pending_age_s.toFixed(1)}s` : '—'}
         />
         <Metric
-          label="Dead-letter"
+          label="Consolidation DLQ"
           value={health?.dead_letter_count ?? '—'}
           tone={
             health && health.dead_letter_count > 0 ? 'amber' : 'emerald'
+          }
+        />
+        <Metric
+          label="Global outbox terminal"
+          value={health?.global_outbox_dead_letter_count ?? '—'}
+          tone={
+            health && (health.global_outbox_dead_letter_count ?? 0) > 0
+              ? 'amber'
+              : 'emerald'
           }
         />
         <Metric label="Claims / min" value={health?.claims_per_min_1m ?? '—'} />

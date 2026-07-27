@@ -9,11 +9,12 @@
  * keep working.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ChevronRight, Network, X } from 'lucide-react';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { KG_HELP_SECTIONS } from './KGHelpContent';
 import { SCHEMA_VERSION } from '@/constants/kg';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface KGHelpModalProps {
   onClose: () => void;
@@ -26,14 +27,7 @@ export function KGHelpModal({ onClose, initialSectionId }: KGHelpModalProps) {
     KG_HELP_SECTIONS.find((s) => s.id === initialSectionId)?.id ??
     KG_HELP_SECTIONS[0].id;
   const [activeSection, setActiveSection] = useState(defaultSection);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  useEscapeToClose(onClose);
 
   const current =
     KG_HELP_SECTIONS.find((s) => s.id === activeSection) ?? KG_HELP_SECTIONS[0];

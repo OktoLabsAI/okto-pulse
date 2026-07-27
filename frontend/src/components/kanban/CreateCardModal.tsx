@@ -2,13 +2,37 @@
  * CreateCardModal - Modal for creating new cards (normal or bug)
  */
 
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { X, Bug } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { v4 as uuidv4 } from 'uuid';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore, useColumns } from '@/store/dashboard';
-import type { CardStatus, CardPriority, CardType, BugSeverity, SpecSummary } from '@/types';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import type {
+  BugSeverity,
+  CardPriority,
+  CardStatus,
+  CardType,
+  CreateCardRequest,
+  SpecSummary,
+} from '@/types';
 import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
+import {
+  KnowledgePropagationSelector,
+} from '@/components/shared/KnowledgePropagationSelector';
+import {
+  effectiveKnowledgeCandidate,
+  mergeKnowledgePropagationCandidates,
+  physicalKnowledgeCandidate,
+  type KnowledgePropagationCandidate,
+} from '@/components/shared/knowledgePropagationCandidates';
+import {
+  buildKnowledgePropagationEnvelope,
+  EMPTY_KNOWLEDGE_PROPAGATION_CHOICE,
+  isKnowledgePropagationChoiceValid,
+  type KnowledgePropagationChoice,
+} from '@/components/shared/knowledgePropagationChoice';
 
 interface CreateCardModalProps {
   boardId: string;
@@ -33,9 +57,22 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
   const [isLoading, setIsLoading] = useState(false);
   const [boardMembers, setBoardMembers] = useState<{ id: string; name: string }[]>([]);
 
+  useEscapeToClose(onClose, { canClose: !isLoading });
+
   // Spec selection
   const [specs, setSpecs] = useState<SpecSummary[]>([]);
   const [selectedSpecId, setSelectedSpecId] = useState('');
+  const [specKnowledge, setSpecKnowledge] = useState<KnowledgePropagationCandidate[]>([]);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [knowledgeReload, setKnowledgeReload] = useState(0);
+  const [knowledgeChoice, setKnowledgeChoice] = useState<KnowledgePropagationChoice>(
+    EMPTY_KNOWLEDGE_PROPAGATION_CHOICE,
+  );
+  const [knowledgeIdempotencyKey, setKnowledgeIdempotencyKey] = useState<string>(
+    () => uuidv4(),
+  );
+  const lastSubmittedIntentRef = useRef<string | null>(null);
 
   // Card type
   const [cardType, setCardType] = useState<CardType>('normal');
@@ -73,6 +110,55 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
       setSpecs([...approved, ...validated, ...inProgress, ...done]);
     }).catch(() => {});
   }, [boardId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setKnowledgeChoice(EMPTY_KNOWLEDGE_PROPAGATION_CHOICE);
+    setKnowledgeIdempotencyKey(uuidv4());
+    lastSubmittedIntentRef.current = null;
+    setSpecKnowledge([]);
+    setKnowledgeError(null);
+    if (!selectedSpecId) {
+      setKnowledgeLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setKnowledgeLoading(true);
+    Promise.allSettled([
+      api.getSpec(selectedSpecId),
+      api.getEffectiveResources(boardId, 'spec', selectedSpecId),
+    ]).then(([specResult, effectiveResult]) => {
+      if (cancelled) return;
+      const direct =
+        specResult.status === 'fulfilled'
+          ? (specResult.value.knowledge_bases || []).map(physicalKnowledgeCandidate)
+          : [];
+      const effective =
+        effectiveResult.status === 'fulfilled'
+          ? (effectiveResult.value.resources.knowledge_base || [])
+            .map(effectiveKnowledgeCandidate)
+            .filter((item): item is KnowledgePropagationCandidate => item !== null)
+          : [];
+      setSpecKnowledge(
+        mergeKnowledgePropagationCandidates(direct, effective),
+      );
+      if (effectiveResult.status === 'rejected') {
+        setKnowledgeError(
+          effectiveResult.reason instanceof Error
+            ? effectiveResult.reason.message
+            : 'Failed to load effective Knowledge resources',
+        );
+      }
+    }).finally(() => {
+      if (!cancelled) setKnowledgeLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [boardId, selectedSpecId, knowledgeReload]);
 
   // Load test scenarios when spec changes and card type is test
   useEffect(() => {
@@ -128,11 +214,17 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
         return;
       }
     }
+    if (!isKnowledgePropagationChoiceValid(knowledgeChoice)) {
+      toast.error(
+        knowledgeChoice.action === 'reference'
+          || knowledgeChoice.action === 'snapshot'
+          ? 'Select at least one Knowledge resource and add a justification'
+          : 'Add a justification for the Knowledge decision',
+      );
+      return;
+    }
 
-    setIsLoading(true);
-
-    try {
-      const card = await api.createCard(boardId, {
+    const request = {
         title: title.trim(),
         description: description.trim() || undefined,
         status,
@@ -141,6 +233,10 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
         labels: labels ? labels.split(',').map((l) => l.trim()).filter(Boolean) : undefined,
         // Spec
         spec_id: selectedSpecId,
+        knowledge_propagation: buildKnowledgePropagationEnvelope(
+          knowledgeChoice,
+          '__intent_fingerprint__',
+        ),
         // Card type
         ...(cardType !== 'normal' ? { card_type: cardType } : {}),
         // Test fields
@@ -156,7 +252,26 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
           steps_to_reproduce: stepsToReproduce.trim() || undefined,
           action_plan: actionPlan.trim() || undefined,
         } : {}),
-      } as any);
+    } as CreateCardRequest;
+    const intentFingerprint = JSON.stringify(request);
+    let idempotencyKey = knowledgeIdempotencyKey;
+    if (
+      lastSubmittedIntentRef.current !== null
+      && lastSubmittedIntentRef.current !== intentFingerprint
+    ) {
+      idempotencyKey = uuidv4();
+      setKnowledgeIdempotencyKey(idempotencyKey);
+    }
+    lastSubmittedIntentRef.current = intentFingerprint;
+    request.knowledge_propagation = buildKnowledgePropagationEnvelope(
+      knowledgeChoice,
+      idempotencyKey,
+    );
+
+    setIsLoading(true);
+
+    try {
+      const card = await api.createCard(boardId, request);
 
       addCardToColumn({
         id: card.id,
@@ -192,11 +307,23 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content max-w-lg max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-overlay" onClick={() => { if (!isLoading) onClose(); }}>
+      <div
+        className="modal-content max-w-lg max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-card-title"
+      >
         <div className="modal-header">
-          <h2 className="font-semibold text-lg">New Card</h2>
-          <button onClick={onClose} className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded">
+          <h2 id="create-card-title" className="font-semibold text-lg">New Card</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isLoading}
+            aria-label="Close new card dialog"
+            className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded disabled:opacity-50"
+          >
             <X size={20} />
           </button>
         </div>
@@ -273,6 +400,21 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
                 <p className="text-xs text-gray-400 mt-0.5">Auto-resolved from origin task</p>
               )}
             </div>
+
+            {selectedSpecId && (
+              <KnowledgePropagationSelector
+                items={specKnowledge}
+                value={knowledgeChoice}
+                onChange={setKnowledgeChoice}
+                loading={knowledgeLoading}
+                error={knowledgeError}
+                onRetry={() => setKnowledgeReload((current) => current + 1)}
+                disabled={isLoading}
+                title="Knowledge from the selected spec"
+                description="Opt in only to resources that this card actually needs."
+                testId="create-card-knowledge-propagation"
+              />
+            )}
 
             {/* Test: Scenario selector */}
             {cardType === 'test' && selectedSpecId && (
@@ -525,7 +667,7 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
           </div>
 
           <div className="modal-footer">
-            <button type="button" onClick={onClose} className="btn btn-secondary">
+            <button type="button" onClick={onClose} disabled={isLoading} className="btn btn-secondary">
               Cancel
             </button>
             <button type="submit" disabled={isLoading} className="btn btn-primary">

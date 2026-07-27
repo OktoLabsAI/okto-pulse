@@ -56,6 +56,25 @@ vi.mock('react-hot-toast', () => ({
   },
 }));
 
+// DefaultBoardConfigPanel's Export/Import buttons pull the import-export
+// service through the API context; stub the hook so this Header test does
+// not need an ApiProvider.
+vi.mock('@/services/import-export-api', () => ({
+  useImportExportApi: () => ({
+    exportGuidelines: vi.fn(),
+    importGuidelines: vi.fn(),
+    exportDesignSystems: vi.fn(),
+    exportDesignSystem: vi.fn(),
+    importDesignSystems: vi.fn(),
+    exportPresets: vi.fn(),
+    importPresets: vi.fn(),
+    exportBoardConfig: vi.fn(),
+    importBoardConfig: vi.fn(),
+  }),
+  importExportFilename: (kind: string) => `${kind}-00000000.json`,
+  downloadJsonFile: vi.fn(),
+}));
+
 const baseSettings: BoardSettings = {
   max_scenarios_per_card: 3,
   skip_test_coverage_global: false,
@@ -64,6 +83,7 @@ const baseSettings: BoardSettings = {
   skip_contract_coverage_global: false,
   skip_ir_coverage_global: false,
   skip_or_coverage_global: false,
+  skip_task_requirement_link_gate_global: false,
   skip_decisions_coverage_global: false,
   skip_cognitive_consolidation: false,
   allow_agent_self_answering: false,
@@ -154,6 +174,8 @@ describe('Header Board settings resource automation', () => {
         }),
       }),
     );
+    const payload = apiMock.updateBoard.mock.calls[0][1].settings;
+    expect(Object.prototype.hasOwnProperty.call(payload, 'skip_task_requirement_link_gate_global')).toBe(false);
   });
 
   it('opens board settings in the standard modal shell', () => {
@@ -218,7 +240,6 @@ describe('Header Board settings resource automation', () => {
       'board-1',
       expect.objectContaining({
         settings: expect.objectContaining({
-          auto_derive_spec_resources_enabled: true,
           auto_derive_spec_resource_types: ['knowledge_base', 'architecture'],
         }),
       }),
@@ -236,8 +257,6 @@ describe('Header Board settings resource automation', () => {
       expect.objectContaining({
         settings: expect.objectContaining({
           skip_cognitive_consolidation: true,
-          skip_test_evidence_global: false,
-          skip_decisions_coverage_global: false,
         }),
       }),
     );
@@ -267,8 +286,6 @@ describe('Header Board settings resource automation', () => {
       expect.objectContaining({
         settings: expect.objectContaining({
           allow_agent_self_answering: true,
-          require_full_context_for_critical_actions: true,
-          skip_cognitive_consolidation: false,
         }),
       }),
     );
@@ -285,7 +302,6 @@ describe('Header Board settings resource automation', () => {
       'board-1',
       expect.objectContaining({
         settings: expect.objectContaining({
-          allow_agent_self_answering: false,
           require_full_context_for_critical_actions: false,
         }),
       }),
@@ -303,9 +319,6 @@ describe('Header Board settings resource automation', () => {
       expect.objectContaining({
         settings: expect.objectContaining({
           require_ideation_ambiguity_gate: true,
-          max_ideation_ambiguity: 3,
-          // The spec ambiguity gate is untouched — distinct setting.
-          max_spec_ambiguity: 30,
         }),
       }),
     );

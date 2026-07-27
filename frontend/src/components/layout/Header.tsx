@@ -5,7 +5,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { authAdapter, portalAdapter } from '@/adapters';
-import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity, HeartPulse, Trash2, AlertTriangle, Palette } from 'lucide-react';
+import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity, Trash2, AlertTriangle, Palette } from 'lucide-react';
 import { GuidelinesPanel } from '@/components/guidelines';
 import { DefaultBoardConfigPanel } from '@/components/board/DefaultBoardConfigPanel';
 import { DesignSystemPanel } from '@/components/board/DesignSystemPanel';
@@ -15,13 +15,13 @@ import { PresetListModal } from '@/components/permissions';
 import { KnowledgeGraphPage } from '@/components/knowledge';
 import { RuntimeSettingsPanel } from '@/components/layout/RuntimeSettingsPanel';
 import { MetricsSettingsPanel } from '@/components/layout/MetricsSettingsPanel';
-import { MetricsHealthPanel } from '@/components/layout/MetricsHealthPanel';
 import { useCurrentBoard } from '@/store/dashboard';
 import pulseWordmark from '@/assets/pulse-wordmark.svg';
 import pulseWordmarkLight from '@/assets/pulse-wordmark-light.svg';
 import pulseIcon from '@/assets/pulse-icon.svg';
 import oktolabsIcon from '@/assets/oktolabs-icon.svg';
 import { useTheme } from '@/hooks/useTheme';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { useDashboardApi } from '@/services/api';
 import toast from 'react-hot-toast';
 import type { BoardSettings } from '@/types';
@@ -56,7 +56,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const [runtimeSettingsInitialTab, setRuntimeSettingsInitialTab] =
     useState<'graphdb' | 'eventqueue' | 'decaytick'>('graphdb');
   const [showMetricsSettings, setShowMetricsSettings] = useState(false);
-  const [showMetricsHealth, setShowMetricsHealth] = useState(false);
   const [showGuidelines, setShowGuidelines] = useState(false);
   const [showDesignSystem, setShowDesignSystem] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
@@ -82,6 +81,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     }
     onKnowledgeGraphOpenChange?.(open);
   };
+
+  useEscapeToClose(() => setShowSettings(false), { enabled: showSettings });
+  useEscapeToClose(() => setShowKnowledgeGraph(false), { enabled: showKnowledgeGraph });
+  useEscapeToClose(() => setShowAbout(false), { enabled: showAbout });
 
   // Close on outside click
   useEffect(() => {
@@ -149,6 +152,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false,
         skip_ir_coverage_global: currentBoard.settings.skip_ir_coverage_global ?? false,
         skip_or_coverage_global: currentBoard.settings.skip_or_coverage_global ?? false,
+        skip_task_requirement_link_gate_global: currentBoard.settings.skip_task_requirement_link_gate_global ?? false,
         skip_decisions_coverage_global: currentBoard.settings.skip_decisions_coverage_global ?? false,
         skip_cognitive_consolidation: currentBoard.settings.skip_cognitive_consolidation ?? false,
         allow_agent_self_answering: currentBoard.settings.allow_agent_self_answering ?? false,
@@ -178,6 +182,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_contract_coverage_global: false,
         skip_ir_coverage_global: false,
         skip_or_coverage_global: false,
+        skip_task_requirement_link_gate_global: false,
         skip_decisions_coverage_global: false,
         skip_cognitive_consolidation: false,
         allow_agent_self_answering: false,
@@ -202,9 +207,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
   const updateSettings = async (patch: Partial<BoardSettings>) => {
     if (!currentBoard) return;
-    const newSettings = { ...settings, ...patch };
     try {
-      await api.updateBoard(currentBoard.id, { settings: newSettings });
+      await api.updateBoard(currentBoard.id, { settings: patch });
       onBoardUpdated?.();
       toast.success('Board settings updated');
       // Bug fix (banner inversion): notify the global EvidenceGateSkipBanner
@@ -428,15 +432,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       Metrics
                     </button>
 
-                    <button
-                      onClick={() => { setShowMenu(false); setShowMetricsHealth(true); }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
-                      data-testid="menu-metrics-health"
-                    >
-                      <HeartPulse size={14} />
-                      Metrics Health
-                    </button>
-
                     {/* Toggle View Mode */}
                     <button
                       onClick={() => { setShowMenu(false); toggleTheme(); }}
@@ -620,12 +615,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         />
       )}
 
-      {showMetricsHealth && (
-        <MetricsHealthPanel
-          onClose={() => setShowMetricsHealth(false)}
-        />
-      )}
-
       {showPresets && (
         <PresetListModal onClose={() => setShowPresets(false)} />
       )}
@@ -670,7 +659,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                 Okto Pulse
               </h2>
               <p className="text-sm text-surface-500 dark:text-surface-400 mt-1">
-                Community Edition — v0.2.5
+                Community Edition — v{__APP_VERSION__}
               </p>
               <p className="text-[11px] text-surface-400 dark:text-surface-500 mt-0.5">
                 Elastic License 2.0 + SaaS/Branding Addendum + Trademark Policy

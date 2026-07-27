@@ -1,24 +1,30 @@
-"""Local authentication provider for community edition — single-user, no JWT."""
+"""Local-first authentication adapter for the Community edition."""
 
-from typing import Any
-from fastapi import Request
-from fastapi.security import HTTPAuthorizationCredentials
-from okto_pulse.core.infra.auth import AuthProvider
+from okto_pulse.core.ports import (
+    AuthenticationPort,
+    Credential,
+    Principal,
+)
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 
 LOCAL_USER = {
     "sub": "local-user",
     "email": "local@okto-pulse.dev",
     "name": "Local User",
+    "roles": ["admin"],
 }
 
-class LocalAuthProvider(AuthProvider):
-    """Always returns a fixed local user. No JWT validation."""
+class LocalAuthProvider(AuthenticationPort):
+    """Always resolves the Community single-user principal.
 
-    async def get_current_user(self, request: Request, credentials: HTTPAuthorizationCredentials | None) -> dict[str, Any]:
-        return LOCAL_USER
+    The local-first policy intentionally accepts an absent credential; HTTP and
+    MCP extraction are handled by their own inbound adapters.
+    """
 
-    def get_user_id(self, user: dict[str, Any] | None) -> str:
-        return "local-user"
-
-    async def get_realm_id(self, request: Request, user: dict[str, Any] | None) -> str | None:
-        return None
+    async def authenticate(self, credential: Credential | None) -> Principal:
+        del credential
+        return Principal(
+            subject="local-user",
+            realm_id=LOCAL_REALM_ID,
+            claims=LOCAL_USER,
+        )
