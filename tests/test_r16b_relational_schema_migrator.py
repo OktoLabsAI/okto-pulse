@@ -355,15 +355,37 @@ def test_ts_7c1fc064_first_step_failure_is_failed_not_partial():
     assert not result.is_success
 
 
+@pytest.mark.parametrize(
+    ("stored_permissions", "expected_failure"),
+    [
+        ("{", "JSONDecodeError"),
+        ("{}", "ValueError"),
+        ('"board:read"', "ValueError"),
+        ('["board:read", 7]', "ValueError"),
+    ],
+    ids=(
+        "invalid-json",
+        "json-object",
+        "json-string",
+        "json-array-with-non-string",
+    ),
+)
 def test_ts_7c1fc064_agent_permission_migration_rolls_back_and_fails_closed(
     monkeypatch,
+    stored_permissions,
+    expected_failure,
 ):
     class _MalformedLegacyPermissionResult:
         def mappings(self):
             return self
 
         def all(self):
-            return [{"id": "agent-malformed", "permissions": "{"}]
+            return [
+                {
+                    "id": "agent-malformed",
+                    "permissions": stored_permissions,
+                }
+            ]
 
     class _TrackingSession:
         def __init__(self):
@@ -428,7 +450,7 @@ def test_ts_7c1fc064_agent_permission_migration_rolls_back_and_fails_closed(
     assert not result.is_success
     assert result.failed_step is not None
     assert result.failed_step.step_id == permission_step_id
-    assert "JSONDecodeError" in (result.failed_step.failure_reason or "")
+    assert expected_failure in (result.failed_step.failure_reason or "")
     assert {step.step_id for step in result.applied_steps} == {
         "pre_a",
         CREATE_ALL_BOUNDARY_STEP_ID,

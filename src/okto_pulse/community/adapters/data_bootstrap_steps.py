@@ -27,19 +27,71 @@ def _json_value(value):
     return value
 
 
-def _permission_flags_document(value, *, agent_id: object) -> dict:
+def _validate_permission_flags_shape(
+    document: dict,
+    canonical: Mapping,
+    *,
+    agent_id: object,
+    path: tuple[str, ...] = (),
+) -> None:
+    """Validate only canonical keys, leaving extension keys untouched."""
+    for key, canonical_value in canonical.items():
+        if key not in document:
+            continue
+        value = document[key]
+        key_path = (*path, str(key))
+        dotted_path = ".".join(key_path)
+        if isinstance(canonical_value, Mapping):
+            if not isinstance(value, Mapping):
+                raise ValueError(
+                    f"Agent {agent_id!r} permission_flags canonical branch "
+                    f"{dotted_path!r} must be a JSON object, "
+                    f"got {type(value).__name__}"
+                )
+            normalized_branch = _copy.deepcopy(dict(value))
+            document[key] = normalized_branch
+            _validate_permission_flags_shape(
+                normalized_branch,
+                canonical_value,
+                agent_id=agent_id,
+                path=key_path,
+            )
+        elif not isinstance(value, bool):
+            raise ValueError(
+                f"Agent {agent_id!r} permission_flags canonical leaf "
+                f"{dotted_path!r} must be boolean, got {type(value).__name__}"
+            )
+
+
+def _permission_flags_document(
+    value,
+    *,
+    agent_id: object,
+    canonical: Mapping,
+) -> dict | None:
     try:
         decoded = _json_value(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(
             f"Agent {agent_id!r} permission_flags is not valid JSON"
         ) from exc
+    # ``AgentUpdate(permission_flags=None)`` is a supported way to clear the
+    # direct layer and fall back to a preset/legacy/default policy. SQLite's
+    # historical JSON binding persisted that as the JSON literal ``null``.
+    if decoded is None:
+        return None
     if not isinstance(decoded, Mapping):
         raise ValueError(
             f"Agent {agent_id!r} permission_flags must be a JSON object, "
             f"got {type(decoded).__name__}"
         )
-    return _copy.deepcopy(dict(decoded))
+    document = _copy.deepcopy(dict(decoded))
+    _validate_permission_flags_shape(
+        document,
+        canonical,
+        agent_id=agent_id,
+    )
+    return document
 
 
 async def _seed_builtin_presets() -> None:
@@ -71,6 +123,7 @@ async def _reconcile_agent_permission_flags() -> None:
             from sqlalchemy import JSON as sa_JSON
             from sqlalchemy import bindparam, text as sa_text
 
+            canonical, _ = merge_permission_registry_defaults({})
             result = await session.execute(
                 sa_text(
                     "SELECT id, permission_flags FROM agents "
@@ -84,7 +137,10 @@ async def _reconcile_agent_permission_flags() -> None:
                 stored_dict = _permission_flags_document(
                     agent["permission_flags"],
                     agent_id=agent["id"],
+                    canonical=canonical,
                 )
+                if stored_dict is None:
+                    continue
                 merged, added = merge_permission_registry_defaults(stored_dict)
                 if added > 0:
                     await session.execute(

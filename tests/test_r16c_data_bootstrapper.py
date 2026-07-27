@@ -232,6 +232,9 @@ def test_ts_71673acb_permission_flags_merge_default_and_preserve(
     assert "board" in partial and "read" in partial["board"]
     assert "profile" in partial  # a small top-level subtree to drop
     partial["board"]["read"] = False  # custom value -> must be preserved
+    extension = {"mode": ["custom", False]}
+    partial["vendor_extension"] = copy.deepcopy(extension)
+    partial["board"]["vendor_extension"] = copy.deepcopy(extension)
     del partial["profile"]  # missing subtree -> must be backfilled True
 
     async def _load_flags():
@@ -277,6 +280,9 @@ def test_ts_71673acb_permission_flags_merge_default_and_preserve(
     assert after1["profile"]["update"] is True
     # Custom False leaf preserved — NOT overwritten back to True.
     assert after1["board"]["read"] is False
+    # Non-canonical extension keys and their opaque shapes are preserved.
+    assert after1["vendor_extension"] == extension
+    assert after1["board"]["vendor_extension"] == extension
     # Every registry top-level key is now present.
     for key in permission_registry:
         assert key in after1, f"registry key {key!r} not backfilled"
@@ -290,8 +296,18 @@ def test_ts_71673acb_permission_flags_merge_default_and_preserve(
         ("{not-json", "not valid JSON"),
         ("[]", "must be a JSON object"),
         ("42", "must be a JSON object"),
+        ('{"board":[]}', "canonical branch 'board'"),
+        ('{"board":false}', "canonical branch 'board'"),
+        ('{"board":{"read":"false"}}', "canonical leaf 'board.read'"),
     ],
-    ids=("malformed-json", "array", "scalar"),
+    ids=(
+        "malformed-json",
+        "array",
+        "scalar",
+        "canonical-branch-array",
+        "canonical-branch-scalar",
+        "canonical-leaf-non-bool",
+    ),
 )
 def test_permission_flag_reconcile_rejects_invalid_documents_and_rolls_back(
     monkeypatch, stored_value, expected_message
@@ -370,6 +386,147 @@ def test_permission_flag_reconcile_propagates_database_failure_after_rollback(
         asyncio.run(_bootstrap_steps._reconcile_agent_permission_flags())
 
     assert session.rollback_count == 1
+
+
+@pytest.mark.parametrize(
+    ("invalid_flags", "expected_message"),
+    [
+        ({"board": []}, "canonical branch 'board'"),
+        ({"board": False}, "canonical branch 'board'"),
+        ({"board": {"read": "false"}}, "canonical leaf 'board.read'"),
+    ],
+    ids=("branch-array", "branch-bool", "leaf-string"),
+)
+def test_permission_flag_reconcile_rejects_invalid_canonical_shape_in_database(
+    tmp_path,
+    _isolate_engine,
+    invalid_flags,
+    expected_message,
+):
+    import copy
+
+    from sqlalchemy import select
+
+    from okto_pulse.community.adapters.sqlalchemy_models import Agent
+
+    async def drive():
+        _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'shape.db'}")
+        register_community_relational_schema_lifecycle()
+        await _db_mod.init_db()
+        try:
+            async with _db_mod.get_session_factory()() as session:
+                session.add(
+                    Agent(
+                        id="invalid-shape-agent",
+                        name="Invalid Shape Agent",
+                        api_key="invalid-shape-key",
+                        api_key_hash="invalid-shape-hash",
+                        created_by="r16c-test",
+                        permission_flags=copy.deepcopy(invalid_flags),
+                    )
+                )
+                await session.commit()
+
+            with pytest.raises(ValueError, match=expected_message):
+                await _bootstrap_steps._reconcile_agent_permission_flags()
+
+            async with _db_mod.get_session_factory()() as session:
+                stored = (
+                    await session.execute(
+                        select(Agent.permission_flags).where(
+                            Agent.id == "invalid-shape-agent"
+                        )
+                    )
+                ).scalar_one()
+                return copy.deepcopy(stored)
+        finally:
+            await _db_mod.get_engine().dispose()
+
+    assert asyncio.run(drive()) == invalid_flags
+
+
+def test_permission_flag_null_storage_is_backward_compatible_on_replay(
+    tmp_path,
+    _isolate_engine,
+):
+    from sqlalchemy import text
+
+    from okto_pulse.community.adapters.relational_application import (
+        CommunityPermissionPresetGateway,
+    )
+    from okto_pulse.community.adapters.relational_schema_lifecycle import (
+        make_community_relational_schema_lifecycle_orchestrator,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_models import Agent
+
+    async def raw_flags():
+        async with _db_mod.get_engine().connect() as conn:
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT id, permission_flags FROM agents "
+                        "WHERE id = 'json-null-agent' "
+                        "ORDER BY id"
+                    )
+                )
+            ).all()
+            return {agent_id: flags for agent_id, flags in rows}
+
+    async def drive():
+        _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'null.db'}")
+        register_community_relational_schema_lifecycle()
+        await _db_mod.init_db()
+        try:
+            async with _db_mod.get_session_factory()() as session:
+                preset_id = (
+                    await session.execute(
+                        text(
+                            "SELECT id FROM permission_presets "
+                            "WHERE is_builtin = 1 AND name = 'Reporter'"
+                        )
+                    )
+                ).scalar_one()
+                session.add(
+                    Agent(
+                        id="json-null-agent",
+                        name="JSON Null Agent",
+                        api_key="json-null-key",
+                        api_key_hash="json-null-hash",
+                        created_by="json-null-owner",
+                        preset_id=preset_id,
+                        permission_flags=None,
+                    )
+                )
+                await session.commit()
+
+            before = await raw_flags()
+            # Exercise the actual startup composition (migration followed by
+            # data reconciliation), not only the helper in isolation.
+            orchestrator = (
+                make_community_relational_schema_lifecycle_orchestrator()
+            )
+            await orchestrator.initialize_schema()
+            after = await raw_flags()
+            async with _db_mod.get_session_factory()() as session:
+                effective = await CommunityPermissionPresetGateway(
+                    session
+                ).get_effective_permissions(
+                    user_id="json-null-owner",
+                    board_id="any-board",
+                )
+            return before, after, effective
+        finally:
+            await _db_mod.get_engine().dispose()
+
+    before, after, effective = asyncio.run(drive())
+
+    # The current SQLAlchemy JSON binding persists the supported Python None
+    # value as a TEXT JSON literal, which the replay must treat as absence.
+    assert before == {"json-null-agent": "null"}
+    assert after == before
+    # No full-control backfill: the restrictive preset remains authoritative.
+    assert effective.preset_name == "Reporter"
+    assert effective.flags["kg"]["session"]["commit"] is False
 
 
 # ===========================================================================

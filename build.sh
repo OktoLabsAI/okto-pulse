@@ -23,6 +23,15 @@ if [ ! -f "${CORE_DIR}/pyproject.toml" ]; then
     exit 1
 fi
 
+ensure_python_build_tool() {
+    if python -c 'import build' >/dev/null 2>&1; then
+        return
+    fi
+
+    echo -e "${YELLOW}Python wheel builder not found; installing it...${NC}"
+    python -m pip install --disable-pip-version-check "build>=1.2,<2"
+}
+
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Okto Pulse CLI Build Script${NC}"
 echo -e "${GREEN}========================================${NC}"
@@ -44,6 +53,7 @@ echo -e "${GREEN}✓ Packaged frontend built and hash-verified${NC}"
 echo ""
 echo -e "${YELLOW}[2/4] Building okto-pulse-core...${NC}"
 cd "${CORE_DIR}"
+ensure_python_build_tool
 python -m build --wheel
 CORE_WHEEL="$(find "${CORE_DIR}/dist" -maxdepth 1 -type f -name 'okto_pulse_core-0.3.0-*.whl' -print -quit)"
 if [ -z "${CORE_WHEEL}" ]; then

@@ -40,6 +40,21 @@ def test_community_declares_every_runtime_dependency_directly() -> None:
     } <= direct
 
 
+def test_build_script_bootstraps_build_frontend_before_wheels() -> None:
+    script = (COMMUNITY_REPO / "build.sh").read_text(encoding="utf-8")
+    attributes = (COMMUNITY_REPO / ".gitattributes").read_text(encoding="utf-8")
+    step_two = script.index("# Step 2: Build okto-pulse-core")
+    bootstrap_call = script.index("\nensure_python_build_tool\n", step_two)
+    first_wheel_build = script.index("\npython -m build --wheel\n", step_two)
+
+    assert "*.sh text eol=lf" in attributes.splitlines()
+    assert "python -c 'import build'" in script[:step_two]
+    assert 'python -m pip install --disable-pip-version-check "build>=1.2,<2"' in (
+        script[:step_two]
+    )
+    assert bootstrap_call < first_wheel_build
+
+
 @pytest.mark.skipif(
     os.environ.get("OKTO_RUN_F14_WHEEL_SMOKE") != "1",
     reason="Set OKTO_RUN_F14_WHEEL_SMOKE=1 for clean-wheel acceptance.",
