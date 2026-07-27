@@ -19,15 +19,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 # Registers every ORM model on Base.metadata so init_db builds the full schema.
 import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
+from okto_pulse.community.api import attachments as attachments_api
 from okto_pulse.community.api.attachments import router as attachments_router
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.infra.database import get_db, get_session_factory
@@ -241,6 +243,103 @@ def test_upload_download_delete_roundtrip_real_adapter(env):
     assert sorted(actions) == ["attachment_deleted", "attachment_uploaded"]
     assert actions.count("attachment_uploaded") == 1
     assert actions.count("attachment_deleted") == 1
+
+
+def test_upload_accepts_content_exactly_at_configured_size_limit(env, monkeypatch):
+    client = env["client"]
+    upload_dir = env["upload_dir"]
+    bid, cid = _seed_board_card()
+    content = b"boundary"
+    monkeypatch.setattr(
+        attachments_api,
+        "get_settings",
+        lambda: SimpleNamespace(max_upload_size=len(content)),
+    )
+
+    response = client.post(
+        f"{PREFIX}/{bid}/{cid}",
+        files={"file": ("boundary.bin", content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 201, response.text
+    stored = list((upload_dir / bid).iterdir())
+    assert len(stored) == 1
+    assert stored[0].read_bytes() == content
+
+
+def test_upload_rejects_content_above_configured_size_without_side_effects(
+    env,
+    monkeypatch,
+):
+    client = env["client"]
+    upload_dir = env["upload_dir"]
+    bid, cid = _seed_board_card()
+    max_upload_size = 8
+    monkeypatch.setattr(
+        attachments_api,
+        "get_settings",
+        lambda: SimpleNamespace(max_upload_size=max_upload_size),
+    )
+
+    response = client.post(
+        f"{PREFIX}/{bid}/{cid}",
+        files={
+            "file": (
+                "oversize.bin",
+                b"x" * (max_upload_size + 1),
+                "application/octet-stream",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == {
+        "error": "attachment_too_large",
+        "message": (
+            "Attachment exceeds the configured maximum upload size of "
+            f"{max_upload_size} bytes"
+        ),
+    }
+    assert not (upload_dir / bid).exists()
+    assert _attachment_activity_actions(bid, cid) == []
+
+
+@pytest.mark.asyncio
+async def test_upload_reader_consumes_at_most_limit_plus_one_byte():
+    max_upload_size = attachments_api._UPLOAD_CHUNK_SIZE + 7
+
+    class RecordingUpload:
+        size = None
+
+        def __init__(self) -> None:
+            self._content = b"x" * (max_upload_size + 100)
+            self._offset = 0
+            self.requested_sizes: list[int] = []
+            self.returned_bytes = 0
+
+        async def read(self, size: int = -1) -> bytes:
+            self.requested_sizes.append(size)
+            end = min(self._offset + size, len(self._content))
+            chunk = self._content[self._offset : end]
+            self._offset = end
+            self.returned_bytes += len(chunk)
+            return chunk
+
+    upload = RecordingUpload()
+
+    with pytest.raises(HTTPException) as raised:
+        await attachments_api._read_upload_content(
+            upload,  # type: ignore[arg-type]
+            max_upload_size=max_upload_size,
+        )
+
+    assert raised.value.status_code == 413
+    assert upload.returned_bytes == max_upload_size + 1
+    assert upload.requested_sizes
+    assert all(
+        0 < requested <= attachments_api._UPLOAD_CHUNK_SIZE
+        for requested in upload.requested_sizes
+    )
 
 
 @pytest.mark.parametrize(

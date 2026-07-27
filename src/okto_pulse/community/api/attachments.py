@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from starlette.responses import StreamingResponse
 
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.config import CommunitySettings
 from okto_pulse.core.application.use_cases.card_collaboration import (
     AttachmentNotFoundError,
     AttachmentStorageError,
@@ -24,7 +25,7 @@ from okto_pulse.core.application.use_cases.card_collaboration import (
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
-from okto_pulse.core import StorageObjectStat, get_storage_provider
+from okto_pulse.core import StorageObjectStat, get_settings, get_storage_provider
 from okto_pulse.core.models import AttachmentResponse
 from okto_pulse.core.repositories import PulseUnitOfWork
 
@@ -33,6 +34,10 @@ router = APIRouter()
 #: Streamed-download chunk size — mirrors Starlette's file-download chunk size so
 #: the provider-backed response chunks identically to the prior filesystem response.
 _DOWNLOAD_CHUNK_SIZE = 64 * 1024
+#: Bound each application-level upload read.  The multipart parser may spool the
+#: request before this endpoint runs; this prevents a second, unbounded heap
+#: allocation when the attachment is materialised for the Core use case.
+_UPLOAD_CHUNK_SIZE = 64 * 1024
 
 
 def _attachment_http_error(
@@ -46,6 +51,54 @@ def _attachment_http_error(
         status_code=status_code,
         detail={"error": error.code, "message": str(error)},
     )
+
+
+def _configured_max_upload_size() -> int:
+    """Resolve the live Community upload limit without freezing startup state."""
+
+    configured = getattr(
+        get_settings(),
+        "max_upload_size",
+        CommunitySettings.model_fields["max_upload_size"].default,
+    )
+    return max(0, int(configured))
+
+
+def _attachment_too_large_http_error(max_upload_size: int) -> HTTPException:
+    return HTTPException(
+        # Literal keeps compatibility with the supported Starlette 0.35 floor;
+        # newer releases renamed and deprecated the original status constant.
+        status_code=413,
+        detail={
+            "error": "attachment_too_large",
+            "message": (
+                "Attachment exceeds the configured maximum upload size of "
+                f"{max_upload_size} bytes"
+            ),
+        },
+    )
+
+
+async def _read_upload_content(
+    file: UploadFile,
+    *,
+    max_upload_size: int,
+) -> bytes:
+    """Read at most the configured limit plus one overflow-detection byte."""
+
+    reported_size = getattr(file, "size", None)
+    if reported_size is not None and reported_size > max_upload_size:
+        raise _attachment_too_large_http_error(max_upload_size)
+
+    content = bytearray()
+    while True:
+        remaining = max_upload_size - len(content)
+        chunk = await file.read(min(_UPLOAD_CHUNK_SIZE, remaining + 1))
+        if not chunk:
+            return bytes(content)
+        if len(chunk) > remaining:
+            raise _attachment_too_large_http_error(max_upload_size)
+        content.extend(chunk)
 
 
 def _content_disposition(filename: str) -> str:
@@ -204,7 +257,10 @@ async def upload_attachment(
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Upload a file attachment to a card."""
-    content = await file.read()
+    content = await _read_upload_content(
+        file,
+        max_upload_size=_configured_max_upload_size(),
+    )
     try:
         result = await UploadCardAttachmentUseCase().execute(
             UploadCardAttachmentCommand(
