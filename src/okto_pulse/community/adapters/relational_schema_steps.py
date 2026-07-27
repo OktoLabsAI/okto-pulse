@@ -4385,23 +4385,23 @@ async def _migrate_agent_permissions() -> None:
 
             for agent in agents:
                 old_perms = agent["permissions"]
-                if old_perms is None:
+                if isinstance(old_perms, str):
+                    decoded_perms = _json.loads(old_perms)
+                else:
+                    decoded_perms = old_perms
+                if decoded_perms is None:
                     new_flags = registered_permission_flags()
                 else:
-                    if isinstance(old_perms, str):
-                        perm_list = _json.loads(old_perms)
-                    else:
-                        perm_list = old_perms
                     # Duplicate strings are valid: legacy mapping only sets
                     # boolean leaves, so replaying one permission is idempotent.
-                    if not isinstance(perm_list, list) or not all(
-                        isinstance(permission, str) for permission in perm_list
+                    if not isinstance(decoded_perms, list) or not all(
+                        isinstance(permission, str) for permission in decoded_perms
                     ):
                         raise ValueError(
                             f"Agent {agent['id']!r} legacy permissions must be "
                             "a JSON array of strings"
                         )
-                    new_flags = legacy_permissions_to_flags(perm_list)
+                    new_flags = legacy_permissions_to_flags(decoded_perms)
                 await session.execute(
                     sa_text(
                         "UPDATE agents SET permission_flags = :permission_flags "

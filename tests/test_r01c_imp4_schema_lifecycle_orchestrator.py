@@ -485,6 +485,109 @@ def test_legacy_replay_preserves_rows_migrates_and_idempotent(tmp_path, _isolate
     assert rows2["intent_count"] == rows1["intent_count"] == rows0["intent_count"]
 
 
+def test_legacy_json_null_permissions_replay_matches_sql_null(
+    tmp_path,
+    _isolate,
+):
+    async def _raw_storage():
+        return {
+            agent_id: {
+                "permissions": permissions,
+                "permissions_is_null": bool(permissions_is_null),
+                "permission_flags_is_null": bool(permission_flags_is_null),
+            }
+            for (
+                agent_id,
+                permissions,
+                permissions_is_null,
+                permission_flags_is_null,
+            ) in await _fetch(
+                _db_mod.get_engine(),
+                "SELECT id, quote(permissions), permissions IS NULL, "
+                "permission_flags IS NULL FROM agents "
+                "WHERE id IN ('a-json-null', 'a-sql-null') ORDER BY id",
+            )
+        }
+
+    async def drive():
+        _db_mod.create_database(
+            f"sqlite+aiosqlite:///{tmp_path / 'legacy-null.db'}"
+        )
+        await make_community_relational_schema_lifecycle_orchestrator().initialize_schema()
+        try:
+            async with _db_mod.get_session_factory()() as session:
+                for agent_id in ("a-json-null", "a-sql-null"):
+                    session.add(
+                        Agent(
+                            id=agent_id,
+                            name=f"Legacy {agent_id}",
+                            api_key=f"{agent_id}-key",
+                            api_key_hash=f"{agent_id}-hash",
+                            created_by="legacy-null-owner",
+                            permissions=None,
+                            permission_flags=None,
+                        )
+                    )
+                await session.commit()
+
+            # A pre-column legacy row has SQL NULL permission_flags. Keep the
+            # first agent's ORM-written JSON null permissions, while the second
+            # represents the equivalent SQL NULL storage used by older rows.
+            await _force_null_flags("a-json-null")
+            await _force_null_flags("a-sql-null")
+            from sqlalchemy import text
+
+            async with _db_mod.get_engine().begin() as connection:
+                await connection.execute(
+                    text(
+                        "UPDATE agents SET permissions = NULL "
+                        "WHERE id = 'a-sql-null'"
+                    )
+                )
+
+            storage_before = await _raw_storage()
+            await make_community_relational_schema_lifecycle_orchestrator().initialize_schema()
+            flags_after = await _agents_state(_db_mod.get_engine())
+            storage_after = await _raw_storage()
+            await make_community_relational_schema_lifecycle_orchestrator().initialize_schema()
+            flags_after_replay = await _agents_state(_db_mod.get_engine())
+            return (
+                storage_before,
+                storage_after,
+                flags_after,
+                flags_after_replay,
+            )
+        finally:
+            await _db_mod.get_engine().dispose()
+
+    storage_before, storage_after, flags_after, flags_after_replay = asyncio.run(
+        drive()
+    )
+    assert storage_before == {
+        "a-json-null": {
+            "permissions": "'null'",
+            "permissions_is_null": False,
+            "permission_flags_is_null": True,
+        },
+        "a-sql-null": {
+            "permissions": "NULL",
+            "permissions_is_null": True,
+            "permission_flags_is_null": True,
+        },
+    }
+    assert storage_after == {
+        agent_id: {
+            **storage,
+            "permission_flags_is_null": False,
+        }
+        for agent_id, storage in storage_before.items()
+    }
+    expected_flags, _ = _data_steps.merge_permission_registry_defaults({})
+    assert flags_after["a-json-null"] == expected_flags
+    assert flags_after["a-sql-null"] == expected_flags
+    assert flags_after_replay == flags_after
+
+
 # ===========================================================================
 # Fail-closed: a failed/partial migration or bootstrap result is re-raised as
 # the port's structured error — the lifecycle never silently half-applies.
