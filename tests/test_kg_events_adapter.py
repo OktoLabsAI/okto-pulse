@@ -54,6 +54,9 @@ async def test_community_reader_returns_outbox_events_and_queue_snapshot() -> No
 
         assert isinstance(reader, KGEventsReaderPort)
         assert [event.event_id for event in result.events] == ["evt-community-reader"]
+        assert result.events[0].created_at == created_at
+        assert result.events[0].created_at is not None
+        assert result.events[0].created_at.utcoffset() == timedelta(0)
         assert result.events[0].payload == {"nodes": 3}
         assert result.progress == {
             "pending": 0,
@@ -70,6 +73,49 @@ async def test_community_reader_returns_outbox_events_and_queue_snapshot() -> No
             limit=50,
         )
         assert [event.event_id for event in replay] == ["evt-community-reader"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_community_reader_pages_equal_timestamps_by_event_id() -> None:
+    engine = create_async_engine("sqlite+aiosqlite://", future=True)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    created_at = datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            session.add_all(
+                [
+                    GlobalUpdateOutbox(
+                        event_id=event_id,
+                        board_id="board-tied-events",
+                        session_id=f"session-{event_id}",
+                        event_type="kg.session.committed",
+                        payload={},
+                        created_at=created_at,
+                    )
+                    for event_id in ("event-c", "event-a", "event-b")
+                ]
+            )
+            await session.commit()
+
+        reader = CommunityKGEventsReader(factory)
+        first = await reader.poll(
+            board_id="board-tied-events",
+            after=created_at - timedelta(seconds=1),
+            limit=2,
+        )
+        second = await reader.poll(
+            board_id="board-tied-events",
+            after=created_at,
+            after_event_id=first.events[-1].event_id,
+            limit=2,
+        )
+
+        assert [event.event_id for event in first.events] == ["event-a", "event-b"]
+        assert [event.event_id for event in second.events] == ["event-c"]
     finally:
         await engine.dispose()
 

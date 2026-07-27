@@ -51,6 +51,7 @@ from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
+from okto_pulse.community.adapters.kg_events import poll_community_kg_events
 from okto_pulse.core.application.use_cases.kg_routes_crud import (
     BoostNodeCommand,
     BoostNodeUseCase,
@@ -1207,10 +1208,99 @@ async def list_pending_tree(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/boards/{board_id}/events/poll")
+async def poll_kg_events(
+    board_id: str,
+    since: str | None = Query(
+        None,
+        description="ISO timestamp cursor returned by the previous poll",
+    ),
+    after_event_id: str | None = Query(
+        None,
+        description="Stable event-id tie breaker returned by the previous poll",
+    ),
+    limit: int = Query(500, ge=1, le=500),
+    _actor: ActorContext = Depends(require_kg_stream_board_actor),
+):
+    """Return one finite, authenticated read of KG events and queue state.
+
+    The SSE endpoint below intentionally never completes.  This companion
+    endpoint gives authenticated clients a finite polling fallback while
+    reusing the same composed event reader and timestamp cursor semantics.
+    The first request establishes a ``now`` baseline and returns only the
+    current progress snapshot; subsequent requests replay events after the
+    returned cursor.
+    """
+    if since is None and after_event_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="after_event_id requires since",
+        )
+    if since is None:
+        after = datetime.now(timezone.utc)
+        include_events = False
+    else:
+        try:
+            after = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="since must be ISO 8601")
+        if after.tzinfo is None:
+            after = after.replace(tzinfo=timezone.utc)
+        else:
+            after = after.astimezone(timezone.utc)
+        include_events = True
+
+    result = await poll_community_kg_events(
+        board_id=board_id,
+        after=after,
+        after_event_id=after_event_id,
+        limit=limit,
+    )
+    events = []
+    cursor = after
+    cursor_event_id = after_event_id
+    if include_events:
+        for event in result.events:
+            events.append(
+                {
+                    "event_id": event.event_id,
+                    "session_id": event.session_id,
+                    "event_type": event.event_type,
+                    "created_at": (
+                        event.created_at.isoformat()
+                        if event.created_at is not None
+                        else None
+                    ),
+                    "payload": dict(event.payload),
+                }
+            )
+            if event.created_at is not None:
+                event_cursor = event.created_at
+                if event_cursor.tzinfo is None:
+                    event_cursor = event_cursor.replace(tzinfo=timezone.utc)
+                else:
+                    event_cursor = event_cursor.astimezone(timezone.utc)
+                event_position = (event_cursor, event.event_id)
+                cursor_position = (cursor, cursor_event_id or "")
+                if event_position > cursor_position:
+                    cursor, cursor_event_id = event_position
+
+    return {
+        "events": events,
+        "progress": dict(result.progress),
+        "cursor": cursor.isoformat(),
+        "cursor_event_id": cursor_event_id,
+    }
+
+
 @router.get("/boards/{board_id}/events")
 async def stream_kg_events(
     board_id: str,
     since: str | None = Query(None, description="ISO timestamp — only emit events created after this"),
+    after_event_id: str | None = Query(
+        None,
+        description="Stable event-id tie breaker for events sharing `since`",
+    ),
     _actor: ActorContext = Depends(require_kg_stream_board_actor),
 ):
     """Server-Sent Events stream of `kg.session.committed` /
@@ -1245,10 +1335,22 @@ async def stream_kg_events(
         get_kg_events_hub,
     )
 
+    if since is None and after_event_id is not None:
+        raise HTTPException(status_code=400, detail="after_event_id requires since")
     try:
-        since_cursor = _dt.fromisoformat(since) if since else None
+        since_cursor = (
+            _dt.fromisoformat(since.replace("Z", "+00:00"))
+            if since
+            else None
+        )
     except ValueError:
         raise HTTPException(status_code=400, detail="since must be ISO 8601")
+    if since_cursor is not None:
+        since_cursor = (
+            since_cursor.replace(tzinfo=_tz.utc)
+            if since_cursor.tzinfo is None
+            else since_cursor.astimezone(_tz.utc)
+        )
 
     def _as_utc(value: _dt) -> _dt:
         return value if value.tzinfo is not None else value.replace(tzinfo=_tz.utc)
@@ -1266,19 +1368,53 @@ async def stream_kg_events(
             # (sem gap nem duplicata). Best-effort — nunca quebra o stream.
             if since_cursor is not None:
                 try:
-                    backlog = await hub.replay(
-                        board_id=board_id,
-                        after=since_cursor,
-                        limit=500,
+                    replay_cursor = since_cursor
+                    replay_event_id = after_event_id
+                    replay_limit = 500
+                    subscription_boundary = (
+                        _as_utc(subscription.cursor),
+                        subscription.cursor_event_id or "",
                     )
-                    for event in backlog:
+                    while True:
+                        backlog = await hub.replay(
+                            board_id=board_id,
+                            after=replay_cursor,
+                            after_event_id=replay_event_id,
+                            limit=replay_limit,
+                        )
+                        if not backlog:
+                            break
+
+                        advanced = False
+                        reached_subscription = False
+                        for event in backlog:
+                            if event.created_at is None:
+                                continue
+                            event_position = (
+                                _as_utc(event.created_at),
+                                event.event_id,
+                            )
+                            if event_position > subscription_boundary:
+                                reached_subscription = True
+                                break  # daqui em diante a queue do hub entrega
+                            if event_position <= (
+                                _as_utc(replay_cursor),
+                                replay_event_id or "",
+                            ):
+                                continue
+                            yield format_outbox_row_sse(event)
+                            replay_cursor, replay_event_id = event_position
+                            advanced = True
+                            if event_position == subscription_boundary:
+                                reached_subscription = True
+                                break
+
                         if (
-                            event.created_at is not None
-                            and _as_utc(event.created_at)
-                            > _as_utc(subscription.cursor)
+                            reached_subscription
+                            or len(backlog) < replay_limit
+                            or not advanced
                         ):
-                            break  # daqui em diante a queue do hub entrega
-                        yield format_outbox_row_sse(event)
+                            break
                 except Exception:
                     pass
 

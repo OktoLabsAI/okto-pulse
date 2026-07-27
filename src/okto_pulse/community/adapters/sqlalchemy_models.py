@@ -3049,7 +3049,9 @@ class GlobalUpdateOutbox(Base):
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
     )
     processed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
