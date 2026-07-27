@@ -82,9 +82,9 @@ def _stat_headers(meta: StorageObjectStat) -> dict[str, str]:
 
 
 def _parse_byte_ranges(range_header: str | None, size: int):
-    """Parse a ``bytes=`` Range header with the SAME semantics as the prior
-    filesystem file-download response, so single / multi / suffix / unsatisfiable /
-    malformed all resolve identically to the baseline.
+    """Parse a ``bytes=`` Range header with the prior filesystem response's
+    observable contract plus RFC-compatible suffix clamping and mixed-range
+    filtering.
 
     Returns one of:
       ``("single", start, end_exclusive)`` — one satisfiable range -> 206;
@@ -104,6 +104,8 @@ def _parse_byte_ranges(range_header: str | None, size: int):
         return ("malformed",)
 
     ranges: list[tuple[int, int]] = []
+    saw_numeric_range = False
+    saw_unsatisfiable_range = False
     for part in spec.split(","):
         part = part.strip()
         if not part or part == "-" or "-" not in part:
@@ -111,17 +113,36 @@ def _parse_byte_ranges(range_header: str | None, size: int):
         start_s, end_s = part.split("-", 1)
         start_s, end_s = start_s.strip(), end_s.strip()
         try:
-            start = int(start_s) if start_s else size - int(end_s)
-            end = int(end_s) + 1 if start_s and end_s and int(end_s) < size else size
+            if start_s:
+                start = int(start_s)
+                requested_end = int(end_s) if end_s else None
+                saw_numeric_range = True
+                if requested_end is not None and requested_end < start:
+                    return ("malformed",)
+                end = (
+                    min(requested_end + 1, size) if requested_end is not None else size
+                )
+            else:
+                suffix_length = int(end_s)
+                saw_numeric_range = True
+                if suffix_length <= 0:
+                    saw_unsatisfiable_range = True
+                    continue
+                start = max(size - suffix_length, 0)
+                end = size
         except ValueError:
             continue
+
+        if not (0 <= start < size):
+            saw_unsatisfiable_range = True
+            continue
+        if start >= end:
+            return ("malformed",)
         ranges.append((start, end))
 
     if not ranges:
-        return ("malformed",)
-    if any(not (0 <= start < size) for start, _ in ranges):
-        return ("unsatisfiable", size)
-    if any(start > end for start, end in ranges):
+        if saw_numeric_range and saw_unsatisfiable_range:
+            return ("unsatisfiable", size)
         return ("malformed",)
     if len(ranges) == 1:
         return ("single", ranges[0][0], ranges[0][1])

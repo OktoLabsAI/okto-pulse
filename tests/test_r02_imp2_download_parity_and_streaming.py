@@ -360,6 +360,53 @@ def test_suffix_range_206(env):
     )
 
 
+def test_oversized_suffix_range_clamps_to_full_representation(env):
+    client = env["client"]
+    bid, cid = _seed_board_card()
+    content = b"short"
+    aid = _upload(client, bid, cid, "suffix.bin", content, "application/octet-stream")
+
+    real = client.get(
+        f"{PREFIX}/{bid}/{cid}/{aid}",
+        headers={"Range": "bytes=-10"},
+    )
+
+    assert real.status_code == 206
+    assert real.content == content
+    assert real.headers["content-range"] == f"bytes 0-{len(content) - 1}/{len(content)}"
+
+
+def test_mixed_range_ignores_unsatisfiable_members(env):
+    client = env["client"]
+    bid, cid = _seed_board_card()
+    content = bytes(range(32))
+    aid = _upload(client, bid, cid, "mixed.bin", content, "application/octet-stream")
+
+    real = client.get(
+        f"{PREFIX}/{bid}/{cid}/{aid}",
+        headers={"Range": "bytes=0-9,999999-"},
+    )
+
+    assert real.status_code == 206
+    assert real.content == content[:10]
+    assert real.headers["content-range"] == f"bytes 0-9/{len(content)}"
+
+
+def test_reversed_range_is_malformed(env):
+    client = env["client"]
+    bid, cid = _seed_board_card()
+    content = b"more than five bytes"
+    aid = _upload(client, bid, cid, "reversed.bin", content, "application/octet-stream")
+
+    real = client.get(
+        f"{PREFIX}/{bid}/{cid}/{aid}",
+        headers={"Range": "bytes=5-4"},
+    )
+
+    assert real.status_code == 400
+    assert real.json()["detail"] == "Malformed range header."
+
+
 def test_unsatisfiable_range_416(env):
     client = env["client"]
     bid, cid = _seed_board_card()

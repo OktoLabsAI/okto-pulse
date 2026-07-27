@@ -14,7 +14,7 @@ NC='\033[0m' # No Color
 # developer workstation path.  CI may override the Core checkout explicitly.
 COMMUNITY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "${COMMUNITY_DIR}/.." && pwd)"
-CORE_DIR="${OKTO_PULSE_CORE_DIR:-${WORKSPACE_DIR}/okto_labs_pulse_core}"
+CORE_DIR="${OKTO_PULSE_CORE_DIR:-${WORKSPACE_DIR}/okto-pulse-core}"
 FRONTEND_DIR="${COMMUNITY_DIR}/frontend"
 PACKAGED_FRONTEND_DIR="${COMMUNITY_DIR}/src/okto_pulse/community/frontend_dist"
 
