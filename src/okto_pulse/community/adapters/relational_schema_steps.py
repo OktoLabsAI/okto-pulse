@@ -4409,6 +4409,7 @@ async def _migrate_agent_permissions() -> None:
         except Exception as e:
             logger.error(f"Permission migration failed: {e}")
             await session.rollback()
+            raise
 
 
 _RKG04_FIXTURE_BOARD_RE = re.compile(r"^(?:rkg04-[0-9a-f]{10}|rkg04mcp-[0-9a-f]{8})$")

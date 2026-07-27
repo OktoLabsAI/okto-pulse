@@ -284,6 +284,94 @@ def test_ts_71673acb_permission_flags_merge_default_and_preserve(
     assert after2 == after1
 
 
+@pytest.mark.parametrize(
+    ("stored_value", "expected_message"),
+    [
+        ("{not-json", "not valid JSON"),
+        ("[]", "must be a JSON object"),
+        ("42", "must be a JSON object"),
+    ],
+    ids=("malformed-json", "array", "scalar"),
+)
+def test_permission_flag_reconcile_rejects_invalid_documents_and_rolls_back(
+    monkeypatch, stored_value, expected_message
+):
+    class _Rows:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [{"id": "invalid-agent", "permission_flags": stored_value}]
+
+    class _Session:
+        def __init__(self):
+            self.execute_count = 0
+            self.commit_count = 0
+            self.rollback_count = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, *args, **kwargs):
+            self.execute_count += 1
+            return _Rows()
+
+        async def commit(self):
+            self.commit_count += 1
+
+        async def rollback(self):
+            self.rollback_count += 1
+
+    session = _Session()
+    monkeypatch.setattr(
+        _bootstrap_steps,
+        "get_session_factory",
+        lambda: lambda: session,
+    )
+
+    with pytest.raises(ValueError, match=expected_message):
+        asyncio.run(_bootstrap_steps._reconcile_agent_permission_flags())
+
+    assert session.execute_count == 1
+    assert session.commit_count == 0
+    assert session.rollback_count == 1
+
+
+def test_permission_flag_reconcile_propagates_database_failure_after_rollback(
+    monkeypatch,
+):
+    class _Session:
+        def __init__(self):
+            self.rollback_count = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, *args, **kwargs):
+            raise RuntimeError("permission query failed")
+
+        async def rollback(self):
+            self.rollback_count += 1
+
+    session = _Session()
+    monkeypatch.setattr(
+        _bootstrap_steps,
+        "get_session_factory",
+        lambda: lambda: session,
+    )
+
+    with pytest.raises(RuntimeError, match="permission query failed"):
+        asyncio.run(_bootstrap_steps._reconcile_agent_permission_flags())
+
+    assert session.rollback_count == 1
+
+
 # ===========================================================================
 # ts_533312dd — discovery intents preserve their attributes on rerun.
 # ===========================================================================

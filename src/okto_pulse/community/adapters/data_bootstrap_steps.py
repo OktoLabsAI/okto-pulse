@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 import copy as _copy
 import json as _json
 
@@ -10,7 +10,10 @@ from okto_pulse.core.discovery_intent_catalog import DEFAULT_DISCOVERY_INTENTS
 from okto_pulse.core.ports.permission_policy import (
     merge_permission_registry_defaults,
 )
-from okto_pulse.community.adapters.sqlalchemy_database import get_engine, get_session_factory
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    get_engine,
+    get_session_factory,
+)
 from okto_pulse.community.adapters.permission_preset_reconciliation import (
     reconcile_community_permission_presets,
 )
@@ -20,11 +23,23 @@ StepCallable = Callable[[], "Awaitable[object] | object"]
 
 def _json_value(value):
     if isinstance(value, str):
-        try:
-            return _json.loads(value)
-        except Exception:
-            return None
+        return _json.loads(value)
     return value
+
+
+def _permission_flags_document(value, *, agent_id: object) -> dict:
+    try:
+        decoded = _json_value(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Agent {agent_id!r} permission_flags is not valid JSON"
+        ) from exc
+    if not isinstance(decoded, Mapping):
+        raise ValueError(
+            f"Agent {agent_id!r} permission_flags must be a JSON object, "
+            f"got {type(decoded).__name__}"
+        )
+    return _copy.deepcopy(dict(decoded))
 
 
 async def _seed_builtin_presets() -> None:
@@ -32,10 +47,12 @@ async def _seed_builtin_presets() -> None:
 
     await reconcile_community_permission_presets()
 
+
 async def _reconcile_builtin_presets() -> None:
     """Compatibility entrypoint for the unified Core reconciliation use case."""
 
     await reconcile_community_permission_presets()
+
 
 async def _reconcile_agent_permission_flags() -> None:
     """Backfill missing registry keys into agents' permission_flags on every startup.
@@ -46,13 +63,14 @@ async def _reconcile_agent_permission_flags() -> None:
     — the user's customisations are preserved.
     """
     import logging
-    logger = logging.getLogger("okto_pulse.migrations")
 
+    logger = logging.getLogger("okto_pulse.migrations")
 
     async with get_session_factory()() as session:
         try:
             from sqlalchemy import JSON as sa_JSON
             from sqlalchemy import bindparam, text as sa_text
+
             result = await session.execute(
                 sa_text(
                     "SELECT id, permission_flags FROM agents "
@@ -63,7 +81,10 @@ async def _reconcile_agent_permission_flags() -> None:
             updated = 0
             total_added = 0
             for agent in agents:
-                stored_dict = _copy.deepcopy(_json_value(agent["permission_flags"]) or {})
+                stored_dict = _permission_flags_document(
+                    agent["permission_flags"],
+                    agent_id=agent["id"],
+                )
                 merged, added = merge_permission_registry_defaults(stored_dict)
                 if added > 0:
                     await session.execute(
@@ -87,6 +108,7 @@ async def _reconcile_agent_permission_flags() -> None:
         except Exception as e:
             logger.error(f"Agent permissions reconcile failed: {e}")
             await session.rollback()
+            raise
 
 
 async def _bootstrap_default_discovery_intents() -> None:
@@ -95,6 +117,7 @@ async def _bootstrap_default_discovery_intents() -> None:
 
     async with get_engine().begin() as conn:
         import json as _json
+
         for s in DEFAULT_DISCOVERY_INTENTS:
             params_literal = (
                 _json.dumps(s["params_schema"])
@@ -141,6 +164,7 @@ async def _bootstrap_default_discovery_intents() -> None:
                 continue
 
             import uuid as _uuid
+
             await conn.execute(
                 sa_text(
                     "INSERT INTO discovery_intents "

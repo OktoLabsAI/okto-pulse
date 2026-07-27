@@ -355,6 +355,88 @@ def test_ts_7c1fc064_first_step_failure_is_failed_not_partial():
     assert not result.is_success
 
 
+def test_ts_7c1fc064_agent_permission_migration_rolls_back_and_fails_closed(
+    monkeypatch,
+):
+    class _MalformedLegacyPermissionResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [{"id": "agent-malformed", "permissions": "{"}]
+
+    class _TrackingSession:
+        def __init__(self):
+            self.rollbacks = 0
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, statement, parameters=None):
+            return _MalformedLegacyPermissionResult()
+
+        async def commit(self):
+            self.commits += 1
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+    session = _TrackingSession()
+    monkeypatch.setattr(
+        _steps_mod,
+        "get_session_factory",
+        lambda: lambda: session,
+    )
+    permission_step_id = "_migrate_agent_permissions"
+    steps = (
+        MigrationStep("pre_a", 1, "pre_create_all", "d", True, False, "community"),
+        MigrationStep(
+            CREATE_ALL_BOUNDARY_STEP_ID,
+            2,
+            "create_all_boundary",
+            "d",
+            True,
+            False,
+            "community",
+        ),
+        MigrationStep(
+            permission_step_id,
+            3,
+            "post_create_all",
+            "d",
+            True,
+            False,
+            "community",
+        ),
+    )
+    migrator = _det_migrator(
+        {
+            "pre_a": lambda: None,
+            CREATE_ALL_BOUNDARY_STEP_ID: lambda: None,
+            permission_step_id: _steps_mod._migrate_agent_permissions,
+        },
+        steps=steps,
+    )
+
+    result = migrator.execute(migrator.plan(target="malformed-agent-permissions"))
+
+    assert result.status == "partial"
+    assert not result.is_success
+    assert result.failed_step is not None
+    assert result.failed_step.step_id == permission_step_id
+    assert "JSONDecodeError" in (result.failed_step.failure_reason or "")
+    assert {step.step_id for step in result.applied_steps} == {
+        "pre_a",
+        CREATE_ALL_BOUNDARY_STEP_ID,
+    }
+    assert session.rollbacks == 1
+    assert session.commits == 0
+
+
 def test_ts_7c1fc064_missing_callable_is_fail_closed():
     migrator = _det_migrator({"pre_a": lambda: None})  # boundary + post unbound
     result = migrator.execute(migrator.plan(target="t"))
