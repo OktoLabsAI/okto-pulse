@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from filelock import FileLock
 
 from okto_pulse.community import serve_lock
 
@@ -43,6 +45,231 @@ def test_serve_lock_blocks_when_live_owner_exists(tmp_path: Path, monkeypatch) -
 
     assert "already using this data directory" in str(exc.value)
     assert str(data_dir.resolve()) in str(exc.value)
+
+
+def test_malformed_existing_lock_fails_closed_for_guard_and_acquire(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "pulse-data"
+    data_dir.mkdir()
+    lock_path = data_dir / serve_lock.LOCK_FILENAME
+    lock_path.write_text('{"pid":', encoding="utf-8")
+    sleeps: list[float] = []
+    monkeypatch.setattr(serve_lock.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        serve_lock,
+        "_pid_is_running",
+        lambda _pid: pytest.fail("an unreadable lock must not reach the PID probe"),
+    )
+
+    with pytest.raises(serve_lock.ServeAlreadyRunningError, match="could not be read"):
+        serve_lock.assert_no_live_server(data_dir, operation="malformed-guard")
+    with pytest.raises(serve_lock.ServeAlreadyRunningError, match="could not be read"):
+        serve_lock.acquire_serve_lock(data_dir)
+
+    assert lock_path.read_text(encoding="utf-8") == '{"pid":'
+    assert sleeps == [serve_lock._LOCK_READ_RETRY_SECONDS] * (
+        2 * (serve_lock._LOCK_READ_ATTEMPTS - 1)
+    )
+
+
+def test_transient_malformed_read_then_valid_active_owner_still_blocks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "pulse-data"
+    data_dir.mkdir()
+    lock_path = data_dir / serve_lock.LOCK_FILENAME
+    _write_lock(
+        lock_path,
+        {
+            "pid": 424242,
+            "heartbeat_at": _iso(datetime.now(timezone.utc)),
+        },
+    )
+    real_read = serve_lock._read_lock_payload_once
+    reads = 0
+
+    def transient_read(path: Path) -> dict:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            raise json.JSONDecodeError("heartbeat rewrite", "{", 1)
+        return real_read(path)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(serve_lock, "_read_lock_payload_once", transient_read)
+    monkeypatch.setattr(serve_lock.time, "sleep", sleeps.append)
+    monkeypatch.setattr(serve_lock, "_pid_is_running", lambda _pid: True)
+
+    with pytest.raises(serve_lock.ServeAlreadyRunningError):
+        serve_lock.assert_no_live_server(data_dir, operation="transient-read")
+
+    assert reads == 2
+    assert sleeps == [serve_lock._LOCK_READ_RETRY_SECONDS]
+
+
+def test_valid_stale_dead_lock_still_allows_guard_and_takeover(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "pulse-data"
+    data_dir.mkdir()
+    lock_path = data_dir / serve_lock.LOCK_FILENAME
+    stale_heartbeat = datetime.now(timezone.utc) - timedelta(
+        seconds=serve_lock.HEARTBEAT_TTL_SECONDS + 60
+    )
+    _write_lock(
+        lock_path,
+        {
+            "pid": 424242,
+            "heartbeat_at": _iso(stale_heartbeat),
+        },
+    )
+    monkeypatch.setattr(serve_lock, "_pid_is_running", lambda _pid: False)
+
+    serve_lock.assert_no_live_server(data_dir, operation="stale-recovery")
+    lock = serve_lock.acquire_serve_lock(data_dir)
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+        assert payload["pid"] == os.getpid()
+    finally:
+        lock.release()
+
+
+def test_concurrent_stale_takeover_has_exactly_one_owner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "pulse-data"
+    data_dir.mkdir()
+    lock_path = data_dir / serve_lock.LOCK_FILENAME
+    _write_lock(lock_path, {"pid": 424242})
+
+    real_read = serve_lock._read_lock_payload
+    first_read_started = threading.Event()
+    release_first_read = threading.Event()
+    first_read = True
+    read_guard = threading.Lock()
+
+    def gated_read(path: Path):
+        nonlocal first_read
+        with read_guard:
+            should_gate = first_read
+            first_read = False
+        if should_gate:
+            first_read_started.set()
+            assert release_first_read.wait(5)
+        return real_read(path)
+
+    monkeypatch.setattr(serve_lock, "_read_lock_payload", gated_read)
+    monkeypatch.setattr(
+        serve_lock,
+        "_pid_is_running",
+        lambda pid: pid == os.getpid(),
+    )
+
+    owner_release = threading.Event()
+    blocked = threading.Event()
+    outcomes: list[str] = []
+
+    def contend() -> None:
+        lock = serve_lock.ServeInstanceLock(data_dir)
+        try:
+            lock.acquire()
+        except serve_lock.ServeAlreadyRunningError:
+            outcomes.append("blocked")
+            blocked.set()
+            return
+        outcomes.append("acquired")
+        try:
+            assert owner_release.wait(5)
+        finally:
+            lock.release()
+
+    first = threading.Thread(target=contend)
+    second = threading.Thread(target=contend)
+    first.start()
+    assert first_read_started.wait(5)
+    second.start()
+    release_first_read.set()
+    assert blocked.wait(5)
+    owner_release.set()
+    first.join(5)
+    second.join(5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert sorted(outcomes) == ["acquired", "blocked"]
+
+
+def test_acquisition_mutex_timeout_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "pulse-data"
+    data_dir.mkdir()
+    lock_path = data_dir / serve_lock.LOCK_FILENAME
+    lock_path.write_text('{"pid": 424242}', encoding="utf-8")
+    before = lock_path.read_bytes()
+    mutex_path = data_dir / serve_lock._ACQUIRE_MUTEX_FILENAME
+    monkeypatch.setattr(serve_lock, "_ACQUIRE_MUTEX_TIMEOUT_SECONDS", 0.01)
+
+    with FileLock(str(mutex_path), timeout=0):
+        with pytest.raises(
+            serve_lock.ServeAlreadyRunningError,
+            match="acquisition mutex",
+        ):
+            serve_lock.ServeInstanceLock(data_dir).acquire()
+
+    assert lock_path.read_bytes() == before
+
+
+def test_cli_guard_fails_closed_while_takeover_mutex_is_held(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "pulse-data"
+    data_dir.mkdir()
+    mutex_path = data_dir / serve_lock._ACQUIRE_MUTEX_FILENAME
+    monkeypatch.setattr(serve_lock, "_ACQUIRE_MUTEX_TIMEOUT_SECONDS", 0.01)
+
+    with FileLock(str(mutex_path), timeout=0):
+        with pytest.raises(
+            serve_lock.ServeAlreadyRunningError,
+            match="acquisition mutex",
+        ):
+            serve_lock.assert_no_live_server(data_dir, operation="mutex-race")
+
+
+def test_heartbeat_rewrite_race_retries_partial_json_and_blocks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "pulse-data"
+    lock = serve_lock.acquire_serve_lock(data_dir)
+    lock_path = data_dir / serve_lock.LOCK_FILENAME
+    real_read_text = Path.read_text
+    reads = 0
+
+    def read_during_rewrite(path: Path, *args, **kwargs) -> str:
+        nonlocal reads
+        if path == lock_path:
+            reads += 1
+            if reads == 1:
+                lock.refresh_heartbeat()
+                return '{"pid":'
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_during_rewrite)
+    monkeypatch.setattr(serve_lock.time, "sleep", lambda _seconds: None)
+    try:
+        with pytest.raises(serve_lock.ServeAlreadyRunningError):
+            serve_lock.assert_no_live_server(data_dir, operation="rewrite-race")
+        assert reads == 2
+    finally:
+        lock.release()
 
 
 def test_serve_lock_replaces_stale_owner(tmp_path: Path, monkeypatch) -> None:

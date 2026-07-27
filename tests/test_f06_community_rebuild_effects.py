@@ -72,6 +72,30 @@ def test_f06_production_composition_injects_durable_artifact_store(
     assert registry.rebuild_audit_artifact_store._base_dir == tmp_path  # noqa: SLF001
 
 
+def test_quarantine_restore_composition_fences_distinct_data_and_kg_roots(
+    tmp_path: Path,
+) -> None:
+    from okto_pulse.community.adapters.composition import _apply_quarantine_restore
+
+    kg_root = (tmp_path / "kg").resolve()
+    data_root = (tmp_path / "data").resolve()
+    kg_root.mkdir()
+    registry = SimpleNamespace()
+
+    _apply_quarantine_restore(
+        registry,
+        kg_base_dir=str(kg_root),
+        data_dir=str(data_root),
+    )
+
+    restore = registry.quarantine_restore
+    assert restore._resolved_base_dir() == kg_root  # noqa: SLF001
+    assert not data_root.exists()
+    assert restore._serve_lock_directories() == tuple(  # noqa: SLF001
+        sorted((data_root, kg_root), key=str)
+    )
+
+
 def _queue_db(tmp_path: Path) -> Path:
     path = tmp_path / "pulse.db"
     with sqlite3.connect(str(path)) as connection:

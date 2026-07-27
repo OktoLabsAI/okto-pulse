@@ -25,7 +25,11 @@ from typing import AsyncGenerator, Callable
 import uvicorn
 from fastapi.staticfiles import StaticFiles
 
-from okto_pulse.community.app import create_app, register_kg_daily_tick_job
+from okto_pulse.community.app import (
+    create_app,
+    register_kg_daily_tick_job,
+    run_startup_schema_sweep,
+)
 from okto_pulse.community.adapters.sqlalchemy_database import (
     close_db,
     get_session_factory,
@@ -914,6 +918,23 @@ def create_community_app():
             _STARTUP_LOGGER.warning(
                 "qa.answered_at.backfill_failed err=%s",
                 _qa_exc,
+            )
+
+        # NC-10 parity with create_app's default lifespan.  The productive
+        # combined lifespan replaces that default completely, so it must run
+        # the idempotent per-board KG schema sweep itself.  Keep this before
+        # every worker and the decay scheduler so they never observe a
+        # pre-migration board graph.
+        try:
+            await run_startup_schema_sweep(
+                uow_factory=app_instance.state.runtime_composition.uow_factory,
+                logger=_STARTUP_LOGGER,
+            )
+        except Exception as _schema_exc:
+            _STARTUP_LOGGER.debug(
+                "kg.schema.migration_skipped err=%s",
+                _schema_exc,
+                extra={"event": "kg.schema.migration_skipped"},
             )
 
         # Self-heal AFG (investigacao 2026-06-10): materializa finding runs

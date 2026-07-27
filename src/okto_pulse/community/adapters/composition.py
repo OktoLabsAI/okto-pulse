@@ -168,7 +168,12 @@ def _apply_rebuild_audit_storage(base: Any, *, kg_base_dir: str) -> None:
     )
 
 
-def _apply_quarantine_restore(base: Any) -> None:
+def _apply_quarantine_restore(
+    base: Any,
+    *,
+    kg_base_dir: str,
+    data_dir: str,
+) -> None:
     """(KGD-01 FR4) Fill the quarantine-restore port slot with the Community
     filesystem adapter. Lazy-imported; the adapter itself only touches
     Ladybug inside ``apply`` (open validation), never at import time."""
@@ -176,7 +181,10 @@ def _apply_quarantine_restore(base: Any) -> None:
         CommunityQuarantineRestore,
     )
 
-    base.quarantine_restore = CommunityQuarantineRestore()
+    base.quarantine_restore = CommunityQuarantineRestore(
+        base_dir=Path(kg_base_dir),
+        extra_serve_lock_dirs=(Path(data_dir),),
+    )
 
 
 def build_community_kg_composition(
@@ -193,7 +201,11 @@ def build_community_kg_composition(
     base = build_community_base_registry(embedding=embedding, settings=s)
     _apply_source_reader(base)
     _apply_rebuild_audit_storage(base, kg_base_dir=str(s.kg_base_dir))
-    _apply_quarantine_restore(base)
+    _apply_quarantine_restore(
+        base,
+        kg_base_dir=str(s.kg_base_dir),
+        data_dir=str(getattr(s, "data_dir", s.kg_base_dir)),
+    )
     _apply_rebuild_ingestion(base)
     if include_graph:
         _apply_graph_providers(base)
@@ -286,7 +298,17 @@ def configure_community_kg_registry(
         base,
         kg_base_dir=str(effective_settings.kg_base_dir),
     )
-    _apply_quarantine_restore(base)
+    _apply_quarantine_restore(
+        base,
+        kg_base_dir=str(effective_settings.kg_base_dir),
+        data_dir=str(
+            getattr(
+                effective_settings,
+                "data_dir",
+                effective_settings.kg_base_dir,
+            )
+        ),
+    )
     _apply_rebuild_ingestion(base)
     if include_graph:
         _apply_graph_providers(base)

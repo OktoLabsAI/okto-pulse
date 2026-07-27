@@ -5,12 +5,16 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import time
 from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock, Timeout as FileLockTimeout
+
 LOCK_FILENAME = ".okto-pulse-serve.lock"
+_ACQUIRE_MUTEX_FILENAME = f"{LOCK_FILENAME}.acquire"
 
 # Heartbeat schedule. The owner refreshes `heartbeat_at` every
 # HEARTBEAT_INTERVAL_SECONDS. A peer that finds a lock with a heartbeat older
@@ -20,12 +24,19 @@ LOCK_FILENAME = ".okto-pulse-serve.lock"
 # of the interval so a sleeping laptop doesn't trigger a false takeover.
 HEARTBEAT_INTERVAL_SECONDS = 30
 HEARTBEAT_TTL_SECONDS = 120
+_LOCK_READ_ATTEMPTS = 4
+_LOCK_READ_RETRY_SECONDS = 0.01
+_ACQUIRE_MUTEX_TIMEOUT_SECONDS = 1.0
 
 _ACTIVE_LOCK: "ServeInstanceLock | None" = None
 
 
 class ServeAlreadyRunningError(RuntimeError):
     """Raised when another local server owns the same data directory."""
+
+
+class _UnreadableServeLock(RuntimeError):
+    """An existing lock could not be decoded after bounded retries."""
 
 
 class _ReentrantServeLock(AbstractContextManager[None]):
@@ -55,11 +66,39 @@ class ServeInstanceLock(AbstractContextManager["ServeInstanceLock"]):
         # fd repeatedly; without O_BINARY the truncate length disagrees with
         # the file's on-disk size and readers see corrupt JSON.
         open_flags = os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_BINARY", 0)
+        try:
+            with _acquisition_mutex(self.data_dir):
+                return self._acquire_serialized(open_flags)
+        except FileLockTimeout as exc:
+            raise ServeAlreadyRunningError(
+                _format_acquisition_mutex_error(self.data_dir)
+            ) from exc
+
+    def _acquire_serialized(self, open_flags: int) -> "ServeInstanceLock":
+        """Create or recover the authoritative lock under a process mutex.
+
+        Serializing the entire read/revalidate/unlink/create sequence prevents
+        two stale-lock recoverers from unlinking each other's newly-created
+        live lock. ``FileLock`` is kernel-backed and releases on process crash;
+        its persistent sidecar file is only the mutex rendezvous path.
+        """
         while True:
             try:
                 self._fd = os.open(str(self.lock_path), open_flags)
             except FileExistsError:
-                payload = _read_lock_payload(self.lock_path)
+                try:
+                    payload = _read_lock_payload(self.lock_path)
+                except _UnreadableServeLock as exc:
+                    raise ServeAlreadyRunningError(
+                        _format_unreadable_lock_error(
+                            self.data_dir,
+                            self.lock_path,
+                        )
+                    ) from exc
+                if payload is None:
+                    # The previous owner released between O_EXCL and our read.
+                    # Retry creation rather than treating absence as corruption.
+                    continue
                 if _owner_is_live(payload):
                     raise ServeAlreadyRunningError(
                         _format_lock_error(self.data_dir, self.lock_path, payload)
@@ -194,11 +233,37 @@ def _rewrite_lock_payload(fd: int, data_dir: Path) -> None:
         raise
 
 
-def _read_lock_payload(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+def _read_lock_payload_once(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or _payload_pid(payload) is None:
+        raise ValueError("serve-lock payload must be an object with a positive pid")
+    return payload
+
+
+def _read_lock_payload(path: Path) -> dict[str, Any] | None:
+    """Read one existing lock without turning corruption into an orphan.
+
+    Heartbeat refresh rewrites the small JSON document in place through the
+    owner's open descriptor. That write is durable but not an atomic pathname
+    replacement, so a peer can briefly observe partial JSON. Retry that narrow
+    window; if the file remains present and undecodable, fail closed.
+    """
+
+    last_error: BaseException | None = None
+    for attempt in range(_LOCK_READ_ATTEMPTS):
+        try:
+            return _read_lock_payload_once(path)
+        except FileNotFoundError as exc:
+            if not path.exists():
+                return None
+            last_error = exc
+        except (OSError, UnicodeError, ValueError) as exc:
+            last_error = exc
+
+        if attempt + 1 < _LOCK_READ_ATTEMPTS:
+            time.sleep(_LOCK_READ_RETRY_SECONDS)
+
+    raise _UnreadableServeLock(str(path)) from last_error
 
 
 def _payload_pid(payload: dict[str, Any]) -> int | None:
@@ -207,6 +272,14 @@ def _payload_pid(payload: dict[str, Any]) -> int | None:
     except (TypeError, ValueError):
         return None
     return pid if pid > 0 else None
+
+
+def _acquisition_mutex(data_dir: str | Path) -> FileLock:
+    resolved = Path(data_dir).expanduser().resolve()
+    return FileLock(
+        str(resolved / _ACQUIRE_MUTEX_FILENAME),
+        timeout=_ACQUIRE_MUTEX_TIMEOUT_SECONDS,
+    )
 
 
 def _payload_heartbeat_age_seconds(payload: dict[str, Any]) -> float | None:
@@ -275,10 +348,35 @@ def assert_no_live_server(
     morrer pode ter deixado WAL/handles em estado transitório).
     """
     resolved = Path(data_dir).expanduser().resolve()
+    if not resolved.is_dir():
+        return
+    try:
+        with _acquisition_mutex(resolved):
+            _assert_no_live_server_serialized(resolved, operation=operation)
+    except FileLockTimeout as exc:
+        raise ServeAlreadyRunningError(
+            f"serve-lock: refusing '{operation}' — "
+            + _format_acquisition_mutex_error(resolved)
+        ) from exc
+
+
+def _assert_no_live_server_serialized(
+    resolved: Path,
+    *,
+    operation: str,
+) -> None:
     lock_path = resolved / LOCK_FILENAME
     if not lock_path.exists():
         return
-    payload = _read_lock_payload(lock_path)
+    try:
+        payload = _read_lock_payload(lock_path)
+    except _UnreadableServeLock as exc:
+        raise ServeAlreadyRunningError(
+            f"serve-lock: refusing '{operation}' — "
+            + _format_unreadable_lock_error(resolved, lock_path)
+        ) from exc
+    if payload is None:
+        return
     pid = _payload_pid(payload)
     age = _payload_heartbeat_age_seconds(payload)
     heartbeat_fresh = age is not None and age <= _payload_ttl(payload)
@@ -349,6 +447,27 @@ def _format_lock_error(data_dir: Path, lock_path: Path, payload: dict[str, Any])
         "AND the PID above is provably dead. If the process is alive but "
         "stuck, stop it first; if you are sure no server is running, remove "
         "the lock file manually."
+    )
+
+
+def _format_unreadable_lock_error(data_dir: Path, lock_path: Path) -> str:
+    return (
+        "An existing okto-pulse serve-lock could not be read safely after "
+        "bounded retries.\n"
+        f"  Data dir: {data_dir}\n"
+        f"  Lock file: {lock_path}\n"
+        "The lock may be undergoing a heartbeat rewrite or may be corrupt. "
+        "Refusing to proceed because the owner PID and liveness cannot be "
+        "verified. Wait briefly and retry; if you are sure no server is "
+        "running, remove the lock file manually."
+    )
+
+
+def _format_acquisition_mutex_error(data_dir: Path) -> str:
+    return (
+        "Timed out waiting for the okto-pulse serve-lock acquisition mutex. "
+        "Another process is starting or recovering the server for data "
+        f"directory {data_dir}. Wait briefly and retry."
     )
 
 

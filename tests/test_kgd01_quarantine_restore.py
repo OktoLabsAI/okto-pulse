@@ -354,6 +354,143 @@ def test_live_server_manual_restore_stays_blocked_but_compensation_is_fenced(
     assert "rebuild-run-1" in manifest["correlation_ids"]
 
 
+def test_unreadable_serve_lock_preserves_board_locked_contract(
+    tmp_path,
+    monkeypatch,
+):
+    from okto_pulse.community import serve_lock
+
+    base = tmp_path / "kgbase"
+    base.mkdir()
+    lock_path = base / serve_lock.LOCK_FILENAME
+    lock_path.write_text('{"pid":', encoding="utf-8")
+    adapter = CommunityQuarantineRestore(base_dir=base)
+
+    def unreadable(_path):
+        raise serve_lock._UnreadableServeLock(str(lock_path))
+
+    monkeypatch.setattr(serve_lock, "_read_lock_payload", unreadable)
+
+    with pytest.raises(QuarantineRestoreError) as exc_info:
+        adapter._ensure_board_not_live(BOARD_ID, base / "boards" / BOARD_ID, [])
+
+    assert exc_info.value.code is QuarantineRestoreErrorCode.BOARD_LOCKED
+    assert exc_info.value.details["serve_lock"] == {
+        "lock_path": str(lock_path),
+        "pid": None,
+        "heartbeat_at": None,
+        "state": "unreadable",
+    }
+
+
+def test_disappearing_serve_lock_during_read_does_not_block_restore_probe(
+    tmp_path,
+    monkeypatch,
+):
+    from okto_pulse.community import serve_lock
+
+    base = tmp_path / "kgbase"
+    base.mkdir()
+    lock_path = base / serve_lock.LOCK_FILENAME
+    lock_path.write_text('{"pid": 424242}', encoding="utf-8")
+    adapter = CommunityQuarantineRestore(base_dir=base)
+
+    monkeypatch.setattr(serve_lock, "_read_lock_payload", lambda _path: None)
+
+    assert adapter._live_serve_lock() is None
+
+
+def test_restore_fails_closed_while_serve_lock_takeover_is_in_progress(
+    tmp_path,
+    monkeypatch,
+):
+    from filelock import FileLock
+    from okto_pulse.community import serve_lock
+
+    base = tmp_path / "kgbase"
+    base.mkdir()
+    adapter = CommunityQuarantineRestore(base_dir=base)
+    mutex_path = base / serve_lock._ACQUIRE_MUTEX_FILENAME
+    monkeypatch.setattr(serve_lock, "_ACQUIRE_MUTEX_TIMEOUT_SECONDS", 0.01)
+
+    with FileLock(str(mutex_path), timeout=0):
+        with pytest.raises(QuarantineRestoreError) as exc_info:
+            adapter._ensure_board_not_live(
+                BOARD_ID,
+                base / "boards" / BOARD_ID,
+                [],
+            )
+
+    assert exc_info.value.code is QuarantineRestoreErrorCode.BOARD_LOCKED
+    assert exc_info.value.details["serve_lock"]["state"] == (
+        "acquisition_in_progress"
+    )
+
+
+def test_restore_holds_serve_lock_fence_through_backup_swap(
+    restore_env,
+    monkeypatch,
+):
+    from okto_pulse.community import serve_lock
+
+    base: Path = restore_env["base"]
+    future_data_dir = restore_env["base"].parent / "future-data"
+    adapter = CommunityQuarantineRestore(
+        base_dir=base,
+        extra_serve_lock_dirs=(future_data_dir,),
+    )
+    real_move = adapter._move_with_retry
+    contender_was_blocked = False
+    monkeypatch.setattr(serve_lock, "_ACQUIRE_MUTEX_TIMEOUT_SECONDS", 0.01)
+
+    def fenced_move(src: Path, dst: Path) -> None:
+        nonlocal contender_was_blocked
+        if not contender_was_blocked:
+            assert future_data_dir.is_dir()
+            with pytest.raises(
+                serve_lock.ServeAlreadyRunningError,
+                match="acquisition mutex",
+            ):
+                serve_lock.ServeInstanceLock(future_data_dir).acquire()
+            contender_was_blocked = True
+        real_move(src, dst)
+
+    monkeypatch.setattr(adapter, "_move_with_retry", fenced_move)
+
+    report = adapter.apply(QUARANTINE_ID)
+
+    assert contender_was_blocked is True
+    assert future_data_dir.is_dir()
+    assert report.applied is True
+    assert report.open_validated is True
+
+
+def test_restore_maps_mutex_io_failure_to_board_locked(
+    tmp_path,
+    monkeypatch,
+):
+    from okto_pulse.community import serve_lock
+
+    base = tmp_path / "kgbase"
+    base.mkdir()
+    adapter = CommunityQuarantineRestore(base_dir=base)
+
+    def denied_mutex(_directory):
+        raise PermissionError("mutex path denied")
+
+    monkeypatch.setattr(serve_lock, "_acquisition_mutex", denied_mutex)
+
+    with pytest.raises(QuarantineRestoreError) as exc_info:
+        with adapter._serve_lock_fence(BOARD_ID):
+            pytest.fail("restore body must not run without the startup fence")
+
+    assert exc_info.value.code is QuarantineRestoreErrorCode.BOARD_LOCKED
+    assert exc_info.value.details["serve_lock"]["state"] == (
+        "acquisition_unavailable"
+    )
+    assert exc_info.value.details["serve_lock"]["error_type"] == "PermissionError"
+
+
 def test_compensation_rejects_board_manifest_mismatch_without_mutation(
     restore_env,
 ):

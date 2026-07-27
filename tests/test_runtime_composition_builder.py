@@ -160,3 +160,39 @@ def test_lifespan_applies_persisted_settings_before_background_runtime() -> None
 
     assert runtime_start_lines
     assert apply_line < min(runtime_start_lines)
+
+
+def test_productive_lifespan_sweeps_schema_once_before_workers_and_decay_tick() -> None:
+    tree = ast.parse(MAIN_PATH.read_text(encoding="utf-8"), filename=str(MAIN_PATH))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "create_community_app"
+    )
+    lifespan = next(
+        node
+        for node in function.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "combined_lifespan"
+    )
+
+    def call_name(call: ast.Call) -> str:
+        func = call.func
+        if isinstance(func, ast.Name):
+            return func.id
+        if isinstance(func, ast.Attribute):
+            return func.attr
+        return ""
+
+    calls = [node for node in ast.walk(lifespan) if isinstance(node, ast.Call)]
+    sweep_calls = [
+        call for call in calls if call_name(call) == "run_startup_schema_sweep"
+    ]
+    worker_start_calls = [call for call in calls if call_name(call) == "start_all"]
+    tick_calls = [
+        call for call in calls if call_name(call) == "register_kg_daily_tick_job"
+    ]
+
+    assert len(sweep_calls) == 1
+    assert len(worker_start_calls) == 1
+    assert len(tick_calls) == 1
+    assert sweep_calls[0].lineno < worker_start_calls[0].lineno < tick_calls[0].lineno
