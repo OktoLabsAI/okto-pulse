@@ -662,24 +662,34 @@ def cmd_init(args):
             register_community_coordination_providers()
 
             board_id = None
+            primary_commit_delivered = False
+
+            def _on_primary_committed(board, agent, api_key) -> None:
+                nonlocal board_id, primary_commit_delivered
+                if handoff_reservation is not None:
+                    handoff_reservation.publish(api_key)
+                revealed_agents.append((agent.name, api_key))
+                board_id = board.id
+                primary_commit_delivered = True
+                print(f"\n  Board created: {board.name}")
+                print(f"  Agent created: {agent.name}")
+                if handoff_path is None:
+                    print(f"  API Key: {api_key}")
+                else:
+                    print("  API Key: reserved for one-time automation handoff")
+
             async with session_factory() as db:
-                result = await seed_community_defaults(db)
+                result = await seed_community_defaults(
+                    db,
+                    on_primary_committed=_on_primary_committed,
+                )
                 if result:
                     board, agent, api_key = result
-                    if handoff_reservation is not None:
-                        # The seed owns the only plaintext value. Publish it
-                        # immediately, before KG/bootstrap work can fail, so a
-                        # successfully persisted agent never loses its
-                        # reveal-once automation credential.
-                        handoff_reservation.publish(api_key)
-                    revealed_agents.append((agent.name, api_key))
-                    board_id = board.id
-                    print(f"\n  Board created: {board.name}")
-                    print(f"  Agent created: {agent.name}")
-                    if handoff_path is None:
-                        print(f"  API Key: {api_key}")
-                    else:
-                        print("  API Key: reserved for one-time automation handoff")
+                    # Compatibility with a test double or older external seed
+                    # implementation that returns the legacy tuple without
+                    # invoking the new sink.
+                    if not primary_commit_delivered:
+                        _on_primary_committed(board, agent, api_key)
                 else:
                     print("\n  Already initialized (seed exists).")
                     # Fetch the default board for KG bootstrap

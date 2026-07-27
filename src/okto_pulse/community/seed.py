@@ -9,15 +9,18 @@ boards; we materialise the minimum needed to land the user on a populated UI:
   KG explorer isn't empty on first open. Controlled by
   ``OKTO_PULSE_SKIP_DEMO_SEED=1`` (useful for CI / enterprise installs).
 
-Idempotence is enforced by the top-level ``seed_community_defaults`` which
-aborts when any board already exists — deleting the demo board therefore does
-not trigger a re-seed on subsequent starts.
+Relational idempotence is enforced by the top-level
+``seed_community_defaults``: existing boards are never recreated.  The sole
+recovery path fingerprints persisted Demo rows and, when their committed
+``seed-demo`` audit is absent, retries only KG materialisation.  Deleting the
+Demo board therefore never triggers a re-seed on subsequent starts.
 """
 
 import logging
 import os
 import secrets
 from types import SimpleNamespace
+from typing import Callable
 from uuid import uuid4
 
 from sqlalchemy import JSON as sa_JSON
@@ -31,16 +34,41 @@ logger = logging.getLogger("okto_pulse.community.seed")
 DEMO_BOARD_NAME = "Demo"
 DEMO_SPEC_TITLE = "Demo Spec"
 DEMO_SKIP_ENV = "OKTO_PULSE_SKIP_DEMO_SEED"
+DEMO_BOARD_DESCRIPTION = "Walkthrough board with a pre-populated knowledge graph."
+DEMO_SPEC_DESCRIPTION = "Short illustrative spec used to seed the KG on first boot."
+DEMO_SPEC_CONTEXT = "Demonstrates a spec → cards → consolidated KG flow."
+
+PrimaryCommitSink = Callable[[SimpleNamespace, SimpleNamespace, str], None]
 
 
-async def seed_community_defaults(db: AsyncSession) -> tuple | None:
+async def seed_community_defaults(
+    db: AsyncSession,
+    *,
+    on_primary_committed: PrimaryCommitSink | None = None,
+) -> tuple | None:
     """Create default board, agent and demo board on first boot.
 
     Returns (board, agent, api_key) on first boot, None if already seeded.
+
+    ``on_primary_committed`` is a synchronous reveal-once sink.  When supplied,
+    it runs in the same cancellation-drained boundary as the primary relational
+    commit, before any Demo/KG await.  This lets CLI callers publish or reveal
+    the plaintext exactly once without retaining it in durable storage.
     """
     # Check if already seeded
     result = await db.execute(sa_text("SELECT id FROM boards LIMIT 1"))
     if result.first() is not None:
+        # A previous first boot may have committed the relational Demo rows and
+        # then failed or been cancelled while materialising its KG.  Recover
+        # only that missing graph work; never recreate a deleted Demo.
+        try:
+            await _recover_incomplete_demo_graph(db)
+        except Exception as exc:
+            logger.warning(
+                "community.seed.demo_recovery_failed err=%s",
+                exc,
+                extra={"event": "community.seed.demo_recovery_failed"},
+            )
         return None  # Already seeded
 
     # Create default board
@@ -100,7 +128,22 @@ async def seed_community_defaults(db: AsyncSession) -> tuple | None:
         },
     )
 
-    await db.commit()
+    board = SimpleNamespace(id=board_id, name=board_name)
+    agent = SimpleNamespace(id=agent_id, name=agent_name)
+
+    async def _commit_primary_and_deliver() -> None:
+        await db.commit()
+        if on_primary_committed is not None:
+            # Intentionally synchronous: after db.commit() returns there is no
+            # cancellation point before the reveal-once value reaches its sink.
+            on_primary_committed(board, agent, api_key)
+
+    from okto_pulse.core.kg.primitives import run_cancellation_atomic
+
+    await run_cancellation_atomic(
+        _commit_primary_and_deliver(),
+        task_name="community.seed.primary_commit_and_credential_delivery",
+    )
 
     # Demo board with a pre-populated KG. Best-effort: a failure here must
     # NOT block the initial boot — the primary board and agent are already
@@ -114,10 +157,87 @@ async def seed_community_defaults(db: AsyncSession) -> tuple | None:
         )
 
     return (
-        SimpleNamespace(id=board_id, name=board_name),
-        SimpleNamespace(id=agent_id, name=agent_name),
+        board,
+        agent,
         api_key,
     )
+
+
+async def _recover_incomplete_demo_graph(db: AsyncSession) -> bool:
+    """Retry only a persisted Demo whose seed consolidation never committed.
+
+    Completion is derived from the durable consolidation audit rather than a
+    second mutable marker.  The exact relational fingerprint prevents a
+    user-created board named ``Demo`` from being claimed, and an absent/deleted
+    Demo is intentionally left alone.
+    """
+    if os.environ.get(DEMO_SKIP_ENV) == "1":
+        return False
+
+    identity = (
+        await db.execute(
+            sa_text(
+                "SELECT b.id AS board_id, s.id AS spec_id "
+                "FROM boards AS b "
+                "JOIN specs AS s ON s.board_id = b.id "
+                "WHERE b.name = :board_name "
+                "AND b.description = :board_description "
+                "AND b.owner_id = :owner_id "
+                "AND s.title = :spec_title "
+                "AND s.description = :spec_description "
+                "AND s.context = :spec_context "
+                "ORDER BY b.created_at, b.id, s.created_at, s.id "
+                "LIMIT 1"
+            ),
+            {
+                "board_name": DEMO_BOARD_NAME,
+                "board_description": DEMO_BOARD_DESCRIPTION,
+                "owner_id": "local-user",
+                "spec_title": DEMO_SPEC_TITLE,
+                "spec_description": DEMO_SPEC_DESCRIPTION,
+                "spec_context": DEMO_SPEC_CONTEXT,
+            },
+        )
+    ).mappings().first()
+    if identity is None:
+        return False
+
+    committed = (
+        await db.execute(
+            sa_text(
+                "SELECT session_id FROM consolidation_audit "
+                "WHERE board_id = :board_id "
+                "AND artifact_type = :artifact_type "
+                "AND artifact_id = :artifact_id "
+                "AND agent_id = :agent_id "
+                "AND committed_at IS NOT NULL "
+                "LIMIT 1"
+            ),
+            {
+                "board_id": identity["board_id"],
+                "artifact_type": "spec",
+                "artifact_id": identity["spec_id"],
+                "agent_id": "seed-demo",
+            },
+        )
+    ).first()
+    if committed is not None:
+        return False
+
+    # Release the read transaction before the isolated KG runtime opens its own
+    # relational UoW.  This matters for SQLite rollback-journal deployments and
+    # also ensures the retry observes a clean durability boundary.
+    await db.rollback()
+    await _commit_demo_graph(identity["board_id"], identity["spec_id"])
+    logger.info(
+        "community.seed.demo_recovered board_id=%s",
+        identity["board_id"],
+        extra={
+            "event": "community.seed.demo_recovered",
+            "board_id": identity["board_id"],
+        },
+    )
+    return True
 
 
 async def _seed_demo_board(db: AsyncSession) -> str | None:
@@ -129,8 +249,8 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
 
     * ``OKTO_PULSE_SKIP_DEMO_SEED=1`` — explicit opt-out for CI / enterprise.
     * Existing board named ``"Demo"`` — defensive duplicate-seed guard. The
-      outer :func:`seed_community_defaults` also aborts when any board exists,
-      so deleting the demo board will not cause re-seeding.
+      outer :func:`seed_community_defaults` never recreates relational Demo
+      data, so deleting the demo board will not cause re-seeding.
 
     The consolidation forces ``KG_EMBEDDING_MODE=stub`` for its duration so
     the first-boot experience does not block on the 90 MB sentence-transformer
@@ -162,7 +282,7 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
         {
             "id": demo_board_id,
             "name": DEMO_BOARD_NAME,
-            "description": "Walkthrough board with a pre-populated knowledge graph.",
+            "description": DEMO_BOARD_DESCRIPTION,
             "owner_id": "local-user",
         },
     )
@@ -185,8 +305,8 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
             "id": demo_spec_id,
             "board_id": demo_board_id,
             "title": DEMO_SPEC_TITLE,
-            "description": "Short illustrative spec used to seed the KG on first boot.",
-            "context": "Demonstrates a spec → cards → consolidated KG flow.",
+            "description": DEMO_SPEC_DESCRIPTION,
+            "context": DEMO_SPEC_CONTEXT,
             "functional_requirements": [
                 {"title": "FR-1", "text": "The demo board must render in the KG explorer on first open."}
             ],

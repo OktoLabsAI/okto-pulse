@@ -28,12 +28,12 @@ _ALLOWLIST: dict[tuple[str, str, str], str] = {
     ): "first boot returns plaintext only to the caller that immediately reveals it",
     (
         "okto_pulse/community/cli.py",
-        "cmd_init._init",
+        "cmd_init._init._on_primary_committed",
         "stdout_secret",
     ): "init prints the freshly seeded reveal-once key",
     (
         "okto_pulse/community/cli.py",
-        "cmd_init._init",
+        "cmd_init._init._on_primary_committed",
         "credential_interpolation",
     ): "init formats the freshly seeded reveal-once key for stdout",
     (
@@ -48,12 +48,12 @@ _ALLOWLIST: dict[tuple[str, str, str], str] = {
     ): ".mcp.json export receives only classified exportable credentials",
     (
         "okto_pulse/community/main.py",
-        "create_community_app.combined_lifespan",
+        "create_community_app.combined_lifespan._on_primary_committed",
         "stdout_secret",
     ): "serve first boot prints the freshly seeded reveal-once key",
     (
         "okto_pulse/community/main.py",
-        "create_community_app.combined_lifespan",
+        "create_community_app.combined_lifespan._on_primary_committed",
         "credential_interpolation",
     ): "serve first boot prints the freshly seeded reveal-once MCP URL",
 }

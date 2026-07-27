@@ -869,18 +869,30 @@ def create_community_app():
         )
 
         register_community_kg_events_reader(get_session_factory())
+
+        primary_commit_delivered = False
+
+        def _on_primary_committed(board, agent, api_key) -> None:
+            nonlocal primary_commit_delivered
+            primary_commit_delivered = True
+            print(f"\n{'=' * 60}")
+            print("  Okto Pulse Community — First Boot Setup")
+            print(f"{'=' * 60}")
+            print(f"  Board created: {board.name} ({board.id})")
+            print(f"  Agent created: {agent.name}")
+            print(f"  API Key: {api_key}")
+            print(f"  MCP URL: http://localhost:{mcp_port}/mcp?api_key={api_key}")
+            print(f"{'=' * 60}\n")
+
         async with database_runtime.cancel_safe_session_scope() as db:
-            result = await seed_community_defaults(db)
-            if result:
+            result = await seed_community_defaults(
+                db,
+                on_primary_committed=_on_primary_committed,
+            )
+            if result and not primary_commit_delivered:
+                # Compatibility with an older external seed implementation.
                 board, agent, api_key = result
-                print(f"\n{'=' * 60}")
-                print("  Okto Pulse Community — First Boot Setup")
-                print(f"{'=' * 60}")
-                print(f"  Board created: {board.name} ({board.id})")
-                print(f"  Agent created: {agent.name}")
-                print(f"  API Key: {api_key}")
-                print(f"  MCP URL: http://localhost:{mcp_port}/mcp?api_key={api_key}")
-                print(f"{'=' * 60}\n")
+                _on_primary_committed(board, agent, api_key)
 
         # Self-heal: Q&A respondidas herdadas sem answered_at viravam
         # falso-abertas no badge open_qa_count (a herança não copiava o

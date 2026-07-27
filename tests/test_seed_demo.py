@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +22,310 @@ source_paths = [p for p in (REPO_SRC, *CORE_SRC_CANDIDATES) if p.exists()]
 for p in reversed(source_paths):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
+
+
+async def _demo_seed_factory(tmp_path, name: str):
+    from okto_pulse.community.adapters.sqlalchemy_base import Base
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / name}")
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    return engine, factory
+
+
+@pytest.mark.asyncio
+async def test_primary_commit_delivers_key_before_demo_cancellation(
+    tmp_path, monkeypatch, caplog
+):
+    """Cancellation during commit drains through reveal before propagating."""
+    from okto_pulse.community import seed as seed_mod
+
+    engine, factory = await _demo_seed_factory(tmp_path, "cancelled-demo.db")
+    delivered = []
+    demo_calls = []
+    commit_started = asyncio.Event()
+    release_commit = asyncio.Event()
+
+    async def unexpected_demo(_db):
+        demo_calls.append("demo")
+
+    monkeypatch.delenv(seed_mod.DEMO_SKIP_ENV, raising=False)
+    monkeypatch.setattr(seed_mod, "_seed_demo_board", unexpected_demo)
+
+    try:
+        async with factory() as db:
+            original_commit = db.commit
+
+            async def delayed_commit():
+                commit_started.set()
+                await release_commit.wait()
+                await original_commit()
+
+            monkeypatch.setattr(db, "commit", delayed_commit)
+            seed_task = asyncio.create_task(
+                seed_mod.seed_community_defaults(
+                    db,
+                    on_primary_committed=lambda board, agent, api_key: delivered.append(
+                        (board.id, agent.id, api_key)
+                    ),
+                )
+            )
+            await commit_started.wait()
+            seed_task.cancel()
+            release_commit.set()
+            with pytest.raises(asyncio.CancelledError):
+                await seed_task
+
+        async with factory() as db:
+            board_count = (
+                await db.execute(sa_text("SELECT COUNT(*) FROM boards"))
+            ).scalar_one()
+            agent_row = (
+                await db.execute(
+                    sa_text("SELECT api_key, api_key_hash FROM agents LIMIT 1")
+                )
+            ).mappings().one()
+
+        assert board_count == 1
+        assert len(delivered) == 1
+        assert delivered[0][2].startswith("dash_")
+        assert agent_row["api_key"].startswith("sha256:")
+        assert agent_row["api_key_hash"]
+        assert delivered[0][2] not in caplog.text
+        assert demo_calls == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_primary_commit_failure_does_not_deliver_key_or_start_demo(
+    tmp_path, monkeypatch
+):
+    """A non-durable primary seed must never expose its unusable credential."""
+    from okto_pulse.community import seed as seed_mod
+
+    engine, factory = await _demo_seed_factory(tmp_path, "failed-primary.db")
+    delivered = []
+    demo_calls = []
+
+    async def unexpected_demo(_db):
+        demo_calls.append("demo")
+
+    monkeypatch.setattr(seed_mod, "_seed_demo_board", unexpected_demo)
+
+    try:
+        async with factory() as db:
+            async def failing_commit():
+                raise RuntimeError("primary commit failed")
+
+            monkeypatch.setattr(db, "commit", failing_commit)
+            with pytest.raises(RuntimeError, match="primary commit failed"):
+                await seed_mod.seed_community_defaults(
+                    db,
+                    on_primary_committed=lambda board, agent, api_key: delivered.append(
+                        (board.id, agent.id, api_key)
+                    ),
+                )
+
+        assert delivered == []
+        assert demo_calls == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_primary_commit_sink_failure_propagates_without_starting_demo(
+    tmp_path, monkeypatch
+):
+    """A failed sink is fail-closed after durability and before Demo work."""
+    from okto_pulse.community import seed as seed_mod
+
+    engine, factory = await _demo_seed_factory(tmp_path, "sink-failure.db")
+    demo_calls = []
+
+    async def unexpected_demo(_db):
+        demo_calls.append("demo")
+
+    def failing_sink(_board, _agent, _api_key):
+        raise RuntimeError("credential sink failed")
+
+    monkeypatch.setattr(seed_mod, "_seed_demo_board", unexpected_demo)
+
+    try:
+        async with factory() as db:
+            with pytest.raises(RuntimeError, match="credential sink failed"):
+                await seed_mod.seed_community_defaults(
+                    db,
+                    on_primary_committed=failing_sink,
+                )
+
+        async with factory() as db:
+            counts = (
+                await db.execute(
+                    sa_text(
+                        "SELECT "
+                        "(SELECT COUNT(*) FROM boards) AS boards, "
+                        "(SELECT COUNT(*) FROM agents) AS agents"
+                    )
+                )
+            ).mappings().one()
+
+        assert dict(counts) == {"boards": 1, "agents": 1}
+        assert demo_calls == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_incomplete_demo_graph_retries_without_duplicate_demo_data(
+    tmp_path, monkeypatch
+):
+    """A later startup retries graph-only work until a committed audit exists."""
+    from okto_pulse.community import seed as seed_mod
+
+    engine, factory = await _demo_seed_factory(tmp_path, "retry-demo.db")
+    graph_calls = []
+
+    async def fail_then_commit_audit(board_id: str, spec_id: str) -> None:
+        graph_calls.append((board_id, spec_id))
+        if len(graph_calls) <= 2:
+            raise RuntimeError("demo graph unavailable")
+        async with factory() as audit_db:
+            await audit_db.execute(
+                sa_text(
+                    "INSERT INTO consolidation_audit "
+                    "(session_id, board_id, artifact_id, artifact_type, agent_id, "
+                    " started_at, committed_at, nodes_added, nodes_updated, "
+                    " nodes_superseded, edges_added, undo_status) "
+                    "VALUES "
+                    "(:session_id, :board_id, :artifact_id, 'spec', 'seed-demo', "
+                    " CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 4, 0, 0, 3, 'undone')"
+                ),
+                {
+                    "session_id": "seed-retry-committed",
+                    "board_id": board_id,
+                    "artifact_id": spec_id,
+                },
+            )
+            await audit_db.commit()
+
+    async def snapshot_counts():
+        async with factory() as db:
+            return dict(
+                (
+                    await db.execute(
+                        sa_text(
+                            "SELECT "
+                            "(SELECT COUNT(*) FROM boards) AS boards, "
+                            "(SELECT COUNT(*) FROM specs) AS specs, "
+                            "(SELECT COUNT(*) FROM cards) AS cards, "
+                            "(SELECT COUNT(*) FROM agents) AS agents, "
+                            "(SELECT COUNT(*) FROM consolidation_audit) AS audits"
+                        )
+                    )
+                ).mappings().one()
+            )
+
+    monkeypatch.delenv(seed_mod.DEMO_SKIP_ENV, raising=False)
+    monkeypatch.setattr(seed_mod, "_commit_demo_graph", fail_then_commit_audit)
+
+    try:
+        async with factory() as db:
+            first = await seed_mod.seed_community_defaults(db)
+        assert first is not None
+        assert await snapshot_counts() == {
+            "boards": 2,
+            "specs": 1,
+            "cards": 3,
+            "agents": 1,
+            "audits": 0,
+        }
+
+        # An explicit skip suppresses recovery without erasing its evidence.
+        monkeypatch.setenv(seed_mod.DEMO_SKIP_ENV, "1")
+        async with factory() as db:
+            assert await seed_mod.seed_community_defaults(db) is None
+        assert len(graph_calls) == 1
+
+        monkeypatch.delenv(seed_mod.DEMO_SKIP_ENV, raising=False)
+        async with factory() as db:
+            assert await seed_mod.seed_community_defaults(db) is None
+        assert len(graph_calls) == 2
+        assert await snapshot_counts() == {
+            "boards": 2,
+            "specs": 1,
+            "cards": 3,
+            "agents": 1,
+            "audits": 0,
+        }
+
+        # Recovery itself is fail-soft; a later startup can try the same
+        # graph-only materialization again.
+        async with factory() as db:
+            assert await seed_mod.seed_community_defaults(db) is None
+        assert len(graph_calls) == 3
+        assert await snapshot_counts() == {
+            "boards": 2,
+            "specs": 1,
+            "cards": 3,
+            "agents": 1,
+            "audits": 1,
+        }
+
+        # Any committed seed audit, including an intentionally undone one,
+        # suppresses resurrection on all later starts.
+        async with factory() as db:
+            assert await seed_mod.seed_community_defaults(db) is None
+        assert len(graph_calls) == 3
+        assert await snapshot_counts() == {
+            "boards": 2,
+            "specs": 1,
+            "cards": 3,
+            "agents": 1,
+            "audits": 1,
+        }
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_existing_install_does_not_recreate_absent_demo(
+    tmp_path, monkeypatch
+):
+    """Opted-out or intentionally deleted Demo content stays absent."""
+    from okto_pulse.community import seed as seed_mod
+
+    engine, factory = await _demo_seed_factory(tmp_path, "absent-demo.db")
+    graph_calls = []
+
+    async def unexpected_graph(board_id: str, spec_id: str) -> None:
+        graph_calls.append((board_id, spec_id))
+
+    monkeypatch.setenv(seed_mod.DEMO_SKIP_ENV, "1")
+    monkeypatch.setattr(seed_mod, "_commit_demo_graph", unexpected_graph)
+
+    try:
+        async with factory() as db:
+            assert await seed_mod.seed_community_defaults(db) is not None
+
+        monkeypatch.delenv(seed_mod.DEMO_SKIP_ENV, raising=False)
+        async with factory() as db:
+            assert await seed_mod.seed_community_defaults(db) is None
+            demo_count = (
+                await db.execute(
+                    sa_text("SELECT COUNT(*) FROM boards WHERE name = 'Demo'")
+                )
+            ).scalar_one()
+
+        assert demo_count == 0
+        assert graph_calls == []
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

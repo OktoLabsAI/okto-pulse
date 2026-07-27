@@ -125,10 +125,13 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     async def fake_close_db():
         return None
 
-    async def fake_seed(_db):
+    async def fake_seed(_db, *, on_primary_committed=None):
         board = SimpleNamespace(id="board-1", name="Board")
         agent = SimpleNamespace(name="Agent", api_key=persisted_marker)
-        return board, agent, revealed_key
+        seeded = (board, agent, revealed_key)
+        if on_primary_committed is not None:
+            on_primary_committed(*seeded)
+        return seeded
 
     class _GraphSchema:
         async def ensure_bootstrapped(self, _board_id):

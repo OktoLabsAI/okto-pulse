@@ -138,15 +138,18 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
         assert isinstance(settings, Settings)
         events.append("configure_community_kg")
 
-    async def fake_seed(_db):
+    async def fake_seed(_db, *, on_primary_committed=None):
         assert os.environ[community_seed.DEMO_SKIP_ENV] == "1"
         assert events[-1] == "configure_community_kg"
         events.append("seed_demo_skipped")
-        return (
+        seeded = (
             SimpleNamespace(id="board-1", name="My Board"),
             SimpleNamespace(name="Local Agent"),
             revealed_key,
         )
+        if on_primary_committed is not None:
+            on_primary_committed(*seeded)
+        return seeded
 
     class FailingGraphSchema:
         async def ensure_bootstrapped(self, board_id):
@@ -1380,13 +1383,16 @@ def _cmd_init_order_harness(
         events.append("configure_kg")
         registry_holder["value"] = registry
 
-    async def fake_seed(_db):
+    async def fake_seed(_db, *, on_primary_committed=None):
         events.append("seed")
-        return (
+        seeded = (
             SimpleNamespace(id="board-1", name="My Board"),
             SimpleNamespace(name="Local Agent"),
             seed_key,
         )
+        if on_primary_committed is not None:
+            on_primary_committed(*seeded)
+        return seeded
 
     class _GSM:
         async def ensure_bootstrapped(self, board_id):
