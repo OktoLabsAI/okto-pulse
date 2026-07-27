@@ -11,10 +11,11 @@ from okto_pulse.core.application.boundary.distribution_dependency_ownership impo
     COMMUNITY_DISTRIBUTION,
     audit_distribution_dependencies,
 )
+from repo_layout import resolve_core_repo
 
 
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
-CORE_REPO = COMMUNITY_REPO.parent / "okto_labs_pulse_core"
+CORE_REPO = resolve_core_repo(COMMUNITY_REPO)
 CORE_WHEEL = CORE_REPO / "dist" / "okto_pulse_core-0.3.0-py3-none-any.whl"
 COMMUNITY_WHEEL = COMMUNITY_REPO / "dist" / "okto_pulse-0.3.0-py3-none-any.whl"
 
@@ -23,8 +24,6 @@ def test_community_declares_every_runtime_dependency_directly() -> None:
     report = audit_distribution_dependencies(
         core_repo=CORE_REPO,
         community_repo=COMMUNITY_REPO,
-        core_wheel=CORE_WHEEL,
-        community_wheel=COMMUNITY_WHEEL,
     )
 
     assert report.ok, report.as_dict()

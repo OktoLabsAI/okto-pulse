@@ -12,6 +12,7 @@ from okto_pulse.community.adapters.workers import (
     build_community_worker_registry,
 )
 from okto_pulse.core.application.boundary import RuntimeWorkerBoundaryGate
+from repo_layout import resolve_core_repo
 
 
 def test_r08c_community_worker_registry_declares_baseline_families() -> None:
@@ -89,7 +90,7 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
 
 def test_r08c_worker_boundary_real_core_and_community_trees_pass() -> None:
     community_root = Path(__file__).resolve().parents[1]
-    core_root = community_root.parent / "okto_labs_pulse_core"
+    core_root = resolve_core_repo(community_root)
 
     report = RuntimeWorkerBoundaryGate().run(
         source_root=core_root,

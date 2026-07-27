@@ -21,6 +21,8 @@ from okto_pulse.core.kg.rebuild_generation import (
     RebuildAuditKGGenerationRepository,
 )
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def _append_from_process(base_dir: str, index: int, start) -> None:
     store = CommunityFileSystemRebuildAuditArtifactStore(Path(base_dir))
@@ -530,7 +532,7 @@ def test_revisioned_replace_persists_pending_target_committed_order(
 
 
 def test_af16_composition_uses_community_rebuild_base_dir_resolver():
-    composition_source = Path("src/okto_pulse/community/adapters/composition.py")
+    composition_source = ROOT / "src/okto_pulse/community/adapters/composition.py"
     source = composition_source.read_text(encoding="utf-8")
     forbidden_import = (
         "from okto_pulse.core.kg."

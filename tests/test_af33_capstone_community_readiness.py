@@ -17,24 +17,31 @@ from okto_pulse.core.application.boundary.capstone_conformance import (
     audit_capstone_ledgers,
     validate_capstone_readme_sync,
 )
+from repo_layout import resolve_core_repo
 
 
 COMMUNITY_ROOT = Path(__file__).resolve().parents[1]
-CORE_ROOT = COMMUNITY_ROOT.parent / "okto_labs_pulse_core"
 
 
-def _core_readme() -> str:
-    readme = CORE_ROOT / "README.md"
-    if not readme.exists():
-        pytest.skip("Core sibling repo not available for AF33 README sync")
-    return readme.read_text(encoding="utf-8")
+def _resolve_core_root() -> Path:
+    try:
+        return resolve_core_repo(COMMUNITY_ROOT)
+    except RuntimeError:
+        pytest.skip("Core sibling repo not available for AF33 documentation sync")
+
+
+def _core_capstone_document() -> str:
+    core_root = _resolve_core_root()
+    readme = (core_root / "README.md").read_text(encoding="utf-8")
+    assert "(docs/ARCHITECTURE-OVERVIEW.md)" in readme
+    return (core_root / "docs" / "ARCHITECTURE-OVERVIEW.md").read_text(encoding="utf-8")
 
 
 def test_af33_community_readme_matches_core_capstone_matrix() -> None:
     community_readme = (COMMUNITY_ROOT / "README.md").read_text(encoding="utf-8")
 
     report = validate_capstone_readme_sync(
-        core_readme=_core_readme(),
+        core_readme=_core_capstone_document(),
         community_readme=community_readme,
     )
 
@@ -51,7 +58,7 @@ def test_af33_community_readme_mismatch_fails_closed() -> None:
     )
 
     report = validate_capstone_readme_sync(
-        core_readme=_core_readme(),
+        core_readme=_core_capstone_document(),
         community_readme=mutated,
     )
 

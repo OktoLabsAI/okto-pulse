@@ -873,6 +873,7 @@ async def test_manifest_change_and_secret_loss_or_rotation_fail_closed(tmp_path)
     assert not ledger.secret_path.exists()
 
     ledger.secret_path.write_bytes(b"x" * 32)
+    ledger.secret_path.chmod(0o600)
     rotated = verify_community_evidence_v2(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
@@ -892,6 +893,7 @@ async def test_rotated_key_cannot_be_hidden_by_injected_first_receipt(tmp_path):
     ledger, _calls, _evidence = await _produce(tmp_path)
     rotated_key = b"r" * 32
     ledger.secret_path.write_bytes(rotated_key)
+    ledger.secret_path.chmod(0o600)
     rotated_key_id = hashlib.sha256(rotated_key).hexdigest()[:16]
     injected = ledger.receipt_root / ("0" * 32 + ".json")
     injected.write_text(

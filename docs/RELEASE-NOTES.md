@@ -91,6 +91,8 @@ The UI side of the **53-spec 0.2.3 board** — the KG resilience, governance, co
 - **`PulseLoader`** — screen loading now uses the landing-page hero animation.
 - **Serve lifespan self-heals** — `combined_lifespan` (which replaces the core default) now runs the Q&A `answered_at` backfill, the decay-tick catch-up, and the architecture-finding-runs backfill on boot, so fixes that live in the core lifespan actually run in the deployed runtime. `SPAMiddleware` became pure ASGI, removing a cancel scope over SSE.
 - **License** — the internal-platform large-scale exposure threshold drops from 500 to 200 users (clause I(d)(ii)), reflected in `LICENSE`, the About modal Terms of Use, `frontend/src/constants/terms.ts` and the backend acceptance constants. The in-product Help was reviewed end-to-end against the current product state.
+- **Terms acceptance drift is gated** — backend pre-acceptance uses the same Terms version and hash as `frontend/src/constants/terms.ts`, with a regression test that fails if the two sources diverge.
+- **Operational metric samples are bounded** — debug sample buffers remain capped while count APIs continue to report total observations after sample eviction.
 - Pulls in all `okto-pulse-core` 0.2.3 engine changes (KG durability lifecycle, recovery & deterministic rebuild, zero-orphan integrity, cognitive consolidation, health honesty + degraded-mode resilience, governance/lineage/gates, the MCP token-budget/projection layer to 215 tools, the bug-regression workflow, structured spec entities and analytics IR/OR coverage). See the `okto-pulse-core` CHANGELOG for engine-level detail.
 
 ### 0.2.2

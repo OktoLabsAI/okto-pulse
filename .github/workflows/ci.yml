@@ -28,6 +28,8 @@ jobs:
     name: docker build verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      OKTO_PULSE_CORE_REPO: ${{ github.workspace }}/okto-pulse-core
 
     steps:
       - name: Checkout okto-pulse
@@ -71,7 +73,7 @@ jobs:
       - name: F16 SaaS closure ratchet
         run: |
           python -m pip install --upgrade pip
-          pip install -e okto-pulse-core -e okto-pulse pytest pytest-asyncio build
+          pip install -e okto-pulse-core -e okto-pulse pytest pytest-asyncio build uv
           pytest --noconftest -q okto-pulse-core/tests/test_f16_saas_closure_report.py okto-pulse/tests/test_f16_saas_closure.py
           okto-pulse-saas-closure --core-repo okto-pulse-core --community-repo okto-pulse --format text
 

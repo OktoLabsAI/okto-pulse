@@ -43,7 +43,7 @@ def _isolate_factory():
 
 def _exercise(store) -> dict:
     """Drive the full EventStore surface and return an observable fingerprint."""
-    occurred = datetime(2026, 6, 26, tzinfo=timezone.utc).isoformat()
+    occurred = datetime.now(timezone.utc).isoformat()
     store.append_event(
         {
             "schema_version": CURRENT_SCHEMA_VERSION,

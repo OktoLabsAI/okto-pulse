@@ -33,7 +33,30 @@ from typing import Any, Sequence
 EXPECTED_VERSION = "0.3.0"
 EXPECTED_MCP_TOOL_COUNT = 281
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
-CORE_REPO = COMMUNITY_REPO.parent / "okto_labs_pulse_core"
+
+
+def _resolve_core_repo() -> Path:
+    configured = os.environ.get("OKTO_PULSE_CORE_REPO")
+    candidates = (
+        Path(configured).expanduser() if configured else None,
+        COMMUNITY_REPO.parent / "okto-pulse-core",
+        COMMUNITY_REPO.parent / "okto_labs_pulse_core",
+        COMMUNITY_REPO.parent.parent / "okto-pulse-core",
+        COMMUNITY_REPO.parent.parent / "okto_labs_pulse_core",
+    )
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        resolved = candidate.resolve()
+        if (
+            (resolved / "pyproject.toml").is_file()
+            and (resolved / "src" / "okto_pulse" / "core").is_dir()
+        ):
+            return resolved
+    return COMMUNITY_REPO.parent / "okto_labs_pulse_core"
+
+
+CORE_REPO = _resolve_core_repo()
 
 
 class ReleaseArtifactGateError(RuntimeError):
@@ -111,12 +134,21 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _build_wheels(uv: str, work_dir: Path) -> tuple[Path, Path]:
+def _build_wheels(
+    uv: str,
+    work_dir: Path,
+    *,
+    offline: bool,
+) -> tuple[Path, Path]:
     wheel_dir = work_dir / "wheels"
     wheel_dir.mkdir(parents=True)
     for repo in (CORE_REPO, COMMUNITY_REPO):
+        command: list[object] = [uv, "build", "--wheel"]
+        if offline:
+            command.append("--offline")
+        command.extend(("--out-dir", wheel_dir, repo))
         _run(
-            (uv, "build", "--wheel", "--offline", "--out-dir", wheel_dir, repo),
+            command,
             cwd=work_dir,
             timeout=240,
         )
@@ -508,7 +540,7 @@ def run_gate(work_dir: Path, *, offline: bool) -> dict[str, Any]:
         raise ReleaseArtifactGateError(f"Core sibling repository missing: {CORE_REPO}")
 
     work_dir.mkdir(parents=True, exist_ok=False)
-    core_wheel, community_wheel = _build_wheels(uv, work_dir)
+    core_wheel, community_wheel = _build_wheels(uv, work_dir, offline=offline)
     audit = _audit_core_artifact(core_wheel, community_wheel, work_dir)
     installed = _installed_gate(
         uv,

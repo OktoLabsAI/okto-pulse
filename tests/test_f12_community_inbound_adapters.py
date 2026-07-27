@@ -9,10 +9,11 @@ from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     CommunityUnitOfWorkFactory,
 )
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
+from repo_layout import resolve_core_repo
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CORE_ROOT = ROOT.parent / "okto_labs_pulse_core"
+CORE_ROOT = resolve_core_repo(ROOT)
 
 
 class _Session:

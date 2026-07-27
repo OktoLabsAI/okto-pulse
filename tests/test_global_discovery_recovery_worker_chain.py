@@ -116,6 +116,7 @@ from test_global_discovery_recovery_adapter import (  # noqa: E402
     _coherent_adopt_state,
 )
 from test_global_discovery_recovery_worker_adoption import _seed  # noqa: E402
+from repo_layout import resolve_core_repo
 
 
 def _two_seeds():
@@ -3708,7 +3709,7 @@ def _run_cold_resume(
     script_path.write_text(_COLD_RESUME_SCRIPT, encoding="utf-8")
     tests_dir = Path(__file__).resolve().parent
     community_src = tests_dir.parent / "src"
-    core_src = tests_dir.parent.parent / "okto_labs_pulse_core" / "src"
+    core_src = resolve_core_repo(tests_dir.parent) / "src"
     # Hermetic child env: NO inherited PYTHONPATH; neutral cwd (tmp) so the
     # child cannot silently rely on repo-relative resolution.
     child_env = dict(os.environ)
