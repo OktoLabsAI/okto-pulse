@@ -18,6 +18,19 @@ def test_release_docs_match_current_dockerfile_claims() -> None:
     assert "HF_MODEL_SHA256" not in claude
 
 
+def test_dockerfile_uses_community_mcp_host_without_patching_core() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    main_source = (
+        ROOT / "src" / "okto_pulse" / "community" / "main.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'MCP_HOST: "0.0.0.0"' in compose
+    assert 'os.environ.get("MCP_HOST", "127.0.0.1")' in main_source
+    assert "okto_pulse/core/mcp/server.py" not in dockerfile
+    assert "sed -i" not in dockerfile
+
+
 def test_release_notes_document_implemented_terms_and_metric_guarantees() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     release_notes = RELEASE_NOTES.read_text(encoding="utf-8")
