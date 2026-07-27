@@ -33,8 +33,8 @@ for p in (str(REPO_SRC), *(str(path) for path in CORE_SRC_CANDIDATES if path.exi
 # ---------------------------------------------------------------------------
 
 
-def test_init_subparser_has_agents_flag():
-    """The init subparser exposes --agents (nargs='*')."""
+def test_init_subparser_has_agents_and_bootstrap_handoff_flags():
+    """The init subparser exposes interactive and automation destinations."""
     result = subprocess.run(
         [
             sys.executable,
@@ -50,6 +50,29 @@ def test_init_subparser_has_agents_flag():
     )
     assert result.returncode == 0
     assert "--agents" in result.stdout
+    assert "--bootstrap-key-handoff" in result.stdout
+    assert "private ACL" in result.stdout
+
+
+def test_api_key_subparser_exposes_optional_handoff_file():
+    """The new handoff is selectable without removing the legacy fallback."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.path.insert(0, r'{}'); "
+            "from okto_pulse.community.cli import main; main()".format(str(REPO_SRC)),
+            "api-key",
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0
+    assert "--handoff-file" in result.stdout
+    assert "usage:" in result.stdout
+    assert "--handoff-file ABSOLUTE_PATH" in result.stdout
 
 
 def test_init_subparser_no_args_shows_help(tmp_path):
@@ -90,6 +113,7 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
 
     events: list[str] = []
     factory = lambda: _FakeSession([])  # noqa: E731 - identity asserted below
+    revealed_key = f"dash_{'ab' * 24}"
 
     class Settings:
         def __init__(self):
@@ -121,7 +145,7 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
         return (
             SimpleNamespace(id="board-1", name="My Board"),
             SimpleNamespace(name="Local Agent"),
-            "dash_revealed_once",
+            revealed_key,
         )
 
     class FailingGraphSchema:
@@ -165,8 +189,15 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
         lambda: SimpleNamespace(graph_schema_manager=FailingGraphSchema()),
     )
 
+    handoff_path = tmp_path / "bootstrap-api-key"
     with pytest.raises(RuntimeError, match="kg bootstrap failed"):
-        cli.cmd_init(SimpleNamespace(mcp_port=8101, agents=None))
+        cli.cmd_init(
+            SimpleNamespace(
+                mcp_port=8101,
+                agents=None,
+                bootstrap_key_handoff=str(handoff_path),
+            )
+        )
 
     assert events == [
         "init_db",
@@ -179,6 +210,11 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
         "kg_shutdown",
     ]
     captured = capsys.readouterr()
+    assert revealed_key not in captured.out
+    assert revealed_key not in captured.err
+    assert handoff_path.exists()
+    assert cli._consume_bootstrap_key_handoff(handoff_path) == revealed_key
+    assert not handoff_path.exists()
     assert "bootstrap skipped" not in captured.out
     assert "bootstrap skipped" not in captured.err
 
@@ -408,10 +444,15 @@ def test_af14_ts6_mcp_export_marker_only_writes_no_config(
     assert not (tmp_path / ".mcp.json").exists()
 
 
-def test_af14_ts6_api_key_cli_refuses_reveal_once_marker(tmp_path, monkeypatch, capsys):
+def test_af14_ts6_api_key_cli_never_recovers_reveal_once_marker(
+    tmp_path, monkeypatch, capsys
+):
     import okto_pulse.community.config as community_config
     from okto_pulse.community.cli import cmd_api_key
 
+    # A realistic database marker is deliberately irrelevant to this command:
+    # release automation must receive the secret directly from the init call
+    # that generated it, never by querying persisted agent state.
     data_dir = tmp_path / "pulse-data"
     db_dir = data_dir / "data"
     db_dir.mkdir(parents=True)
@@ -430,12 +471,42 @@ def test_af14_ts6_api_key_cli_refuses_reveal_once_marker(tmp_path, monkeypatch, 
     monkeypatch.setattr(community_config, "CommunitySettings", Settings)
 
     with pytest.raises(SystemExit) as exc_info:
-        cmd_api_key(SimpleNamespace())
+        cmd_api_key(SimpleNamespace(handoff_file=None))
 
     captured = capsys.readouterr()
     assert exc_info.value.code == 1
     assert captured.out == ""
     assert "reveal-once and is not recoverable" in captured.err
+
+
+def test_af14_ts6_api_key_cli_preserves_governed_legacy_plaintext(
+    tmp_path, monkeypatch, capsys
+):
+    import okto_pulse.community.config as community_config
+    from okto_pulse.community.cli import cmd_api_key
+
+    data_dir = tmp_path / "pulse-data"
+    db_dir = data_dir / "data"
+    db_dir.mkdir(parents=True)
+    conn = sqlite3.connect(db_dir / "pulse.db")
+    try:
+        conn.execute("CREATE TABLE agents (api_key TEXT, created_at TEXT)")
+        conn.execute(
+            "INSERT INTO agents (api_key, created_at) VALUES (?, ?)",
+            ("dash_governed_legacy", "2025-01-01T00:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    Settings = type("Settings", (), {"data_dir": str(data_dir)})
+    monkeypatch.setattr(community_config, "CommunitySettings", Settings)
+
+    cmd_api_key(SimpleNamespace(handoff_file=None))
+
+    captured = capsys.readouterr()
+    assert captured.out == "dash_governed_legacy\n"
+    assert captured.err == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1259,7 +1330,13 @@ def test_a5_release_exception_preserves_earlier_error_by_identity(
 
 
 def _cmd_init_order_harness(
-    tmp_path, monkeypatch, events, *, init_db_error=None, gd_bootstrap_error=None
+    tmp_path,
+    monkeypatch,
+    events,
+    *,
+    init_db_error=None,
+    gd_bootstrap_error=None,
+    seed_key="dash_x",
 ):
     import okto_pulse.core as core
     import okto_pulse.community.adapters.composition as composition
@@ -1308,7 +1385,7 @@ def _cmd_init_order_harness(
         return (
             SimpleNamespace(id="board-1", name="My Board"),
             SimpleNamespace(name="Local Agent"),
-            "dash_x",
+            seed_key,
         )
 
     class _GSM:
@@ -1399,9 +1476,7 @@ def _cmd_init_order_harness(
     monkeypatch.setattr(database, "init_db", fake_init_db)
     monkeypatch.setattr(database, "close_db", fake_close_db)
     monkeypatch.setattr(database, "get_session_factory", lambda: factory)
-    monkeypatch.setattr(
-        kg_shutdown, "close_all_graphs_on_shutdown", fake_close_graphs
-    )
+    monkeypatch.setattr(kg_shutdown, "close_all_graphs_on_shutdown", fake_close_graphs)
     monkeypatch.setattr(community_seed, "seed_community_defaults", fake_seed)
     monkeypatch.setattr(
         lifecycle, "register_community_relational_schema_lifecycle", lambda: None
@@ -1460,12 +1535,41 @@ def test_a5_cmd_init_event_order_success(tmp_path, monkeypatch):
     assert probe["registry"].require_global_discovery_runtime() is probe["runtime"]
 
 
+def test_cmd_init_success_publishes_handoff_without_printing_secret(
+    tmp_path, monkeypatch, capsys
+):
+    events: list[str] = []
+    revealed_key = f"dash_{'cd' * 24}"
+    _cmd_init_order_harness(
+        tmp_path,
+        monkeypatch,
+        events,
+        seed_key=revealed_key,
+    )
+    handoff = tmp_path / "bootstrap-api-key"
+
+    _cli.cmd_init(
+        SimpleNamespace(
+            mcp_port=8101,
+            agents=None,
+            bootstrap_key_handoff=str(handoff),
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert events == _A5_CMD_INIT_FULL_TRACE
+    assert revealed_key not in captured.out
+    assert revealed_key not in captured.err
+    assert "Bootstrap credential handoff ready" in captured.out
+    assert handoff.exists()
+    assert not list(tmp_path.glob(".*.pending-*"))
+    assert _cli._consume_bootstrap_key_handoff(handoff) == revealed_key
+
+
 def test_a5_cmd_init_event_order_global_ceremony_failure(tmp_path, monkeypatch):
     events: list[str] = []
     original = RuntimeError("gd boom")
-    _cmd_init_order_harness(
-        tmp_path, monkeypatch, events, gd_bootstrap_error=original
-    )
+    _cmd_init_order_harness(tmp_path, monkeypatch, events, gd_bootstrap_error=original)
     with pytest.raises(RuntimeError) as exc_info:
         _cli.cmd_init(SimpleNamespace(mcp_port=8101, agents=None))
 

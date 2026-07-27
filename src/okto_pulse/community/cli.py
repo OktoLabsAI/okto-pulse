@@ -17,11 +17,13 @@ import logging
 import os
 import shutil
 import socket
+import stat
 import sys
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 # Default ports
 DEFAULT_API_PORT = 8100
@@ -29,6 +31,8 @@ DEFAULT_MCP_PORT = 8101
 
 _BANNER_PATH = Path(__file__).parent / "banner.txt"
 _METRICS_CLI_LOGGER = logging.getLogger("okto_pulse.community.metrics.cli")
+_BOOTSTRAP_KEY_HEX_LENGTH = 48
+_BOOTSTRAP_HANDOFF_MAX_BYTES = 128
 
 _CredentialSource = Literal["governed_legacy_plaintext", "reveal_once"]
 
@@ -38,6 +42,206 @@ class _ExportableAgentCredential:
     name: str
     plaintext: str
     source: _CredentialSource
+
+
+def _is_bootstrap_credential(value: str) -> bool:
+    if not value.startswith("dash_"):
+        return False
+    suffix = value.removeprefix("dash_")
+    return len(suffix) == _BOOTSTRAP_KEY_HEX_LENGTH and all(
+        character in "0123456789abcdef" for character in suffix
+    )
+
+
+def _validated_bootstrap_handoff_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise ValueError("bootstrap credential handoff path must be absolute")
+    parent = path.parent
+    if not parent.is_dir():
+        raise ValueError(
+            f"bootstrap credential handoff directory does not exist: {parent}"
+        )
+    if parent.is_symlink():
+        raise ValueError(
+            f"bootstrap credential handoff directory must not be a symlink: {parent}"
+        )
+    return path
+
+
+class _BootstrapKeyHandoffReservation:
+    """Hidden sibling reserved before initialization mutates persistent state.
+
+    POSIX creates the pending file with mode ``0600``. On Windows, the caller
+    must provide a directory protected by a private ACL; chmod-style mode bits
+    do not provide the same confidentiality guarantee.
+    """
+
+    def __init__(self, path: Path, pending_path: Path, descriptor: int) -> None:
+        self.path = path
+        self.pending_path = pending_path
+        self._descriptor: int | None = descriptor
+        self._payload_ready = False
+        self._published = False
+
+    @property
+    def published(self) -> bool:
+        return self._published
+
+    def publish(self, credential: str) -> Path:
+        if not _is_bootstrap_credential(credential):
+            raise ValueError("refusing to hand off an invalid bootstrap credential")
+        if self._descriptor is None:
+            raise RuntimeError("bootstrap credential handoff reservation is closed")
+
+        payload = f"{credential}\n".encode("ascii")
+        view = memoryview(payload)
+        try:
+            while view:
+                written = os.write(self._descriptor, view)
+                if written <= 0:
+                    raise OSError("bootstrap credential handoff write made no progress")
+                view = view[written:]
+            os.fsync(self._descriptor)
+            os.close(self._descriptor)
+            self._descriptor = None
+            self._payload_ready = True
+
+            # Publish only a complete, fsynced payload. POSIX hard-link
+            # creation is atomic and refuses an existing destination. Windows
+            # os.rename is same-volume atomic and refuses an existing target.
+            if os.name == "nt":
+                os.rename(self.pending_path, self.path)
+                self._published = True
+            else:
+                os.link(
+                    self.pending_path,
+                    self.path,
+                    follow_symlinks=False,
+                )
+                self._published = True
+                self.pending_path.unlink()
+        except FileExistsError as exc:
+            raise RuntimeError(
+                "bootstrap credential handoff destination appeared during "
+                f"initialization; complete pending handoff retained at "
+                f"{self.pending_path}"
+            ) from exc
+        except BaseException:
+            self.discard()
+            raise
+        return self.path
+
+    def discard(self) -> None:
+        if self._descriptor is not None:
+            os.close(self._descriptor)
+            self._descriptor = None
+        if self._published or not self._payload_ready:
+            self.pending_path.unlink(missing_ok=True)
+
+
+def _reserve_bootstrap_key_handoff(
+    destination: str | Path,
+) -> _BootstrapKeyHandoffReservation:
+    path = _validated_bootstrap_handoff_path(destination)
+    if os.path.lexists(path):
+        raise FileExistsError(
+            f"bootstrap credential handoff destination already exists: {path}"
+        )
+
+    pending_path = path.with_name(f".{path.name}.pending-{os.getpid()}-{uuid4().hex}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(pending_path, flags, 0o600)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(
+                "bootstrap credential handoff destination is not a regular file"
+            )
+    except BaseException:
+        os.close(descriptor)
+        pending_path.unlink(missing_ok=True)
+        raise
+    return _BootstrapKeyHandoffReservation(path, pending_path, descriptor)
+
+
+def _write_bootstrap_key_handoff(
+    destination: str | Path,
+    credential: str,
+) -> Path:
+    """Write a freshly generated credential to an exclusive private file.
+
+    This is an opt-in automation bridge for the exact ``init`` invocation that
+    receives the reveal-once value from ``seed_community_defaults``. It never
+    reads the database and refuses to overwrite an existing handoff. POSIX
+    handoffs use mode ``0600``; on Windows the destination directory must have
+    a private ACL because chmod-style mode bits are not a privacy boundary.
+    """
+    reservation = _reserve_bootstrap_key_handoff(destination)
+    try:
+        return reservation.publish(credential)
+    except BaseException:
+        reservation.discard()
+        raise
+
+
+def _consume_bootstrap_key_handoff(source: str | Path) -> str:
+    """Atomically claim, validate and remove one reveal-once handoff."""
+    path = _validated_bootstrap_handoff_path(source)
+    claimed = path.with_name(f".{path.name}.claimed-{os.getpid()}-{uuid4().hex}")
+    try:
+        os.rename(path, claimed)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "bootstrap credential handoff is missing or was already consumed"
+        ) from exc
+
+    descriptor: int | None = None
+    try:
+        try:
+            claimed_metadata = os.lstat(claimed)
+        except FileNotFoundError as exc:
+            # Windows may report a successful racing rename to more than one
+            # caller while only one claim remains addressable. Treat a vanished
+            # claim as the losing consumer; it must never fall back to the DB.
+            raise RuntimeError(
+                "bootstrap credential handoff is missing or was already consumed"
+            ) from exc
+        if not stat.S_ISREG(claimed_metadata.st_mode):
+            raise RuntimeError("bootstrap credential handoff is not a regular file")
+        if os.name != "nt" and claimed_metadata.st_mode & 0o077:
+            raise RuntimeError(
+                "bootstrap credential handoff permissions are broader than 0600"
+            )
+
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(claimed, flags)
+        opened_metadata = os.fstat(descriptor)
+        if (
+            opened_metadata.st_dev != claimed_metadata.st_dev
+            or opened_metadata.st_ino != claimed_metadata.st_ino
+        ):
+            raise RuntimeError("bootstrap credential handoff changed while opening")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            payload = stream.read(_BOOTSTRAP_HANDOFF_MAX_BYTES + 1)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        claimed.unlink(missing_ok=True)
+
+    if len(payload) > _BOOTSTRAP_HANDOFF_MAX_BYTES:
+        raise RuntimeError("bootstrap credential handoff is unexpectedly large")
+    try:
+        credential = payload.decode("ascii").rstrip("\r\n")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("bootstrap credential handoff is not ASCII") from exc
+    if not _is_bootstrap_credential(credential):
+        raise RuntimeError("bootstrap credential handoff is invalid")
+    return credential
 
 
 def _is_recoverable_agent_key(value: str | None) -> bool:
@@ -345,6 +549,27 @@ def cmd_init(args):
     # servidor vivo segurando o mesmo graph.lbug.
     _fail_fast_if_server_running("init")
 
+    handoff_argument = getattr(args, "bootstrap_key_handoff", None)
+    handoff_path = (
+        _validated_bootstrap_handoff_path(handoff_argument)
+        if handoff_argument
+        else None
+    )
+    if handoff_path is not None and getattr(args, "agents", None) is not None:
+        print(
+            "--bootstrap-key-handoff cannot be combined with --agents: "
+            "choose exactly one credential destination.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if handoff_path is not None and os.path.lexists(handoff_path):
+        print(
+            "Unable to reserve bootstrap credential handoff: destination "
+            f"already exists: {handoff_path}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.community.main import _ensure_data_dir
 
@@ -393,6 +618,20 @@ def cmd_init(args):
     register_community_relational_schema_lifecycle()
     _configure_community_relational_runtime(settings, echo=False)
 
+    handoff_reservation: _BootstrapKeyHandoffReservation | None = None
+    if handoff_path is not None:
+        try:
+            # Reserve a hidden sibling before init_db/seed can mutate
+            # persistent state. The final path stays absent until a complete,
+            # fsynced credential is published atomically.
+            handoff_reservation = _reserve_bootstrap_key_handoff(handoff_path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(
+                f"Unable to reserve bootstrap credential handoff: {exc}",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
+
     async def _init():
         revealed_agents: list[tuple[str, str]] = []
         # Blocker 9: init_db() is INSIDE the try so a partial failure still runs
@@ -427,11 +666,20 @@ def cmd_init(args):
                 result = await seed_community_defaults(db)
                 if result:
                     board, agent, api_key = result
+                    if handoff_reservation is not None:
+                        # The seed owns the only plaintext value. Publish it
+                        # immediately, before KG/bootstrap work can fail, so a
+                        # successfully persisted agent never loses its
+                        # reveal-once automation credential.
+                        handoff_reservation.publish(api_key)
                     revealed_agents.append((agent.name, api_key))
                     board_id = board.id
                     print(f"\n  Board created: {board.name}")
                     print(f"  Agent created: {agent.name}")
-                    print(f"  API Key: {api_key}")
+                    if handoff_path is None:
+                        print(f"  API Key: {api_key}")
+                    else:
+                        print("  API Key: reserved for one-time automation handoff")
                 else:
                     print("\n  Already initialized (seed exists).")
                     # Fetch the default board for KG bootstrap
@@ -480,13 +728,29 @@ def cmd_init(args):
                 await close_db()
 
     try:
-        revealed_agents = asyncio.run(_init())
+        try:
+            revealed_agents = asyncio.run(_init())
+        finally:
+            # ``asyncio.run`` drains/cancels tasks and shuts down its default
+            # executor only after ``_init`` returns. A final synchronous barrier
+            # therefore closes any graph handle opened by a late Global Discovery
+            # task after the in-loop teardown. Idempotent on the normal path.
+            close_all_graphs_on_shutdown()
+
+        if handoff_reservation is not None:
+            if not handoff_reservation.published:
+                print(
+                    "No freshly generated bootstrap credential is available for "
+                    "handoff. Reveal-once credentials cannot be recovered from "
+                    "the database.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+            print(f"  Bootstrap credential handoff ready: {handoff_reservation.path}")
     finally:
-        # ``asyncio.run`` drains/cancels tasks and shuts down its default
-        # executor only after ``_init`` returns. A final synchronous barrier
-        # therefore closes any graph handle opened by a late Global Discovery
-        # task after the in-loop teardown. Idempotent on the normal path.
-        close_all_graphs_on_shutdown()
+        if handoff_reservation is not None:
+            handoff_reservation.discard()
+
     print("\nRun 'okto-pulse serve' to start the server.")
 
     # Handle --agents flag: generate .mcp.json with specified agents
@@ -829,25 +1093,41 @@ def cmd_metrics(args):
 
 
 def cmd_api_key(args):
-    """Print the bootstrap API key (the dash_<hex> seeded by `okto-pulse init`).
+    """Consume a reveal-once bootstrap credential handoff.
 
-    Reads directly from the SQLite database to avoid coupling to the
-    running API server. Used by the release pipeline (release.yml) to
-    extract the key for replay smoke tests without grepping log output.
+    Used by release automation after ``okto-pulse init
+    --bootstrap-key-handoff``. The handoff is atomically claimed and deleted
+    whether it is valid or invalid. This handoff branch never reads the agent
+    table: persisted credentials are hashes/markers and are intentionally
+    non-recoverable. Without ``--handoff-file``, the governed legacy database
+    fallback remains available only for installations that still contain a
+    plaintext key.
 
     Exit codes:
       0 — key printed
-      1 — DB missing, no agents seeded, or agent has no api_key
+      1 — handoff missing/invalid, DB unavailable, or persisted key is hashed
 
     Output format: a single line containing the key on stdout. Banner
     goes to stderr so this is safe to pipe.
     """
+    handoff_file = getattr(args, "handoff_file", None)
+    if handoff_file:
+        try:
+            credential = _consume_bootstrap_key_handoff(handoff_file)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(
+                f"Unable to consume bootstrap credential handoff: {exc}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
+        print(credential)
+        return
+
     import sqlite3
     from okto_pulse.community.config import CommunitySettings
 
     settings = CommunitySettings()
     db_path = Path(settings.data_dir) / "data" / "pulse.db"
-
     if not db_path.exists():
         print(
             f"Database not found at {db_path}. Run 'okto-pulse init' first.",
@@ -857,10 +1137,6 @@ def cmd_api_key(args):
 
     conn = sqlite3.connect(str(db_path))
     try:
-        # The default seed creates exactly one agent ("Local Agent") with a
-        # bootstrap dash_<hex> key. Take the oldest seeded agent so we keep
-        # returning the same value across restarts even if more agents are
-        # added later.
         row = conn.execute(
             "SELECT api_key FROM agents WHERE api_key IS NOT NULL "
             "ORDER BY created_at ASC LIMIT 1"
@@ -1874,6 +2150,14 @@ def main():
         metavar="NAME",
         help="Export specific agents to .mcp.json (comma-separated names, or all if empty)",
     )
+    sub_init.add_argument(
+        "--bootstrap-key-handoff",
+        metavar="ABSOLUTE_PATH",
+        help="Write the freshly seeded reveal-once API key to a new private "
+        "file for automation. The path must not exist; use a volatile "
+        "filesystem and consume it with 'api-key --handoff-file'. POSIX uses "
+        "mode 0600; on Windows provide a directory with a private ACL.",
+    )
     sub_init.set_defaults(func=cmd_init)
 
     # serve
@@ -1956,10 +2240,17 @@ def main():
     metrics_purge.add_argument("--yes", action="store_true", help="Confirm local purge")
     metrics_purge.set_defaults(func=cmd_metrics)
 
-    # api-key — print bootstrap dash_<hex> from the seeded DB.
+    # api-key — atomically consume an explicit reveal-once handoff.
     sub_apikey = subparsers.add_parser(
         "api-key",
-        help="Print the bootstrap API key (dash_<hex>) seeded by 'okto-pulse init'",
+        help="Consume a reveal-once bootstrap API key handoff",
+    )
+    sub_apikey.add_argument(
+        "--handoff-file",
+        metavar="ABSOLUTE_PATH",
+        help="Private file created by 'init --bootstrap-key-handoff'; "
+        "it is deleted after this read. Without this option, only governed "
+        "legacy plaintext database keys remain exportable.",
     )
     sub_apikey.set_defaults(func=cmd_api_key)
 
