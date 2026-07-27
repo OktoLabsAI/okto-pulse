@@ -543,11 +543,39 @@ def _bootstrap_global_discovery_graph() -> str:
     return outcome
 
 
-def cmd_init(args):
+def cmd_init(args, *, owned_serve_lock: object | None = None):
     """Initialize ~/.okto-pulse/ directory and seed the database."""
+    from okto_pulse.community.config import CommunitySettings
+
+    settings = CommunitySettings()
+
     # KGD-01 C6 (S10): init bootstrapa o grafo do board — nunca com o
-    # servidor vivo segurando o mesmo graph.lbug.
-    _fail_fast_if_server_running("init")
+    # servidor vivo segurando o mesmo graph.lbug. Reset may reuse the exact
+    # authoritative lock capability that it already owns, but a boolean or a
+    # stale/different lock must never bypass this fence.
+    if owned_serve_lock is None:
+        _fail_fast_if_server_running("init")
+    else:
+        from okto_pulse.community.serve_lock import (
+            ServeInstanceLock,
+            get_active_lock,
+        )
+
+        expected_data_dir = Path(settings.data_dir).expanduser().resolve()
+        owns_expected_lock = (
+            isinstance(owned_serve_lock, ServeInstanceLock)
+            and get_active_lock() is owned_serve_lock
+            and owned_serve_lock.is_acquired
+            and owned_serve_lock.data_dir == expected_data_dir
+        )
+        if not owns_expected_lock:
+            # Preserve the user-facing live-server error when one exists, then
+            # fail closed for a forged, released, or wrong-directory capability.
+            _fail_fast_if_server_running("init")
+            raise RuntimeError(
+                "init requires the active serve-lock capability for "
+                f"{expected_data_dir}"
+            )
 
     handoff_argument = getattr(args, "bootstrap_key_handoff", None)
     handoff_path = (
@@ -570,12 +598,10 @@ def cmd_init(args):
         )
         raise SystemExit(2)
 
-    from okto_pulse.community.config import CommunitySettings
     from okto_pulse.community.main import _ensure_data_dir
 
     mcp_port = getattr(args, "mcp_port", DEFAULT_MCP_PORT) or DEFAULT_MCP_PORT
 
-    settings = CommunitySettings()
     if mcp_port != DEFAULT_MCP_PORT:
         settings.mcp_port = mcp_port
     _ensure_data_dir(settings)
@@ -2104,6 +2130,10 @@ def cmd_kg_restore(args):
 def cmd_reset(args):
     """Reset all data — delete DB and uploads, re-seed."""
     from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.serve_lock import (
+        ServeAlreadyRunningError,
+        ServeInstanceLock,
+    )
 
     settings = CommunitySettings()
     data_path = Path(settings.data_dir)
@@ -2117,17 +2147,30 @@ def cmd_reset(args):
             print("Aborted.")
             return
 
-    for f in (data_path / "data").glob("pulse.db*"):
-        f.unlink()
-        print(f"  Deleted: {f}")
+    # Check before the first destructive operation, then own the authoritative
+    # serve lock for the entire delete + seed transaction. The second fence
+    # closes the race where a server starts after the fast guard returns.
+    _fail_fast_if_server_running("reset")
+    try:
+        with ServeInstanceLock(data_path).acquire() as owned_serve_lock:
+            for f in (data_path / "data").glob("pulse.db*"):
+                f.unlink()
+                print(f"  Deleted: {f}")
 
-    if uploads_path.exists():
-        shutil.rmtree(uploads_path)
-        uploads_path.mkdir(parents=True, exist_ok=True)
-        print(f"  Cleared: {uploads_path}")
+            if uploads_path.exists():
+                shutil.rmtree(uploads_path)
+                uploads_path.mkdir(parents=True, exist_ok=True)
+                print(f"  Cleared: {uploads_path}")
 
-    print("  Data reset complete.\n")
-    cmd_init(args)
+            print("  Data reset complete.\n")
+            cmd_init(args, owned_serve_lock=owned_serve_lock)
+    except ServeAlreadyRunningError as exc:
+        print(
+            "ERROR [serve-lock]: refusing 'reset' while an okto-pulse "
+            f"server is running.\n{exc}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 def main():

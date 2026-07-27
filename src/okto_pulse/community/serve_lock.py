@@ -120,6 +120,11 @@ class ServeInstanceLock(AbstractContextManager["ServeInstanceLock"]):
             return
         _rewrite_lock_payload(self._fd, self.data_dir)
 
+    @property
+    def is_acquired(self) -> bool:
+        """Whether this capability still owns an open serve-lock descriptor."""
+        return self._fd is not None
+
     def release(self) -> None:
         global _ACTIVE_LOCK
 

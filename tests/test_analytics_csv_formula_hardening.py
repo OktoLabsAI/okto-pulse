@@ -82,6 +82,75 @@ async def test_overview_csv_neutralizes_every_formula_prefix_and_preserves_safe_
 
 
 @pytest.mark.asyncio
+async def test_board_csv_neutralizes_formula_prefixes_in_quality_titles(
+    monkeypatch,
+):
+    quality = {
+        "conclusion_reported": [
+            {
+                "card_id": "card-equals",
+                "title": "=SUM(A1:A2)",
+                "completeness": 91,
+                "drift": -1,
+            },
+            {
+                "card_id": "card-plus",
+                "title": "+cmd",
+                "completeness": 92,
+                "drift": -2,
+            },
+            {
+                "card_id": "card-minus",
+                "title": "-formula",
+                "completeness": 93,
+                "drift": -3,
+            },
+            {
+                "card_id": "card-at",
+                "title": "@function",
+                "completeness": 94,
+                "drift": -4,
+            },
+        ]
+    }
+
+    async def funnel_execute(_self, _command, *, actor, uow):
+        return SimpleNamespace(data={"=malicious-stage": 1})
+
+    async def quality_execute(_self, _command, *, actor, uow):
+        return SimpleNamespace(data=quality)
+
+    async def velocity_execute(_self, _command, *, actor, uow):
+        return SimpleNamespace(
+            data=[{"week": "@malicious-week", "impl": 1, "test": 2}]
+        )
+
+    monkeypatch.setattr(analytics_api.BoardFunnelUseCase, "execute", funnel_execute)
+    monkeypatch.setattr(analytics_api.BoardQualityUseCase, "execute", quality_execute)
+    monkeypatch.setattr(analytics_api.BoardVelocityUseCase, "execute", velocity_execute)
+
+    response = await analytics_api.board_analytics_export(
+        board_id="board-id",
+        date_from=None,
+        date_to=None,
+        user_id="csv-user",
+        uow=object(),
+    )
+    rows = await _response_csv(response)
+    quality_rows = {
+        row[0]: row for row in rows if row and row[0].startswith("card-")
+    }
+
+    assert quality_rows["card-equals"][1] == "'=SUM(A1:A2)"
+    assert quality_rows["card-plus"][1] == "'+cmd"
+    assert quality_rows["card-minus"][1] == "'-formula"
+    assert quality_rows["card-at"][1] == "'@function"
+    assert quality_rows["card-minus"][3] == "-3"
+    assert ["'=malicious-stage", "1"] in rows
+    assert ["'@malicious-week", "1", "2"] in rows
+
+
+@pytest.mark.asyncio
 async def test_entity_detail_csv_neutralizes_every_formula_prefix_in_all_row_shapes(
     monkeypatch,
 ):

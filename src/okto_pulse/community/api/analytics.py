@@ -720,23 +720,26 @@ async def board_analytics_export(
     writer = csv.writer(output)
 
     # Funnel
-    writer.writerow(["Funnel Stage", "Count"])
+    _write_csv_row(writer, ["Funnel Stage", "Count"])
     for stage, count in funnel.items():
-        writer.writerow([stage, count])
+        _write_csv_row(writer, [stage, count])
 
     # Quality scatter (conclusion-reported rows; spec R01A REST-FU2d fixes the
     # pre-existing bug where the dict payload was iterated by key — the endpoint
     # had been unreachable since the funnel/quality/velocity helpers became uow).
-    writer.writerow([])
-    writer.writerow(["Card ID", "Title", "Completeness", "Drift"])
+    _write_csv_row(writer, [])
+    _write_csv_row(writer, ["Card ID", "Title", "Completeness", "Drift"])
     for item in quality["conclusion_reported"]:
-        writer.writerow([item["card_id"], item["title"], item["completeness"], item["drift"]])
+        _write_csv_row(
+            writer,
+            [item["card_id"], item["title"], item["completeness"], item["drift"]],
+        )
 
     # Velocity
-    writer.writerow([])
-    writer.writerow(["Week", "Impl", "Test"])
+    _write_csv_row(writer, [])
+    _write_csv_row(writer, ["Week", "Impl", "Test"])
     for v in velocity:
-        writer.writerow([v["week"], v["impl"], v["test"]])
+        _write_csv_row(writer, [v["week"], v["impl"], v["test"]])
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return StreamingResponse(
