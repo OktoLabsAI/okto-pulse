@@ -16,6 +16,7 @@ from okto_pulse.community.adapters import sqlalchemy_models as models
 from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
     is_knowledge_creation_race_error,
 )
+from okto_pulse.community.sql_like import SQL_LIKE_ESCAPE
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     ApplicationGroupCount,
@@ -370,7 +371,7 @@ def _predicate(model: Any, item: ApplicationFilter):
         # two scalar-function calls per row.  The native form preserves the
         # established search contract and materially reduces full-scan cost
         # for the intentional ``%needle%`` pagination filters.
-        return column.like(item.value)
+        return column.like(item.value, escape=SQL_LIKE_ESCAPE)
     raise ValueError(f"unsupported_application_operator:{item.operator}")
 
 

@@ -8,6 +8,7 @@ from fastapi import HTTPException, Request, status
 from pydantic import TypeAdapter, ValidationError
 
 from okto_pulse.community.api.pagination import board_scope
+from okto_pulse.community.sql_like import literal_contains_pattern
 from okto_pulse.core.domain.enums import IdeationStatus, SpecStatus
 from okto_pulse.core.models import LookupItem, LookupResponse
 from okto_pulse.core.ports.application_persistence import (
@@ -99,7 +100,9 @@ def lookup_page_request(
     if status_values:
         filters.append(ApplicationFilter("status", "in", status_values))
     if search:
-        filters.append(ApplicationFilter("title", "ilike", f"%{search}%"))
+        filters.append(
+            ApplicationFilter("title", "ilike", literal_contains_pattern(search))
+        )
     if surface == "spec_lookup" and linked_to_cards:
         link_field = (
             "linked_to_cards" if include_archived_cards else "linked_to_active_cards"

@@ -8,6 +8,7 @@ from fastapi import HTTPException, Request, status
 from pydantic import TypeAdapter, ValidationError
 
 from okto_pulse.community.api.pagination import board_scope
+from okto_pulse.community.sql_like import literal_contains_pattern
 from okto_pulse.core.domain.enums import CardPriority, CardStatus, CardType
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
@@ -134,7 +135,7 @@ def _labels_and_search_groups(
 
     search_branches: tuple[tuple[ApplicationFilter, ...], ...] = ()
     if search:
-        needle = f"%{search}%"
+        needle = literal_contains_pattern(search)
         search_branches = tuple(
             (ApplicationFilter(field, "ilike", needle),)
             for field in ("title", "description", "labels")

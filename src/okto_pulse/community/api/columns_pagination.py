@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request, status
 
+from okto_pulse.community.sql_like import literal_contains_pattern
 from okto_pulse.core.domain.enums import CardStatus, CardType
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
@@ -180,7 +181,7 @@ def _search_disjunction(
 ) -> tuple[tuple[ApplicationFilter, ...], ...]:
     if not parameters.search:
         return ()
-    needle = f"%{parameters.search}%"
+    needle = literal_contains_pattern(parameters.search)
     return tuple(
         (ApplicationFilter(field, "ilike", needle),)
         for field in ("title", "description", "labels")

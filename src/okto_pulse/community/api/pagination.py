@@ -20,6 +20,7 @@ from pydantic import TypeAdapter, ValidationError
 from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
     statement_budget,
 )
+from okto_pulse.community.sql_like import literal_contains_pattern
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PAGE_OFFSET_MAX,
@@ -181,7 +182,7 @@ def search_groups(
     """Server-side search: OR of per-field ilike predicates (any_groups)."""
     if not search:
         return ()
-    needle = f"%{search}%"
+    needle = literal_contains_pattern(search)
     return tuple((ApplicationFilter(field, "ilike", needle),) for field in fields)
 
 
