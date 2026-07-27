@@ -226,14 +226,15 @@ Operational health is visible through:
 - dead-letter and queue metrics
 - graph database runtime settings in the board settings panel
 
-`GET /health` is a liveness endpoint: it always keeps the backward-compatible
-HTTP 200 and `status: "healthy"` contract while the process can answer requests.
-Relational readiness/integrity is reported separately through
-`integrity_status` and `findings.sprint_origin_integrity`. A missing sprint
-lineage foreign key with clean data is `degraded`; an invalid lineage row or a
-probe failure is `critical`. The finding is diagnostic and read-only. Direct SQL
-repair is unsupported; use application workflows or a verified backup/restore
-procedure.
+`GET /health` is a constant-time liveness endpoint: it performs no storage
+scan and keeps the backward-compatible HTTP 200 and `status: "healthy"`
+contract while the process can answer requests. Relational integrity is
+available on the explicit, read-only `GET /health/integrity` diagnostic through
+`integrity_status` and `findings.sprint_origin_integrity`; do not use that
+storage-backed route as a recurring liveness probe. A missing sprint lineage
+foreign key with clean data is `degraded`; an invalid lineage row or a probe
+failure is `critical`. Direct SQL repair is unsupported; use application
+workflows or a verified backup/restore procedure.
 
 ## Architecture
 

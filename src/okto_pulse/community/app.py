@@ -577,10 +577,20 @@ def create_app(
     # Health check
     @app.get("/health")
     async def health_check():
+        # Liveness must remain constant-time and independent of database size
+        # or availability.  Storage-backed diagnostics live on the explicit
+        # endpoint below so an orchestrator probe cannot trigger a full scan.
+        return {
+            "status": "healthy",
+            "version": settings.app_version,
+        }
+
+    @app.get("/health/integrity")
+    async def health_integrity_check():
         sprint_origin_finding = await inspect_sprint_origin_integrity(get_engine)
         return {
-            # Backward-compatible liveness contract: this route remains HTTP 200
-            # and status=healthy even when an integrity diagnostic is degraded.
+            # Diagnostics remain HTTP 200 so operators can inspect a complete
+            # finding even when relational integrity is degraded or critical.
             "status": "healthy",
             "version": settings.app_version,
             "integrity_status": sprint_origin_finding["status"],

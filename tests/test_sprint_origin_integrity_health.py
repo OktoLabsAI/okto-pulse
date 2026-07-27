@@ -173,7 +173,7 @@ async def test_probe_failure_is_critical_without_leaking_error_text():
 
 
 @pytest.mark.asyncio
-async def test_health_keeps_liveness_payload_and_http_200_when_integrity_is_critical(
+async def test_health_liveness_skips_scan_and_integrity_endpoint_keeps_diagnostics(
     tmp_path, monkeypatch
 ):
     runtime = configure_community_database(
@@ -193,10 +193,14 @@ async def test_health_keeps_liveness_payload_and_http_200_when_integrity_is_crit
         "repair_policy": {"direct_sql_supported": False},
     }
 
-    async def critical_probe(_engine_factory):
-        return critical_finding
+    async def unexpected_liveness_probe(_engine_factory):
+        raise AssertionError("liveness must not execute relational diagnostics")
 
-    monkeypatch.setattr(app_module, "inspect_sprint_origin_integrity", critical_probe)
+    monkeypatch.setattr(
+        app_module,
+        "inspect_sprint_origin_integrity",
+        unexpected_liveness_probe,
+    )
     settings = CommunitySettings()
     app = app_module.create_app(
         settings,
@@ -204,20 +208,39 @@ async def test_health_keeps_liveness_payload_and_http_200_when_integrity_is_crit
         storage_provider=object(),
         lifespan=no_lifespan,
     )
+
+    probe_calls = []
+
+    async def critical_probe(engine_factory):
+        probe_calls.append(engine_factory)
+        return critical_finding
+
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get("/health")
+            liveness_response = await client.get("/health")
+            monkeypatch.setattr(
+                app_module,
+                "inspect_sprint_origin_integrity",
+                critical_probe,
+            )
+            integrity_response = await client.get("/health/integrity")
     finally:
         await runtime.close()
 
-    payload = response.json()
-    assert response.status_code == 200
+    assert liveness_response.status_code == 200
+    assert liveness_response.json() == {
+        "status": "healthy",
+        "version": settings.app_version,
+    }
+    payload = integrity_response.json()
+    assert integrity_response.status_code == 200
     assert payload["status"] == "healthy"
     assert payload["version"] == settings.app_version
     assert payload["integrity_status"] == "critical"
     assert payload["findings"]["sprint_origin_integrity"] == critical_finding
+    assert probe_calls == [app_module.get_engine]
 
 
 def test_delete_sprint_maps_origin_conflict_to_http_409():
