@@ -27,6 +27,7 @@ from sqlalchemy import JSON as sa_JSON
 from sqlalchemy import bindparam, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.services.application_agents import credential_marker, hash_api_key
 
 logger = logging.getLogger("okto_pulse.community.seed")
@@ -76,14 +77,15 @@ async def seed_community_defaults(
     board_name = "My Board"
     await db.execute(
         sa_text(
-            "INSERT INTO boards (id, name, description, owner_id) "
-            "VALUES (:id, :name, :description, :owner_id)"
+            "INSERT INTO boards (id, name, description, owner_id, realm_id) "
+            "VALUES (:id, :name, :description, :owner_id, :realm_id)"
         ),
         {
             "id": board_id,
             "name": board_name,
             "description": "Default board for the community edition",
             "owner_id": "local-user",
+            "realm_id": LOCAL_REALM_ID,
         },
     )
 
@@ -276,14 +278,15 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
 
     await db.execute(
         sa_text(
-            "INSERT INTO boards (id, name, description, owner_id) "
-            "VALUES (:id, :name, :description, :owner_id)"
+            "INSERT INTO boards (id, name, description, owner_id, realm_id) "
+            "VALUES (:id, :name, :description, :owner_id, :realm_id)"
         ),
         {
             "id": demo_board_id,
             "name": DEMO_BOARD_NAME,
             "description": DEMO_BOARD_DESCRIPTION,
             "owner_id": "local-user",
+            "realm_id": LOCAL_REALM_ID,
         },
     )
     spec_insert = sa_text(

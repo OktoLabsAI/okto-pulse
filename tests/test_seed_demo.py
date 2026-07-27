@@ -332,9 +332,10 @@ async def test_existing_install_does_not_recreate_absent_demo(
 async def test_first_boot_demo_seed_persists_valid_status_and_card_kinds(
     tmp_path, monkeypatch
 ):
-    """Raw seed SQL must supply required ORM defaults and representative kinds."""
+    """Raw seed SQL must supply realm/lifecycle defaults on the first boot."""
     from okto_pulse.community import seed as seed_mod
     from okto_pulse.community.adapters.sqlalchemy_base import Base
+    from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{tmp_path / 'first-boot.db'}"
@@ -358,6 +359,15 @@ async def test_first_boot_demo_seed_persists_valid_status_and_card_kinds(
     try:
         async with factory() as db:
             result = await seed_mod.seed_community_defaults(db)
+            boards = (
+                await db.execute(
+                    sa_text(
+                        "SELECT name, realm_id FROM boards "
+                        "WHERE realm_id = :realm_id ORDER BY name"
+                    ),
+                    {"realm_id": LOCAL_REALM_ID},
+                )
+            ).mappings().all()
             rows = (
                 await db.execute(
                     sa_text(
@@ -369,6 +379,12 @@ async def test_first_boot_demo_seed_persists_valid_status_and_card_kinds(
 
         assert result is not None
         assert len(committed_graphs) == 1
+        assert [
+            (row["name"], row["realm_id"]) for row in boards
+        ] == [
+            ("Demo", LOCAL_REALM_ID),
+            ("My Board", LOCAL_REALM_ID),
+        ]
         assert [row["status"] for row in rows] == ["not_started"] * 3
         assert [row["card_type"] for row in rows] == ["normal", "bug", "test"]
     finally:
