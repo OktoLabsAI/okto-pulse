@@ -33,16 +33,17 @@ import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { useOptionalGuidedHelp, type GuidedHelpSurface, type GuidedHelpTourProgressStatus } from '@/components/guided-help';
 import pulseIcon from '@/assets/pulse-icon.svg';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import type { HelpSectionId } from './contextualHelp';
 
 interface HelpPanelProps {
   onClose: () => void;
-  initialSectionId?: string;
+  initialSectionId?: HelpSectionId;
 }
 
 const isEcosystem = typeof __AUTH_MODE__ !== 'undefined' && __AUTH_MODE__ === 'clerk';
 
 interface Section {
-  id: string;
+  id: HelpSectionId;
   title: string;
   icon: ReactNode;
   content: string;
@@ -1350,6 +1351,36 @@ Individual specs can override board-level settings. Toggle the skip flags direct
 `,
     },
     {
+      id: 'requirement-lint',
+      title: 'Requirement lint',
+      icon: <BarChart3 size={16} />,
+      content: `
+## Requirement lint — deterministic advisory analysis
+
+Requirement lint checks a Spec's governed semantic content after relevant changes. It is available in **Spec → Validation → Requirement lint** and is read-only in the UI: the server creates a new immutable receipt automatically.
+
+### Reading the result
+
+The headline is a **finding count**, not a percentage or approval score:
+
+- **Findings** — issues detected by the deterministic ruleset.
+- **Evaluated rules** — rules that applied to the current Spec input.
+- **Lower is better** — zero means the ruleset found no issue in that run.
+
+Findings carry severity, category, a precise anchor and suggested remediation. Expand **Pinpoint findings** to locate the affected field or structured child. Expand **Receipt history** to audit earlier runs.
+
+### Current and stale receipts
+
+A receipt is **current** only while its Spec content, ruleset, taxonomy and policy inputs still match the evaluated revision. A semantic edit can make the previous receipt stale and trigger a replacement. Historical receipts remain traceable and are never rewritten.
+
+### Advisory authority
+
+Requirement lint never changes Spec transition eligibility. **Zero findings does not authorize a transition**, and one or more findings do not block it. When available, **Checklist** and **Spec Validation** are the authoritative controls shown in the neighboring Validation sub-tabs.
+
+Use lint findings to improve the Spec before formal validation; use the authoritative controls to determine whether the Spec may advance.
+`,
+    },
+    {
       id: 'curated-spec-checklist',
       title: 'Curated Spec Checklist',
       icon: <ListChecks size={16} />,
@@ -1529,13 +1560,22 @@ export function HelpPanel({ onClose, initialSectionId }: HelpPanelProps) {
   const current = sections.find(s => s.id === activeSection) || sections[0];
 
   useEffect(() => {
+    if (
+      initialSectionId
+      && getSections().some((section) => section.id === initialSectionId)
+    ) {
+      setActiveSection(initialSectionId);
+    }
+  }, [initialSectionId]);
+
+  useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     dialogRef.current?.focus();
     return () => previouslyFocused?.focus();
   }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={onClose}>
       <div
         ref={dialogRef}
         role="dialog"

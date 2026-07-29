@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IdeationModal } from '../IdeationModal';
 import type { Ideation } from '@/types';
@@ -22,6 +22,9 @@ const markdownMock = vi.hoisted(() => ({
   downloadMarkdown: vi.fn(),
   slugify: vi.fn((s: string) => s.toLowerCase().replace(/\s+/g, '-')),
 }));
+const resourceGateMock = vi.hoisted(() => ({
+  render: vi.fn(),
+}));
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
@@ -42,15 +45,30 @@ vi.mock('@/components/traceability', () => ({
 }));
 
 vi.mock('@/components/architecture', () => ({
-  ArchitectureTab: () => <div />,
+  ArchitectureTab: ({
+    onChanged,
+  }: {
+    onChanged: (items: Array<{ id: string }>) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="architecture-tab"
+      onClick={() => onChanged([{ id: 'architecture-1' }])}
+    >
+      Update architecture
+    </button>
+  ),
 }));
 
-vi.mock('@/components/resources/ResourceGateSummary', () => ({
-  ResourceGateSummary: () => <div />,
+vi.mock('@/components/resources/ResourceGateDisclosure', () => ({
+  ResourceGateDisclosure: (props: { refreshKey?: string | number }) => {
+    resourceGateMock.render(props);
+    return <div data-testid="resource-gate-disclosure" />;
+  },
 }));
 
 vi.mock('@/components/specs/MockupsTab', () => ({
-  MockupsTab: () => <div />,
+  MockupsTab: () => <div data-testid="mockups-tab" />,
 }));
 
 vi.mock('@/components/shared/MentionInput', () => ({
@@ -168,7 +186,16 @@ describe('IdeationModal Markdown export', () => {
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Ideation');
-    expect(screen.getByText('Scope Ambiguity')).toBeInTheDocument();
+    expect(screen.queryByTestId('ideation-evaluation-score-ambiguity')).not.toBeInTheDocument();
+    const evaluationTab = screen.getByRole('tab', { name: 'Evaluation' });
+    fireEvent.click(evaluationTab);
+    expect(evaluationTab).toHaveAttribute('aria-selected', 'true');
+    expect(document.getElementById(evaluationTab.getAttribute('aria-controls')!)).toBeInTheDocument();
+    const ambiguityComplexityScore = screen.getByTestId('ideation-evaluation-score-ambiguity');
+    expect(ambiguityComplexityScore).toHaveAccessibleName(
+      'Ambiguity (complexity input) score 1 out of 5',
+    );
+    expect(ambiguityComplexityScore).toHaveClass('h-20', 'w-20', 'rounded-full', 'border-4');
     fireEvent.click(screen.getByTitle('Download Markdown'));
 
     await waitFor(() => expect(markdownMock.exportIdeation).toHaveBeenCalled());
@@ -218,8 +245,8 @@ describe('IdeationModal Markdown export', () => {
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Ideation');
-    const qaTab = screen.getByRole('button', { name: /Q&A/ });
-    expect(qaTab.querySelector('span')).toHaveClass(expectedClass);
+    const qaTab = screen.getByRole('tab', { name: /Q&A/ });
+    expect(within(qaTab).getByText('1')).toHaveClass(expectedClass);
   });
 
   it('renders move actions from the allowed_transitions contract', async () => {
@@ -249,7 +276,26 @@ describe('IdeationModal Markdown export', () => {
     expect(screen.queryByRole('button', { name: /Cancelled/ })).toBeNull();
   });
 
-  it('opens Knowledge through the bounded Workspace without eager listing', async () => {
+  it('keeps cancellation audit information at the top of Details instead of a separate tab', async () => {
+    apiMock.getIdeation.mockResolvedValueOnce({
+      ...baseIdeation,
+      status: 'cancelled',
+      cancellation_reason: 'Superseded by a clearer proposal',
+      cancelled_by: 'agent-2',
+      cancelled_at: '2026-07-28T12:00:00Z',
+    });
+
+    render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
+
+    await screen.findByText('My Ideation');
+    const cancellation = screen.getByTestId('cancellation-details');
+    expect(cancellation).toHaveAttribute('id', 'cancellation-panel');
+    expect(cancellation).toHaveTextContent('This ideation was cancelled');
+    expect(cancellation).toHaveTextContent('Superseded by a clearer proposal');
+    expect(screen.queryByRole('tab', { name: 'Cancellation' })).not.toBeInTheDocument();
+  });
+
+  it('opens Knowledge through Resources without eager legacy listing', async () => {
     render(
       <IdeationModal
         ideationId="ideation-1"
@@ -260,7 +306,10 @@ describe('IdeationModal Markdown export', () => {
     );
 
     await screen.findByText('My Ideation');
-    fireEvent.click(screen.getByText('Knowledge'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    expect(screen.getByTestId('resource-gate-disclosure')).toBeInTheDocument();
+    expect(screen.getByTestId('mockups-tab')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Knowledge' }));
 
     await waitFor(() => {
       expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
@@ -271,5 +320,25 @@ describe('IdeationModal Markdown export', () => {
       );
     });
     expect(apiMock.listIdeationKnowledge).not.toHaveBeenCalled();
+  });
+
+  it('refreshes Resource Gate and resource counts after Architecture mutations', async () => {
+    render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
+
+    await screen.findByText('My Ideation');
+    fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    expect(resourceGateMock.render).toHaveBeenLastCalledWith(
+      expect.objectContaining({ refreshKey: 0 }),
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Architecture' }));
+    fireEvent.click(screen.getByTestId('architecture-tab'));
+
+    await waitFor(() => {
+      expect(resourceGateMock.render).toHaveBeenLastCalledWith(
+        expect.objectContaining({ refreshKey: 1 }),
+      );
+    });
+    expect(screen.getByRole('tab', { name: /Architecture 1/ })).toBeInTheDocument();
   });
 });

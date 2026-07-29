@@ -289,6 +289,9 @@ describe('QualityPanel', () => {
       );
 
       await screen.findByTestId('quality-score-ring');
+      if (subjectType === 'spec') {
+        await screen.findByTestId('requirement-lint-summary');
+      }
       const historyToggle = screen.getByTestId('quality-history-toggle');
       const findingsToggle = screen.getByTestId('quality-findings-toggle');
 
@@ -685,6 +688,7 @@ describe('QualityPanel', () => {
   });
 
   it('keeps spec quality read-only and exposes only native requirement lint', async () => {
+    const onOpenHelp = vi.fn();
     apiMock.getCurrentQualityAssessment.mockResolvedValueOnce(currentAssessment({
       receipt: receipt({
         subject_type: 'spec',
@@ -722,10 +726,13 @@ describe('QualityPanel', () => {
         canRead
         canAssess
         canProposeQuestions={false}
+        onOpenHelp={onOpenHelp}
       />,
     );
 
-    await screen.findByTestId('quality-score-ring');
+    expect(
+      await screen.findByRole('heading', { name: 'Requirement lint' }),
+    ).toBeInTheDocument();
     await waitFor(() => expect(
       apiMock.getCurrentQualityAssessment,
     ).toHaveBeenCalledWith(
@@ -772,12 +779,32 @@ describe('QualityPanel', () => {
     expect(screen.queryByTestId('quality-gate-preview')).not.toBeInTheDocument();
     expect(screen.queryByText('Gate preview')).not.toBeInTheDocument();
     expect(screen.queryByText('Not applicable')).not.toBeInTheDocument();
-    expect(screen.getByTestId('quality-advisory-notice')).toHaveTextContent(
-      'does not block Spec transitions',
+    const scoreRing = screen.getByTestId('quality-score-ring');
+    expect(scoreRing).toHaveAccessibleName(
+      'Requirement lint score 2 out of 13',
+    );
+    expect(scoreRing).toHaveClass(
+      'h-16',
+      'w-16',
+      'rounded-full',
+      'border-4',
+      'border-blue-400',
+    );
+    expect(screen.getByTestId('requirement-lint-summary')).toHaveTextContent(
+      '2 findings across 13 evaluated rules — lower is better',
     );
     expect(screen.getByTestId('quality-advisory-notice')).toHaveTextContent(
-      'authoritative gate remains in the Validation tab',
+      'never changes transition eligibility',
     );
+    expect(screen.getByTestId('quality-advisory-notice')).toHaveTextContent(
+      'Checklist and Spec Validation',
+    );
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'How is requirement lint calculated?',
+      }),
+    );
+    expect(onOpenHelp).toHaveBeenCalledOnce();
     expect(screen.queryByTestId('quality-read-only')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Record assessment' })).not.toBeInTheDocument();
   });

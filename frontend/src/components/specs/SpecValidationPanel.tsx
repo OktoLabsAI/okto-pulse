@@ -1,12 +1,20 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 
 import type { SpecStatus } from '@/types';
 
 import { SpecChecklistPanel } from './SpecChecklistPanel';
 import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
 import { isSpecValidationAvailable } from './specValidationAvailability';
+import { QualityPanel } from '@/components/quality';
+import {
+  AccessibleTabList,
+  AccessibleTabPanel,
+} from '@/components/shared/AccessibleTabs';
 
-type ValidationSubTab = 'checklist' | 'spec-validation';
+type ValidationSubTab =
+  | 'checklist'
+  | 'spec-validation'
+  | 'requirement-lint';
 
 interface SpecValidationPanelProps {
   boardId: string;
@@ -16,7 +24,26 @@ interface SpecValidationPanelProps {
   canReadChecklist: boolean;
   canExecuteChecklist: boolean;
   canReadValidation: boolean;
+  canReadQuality: boolean;
+  specArchived: boolean;
   validationHistoryRefreshKey?: number;
+  onAssessmentRecorded?: () => void;
+  onOpenRequirementLintHelp?: () => void;
+}
+
+function preferredValidationTab(
+  specStatus: SpecStatus,
+  availableTabs: ValidationSubTab[],
+): ValidationSubTab {
+  const preference: ValidationSubTab[] =
+    specStatus === 'approved'
+      ? ['checklist', 'spec-validation', 'requirement-lint']
+      : ['validated', 'in_progress', 'done'].includes(specStatus)
+        ? ['spec-validation', 'checklist', 'requirement-lint']
+        : ['requirement-lint', 'checklist', 'spec-validation'];
+  return preference.find((tab) => availableTabs.includes(tab))
+    ?? availableTabs[0]
+    ?? 'requirement-lint';
 }
 
 export function SpecValidationPanel({
@@ -27,83 +54,82 @@ export function SpecValidationPanel({
   canReadChecklist,
   canExecuteChecklist,
   canReadValidation,
+  canReadQuality,
+  specArchived,
   validationHistoryRefreshKey = 0,
+  onAssessmentRecorded,
+  onOpenRequirementLintHelp,
 }: SpecValidationPanelProps) {
-  const [activeTab, setActiveTab] = useState<ValidationSubTab>(
-    canReadChecklist ? 'checklist' : 'spec-validation',
+  const validationStageAvailable = isSpecValidationAvailable(specStatus);
+  const tabs = useMemo<{
+    id: ValidationSubTab;
+    label: string;
+    advisory?: boolean;
+  }[]>(() => [
+    ...(validationStageAvailable && canReadChecklist
+      ? [{ id: 'checklist' as const, label: 'Checklist' }]
+      : []),
+    ...(validationStageAvailable && canReadValidation
+      ? [{ id: 'spec-validation' as const, label: 'Spec Validation' }]
+      : []),
+    ...(canReadQuality
+      ? [{
+          id: 'requirement-lint' as const,
+          label: 'Requirement lint',
+          advisory: true,
+        }]
+      : []),
+  ], [
+    canReadChecklist,
+    canReadQuality,
+    canReadValidation,
+    validationStageAvailable,
+  ]);
+  const availableTabs = useMemo(
+    () => tabs.map((tab) => tab.id),
+    [tabs],
+  );
+  const [activeTab, setActiveTab] = useState<ValidationSubTab>(() =>
+    preferredValidationTab(specStatus, availableTabs),
   );
   const tabIdPrefix = useId();
 
   useEffect(() => {
-    if (
-      activeTab === 'checklist' &&
-      !canReadChecklist &&
-      canReadValidation
-    ) {
-      setActiveTab('spec-validation');
-    } else if (
-      activeTab === 'spec-validation' &&
-      !canReadValidation &&
-      canReadChecklist
-    ) {
-      setActiveTab('checklist');
+    if (!availableTabs.includes(activeTab)) {
+      setActiveTab(preferredValidationTab(specStatus, availableTabs));
     }
-  }, [activeTab, canReadChecklist, canReadValidation]);
+  }, [activeTab, availableTabs, specStatus]);
 
-  if (
-    !isSpecValidationAvailable(specStatus) ||
-    (!canReadChecklist && !canReadValidation)
-  ) {
+  if (tabs.length === 0) {
     return null;
   }
 
-  const tabs: { id: ValidationSubTab; label: string }[] = [
-    ...(canReadChecklist
-      ? [{ id: 'checklist' as const, label: 'Checklist' }]
-      : []),
-    ...(canReadValidation
-      ? [{ id: 'spec-validation' as const, label: 'Spec Validation' }]
-      : []),
-  ];
-
   return (
     <div className="space-y-4 p-4">
-      <div
-        className="inline-flex rounded-lg border border-surface-200 bg-surface-50 p-1 dark:border-surface-700 dark:bg-surface-900"
-        role="tablist"
-        aria-label="Spec validation sections"
-      >
-        {tabs.map((tab) => {
-          const selected = activeTab === tab.id;
-          const tabId = `${tabIdPrefix}-${tab.id}-tab`;
-          const panelId = `${tabIdPrefix}-${tab.id}-panel`;
-
-          return (
-            <button
-              key={tab.id}
-              id={tabId}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              aria-controls={panelId}
-              onClick={() => setActiveTab(tab.id)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium ${
-                selected
-                  ? 'bg-white text-blue-700 shadow-sm dark:bg-surface-700 dark:text-blue-200'
-                  : 'text-surface-500 hover:text-surface-800 dark:text-surface-400 dark:hover:text-surface-100'
-              }`}
-            >
+      <AccessibleTabList
+        idBase={tabIdPrefix}
+        ariaLabel="Spec validation sections"
+        items={tabs.map((tab) => ({
+          id: tab.id,
+          label: tab.advisory ? (
+            <>
               {tab.label}
-            </button>
-          );
-        })}
-      </div>
+              <span className="ml-1.5 rounded-full bg-blue-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-blue-700 dark:bg-blue-900/40 dark:text-blue-200">
+                Advisory
+              </span>
+            </>
+          ) : tab.label,
+        }))}
+        value={activeTab}
+        onValueChange={setActiveTab}
+        variant="secondary"
+      />
 
       {activeTab === 'checklist' && canReadChecklist && (
-        <section
-          id={`${tabIdPrefix}-checklist-panel`}
-          role="tabpanel"
-          aria-labelledby={`${tabIdPrefix}-checklist-tab`}
+        <AccessibleTabPanel
+          idBase={tabIdPrefix}
+          tabId="checklist"
+          value={activeTab}
         >
           <SpecChecklistPanel
             boardId={boardId}
@@ -115,20 +141,41 @@ export function SpecValidationPanel({
             }
             showHistory
           />
-        </section>
+        </AccessibleTabPanel>
       )}
 
       {activeTab === 'spec-validation' && canReadValidation && (
-        <section
-          id={`${tabIdPrefix}-spec-validation-panel`}
-          role="tabpanel"
-          aria-labelledby={`${tabIdPrefix}-spec-validation-tab`}
+        <AccessibleTabPanel
+          idBase={tabIdPrefix}
+          tabId="spec-validation"
+          value={activeTab}
         >
           <SpecValidationHistoryPanel
             specId={specId}
             refreshKey={validationHistoryRefreshKey}
           />
-        </section>
+        </AccessibleTabPanel>
+      )}
+
+      {activeTab === 'requirement-lint' && canReadQuality && (
+        <AccessibleTabPanel
+          idBase={tabIdPrefix}
+          tabId="requirement-lint"
+          value={activeTab}
+        >
+          <QualityPanel
+            subjectType="spec"
+            subjectId={specId}
+            subjectVersion={specVersion}
+            subjectStatus={specStatus}
+            subjectArchived={specArchived}
+            canRead={canReadQuality}
+            canAssess={false}
+            canProposeQuestions={false}
+            onAssessmentRecorded={onAssessmentRecorded}
+            onOpenHelp={onOpenRequirementLintHelp}
+          />
+        </AccessibleTabPanel>
       )}
     </div>
   );

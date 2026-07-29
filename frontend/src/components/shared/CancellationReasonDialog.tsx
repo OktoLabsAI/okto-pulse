@@ -3,13 +3,15 @@
  * MANDATORY justification before an item (ideation, refinement, spec, sprint
  * or card) is moved to 'cancelled' (ITEM 17).
  *
- * Also exports CancellationDetails — the shared renderer used by the
- * "Cancellation" tab of the detail modals (reason as markdown + who + when).
+ * Also exports the backwards-compatible CancellationDetails wrapper.
  */
 
 import { useEffect, useState } from 'react';
 import { Ban } from 'lucide-react';
-import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import {
+  CancellationPanel,
+  type CancellationPanelProps,
+} from '@/components/shared/CancellationPanel';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface CancellationReasonDialogProps {
@@ -96,46 +98,9 @@ export function CancellationReasonDialog({
   );
 }
 
-interface CancellationDetailsProps {
-  reason?: string | null;
-  cancelledBy?: string | null;
-  cancelledAt?: string | null;
-  /** Optional resolver mapping actor ids to display names. */
-  resolveActorName?: (id: string) => string;
-}
+export type CancellationDetailsProps = CancellationPanelProps;
 
-/** Shared content for the "Cancellation" tab — shown only while cancelled. */
-export function CancellationDetails({
-  reason,
-  cancelledBy,
-  cancelledAt,
-  resolveActorName,
-}: CancellationDetailsProps) {
-  const actor = cancelledBy
-    ? (resolveActorName ? resolveActorName(cancelledBy) : cancelledBy)
-    : 'Unknown';
-  const when = cancelledAt ? new Date(cancelledAt).toLocaleString() : null;
-
-  return (
-    <div className="space-y-4" data-testid="cancellation-details">
-      <div className="flex items-start gap-3 p-3 rounded-lg bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-800/50">
-        <Ban size={18} className="text-red-500 shrink-0 mt-0.5" />
-        <div className="text-sm text-red-700 dark:text-red-300">
-          <p className="font-semibold">This item was cancelled</p>
-          <p className="text-xs mt-0.5 text-red-600 dark:text-red-400">
-            Cancelled by <span className="font-medium">{actor}</span>
-            {when && <> on {when}</>}
-          </p>
-        </div>
-      </div>
-      <div>
-        <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Reason</h4>
-        {reason ? (
-          <MarkdownContent content={reason} />
-        ) : (
-          <p className="text-sm text-gray-400 italic">No reason recorded</p>
-        )}
-      </div>
-    </div>
-  );
+/** @deprecated Use CancellationPanel in new Details workspaces. */
+export function CancellationDetails(props: CancellationDetailsProps) {
+  return <CancellationPanel {...props} />;
 }

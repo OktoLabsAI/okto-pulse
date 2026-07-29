@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Header } from './Header';
+import { openContextualHelp } from '@/components/help';
 import type { Board, BoardSettings } from '@/types';
 
 const apiMock = vi.hoisted(() => ({
@@ -251,6 +252,21 @@ describe('Header Board settings resource automation', () => {
     expect(screen.getByTestId('board-settings-tab-board-config')).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('Agent Governance')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-default-board-config')).not.toBeInTheDocument();
+  });
+
+  it('opens the requested Help section through the typed contextual event', () => {
+    boardState.currentBoard = boardWith({});
+    render(<Header />);
+
+    act(() => {
+      openContextualHelp('requirement-lint');
+    });
+
+    expect(
+      screen.getByRole('heading', {
+        name: /Requirement lint — deterministic advisory analysis/i,
+      }),
+    ).toBeInTheDocument();
   });
 
   it('opens contextual checklist help without discarding an unsaved mode', async () => {

@@ -140,7 +140,10 @@ function formatScore(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-function currentReceiptTone(assessment: CurrentQualityAssessment): {
+function currentReceiptTone(
+  assessment: CurrentQualityAssessment,
+  kind: VisibleQualityAssessmentKind,
+): {
   card: string;
   ring: string;
   badge: string;
@@ -153,6 +156,13 @@ function currentReceiptTone(assessment: CurrentQualityAssessment): {
       card: 'border-amber-200 bg-amber-50/60 dark:border-amber-700/50 dark:bg-amber-950/20',
       ring: 'border-amber-400 text-amber-700 dark:border-amber-400 dark:text-amber-200',
       badge: 'bg-amber-100 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200',
+    };
+  }
+  if (kind === 'requirement_lint') {
+    return {
+      card: 'border-blue-200 bg-blue-50/40 dark:border-blue-800/60 dark:bg-blue-950/20',
+      ring: 'border-blue-400 text-blue-700 dark:border-blue-400 dark:text-blue-200',
+      badge: 'bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-200',
     };
   }
   if (
@@ -190,6 +200,7 @@ function currentReceiptHeadline(
 ): string {
   const label = KIND_LABELS[kind];
   if (assessment.currentness !== 'current') return `${label} assessment is stale`;
+  if (kind === 'requirement_lint') return 'Requirement lint assessment';
   switch (assessment.gate_preview.reason_code) {
     case 'ambiguity_score_exceeds_threshold':
       return `${label} exceeds the allowed limit`;
@@ -208,8 +219,10 @@ function currentReceiptHeadline(
 
 function CurrentReceiptStatusIcon({
   assessment,
+  kind,
 }: {
   assessment: CurrentQualityAssessment;
+  kind: VisibleQualityAssessmentKind;
 }) {
   if (assessment.currentness !== 'current') {
     return (
@@ -219,6 +232,17 @@ function CurrentReceiptStatusIcon({
         aria-hidden="true"
         data-testid="quality-receipt-status-icon"
         data-state="stale"
+      />
+    );
+  }
+  if (kind === 'requirement_lint') {
+    return (
+      <Info
+        size={16}
+        className="text-blue-600"
+        aria-hidden="true"
+        data-testid="quality-receipt-status-icon"
+        data-state="advisory"
       />
     );
   }
@@ -277,7 +301,7 @@ function QualityScoreRing({
   assessment: CurrentQualityAssessment;
   kind: VisibleQualityAssessmentKind;
 }) {
-  const tone = currentReceiptTone(assessment);
+  const tone = currentReceiptTone(assessment, kind);
   const score = formatScore(assessment.receipt.score);
   const maximum = formatScore(assessment.receipt.scale.maximum);
   const accessibleLabel = `${KIND_LABELS[kind]} score ${score} out of ${maximum}`;
@@ -854,6 +878,8 @@ export interface QualityPanelProps {
   canAssess: boolean;
   canProposeQuestions: boolean;
   onAssessmentRecorded?: () => void;
+  onOpenHelp?: () => void;
+  refreshKey?: number;
 }
 
 interface CollapsibleQualitySectionProps {
@@ -919,7 +945,11 @@ function CollapsibleQualitySection({
   );
 }
 
-function RequirementLintAdvisoryNotice() {
+function RequirementLintAdvisoryNotice({
+  onOpenHelp,
+}: {
+  onOpenHelp?: () => void;
+}) {
   return (
     <section
       className="rounded-lg border border-blue-200 bg-blue-50/70 p-3 text-blue-800 dark:border-blue-800/60 dark:bg-blue-950/25 dark:text-blue-200"
@@ -931,9 +961,18 @@ function RequirementLintAdvisoryNotice() {
       </h4>
       <p className="mt-1 text-xs">
         This automated assessment highlights potential requirement issues but
-        does not block Spec transitions. The authoritative gate remains in the
-        Validation tab.
+        never changes transition eligibility. Checklist and Spec Validation,
+        when available, are the authoritative controls in the neighboring tabs.
       </p>
+      {onOpenHelp && (
+        <button
+          type="button"
+          onClick={onOpenHelp}
+          className="mt-2 inline-flex text-xs font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900 dark:text-blue-200 dark:hover:text-white"
+        >
+          How is requirement lint calculated?
+        </button>
+      )}
     </section>
   );
 }
@@ -948,6 +987,8 @@ export function QualityPanel({
   canAssess,
   canProposeQuestions,
   onAssessmentRecorded,
+  onOpenHelp,
+  refreshKey = 0,
 }: QualityPanelProps) {
   const kinds: VisibleQualityAssessmentKind[] = subjectType === 'spec'
     ? ['requirement_lint']
@@ -1050,6 +1091,7 @@ export function QualityPanel({
     historyState,
     kind,
     reloadKey,
+    refreshKey,
     subjectId,
     subjectType,
   ]);
@@ -1095,10 +1137,12 @@ export function QualityPanel({
         <div>
           <h3 className="flex items-center gap-2 text-base font-semibold text-surface-900 dark:text-white">
             <ClipboardCheck size={18} className="text-blue-600 dark:text-blue-400" />
-            Quality assessments
+            {subjectType === 'spec' ? 'Requirement lint' : 'Quality assessments'}
           </h3>
           <p className="mt-1 text-xs text-surface-500 dark:text-surface-400">
-            Immutable receipts, currentness, server gate decisions and pinpoint findings.
+            {subjectType === 'spec'
+              ? 'Deterministic advisory findings with immutable receipts and pinpoint evidence.'
+              : 'Immutable receipts, currentness, server gate decisions and pinpoint findings.'}
           </p>
         </div>
         <button
@@ -1155,22 +1199,40 @@ export function QualityPanel({
           </p>
         ) : current ? (
           <>
-            <div className={`rounded-xl border p-4 ${currentReceiptTone(current).card}`}>
+            <div className={`rounded-xl border p-4 ${currentReceiptTone(current, kind).card}`}>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-4">
                   <QualityScoreRing assessment={current} kind={kind} />
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <CurrentReceiptStatusIcon assessment={current} />
+                      <CurrentReceiptStatusIcon assessment={current} kind={kind} />
                       <strong className="text-sm text-surface-800 dark:text-surface-100">
                         {currentReceiptHeadline(current, kind)}
                       </strong>
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${currentReceiptTone(current).badge}`}>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${currentReceiptTone(current, kind).badge}`}>
                         {current.currentness === 'current' ? 'Current receipt' : 'Stale receipt'}
                       </span>
                     </div>
-                    <p className="mt-1 text-xs text-surface-500 dark:text-surface-400">
-                      {current.gate_preview.threshold === null
+                    <p
+                      className="mt-1 text-xs text-surface-500 dark:text-surface-400"
+                      data-testid={kind === 'requirement_lint'
+                        ? 'requirement-lint-summary'
+                        : undefined}
+                    >
+                      {kind === 'requirement_lint'
+                        ? (
+                          <>
+                            <strong className="text-surface-700 dark:text-surface-200">
+                              {formatScore(current.receipt.score)}
+                            </strong>
+                            {' '}finding{current.receipt.score === 1 ? '' : 's'} across{' '}
+                            <strong className="text-surface-700 dark:text-surface-200">
+                              {formatScore(current.receipt.scale.maximum)}
+                            </strong>
+                            {' '}evaluated rule{current.receipt.scale.maximum === 1 ? '' : 's'} — lower is better
+                          </>
+                        )
+                        : current.gate_preview.threshold === null
                         ? `Scale: ${current.receipt.scale.minimum}–${current.receipt.scale.maximum}`
                         : (
                           <>
@@ -1203,7 +1265,7 @@ export function QualityPanel({
       </section>
 
       {kind === 'requirement_lint' ? (
-        <RequirementLintAdvisoryNotice />
+        <RequirementLintAdvisoryNotice onOpenHelp={onOpenHelp} />
       ) : current?.gate_preview.applicable ? (
         <QualityGatePreviewCard assessment={current} />
       ) : null}

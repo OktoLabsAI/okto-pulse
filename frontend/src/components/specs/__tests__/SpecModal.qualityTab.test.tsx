@@ -142,7 +142,7 @@ function renderSpec(
   };
 }
 
-describe('SpecModal Quality tab', () => {
+describe('SpecModal Requirement lint in Validation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     permissionMock.allowed = new Set();
@@ -175,20 +175,23 @@ describe('SpecModal Quality tab', () => {
       renderSpec();
 
       await screen.findByText(baseSpec.title);
-      const qualityTab = screen.queryByRole('button', {
+      expect(screen.queryByRole('tab', {
         name: 'Quality',
+      })).not.toBeInTheDocument();
+      const validationTab = screen.queryByRole('tab', {
+        name: 'Validation',
       });
 
       if (!visible) {
-        expect(qualityTab).not.toBeInTheDocument();
+        expect(validationTab).not.toBeInTheDocument();
         expect(
           screen.queryByTestId('spec-quality-panel'),
         ).not.toBeInTheDocument();
         return;
       }
 
-      expect(qualityTab).toBeInTheDocument();
-      fireEvent.click(qualityTab!);
+      expect(validationTab).toBeInTheDocument();
+      fireEvent.click(validationTab!);
       expect(
         screen.getByTestId('spec-quality-panel'),
       ).toBeInTheDocument();
@@ -220,7 +223,10 @@ describe('SpecModal Quality tab', () => {
 
       await screen.findByText(spec.title);
       fireEvent.click(
-        screen.getByRole('button', { name: 'Quality' }),
+        screen.getByRole('tab', { name: 'Validation' }),
+      );
+      fireEvent.click(
+        screen.getByRole('tab', { name: /Requirement lint/ }),
       );
 
       const props = qualityPanelSpy.mock.calls.at(-1)?.[0] as

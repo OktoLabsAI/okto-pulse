@@ -136,7 +136,7 @@ describe('SpecModal Activity tab', () => {
     );
 
     await screen.findByText(spec.title);
-    fireEvent.click(screen.getByRole('button', { name: 'Activity' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Activity' }));
 
     await waitFor(() => expect(apiMock.listSpecHistory).toHaveBeenCalledWith(spec.id));
     const actionBadge = await screen.findByText('Updated');
@@ -169,7 +169,8 @@ describe('SpecModal Activity tab', () => {
     );
 
     await screen.findByText(spec.title);
-    fireEvent.click(screen.getByRole('button', { name: 'Knowledge' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Knowledge' }));
 
     await waitFor(() => {
       expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
@@ -180,6 +181,105 @@ describe('SpecModal Activity tab', () => {
       );
     });
     expect(apiMock.listSpecKnowledge).not.toHaveBeenCalled();
+  });
+
+  it('uses the consolidated top-level order without Spec Versions', async () => {
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    const tabList = screen.getByRole('tablist', { name: 'Spec sections' });
+    expect(
+      within(tabList).getAllByRole('tab').map((tab) => tab.textContent),
+    ).toEqual([
+      'Details',
+      'Tests',
+      'Rules',
+      'Contracts',
+      'IRs',
+      'ORs',
+      'TRs',
+      'Decisions',
+      'Resources',
+      'Q&A',
+      'References',
+      'Sprints',
+      'KG Graph',
+      'Validation',
+      'Activity',
+    ]);
+    expect(
+      within(tabList).queryByRole('tab', { name: 'Versions' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(tabList).queryByRole('tab', { name: 'Quality' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(tabList).queryByRole('tab', { name: 'Cards' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows cancellation audit in Details without a Cancellation tab', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({
+      ...spec,
+      status: 'cancelled',
+      cancellation_reason: 'The capability is no longer required.',
+      cancelled_by: 'user-2',
+      cancelled_at: '2026-07-28T18:00:00Z',
+    });
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    expect(screen.getByTestId('cancellation-details')).toHaveTextContent(
+      'The capability is no longer required.',
+    );
+    expect(
+      screen.queryByRole('tab', { name: 'Cancellation' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('groups origin and derived cards under References', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({
+      ...spec,
+      cards: [{
+        id: 'card-1',
+        title: 'Implement deterministic lint view',
+        status: 'not_started',
+      }],
+    });
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^References/ }));
+    expect(
+      screen.getByText('No origin is registered for this spec.'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: /^Derived cards/ }));
+    expect(
+      screen.getByText('Implement deterministic lint view'),
+    ).toBeInTheDocument();
   });
 
   it('omits an unsupported legacy scenario type from the whole-list request', async () => {
@@ -232,7 +332,7 @@ describe('SpecModal Activity tab', () => {
     );
 
     await screen.findByText(legacySpec.title);
-    fireEvent.click(screen.getByRole('button', { name: /^Tests/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
     expect(
       await screen.findByText('regression (unsupported)'),
     ).toBeInTheDocument();
@@ -301,7 +401,7 @@ describe('SpecModal Activity tab', () => {
     );
 
     await screen.findByText(spec.title);
-    fireEvent.click(screen.getByRole('button', { name: /^Tests/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
     fireEvent.click(screen.getByRole('button', { name: /Add Test Scenario/i }));
     fireEvent.change(screen.getByPlaceholderText('Scenario title'), {
       target: { value: 'Defaulted scenario' },

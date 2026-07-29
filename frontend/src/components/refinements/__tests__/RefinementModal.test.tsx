@@ -274,8 +274,8 @@ describe('RefinementModal handleMove error surfacing (AC1)', () => {
     );
 
     await screen.findByText('My Refinement');
-    const qaTab = screen.getByRole('button', { name: /Q&A/ });
-    expect(qaTab.querySelector('span')).toHaveClass(expectedClass);
+    const qaTab = screen.getByRole('tab', { name: /Q&A/ });
+    expect(qaTab.querySelector('.rounded-full')).toHaveClass(expectedClass);
   });
 });
 
@@ -453,7 +453,8 @@ describe('RefinementModal Knowledge tab markdown rendering', () => {
 
     await screen.findByText('My Refinement');
 
-    fireEvent.click(screen.getByText('Knowledge'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    fireEvent.click(screen.getByRole('tab', { name: /Knowledge/ }));
 
     // The bounded summary loads, then expanding hydrates one detail projection.
     const kbTitle = await screen.findByText('API Notes');

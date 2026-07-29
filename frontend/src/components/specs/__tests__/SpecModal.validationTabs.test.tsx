@@ -51,6 +51,10 @@ vi.mock('@/components/resources/ResourceGateSummary', () => ({
   ResourceGateSummary: () => <div />,
 }));
 
+vi.mock('@/components/quality', () => ({
+  QualityPanel: () => <div data-testid="requirement-lint-panel" />,
+}));
+
 vi.mock('@/components/shared/ValidationGateOverride', () => ({
   ValidationGateOverride: () => <div />,
 }));
@@ -142,20 +146,20 @@ describe('SpecModal validation navigation', () => {
   });
 
   it.each([
-    ['draft', false],
-    ['review', false],
+    ['draft', true],
+    ['review', true],
     ['approved', true],
     ['validated', true],
     ['in_progress', true],
     ['done', true],
-    ['cancelled', false],
+    ['cancelled', true],
   ] satisfies [SpecStatus, boolean][])(
     'shows the Validation tab for status %s: %s',
     async (status, visible) => {
       renderSpec(status);
 
       await screen.findByText(baseSpec.title);
-      const validationTab = screen.queryByRole('button', {
+      const validationTab = screen.queryByRole('tab', {
         name: 'Validation',
       });
 
@@ -172,7 +176,7 @@ describe('SpecModal validation navigation', () => {
 
     await screen.findByText(baseSpec.title);
     fireEvent.click(
-      screen.getByRole('button', { name: 'Validation' }),
+      screen.getByRole('tab', { name: 'Validation' }),
     );
 
     const tabList = screen.getByRole('tablist', {
@@ -184,9 +188,13 @@ describe('SpecModal validation navigation', () => {
     const validationTab = within(tabList).getByRole('tab', {
       name: 'Spec Validation',
     });
+    const lintTab = within(tabList).getByRole('tab', {
+      name: /Requirement lint/,
+    });
 
     expect(checklistTab).toHaveAttribute('aria-selected', 'true');
     expect(validationTab).toHaveAttribute('aria-selected', 'false');
+    expect(lintTab).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByTestId('checklist-panel')).toHaveAttribute(
       'data-can-execute',
       'true',
@@ -218,7 +226,7 @@ describe('SpecModal validation navigation', () => {
     await screen.findByText(baseSpec.title);
 
     expect(
-      screen.queryByRole('button', { name: 'Validation' }),
+      screen.queryByRole('tab', { name: 'Validation' }),
     ).not.toBeInTheDocument();
   });
 
@@ -229,7 +237,7 @@ describe('SpecModal validation navigation', () => {
 
     await screen.findByText(baseSpec.title);
     fireEvent.click(
-      screen.getByRole('button', { name: 'Validation' }),
+      screen.getByRole('tab', { name: 'Validation' }),
     );
 
     const tabList = screen.getByRole('tablist', {
@@ -253,7 +261,7 @@ describe('SpecModal validation navigation', () => {
 
     await screen.findByText(baseSpec.title);
     fireEvent.click(
-      screen.getByRole('button', { name: 'Validation' }),
+      screen.getByRole('tab', { name: 'Validation' }),
     );
 
     const tabList = screen.getByRole('tablist', {
@@ -270,13 +278,41 @@ describe('SpecModal validation navigation', () => {
     expect(screen.getByTestId('checklist-panel')).toBeInTheDocument();
   });
 
+  it('shows only Requirement lint before Approved when quality can be read', async () => {
+    permissionMock.allowAll = false;
+    permissionMock.allowed = new Set(['spec.quality.read']);
+    renderSpec('draft');
+
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(
+      screen.getByRole('tab', { name: 'Validation' }),
+    );
+
+    const tabList = screen.getByRole('tablist', {
+      name: 'Spec validation sections',
+    });
+    expect(
+      within(tabList).getByRole('tab', { name: /Requirement lint/ }),
+    ).toHaveAttribute('aria-selected', 'true');
+    expect(
+      within(tabList).queryByRole('tab', { name: 'Checklist' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(tabList).queryByRole('tab', { name: 'Spec Validation' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('requirement-lint-panel')).toBeInTheDocument();
+  });
+
   it('keeps the checklist history read-only after Approved', async () => {
     renderSpec('validated');
 
     await screen.findByText(baseSpec.title);
     fireEvent.click(
-      screen.getByRole('button', { name: 'Validation' }),
+      screen.getByRole('tab', { name: 'Validation' }),
     );
+
+    const checklistTab = screen.getByRole('tab', { name: 'Checklist' });
+    fireEvent.click(checklistTab);
 
     expect(screen.getByTestId('checklist-panel')).toHaveAttribute(
       'data-can-execute',

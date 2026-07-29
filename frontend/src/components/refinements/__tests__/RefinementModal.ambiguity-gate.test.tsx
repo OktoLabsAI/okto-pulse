@@ -1,8 +1,19 @@
 import type { ReactNode } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { BoardSettings, Refinement } from '@/types';
+import type {
+  BoardSettings,
+  CurrentQualityAssessment,
+  QualityAssessmentReceipt,
+  Refinement,
+} from '@/types';
 import { RefinementModal } from '../RefinementModal';
 
 const apiMock = vi.hoisted(() => ({
@@ -20,6 +31,9 @@ const apiMock = vi.hoisted(() => ({
   listRefinementHistory: vi.fn(),
   listRefinementQA: vi.fn(),
   getCurrentQualityAssessment: vi.fn(),
+  listQualityAssessments: vi.fn(),
+  listQualityFindings: vi.fn(),
+  recordAmbiguityAssessment: vi.fn(),
 }));
 
 type TestBoardState = {
@@ -42,6 +56,13 @@ const boardState = vi.hoisted((): TestBoardState => ({
     },
   },
 }));
+const permissionState = vi.hoisted(() => ({
+  flags: new Set([
+    'refinement.quality.read',
+    'refinement.quality.assess',
+    'refinement.research_decisions.read',
+  ]),
+}));
 
 const toastMock = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 
@@ -52,11 +73,7 @@ vi.mock('@/hooks/usePermissions', () => ({
     isLoading: false,
     error: null,
     ownerReviewRequired: false,
-    has: (flag: string) => (
-      flag === 'refinement.quality.read'
-      || flag === 'refinement.quality.assess'
-      || flag === 'refinement.research_decisions.read'
-    ),
+    has: (flag: string) => permissionState.flags.has(flag),
   }),
 }));
 vi.mock('@/store/dashboard', () => ({ useCurrentBoard: () => boardState.currentBoard }));
@@ -123,19 +140,62 @@ function refinementWith(overrides: Partial<Refinement> = {}): Refinement {
   };
 }
 
+function qualityReceipt(): QualityAssessmentReceipt {
+  return {
+    id: 'receipt-ref-1',
+    board_id: 'board-1',
+    subject_type: 'refinement',
+    subject_id: 'refinement-1',
+    subject_version: 7,
+    assessment_kind: 'ambiguity',
+    origin: 'human_or_agent',
+    source: 'native',
+    channel: 'rest',
+    outcome: 'recorded',
+    scale: {
+      kind: 'ambiguity_score',
+      minimum: 1,
+      maximum: 5,
+      direction: 'lower_better',
+    },
+    score: 2,
+    justification: 'The remaining ambiguity is acceptable.',
+    digests: {
+      content_digest: 'a',
+      clarification_digest: 'b',
+      ruleset_digest: 'c',
+      taxonomy_digest: 'd',
+      policy_digest: 'e',
+      input_digest: 'f',
+      canonicalization_version: 'v1',
+    },
+    versions: {
+      ruleset_version: 'v1',
+      taxonomy_version: 'v1',
+      analyzer_version: 'v1',
+      policy_version: 'v1',
+    },
+    run_identity_digest: 'g',
+    authority_digest: 'h',
+    idempotency_key: 'idem-ref-1',
+    request_digest: 'i',
+    created_by: 'agent-1',
+    created_at: '2026-07-27T10:00:00Z',
+    predecessor_receipt_id: null,
+    contract_version: 'quality-assessment/v1',
+  };
+}
+
 function currentAssessment(
   reasonCode:
     | 'ambiguity_gate_ready'
     | 'ambiguity_gate_skipped'
     | 'ambiguity_assessment_stale' = 'ambiguity_gate_ready',
-) {
+): CurrentQualityAssessment {
   const skipped = reasonCode === 'ambiguity_gate_skipped';
   const stale = reasonCode === 'ambiguity_assessment_stale';
   return {
-    receipt: {
-      id: 'receipt-ref-1',
-      score: 2,
-    },
+    receipt: qualityReceipt(),
     head_revision: 4,
     currentness: stale ? 'stale' : 'current',
     stale_reasons: stale ? ['content_changed'] : [],
@@ -163,6 +223,11 @@ describe('RefinementModal ambiguity gate', () => {
         max_refinement_ambiguity: 3,
       },
     };
+    permissionState.flags = new Set([
+      'refinement.quality.read',
+      'refinement.quality.assess',
+      'refinement.research_decisions.read',
+    ]);
     apiMock.getRefinement.mockResolvedValue(refinementWith());
     apiMock.getIdeation.mockResolvedValue({
       id: 'ideation-1',
@@ -178,6 +243,67 @@ describe('RefinementModal ambiguity gate', () => {
       allowed_transitions: [],
     });
     apiMock.getCurrentQualityAssessment.mockResolvedValue(currentAssessment());
+    apiMock.listQualityAssessments.mockResolvedValue({
+      items: [],
+      total_filtered: 0,
+      total_overall: 0,
+      offset: 0,
+      limit: 25,
+    });
+    apiMock.listQualityFindings.mockResolvedValue({
+      items: [],
+      total_filtered: 0,
+      total_overall: 0,
+      offset: 0,
+      limit: 25,
+    });
+  });
+
+  it('exposes the agreed top-level information architecture in order', async () => {
+    render(
+      <RefinementModal
+        refinementId="refinement-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('My Refinement');
+    const detailsTab = screen.getByRole('tab', { name: 'Details' });
+    const tabBar = detailsTab.parentElement;
+    expect(tabBar).not.toBeNull();
+    expect(
+      within(tabBar as HTMLElement)
+        .getAllByRole('tab')
+        .map((button) => button.textContent?.trim()),
+    ).toEqual([
+      'Details',
+      'Research decisions',
+      'Resources',
+      'Q&A',
+      'References',
+      'Validation',
+      'Versions',
+      'Activity',
+    ]);
+    expect(
+      within(tabBar as HTMLElement).queryByRole('tab', { name: 'Quality' }),
+    ).not.toBeInTheDocument();
+    expect(detailsTab).toHaveAttribute(
+      'aria-controls',
+      'refinement-refinement-1-details-panel',
+    );
+    expect(
+      screen.getByRole('tab', { name: 'Research decisions' }),
+    ).toHaveAttribute(
+      'id',
+      'refinement-refinement-1-research-decisions-tab',
+    );
+    expect(screen.getByRole('tab', { name: 'Activity' })).toHaveAttribute(
+      'id',
+      'refinement-refinement-1-activity-tab',
+    );
   });
 
   it('shows the current server receipt and gate result without inventing a legacy score', async () => {
@@ -191,24 +317,35 @@ describe('RefinementModal ambiguity gate', () => {
     );
 
     await screen.findByText('My Refinement');
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
     const panel = screen.getByTestId('refinement-ambiguity-gate-panel');
-    await screen.findByTestId('quality-gate-preview');
+    const preview = await screen.findByTestId('quality-gate-preview');
     expect(apiMock.getCurrentQualityAssessment).toHaveBeenCalledWith(
       'refinement',
       'refinement-1',
       'ambiguity',
       expect.any(AbortSignal),
     );
-    expect(panel).toHaveTextContent('Score: 2');
-    expect(panel).toHaveTextContent('Threshold: 3');
+    expect(preview).toHaveTextContent('Score: 2');
+    expect(preview).toHaveTextContent('Threshold: 3');
     expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent(
       'Ready',
     );
     expect(panel).not.toHaveTextContent('Current ambiguity:');
-    expect(screen.getByTestId('refinement-ambiguity-skip-submit')).toBeDisabled();
+    expect(screen.getByTestId('ambiguity-gate-skip-control')).toHaveTextContent(
+      'Skip Max ambiguity gate',
+    );
+    expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute(
+      'role',
+      'switch',
+    );
+    expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
   });
 
-  it('applies a reasoned skip without a semantic version bump and renders the receipt', async () => {
+  it('applies skip through the same switch pattern used by ideation', async () => {
     apiMock.getCurrentQualityAssessment
       .mockResolvedValueOnce(currentAssessment())
       .mockResolvedValue(currentAssessment('ambiguity_gate_skipped'));
@@ -228,17 +365,15 @@ describe('RefinementModal ambiguity gate', () => {
     );
 
     await screen.findByText('My Refinement');
-    fireEvent.change(screen.getByTestId('refinement-ambiguity-skip-reason'), {
-      target: { value: 'Accepted risk for this delivery.' },
-    });
-    fireEvent.click(screen.getByTestId('refinement-ambiguity-skip-submit'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(screen.getByTestId('toggle-skip-ambiguity-gate'));
 
     await waitFor(() => {
       expect(apiMock.setRefinementAmbiguityGateSkip).toHaveBeenCalledWith(
         'refinement-1',
         {
           skip_ambiguity_gate: true,
-          reason: 'Accepted risk for this delivery.',
+          reason: 'Max ambiguity gate skipped from the refinement UI.',
           expected_refinement_version: 7,
         },
       );
@@ -249,15 +384,14 @@ describe('RefinementModal ambiguity gate', () => {
     await waitFor(() => expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent(
       'Skipped by recorded override',
     ));
-    expect(screen.getByTestId('refinement-ambiguity-skip-receipt')).toHaveTextContent(
-      'activity-42',
+    expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute(
+      'aria-checked',
+      'true',
     );
-    expect(screen.getByTestId('refinement-ambiguity-skip-submit')).toHaveTextContent(
-      'Remove skip',
-    );
+    expect(screen.queryByTestId('refinement-ambiguity-skip-reason')).not.toBeInTheDocument();
   });
 
-  it('requires a new explicit reason when removing an existing skip', async () => {
+  it('removes an existing skip through the same switch', async () => {
     apiMock.getRefinement.mockResolvedValue(refinementWith({ skip_ambiguity_gate: true }));
     apiMock.setRefinementAmbiguityGateSkip.mockResolvedValue({
       skipped: false,
@@ -274,28 +408,25 @@ describe('RefinementModal ambiguity gate', () => {
     );
 
     await screen.findByText('My Refinement');
-    const submit = screen.getByTestId('refinement-ambiguity-skip-submit');
-    expect(submit).toHaveTextContent('Remove skip');
-    expect(submit).toBeDisabled();
-
-    fireEvent.change(screen.getByTestId('refinement-ambiguity-skip-reason'), {
-      target: { value: 'The current assessment is now acceptable.' },
-    });
-    fireEvent.click(submit);
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    const toggle = screen.getByTestId('toggle-skip-ambiguity-gate');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(toggle);
 
     await waitFor(() => {
       expect(apiMock.setRefinementAmbiguityGateSkip).toHaveBeenCalledWith(
         'refinement-1',
         {
           skip_ambiguity_gate: false,
-          reason: 'The current assessment is now acceptable.',
+          reason: 'Max ambiguity gate re-enabled from the refinement UI.',
           expected_refinement_version: 7,
         },
       );
     });
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
   });
 
-  it('surfaces a version conflict without changing local gate state or losing the reason', async () => {
+  it('surfaces a version conflict without changing local gate state', async () => {
     apiMock.setRefinementAmbiguityGateSkip.mockRejectedValue(
       new Error('The refinement changed; refresh before applying this override.'),
     );
@@ -309,11 +440,9 @@ describe('RefinementModal ambiguity gate', () => {
     );
 
     await screen.findByText('My Refinement');
-    const reason = screen.getByTestId('refinement-ambiguity-skip-reason');
-    fireEvent.change(reason, {
-      target: { value: 'Accepted risk for this delivery.' },
-    });
-    fireEvent.click(screen.getByTestId('refinement-ambiguity-skip-submit'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    const toggle = screen.getByTestId('toggle-skip-ambiguity-gate');
+    fireEvent.click(toggle);
 
     await waitFor(() => {
       expect(toastMock.error).toHaveBeenCalledWith(
@@ -323,8 +452,7 @@ describe('RefinementModal ambiguity gate', () => {
     expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent(
       'Ready',
     );
-    expect(reason).toHaveValue('Accepted risk for this delivery.');
-    expect(screen.queryByTestId('refinement-ambiguity-skip-receipt')).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
   });
 
   it('hides the panel when the board policy is disabled', async () => {
@@ -344,7 +472,57 @@ describe('RefinementModal ambiguity gate', () => {
     );
 
     await screen.findByText('My Refinement');
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
     expect(screen.queryByTestId('refinement-ambiguity-gate-panel')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('quality-panel')).toBeInTheDocument();
+  });
+
+  it('keeps Validation available for a required board gate without Quality read permission', async () => {
+    permissionState.flags.delete('refinement.quality.read');
+    permissionState.flags.delete('refinement.quality.assess');
+    render(
+      <RefinementModal
+        refinementId="refinement-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('My Refinement');
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    expect(
+      screen.getByTestId('refinement-ambiguity-gate-panel'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('refinement-ambiguity-currentness-note'),
+    ).toHaveTextContent('Quality read permission is not available');
+    expect(screen.queryByTestId('quality-panel')).not.toBeInTheDocument();
+  });
+
+  it('hides Validation only when neither Quality read nor the board gate applies', async () => {
+    boardState.currentBoard = {
+      id: 'board-1',
+      owner_id: 'owner-1',
+      agents: [],
+      settings: { require_refinement_ambiguity_gate: false },
+    };
+    permissionState.flags.delete('refinement.quality.read');
+    permissionState.flags.delete('refinement.quality.assess');
+
+    render(
+      <RefinementModal
+        refinementId="refinement-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('My Refinement');
+    expect(
+      screen.queryByRole('tab', { name: 'Validation' }),
+    ).not.toBeInTheDocument();
   });
 
   it('keeps the Research Decision tab mounted while another tab is active', async () => {
@@ -358,13 +536,13 @@ describe('RefinementModal ambiguity gate', () => {
     );
 
     await screen.findByText('My Refinement');
-    fireEvent.click(screen.getByRole('button', { name: 'Research decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Research decisions' }));
     const draft = screen.getByLabelText('Research decision draft');
     fireEvent.change(draft, { target: { value: 'Preserve this draft' } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
     expect(screen.getByTestId('research-decisions-tab-state')).not.toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Research decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Research decisions' }));
     expect(screen.getByLabelText('Research decision draft')).toHaveValue(
       'Preserve this draft',
     );

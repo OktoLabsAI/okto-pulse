@@ -15,7 +15,11 @@ import {
   normalizeDesignSystemGateMode,
 } from '@/components/board/BoardSettingsForm';
 import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
-import { HelpPanel } from '@/components/help';
+import {
+  HelpPanel,
+  subscribeContextualHelp,
+  type HelpSectionId,
+} from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
 import { KnowledgeGraphPage } from '@/components/knowledge';
 import { RuntimeSettingsPanel } from '@/components/layout/RuntimeSettingsPanel';
@@ -65,7 +69,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const [showDesignSystem, setShowDesignSystem] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [localShowHelp, setLocalShowHelp] = useState(false);
-  const [helpInitialSection, setHelpInitialSection] = useState<string | undefined>();
+  const [helpInitialSection, setHelpInitialSection] = useState<HelpSectionId | undefined>();
   const [showAbout, setShowAbout] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
   const [localShowKnowledgeGraph, setLocalShowKnowledgeGraph] = useState(false);
@@ -80,6 +84,14 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     }
     onHelpOpenChange?.(open);
   };
+
+  useEffect(() => subscribeContextualHelp(({ sectionId }) => {
+    setHelpInitialSection(sectionId);
+    if (helpOpen === undefined) {
+      setLocalShowHelp(true);
+    }
+    onHelpOpenChange?.(true);
+  }), [helpOpen, onHelpOpenChange]);
   const showKnowledgeGraph = knowledgeGraphOpen ?? localShowKnowledgeGraph;
   const setShowKnowledgeGraph = (open: boolean) => {
     if (knowledgeGraphOpen === undefined) {

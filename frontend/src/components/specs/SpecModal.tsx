@@ -97,10 +97,15 @@ import {
   isAcceptanceCriterionLinked,
   normalizeAcceptanceCriteria,
 } from './acceptanceCriteriaCoverage';
-import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
+import { ResourceGateDisclosure } from '@/components/resources/ResourceGateDisclosure';
 import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
-import { QualityPanel } from '@/components/quality';
+import { useOptionalModalStack } from '@/contexts/ModalStackContext';
+import { openContextualHelp } from '@/components/help';
+import {
+  AccessibleTabList,
+  AccessibleTabPanel,
+} from '@/components/shared/AccessibleTabs';
 
 interface SpecModalProps {
   specId: string;
@@ -110,7 +115,25 @@ interface SpecModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'quality' | 'tests' | 'rules' | 'contracts' | 'irs' | 'ors' | 'trs' | 'decisions' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg' | 'cancellation';
+type ModalTab =
+  | 'details'
+  | 'tests'
+  | 'rules'
+  | 'contracts'
+  | 'irs'
+  | 'ors'
+  | 'trs'
+  | 'decisions'
+  | 'resources'
+  | 'qa'
+  | 'references'
+  | 'sprints'
+  | 'kg'
+  | 'validation'
+  | 'activity';
+
+type ResourceSubTab = 'mockups' | 'knowledge' | 'architecture';
+type ReferenceSubTab = 'origin' | 'cards';
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -1246,7 +1269,15 @@ function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<type
    Knowledge Base Tab
    ============================================================ */
 
-function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) {
+function KnowledgeTab({
+  specId,
+  boardId,
+  onChanged,
+}: {
+  specId: string;
+  boardId: string;
+  onChanged?: () => void;
+}) {
   const api = useDashboardApi();
   const [refreshGeneration, setRefreshGeneration] = useState(0);
   const [adding, setAdding] = useState(false);
@@ -1272,6 +1303,7 @@ function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) 
       setAdding(false);
       setNewTitle(''); setNewDesc(''); setNewContent('');
       refreshWorkspace();
+      onChanged?.();
     } catch { toast.error('Failed to add knowledge'); }
   };
 
@@ -1280,6 +1312,7 @@ function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) 
     try {
       await api.deleteSpecKnowledge(specId, knowledgeId);
       toast.success('Deleted');
+      onChanged?.();
       return true;
     } catch {
       toast.error('Failed to delete');
@@ -1327,6 +1360,7 @@ function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) 
 
 export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChanged }: SpecModalProps) {
   const api = useDashboardApi();
+  const modalStack = useOptionalModalStack();
   const currentBoard = useCurrentBoard();
   const perms = usePermissions(_boardId || currentBoard?.id);
   const canStructured = (
@@ -1348,13 +1382,17 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const canReadChecklist = perms.has('spec.checklist.read');
   const canExecuteChecklist = perms.has('spec.checklist.execute');
   const canReadSpecValidation = perms.has('spec.validation.read');
-  const canAccessValidationTab =
-    canReadChecklist || canReadSpecValidation;
   const [spec, setSpec] = useState<Spec | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<SpecStatus | null>(null);
   const [nextStatuses, setNextStatuses] = useState<SpecStatus[]>([]);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
+  const [resourceTab, setResourceTab] =
+    useState<ResourceSubTab>('mockups');
+  const [referenceTab, setReferenceTab] =
+    useState<ReferenceSubTab>('origin');
+  const [resourceGateRefreshKey, setResourceGateRefreshKey] =
+    useState(0);
   const [detailsStructuredEditor, setDetailsStructuredEditor] = useState<{
     tab: ModalTab;
     mode: 'add' | 'edit';
@@ -1379,33 +1417,27 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     priority: 10,
   });
 
-  // The Cancellation tab only exists while the spec is cancelled.
   useEffect(() => {
-    if (
-      activeTab === 'cancellation' &&
-      currentSpecStatus &&
-      currentSpecStatus !== 'cancelled'
-    ) {
-      setActiveTab('details');
-    }
-  }, [activeTab, currentSpecStatus]);
-
-  useEffect(() => {
-    if (activeTab === 'quality' && !canReadQuality) {
-      setActiveTab('details');
-    }
-  }, [activeTab, canReadQuality]);
-
-  useEffect(() => {
+    const validationAvailable =
+      canReadQuality ||
+      Boolean(
+        currentSpecStatus &&
+        isSpecValidationAvailable(currentSpecStatus) &&
+        (canReadChecklist || canReadSpecValidation),
+      );
     if (
       activeTab === 'validation' &&
-      (!canAccessValidationTab ||
-        (currentSpecStatus &&
-          !isSpecValidationAvailable(currentSpecStatus)))
+      !validationAvailable
     ) {
       setActiveTab('details');
     }
-  }, [activeTab, canAccessValidationTab, currentSpecStatus]);
+  }, [
+    activeTab,
+    canReadChecklist,
+    canReadQuality,
+    canReadSpecValidation,
+    currentSpecStatus,
+  ]);
 
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
@@ -1422,6 +1454,22 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const [parentRefinement, setParentRefinement] = useState<{ id: string; title: string; version: number } | null>(null);
   const [viewingIdeationId, setViewingIdeationId] = useState<string | null>(null);
   const [viewingRefinementId, setViewingRefinementId] = useState<string | null>(null);
+
+  const openIdeationReference = (id: string) => {
+    if (modalStack) {
+      modalStack.push({ type: 'ideation', id });
+    } else {
+      setViewingIdeationId(id);
+    }
+  };
+
+  const openRefinementReference = (id: string) => {
+    if (modalStack) {
+      modalStack.push({ type: 'refinement', id });
+    } else {
+      setViewingRefinementId(id);
+    }
+  };
 
   useEffect(() => { loadSpec(); }, [specId]);
 
@@ -1797,14 +1845,13 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
 
   const unansweredQA = spec.qa_items?.filter((q) => !q.answered_at).length || 0;
   const showValidationTab =
-    isSpecValidationAvailable(spec.status) &&
-    canAccessValidationTab;
+    canReadQuality ||
+    (
+      isSpecValidationAvailable(spec.status) &&
+      (canReadChecklist || canReadSpecValidation)
+    );
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
-    ...(spec.status === 'cancelled'
-      ? [{ id: 'cancellation' as ModalTab, label: 'Cancellation', icon: <Ban size={14} /> }]
-      : []),
-    { id: 'quality', label: 'Quality', icon: <ShieldCheck size={14} />, permission: 'spec.quality.read' },
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
@@ -1812,17 +1859,15 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     { id: 'ors', label: 'ORs', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0, permission: 'spec.observability_requirements.read' },
     { id: 'trs', label: 'TRs', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
     { id: 'decisions', label: 'Decisions', icon: <GitBranch size={14} />, count: spec.decisions?.length || 0 },
-    { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: spec.screen_mockups?.length || 0 },
-    { id: 'architecture', label: 'Architecture', icon: <Network size={14} />, count: spec.architecture_designs?.length || 0 },
+    { id: 'resources', label: 'Resources', icon: <BookOpen size={14} /> },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: spec.qa_items?.length || 0, highlight: unansweredQA > 0 },
-    { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={14} />, count: spec.knowledge_bases?.length || 0 },
-    { id: 'cards', label: 'Cards', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
+    { id: 'references', label: 'References', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
     { id: 'sprints', label: 'Sprints', icon: <Layers size={14} />, count: linkedSprints.length },
+    { id: 'kg', label: 'KG Graph', icon: <Network size={14} /> },
     ...(showValidationTab
       ? [{ id: 'validation' as ModalTab, label: 'Validation', icon: <ShieldCheck size={14} /> }]
       : []),
-    { id: 'kg', label: 'KG Graph', icon: <Network size={14} /> },
-    { id: 'history', label: 'Activity', icon: <History size={14} /> },
+    { id: 'activity', label: 'Activity', icon: <History size={14} /> },
   ];
   const tabs = allTabs.filter((tab) => !tab.permission || perms.has(tab.permission));
 
@@ -1918,7 +1963,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
             <span className="text-gray-400">From:</span>
             {parentIdeation && (
               <button
-                onClick={() => setViewingIdeationId(parentIdeation.id)}
+                onClick={() => openIdeationReference(parentIdeation.id)}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300 hover:ring-2 hover:ring-amber-300 dark:hover:ring-amber-600 transition-all cursor-pointer"
               >
                 <Lightbulb size={11} />
@@ -1929,7 +1974,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
             {parentIdeation && parentRefinement && <ChevronRight size={12} className="text-gray-300" />}
             {parentRefinement && (
               <button
-                onClick={() => setViewingRefinementId(parentRefinement.id)}
+                onClick={() => openRefinementReference(parentRefinement.id)}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300 hover:ring-2 hover:ring-blue-300 dark:hover:ring-blue-600 transition-all cursor-pointer"
               >
                 <Layers size={11} />
@@ -1941,44 +1986,42 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
         )}
 
         {/* Tabs */}
-        <div
-          className="flex items-center gap-1 px-6 pt-3 border-b border-gray-200 dark:border-gray-700 overflow-x-auto shrink-0 scrollbar-hide"
-          data-tour-id="specs.resources.tabs"
-        >
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap shrink-0 ${
-                activeTab === tab.id
-                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-              }`}
-            >
-              {tab.icon}
-              {tab.label}
-              {tab.count !== undefined && tab.count > 0 && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                  tab.highlight
-                    ? 'bg-amber-200 text-amber-700 dark:bg-amber-800 dark:text-amber-300'
-                    : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'
-                }`}>
-                  {tab.count}
-                </span>
-              )}
-            </button>
-          ))}
+        <div data-tour-id="specs.resources.tabs" className="shrink-0">
+          <AccessibleTabList
+            idBase={`spec-${specId}`}
+            ariaLabel="Spec sections"
+            items={tabs.map((tab) => ({
+              id: tab.id,
+              label: tab.label,
+              icon: tab.icon,
+              count: tab.count,
+              attention: tab.highlight,
+            }))}
+            value={activeTab}
+            onValueChange={setActiveTab}
+            className="px-6 pt-3 scrollbar-hide"
+          />
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
+          <AccessibleTabPanel
+            idBase={`spec-${specId}`}
+            tabId={activeTab}
+            value={activeTab}
+            className="outline-none"
+          >
           {activeTab === 'details' && (
             <div className="space-y-5">
-              <ResourceGateSummary
-                boardId={spec.board_id || _boardId}
-                entityType="spec"
-                entityId={specId}
-              />
+              {spec.status === 'cancelled' && (
+                <CancellationDetails
+                  id="cancellation-panel"
+                  entityLabel="spec"
+                  reason={spec.cancellation_reason}
+                  cancelledBy={spec.cancelled_by}
+                  cancelledAt={spec.cancelled_at}
+                />
+              )}
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Description</h4>
                 <EditableField
@@ -2444,44 +2487,106 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               }}
             />
           )}
-          {activeTab === 'mockups' && spec && (
-            <MockupsTab
-              screenMockups={spec.screen_mockups}
-              boardId={spec.board_id}
-              entityType="spec"
-              entityId={specId}
-              expanded={expanded}
-              onUpdate={async (mockups) => {
-                const updated = await api.updateSpec(specId, { screen_mockups: mockups });
-                setSpec(updated);
-              }}
-            />
-          )}
-          {activeTab === 'architecture' && spec && (
-            <ArchitectureTab
-              parentType="spec"
-              parentId={specId}
-              boardId={spec.board_id}
-              entityType="spec"
-              entityId={specId}
-              expanded={expanded}
-              locked={['validated', 'in_progress', 'done'].includes(spec.status)}
-              screenMockups={spec.screen_mockups || []}
-              onChanged={(items) => setSpec((current) => current ? { ...current, architecture_designs: items } : current)}
-            />
-          )}
-          {activeTab === 'quality' && spec && canReadQuality && (
-            <QualityPanel
-              subjectType="spec"
-              subjectId={specId}
-              subjectVersion={spec.version}
-              subjectStatus={spec.status}
-              subjectArchived={spec.archived ?? false}
-              canRead={canReadQuality}
-              canAssess={false}
-              canProposeQuestions={false}
-              onAssessmentRecorded={onChanged}
-            />
+          {activeTab === 'resources' && spec && (
+            <div className="space-y-4" data-testid="spec-resources-panel">
+              <ResourceGateDisclosure
+                boardId={spec.board_id || _boardId}
+                entityType="spec"
+                entityId={specId}
+                refreshKey={resourceGateRefreshKey}
+              />
+              <AccessibleTabList
+                idBase={`spec-${specId}-resources`}
+                ariaLabel="Spec resources"
+                items={[
+                  {
+                    id: 'mockups',
+                    label: 'Mockups',
+                    icon: <Monitor size={13} />,
+                    count: spec.screen_mockups?.length || 0,
+                  },
+                  {
+                    id: 'knowledge',
+                    label: 'Knowledge',
+                    icon: <BookOpen size={13} />,
+                    count: spec.knowledge_bases?.length || 0,
+                  },
+                  {
+                    id: 'architecture',
+                    label: 'Architecture',
+                    icon: <Network size={13} />,
+                    count: spec.architecture_designs?.length || 0,
+                  },
+                ] satisfies {
+                  id: ResourceSubTab;
+                  label: string;
+                  icon: React.ReactNode;
+                  count: number;
+                }[]}
+                value={resourceTab}
+                onValueChange={setResourceTab}
+                variant="secondary"
+                className="max-w-full"
+              />
+
+              <AccessibleTabPanel
+                idBase={`spec-${specId}-resources`}
+                tabId="mockups"
+                value={resourceTab}
+                mount="lazy-keep"
+              >
+                  <MockupsTab
+                    screenMockups={spec.screen_mockups}
+                    boardId={spec.board_id}
+                    entityType="spec"
+                    entityId={specId}
+                    expanded={expanded}
+                    onUpdate={async (mockups) => {
+                      const updated = await api.updateSpec(specId, { screen_mockups: mockups });
+                      setSpec(updated);
+                      setResourceGateRefreshKey((value) => value + 1);
+                    }}
+                  />
+              </AccessibleTabPanel>
+              <AccessibleTabPanel
+                idBase={`spec-${specId}-resources`}
+                tabId="knowledge"
+                value={resourceTab}
+                mount="lazy-keep"
+              >
+                  <KnowledgeTab
+                    specId={specId}
+                    boardId={spec.board_id}
+                    onChanged={() => {
+                      setResourceGateRefreshKey((value) => value + 1);
+                      void loadSpec();
+                    }}
+                  />
+              </AccessibleTabPanel>
+              <AccessibleTabPanel
+                idBase={`spec-${specId}-resources`}
+                tabId="architecture"
+                value={resourceTab}
+                mount="lazy-keep"
+              >
+                  <ArchitectureTab
+                    parentType="spec"
+                    parentId={specId}
+                    boardId={spec.board_id}
+                    entityType="spec"
+                    entityId={specId}
+                    expanded={expanded}
+                    locked={['validated', 'in_progress', 'done'].includes(spec.status)}
+                    screenMockups={spec.screen_mockups || []}
+                    onChanged={(items) => {
+                      setSpec((current) => current
+                        ? { ...current, architecture_designs: items }
+                        : current);
+                      setResourceGateRefreshKey((value) => value + 1);
+                    }}
+                  />
+              </AccessibleTabPanel>
+            </div>
           )}
           {activeTab === 'validation' && spec && (
             <SpecValidationPanel
@@ -2492,51 +2597,144 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               canReadChecklist={canReadChecklist}
               canExecuteChecklist={canExecuteChecklist}
               canReadValidation={canReadSpecValidation}
+              canReadQuality={canReadQuality}
+              specArchived={spec.archived ?? false}
               validationHistoryRefreshKey={
                 validationHistoryRefreshKey
               }
+              onAssessmentRecorded={onChanged}
+              onOpenRequirementLintHelp={() =>
+                openContextualHelp('requirement-lint')}
             />
           )}
           {activeTab === 'kg' && spec && (
             <KGValidationTab boardId={spec.board_id} specId={specId} />
           )}
-          {activeTab === 'history' && <HistoryTab specId={specId} />}
+          {activeTab === 'activity' && <HistoryTab specId={specId} />}
           {activeTab === 'qa' && <QATab specId={specId} mentionables={mentionables} />}
-          {activeTab === 'knowledge' && <KnowledgeTab specId={specId} boardId={spec.board_id} />}
-
-          {activeTab === 'cancellation' && spec.status === 'cancelled' && (
-            <CancellationDetails
-              reason={spec.cancellation_reason}
-              cancelledBy={spec.cancelled_by}
-              cancelledAt={spec.cancelled_at}
-            />
-          )}
 
           {activeTab === 'sprints' && (
             <SpecSprintsTab sprints={linkedSprints} api={api} />
           )}
 
+          {activeTab === 'references' && (
+            <div className="space-y-4" data-testid="spec-references-panel">
+              <AccessibleTabList
+                idBase={`spec-${specId}-references`}
+                ariaLabel="Spec references"
+                items={[
+                  { id: 'origin', label: 'Origin' },
+                  {
+                    id: 'cards',
+                    label: 'Derived cards',
+                    count: spec.cards?.length || 0,
+                  },
+                ] satisfies {
+                  id: ReferenceSubTab;
+                  label: string;
+                  count?: number;
+                }[]}
+                value={referenceTab}
+                onValueChange={setReferenceTab}
+                variant="secondary"
+                className="max-w-full"
+              />
 
-          {activeTab === 'cards' && (
-            <div className="space-y-2">
-              {(!spec.cards || spec.cards.length === 0) ? (
-                <div className="text-center py-6">
-                  <Link2 size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-                  <p className="text-sm text-gray-500 dark:text-gray-400">No linked cards</p>
-                  <p className="text-xs text-gray-400 mt-1">Cards are created manually and linked to this spec</p>
-                </div>
-              ) : (
-                spec.cards.map((card) => (
-                  <div key={card.id} className="flex items-center justify-between py-1.5 px-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                    <span className="text-sm text-gray-700 dark:text-gray-300 truncate">{card.title}</span>
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${CARD_STATUS_COLORS[card.status] || ''}`}>
-                      {card.status.replace('_', ' ')}
-                    </span>
-                  </div>
-                ))
-              )}
+              <AccessibleTabPanel
+                idBase={`spec-${specId}-references`}
+                tabId="origin"
+                value={referenceTab}
+                className="space-y-3"
+              >
+                  {!parentIdeation && !parentRefinement ? (
+                    <div className="rounded-xl border border-dashed border-gray-300 px-4 py-8 text-center dark:border-gray-700">
+                      <GitBranch size={28} className="mx-auto mb-2 text-gray-300 dark:text-gray-600" />
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        No origin is registered for this spec.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {parentIdeation && (
+                        <button
+                          type="button"
+                          onClick={() => openIdeationReference(parentIdeation.id)}
+                          className="flex w-full items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-3 text-left hover:bg-amber-100/70 dark:border-amber-900/60 dark:bg-amber-950/20 dark:hover:bg-amber-950/35"
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <Lightbulb size={15} className="shrink-0 text-amber-600" />
+                            <span className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
+                              {parentIdeation.title}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-xs text-amber-600 dark:text-amber-300">
+                            Ideation · v{parentIdeation.version}
+                          </span>
+                        </button>
+                      )}
+                      {parentRefinement && (
+                        <button
+                          type="button"
+                          onClick={() => openRefinementReference(parentRefinement.id)}
+                          className="flex w-full items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50/60 px-3 py-3 text-left hover:bg-blue-100/70 dark:border-blue-900/60 dark:bg-blue-950/20 dark:hover:bg-blue-950/35"
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <Layers size={15} className="shrink-0 text-blue-600" />
+                            <span className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
+                              {parentRefinement.title}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-xs text-blue-600 dark:text-blue-300">
+                            Refinement · v{parentRefinement.version}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+              </AccessibleTabPanel>
+
+              <AccessibleTabPanel
+                idBase={`spec-${specId}-references`}
+                tabId="cards"
+                value={referenceTab}
+                className="space-y-2"
+              >
+                  {(!spec.cards || spec.cards.length === 0) ? (
+                    <div className="text-center py-6">
+                      <Link2 size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
+                      <p className="text-sm text-gray-500 dark:text-gray-400">No linked cards</p>
+                      <p className="text-xs text-gray-400 mt-1">Cards are created manually and linked to this spec</p>
+                    </div>
+                  ) : (
+                    spec.cards.map((card) => {
+                      const content = (
+                        <>
+                          <span className="text-sm text-gray-700 dark:text-gray-300 truncate">{card.title}</span>
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${CARD_STATUS_COLORS[card.status] || ''}`}>
+                            {card.status.replace('_', ' ')}
+                          </span>
+                        </>
+                      );
+                      return modalStack ? (
+                        <button
+                          key={card.id}
+                          type="button"
+                          onClick={() => modalStack.push({ type: 'card', id: card.id })}
+                          className="flex w-full items-center justify-between gap-3 rounded bg-gray-50 px-2 py-1.5 text-left hover:bg-blue-50 dark:bg-gray-700/50 dark:hover:bg-blue-950/20"
+                        >
+                          {content}
+                        </button>
+                      ) : (
+                        <div key={card.id} className="flex items-center justify-between gap-3 rounded bg-gray-50 px-2 py-1.5 dark:bg-gray-700/50">
+                          {content}
+                        </div>
+                      );
+                    })
+                  )}
+              </AccessibleTabPanel>
             </div>
           )}
+          </AccessibleTabPanel>
         </div>
 
         {/* Footer */}
