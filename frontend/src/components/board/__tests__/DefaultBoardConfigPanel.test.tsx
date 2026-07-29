@@ -41,6 +41,7 @@ function tmpl(over: Record<string, unknown> = {}) {
   return {
     id: 't', version: 1, status: 'active', is_active: true, scope: 'global',
     settings_payload: {}, guideline_default_refs: [], design_system_default_ref: null,
+    spec_checklist_mode: 'advisory',
     created_by: 'u', created_at: null, updated_at: null, ...over,
   };
 }
@@ -97,6 +98,7 @@ describe('DefaultBoardConfigPanel', () => {
     expect(screen.getByTestId('dbc-guideline-count').textContent).toBe('1');
     expect(screen.getByTestId('dbc-design-system-detail').textContent).toMatch(/ds-1/);
     expect(screen.getByTestId('dbc-design-system-detail').textContent).toMatch(/advisory/);
+    expect(screen.getByTestId('dbc-spec-checklist')).toHaveTextContent('advisory');
     expect(screen.getByTestId('dbc-outdated')).toBeInTheDocument();
     expect(screen.getByTestId('dbc-diff-fields').textContent).toMatch(/max_scenarios_per_card/);
     // The board diff was fetched from the REAL API with the board id.
@@ -256,6 +258,60 @@ describe('DefaultBoardConfigPanel', () => {
         design_system_gate_mode: 'advisory',
       }),
     }));
+  });
+
+  it('versions the refinement ambiguity policy and bounded threshold in Global Default', async () => {
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    fireEvent.click(await screen.findByTestId('toggle-refinement-ambiguity-gate'));
+    fireEvent.click(await screen.findByTestId('button-max-refinement-ambiguity-5'));
+
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(expect.objectContaining({
+      activate: true,
+      settings_payload: expect.objectContaining({
+        require_refinement_ambiguity_gate: true,
+        max_refinement_ambiguity: 5,
+      }),
+    }));
+  });
+
+  it('versions the curated checklist default and applies it only on Save', async () => {
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    expect(await screen.findByTestId('dbc-checklist-mode-advisory')).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    fireEvent.click(screen.getByTestId('dbc-checklist-mode-blocking'));
+
+    expect(screen.getByTestId('dbc-template-dirty')).toBeInTheDocument();
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    await waitFor(() =>
+      expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1),
+    );
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        activate: true,
+        spec_checklist_mode: 'blocking',
+      }),
+    );
+  });
+
+  it('opens contextual checklist help from Global Default', async () => {
+    const onOpenHelp = vi.fn();
+    render(
+      <DefaultBoardConfigPanel boardId="b1" onOpenHelp={onOpenHelp} />,
+    );
+
+    fireEvent.click(await screen.findByTestId('dbc-checklist-help-link'));
+
+    expect(onOpenHelp).toHaveBeenCalledTimes(1);
   });
 
   it('stages task requirement link gate skip in the default board config payload', async () => {

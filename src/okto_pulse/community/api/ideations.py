@@ -23,6 +23,10 @@ from okto_pulse.community.api.pagination import (
     search_groups,
     validate_ideation_pagination_query,
 )
+from okto_pulse.community.api.quality_summary_projection import (
+    load_quality_summaries_for_page,
+    quality_summary_field,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
@@ -194,6 +198,15 @@ async def list_ideations(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
             )
+        quality_summaries = await load_quality_summaries_for_page(
+            uow=uow,
+            user_id=user_id,
+            board_id=board_id,
+            subject_type="ideation",
+            subject_ids=tuple(
+                str(record.values["id"]) for record in page.items
+            ),
+        )
         return project_page(
             page,
             lambda record: IdeationPageItem(
@@ -216,7 +229,11 @@ async def list_ideations(
                         "archived",
                         "scope_assessment",
                     ),
-                )
+                ),
+                **quality_summary_field(
+                    str(record.values["id"]),
+                    quality_summaries,
+                ),
             ),
         )
     try:

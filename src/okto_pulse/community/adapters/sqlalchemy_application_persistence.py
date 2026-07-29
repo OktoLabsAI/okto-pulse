@@ -13,6 +13,9 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import selectinload
 
 from okto_pulse.community.adapters import sqlalchemy_models as models
+from okto_pulse.community.adapters.permission_policy import (
+    direct_permission_review,
+)
 from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
     is_knowledge_creation_race_error,
 )
@@ -26,8 +29,10 @@ from okto_pulse.core.ports.application_persistence import (
     ApplicationRecordConflictError,
 )
 from okto_pulse.core.ports.permission_policy import (
+    PermissionPresetLineageNode,
     legacy_permissions_to_flags,
     resolve_effective_permissions,
+    resolve_preset_lineage,
 )
 from okto_pulse.core.domain.ownership import aggregate_ownership
 from okto_pulse.core.domain.realm import (
@@ -731,17 +736,13 @@ class CommunitySqlAlchemyApplicationPersistence:
     async def resolve_user_permissions(
         self, context: Any, *, user_id: str, board_id: str
     ) -> Any:
-        """Resolve all three permission layers in one bounded statement."""
+        """Resolve direct flags, preset lineage and the board ceiling."""
         result = await context.execute(
             select(
                 models.Agent.permission_flags,
                 models.Agent.permissions,
-                models.PermissionPreset.flags,
+                models.Agent.preset_id,
                 models.AgentBoard.permission_overrides,
-            )
-            .outerjoin(
-                models.PermissionPreset,
-                models.PermissionPreset.id == models.Agent.preset_id,
             )
             .outerjoin(
                 models.AgentBoard,
@@ -756,14 +757,54 @@ class CommunitySqlAlchemyApplicationPersistence:
         row = result.first()
         if row is None:
             return resolve_effective_permissions(None, None, None)
-        permission_flags, legacy_permissions, preset_flags, board_overrides = row
-        agent_flags = permission_flags
-        if not agent_flags and legacy_permissions:
+        permission_flags, legacy_permissions, preset_id, board_overrides = row
+        agent_flags = (
+            copy.deepcopy(permission_flags)
+            if permission_flags is not None
+            else None
+        )
+        owner_review_required, review_reason = direct_permission_review(
+            agent_flags,
+            preset_id=preset_id,
+        )
+        if agent_flags is None and isinstance(legacy_permissions, list):
             agent_flags = legacy_permissions_to_flags(legacy_permissions)
+
+        preset_flags = None
+        if preset_id:
+            preset_rows = list(
+                (
+                    await context.execute(
+                        select(
+                            models.PermissionPreset.id,
+                            models.PermissionPreset.base_preset_id,
+                            models.PermissionPreset.flags,
+                        ).order_by(models.PermissionPreset.id)
+                    )
+                ).all()
+            )
+            lineage = resolve_preset_lineage(
+                preset_id,
+                tuple(
+                    PermissionPresetLineageNode(
+                        id=preset_row.id,
+                        base_preset_id=preset_row.base_preset_id,
+                        # Preserve malformed top-level JSON so the canonical
+                        # lineage resolver can fail closed and request review.
+                        flags=copy.deepcopy(preset_row.flags),
+                    )
+                    for preset_row in preset_rows
+                ),
+            )
+            preset_flags = lineage.flags
+            owner_review_required = lineage.owner_review_required
+            review_reason = lineage.review_reason
         return resolve_effective_permissions(
             agent_flags,
             preset_flags,
             board_overrides,
+            owner_review_required=owner_review_required,
+            review_reason=review_reason,
         )
 
     async def list(

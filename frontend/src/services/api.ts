@@ -3,10 +3,20 @@
  */
 
 import { useApiClient } from '@/contexts/ApiContext';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type {
   Board,
   BoardSummary,
   BoardShare,
+  ChecklistBinding,
+  ChecklistBindingUpdateResult,
+  ChecklistExecutionStartResult,
+  ChecklistExecutionSubmitResult,
+  ChecklistItemResult,
+  ChecklistReceipt,
+  ChecklistReceiptPage,
+  ChecklistSpecState,
+  ChecklistTemplate,
   CreateBoardRequest,
   UpdateBoardRequest,
   ShareBoardRequest,
@@ -102,6 +112,8 @@ import type {
   RefinementSnapshotSummary,
   RefinementKnowledge,
   RefinementKnowledgeSummary,
+  RefinementAmbiguityGateSkipRequest,
+  RefinementAmbiguityGateSkipReceipt,
   Guideline,
   BoardGuidelineEntry,
   ArchitectureParentType,
@@ -130,6 +142,16 @@ import type {
   KnowledgeMutationResponse,
   KnowledgeRefreshResponse,
   KnowledgeTechnicalReadResponse,
+  CurrentQualityAssessment,
+  QualityAssessmentKind,
+  QualityAssessmentListItem,
+  QualityAssessmentReceiptDetail,
+  QualityAssessmentReceiptState,
+  QualityFinding,
+  QualityFindingSeverity,
+  QualitySubjectType,
+  RecordAmbiguityAssessmentRequest,
+  RecordAmbiguityAssessmentResponse,
 } from '@/types';
 
 export interface BoardColumnsQuery {
@@ -155,6 +177,18 @@ export interface PageWindow {
   offset: number;
   limit: 25 | 50 | 100;
   signal?: AbortSignal;
+}
+
+export interface QualityAssessmentPageWindow extends PageWindow {
+  assessmentKind?: QualityAssessmentKind;
+  state?: QualityAssessmentReceiptState;
+}
+
+export interface QualityFindingPageWindow extends PageWindow {
+  receiptId?: string;
+  assessmentKind?: QualityAssessmentKind;
+  categoryCode?: string;
+  severity?: QualityFindingSeverity;
 }
 
 export type StoryPageItem = Omit<
@@ -250,6 +284,25 @@ function architectureParentPath(parentType: ArchitectureParentType, parentId: st
   return `/${segment[parentType]}/${parentId}/architecture`;
 }
 
+function qualitySubjectPath(
+  subjectType: QualitySubjectType,
+  subjectId: string,
+): string {
+  const plural: Record<QualitySubjectType, string> = {
+    ideation: 'ideations',
+    refinement: 'refinements',
+    spec: 'specs',
+  };
+  return `/${plural[subjectType]}/${encodeURIComponent(subjectId)}`;
+}
+
+function qualityPageParams(options: PageWindow): URLSearchParams {
+  return new URLSearchParams({
+    offset: String(options.offset),
+    limit: String(options.limit),
+  });
+}
+
 export interface ActivityLogEntry {
   id: string;
   action: string;
@@ -266,6 +319,122 @@ export function useDashboardApi() {
   const apiClient = useApiClient();
 
   return {
+    // ==================== QUALITY ASSESSMENTS ====================
+
+    async getCurrentQualityAssessment(
+      subjectType: QualitySubjectType,
+      subjectId: string,
+      assessmentKind: QualityAssessmentKind,
+      signal?: AbortSignal,
+    ): Promise<CurrentQualityAssessment | null> {
+      const params = new URLSearchParams({ assessment_kind: assessmentKind });
+      try {
+        return await apiClient.fetchJson<CurrentQualityAssessment>(
+          `${qualitySubjectPath(subjectType, subjectId)}/quality-assessments/current?${params.toString()}`,
+          { signal },
+        );
+      } catch (error) {
+        const details = (
+          error instanceof AuthenticatedFetchError
+          && typeof error.details === 'object'
+          && error.details !== null
+        )
+          ? error.details as Record<string, unknown>
+          : null;
+        const reasonCode = error instanceof AuthenticatedFetchError
+          ? (error.code === 'assessment_current_not_found'
+              ? error.code
+              : details?.reason_code)
+          : null;
+        if (
+          error instanceof AuthenticatedFetchError
+          && error.status === 404
+          && reasonCode === 'assessment_current_not_found'
+        ) {
+          return null;
+        }
+        throw error;
+      }
+    },
+
+    async listQualityAssessments(
+      subjectType: QualitySubjectType,
+      subjectId: string,
+      options: QualityAssessmentPageWindow,
+    ): Promise<PageEnvelope<QualityAssessmentListItem>> {
+      const params = qualityPageParams(options);
+      if (options.assessmentKind) {
+        params.set('assessment_kind', options.assessmentKind);
+      }
+      if (options.state) params.set('state', options.state);
+      return apiClient.fetchJson<PageEnvelope<QualityAssessmentListItem>>(
+        `${qualitySubjectPath(subjectType, subjectId)}/quality-assessments?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async listQualityFindings(
+      subjectType: QualitySubjectType,
+      subjectId: string,
+      options: QualityFindingPageWindow,
+    ): Promise<PageEnvelope<QualityFinding>> {
+      const params = qualityPageParams(options);
+      if (options.receiptId) params.set('receipt_id', options.receiptId);
+      if (options.assessmentKind) {
+        params.set('assessment_kind', options.assessmentKind);
+      }
+      if (options.categoryCode?.trim()) {
+        params.set('category_code', options.categoryCode.trim());
+      }
+      if (options.severity) params.set('severity', options.severity);
+      return apiClient.fetchJson<PageEnvelope<QualityFinding>>(
+        `${qualitySubjectPath(subjectType, subjectId)}/quality-findings?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async getQualityAssessmentReceipt(
+      receiptId: string,
+      signal?: AbortSignal,
+    ): Promise<QualityAssessmentReceiptDetail> {
+      return apiClient.fetchJson<QualityAssessmentReceiptDetail>(
+        `/quality-assessment-receipts/${encodeURIComponent(receiptId)}`,
+        { signal },
+      );
+    },
+
+    async listQualityAssessmentReceiptFindings(
+      receiptId: string,
+      options: PageWindow & {
+        categoryCode?: string;
+        severity?: QualityFindingSeverity;
+      },
+    ): Promise<PageEnvelope<QualityFinding>> {
+      const params = qualityPageParams(options);
+      if (options.categoryCode?.trim()) {
+        params.set('category_code', options.categoryCode.trim());
+      }
+      if (options.severity) params.set('severity', options.severity);
+      return apiClient.fetchJson<PageEnvelope<QualityFinding>>(
+        `/quality-assessment-receipts/${encodeURIComponent(receiptId)}/findings?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async recordAmbiguityAssessment(
+      subjectType: 'ideation' | 'refinement',
+      subjectId: string,
+      data: RecordAmbiguityAssessmentRequest,
+    ): Promise<RecordAmbiguityAssessmentResponse> {
+      return apiClient.fetchJson<RecordAmbiguityAssessmentResponse>(
+        `${qualitySubjectPath(subjectType, subjectId)}/quality-assessments`,
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+        },
+      );
+    },
+
     // ==================== BOARDS ====================
     
     async createBoard(data: CreateBoardRequest): Promise<Board> {
@@ -1446,6 +1615,29 @@ export function useDashboardApi() {
       });
     },
 
+    // Human-only override. The server owns actor authorization and records the
+    // explicit reason; optimistic concurrency prevents applying intent to a
+    // refinement version the operator did not review.
+    async setRefinementAmbiguityGateSkip(
+      refinementId: string,
+      data: RefinementAmbiguityGateSkipRequest,
+    ): Promise<RefinementAmbiguityGateSkipReceipt> {
+      const reason = data.reason.trim();
+      if (!reason) {
+        throw new Error('A non-empty reason is required to change the refinement ambiguity gate skip.');
+      }
+      if (!Number.isInteger(data.expected_refinement_version) || data.expected_refinement_version < 1) {
+        throw new Error('A valid expected refinement version is required.');
+      }
+      return apiClient.fetchJson<RefinementAmbiguityGateSkipReceipt>(
+        `/refinements/${refinementId}/ambiguity-gate-skip`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ ...data, reason }),
+        },
+      );
+    },
+
     async moveRefinement(refinementId: string, data: { status: RefinementStatus; cancellation_reason?: string }): Promise<Refinement> {
       return apiClient.fetchJson<Refinement>(`/refinements/${refinementId}/move`, {
         method: 'POST',
@@ -1662,8 +1854,8 @@ export function useDashboardApi() {
       await apiClient.fetch(`/agents/${agentId}/boards/${boardId}`, { method: 'DELETE' });
     },
 
-    async updateAgentBoardOverrides(agentId: string, boardId: string, overrides: Record<string, any> | null): Promise<any> {
-      return apiClient.fetchJson(`/agents/${agentId}/boards/${boardId}`, {
+    async updateAgentBoardOverrides(agentId: string, boardId: string, overrides: Record<string, unknown> | null): Promise<AgentBoardGrant> {
+      return apiClient.fetchJson<AgentBoardGrant>(`/agents/${agentId}/boards/${boardId}`, {
         method: 'PATCH',
         body: JSON.stringify({ permission_overrides: overrides }),
       });
@@ -1970,6 +2162,16 @@ export function useDashboardApi() {
       return apiClient.fetchJson('/presets', { method: 'POST', body: JSON.stringify(data) });
     },
 
+    async clonePreset(
+      presetId: string,
+      data: { name: string; description?: string; flags?: Record<string, any> },
+    ): Promise<any> {
+      return apiClient.fetchJson(`/presets/${presetId}/clone`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
     async updatePreset(presetId: string, data: { name?: string; description?: string; flags?: Record<string, any> }): Promise<any> {
       return apiClient.fetchJson(`/presets/${presetId}`, { method: 'PUT', body: JSON.stringify(data) });
     },
@@ -2085,6 +2287,92 @@ export function useDashboardApi() {
 
     async listSpecValidations(specId: string): Promise<any> {
       return apiClient.fetchJson(`/specs/${specId}/validations`);
+    },
+
+    // ==================== CURATED SPEC CHECKLIST ====================
+
+    async listChecklistTemplates(): Promise<{ items: ChecklistTemplate[]; total: number }> {
+      return apiClient.fetchJson('/checklist-templates');
+    },
+
+    async getChecklistBinding(boardId: string): Promise<ChecklistBinding> {
+      return apiClient.fetchJson(
+        `/boards/${boardId}/checklist-bindings/spec/spec_validation`,
+      );
+    },
+
+    async updateChecklistBinding(
+      boardId: string,
+      data: {
+        mode: ChecklistBinding['mode'];
+        template_version_id: '/specify/v1';
+        expected_revision: number;
+      },
+    ): Promise<ChecklistBindingUpdateResult> {
+      return apiClient.fetchJson(
+        `/boards/${boardId}/checklist-bindings/spec/spec_validation`,
+        { method: 'PUT', body: JSON.stringify(data) },
+      );
+    },
+
+    async getSpecChecklistState(
+      boardId: string,
+      specId: string,
+    ): Promise<ChecklistSpecState> {
+      return apiClient.fetchJson(
+        `/boards/${boardId}/specs/${specId}/checklist-state`,
+      );
+    },
+
+    async listChecklistExecutions(
+      boardId: string,
+      specId: string,
+      offset = 0,
+      limit: 25 | 50 | 100 = 25,
+    ): Promise<ChecklistReceiptPage> {
+      return apiClient.fetchJson(
+        `/boards/${boardId}/specs/${specId}/checklist-executions?offset=${offset}&limit=${limit}`,
+      );
+    },
+
+    async startChecklistExecution(
+      boardId: string,
+      specId: string,
+      data: {
+        binding_id: string;
+        expected_spec_version: number;
+        idempotency_key: string;
+      },
+    ): Promise<ChecklistExecutionStartResult> {
+      return apiClient.fetchJson(
+        `/boards/${boardId}/specs/${specId}/checklist-executions`,
+        { method: 'POST', body: JSON.stringify(data) },
+      );
+    },
+
+    async submitChecklistExecution(
+      boardId: string,
+      specId: string,
+      executionId: string,
+      data: {
+        expected_execution_revision: number;
+        results: ChecklistItemResult[];
+        idempotency_key: string;
+      },
+    ): Promise<ChecklistExecutionSubmitResult> {
+      return apiClient.fetchJson(
+        `/boards/${boardId}/specs/${specId}/checklist-executions/${executionId}/submit`,
+        { method: 'POST', body: JSON.stringify(data) },
+      );
+    },
+
+    async getChecklistReceipt(
+      boardId: string,
+      receiptId: string,
+    ): Promise<ChecklistReceipt> {
+      return apiClient.fetchJson(
+        `/boards/${boardId}/checklist-receipts/${receiptId}`,
+      );
     },
   };
 }

@@ -392,10 +392,12 @@ def test_s3_e2e_serve_signal_runs_ordered_graph_shutdown(tmp_path: Path) -> None
     # Pin this source-tree E2E to the current Community + Core checkouts so an
     # older installed wheel cannot produce a false failure (or false pass).
     community_root = Path(__file__).resolve().parents[1]
-    workspace_root = community_root.parent
+    from repo_layout import resolve_core_repo
+
+    core_root = resolve_core_repo(community_root)
     source_paths = (
         community_root / "src",
-        workspace_root / "okto_labs_pulse_core" / "src",
+        core_root / "src",
     )
     inherited_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = os.pathsep.join(

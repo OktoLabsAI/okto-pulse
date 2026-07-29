@@ -9,13 +9,26 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = REPO_ROOT.parent
 LOCAL_IMPORT_PATHS = (
     REPO_ROOT / "src",
-    WORKSPACE_ROOT / "okto_labs_pulse_core" / "src",
+    WORKSPACE_ROOT / "okto-pulse-core" / "src",
 )
 
 for path in reversed(LOCAL_IMPORT_PATHS):
     value = str(path)
-    if value not in sys.path:
-        sys.path.insert(0, value)
+    while value in sys.path:
+        sys.path.remove(value)
+    sys.path.insert(0, value)
+
+from okto_pulse.core.application.boundary.repository_checkout import (  # noqa: E402
+    activate_repository_checkout_paths,
+)
+
+# Purge stale legacy checkout roots before collection. The normalized sys.path
+# and PYTHONPATH are inherited by both multiprocessing spawn and subprocess
+# workers used by the storage and CLI suites.
+_REPOSITORY_PATHS = activate_repository_checkout_paths(
+    anchor_repo=REPO_ROOT,
+    required=False,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +60,25 @@ def _reset_relational_schema_lifecycle_seam():
     _runtime_registry.register_relational_runtime_factory(
         lambda url, echo=False: configure_community_database(url, echo=echo)
     )
+    from okto_pulse.core.ports.requirement_lint import (
+        RequirementLintWriteResult,
+        register_requirement_lint_writer_hook,
+    )
+
+    class _ContractTestRequirementLintHook:
+        async def stage_requirement_lint(self, context, command):  # noqa: ANN001
+            del context
+            return RequirementLintWriteResult(
+                receipt_id=(
+                    f"qar_test_{command.spec_id}_{command.spec_version}_"
+                    f"{command.writer.value}"
+                ),
+                head_revision=command.spec_version,
+                evaluated_rule_count=1,
+                finding_count=0,
+            )
+
+    register_requirement_lint_writer_hook(_ContractTestRequirementLintHook())
     configure_settings(CommunitySettings())
     try:
         yield

@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases import (
@@ -36,6 +36,10 @@ from okto_pulse.core.application.use_cases.permission_presets import (
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.ports.permission_policy import (
+    PermissionContractViolation,
+    validate_permission_flag_values,
+)
 
 router = APIRouter()
 
@@ -50,11 +54,29 @@ class PresetCreate(BaseModel):
     description: str = ""
     flags: dict | None = None
 
+    @field_validator("flags")
+    @classmethod
+    def validate_flags(cls, value: dict | None) -> dict | None:
+        try:
+            validate_permission_flag_values(value)
+        except PermissionContractViolation as exc:
+            raise ValueError(str(exc)) from exc
+        return value
+
 
 class PresetUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     flags: dict | None = None
+
+    @field_validator("flags")
+    @classmethod
+    def validate_flags(cls, value: dict | None) -> dict | None:
+        try:
+            validate_permission_flag_values(value)
+        except PermissionContractViolation as exc:
+            raise ValueError(str(exc)) from exc
+        return value
 
 
 class PresetResponse(BaseModel):
@@ -65,6 +87,8 @@ class PresetResponse(BaseModel):
     is_builtin: bool
     base_preset_id: str | None
     flags: dict | None
+    owner_review_required: bool = False
+    review_reason: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

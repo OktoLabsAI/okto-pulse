@@ -1079,6 +1079,14 @@ def create_community_app():
     )
 
     register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    from okto_pulse.community.adapters.requirement_lint_writer import (
+        CommunityRequirementLintWriterHook,
+    )
+    from okto_pulse.core.ports.requirement_lint import (
+        register_requirement_lint_writer_hook,
+    )
+
+    register_requirement_lint_writer_hook(CommunityRequirementLintWriterHook())
     from okto_pulse.community.adapters.relational_effects import (
         register_community_relational_effects,
     )
@@ -1111,6 +1119,18 @@ def create_community_app():
     )
 
     _rc_session_factory = get_session_factory()
+    from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
+        CommunitySqlAlchemyQualityAssessmentPreflightReader,
+    )
+    from okto_pulse.core.ports.quality_assessment import (
+        register_quality_assessment_preflight_reader,
+    )
+
+    register_quality_assessment_preflight_reader(
+        CommunitySqlAlchemyQualityAssessmentPreflightReader(
+            _rc_session_factory
+        )
+    )
 
     def _cancel_safe_rc_scope():
         return database_runtime.cancel_safe_session_scope(

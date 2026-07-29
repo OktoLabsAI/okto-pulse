@@ -680,4 +680,33 @@ describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)'
     expect(screen.queryByText('Replay command')).not.toBeInTheDocument();
     expect(screen.queryByText('Non-replayable justification')).not.toBeInTheDocument();
   });
+
+  it('renders negative as supported and a historical unknown type explicitly', () => {
+    render(
+      <TestEvidenceTab
+        scenarios={[
+          scenario({
+            id: 'negative',
+            scenario_type: 'negative',
+          }),
+          scenario({
+            id: 'legacy',
+            scenario_type: 'regression',
+          }),
+        ]}
+      />,
+    );
+
+    const badges = screen.getAllByTestId('scenario-type-badge');
+    expect(badges[0]).toHaveTextContent('negative');
+    expect(badges[0]).not.toHaveAttribute('data-unsupported');
+    expect(badges[0]).toHaveClass(
+      'bg-rose-50',
+      'text-rose-600',
+      'dark:bg-rose-900/30',
+      'dark:text-rose-300',
+    );
+    expect(badges[1]).toHaveTextContent('regression (unsupported)');
+    expect(badges[1]).toHaveAttribute('data-unsupported', 'true');
+  });
 });

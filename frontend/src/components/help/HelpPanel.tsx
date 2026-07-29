@@ -3,7 +3,7 @@
  * Content adapts based on edition (community vs ecosystem).
  */
 
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 
 // MCP configuration - uses runtime config or environment variable or defaults to port 8101
 const getMcpBaseUrl = () => {
@@ -28,7 +28,7 @@ const WEB_URL = typeof window !== 'undefined' && (window as any).OKTO_PULSE_CONF
   : (typeof import.meta.env.VITE_API_URL !== 'undefined' && import.meta.env.VITE_API_URL !== '/api/v1'
       ? import.meta.env.VITE_API_URL.replace('/api/v1', '')
       : `http://127.0.0.1:8100`);
-import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Users, Bot, GitBranch, Settings, CheckCircle, Network, Play, RotateCcw, SkipForward, Undo2 } from 'lucide-react';
+import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Users, Bot, GitBranch, Settings, CheckCircle, ListChecks, Network, Play, RotateCcw, SkipForward, Undo2 } from 'lucide-react';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { useOptionalGuidedHelp, type GuidedHelpSurface, type GuidedHelpTourProgressStatus } from '@/components/guided-help';
 import pulseIcon from '@/assets/pulse-icon.svg';
@@ -36,6 +36,7 @@ import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface HelpPanelProps {
   onClose: () => void;
+  initialSectionId?: string;
 }
 
 const isEcosystem = typeof __AUTH_MODE__ !== 'undefined' && __AUTH_MODE__ === 'clerk';
@@ -696,7 +697,7 @@ Additional status: \`cancelled\`
 | Tab | Purpose |
 |-----|---------|
 | **Details** | Title, description, context (supports Markdown + Mermaid diagrams), functional & technical requirements, acceptance criteria |
-| **Test Scenarios** | Given/When/Then format with types (unit, integration, e2e, manual), status tracking, task linking, **EvidenceBadge** (✓/?) for scenarios in \`automated/passed/failed\` — see Test Evidence Gate in Governance |
+| **Test Scenarios** | Given/When/Then format with types (unit, integration, e2e, manual, negative), status tracking, task linking, **EvidenceBadge** (✓/?) for scenarios in \`automated/passed/failed\` — use **negative** for invalid, forbidden, or denial paths that the product must reject; see Test Evidence Gate in Governance |
 | **Business Rules** | When/Then format for domain logic, linked to functional requirements |
 | **API Contracts** | Endpoint definitions — method, path, request body, success/error responses |
 | **Technical Reqs** | Technical constraints and implementation details, linked to task cards |
@@ -707,6 +708,10 @@ Additional status: \`cancelled\`
 | **Cards** | View all derived task cards, link/unlink cards |
 | **Sprints** | Create and manage sprints, assign cards, use sprint suggestion algorithm |
 | **History** | Full change log with field-level diffs |
+
+### Negative scenario outcomes
+
+\`negative\` describes an **expected failure path**, not a test that is expected to fail. For a negative scenario, \`passed\` means the expected error/status **and the expected invariants** occurred; \`failed\` means the observed behavior diverged from those expectations.
 
 ### Coverage governance
 
@@ -1344,6 +1349,76 @@ Changes apply without restarting the server. The Decay Tick tab also polls \`/kg
 Individual specs can override board-level settings. Toggle the skip flags directly on the spec to bypass specific checks for that spec only.
 `,
     },
+    {
+      id: 'curated-spec-checklist',
+      title: 'Curated Spec Checklist',
+      icon: <ListChecks size={16} />,
+      content: `
+## Curated Spec Checklist — Traceable Spec quality governance
+
+The Curated Spec Checklist is a **board-level policy** that controls how the immutable \`/specify/v1\` checklist participates in Spec Validation. “Curated” means that its ten ordered checks are maintained by Okto Pulse rather than edited independently on each board.
+
+Configure the policy for the current board in **Menu → Board → Board Config**. Configure the value inherited by future boards in **Menu → Board → Global Default**. Changing the global default is forward-only: it does not alter existing boards.
+
+### Policy modes
+
+| Mode | Checklist execution | Validation effect |
+|------|---------------------|-------------------|
+| **Off** | Disabled | Never blocks validation |
+| **Advisory** | Enabled and stored as traceable evidence | Never blocks validation |
+| **Blocking** | Required | Requires a current passing receipt before the Spec can be validated |
+
+**Advisory** is the recommended adoption mode while a team calibrates evidence and anchors. Promote the policy to **Blocking** once checklist runs are consistent. Use **Off** only for an intentional opt-out or legacy compatibility.
+
+### The ten curated checks
+
+1. Scope and boundaries
+2. Functional requirement value
+3. Testable FR and AC coverage
+4. Measurable acceptance criteria
+5. Edge cases and failure paths
+6. Dependencies and assumptions
+7. No unresolved placeholders
+8. Functional and technical requirement separation
+9. Stable IDs and traceability
+10. Decision rationale
+
+Every result requires a concrete **anchor** to evidence in the Spec. Items 5, 6, 8 and 10 may be marked **Not applicable**, with a required rationale. All ten ordered results are submitted together.
+
+### Receipts and currentness
+
+A completed run produces an immutable, auditable receipt. The Spec modal shows its result, counts, currentness and paginated receipt history.
+
+A receipt becomes **stale** when the evaluated Spec version, content, inputs, or executable checklist identity changes. Changing only the policy from Advisory to Blocking does not make an otherwise current receipt stale; an existing native receipt with no failed items can immediately satisfy Blocking.
+
+The visible states are:
+
+- \`off\` — policy disabled
+- \`not_started\` — no receipt exists
+- \`current\` — receipt still matches the Spec
+- \`stale\` — the Spec or executable inputs changed
+- \`failed\` — at least one checklist item failed
+
+### Relationship with Spec Validation
+
+The checklist and the score-based Spec Validation Gate are independent and cumulative:
+
+- With \`require_spec_validation=true\`, use the formal Spec Validation submission; a Blocking checklist must also be satisfied.
+- With \`require_spec_validation=false\`, a direct \`approved → validated\` transition is available, but a Blocking checklist still applies.
+
+Turning off the score-based gate does not turn off this checklist. Select the **Off** checklist mode when that separate gate must also be disabled.
+
+### Governance and permissions
+
+Only an authenticated human with board write authority can change the current board's checklist mode. Changing the Global Default requires catalog admin/operator authority. Agents cannot change the board binding or the checklist mode carried by a Global Default.
+
+Agent permissions are cumulative: inspection requires both \`board:read\` and \`spec.checklist.read\`; execution requires both \`specs:update\` and \`spec.checklist.execute\`. **Full Control** and **Spec** presets can read and execute; **Validator**, **QA**, **Reporter**, **Sprint Manager**, and **Executor** have read access by default.
+
+### Defaults
+
+When a new Global Default version omits this field, it inherits the active template's mode. If no value exists — including historical templates — the forward default is **Advisory**. New boards snapshot the selected mode from the active Global Default; existing boards are never changed retroactively. Legacy boards that predate checklist governance keep their effective **Off** compatibility behavior until explicitly configured.
+`,
+    },
   ];
 
   if (isEcosystem) {
@@ -1441,16 +1516,32 @@ Both appear in the sidebar for quick switching.
   return sections;
 }
 
-export function HelpPanel({ onClose }: HelpPanelProps) {
+export function HelpPanel({ onClose, initialSectionId }: HelpPanelProps) {
   useEscapeToClose(onClose);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const sections = getSections();
-  const [activeSection, setActiveSection] = useState(() => sections[0]?.id ?? 'quickstart');
+  const [activeSection, setActiveSection] = useState(() => (
+    sections.some((section) => section.id === initialSectionId)
+      ? initialSectionId!
+      : sections[0]?.id ?? 'quickstart'
+  ));
 
   const current = sections.find(s => s.id === activeSection) || sections[0];
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    dialogRef.current?.focus();
+    return () => previouslyFocused?.focus();
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="help-panel-title"
+        tabIndex={-1}
         className="relative w-[90vw] max-w-5xl bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 flex overflow-hidden"
         style={{ height: '85vh' }}
         onClick={e => e.stopPropagation()}
@@ -1460,7 +1551,7 @@ export function HelpPanel({ onClose }: HelpPanelProps) {
           <div className="px-4 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2.5">
             <img src={pulseIcon} alt="Okto Pulse" className="h-8 w-8" />
             <div>
-              <h2 className="text-sm font-bold text-gray-800 dark:text-gray-200">
+              <h2 id="help-panel-title" className="text-sm font-bold text-gray-800 dark:text-gray-200">
                 Help Guide
               </h2>
               <p className="text-[10px] text-gray-400 mt-0.5">
@@ -1496,6 +1587,7 @@ export function HelpPanel({ onClose }: HelpPanelProps) {
             </h3>
             <button
               onClick={onClose}
+              aria-label="Close help"
               className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
             >
               <X size={18} />

@@ -6,11 +6,13 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
+    DDL,
     JSON,
     CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -18,6 +20,7 @@ from sqlalchemy import (
     Text,
     TypeDecorator,
     UniqueConstraint,
+    event,
     func,
     text,
 )
@@ -64,17 +67,24 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
     "consolidation_queue",
     "global_update_outbox",
     "ideations",
+    "ideation_qa_items",
     "kg_cognitive_sources",
     "kg_cognitive_source_revisions",
     "kuzu_node_refs",
+    "quality_assessment_heads",
+    "quality_assessment_receipts",
     "refinements",
+    "refinement_qa_items",
+    "research_decision_entries",
+    "research_decision_heads",
     "specs",
+    "spec_qa_items",
     "sprints",
     "stories",
 )
 GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID = "_global"
 GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION = "gdsr-fence-v2"
-GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v3"
+GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v5"
 GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX = "trg_global_discovery_source_revision"
 
 
@@ -750,6 +760,22 @@ class IdeationQAItem(Base):
     answered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Clarification identity is revision/lifecycle aware in the SK-A
+    # canonicalization contract. Legacy rows converge to active revision 1.
+    revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+    lifecycle: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default=text("'active'"),
+    )
+    tombstoned: Mapped[bool] = mapped_column(
+        nullable=False,
+        server_default=text("false"),
+    )
 
     ideation: Mapped["Ideation"] = relationship("Ideation", back_populates="qa_items")
 
@@ -851,6 +877,12 @@ class Refinement(Base):
     # Archive support
     archived: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
     pre_archive_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Human-only override for the receipt-backed Refinement ambiguity gate.
+    # This is governance metadata and therefore does not bump semantic version.
+    skip_ambiguity_gate: Mapped[bool] = mapped_column(
+        nullable=False,
+        server_default=text("false"),
+    )
     # Cancellation justification (ITEM 17): required when moving to 'cancelled';
     # reopening (cancelled -> any other status) clears all three fields.
     cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1030,6 +1062,20 @@ class RefinementQAItem(Base):
     )
     answered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+    lifecycle: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default=text("'active'"),
+    )
+    tombstoned: Mapped[bool] = mapped_column(
+        nullable=False,
+        server_default=text("false"),
     )
 
     refinement: Mapped["Refinement"] = relationship(
@@ -1279,6 +1325,20 @@ class SpecQAItem(Base):
     )
     answered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+    lifecycle: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default=text("'active'"),
+    )
+    tombstoned: Mapped[bool] = mapped_column(
+        nullable=False,
+        server_default=text("false"),
     )
 
     # Relationships
@@ -2284,6 +2344,33 @@ class PermissionPreset(Base):
     )
 
 
+class PermissionIntroductionAudit(Base):
+    """Append-only SK-A permission-introduction reconciliation evidence."""
+
+    __tablename__ = "permission_introduction_audit"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    manifest_version: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True
+    )
+    phase: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    classification: Mapped[str] = mapped_column(String(80), nullable=False)
+    subject_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    base_preset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    before_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    after_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    introduced_true_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    introduced_false_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    owner_review_required: Mapped[bool] = mapped_column(nullable=False)
+    mutation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class AgentSeenItem(Base):
     """Tracks which items an agent has marked as seen."""
 
@@ -2565,6 +2652,13 @@ class DefaultBoardConfiguration(Base):
     """
 
     __tablename__ = "default_board_configurations"
+    __table_args__ = (
+        CheckConstraint(
+            "spec_checklist_mode IS NULL OR "
+            "spec_checklist_mode IN ('off', 'advisory', 'blocking')",
+            name="ck_default_board_config_spec_checklist_mode",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
@@ -2584,6 +2678,12 @@ class DefaultBoardConfiguration(Base):
     # Design System default ref consumed by the design-system adapter (card #4).
     # Shape: {design_system_id, version, snapshot, gate_mode}.
     design_system_default_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Kept outside settings_payload because the enforcement source of truth is
+    # the versioned ChecklistBinding materialized for each new board. NULL
+    # identifies historical template rows and resolves to Advisory.
+    spec_checklist_mode: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -4630,3 +4730,1628 @@ class KnowledgeMutationAttemptRecord(Base):
     reason_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     reason_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+# ============================================================================
+# QUALITY ASSESSMENTS (SK-A D0)
+# ============================================================================
+
+
+class QualityAssessmentReceiptRow(Base):
+    """Immutable persisted assessment receipt and replay identity."""
+
+    __tablename__ = "quality_assessment_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "idempotency_key",
+            name="uq_quality_receipt_board_idempotency",
+        ),
+        UniqueConstraint(
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "assessment_kind",
+            "id",
+            name="uq_quality_receipt_subject_identity",
+        ),
+        UniqueConstraint("event_id", name="uq_quality_receipt_event"),
+        UniqueConstraint("history_id", name="uq_quality_receipt_history"),
+        UniqueConstraint("outbox_id", name="uq_quality_receipt_outbox"),
+        CheckConstraint(
+            "subject_type IN ('ideation', 'refinement', 'spec')",
+            name="ck_quality_receipt_subject_type",
+        ),
+        CheckConstraint(
+            "assessment_kind IN "
+            "('ambiguity', 'spec_validation', 'requirement_lint')",
+            name="ck_quality_receipt_kind",
+        ),
+        CheckConstraint(
+            "origin IN "
+            "('human_or_agent', 'spec_validation', 'semantic_writer', "
+            "'legacy_import')",
+            name="ck_quality_receipt_origin",
+        ),
+        CheckConstraint(
+            "source IN ('native', 'legacy_migration')",
+            name="ck_quality_receipt_source",
+        ),
+        CheckConstraint(
+            "outcome IN ('recorded', 'advisory')",
+            name="ck_quality_receipt_outcome",
+        ),
+        CheckConstraint(
+            "scale_kind IN "
+            "('ambiguity_score', 'percentage', 'finding_count')",
+            name="ck_quality_receipt_scale_kind",
+        ),
+        CheckConstraint(
+            "scale_direction IN ('lower_better', 'higher_better')",
+            name="ck_quality_receipt_scale_direction",
+        ),
+        CheckConstraint(
+            "subject_version >= 1",
+            name="ck_quality_receipt_subject_version",
+        ),
+        CheckConstraint(
+            "head_revision >= 1",
+            name="ck_quality_receipt_head_revision",
+        ),
+        CheckConstraint(
+            "scale_minimum < scale_maximum",
+            name="ck_quality_receipt_scale_bounds",
+        ),
+        CheckConstraint(
+            "score >= scale_minimum AND score <= scale_maximum",
+            name="ck_quality_receipt_score_bounds",
+        ),
+        CheckConstraint(
+            "length(content_digest) = 64 "
+            "AND length(clarification_digest) = 64 "
+            "AND length(ruleset_digest) = 64 "
+            "AND length(taxonomy_digest) = 64 "
+            "AND length(policy_digest) = 64 "
+            "AND length(input_digest) = 64 "
+            "AND length(run_identity_digest) = 64 "
+            "AND length(authority_digest) = 64 "
+            "AND length(request_digest) = 64",
+            name="ck_quality_receipt_digest_lengths",
+        ),
+        Index(
+            "ix_quality_receipt_subject_created",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_quality_receipt_subject_kind_created",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "assessment_kind",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    assessment_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    origin: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    channel: Mapped[str] = mapped_column(String(128), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False)
+    scale_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    scale_minimum: Mapped[float] = mapped_column(Float, nullable=False)
+    scale_maximum: Mapped[float] = mapped_column(Float, nullable=False)
+    scale_direction: Mapped[str] = mapped_column(String(24), nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    clarification_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    ruleset_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    taxonomy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonicalization_version: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    ruleset_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    analyzer_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    run_identity_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    authority_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    predecessor_receipt_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("quality_assessment_receipts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    history_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    outbox_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    head_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class QualityFindingRow(Base):
+    """Lossless finding projection with stable structured anchors."""
+
+    __tablename__ = "quality_findings"
+    __table_args__ = (
+        UniqueConstraint(
+            "receipt_id",
+            "finding_key",
+            name="uq_quality_finding_receipt_key",
+        ),
+        UniqueConstraint(
+            "receipt_id",
+            "id",
+            name="uq_quality_finding_receipt_id",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="ck_quality_finding_confidence",
+        ),
+        CheckConstraint(
+            "anchor_subject_version >= 1",
+            name="ck_quality_finding_anchor_version",
+        ),
+        CheckConstraint(
+            "length(anchor_input_digest) = 64",
+            name="ck_quality_finding_input_digest",
+        ),
+        CheckConstraint(
+            "subject_type IN ('ideation', 'refinement', 'spec') "
+            "AND anchor_subject_type IN ('ideation', 'refinement', 'spec')",
+            name="ck_quality_finding_subject_types",
+        ),
+        CheckConstraint(
+            "assessment_kind IN "
+            "('ambiguity', 'spec_validation', 'requirement_lint')",
+            name="ck_quality_finding_kind",
+        ),
+        CheckConstraint(
+            "severity IN ('info', 'low', 'medium', 'high', 'critical')",
+            name="ck_quality_finding_severity",
+        ),
+        CheckConstraint(
+            "anchor_type IN ('whole_artifact', 'field', 'structured_child', 'qa')",
+            name="ck_quality_finding_anchor_type",
+        ),
+        CheckConstraint(
+            "lifecycle IN ('open', 'resolved', 'superseded')",
+            name="ck_quality_finding_lifecycle",
+        ),
+        ForeignKeyConstraint(
+            (
+                "board_id",
+                "subject_type",
+                "subject_id",
+                "assessment_kind",
+                "receipt_id",
+            ),
+            (
+                "quality_assessment_receipts.board_id",
+                "quality_assessment_receipts.subject_type",
+                "quality_assessment_receipts.subject_id",
+                "quality_assessment_receipts.assessment_kind",
+                "quality_assessment_receipts.id",
+            ),
+            ondelete="CASCADE",
+            name="fk_quality_finding_receipt_subject",
+        ),
+        Index(
+            "ix_quality_finding_subject_created",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    receipt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    assessment_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    finding_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    category_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    severity: Mapped[str] = mapped_column(String(24), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    deterministic: Mapped[bool] = mapped_column(nullable=False)
+    blocking_eligible: Mapped[bool] = mapped_column(nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    anchor_board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    anchor_subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    anchor_subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    anchor_subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    anchor_input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    anchor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    anchor_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    excerpt_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    lifecycle: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    remediation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rule_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class QualityProposedQuestionRow(Base):
+    """Receipt-owned proposal linked to the server-issued subject Q&A id."""
+
+    __tablename__ = "quality_proposed_questions"
+    __table_args__ = (
+        UniqueConstraint(
+            "receipt_id",
+            "client_key",
+            name="uq_quality_question_receipt_client",
+        ),
+        UniqueConstraint(
+            "receipt_id",
+            "qa_id",
+            name="uq_quality_question_receipt_qa",
+        ),
+        Index(
+            "ix_quality_question_receipt_created",
+            "receipt_id",
+            "created_at",
+            "qa_id",
+        ),
+    )
+
+    qa_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("quality_assessment_receipts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    client_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    question_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    choices: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    allow_free_text: Mapped[bool] = mapped_column(nullable=False)
+    category_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class QualityFindingQaLinkRow(Base):
+    """Receipt-scoped many-to-many link between findings and proposed Q&A."""
+
+    __tablename__ = "quality_finding_qa_links"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("receipt_id", "finding_id"),
+            ("quality_findings.receipt_id", "quality_findings.id"),
+            ondelete="CASCADE",
+            name="fk_quality_link_finding",
+        ),
+        ForeignKeyConstraint(
+            ("receipt_id", "qa_id"),
+            (
+                "quality_proposed_questions.receipt_id",
+                "quality_proposed_questions.qa_id",
+            ),
+            ondelete="CASCADE",
+            name="fk_quality_link_question",
+        ),
+    )
+
+    receipt_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    finding_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    qa_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+
+class QualityAssessmentHeadRow(Base):
+    """CAS-protected current receipt pointer per subject and assessment kind."""
+
+    __tablename__ = "quality_assessment_heads"
+    __table_args__ = (
+        UniqueConstraint("receipt_id", name="uq_quality_head_receipt"),
+        CheckConstraint("revision >= 1", name="ck_quality_head_revision"),
+        CheckConstraint(
+            "subject_type IN ('ideation', 'refinement', 'spec')",
+            name="ck_quality_head_subject_type",
+        ),
+        CheckConstraint(
+            "assessment_kind IN "
+            "('ambiguity', 'spec_validation', 'requirement_lint')",
+            name="ck_quality_head_kind",
+        ),
+        ForeignKeyConstraint(
+            (
+                "board_id",
+                "subject_type",
+                "subject_id",
+                "assessment_kind",
+                "receipt_id",
+            ),
+            (
+                "quality_assessment_receipts.board_id",
+                "quality_assessment_receipts.subject_type",
+                "quality_assessment_receipts.subject_id",
+                "quality_assessment_receipts.assessment_kind",
+                "quality_assessment_receipts.id",
+            ),
+            ondelete="CASCADE",
+            name="fk_quality_head_receipt_subject",
+        ),
+        Index(
+            "ix_quality_head_subject",
+            "board_id",
+            "subject_type",
+            "subject_id",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), primary_key=True)
+    subject_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    assessment_kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    receipt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class QualityAssessmentOutboxRow(Base):
+    """Verifiable outbox identity paired with the canonical domain event."""
+
+    __tablename__ = "quality_assessment_outbox"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_quality_outbox_event"),
+        UniqueConstraint("receipt_id", name="uq_quality_outbox_receipt"),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'done', 'failed')",
+            name="ck_quality_outbox_status",
+        ),
+        Index(
+            "ix_quality_outbox_status_created",
+            "status",
+            "occurred_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    event_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("domain_events.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("quality_assessment_receipts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        server_default=text("'pending'"),
+    )
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+# ============================================================================
+# SK-A RESEARCH DECISION LEDGER
+# ============================================================================
+
+
+class ResearchDecisionEntryRow(Base):
+    """Immutable RDL entry; evolution is represented only by a successor."""
+
+    __tablename__ = "research_decision_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "refinement_id",
+            "refinement_version",
+            name="uq_rdl_entry_refinement_version",
+        ),
+        UniqueConstraint(
+            "predecessor_entry_id",
+            name="uq_rdl_entry_predecessor",
+        ),
+        CheckConstraint(
+            "refinement_version >= 1",
+            name="ck_rdl_entry_refinement_version",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'investigating', 'resolved', 'deferred')",
+            name="ck_rdl_entry_status",
+        ),
+        CheckConstraint(
+            "anchor_type IN "
+            "('functional_requirement', 'acceptance_criterion', "
+            "'technical_requirement', 'qa')",
+            name="ck_rdl_entry_anchor_type",
+        ),
+        Index(
+            "ix_rdl_entry_refinement_created",
+            "board_id",
+            "refinement_id",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_rdl_entry_ledger_created",
+            "ledger_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ledger_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id"),
+        nullable=False,
+    )
+    refinement_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("refinements.id"),
+        nullable=False,
+    )
+    refinement_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    predecessor_entry_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("research_decision_entries.id"),
+        nullable=True,
+    )
+    unknown: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    anchor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    anchor_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    evidence_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    alternatives: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    decision: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_absence_justification: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ResearchDecisionHeadRow(Base):
+    """CAS pointer to the current immutable entry of one ledger thread."""
+
+    __tablename__ = "research_decision_heads"
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_rdl_head_revision"),
+        CheckConstraint(
+            "refinement_version >= 1",
+            name="ck_rdl_head_refinement_version",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'investigating', 'resolved', 'deferred')",
+            name="ck_rdl_head_status",
+        ),
+        UniqueConstraint(
+            "current_entry_id",
+            name="uq_rdl_head_current_entry",
+        ),
+        Index(
+            "ix_rdl_head_refinement",
+            "board_id",
+            "refinement_id",
+            "ledger_id",
+        ),
+    )
+
+    ledger_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id"),
+        nullable=False,
+    )
+    refinement_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("refinements.id"),
+        nullable=False,
+    )
+    current_entry_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("research_decision_entries.id"),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    refinement_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ResearchDecisionHistoryRow(Base):
+    """Insert-only audit row paired one-to-one with an RDL entry."""
+
+    __tablename__ = "research_decision_history"
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('append', 'supersede')",
+            name="ck_rdl_history_action",
+        ),
+        UniqueConstraint("entry_id", name="uq_rdl_history_entry"),
+        Index(
+            "ix_rdl_history_refinement_created",
+            "board_id",
+            "refinement_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id"),
+        nullable=False,
+    )
+    refinement_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("refinements.id"),
+        nullable=False,
+    )
+    ledger_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    entry_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("research_decision_entries.id"),
+        nullable=False,
+    )
+    predecessor_entry_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    from_refinement_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    to_refinement_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ResearchDecisionOutboxRow(Base):
+    """Pending dispatch paired with the canonical domain event."""
+
+    __tablename__ = "research_decision_outbox"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_rdl_outbox_event"),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'done', 'failed')",
+            name="ck_rdl_outbox_status",
+        ),
+        Index(
+            "ix_rdl_outbox_status_available",
+            "status",
+            "available_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    event_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("domain_events.id"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    partition_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        server_default=text("'pending'"),
+    )
+    available_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ResearchDecisionIdempotencyRow(Base):
+    """Stable request binding used to return the original write receipt."""
+
+    __tablename__ = "research_decision_idempotency"
+    __table_args__ = (
+        CheckConstraint(
+            "length(request_digest) = 64",
+            name="ck_rdl_idempotency_digest",
+        ),
+        Index(
+            "ix_rdl_idempotency_entry",
+            "entry_id",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id"),
+        primary_key=True,
+    )
+    refinement_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("refinements.id"),
+        primary_key=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    ledger_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    entry_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("research_decision_entries.id"),
+        nullable=False,
+    )
+    head_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    refinement_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    history_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("research_decision_history.id"),
+        nullable=False,
+    )
+    event_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("domain_events.id"),
+        nullable=False,
+    )
+    outbox_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("research_decision_outbox.id"),
+        nullable=False,
+    )
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ResearchDecisionSnapshotRow(Base):
+    """Frozen head identities captured at one Refinement version."""
+
+    __tablename__ = "research_decision_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "refinement_id",
+            "refinement_version",
+            name="uq_rdl_snapshot_refinement_version",
+        ),
+        Index(
+            "ix_rdl_snapshot_refinement_created",
+            "board_id",
+            "refinement_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id"),
+        nullable=False,
+    )
+    refinement_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("refinements.id"),
+        nullable=False,
+    )
+    refinement_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    heads_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ResearchDecisionDerivationRow(Base):
+    """Immutable resolved RDL references bound to one derived Spec version."""
+
+    __tablename__ = "research_decision_derivations"
+    __table_args__ = (
+        UniqueConstraint(
+            "spec_id",
+            "spec_version",
+            name="uq_rdl_derivation_spec_version",
+        ),
+        CheckConstraint(
+            "spec_version >= 1",
+            name="ck_rdl_derivation_spec_version",
+        ),
+        CheckConstraint(
+            "source_refinement_version >= 1",
+            name="ck_rdl_derivation_refinement_version",
+        ),
+        Index(
+            "ix_rdl_derivation_source",
+            "board_id",
+            "source_refinement_id",
+            "source_snapshot_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+        default=lambda: f"rdld_{uuid.uuid4().hex}",
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id"),
+        nullable=False,
+    )
+    spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("specs.id"),
+        nullable=False,
+    )
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_refinement_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("refinements.id"),
+        nullable=False,
+    )
+    source_refinement_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    source_snapshot_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("research_decision_snapshots.id"),
+        nullable=False,
+    )
+    references_json: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+for _rdl_immutable_table in (
+    ResearchDecisionEntryRow.__table__,
+    ResearchDecisionHistoryRow.__table__,
+    ResearchDecisionSnapshotRow.__table__,
+    ResearchDecisionDerivationRow.__table__,
+):
+    event.listen(
+        _rdl_immutable_table,
+        "after_create",
+        DDL(
+            "CREATE TRIGGER IF NOT EXISTS "
+            f"trg_{_rdl_immutable_table.name}_immutable_update "
+            f"BEFORE UPDATE ON {_rdl_immutable_table.name} "
+            "BEGIN SELECT RAISE(ABORT, "
+            "'research_decision_entry_immutable'); END"
+        ).execute_if(dialect="sqlite"),
+    )
+    event.listen(
+        _rdl_immutable_table,
+        "after_create",
+        DDL(
+            "CREATE TRIGGER IF NOT EXISTS "
+            f"trg_{_rdl_immutable_table.name}_immutable_delete "
+            f"BEFORE DELETE ON {_rdl_immutable_table.name} "
+            "BEGIN SELECT RAISE(ABORT, "
+            "'research_decision_entry_immutable'); END"
+        ).execute_if(dialect="sqlite"),
+    )
+
+
+# ============================================================================
+# A3 CURATED SPEC CHECKLIST
+# ============================================================================
+
+
+class ChecklistTemplateVersionRow(Base):
+    """Immutable curated checklist template manifest."""
+
+    __tablename__ = "checklist_template_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "template_id",
+            "digest",
+            name="uq_checklist_template_identity",
+        ),
+        CheckConstraint(
+            "length(digest) = 64",
+            name="ck_checklist_template_digest",
+        ),
+    )
+
+    version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    template_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    items_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ChecklistBindingRow(Base):
+    """Append-only board/target/phase checklist binding version.
+
+    The primary-key version identifies the immutable governance record.
+    ``digest`` identifies executable checklist semantics, so mode-only
+    revisions intentionally share it and it must not be unique in this scope.
+    """
+
+    __tablename__ = "checklist_bindings"
+    __table_args__ = (
+        CheckConstraint(
+            "target_type = 'spec'",
+            name="ck_checklist_binding_target_type",
+        ),
+        CheckConstraint(
+            "phase = 'spec_validation'",
+            name="ck_checklist_binding_phase",
+        ),
+        CheckConstraint(
+            "mode IN ('off', 'advisory', 'blocking')",
+            name="ck_checklist_binding_mode",
+        ),
+        CheckConstraint(
+            "version >= 1",
+            name="ck_checklist_binding_version",
+        ),
+        CheckConstraint(
+            "length(digest) = 64",
+            name="ck_checklist_binding_digest",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    target_type: Mapped[str] = mapped_column(String(24), primary_key=True)
+    phase: Mapped[str] = mapped_column(String(32), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    template_version: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("checklist_template_versions.version"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ChecklistBindingHeadRow(Base):
+    """Mutable CAS pointer to the effective binding version."""
+
+    __tablename__ = "checklist_binding_heads"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            (
+                "board_id",
+                "target_type",
+                "phase",
+                "version",
+            ),
+            (
+                "checklist_bindings.board_id",
+                "checklist_bindings.target_type",
+                "checklist_bindings.phase",
+                "checklist_bindings.version",
+            ),
+            ondelete="CASCADE",
+            name="fk_checklist_binding_head_version",
+        ),
+        CheckConstraint(
+            "version >= 1",
+            name="ck_checklist_binding_head_version",
+        ),
+        CheckConstraint(
+            "length(digest) = 64",
+            name="ck_checklist_binding_head_digest",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    target_type: Mapped[str] = mapped_column(String(24), primary_key=True)
+    phase: Mapped[str] = mapped_column(String(32), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ChecklistExecutionRow(Base):
+    """Frozen checklist execution opened before item submission."""
+
+    __tablename__ = "checklist_executions"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "idempotency_key",
+            name="uq_checklist_execution_idempotency",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'submitted')",
+            name="ck_checklist_execution_status",
+        ),
+        CheckConstraint(
+            "binding_mode IN ('advisory', 'blocking')",
+            name="ck_checklist_execution_binding_mode",
+        ),
+        CheckConstraint(
+            "spec_version >= 1 AND binding_version >= 1 AND revision >= 1",
+            name="ck_checklist_execution_versions",
+        ),
+        CheckConstraint(
+            "length(content_digest) = 64 "
+            "AND length(input_digest) = 64 "
+            "AND length(template_digest) = 64 "
+            "AND length(binding_digest) = 64 "
+            "AND length(request_digest) = 64",
+            name="ck_checklist_execution_digests",
+        ),
+        Index(
+            "ix_checklist_execution_spec_created",
+            "board_id",
+            "spec_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("specs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    template_version: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("checklist_template_versions.version"),
+        nullable=False,
+    )
+    template_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    binding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    receipt_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ChecklistReceiptRow(Base):
+    """Immutable server-issued result receipt for one complete execution."""
+
+    __tablename__ = "checklist_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "idempotency_key",
+            name="uq_checklist_receipt_idempotency",
+        ),
+        CheckConstraint(
+            "source IN ('native', 'legacy_unverified')",
+            name="ck_checklist_receipt_source",
+        ),
+        CheckConstraint(
+            "binding_mode IN ('off', 'advisory', 'blocking')",
+            name="ck_checklist_receipt_binding_mode",
+        ),
+        CheckConstraint(
+            "spec_version >= 1 AND binding_version >= 1 AND head_revision >= 1",
+            name="ck_checklist_receipt_versions",
+        ),
+        CheckConstraint(
+            "length(content_digest) = 64 "
+            "AND length(input_digest) = 64 "
+            "AND length(template_digest) = 64 "
+            "AND length(binding_digest) = 64 "
+            "AND length(request_digest) = 64",
+            name="ck_checklist_receipt_digests",
+        ),
+        Index(
+            "ix_checklist_receipt_spec_created",
+            "board_id",
+            "spec_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("specs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    execution_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("checklist_executions.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    template_version: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("checklist_template_versions.version"),
+        nullable=False,
+    )
+    template_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    binding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    source: Mapped[str] = mapped_column(String(24), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    manual_checklist_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    predecessor_receipt_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    head_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ChecklistItemResultRow(Base):
+    """Immutable, ordered per-item result belonging to one receipt."""
+
+    __tablename__ = "checklist_item_results"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('pass', 'fail', 'not_applicable')",
+            name="ck_checklist_item_outcome",
+        ),
+        CheckConstraint(
+            "order_index >= 0",
+            name="ck_checklist_item_order",
+        ),
+        UniqueConstraint(
+            "receipt_id",
+            "order_index",
+            name="uq_checklist_item_order",
+        ),
+    )
+
+    receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("checklist_receipts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    item_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    execution_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("checklist_executions.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False)
+    anchor: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ChecklistExecutionHeadRow(Base):
+    """Mutable CAS pointer to the latest receipt for a Spec/phase."""
+
+    __tablename__ = "checklist_execution_heads"
+    __table_args__ = (
+        UniqueConstraint(
+            "receipt_id",
+            name="uq_checklist_execution_head_receipt",
+        ),
+        CheckConstraint(
+            "phase = 'spec_validation'",
+            name="ck_checklist_execution_head_phase",
+        ),
+        CheckConstraint(
+            "revision >= 1",
+            name="ck_checklist_execution_head_revision",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("specs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    phase: Mapped[str] = mapped_column(String(32), primary_key=True)
+    receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("checklist_receipts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+for _checklist_immutable_table in (
+    ChecklistTemplateVersionRow.__table__,
+    ChecklistBindingRow.__table__,
+    ChecklistReceiptRow.__table__,
+    ChecklistItemResultRow.__table__,
+):
+    event.listen(
+        _checklist_immutable_table,
+        "after_create",
+        DDL(
+            "CREATE TRIGGER IF NOT EXISTS "
+            f"trg_{_checklist_immutable_table.name}_immutable_update "
+            f"BEFORE UPDATE ON {_checklist_immutable_table.name} "
+            "BEGIN SELECT RAISE(ABORT, "
+            "'checklist_row_immutable'); END"
+        ).execute_if(dialect="sqlite"),
+    )
+
+
+# ============================================================================
+# SK-A C7 LEGACY IMPORT EPOCH + QUALITY LIFECYCLE
+# ============================================================================
+
+
+class QualityAssessmentSubjectErasurePermitRow(Base):
+    """Transaction-local permit for one governed subject purge."""
+
+    __tablename__ = "quality_assessment_subject_erasure_permits"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "subject_type",
+            "subject_id",
+            name="uq_quality_subject_erasure_scope",
+        ),
+        CheckConstraint(
+            "subject_type IN ('ideation', 'refinement', 'spec')",
+            name="ck_quality_subject_erasure_type",
+        ),
+    )
+
+    permit_token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class QualityAssessmentLegacyImportRunRow(Base):
+    """Immutable, board-scoped v1 import plan header."""
+
+    __tablename__ = "quality_assessment_legacy_import_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "candidate_count >= 0",
+            name="ck_quality_legacy_run_candidate_count",
+        ),
+        CheckConstraint(
+            "length(code_digest) = 64 "
+            "AND length(candidate_digest) = 64 "
+            "AND length(plan_digest) = 64",
+            name="ck_quality_legacy_run_digests",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    epoch: Mapped[str] = mapped_column(String(128), primary_key=True)
+    cutoff: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    code_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    rejection_counts_json: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+    contract_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class QualityAssessmentLegacyImportCandidateRow(Base):
+    """Frozen candidate plan with the exact BR15 five-column identity."""
+
+    __tablename__ = "quality_assessment_legacy_import_candidates"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("board_id", "epoch"),
+            (
+                "quality_assessment_legacy_import_runs.board_id",
+                "quality_assessment_legacy_import_runs.epoch",
+            ),
+            ondelete="CASCADE",
+            name="fk_quality_legacy_candidate_run",
+        ),
+        UniqueConstraint(
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "assessment_kind",
+            "epoch",
+            name="uq_quality_legacy_candidate_physical_identity",
+        ),
+        CheckConstraint(
+            "ordinal >= 0 AND subject_version >= 1",
+            name="ck_quality_legacy_candidate_ord_version",
+        ),
+        CheckConstraint(
+            "(subject_type = 'ideation' AND assessment_kind = 'ambiguity') "
+            "OR (subject_type = 'spec' "
+            "AND assessment_kind = 'spec_validation')",
+            name="ck_quality_legacy_candidate_subject_kind",
+        ),
+        CheckConstraint(
+            "scale_minimum < scale_maximum "
+            "AND score >= scale_minimum AND score <= scale_maximum",
+            name="ck_quality_legacy_candidate_score",
+        ),
+        CheckConstraint(
+            "length(content_digest) = 64 "
+            "AND length(clarification_digest) = 64 "
+            "AND length(ruleset_digest) = 64 "
+            "AND length(taxonomy_digest) = 64 "
+            "AND length(policy_digest) = 64 "
+            "AND length(input_digest) = 64 "
+            "AND length(legacy_source_digest) = 64",
+            name="ck_quality_legacy_candidate_digests",
+        ),
+        Index(
+            "ix_quality_legacy_candidate_subject",
+            "board_id",
+            "subject_type",
+            "subject_id",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    epoch: Mapped[str] = mapped_column(String(128), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    assessment_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    scale_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    scale_minimum: Mapped[float] = mapped_column(Float, nullable=False)
+    scale_maximum: Mapped[float] = mapped_column(Float, nullable=False)
+    scale_direction: Mapped[str] = mapped_column(String(24), nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    clarification_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    ruleset_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    taxonomy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonicalization_version: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    ruleset_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    analyzer_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    legacy_source_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    legacy_source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class QualityAssessmentLegacyImportCheckpointRow(Base):
+    """Durable cursor advanced atomically with one candidate resolution."""
+
+    __tablename__ = "quality_assessment_legacy_import_checkpoints"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("board_id", "epoch"),
+            (
+                "quality_assessment_legacy_import_runs.board_id",
+                "quality_assessment_legacy_import_runs.epoch",
+            ),
+            ondelete="CASCADE",
+            name="fk_quality_legacy_checkpoint_run",
+        ),
+        CheckConstraint(
+            "processed_count >= 0 AND imported_count >= 0 "
+            "AND native_wins_count >= 0 "
+            "AND processed_count = imported_count + native_wins_count "
+            "AND revision >= 1",
+            name="ck_quality_legacy_checkpoint_counts",
+        ),
+        CheckConstraint(
+            "(processed_count = 0 AND cursor_ordinal IS NULL "
+            "AND last_subject_type IS NULL AND last_subject_id IS NULL "
+            "AND last_assessment_kind IS NULL) "
+            "OR (processed_count > 0 "
+            "AND cursor_ordinal = processed_count - 1 "
+            "AND last_subject_type IS NOT NULL "
+            "AND last_subject_id IS NOT NULL "
+            "AND last_assessment_kind IS NOT NULL)",
+            name="ck_quality_legacy_checkpoint_cursor",
+        ),
+        CheckConstraint(
+            "length(plan_digest) = 64 AND length(candidate_digest) = 64",
+            name="ck_quality_legacy_checkpoint_digests",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    epoch: Mapped[str] = mapped_column(String(128), primary_key=True)
+    plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    processed_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    imported_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    native_wins_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    cursor_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_subject_type: Mapped[str | None] = mapped_column(
+        String(24),
+        nullable=True,
+    )
+    last_subject_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    last_assessment_kind: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class QualityAssessmentLegacyImportResolutionRow(Base):
+    """Immutable per-candidate imported/native-wins resolution evidence."""
+
+    __tablename__ = "quality_assessment_legacy_import_resolutions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("board_id", "epoch", "ordinal"),
+            (
+                "quality_assessment_legacy_import_candidates.board_id",
+                "quality_assessment_legacy_import_candidates.epoch",
+                "quality_assessment_legacy_import_candidates.ordinal",
+            ),
+            ondelete="CASCADE",
+            name="fk_quality_legacy_resolution_candidate",
+        ),
+        CheckConstraint(
+            "resolution IN ('imported', 'native_wins')",
+            name="ck_quality_legacy_resolution_kind",
+        ),
+        CheckConstraint(
+            "processed_count >= 1 AND imported_count >= 0 "
+            "AND native_wins_count >= 0 "
+            "AND processed_count = imported_count + native_wins_count",
+            name="ck_quality_legacy_resolution_counts",
+        ),
+        CheckConstraint(
+            "length(request_digest) = 64 "
+            "AND length(run_identity_digest) = 64 "
+            "AND length(authority_digest) = 64",
+            name="ck_quality_legacy_resolution_digests",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    epoch: Mapped[str] = mapped_column(String(128), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    resolution: Mapped[str] = mapped_column(String(24), nullable=False)
+    processed_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    imported_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    native_wins_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Deliberately not an FK: subject purge preserves this durable epoch even
+    # when the referenced operational receipt is physically erased.
+    receipt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    history_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    outbox_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_identity_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    authority_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    resolved_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class QualityAssessmentLegacyImportCompletionRow(Base):
+    """Immutable closure marker written only after physical postconditions."""
+
+    __tablename__ = "quality_assessment_legacy_import_completions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("board_id", "epoch"),
+            (
+                "quality_assessment_legacy_import_runs.board_id",
+                "quality_assessment_legacy_import_runs.epoch",
+            ),
+            ondelete="CASCADE",
+            name="fk_quality_legacy_completion_run",
+        ),
+        CheckConstraint(
+            "candidate_count >= 0 AND processed_count = candidate_count "
+            "AND imported_count >= 0 AND native_wins_count >= 0 "
+            "AND processed_count = imported_count + native_wins_count",
+            name="ck_quality_legacy_completion_counts",
+        ),
+        CheckConstraint(
+            "length(plan_digest) = 64 "
+            "AND length(candidate_digest) = 64 "
+            "AND length(postcondition_digest) = 64",
+            name="ck_quality_legacy_completion_digests",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    epoch: Mapped[str] = mapped_column(String(128), primary_key=True)
+    plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    processed_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    imported_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    native_wins_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    all_candidates_resolved: Mapped[bool] = mapped_column(nullable=False)
+    unique_identity_satisfied: Mapped[bool] = mapped_column(nullable=False)
+    checkpoint_consistent: Mapped[bool] = mapped_column(nullable=False)
+    zero_orphans: Mapped[bool] = mapped_column(nullable=False)
+    audit_bundles_consistent: Mapped[bool] = mapped_column(nullable=False)
+    epoch_closed: Mapped[bool] = mapped_column(nullable=False)
+    postcondition_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class QualityAssessmentLifecycleTransitionRow(Base):
+    """Idempotency fence and audit binding for archive/cancel/restore/reopen."""
+
+    __tablename__ = "quality_assessment_lifecycle_transitions"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "idempotency_key",
+            name="uq_quality_lifecycle_board_idempotency",
+        ),
+        CheckConstraint(
+            "action IN ('archive', 'cancel', 'restore', 'reopen')",
+            name="ck_quality_lifecycle_action",
+        ),
+        CheckConstraint(
+            "subject_type IN ('ideation', 'refinement', 'spec') "
+            "AND before_version >= 1 AND after_version >= 1",
+            name="ck_quality_lifecycle_subject",
+        ),
+        CheckConstraint(
+            "length(transition_digest) = 64",
+            name="ck_quality_lifecycle_digest",
+        ),
+        Index(
+            "ix_quality_lifecycle_subject",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "occurred_at",
+        ),
+    )
+
+    transition_digest: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    before_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    before_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    before_archived: Mapped[bool] = mapped_column(nullable=False)
+    after_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    after_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    after_archived: Mapped[bool] = mapped_column(nullable=False)
+    head_rebuilds_json: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    event_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    history_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    outbox_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class QualityAssessmentLifecycleStaleTransitionRow(Base):
+    """At-most-once evidence that a restored/reopened head became stale."""
+
+    __tablename__ = "quality_assessment_lifecycle_stale_transitions"
+    __table_args__ = (
+        CheckConstraint(
+            "assessment_kind IN "
+            "('ambiguity', 'spec_validation', 'requirement_lint')",
+            name="ck_quality_lifecycle_stale_kind",
+        ),
+        Index(
+            "ix_quality_lifecycle_stale_subject",
+            "board_id",
+            "subject_type",
+            "subject_id",
+        ),
+    )
+
+    stale_transition_key: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
+    transition_digest: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "quality_assessment_lifecycle_transitions.transition_digest",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    assessment_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    receipt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)

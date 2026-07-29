@@ -4,7 +4,7 @@ Covers the 7 test scenarios 1:1:
 
   ts_8d495739 — contract imports in isolation (subprocess: no sqlalchemy /
                 infra.database / community in sys.modules).
-  ts_26bd0c7a — ledger covers the 4 data-bootstrap domains in init_db order.
+  ts_26bd0c7a — ledger covers the data-bootstrap domains in init_db order.
   ts_71673acb — idempotent replay preserves presets/flags (re-run -> skipped).
   ts_533312dd — discovery intents preserve tool_binding/params_schema/
                 min_permission/is_seed on rerun.
@@ -58,7 +58,7 @@ from okto_pulse.core.ports import (
     require_bootstrapper,
 )
 
-CORE_SRC = Path(_db_mod.__file__).parents[3]  # .../okto_labs_pulse_core/src
+CORE_SRC = Path(_db_mod.__file__).parents[3]  # selected Core checkout /src
 COMMUNITY_SRC = Path(__file__).resolve().parents[1] / "src"
 
 _DATA_BOOTSTRAP_STEP_IDS = (
@@ -67,6 +67,7 @@ _DATA_BOOTSTRAP_STEP_IDS = (
     "_reconcile_agent_permission_flags",
     "_bootstrap_default_discovery_intents",
     "_backfill_knowledge_propagation_v2",
+    "_bootstrap_quality_assessment_legacy_import_v1",
 )
 
 
@@ -142,18 +143,19 @@ def test_ts_8d495739_contract_imports_in_isolation(tmp_path):
 
 
 # ===========================================================================
-# ts_26bd0c7a — ledger covers the 4 domains in init_db order.
+# ts_26bd0c7a — ledger covers the canonical domains in init_db order.
 # ===========================================================================
-def test_ts_26bd0c7a_ledger_four_domains_in_order():
+def test_ts_26bd0c7a_ledger_domains_in_order():
     ledger = build_community_data_bootstrap_ledger()
     assert [s.step_id for s in ledger] == list(_DATA_BOOTSTRAP_STEP_IDS)
-    assert [s.order for s in ledger] == [1, 2, 3, 4, 5]
+    assert [s.order for s in ledger] == [1, 2, 3, 4, 5, 6]
     assert [s.domain for s in ledger] == [
         "presets",
         "presets",
         "permissions",
         "discovery_intents",
         "knowledge_propagation",
+        "quality_assessment",
     ]
     assert all(s.owner == "community" and s.idempotent for s in ledger)
     # Domains are drawn from the canonical set.
@@ -200,34 +202,302 @@ def test_ts_71673acb_idempotent_replay_preserves_presets_and_flags(
     assert r1.is_success
     assert len(r1.applied_steps) == 4
     assert {step.step_id for step in r1.skipped_steps} == {
-        "_backfill_knowledge_propagation_v2"
+        "_backfill_knowledge_propagation_v2",
+        "_bootstrap_quality_assessment_legacy_import_v1",
     }
     assert after1 == before  # presets/flags/intents preserved, no drift
 
     assert r2.is_success
-    assert not r2.applied_steps and len(r2.skipped_steps) == 5
+    assert not r2.applied_steps and len(r2.skipped_steps) == 6
     assert after2 == before
 
     assert r3.is_success  # fresh instance re-ran the real funcs idempotently
     assert after3 == before
 
 
-def test_ts_71673acb_permission_flags_merge_default_and_preserve(
+def test_c7_legacy_quality_bootstrap_imports_and_replays_without_drift(
     tmp_path, _isolate_engine
 ):
-    # tr_e9908b28 / ac_1293f19a: the permissions-domain step
-    # (_reconcile_agent_permission_flags) must BACKFILL registry keys missing
-    # from an agent's stored flags as True, PRESERVE existing custom leaf values
-    # (never overwrite), and stay idempotent on rerun.
+    async def quality_snapshot():
+        from sqlalchemy import func, select
+
+        from okto_pulse.community.adapters.sqlalchemy_models import (
+            DomainEventHandlerExecution,
+            DomainEventRow,
+            QualityAssessmentHeadRow,
+            QualityAssessmentLegacyImportCandidateRow,
+            QualityAssessmentLegacyImportCheckpointRow,
+            QualityAssessmentLegacyImportCompletionRow,
+            QualityAssessmentLegacyImportResolutionRow,
+            QualityAssessmentLegacyImportRunRow,
+            QualityAssessmentReceiptRow,
+        )
+
+        models = (
+            QualityAssessmentLegacyImportRunRow,
+            QualityAssessmentLegacyImportCandidateRow,
+            QualityAssessmentLegacyImportCheckpointRow,
+            QualityAssessmentLegacyImportResolutionRow,
+            QualityAssessmentLegacyImportCompletionRow,
+            QualityAssessmentReceiptRow,
+            QualityAssessmentHeadRow,
+        )
+        async with _db_mod.get_session_factory()() as session:
+            counts = []
+            for model in models:
+                counts.append(
+                    int(
+                        await session.scalar(
+                            select(func.count())
+                            .select_from(model)
+                            .where(model.board_id == "board-c7-bootstrap")
+                        )
+                        or 0
+                    )
+                )
+            counts.append(
+                int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(DomainEventHandlerExecution)
+                        .join(
+                            DomainEventRow,
+                            DomainEventRow.id
+                            == DomainEventHandlerExecution.event_id,
+                        )
+                        .where(
+                            DomainEventRow.board_id
+                            == "board-c7-bootstrap",
+                            DomainEventHandlerExecution.handler_name
+                            == "ConsolidationEnqueuer",
+                        )
+                    )
+                    or 0
+                )
+            )
+            return tuple(counts)
+
+    async def drive():
+        from okto_pulse.community.adapters.sqlalchemy_models import (
+            Board,
+            Ideation,
+        )
+        from okto_pulse.core.domain.enums import IdeationStatus
+
+        _db_mod.create_database(
+            f"sqlite+aiosqlite:///{tmp_path / 'quality-bootstrap.db'}"
+        )
+        register_community_relational_schema_lifecycle()
+        await _db_mod.init_db()
+        async with _db_mod.get_session_factory()() as session:
+            session.add(
+                Board(
+                    id="board-c7-bootstrap",
+                    name="C7 bootstrap",
+                    owner_id="owner-c7-bootstrap",
+                    realm_id="local",
+                    settings={
+                        "require_ideation_ambiguity_gate": True,
+                        "max_ideation_ambiguity": 3,
+                    },
+                )
+            )
+            session.add(
+                Ideation(
+                    id="ideation-c7-bootstrap",
+                    board_id="board-c7-bootstrap",
+                    title="Legacy ambiguity",
+                    status=IdeationStatus.DONE,
+                    version=1,
+                    scope_assessment={
+                        "ambiguity": 2,
+                        "ambiguity_justification": "Legacy assessment",
+                    },
+                    created_by="owner-c7-bootstrap",
+                )
+            )
+            await session.commit()
+
+        first = make_community_data_bootstrapper()
+        first_result = await first.aexecute(first.plan(target="quality-1"))
+        first_snapshot = await quality_snapshot()
+        replay = make_community_data_bootstrapper()
+        replay_result = await replay.aexecute(replay.plan(target="quality-2"))
+        replay_snapshot = await quality_snapshot()
+        await _db_mod.get_engine().dispose()
+        return (
+            first_result,
+            first_snapshot,
+            replay_result,
+            replay_snapshot,
+        )
+
+    first_result, first_snapshot, replay_result, replay_snapshot = asyncio.run(drive())
+    assert first_result.is_success, first_result.failure_reason
+    assert replay_result.is_success, replay_result.failure_reason
+    assert first_snapshot == (1, 1, 1, 1, 1, 1, 1, 1)
+    assert replay_snapshot == first_snapshot
+
+
+def test_c7_legacy_quality_bootstrap_replays_after_subject_purge(
+    tmp_path, _isolate_engine
+):
+    async def durable_and_physical_snapshot():
+        from sqlalchemy import func, select
+
+        from okto_pulse.community.adapters.sqlalchemy_models import (
+            ActivityLog,
+            DomainEventRow,
+            QualityAssessmentHeadRow,
+            QualityAssessmentLegacyImportCompletionRow,
+            QualityAssessmentOutboxRow,
+            QualityAssessmentReceiptRow,
+        )
+
+        models = (
+            QualityAssessmentLegacyImportCompletionRow,
+            QualityAssessmentReceiptRow,
+            QualityAssessmentHeadRow,
+            DomainEventRow,
+            QualityAssessmentOutboxRow,
+        )
+        async with _db_mod.get_session_factory()() as session:
+            counts = [
+                int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(model)
+                        .where(model.board_id == "board-c7-purge-replay")
+                    )
+                    or 0
+                )
+                for model in models
+            ]
+            counts.append(
+                int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(ActivityLog)
+                        .where(
+                            ActivityLog.board_id
+                            == "board-c7-purge-replay",
+                            ActivityLog.action
+                            == "quality_assessment_legacy_imported",
+                        )
+                    )
+                    or 0
+                )
+            )
+            return tuple(counts)
+
+    async def drive():
+        from okto_pulse.community.adapters.sqlalchemy_models import (
+            Board,
+            Ideation,
+        )
+        from okto_pulse.community.adapters.sqlalchemy_quality_assessment_lifecycle import (
+            CommunitySqlAlchemyQualityAssessmentLifecycle,
+        )
+        from okto_pulse.core.domain.enums import IdeationStatus
+        from okto_pulse.core.domain.quality_assessment import (
+            AssessmentSubjectType,
+        )
+        from okto_pulse.core.services.quality_assessment_lifecycle import (
+            QualityAssessmentLifecycleService,
+        )
+
+        _db_mod.create_database(
+            f"sqlite+aiosqlite:///{tmp_path / 'quality-purge-replay.db'}"
+        )
+        register_community_relational_schema_lifecycle()
+        await _db_mod.init_db()
+        async with _db_mod.get_session_factory()() as session:
+            session.add(
+                Board(
+                    id="board-c7-purge-replay",
+                    name="C7 purge replay",
+                    owner_id="owner-c7-purge-replay",
+                    realm_id="local",
+                    settings={
+                        "require_ideation_ambiguity_gate": True,
+                        "max_ideation_ambiguity": 3,
+                    },
+                )
+            )
+            session.add(
+                Ideation(
+                    id="ideation-c7-purge-replay",
+                    board_id="board-c7-purge-replay",
+                    title="Legacy ambiguity",
+                    status=IdeationStatus.DONE,
+                    version=1,
+                    scope_assessment={
+                        "ambiguity": 2,
+                        "ambiguity_justification": "Legacy assessment",
+                    },
+                    created_by="owner-c7-purge-replay",
+                )
+            )
+            await session.commit()
+
+        first = make_community_data_bootstrapper()
+        first_result = await first.aexecute(first.plan(target="quality-first"))
+
+        lifecycle = QualityAssessmentLifecycleService()
+        purge_plan = lifecycle.prepare_subject_purge(
+            board_id="board-c7-purge-replay",
+            subject_type=AssessmentSubjectType.IDEATION,
+            subject_id="ideation-c7-purge-replay",
+        )
+        async with _db_mod.get_session_factory()() as session:
+            persistence = CommunitySqlAlchemyQualityAssessmentLifecycle(
+                session
+            )
+            purge_postcondition = await persistence.apply_purge_plan(
+                purge_plan
+            )
+            lifecycle.validate_purge_postcondition(
+                plan=purge_plan,
+                postcondition=purge_postcondition,
+            )
+            await session.commit()
+
+        after_purge = await durable_and_physical_snapshot()
+        replay = make_community_data_bootstrapper()
+        replay_result = await replay.aexecute(
+            replay.plan(target="quality-after-subject-purge")
+        )
+        after_replay = await durable_and_physical_snapshot()
+        await _db_mod.get_engine().dispose()
+        return first_result, after_purge, replay_result, after_replay
+
+    first_result, after_purge, replay_result, after_replay = asyncio.run(
+        drive()
+    )
+    assert first_result.is_success, first_result.failure_reason
+    # The one-shot completion ledger survives while its subject-scoped
+    # receipt/event/outbox/history bundle is legitimately gone.
+    assert after_purge == (1, 0, 0, 0, 0, 0)
+    assert replay_result.is_success, replay_result.failure_reason
+    # A startup/bootstrap replay trusts the validated durable completion and
+    # neither bricks nor recreates the already-purged operational evidence.
+    assert after_replay == after_purge
+
+
+def test_ts_71673acb_permission_flags_stay_sparse_and_preserve_overrides(
+    tmp_path, _isolate_engine
+):
+    # The permission-domain step must not materialize missing registry leaves.
+    # Sparse explicit values/extensions are preserved and replay is idempotent.
     import copy
 
     from okto_pulse.core.ports.permission_policy import registered_permission_flags
     from okto_pulse.community.adapters.sqlalchemy_models import Agent
 
-    # Registry leaves are all True; build a partial stored tree with two edits:
+    # Build a partial pre-SK-A stored tree with:
     #   * an existing leaf flipped to a custom False (must be preserved);
-    #   * a whole top-level subtree dropped (must be backfilled, all True).
-    permission_registry = registered_permission_flags()
+    #   * a whole top-level subtree absent (must remain absent);
+    #   * all SK-A/v1 leaves absent (must remain absent).
     partial = registered_permission_flags()
     assert "board" in partial and "read" in partial["board"]
     assert "profile" in partial  # a small top-level subtree to drop
@@ -236,6 +506,11 @@ def test_ts_71673acb_permission_flags_merge_default_and_preserve(
     partial["vendor_extension"] = copy.deepcopy(extension)
     partial["board"]["vendor_extension"] = copy.deepcopy(extension)
     del partial["profile"]  # missing subtree -> must be backfilled True
+    del partial["ideation"]["quality"]
+    del partial["refinement"]["quality"]
+    del partial["refinement"]["research_decisions"]
+    del partial["spec"]["quality"]
+    del partial["spec"]["checklist"]
 
     async def _load_flags():
         from sqlalchemy import select
@@ -275,19 +550,250 @@ def test_ts_71673acb_permission_flags_merge_default_and_preserve(
 
     after1, after2 = asyncio.run(drive())
 
-    # Missing subtree backfilled (default True), present and all-True.
-    assert "profile" in after1
-    assert after1["profile"]["update"] is True
+    # Missing leaves remain absent so future manifest/preset grants propagate.
+    assert "profile" not in after1
     # Custom False leaf preserved — NOT overwritten back to True.
     assert after1["board"]["read"] is False
+    assert "quality" not in after1["ideation"]
+    assert "quality" not in after1["refinement"]
+    assert "research_decisions" not in after1["refinement"]
+    assert "quality" not in after1["spec"]
+    assert "checklist" not in after1["spec"]
     # Non-canonical extension keys and their opaque shapes are preserved.
     assert after1["vendor_extension"] == extension
     assert after1["board"]["vendor_extension"] == extension
-    # Every registry top-level key is now present.
-    for key in permission_registry:
-        assert key in after1, f"registry key {key!r} not backfilled"
     # Idempotent: a second reconcile changes nothing.
     assert after2 == after1
+
+
+def test_permission_upgrade_normalizes_full_control_and_preset_snapshots(
+    tmp_path,
+    _isolate_engine,
+):
+    import copy
+
+    from sqlalchemy import select
+
+    from okto_pulse.core.ports.permission_policy import (
+        get_permission_flag,
+        registered_permission_flags,
+        set_permission_flag,
+        ska_permission_introduction_v1,
+    )
+    from okto_pulse.community.adapters.relational_application import (
+        CommunityPermissionPresetGateway,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Agent,
+        PermissionIntroductionAudit,
+        PermissionPreset,
+    )
+
+    def without_ska_branches(flags):
+        result = copy.deepcopy(flags)
+        del result["ideation"]["quality"]
+        del result["refinement"]["quality"]
+        del result["refinement"]["research_decisions"]
+        del result["spec"]["quality"]
+        del result["spec"]["checklist"]
+        return result
+
+    async def load_layers():
+        async with _db_mod.get_session_factory()() as session:
+            rows = (
+                await session.execute(
+                    select(Agent).where(
+                        Agent.id.in_(
+                            (
+                                "upgrade-full",
+                                "upgrade-preset",
+                                "upgrade-faulty",
+                                "upgrade-explicit",
+                                "upgrade-extension",
+                            )
+                        )
+                    )
+                )
+            ).scalars()
+            return {row.id: copy.deepcopy(row.permission_flags) for row in rows}
+
+    async def drive():
+        _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'upgrade.db'}")
+        register_community_relational_schema_lifecycle()
+        await _db_mod.init_db()
+        try:
+            async with _db_mod.get_session_factory()() as session:
+                spec = (
+                    await session.execute(
+                        select(PermissionPreset).where(
+                            PermissionPreset.name == "Spec",
+                            PermissionPreset.is_builtin.is_(True),
+                        )
+                    )
+                ).scalar_one()
+                historical_full = without_ska_branches(registered_permission_flags())
+                historical_full_with_extension = copy.deepcopy(historical_full)
+                historical_full_with_extension["vendor_extension"] = {
+                    "grant": False,
+                    "audit": True,
+                }
+                historical_spec = without_ska_branches(spec.flags)
+                faulty_spec = copy.deepcopy(spec.flags)
+                for leaf in ska_permission_introduction_v1().leaves:
+                    set_permission_flag(faulty_spec, leaf, False)
+                session.add_all(
+                    [
+                        Agent(
+                            id="upgrade-full",
+                            name="Historical Full Control",
+                            api_key="upgrade-full-key",
+                            api_key_hash="upgrade-full-hash",
+                            created_by="upgrade-full-owner",
+                            permission_flags=historical_full,
+                        ),
+                        Agent(
+                            id="upgrade-preset",
+                            name="Historical preset snapshot",
+                            api_key="upgrade-preset-key",
+                            api_key_hash="upgrade-preset-hash",
+                            created_by="upgrade-preset-owner",
+                            preset_id=spec.id,
+                            permission_flags=historical_spec,
+                        ),
+                        Agent(
+                            id="upgrade-faulty",
+                            name="Faulty prior introduction backfill",
+                            api_key="upgrade-faulty-key",
+                            api_key_hash="upgrade-faulty-hash",
+                            created_by="upgrade-faulty-owner",
+                            preset_id=spec.id,
+                            permission_flags=faulty_spec,
+                        ),
+                        Agent(
+                            id="upgrade-explicit",
+                            name="Sparse explicit override",
+                            api_key="upgrade-explicit-key",
+                            api_key_hash="upgrade-explicit-hash",
+                            created_by="upgrade-explicit-owner",
+                            preset_id=spec.id,
+                            permission_flags={"ideation": {"quality": {"read": False}}},
+                        ),
+                        Agent(
+                            id="upgrade-extension",
+                            name="Historical Full Control with extension",
+                            api_key="upgrade-extension-key",
+                            api_key_hash="upgrade-extension-hash",
+                            created_by="upgrade-extension-owner",
+                            permission_flags=historical_full_with_extension,
+                        ),
+                    ]
+                )
+                await session.commit()
+
+            await _bootstrap_steps._reconcile_agent_permission_flags()
+            after_first = await load_layers()
+            await _bootstrap_steps._reconcile_agent_permission_flags()
+            after_second = await load_layers()
+
+            async with _db_mod.get_session_factory()() as session:
+                gateway = CommunityPermissionPresetGateway(session)
+                effective = {
+                    owner: await gateway.get_effective_permissions(
+                        user_id=owner,
+                        board_id="no-ceiling",
+                    )
+                    for owner in (
+                        "upgrade-full-owner",
+                        "upgrade-preset-owner",
+                        "upgrade-faulty-owner",
+                        "upgrade-explicit-owner",
+                        "upgrade-extension-owner",
+                    )
+                }
+                audits = list(
+                    (
+                        await session.execute(
+                            select(PermissionIntroductionAudit).order_by(
+                                PermissionIntroductionAudit.created_at,
+                                PermissionIntroductionAudit.id,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            return after_first, after_second, effective, audits
+        finally:
+            await _db_mod.get_engine().dispose()
+
+    after_first, after_second, effective, audits = asyncio.run(drive())
+    assert after_first == {
+        "upgrade-explicit": {"ideation": {"quality": {"read": False}}},
+        "upgrade-faulty": {},
+        "upgrade-full": None,
+        "upgrade-preset": {},
+        "upgrade-extension": {"vendor_extension": {"grant": False, "audit": True}},
+    }
+    assert after_second == after_first
+
+    manifest = ska_permission_introduction_v1()
+    assert all(
+        get_permission_flag(
+            effective["upgrade-full-owner"].flags,
+            leaf,
+        )
+        is True
+        for leaf in manifest.leaves
+    )
+    extension_effective = effective["upgrade-extension-owner"]
+    assert extension_effective.owner_review_required is True
+    assert extension_effective.review_reason == "unrecognized_direct_permissions"
+    assert extension_effective.flags["vendor_extension"] == {
+        "grant": False,
+        "audit": False,
+    }
+    spec_grants = set(manifest.grants_for("Spec"))
+    for owner in ("upgrade-preset-owner", "upgrade-faulty-owner"):
+        assert {
+            leaf
+            for leaf in manifest.leaves
+            if get_permission_flag(effective[owner].flags, leaf) is True
+        } == spec_grants
+    assert (
+        get_permission_flag(
+            effective["upgrade-explicit-owner"].flags,
+            "ideation.quality.read",
+        )
+        is False
+    )
+    assert (
+        get_permission_flag(
+            effective["upgrade-explicit-owner"].flags,
+            "ideation.quality.assess",
+        )
+        is True
+    )
+    agent_audits = [row for row in audits if row.phase == "agent_reconciliation"]
+    assert agent_audits
+    assert all(row.manifest_version == manifest.version for row in agent_audits)
+    assert all(
+        len(row.before_digest) == 64 and len(row.after_digest) == 64
+        for row in agent_audits
+    )
+    extension_rows = [
+        row for row in agent_audits if row.subject_id == "upgrade-extension"
+    ]
+    assert len(extension_rows) == 2
+    assert all(
+        row.classification == "direct_unrecognized"
+        and row.owner_review_required is True
+        and row.introduced_true_count == 0
+        and row.introduced_false_count == len(manifest.leaves)
+        for row in extension_rows
+    )
+    summaries = [row for row in agent_audits if row.classification == "run_summary"]
+    assert len(summaries) >= 2
+    assert summaries[-1].mutation_count == 0
 
 
 @pytest.mark.parametrize(
@@ -502,9 +1008,7 @@ def test_permission_flag_null_storage_is_backward_compatible_on_replay(
             before = await raw_flags()
             # Exercise the actual startup composition (migration followed by
             # data reconciliation), not only the helper in isolation.
-            orchestrator = (
-                make_community_relational_schema_lifecycle_orchestrator()
-            )
+            orchestrator = make_community_relational_schema_lifecycle_orchestrator()
             await orchestrator.initialize_schema()
             after = await raw_flags()
             async with _db_mod.get_session_factory()() as session:

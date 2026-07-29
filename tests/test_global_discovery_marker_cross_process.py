@@ -24,15 +24,13 @@ from pathlib import Path
 
 import pytest
 
+from repo_layout import resolve_core_repo
+
 pytest.importorskip("ladybug")
 
 REPO_SRC = Path(__file__).parent.parent / "src"
-WORKSPACE_ROOT = Path(__file__).parent.parent.parent
-CORE_SRC_CANDIDATES = (
-    WORKSPACE_ROOT / "okto_labs_pulse_core" / "src",
-    WORKSPACE_ROOT / "okto-pulse-core" / "src",
-)
-SRC_PATHS = [REPO_SRC, *(p for p in CORE_SRC_CANDIDATES if p.exists())]
+CORE_SRC = resolve_core_repo(REPO_SRC.parent) / "src"
+SRC_PATHS = [REPO_SRC, CORE_SRC]
 
 _PREAMBLE = """
 import os, sys

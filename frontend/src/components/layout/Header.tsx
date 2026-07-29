@@ -9,7 +9,12 @@ import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Su
 import { GuidelinesPanel } from '@/components/guidelines';
 import { DefaultBoardConfigPanel } from '@/components/board/DefaultBoardConfigPanel';
 import { DesignSystemPanel } from '@/components/board/DesignSystemPanel';
-import { BoardSettingsForm, normalizeDesignSystemGateMode } from '@/components/board/BoardSettingsForm';
+import { ChecklistBindingSettings } from '@/components/board/ChecklistBindingSettings';
+import {
+  BoardSettingsForm,
+  normalizeDesignSystemGateMode,
+} from '@/components/board/BoardSettingsForm';
+import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
 import { HelpPanel } from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
 import { KnowledgeGraphPage } from '@/components/knowledge';
@@ -60,6 +65,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const [showDesignSystem, setShowDesignSystem] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [localShowHelp, setLocalShowHelp] = useState(false);
+  const [helpInitialSection, setHelpInitialSection] = useState<string | undefined>();
   const [showAbout, setShowAbout] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
   const [localShowKnowledgeGraph, setLocalShowKnowledgeGraph] = useState(false);
@@ -169,6 +175,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30,
         require_ideation_ambiguity_gate: currentBoard.settings.require_ideation_ambiguity_gate ?? false,
         max_ideation_ambiguity: currentBoard.settings.max_ideation_ambiguity ?? 3,
+        require_refinement_ambiguity_gate: currentBoard.settings.require_refinement_ambiguity_gate ?? false,
+        max_refinement_ambiguity: normalizeRefinementAmbiguityThreshold(
+          currentBoard.settings.max_refinement_ambiguity,
+        ),
         require_spec_resource_task_coverage: currentBoard.settings.require_spec_resource_task_coverage ?? true,
         auto_derive_spec_resources_enabled: currentBoard.settings.auto_derive_spec_resources_enabled ?? false,
         auto_derive_spec_resource_types: currentBoard.settings.auto_derive_spec_resource_types ?? [],
@@ -199,6 +209,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         max_spec_ambiguity: 30,
         require_ideation_ambiguity_gate: false,
         max_ideation_ambiguity: 3,
+        require_refinement_ambiguity_gate: false,
+        max_refinement_ambiguity: 3,
         require_spec_resource_task_coverage: true,
         auto_derive_spec_resources_enabled: false,
         auto_derive_spec_resource_types: [],
@@ -445,7 +457,11 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
                     {/* Help */}
                     <button
-                      onClick={() => { setShowMenu(false); setShowHelp(true); }}
+                      onClick={() => {
+                        setShowMenu(false);
+                        setHelpInitialSection(undefined);
+                        setShowHelp(true);
+                      }}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                       data-tour-id="help.guided_tours"
                     >
@@ -469,7 +485,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
               {/* Board panel (opens from menu — renamed from "Settings" in 0.1.4) */}
               {showSettings && createPortal((
-                <div className="modal-overlay p-4" onClick={() => setShowSettings(false)}>
+                <div
+                  className={`modal-overlay p-4 ${
+                    showHelp ? 'invisible pointer-events-none' : ''
+                  }`}
+                  aria-hidden={showHelp || undefined}
+                  onClick={() => setShowSettings(false)}
+                >
                   <div
                     ref={settingsRef}
                     className="modal-content max-w-4xl !h-auto max-h-[90vh]"
@@ -535,11 +557,22 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       </div>
 
                       {boardSettingsTab === 'board' && (
-                        <BoardSettingsForm
-                          settings={settings}
-                          onChange={updateSettings}
-                          contextWarnings={boardContextWarnings}
-                        />
+                        <>
+                          <BoardSettingsForm
+                            settings={settings}
+                            onChange={updateSettings}
+                            contextWarnings={boardContextWarnings}
+                          />
+                          {currentBoard?.id && (
+                            <ChecklistBindingSettings
+                              boardId={currentBoard.id}
+                              onOpenHelp={() => {
+                                setHelpInitialSection('curated-spec-checklist');
+                                setShowHelp(true);
+                              }}
+                            />
+                          )}
+                        </>
                       )}
 
                       {boardSettingsTab === 'global' && currentBoard?.id && (
@@ -547,7 +580,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                           className="rounded-lg border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900/40"
                           data-testid="settings-default-board-config"
                         >
-                          <DefaultBoardConfigPanel boardId={currentBoard.id} />
+                          <DefaultBoardConfigPanel
+                            boardId={currentBoard.id}
+                            onOpenHelp={() => {
+                              setHelpInitialSection('curated-spec-checklist');
+                              setShowHelp(true);
+                            }}
+                          />
                         </section>
                       )}
                     </div>
@@ -598,7 +637,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       )}
 
       {showHelp && (
-        <HelpPanel onClose={() => setShowHelp(false)} />
+        <HelpPanel
+          initialSectionId={helpInitialSection}
+          onClose={() => setShowHelp(false)}
+        />
       )}
 
       {showRuntimeSettings && (

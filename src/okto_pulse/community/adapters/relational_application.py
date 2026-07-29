@@ -21,10 +21,13 @@ from okto_pulse.core.domain.amendment_eligibility import (
 )
 from okto_pulse.core.ports.permission_policy import (
     PermissionPolicyPort,
+    PermissionPresetLineageNode,
     builtin_preset_name,
+    explicit_permission_overrides,
     flatten_permission_flags,
     get_permission_flag,
     legacy_permissions_to_flags,
+    resolve_preset_lineage,
     set_permission_flag,
 )
 from okto_pulse.core.ports.mcp_auth import AgentAuthSession
@@ -48,10 +51,39 @@ from okto_pulse.community.adapters.sqlalchemy_repositories import (
 )
 from okto_pulse.community.adapters.permission_policy import (
     CommunityPermissionPolicyAdapter,
+    direct_permission_review,
+)
+from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
+    AuthorityDigestResolver,
+    CommunitySqlAlchemyQualityAssessment,
+    InputDigestResolver,
+    resolve_quality_assessment_authority,
+    resolve_quality_assessment_input_digests,
 )
 
 
-def _preset_view(preset: PermissionPreset) -> PermissionPresetView:
+def _lineage_nodes(
+    presets: list[PermissionPreset] | tuple[PermissionPreset, ...],
+) -> tuple[PermissionPresetLineageNode, ...]:
+    return tuple(
+        PermissionPresetLineageNode(
+            id=preset.id,
+            base_preset_id=preset.base_preset_id,
+            # Preserve malformed top-level JSON for the canonical resolver;
+            # coercing it to {} would turn corruption into a valid root.
+            flags=copy.deepcopy(preset.flags),
+        )
+        for preset in presets
+    )
+
+
+def _preset_view(
+    preset: PermissionPreset,
+    *,
+    flags: dict[str, Any] | None = None,
+    owner_review_required: bool = False,
+    review_reason: str | None = None,
+) -> PermissionPresetView:
     return PermissionPresetView(
         id=preset.id,
         owner_id=preset.owner_id,
@@ -59,7 +91,15 @@ def _preset_view(preset: PermissionPreset) -> PermissionPresetView:
         description=preset.description,
         is_builtin=bool(preset.is_builtin),
         base_preset_id=preset.base_preset_id,
-        flags=copy.deepcopy(preset.flags) if preset.flags else preset.flags,
+        flags=(
+            copy.deepcopy(flags)
+            if flags is not None
+            else copy.deepcopy(preset.flags)
+            if preset.flags
+            else preset.flags
+        ),
+        owner_review_required=owner_review_required,
+        review_reason=review_reason,
         created_at=preset.created_at,
         updated_at=preset.updated_at,
     )
@@ -83,26 +123,67 @@ class CommunityPermissionPresetGateway:
             select(Agent).where(Agent.created_by == user_id).limit(1)
         )
         agent = result.scalar_one_or_none()
-        agent_flags: dict[str, Any] | None = None
+        agent_flags: Any = None
         preset_flags: dict[str, Any] | None = None
         preset_name: str | None = None
+        owner_review_required = False
+        review_reason: str | None = None
+        board_overrides: dict[str, Any] | None = None
 
         if agent is not None:
-            if isinstance(agent.permission_flags, dict) and agent.permission_flags:
-                agent_flags = agent.permission_flags
-            elif isinstance(agent.permissions, list) and agent.permissions:
+            if agent.permission_flags is not None:
+                agent_flags = copy.deepcopy(agent.permission_flags)
+                (
+                    owner_review_required,
+                    review_reason,
+                ) = direct_permission_review(
+                    agent_flags,
+                    preset_id=agent.preset_id,
+                )
+            elif isinstance(agent.permissions, list):
                 agent_flags = legacy_permissions_to_flags(agent.permissions)
 
             if agent.preset_id:
-                preset_row = await self._session.get(PermissionPreset, agent.preset_id)
-                if preset_row and preset_row.flags:
-                    preset_flags = preset_row.flags
+                preset_rows = list(
+                    (
+                        await self._session.execute(
+                            select(PermissionPreset).order_by(PermissionPreset.id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                lineage = resolve_preset_lineage(
+                    agent.preset_id,
+                    _lineage_nodes(preset_rows),
+                )
+                preset_flags = lineage.flags
+                owner_review_required = lineage.owner_review_required
+                review_reason = lineage.review_reason
+                preset_row = next(
+                    (row for row in preset_rows if row.id == agent.preset_id),
+                    None,
+                )
+                if preset_row is not None:
                     preset_name = preset_row.name
+
+            agent_board = (
+                await self._session.execute(
+                    select(AgentBoard).where(
+                        AgentBoard.agent_id == agent.id,
+                        AgentBoard.board_id == board_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if agent_board is not None:
+                board_overrides = agent_board.permission_overrides
 
         permission_set = self._permission_policy.resolve(
             agent_flags=agent_flags,
             preset_flags=preset_flags,
-            board_overrides=None,
+            board_overrides=board_overrides,
+            owner_review_required=owner_review_required,
+            review_reason=review_reason,
         )
         if preset_name is None:
             preset_name = builtin_preset_name(permission_set.flags)
@@ -110,18 +191,34 @@ class CommunityPermissionPresetGateway:
             board_id=board_id,
             preset_name=preset_name,
             flags=permission_set.flags,
+            owner_review_required=permission_set.owner_review_required,
+            review_reason=permission_set.review_reason,
         )
 
     async def list_presets(self, *, user_id: str) -> list[PermissionPresetView]:
         result = await self._session.execute(
             select(PermissionPreset)
-            .where(
-                (PermissionPreset.is_builtin.is_(True))
-                | (PermissionPreset.owner_id == user_id)
-            )
             .order_by(PermissionPreset.is_builtin.desc(), PermissionPreset.name)
         )
-        return [_preset_view(row) for row in result.scalars().all()]
+        all_rows = list(result.scalars().all())
+        rows = [
+            row
+            for row in all_rows
+            if bool(row.is_builtin) or row.owner_id == user_id
+        ]
+        nodes = _lineage_nodes(all_rows)
+        views: list[PermissionPresetView] = []
+        for row in rows:
+            lineage = resolve_preset_lineage(row.id, nodes)
+            views.append(
+                _preset_view(
+                    row,
+                    flags=lineage.flags,
+                    owner_review_required=lineage.owner_review_required,
+                    review_reason=lineage.review_reason,
+                )
+            )
+        return views
 
     async def create_preset(
         self,
@@ -137,12 +234,21 @@ class CommunityPermissionPresetGateway:
             name=name,
             description=description or None,
             is_builtin=False,
-            flags=copy.deepcopy(flags) if flags else flags,
+            flags=copy.deepcopy(flags) if flags is not None else {},
         )
         self._session.add(preset)
         await self._session.flush()
         await self._session.refresh(preset)
-        return _preset_view(preset)
+        lineage = resolve_preset_lineage(
+            preset.id,
+            _lineage_nodes([preset]),
+        )
+        return _preset_view(
+            preset,
+            flags=lineage.flags,
+            owner_review_required=lineage.owner_review_required,
+            review_reason=lineage.review_reason,
+        )
 
     async def clone_preset(
         self,
@@ -156,12 +262,29 @@ class CommunityPermissionPresetGateway:
         source = await self._session.get(PermissionPreset, source_preset_id)
         if source is None:
             return None
-        cloned_flags = copy.deepcopy(source.flags) if source.flags else {}
-        if flags:
+        preset_rows = list(
+            (
+                await self._session.execute(
+                    select(PermissionPreset).order_by(PermissionPreset.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        source_lineage = resolve_preset_lineage(
+            source_preset_id,
+            _lineage_nodes(preset_rows),
+        )
+        desired_flags = copy.deepcopy(source_lineage.flags)
+        if flags is not None:
             for path in flatten_permission_flags(flags):
                 value = get_permission_flag(flags, path)
                 if value is not None:
-                    set_permission_flag(cloned_flags, path, value)
+                    set_permission_flag(desired_flags, path, value)
+        cloned_flags = explicit_permission_overrides(
+            source_lineage.flags,
+            desired_flags,
+        )
         preset = PermissionPreset(
             id=str(uuid.uuid4()),
             owner_id=user_id,
@@ -174,7 +297,17 @@ class CommunityPermissionPresetGateway:
         self._session.add(preset)
         await self._session.flush()
         await self._session.refresh(preset)
-        return _preset_view(preset)
+        preset_rows.append(preset)
+        lineage = resolve_preset_lineage(
+            preset.id,
+            _lineage_nodes(preset_rows),
+        )
+        return _preset_view(
+            preset,
+            flags=lineage.flags,
+            owner_review_required=lineage.owner_review_required,
+            review_reason=lineage.review_reason,
+        )
 
     async def update_preset(
         self,
@@ -197,10 +330,47 @@ class CommunityPermissionPresetGateway:
         if description is not None:
             preset.description = description
         if flags is not None:
-            preset.flags = copy.deepcopy(flags)
+            if preset.base_preset_id is None:
+                preset.flags = copy.deepcopy(flags)
+            else:
+                preset_rows = list(
+                    (
+                        await self._session.execute(
+                            select(PermissionPreset).order_by(PermissionPreset.id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                base_lineage = resolve_preset_lineage(
+                    preset.base_preset_id,
+                    _lineage_nodes(preset_rows),
+                )
+                preset.flags = explicit_permission_overrides(
+                    base_lineage.flags,
+                    flags,
+                )
         await self._session.flush()
         await self._session.refresh(preset)
-        return _preset_view(preset)
+        preset_rows = list(
+            (
+                await self._session.execute(
+                    select(PermissionPreset).order_by(PermissionPreset.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        lineage = resolve_preset_lineage(
+            preset.id,
+            _lineage_nodes(preset_rows),
+        )
+        return _preset_view(
+            preset,
+            flags=lineage.flags,
+            owner_review_required=lineage.owner_review_required,
+            review_reason=lineage.review_reason,
+        )
 
     async def delete_preset(self, *, preset_id: str, user_id: str) -> bool:
         preset = await self._session.get(PermissionPreset, preset_id)
@@ -210,6 +380,24 @@ class CommunityPermissionPresetGateway:
             raise PermissionError("Built-in presets cannot be modified or deleted")
         if preset.owner_id != user_id:
             raise PermissionError("You can only delete your own presets")
+        assigned_agent_id = (
+            await self._session.execute(
+                select(Agent.id)
+                .where(Agent.preset_id == preset_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        derived_preset_id = (
+            await self._session.execute(
+                select(PermissionPreset.id)
+                .where(PermissionPreset.base_preset_id == preset_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if assigned_agent_id is not None or derived_preset_id is not None:
+            raise PermissionError(
+                "Preset cannot be deleted while assigned to an agent or used as a base"
+            )
         await self._session.delete(preset)
         await self._session.flush()
         return True
@@ -289,23 +477,52 @@ class CommunityAgentAuthenticationGateway:
             agent_board = result.scalar_one_or_none()
             if agent_board is None:
                 return None
-        agent_flags = getattr(agent, "permission_flags", None)
-        if agent_flags is None:
-            permissions = agent.permissions
-        else:
-            preset_flags = None
-            if agent.preset_id:
-                preset = await self._session.get(PermissionPreset, agent.preset_id)
-                if preset is not None:
-                    preset_flags = preset.flags
-            board_overrides = (
-                agent_board.permission_overrides if agent_board is not None else None
-            )
-            permissions = self._permission_policy.resolve(
+        direct_flags = getattr(agent, "permission_flags", None)
+        agent_flags: Any
+        owner_review_required = False
+        review_reason = None
+        if direct_flags is not None:
+            agent_flags = copy.deepcopy(direct_flags)
+            (
+                owner_review_required,
+                review_reason,
+            ) = direct_permission_review(
                 agent_flags,
-                preset_flags,
-                board_overrides,
+                preset_id=agent.preset_id,
             )
+        elif isinstance(agent.permissions, list):
+            agent_flags = legacy_permissions_to_flags(agent.permissions)
+        else:
+            agent_flags = None
+
+        preset_flags = None
+        if agent.preset_id:
+            preset_rows = list(
+                (
+                    await self._session.execute(
+                        select(PermissionPreset).order_by(PermissionPreset.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            lineage = resolve_preset_lineage(
+                agent.preset_id,
+                _lineage_nodes(preset_rows),
+            )
+            preset_flags = lineage.flags
+            owner_review_required = lineage.owner_review_required
+            review_reason = lineage.review_reason
+        board_overrides = (
+            agent_board.permission_overrides if agent_board is not None else None
+        )
+        permissions = self._permission_policy.resolve(
+            agent_flags,
+            preset_flags,
+            board_overrides,
+            owner_review_required=owner_review_required,
+            review_reason=review_reason,
+        )
         return AgentPermissionContext(
             agent_id=agent.id,
             agent_name=agent.name,
@@ -397,11 +614,55 @@ class CommunityAmendmentRevisionApiBackend:
 class CommunityRelationalApplicationAdapter:
     """Factory bundle registered by the Community composition root."""
 
-    def __init__(self, permission_policy: PermissionPolicyPort | None = None) -> None:
+    def __init__(
+        self,
+        permission_policy: PermissionPolicyPort | None = None,
+        *,
+        quality_authority_resolver: AuthorityDigestResolver | None = None,
+        quality_input_digest_resolver: InputDigestResolver | None = None,
+    ) -> None:
         self._permission_policy = permission_policy or CommunityPermissionPolicyAdapter()
+        self._quality_authority_resolver = (
+            quality_authority_resolver or resolve_quality_assessment_authority
+        )
+        self._quality_input_digest_resolver = (
+            quality_input_digest_resolver
+            or resolve_quality_assessment_input_digests
+        )
 
     def permission_presets(self, session: AsyncSession) -> CommunityPermissionPresetGateway:
         return CommunityPermissionPresetGateway(session, self._permission_policy)
+
+    def quality_assessments(
+        self,
+        session: AsyncSession,
+    ) -> CommunitySqlAlchemyQualityAssessment:
+        return CommunitySqlAlchemyQualityAssessment(
+            session,
+            authority_resolver=self._quality_authority_resolver,
+            input_digest_resolver=self._quality_input_digest_resolver,
+        )
+
+    def quality_assessment_lifecycle(self, session: AsyncSession):
+        from okto_pulse.community.adapters.sqlalchemy_quality_assessment_lifecycle import (
+            CommunitySqlAlchemyQualityAssessmentLifecycle,
+        )
+
+        return CommunitySqlAlchemyQualityAssessmentLifecycle(session)
+
+    def checklists(self, session: AsyncSession):
+        from okto_pulse.community.adapters.sqlalchemy_checklist import (
+            CommunitySqlAlchemyChecklist,
+        )
+
+        return CommunitySqlAlchemyChecklist(session)
+
+    def research_decisions(self, session: AsyncSession):
+        from okto_pulse.community.adapters.sqlalchemy_research_decision_ledger import (
+            CommunitySqlAlchemyResearchDecisionLedger,
+        )
+
+        return CommunitySqlAlchemyResearchDecisionLedger(session)
 
     def amendment_revision_backend(
         self, session: AsyncSession

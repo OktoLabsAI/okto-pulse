@@ -57,12 +57,18 @@ import type {
   SpecStructuredEntityType,
   TechnicalRequirement,
   TestScenario,
+  TestScenarioType,
   BoardSettings,
   Decision,
 } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { EvidenceBadge } from './EvidenceBadge';
-import { SCENARIO_TYPES, ScenarioTypeBadge } from './ScenarioTypeBadge';
+import {
+  SCENARIO_TYPES,
+  ScenarioTypeBadge,
+  isSupportedScenarioType,
+} from './ScenarioTypeBadge';
+import { persistTestScenariosWithWriteGuard } from './scenarioWriteGuard';
 import { usePermissions } from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
 import { RulesTab } from './RulesTab';
@@ -72,7 +78,8 @@ import { DecisionsTab } from './DecisionsTab';
 import { IntegrationRequirementsTab } from './IntegrationRequirementsTab';
 import { ObservabilityRequirementsTab } from './ObservabilityRequirementsTab';
 import { KGValidationTab } from './KGValidationTab';
-import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
+import { SpecValidationPanel } from './SpecValidationPanel';
+import { isSpecValidationAvailable } from './specValidationAvailability';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
 import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
 import { SPEC_STATUSES, SPEC_STATUS_LABELS } from '@/types';
@@ -93,6 +100,7 @@ import {
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { QualityPanel } from '@/components/quality';
 
 interface SpecModalProps {
   specId: string;
@@ -102,7 +110,7 @@ interface SpecModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'irs' | 'ors' | 'trs' | 'decisions' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg' | 'cancellation';
+type ModalTab = 'details' | 'quality' | 'tests' | 'rules' | 'contracts' | 'irs' | 'ors' | 'trs' | 'decisions' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg' | 'cancellation';
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -439,6 +447,10 @@ function stableEntityPayload(item: StructuredObjectEntity): Record<string, unkno
 
 const SCENARIO_STATUSES = ['draft', 'ready', 'automated', 'passed', 'failed'] as const;
 
+function isScenarioStatus(value: string): value is TestScenario['status'] {
+  return (SCENARIO_STATUSES as readonly string[]).includes(value);
+}
+
 const SCENARIO_STATUS_COLORS: Record<string, string> = {
   draft: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
   ready: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
@@ -455,7 +467,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
 
   // New scenario form
   const [newTitle, setNewTitle] = useState('');
-  const [newType, setNewType] = useState<string>('integration');
+  const [newType, setNewType] = useState<TestScenarioType>('integration');
   const [newGiven, setNewGiven] = useState('');
   const [newWhen, setNewWhen] = useState('');
   const [newThen, setNewThen] = useState('');
@@ -472,7 +484,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
       id,
       title: newTitle.trim(),
       linked_criteria: newCriteria.length > 0 ? newCriteria : null,
-      scenario_type: newType as TestScenario['scenario_type'],
+      scenario_type: newType,
       given: newGiven.trim(),
       when: newWhen.trim(),
       then: newThen.trim(),
@@ -490,7 +502,8 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
   };
 
   const handleStatusChange = (id: string, status: string) => {
-    onUpdate(scenarios.map((s) => s.id === id ? { ...s, status: status as TestScenario['status'] } : s));
+    if (!isScenarioStatus(status)) return;
+    onUpdate(scenarios.map((s) => s.id === id ? { ...s, status } : s));
   };
 
   // Coverage matrix
@@ -733,7 +746,15 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
         <div className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
           <div className="flex gap-2">
             <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Scenario title" className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" autoFocus />
-            <select value={newType} onChange={(e) => setNewType(e.target.value)} className="px-2 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600">
+            <select
+              value={newType}
+              onChange={(e) => {
+                if (isSupportedScenarioType(e.target.value)) {
+                  setNewType(e.target.value);
+                }
+              }}
+              className="px-2 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
+            >
               {SCENARIO_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
@@ -981,7 +1002,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
 
   if (loading) return <div className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Loading Q&A...</div>;
 
-  const isAnswered = (qa: SpecQAItem) => qa.answer || (qa.selected && qa.selected.length > 0);
+  const isAnswered = (qa: SpecQAItem) => Boolean(qa.answered_at);
   const unanswered = items.filter((q) => !isAnswered(q));
   const answered = items.filter((q) => isAnswered(q));
 
@@ -1323,6 +1344,12 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const canDeleteOR = canStructured('observability_requirement', 'revoke');
   const canLinkORTasks = canStructured('observability_requirement', 'link_task') && perms.has('card.link_to.or');
   const canEditCoverageFlags = perms.has('spec.entity.edit_coverage_flags');
+  const canReadQuality = perms.has('spec.quality.read');
+  const canReadChecklist = perms.has('spec.checklist.read');
+  const canExecuteChecklist = perms.has('spec.checklist.execute');
+  const canReadSpecValidation = perms.has('spec.validation.read');
+  const canAccessValidationTab =
+    canReadChecklist || canReadSpecValidation;
   const [spec, setSpec] = useState<Spec | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<SpecStatus | null>(null);
@@ -1341,6 +1368,9 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const [sprintSuggestions, setSprintSuggestions] = useState<any[] | null>(null);
   const [linkedSprints, setLinkedSprints] = useState<any[]>([]);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [validationHistoryRefreshKey, setValidationHistoryRefreshKey] =
+    useState(0);
+  const currentSpecStatus = spec?.status;
 
   useEscapeToClose(onEscape ?? onClose);
   useEscapeToClose(() => setShowValidateModal(false), {
@@ -1351,10 +1381,31 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
 
   // The Cancellation tab only exists while the spec is cancelled.
   useEffect(() => {
-    if (activeTab === 'cancellation' && spec && spec.status !== 'cancelled') {
+    if (
+      activeTab === 'cancellation' &&
+      currentSpecStatus &&
+      currentSpecStatus !== 'cancelled'
+    ) {
       setActiveTab('details');
     }
-  }, [activeTab, spec?.status]);
+  }, [activeTab, currentSpecStatus]);
+
+  useEffect(() => {
+    if (activeTab === 'quality' && !canReadQuality) {
+      setActiveTab('details');
+    }
+  }, [activeTab, canReadQuality]);
+
+  useEffect(() => {
+    if (
+      activeTab === 'validation' &&
+      (!canAccessValidationTab ||
+        (currentSpecStatus &&
+          !isSpecValidationAvailable(currentSpecStatus)))
+    ) {
+      setActiveTab('details');
+    }
+  }, [activeTab, canAccessValidationTab, currentSpecStatus]);
 
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
@@ -1653,7 +1704,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   };
 
   const boardSettings = (currentBoard?.settings || {}) as BoardSettings;
-  const requireSpecValidation = Boolean(boardSettings.require_spec_validation);
+  const requireSpecValidation = boardSettings.require_spec_validation ?? true;
   const [showSubmitValidationModal, setShowSubmitValidationModal] = useState(false);
 
   const handleMoveSpec = async (status: SpecStatus, cancellationReason?: string) => {
@@ -1744,12 +1795,16 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   };
   const clearDetailsStructuredEditor = () => setDetailsStructuredEditor(null);
 
-  const unansweredQA = spec.qa_items?.filter((q) => !q.answer).length || 0;
+  const unansweredQA = spec.qa_items?.filter((q) => !q.answered_at).length || 0;
+  const showValidationTab =
+    isSpecValidationAvailable(spec.status) &&
+    canAccessValidationTab;
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     ...(spec.status === 'cancelled'
       ? [{ id: 'cancellation' as ModalTab, label: 'Cancellation', icon: <Ban size={14} /> }]
       : []),
+    { id: 'quality', label: 'Quality', icon: <ShieldCheck size={14} />, permission: 'spec.quality.read' },
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
@@ -1763,7 +1818,9 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={14} />, count: spec.knowledge_bases?.length || 0 },
     { id: 'cards', label: 'Cards', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
     { id: 'sprints', label: 'Sprints', icon: <Layers size={14} />, count: linkedSprints.length },
-    { id: 'validation', label: 'Validation', icon: <ShieldCheck size={14} /> },
+    ...(showValidationTab
+      ? [{ id: 'validation' as ModalTab, label: 'Validation', icon: <ShieldCheck size={14} /> }]
+      : []),
     { id: 'kg', label: 'KG Graph', icon: <Network size={14} /> },
     { id: 'history', label: 'Activity', icon: <History size={14} /> },
   ];
@@ -2192,7 +2249,12 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               spec={spec}
               onUpdate={async (scenarios) => {
                 try {
-                  const updated = await api.updateSpec(specId, { test_scenarios: scenarios });
+                  const updated = await persistTestScenariosWithWriteGuard(
+                    api.updateSpec,
+                    specId,
+                    spec.test_scenarios || [],
+                    scenarios,
+                  );
                   setSpec(updated);
                 } catch (err) {
                   // Surface the backend validation message (e.g. the strict
@@ -2408,10 +2470,32 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               onChanged={(items) => setSpec((current) => current ? { ...current, architecture_designs: items } : current)}
             />
           )}
+          {activeTab === 'quality' && spec && canReadQuality && (
+            <QualityPanel
+              subjectType="spec"
+              subjectId={specId}
+              subjectVersion={spec.version}
+              subjectStatus={spec.status}
+              subjectArchived={spec.archived ?? false}
+              canRead={canReadQuality}
+              canAssess={false}
+              canProposeQuestions={false}
+              onAssessmentRecorded={onChanged}
+            />
+          )}
           {activeTab === 'validation' && spec && (
-            <div className="p-4 space-y-4">
-              <SpecValidationHistoryPanel specId={specId} />
-            </div>
+            <SpecValidationPanel
+              boardId={spec.board_id}
+              specId={specId}
+              specVersion={spec.version}
+              specStatus={spec.status}
+              canReadChecklist={canReadChecklist}
+              canExecuteChecklist={canExecuteChecklist}
+              canReadValidation={canReadSpecValidation}
+              validationHistoryRefreshKey={
+                validationHistoryRefreshKey
+              }
+            />
           )}
           {activeTab === 'kg' && spec && (
             <KGValidationTab boardId={spec.board_id} specId={specId} />
@@ -2586,11 +2670,16 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
         <SubmitSpecValidationModal
           specId={spec.id}
           specTitle={spec.title}
+          boardId={spec.board_id}
+          specVersion={spec.version}
           settings={boardSettings}
+          canReadChecklist={canReadChecklist}
+          canExecuteChecklist={canExecuteChecklist}
           onClose={() => setShowSubmitValidationModal(false)}
           onSubmitted={async () => {
             setShowSubmitValidationModal(false);
             await loadSpec();
+            setValidationHistoryRefreshKey((current) => current + 1);
             onChanged();
           }}
         />

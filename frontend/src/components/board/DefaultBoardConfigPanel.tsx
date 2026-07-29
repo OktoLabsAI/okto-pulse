@@ -8,9 +8,14 @@
 // Template-specific surfaces (version lifecycle, guideline defaults, Design
 // System default, board diff, version history) stay around the shared form.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, GitCompare, ListChecks, Palette, Plus, RotateCcw } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, GitCompare, HelpCircle, ListChecks, Palette, Plus, RotateCcw } from 'lucide-react';
 
-import { BoardSettingsForm, normalizeDesignSystemGateMode } from '@/components/board/BoardSettingsForm';
+import {
+  BoardSettingsForm,
+  normalizeDesignSystemGateMode,
+} from '@/components/board/BoardSettingsForm';
+import { ChecklistModeSelector } from '@/components/board/ChecklistModeSelector';
+import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
 import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
 import { useDashboardApi } from '@/services/api';
 import { useImportExportApi } from '@/services/import-export-api';
@@ -23,6 +28,7 @@ import type {
   DefaultBoardConfigVersionsResponse,
   DefaultGuidelineCandidate,
   DefaultGuidelineCandidatesResponse,
+  ChecklistMode,
   SpecResourceAutoDeriveType,
 } from '@/types';
 
@@ -55,6 +61,8 @@ const DEFAULT_TEMPLATE_SETTINGS: Record<string, unknown> = {
   max_spec_ambiguity: 30,
   require_ideation_ambiguity_gate: false,
   max_ideation_ambiguity: 3,
+  require_refinement_ambiguity_gate: false,
+  max_refinement_ambiguity: 3,
   require_spec_resource_task_coverage: true,
   auto_derive_spec_resources_enabled: false,
   auto_derive_spec_resource_types: [],
@@ -132,6 +140,8 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
     max_spec_ambiguity: num('max_spec_ambiguity', 30),
     require_ideation_ambiguity_gate: bool('require_ideation_ambiguity_gate', false),
     max_ideation_ambiguity: num('max_ideation_ambiguity', 3),
+    require_refinement_ambiguity_gate: bool('require_refinement_ambiguity_gate', false),
+    max_refinement_ambiguity: normalizeRefinementAmbiguityThreshold(raw.max_refinement_ambiguity),
     require_spec_resource_task_coverage: bool('require_spec_resource_task_coverage', true),
     auto_derive_spec_resources_enabled: bool('auto_derive_spec_resources_enabled', false),
     auto_derive_spec_resource_types: Array.isArray(raw.auto_derive_spec_resource_types)
@@ -171,7 +181,13 @@ function StatCard({
   );
 }
 
-export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
+export function DefaultBoardConfigPanel({
+  boardId,
+  onOpenHelp,
+}: {
+  boardId: string;
+  onOpenHelp?: () => void;
+}) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
   apiRef.current = api;
@@ -181,6 +197,7 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
   // Latest-draft ref so Save always reads the most recent edit, even if it is clicked
   // in the same tick as the last change (before the handler closure is re-attached).
   const draftRef = useRef<BoardSettings | null>(null);
+  const draftChecklistModeRef = useRef<ChecklistMode | null>(null);
 
   const [active, setActive] = useState<DefaultBoardConfigActiveResponse | null>(null);
   const [versions, setVersions] = useState<DefaultBoardConfigVersionsResponse | null>(null);
@@ -195,6 +212,7 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
   // no reload); a single new template version is created only on Save. null == not
   // editing that facet.
   const [draft, setDraft] = useState<BoardSettings | null>(null);
+  const [draftChecklistMode, setDraftChecklistMode] = useState<ChecklistMode | null>(null);
   const [draftGuidelineRefs, setDraftGuidelineRefs] = useState<Array<{ guideline_id: string; priority: number }> | null>(null);
   const guidelineRefsRef = useRef<Array<{ guideline_id: string; priority: number }> | null>(null);
 
@@ -271,14 +289,18 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
     .filter((c) => c.is_default)
     .map((c) => ({ guideline_id: c.guideline_id, priority: c.priority ?? 0 }));
   const formSettings = draft ?? baseSettings;
+  const baseChecklistMode = activeTemplate?.spec_checklist_mode ?? 'advisory';
+  const checklistMode = draftChecklistMode ?? baseChecklistMode;
   const effectiveGuidelineRefs = draftGuidelineRefs ?? baseGuidelineRefs;
   const guidelineRefIds = new Map(effectiveGuidelineRefs.map((r) => [r.guideline_id, r.priority]));
   draftRef.current = draft;
+  draftChecklistModeRef.current = draftChecklistMode;
   guidelineRefsRef.current = draftGuidelineRefs;
 
   const settingsDirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(baseSettings);
   const guidelinesDirty = draftGuidelineRefs !== null && JSON.stringify(draftGuidelineRefs) !== JSON.stringify(baseGuidelineRefs);
-  const isDirty = settingsDirty || guidelinesDirty;
+  const checklistDirty = draftChecklistMode !== null && draftChecklistMode !== baseChecklistMode;
+  const isDirty = settingsDirty || guidelinesDirty || checklistDirty;
 
   const onDraftChange = (patch: Partial<BoardSettings>) => {
     setDraft((prev) => ({ ...(prev ?? baseSettings), ...patch }));
@@ -294,12 +316,18 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
   };
   const discardDraft = () => {
     setDraft(null);
+    setDraftChecklistMode(null);
     setDraftGuidelineRefs(null);
   };
   const saveDraft = () => {
     const settingsCurrent = draftRef.current ?? baseSettings;
+    const checklistModeCurrent = draftChecklistModeRef.current ?? baseChecklistMode;
     const refsCurrent = guidelineRefsRef.current ?? baseGuidelineRefs;
-    if (draftRef.current === null && guidelineRefsRef.current === null) return;
+    if (
+      draftRef.current === null
+      && draftChecklistModeRef.current === null
+      && guidelineRefsRef.current === null
+    ) return;
     // Build ONE new active version from the accumulated drafts, mirroring the gate
     // mode into the Design System default ref so the two never drift apart.
     const nextSettings = omitUndefinedValues({
@@ -317,11 +345,13 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
       settings_payload: nextSettings,
       guideline_default_refs: refsCurrent,
       design_system_default_ref: nextDesignSystemRef,
+      spec_checklist_mode: checklistModeCurrent,
       activate: true,
     };
     void runAction(async () => {
       await apiRef.current.createDefaultBoardConfigVersion(payload);
       setDraft(null);
+      setDraftChecklistMode(null);
       setDraftGuidelineRefs(null);
     });
   };
@@ -391,7 +421,7 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
         </div>
       </div>
 
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <StatCard
           label="Active template"
           value={activeTemplate ? `v${activeTemplate.version}` : 'None'}
@@ -417,6 +447,13 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
           tone={dsGate === 'blocking' ? 'green' : dsGate === 'advisory' ? 'amber' : 'slate'}
           testId="dbc-design-system"
         />
+        <StatCard
+          label="Spec checklist"
+          value={checklistMode === 'blocking' ? 'Required' : checklistMode}
+          hint="Applied to future boards"
+          tone={checklistMode === 'blocking' ? 'green' : checklistMode === 'advisory' ? 'amber' : 'slate'}
+          testId="dbc-spec-checklist"
+        />
       </section>
 
       {!activeTemplate && (
@@ -435,6 +472,45 @@ export function DefaultBoardConfigPanel({ boardId }: { boardId: string }) {
           </p>
         </div>
         <BoardSettingsForm settings={formSettings} onChange={onDraftChange} />
+      </section>
+
+      <section
+        className="rounded-md border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900/60"
+        data-testid="dbc-checklist-default"
+      >
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">
+              <ListChecks size={13} />
+              Curated Spec Checklist default
+            </h4>
+            <p className="mt-1 text-[11px] leading-4 text-gray-500 dark:text-gray-400">
+              Snapshotted into a versioned checklist binding when a new board is created.
+              Existing boards are not changed.
+            </p>
+          </div>
+          {onOpenHelp && (
+            <button
+              type="button"
+              onClick={onOpenHelp}
+              aria-label="Learn about Curated Spec Checklist"
+              data-testid="dbc-checklist-help-link"
+              className="inline-flex items-center gap-1 text-[10px] font-medium text-violet-600 hover:text-violet-700 hover:underline dark:text-violet-300 dark:hover:text-violet-200"
+            >
+              <HelpCircle size={11} />
+              How this works
+            </button>
+          )}
+        </div>
+        <ChecklistModeSelector
+          value={checklistMode}
+          onChange={(nextMode) => {
+            draftChecklistModeRef.current = nextMode;
+            setDraftChecklistMode(nextMode);
+          }}
+          disabled={busy}
+          testIdPrefix="dbc-checklist-mode"
+        />
       </section>
 
       <section className="grid gap-5 xl:grid-cols-2">

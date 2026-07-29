@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentsModal } from './AgentsModal';
-import type { Agent, PermissionPreset } from '@/types';
+import type { Agent, AgentSummary, PermissionPreset } from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   createAgent: vi.fn(),
@@ -51,6 +51,26 @@ function agent(id: string, name: string): Agent {
     created_by: 'owner-1',
     created_at: '2026-07-03T00:00:00Z',
     last_used_at: null,
+  };
+}
+
+function preset(
+  id: string,
+  name: string,
+  flags: Record<string, unknown>,
+): PermissionPreset {
+  return {
+    id,
+    owner_id: null,
+    name,
+    description: null,
+    is_builtin: true,
+    base_preset_id: null,
+    flags: flags as PermissionPreset['flags'],
+    owner_review_required: false,
+    review_reason: null,
+    created_at: '2026-07-03T00:00:00Z',
+    updated_at: null,
   };
 }
 
@@ -152,11 +172,16 @@ describe('AgentsModal reveal-once credentials', () => {
     apiMock.listPresets.mockResolvedValue([
       {
         id: 'preset-reviewer',
+        owner_id: null,
         name: 'Reviewer',
         description: null,
         is_builtin: true,
+        base_preset_id: null,
         flags: {},
+        owner_review_required: false,
+        review_reason: null,
         created_at: '2026-07-03T00:00:00Z',
+        updated_at: null,
       } satisfies PermissionPreset,
     ]);
     apiMock.listMyAgents.mockResolvedValue([agent('agent-1', 'Claude Agent')]);
@@ -190,6 +215,213 @@ describe('AgentsModal reveal-once credentials', () => {
     await waitFor(() => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
         expect.stringContaining('api_key=dash_rotated_secret'),
+      );
+    });
+  });
+
+  it('edits a preset-linked effective tree and persists only its direct delta', async () => {
+    const specPreset = preset(
+      'preset-spec',
+      'Spec',
+      { board: { read: true, analytics_read: false } },
+    );
+    const presetAgent = {
+      ...agent('agent-preset', 'Preset Agent'),
+      preset_id: specPreset.id,
+      permission_flags: { board: { read: false } },
+    };
+    apiMock.listPresets.mockResolvedValue([specPreset]);
+    apiMock.listMyAgents.mockResolvedValue([presetAgent]);
+
+    render(<AgentsModal isOpen onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByText('Preset Agent'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Edit Board permissions' }),
+    );
+    expect(
+      screen.getByRole('button', { name: 'Toggle board.read' }),
+    ).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle board.read' }));
+
+    await waitFor(() => {
+      expect(apiMock.updateAgent).toHaveBeenCalledWith('agent-preset', {
+        permission_flags: {},
+      });
+    });
+  });
+
+  it('edits Full Control from its real preset base and stores a sparse delta', async () => {
+    const fullControl = preset(
+      'preset-full',
+      'Full Control',
+      { board: { read: true, analytics_read: true } },
+    );
+    apiMock.listPresets.mockResolvedValue([fullControl]);
+    apiMock.listMyAgents.mockResolvedValue([
+      agent('agent-full', 'Full Control Agent'),
+    ]);
+
+    render(<AgentsModal isOpen onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByText('Full Control Agent'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Edit Board permissions' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle board.read' }));
+
+    await waitFor(() => {
+      expect(apiMock.updateAgent).toHaveBeenCalledWith('agent-full', {
+        permission_flags: { board: { read: false } },
+      });
+    });
+  });
+
+  it('resolves a preset-less delta from Full Control when built-ins are shuffled', async () => {
+    const executor = preset(
+      'preset-executor',
+      'Executor',
+      { board: { read: false, analytics_read: false } },
+    );
+    const fullControl = preset(
+      'preset-full',
+      'Full Control',
+      { board: { read: true, analytics_read: true } },
+    );
+    const fullAgent = {
+      ...agent('agent-shuffled', 'Shuffled Full Agent'),
+      permission_flags: { board: { read: false } },
+    };
+    apiMock.listPresets.mockResolvedValue([executor, fullControl]);
+    apiMock.listMyAgents.mockResolvedValue([fullAgent]);
+
+    render(<AgentsModal isOpen onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByText('Shuffled Full Agent'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Edit Board permissions' }),
+    );
+
+    expect(screen.getByTestId('permission-diff-base')).toHaveTextContent(
+      'Base: Full Control',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Toggle board.read' }),
+    ).toHaveAttribute('aria-pressed', 'false');
+    expect(
+      screen.getByRole('button', { name: 'Toggle board.analytics_read' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Toggle board.analytics_read' }),
+    );
+    await waitFor(() => {
+      expect(apiMock.updateAgent).toHaveBeenCalledWith('agent-shuffled', {
+        permission_flags: {
+          board: { read: false, analytics_read: false },
+        },
+      });
+    });
+  });
+
+  it('keeps selected preset owner-review visible while using its fail-closed base', async () => {
+    const dangerous = {
+      ...preset(
+        'preset-danger',
+        'Dangling Custom',
+        { board: { read: false, analytics_read: false } },
+      ),
+      is_builtin: false,
+      base_preset_id: 'missing-base',
+      owner_review_required: true,
+      review_reason: 'dangling_base_preset',
+    } satisfies PermissionPreset;
+    const presetAgent = {
+      ...agent('agent-danger', 'Danger Agent'),
+      preset_id: dangerous.id,
+      permission_flags: {},
+    };
+    apiMock.listPresets.mockResolvedValue([
+      preset(
+        'preset-full',
+        'Full Control',
+        { board: { read: true, analytics_read: true } },
+      ),
+      dangerous,
+    ]);
+    apiMock.listMyAgents.mockResolvedValue([presetAgent]);
+
+    render(<AgentsModal isOpen onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByText('Danger Agent'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Owner review required for Dangling Custom · dangling_base_preset',
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Edit Board permissions' }),
+    );
+    expect(
+      screen.getByRole('button', { name: 'Toggle board.read' }),
+    ).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('round-trips the projected raw board ceiling against the real agent base', async () => {
+    const fullControl = preset(
+      'preset-full',
+      'Full Control',
+      { board: { read: true, analytics_read: true } },
+    );
+    const fullAgent = agent('agent-board', 'Board Agent');
+    const boardAgent: AgentSummary = {
+      id: fullAgent.id,
+      name: fullAgent.name,
+      description: null,
+      objective: null,
+      is_active: true,
+      preset_id: null,
+      permission_flags: null,
+      permission_overrides: { board: { read: false } },
+      created_at: fullAgent.created_at,
+      last_used_at: null,
+    };
+    apiMock.listPresets.mockResolvedValue([fullControl]);
+    apiMock.listMyAgents.mockResolvedValue([fullAgent]);
+    apiMock.listAgentsForBoard.mockResolvedValue([boardAgent]);
+    apiMock.updateAgentBoardOverrides.mockResolvedValue({
+      id: 'grant-1',
+      agent_id: fullAgent.id,
+      board_id: 'board-1',
+      granted_by: 'owner-1',
+      granted_at: '2026-07-03T00:00:00Z',
+      permission_overrides: null,
+    });
+
+    render(<AgentsModal isOpen onClose={() => {}} />);
+    await screen.findByText('Board Agent');
+    fireEvent.click(screen.getByRole('button', { name: /board access/i }));
+    await waitFor(() => {
+      expect(apiMock.listAgentsForBoard).toHaveBeenCalledWith('board-1');
+    });
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Edit board access for Board Agent',
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Edit Board permissions' }),
+    );
+
+    const readToggle = screen.getByRole('button', {
+      name: 'Toggle board.read',
+    });
+    expect(readToggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(readToggle);
+
+    await waitFor(() => {
+      expect(apiMock.updateAgentBoardOverrides).toHaveBeenCalledWith(
+        'agent-board',
+        'board-1',
+        null,
       );
     });
   });

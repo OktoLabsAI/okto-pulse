@@ -144,13 +144,13 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 44 = historical steps + pagination, governed queue, GD delivery,
-    # cognitive-source revision audit, KB governance metadata, and the
-    # selective Knowledge-propagation v2 schema.
-    assert len(migrate_names) == 44, (
-        f"expected 44 _migrate_*, found {len(migrate_names)}"
+    # 47 = the historical 44 steps plus the SK-A Refinement ambiguity-skip
+    # column, SK-A/C7 quality-assessment persistence schema, and the curated
+    # Spec checklist mode on default-board templates.
+    assert len(migrate_names) == 47, (
+        f"expected 47 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 44
+    assert len(ledger_migrate_ids) == 47
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]
@@ -170,6 +170,65 @@ def test_ts_7aacc71a_ledger_order_matches_community_step_registry():
         if s.step_id != CREATE_ALL_BOUNDARY_STEP_ID
     ]
     assert _step_callable_order() == ledger_migrate_order
+
+
+def test_legacy_default_template_table_gains_nullable_checklist_mode(
+    tmp_path,
+    _isolate_engine,
+):
+    async def drive():
+        from sqlalchemy import text
+
+        _db_mod.create_database(
+            f"sqlite+aiosqlite:///{tmp_path / 'legacy-default-template.db'}"
+        )
+        engine = _db_mod.get_engine()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE TABLE default_board_configurations ("
+                    "id VARCHAR(36) PRIMARY KEY, "
+                    "version INTEGER NOT NULL, "
+                    "status VARCHAR(20) NOT NULL, "
+                    "is_active BOOLEAN NOT NULL, "
+                    "scope VARCHAR(50) NOT NULL, "
+                    "settings_payload JSON NOT NULL, "
+                    "created_by VARCHAR(255) NOT NULL"
+                    ")"
+                )
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO default_board_configurations "
+                    "(id, version, status, is_active, scope, settings_payload, created_by) "
+                    "VALUES ('legacy', 1, 'active', 1, 'global', '{}', 'admin')"
+                )
+            )
+
+        await _steps_mod._migrate_add_default_config_spec_checklist_mode()
+        await _steps_mod._migrate_add_default_config_spec_checklist_mode()
+
+        async with engine.connect() as connection:
+            columns = {
+                row[1]
+                for row in (
+                    await connection.execute(
+                        text("PRAGMA table_info(default_board_configurations)")
+                    )
+                ).all()
+            }
+            mode = await connection.scalar(
+                text(
+                    "SELECT spec_checklist_mode "
+                    "FROM default_board_configurations WHERE id = 'legacy'"
+                )
+            )
+        await engine.dispose()
+        return columns, mode
+
+    columns, mode = asyncio.run(drive())
+    assert "spec_checklist_mode" in columns
+    assert mode is None
 
 
 def test_ts_7aacc71a_destructive_steps_are_explicitly_allowlisted():

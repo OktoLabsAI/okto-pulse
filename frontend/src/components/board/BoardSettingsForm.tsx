@@ -8,6 +8,7 @@
 // Both receive a Partial<BoardSettings> patch from the same controls.
 import { type ReactNode, useEffect, useState } from 'react';
 import { BookOpen, Image, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
+import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
 import type { BoardSettings, SpecResourceAutoDeriveType } from '@/types';
 
 interface SettingsToggleProps {
@@ -631,6 +632,54 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
                   data-testid={`button-max-ideation-ambiguity-${n}`}
                   className={`h-8 w-8 rounded text-xs font-medium transition-colors ${
                     (settings.max_ideation_ambiguity ?? 3) === n
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </SettingsSection>
+
+      <SettingsSection
+        title="Refinement Ambiguity Gate"
+        description="Block approved→done unless the current refinement assessment meets the ambiguity threshold; this runs before Resource and Cognitive gates."
+        icon={<Shield size={12} />}
+      >
+        <SettingRow
+          label="Require refinement ambiguity gate"
+          description="Opt-in. A human can record a reasoned skip on an individual refinement."
+        >
+          <SettingsToggle
+            checked={settings.require_refinement_ambiguity_gate ?? false}
+            onChange={() => onChange({
+              require_refinement_ambiguity_gate: !(settings.require_refinement_ambiguity_gate ?? false),
+            })}
+            ariaLabel="Require refinement ambiguity gate"
+            testId="toggle-refinement-ambiguity-gate"
+          />
+        </SettingRow>
+
+        {(settings.require_refinement_ambiguity_gate ?? false) && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+              Max Ambiguity
+            </label>
+            <p className="mb-2 text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+              Highest allowed ambiguity level in the current assessment.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => onChange({ max_refinement_ambiguity: n })}
+                  data-testid={`button-max-refinement-ambiguity-${n}`}
+                  className={`h-8 w-8 rounded text-xs font-medium transition-colors ${
+                    normalizeRefinementAmbiguityThreshold(settings.max_refinement_ambiguity) === n
                       ? 'bg-blue-500 text-white'
                       : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
                   }`}

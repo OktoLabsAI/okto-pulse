@@ -3,7 +3,21 @@
 Changeset per version, newest first.
 
 
-### 0.3.0 - current
+### 0.3.1 - current
+
+This is the **quality-governance release**: Community exposes receipt-backed
+ambiguity assessments and pinpoint findings in the Ideation, Refinement and Spec
+surfaces, persists the refinement research decision ledger, and presents curated
+Spec checklist execution state.
+
+- Community requires the matching `okto-pulse-core>=0.3.1` release.
+- Test-scenario inputs are closed across REST and UI; `negative` is a supported
+  first-class type.
+- Paired-wheel provenance and installed inventory gates ratchet the exposed MCP
+  contract to 292 tools (284 canonical and 8 aliases).
+
+
+### 0.3.0
 
 **63 commits over `v0.2.6`.** The community edition absorbed every concrete adapter the core shed
 during its hexagonal decontamination. Where 0.2.x still let core reach into infrastructure, 0.3.0

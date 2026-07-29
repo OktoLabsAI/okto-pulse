@@ -31,6 +31,7 @@ import {
   Minimize2,
   Download,
   GitBranch,
+  Shield,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { v4 as uuidv4 } from 'uuid';
@@ -66,6 +67,9 @@ import { ArchitectureTab } from '@/components/architecture';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
+import { QualityGatePreviewPanel, QualityPanel } from '@/components/quality';
+import { ResearchDecisionTab } from './ResearchDecisionPanel';
 
 interface RefinementModalProps {
   refinementId: string;
@@ -75,7 +79,7 @@ interface RefinementModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'specs' | 'versions' | 'history' | 'cancellation';
+type ModalTab = 'details' | 'quality' | 'decisions' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'specs' | 'versions' | 'history' | 'cancellation';
 
 const STATUS_ICON: Record<RefinementStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -626,7 +630,7 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
 
   if (loading) return <div className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Loading Q&A...</div>;
 
-  const isAnswered = (qa: RefinementQAItem) => qa.answer || (qa.selected && qa.selected.length > 0);
+  const isAnswered = (qa: RefinementQAItem) => Boolean(qa.answered_at);
   const unanswered = items.filter((q) => !isAnswered(q));
   const answered = items.filter((q) => isAnswered(q));
 
@@ -816,14 +820,23 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
 export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEscape, onChanged }: RefinementModalProps) {
   const api = useDashboardApi();
   const currentBoard = useCurrentBoard();
+  const perms = usePermissions(_boardId);
+  const canReadQuality = perms.has('refinement.quality.read');
+  const canAssessQuality = perms.has('refinement.quality.assess');
+  const canProposeQualityQuestions = perms.has('refinement.qa.ask');
+  const canReadResearchDecisions = perms.has('refinement.research_decisions.read');
   const [refinement, setRefinement] = useState<Refinement | null>(null);
   const [loading, setLoading] = useState(true);
   const [derivingSpec, setDerivingSpec] = useState(false);
   const [movingTo, setMovingTo] = useState<RefinementStatus | null>(null);
   const [nextStatuses, setNextStatuses] = useState<RefinementStatus[]>([]);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
+  const [researchDecisionsMounted, setResearchDecisionsMounted] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [ambiguitySkipReason, setAmbiguitySkipReason] = useState('');
+  const [savingAmbiguitySkip, setSavingAmbiguitySkip] = useState(false);
+  const [ambiguitySkipActivityId, setAmbiguitySkipActivityId] = useState<string | null>(null);
 
   useEscapeToClose(onEscape ?? onClose);
 
@@ -833,6 +846,15 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
       setActiveTab('details');
     }
   }, [activeTab, refinement?.status]);
+
+  useEffect(() => {
+    if (
+      (activeTab === 'quality' && !canReadQuality)
+      || (activeTab === 'decisions' && !canReadResearchDecisions)
+    ) {
+      setActiveTab('details');
+    }
+  }, [activeTab, canReadQuality, canReadResearchDecisions]);
 
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
@@ -848,7 +870,12 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const [parentIdeation, setParentIdeation] = useState<{ id: string; title: string; version: number } | null>(null);
   const [viewingIdeationId, setViewingIdeationId] = useState<string | null>(null);
 
-  useEffect(() => { loadRefinement(); }, [refinementId]);
+  useEffect(() => {
+    setAmbiguitySkipReason('');
+    setAmbiguitySkipActivityId(null);
+    setResearchDecisionsMounted(false);
+    loadRefinement();
+  }, [refinementId]);
 
   const loadAllowedTransitions = async (data: Refinement) => {
     try {
@@ -904,6 +931,42 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
       return;
     }
     await performMove(status);
+  };
+
+  const handleSetAmbiguitySkip = async (skip: boolean) => {
+    if (!refinement) return;
+    const reason = ambiguitySkipReason.trim();
+    if (!reason) {
+      toast.error('A reason is required to change the ambiguity gate skip.');
+      return;
+    }
+    setSavingAmbiguitySkip(true);
+    try {
+      const receipt = await api.setRefinementAmbiguityGateSkip(refinementId, {
+        skip_ambiguity_gate: skip,
+        reason,
+        expected_refinement_version: refinement.version,
+      });
+      const updated: Refinement = {
+        ...refinement,
+        skip_ambiguity_gate: receipt.skipped,
+        version: receipt.version,
+      };
+      setRefinement(updated);
+      setAmbiguitySkipActivityId(receipt.activity_id);
+      setAmbiguitySkipReason('');
+      await loadAllowedTransitions(updated);
+      onChanged();
+      toast.success(
+        receipt.skipped
+          ? 'Refinement ambiguity gate skip recorded'
+          : 'Refinement ambiguity gate skip removed',
+      );
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setSavingAmbiguitySkip(false);
+    }
   };
 
   const [showSpecSelector, setShowSpecSelector] = useState(false);
@@ -1032,12 +1095,14 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
 
   const canDeriveSpec = refinement.status === 'done';
 
-  const unansweredQA = refinement.qa_items?.filter((q) => !q.answer).length || 0;
-  const tabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean }[] = [
+  const unansweredQA = refinement.qa_items?.filter((q) => q.answered_at == null).length || 0;
+  const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <Layers size={14} /> },
     ...(refinement.status === 'cancelled'
       ? [{ id: 'cancellation' as ModalTab, label: 'Cancellation', icon: <Ban size={14} /> }]
       : []),
+    { id: 'quality', label: 'Quality', icon: <Shield size={14} />, permission: 'refinement.quality.read' },
+    { id: 'decisions', label: 'Research decisions', icon: <Lightbulb size={14} />, permission: 'refinement.research_decisions.read' },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: refinement.screen_mockups?.length || 0 },
     { id: 'architecture', label: 'Architecture', icon: <GitBranch size={14} />, count: refinement.architecture_designs?.length || 0 },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: refinement.qa_items?.length || 0, highlight: unansweredQA > 0 },
@@ -1046,6 +1111,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
     { id: 'versions', label: 'Versions', icon: <Archive size={14} /> },
     { id: 'history', label: 'Activity', icon: <History size={14} /> },
   ];
+  const tabs = allTabs.filter((tab) => !tab.permission || perms.has(tab.permission));
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -1149,7 +1215,10 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
           {tabs.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                if (tab.id === 'decisions') setResearchDecisionsMounted(true);
+                setActiveTab(tab.id);
+              }}
               className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap shrink-0 ${
                 activeTab === tab.id
                   ? 'border-blue-500 text-blue-600 dark:text-blue-400'
@@ -1180,6 +1249,79 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                 entityType="refinement"
                 entityId={refinementId}
               />
+              {(currentBoard?.settings?.require_refinement_ambiguity_gate ?? false) && (() => {
+                const skipped = refinement.skip_ambiguity_gate ?? false;
+                const actionLabel = skipped ? 'Remove skip' : 'Apply skip';
+                return (
+                  <section
+                    className="rounded-lg border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-500/30 dark:bg-amber-500/10"
+                    data-testid="refinement-ambiguity-gate-panel"
+                  >
+                    <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-amber-800 dark:text-amber-200">
+                      <Shield size={14} /> Refinement Ambiguity Gate
+                    </h4>
+                    <div className="space-y-3">
+                      <QualityGatePreviewPanel
+                        subjectType="refinement"
+                        subjectId={refinementId}
+                        canRead={canReadQuality}
+                        refreshKey={refinement.skip_ambiguity_gate ?? false}
+                      />
+                      {!canReadQuality && (
+                        <p
+                          className="text-[11px] leading-4 text-gray-500 dark:text-gray-400"
+                          data-testid="refinement-ambiguity-currentness-note"
+                        >
+                          The server gate preview is omitted because Quality read permission is not available.
+                          No ambiguity score is inferred from legacy refinement fields.
+                        </p>
+                      )}
+                      <div className="rounded border border-amber-200/70 bg-white/50 p-3 dark:border-amber-500/20 dark:bg-gray-900/30">
+                        <label
+                          htmlFor={`refinement-ambiguity-skip-reason-${refinement.id}`}
+                          className="block text-xs font-medium text-gray-700 dark:text-gray-300"
+                        >
+                          Reason to {skipped ? 'remove' : 'apply'} skip
+                        </label>
+                        <p className="mb-2 mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+                          Human-only action. The reason and resulting activity receipt are recorded for audit.
+                        </p>
+                        <textarea
+                          id={`refinement-ambiguity-skip-reason-${refinement.id}`}
+                          value={ambiguitySkipReason}
+                          onChange={(event) => setAmbiguitySkipReason(event.target.value)}
+                          disabled={savingAmbiguitySkip}
+                          rows={2}
+                          maxLength={2000}
+                          aria-label="Refinement ambiguity gate skip reason"
+                          data-testid="refinement-ambiguity-skip-reason"
+                          className="w-full resize-y rounded border border-gray-300 bg-white px-2.5 py-2 text-xs text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-60 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                          placeholder="Explain why this override is appropriate"
+                        />
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                          {ambiguitySkipActivityId ? (
+                            <span
+                              className="text-[10px] text-gray-500 dark:text-gray-400"
+                              data-testid="refinement-ambiguity-skip-receipt"
+                            >
+                              Activity recorded: {ambiguitySkipActivityId}
+                            </span>
+                          ) : <span />}
+                          <button
+                            type="button"
+                            onClick={() => void handleSetAmbiguitySkip(!skipped)}
+                            disabled={savingAmbiguitySkip || ambiguitySkipReason.trim().length === 0}
+                            data-testid="refinement-ambiguity-skip-submit"
+                            className="rounded bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {savingAmbiguitySkip ? 'Saving...' : actionLabel}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                );
+              })()}
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Description</h4>
                 <EditableField
@@ -1276,6 +1418,42 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
               screenMockups={refinement.screen_mockups || []}
               onChanged={(items) => setRefinement((current) => current ? { ...current, architecture_designs: items } : current)}
             />
+          )}
+          {activeTab === 'quality' && canReadQuality && (
+            <QualityPanel
+              subjectType="refinement"
+              subjectId={refinementId}
+              subjectVersion={refinement.version}
+              subjectStatus={refinement.status}
+              subjectArchived={refinement.archived ?? false}
+              canRead={canReadQuality}
+              canAssess={canAssessQuality}
+              canProposeQuestions={canProposeQualityQuestions}
+              onAssessmentRecorded={() => {
+                void loadRefinement();
+                onChanged();
+              }}
+            />
+          )}
+          {researchDecisionsMounted && canReadResearchDecisions && (
+            <div
+              hidden={activeTab !== 'decisions'}
+              aria-hidden={activeTab !== 'decisions'}
+              data-testid="research-decisions-tab-state"
+            >
+              <ResearchDecisionTab
+                key={refinement.id}
+                boardId={refinement.board_id || _boardId}
+                refinementId={refinement.id}
+                refinementStatus={refinement.status}
+                refinementArchived={refinement.archived}
+                legacyDecisions={refinement.decisions}
+                onRefinementVersionChanged={(version) => {
+                  setRefinement((current) => current ? { ...current, version } : current);
+                  onChanged();
+                }}
+              />
+            </div>
           )}
           {activeTab === 'knowledge' && <KnowledgeTab refinementId={refinementId} boardId={refinement.board_id} />}
           {activeTab === 'versions' && <VersionsTab refinementId={refinementId} />}

@@ -15,11 +15,45 @@ const apiMock = vi.hoisted(() => ({
   activateDefaultBoardConfigVersion: vi.fn(),
   deactivateDefaultBoardConfigVersion: vi.fn(),
   updateDefaultGuidelineRefs: vi.fn(),
+  getChecklistBinding: vi.fn(),
+  listChecklistTemplates: vi.fn(),
+  updateChecklistBinding: vi.fn(),
 }));
 
 const boardState = vi.hoisted(() => ({
   currentBoard: null as Board | null,
 }));
+
+const checklistBinding = {
+  id: 'a'.repeat(64),
+  board_id: 'board-1',
+  target_type: 'spec' as const,
+  phase: 'spec_validation' as const,
+  mode: 'advisory' as const,
+  version: 1,
+  expected_revision: 1,
+  digest: 'b'.repeat(64),
+  template_version_id: '/specify/v1' as const,
+};
+
+const checklistTemplates = {
+  total: 1,
+  items: [
+    {
+      template_id: 'specify',
+      version: '/specify/v1',
+      digest: 'c'.repeat(64),
+      items: Array.from({ length: 10 }, (_, index) => ({
+        item_id: `item-${index}`,
+        title_en: `Item ${index}`,
+        title_pt: `Item ${index}`,
+        description_en: 'Description',
+        description_pt: 'Descrição',
+        allow_na: false,
+      })),
+    },
+  ],
+};
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
@@ -156,6 +190,11 @@ describe('Header Board settings resource automation', () => {
     apiMock.activateDefaultBoardConfigVersion.mockReset();
     apiMock.deactivateDefaultBoardConfigVersion.mockReset();
     apiMock.updateDefaultGuidelineRefs.mockReset();
+    apiMock.getChecklistBinding.mockReset();
+    apiMock.getChecklistBinding.mockReturnValue(new Promise(() => {}));
+    apiMock.listChecklistTemplates.mockReset();
+    apiMock.listChecklistTemplates.mockReturnValue(new Promise(() => {}));
+    apiMock.updateChecklistBinding.mockReset();
     boardState.currentBoard = boardWith({});
   });
 
@@ -212,6 +251,36 @@ describe('Header Board settings resource automation', () => {
     expect(screen.getByTestId('board-settings-tab-board-config')).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('Agent Governance')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-default-board-config')).not.toBeInTheDocument();
+  });
+
+  it('opens contextual checklist help without discarding an unsaved mode', async () => {
+    apiMock.getChecklistBinding.mockResolvedValue(checklistBinding);
+    apiMock.listChecklistTemplates.mockResolvedValue(checklistTemplates);
+    renderOpenHeader();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('checklist-mode-advisory')).toHaveAttribute(
+        'aria-checked',
+        'true',
+      ),
+    );
+    fireEvent.click(screen.getByTestId('checklist-mode-blocking'));
+    fireEvent.click(screen.getByTestId('checklist-help-link'));
+
+    expect(screen.getByTestId('board-settings-modal')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', {
+        name: 'Curated Spec Checklist — Traceable Spec quality governance',
+      }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close help' }));
+
+    expect(screen.getByTestId('board-settings-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('checklist-mode-blocking')).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
   });
 
   it('does not send an invalid payload when removing the last active resource type', async () => {
@@ -382,6 +451,52 @@ describe('Header Board settings resource automation', () => {
     expect(screen.queryByTestId('input-max-ideation-ambiguity')).not.toBeInTheDocument();
     expect(screen.queryByTestId('button-max-ideation-ambiguity-1')).not.toBeInTheDocument();
     expect(screen.getByTestId('toggle-ideation-ambiguity-gate')).toBeInTheDocument();
+  });
+
+  it('persists the refinement ambiguity policy and its bounded 1..5 threshold', async () => {
+    boardState.currentBoard = boardWith({
+      require_refinement_ambiguity_gate: true,
+      max_refinement_ambiguity: 3,
+    });
+    renderOpenHeader();
+
+    for (const value of [1, 2, 3, 4, 5]) {
+      expect(screen.getByTestId(`button-max-refinement-ambiguity-${value}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByTestId('button-max-refinement-ambiguity-0')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('button-max-refinement-ambiguity-6')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('button-max-refinement-ambiguity-5'));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({ max_refinement_ambiguity: 5 }),
+      }),
+    );
+  });
+
+  it('keeps the refinement threshold hidden until its policy is enabled', async () => {
+    renderOpenHeader();
+
+    expect(screen.getByTestId('toggle-refinement-ambiguity-gate')).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+    expect(screen.queryByTestId('button-max-refinement-ambiguity-3')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('toggle-refinement-ambiguity-gate'));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          require_refinement_ambiguity_gate: true,
+        }),
+      }),
+    );
   });
 
   it('opens runtime settings on Decay Tick tab from the global KG Health handoff event', async () => {

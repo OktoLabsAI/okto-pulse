@@ -70,6 +70,8 @@ import { ArchitectureTab } from '@/components/architecture';
 import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
+import { QualityGatePreviewPanel, QualityPanel } from '@/components/quality';
 
 interface IdeationModalProps {
   ideationId: string;
@@ -79,7 +81,7 @@ interface IdeationModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'stories' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'refinements' | 'versions' | 'history' | 'cancellation';
+type ModalTab = 'details' | 'quality' | 'stories' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'refinements' | 'versions' | 'history' | 'cancellation';
 
 const STATUS_ICON: Record<IdeationStatus, React.ReactNode> = {
   draft: <Lightbulb size={14} />,
@@ -106,6 +108,12 @@ const REFINEMENT_STATUS_COLORS: Record<string, string> = {
   done: 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-300',
   cancelled: 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-300',
 };
+
+const SCOPE_ASSESSMENT_LABELS = {
+  domains: 'Domains',
+  ambiguity: 'Scope Ambiguity',
+  dependencies: 'Dependencies',
+} as const;
 
 const STORY_STATUS_COLORS: Record<string, string> = {
   draft: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
@@ -242,9 +250,9 @@ function VersionsTab({ ideationId }: { ideationId: string }) {
               {viewing.scope_assessment && (
                 <div>
                   <h5 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Scope Assessment</h5>
-                  <div className="flex gap-4 text-sm">
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
                     <span>Domains: <strong>{viewing.scope_assessment.domains}</strong>/5</span>
-                    <span>Ambiguity: <strong>{viewing.scope_assessment.ambiguity}</strong>/5</span>
+                    <span>Scope Ambiguity: <strong>{viewing.scope_assessment.ambiguity}</strong>/5</span>
                     <span>Dependencies: <strong>{viewing.scope_assessment.dependencies}</strong>/5</span>
                   </div>
                 </div>
@@ -663,7 +671,7 @@ function QATab({ ideationId, mentionables }: { ideationId: string; mentionables:
 
   if (loading) return <div className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Loading Q&A...</div>;
 
-  const isAnswered = (qa: IdeationQAItem) => qa.answer || (qa.selected && qa.selected.length > 0);
+  const isAnswered = (qa: IdeationQAItem) => Boolean(qa.answered_at);
   const unanswered = items.filter((q) => !isAnswered(q));
   const answered = items.filter((q) => isAnswered(q));
 
@@ -877,6 +885,10 @@ function ScopeGauge({ label, value }: { label: string; value: number }) {
 export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape, onChanged }: IdeationModalProps) {
   const api = useDashboardApi();
   const currentBoard = useCurrentBoard();
+  const perms = usePermissions(_boardId);
+  const canReadQuality = perms.has('ideation.quality.read');
+  const canAssessQuality = perms.has('ideation.quality.assess');
+  const canProposeQualityQuestions = perms.has('ideation.qa.ask');
   const [ideation, setIdeation] = useState<Ideation | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<IdeationStatus | null>(null);
@@ -895,6 +907,12 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
       setActiveTab('details');
     }
   }, [activeTab, ideation?.status]);
+
+  useEffect(() => {
+    if (activeTab === 'quality' && !canReadQuality) {
+      setActiveTab('details');
+    }
+  }, [activeTab, canReadQuality]);
 
   // Evaluate form
   const [showEvalForm, setShowEvalForm] = useState(false);
@@ -1066,12 +1084,13 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
   const canDeriveSpec = ideation.status === 'done' && ideation.complexity === 'small';
   const needsRefinements = ideation.status === 'done' && ideation.complexity && ideation.complexity !== 'small';
 
-  const unansweredQA = ideation.qa_items?.filter((q) => !q.answer).length || 0;
-  const tabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean }[] = [
+  const unansweredQA = ideation.qa_items?.filter((q) => q.answered_at == null).length || 0;
+  const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     ...(ideation.status === 'cancelled'
       ? [{ id: 'cancellation' as ModalTab, label: 'Cancellation', icon: <Ban size={14} /> }]
       : []),
+    { id: 'quality', label: 'Quality', icon: <Shield size={14} />, permission: 'ideation.quality.read' },
     { id: 'stories', label: 'Stories', icon: <BookOpen size={14} />, count: ideation.stories?.length || 0 },
     { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: ideation.screen_mockups?.length || 0 },
     { id: 'architecture', label: 'Architecture', icon: <GitBranch size={14} />, count: ideation.architecture_designs?.length || 0 },
@@ -1081,6 +1100,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
     { id: 'versions', label: 'Versions', icon: <Archive size={14} /> },
     { id: 'history', label: 'Activity', icon: <History size={14} /> },
   ];
+  const tabs = allTabs.filter((tab) => !tab.permission || perms.has(tab.permission));
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -1251,7 +1271,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                       const just = (sa[`${dim}_justification`] as string) || '';
                       return (
                         <div key={dim} className="flex items-start gap-3">
-                          <ScopeGauge label={dim.charAt(0).toUpperCase() + dim.slice(1)} value={score} />
+                          <ScopeGauge label={SCOPE_ASSESSMENT_LABELS[dim]} value={score} />
                           {just && (
                             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 flex-1 italic">
                               {just}
@@ -1264,69 +1284,58 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                 </div>
               )}
 
-              {/* Max Ambiguity Gate (spec 2485780b) — only when the board gate is enabled */}
-              {(currentBoard?.settings?.require_ideation_ambiguity_gate ?? false) && (() => {
-                const threshold = currentBoard?.settings?.max_ideation_ambiguity ?? 3;
-                const current = ideation.scope_assessment?.ambiguity ?? null;
-                const skip = ideation.skip_ambiguity_gate ?? false;
-                const blocks = !skip && (current == null || current > threshold);
-                const statusLabel = skip ? 'Skipped' : blocks ? 'Blocks completion' : 'Passing';
-                const statusClass = skip
-                  ? 'text-gray-500 dark:text-gray-400'
-                  : blocks
-                    ? 'text-red-600 dark:text-red-400'
-                    : 'text-green-600 dark:text-green-400';
-                return (
-                  <div
-                    className="rounded-lg border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-500/30 dark:bg-amber-500/10"
-                    data-testid="ambiguity-gate-panel"
-                  >
-                    <h4 className="text-sm font-semibold text-amber-800 dark:text-amber-200 flex items-center gap-1.5 mb-2">
-                      <Shield size={14} /> Max Ambiguity Gate
-                    </h4>
-                    <div className="space-y-2">
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-600 dark:text-gray-300">
-                        <span>Board threshold: <strong>{threshold}</strong>/5</span>
-                        <span>
-                          Current ambiguity:{' '}
-                          <strong>{current ?? 'not evaluated'}</strong>{current != null ? '/5' : ''}
-                        </span>
-                        <span data-testid="ambiguity-gate-status">
-                          Status: <strong className={statusClass}>{statusLabel}</strong>
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between gap-3 rounded border border-amber-200/70 bg-white/50 px-3 py-2 dark:border-amber-500/20 dark:bg-gray-900/30">
-                        <div>
-                          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
-                            Skip Max ambiguity gate
-                          </span>
-                          <p className="text-[10px] text-gray-500 dark:text-gray-400">
-                            Allow this ideation to complete without the board ambiguity threshold.
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={skip}
-                          aria-label="Skip the Max ambiguity gate for this ideation"
-                          disabled={savingSkip}
-                          onClick={() => handleToggleAmbiguitySkip(!skip)}
-                          data-testid="toggle-skip-ambiguity-gate"
-                          className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                            skip ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'
-                          }`}
-                        >
-                          <span
-                            className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
-                              skip ? 'translate-x-5' : 'translate-x-0'
-                            }`}
-                          />
-                        </button>
-                      </div>
+              {/* The gate decision is exclusively server-projected from the
+                  current governed receipt. scope_assessment remains contextual
+                  above, but is never used to infer pass/block state here. */}
+              {(currentBoard?.settings?.require_ideation_ambiguity_gate ?? false) && (
+                <section
+                  className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-500/30 dark:bg-amber-500/10"
+                  data-testid="ambiguity-gate-panel"
+                >
+                  <h4 className="flex items-center gap-1.5 text-sm font-semibold text-amber-800 dark:text-amber-200">
+                    <Shield size={14} /> Max Ambiguity Gate
+                  </h4>
+                  <QualityGatePreviewPanel
+                    subjectType="ideation"
+                    subjectId={ideationId}
+                    canRead={canReadQuality}
+                    refreshKey={ideation.skip_ambiguity_gate ?? false}
+                  />
+                  {!canReadQuality && (
+                    <p className="text-xs text-gray-600 dark:text-gray-300">
+                      The server gate preview is omitted because Quality read permission is not available.
+                    </p>
+                  )}
+                  <div className="flex items-center justify-between gap-3 rounded border border-amber-200/70 bg-white/50 px-3 py-2 dark:border-amber-500/20 dark:bg-gray-900/30">
+                    <div>
+                      <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                        Skip Max ambiguity gate
+                      </span>
+                      <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                        Allow this ideation to complete without the board ambiguity gate.
+                      </p>
                     </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={ideation.skip_ambiguity_gate ?? false}
+                      aria-label="Skip the Max ambiguity gate for this ideation"
+                      disabled={savingSkip}
+                      onClick={() => handleToggleAmbiguitySkip(!(ideation.skip_ambiguity_gate ?? false))}
+                      data-testid="toggle-skip-ambiguity-gate"
+                      className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                        ideation.skip_ambiguity_gate ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                          ideation.skip_ambiguity_gate ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
                   </div>
-                );
-              })()}
+                </section>
+              )}
 
               {/* Complexity badge */}
               {ideation.complexity && (
@@ -1372,6 +1381,22 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
               expanded={expanded}
               screenMockups={ideation.screen_mockups || []}
               onChanged={(items) => setIdeation((current) => current ? { ...current, architecture_designs: items } : current)}
+            />
+          )}
+          {activeTab === 'quality' && canReadQuality && (
+            <QualityPanel
+              subjectType="ideation"
+              subjectId={ideationId}
+              subjectVersion={ideation.version}
+              subjectStatus={ideation.status}
+              subjectArchived={ideation.archived ?? false}
+              canRead={canReadQuality}
+              canAssess={canAssessQuality}
+              canProposeQuestions={canProposeQualityQuestions}
+              onAssessmentRecorded={() => {
+                void loadIdeation();
+                onChanged();
+              }}
             />
           )}
           {activeTab === 'qa' && <QATab ideationId={ideationId} mentionables={mentionables} />}
@@ -1476,7 +1501,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
             <div className="space-y-4 mb-3">
               {([
                 { label: 'Domains', sublabel: 'How many systems/services are impacted?', value: evalDomains, setValue: setEvalDomains, just: evalDomainsJust, setJust: setEvalDomainsJust },
-                { label: 'Ambiguity', sublabel: 'How clear are the requirements?', value: evalAmbiguity, setValue: setEvalAmbiguity, just: evalAmbiguityJust, setJust: setEvalAmbiguityJust },
+                { label: 'Scope Ambiguity', sublabel: 'How clear is the scope and execution context?', value: evalAmbiguity, setValue: setEvalAmbiguity, just: evalAmbiguityJust, setJust: setEvalAmbiguityJust },
                 { label: 'Dependencies', sublabel: 'How many external dependencies?', value: evalDependencies, setValue: setEvalDependencies, just: evalDependenciesJust, setJust: setEvalDependenciesJust },
               ] as const).map((dim) => (
                 <div key={dim.label} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">

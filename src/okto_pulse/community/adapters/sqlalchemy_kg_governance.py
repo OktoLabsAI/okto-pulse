@@ -344,6 +344,16 @@ class CommunitySqlAlchemyKGGovernanceStore:
         return int(result.rowcount or 0)
 
     async def purge_board_metadata(self, context: Any, *, board_id: str) -> None:
+        from okto_pulse.community.adapters.sqlalchemy_quality_assessment_lifecycle import (
+            CommunitySqlAlchemyQualityAssessmentLifecycle,
+        )
+        from okto_pulse.core.domain.quality_assessment_lifecycle import (
+            AssessmentBoardErasureCompletion,
+        )
+        from okto_pulse.core.services.quality_assessment_lifecycle import (
+            QualityAssessmentLifecycleService,
+        )
+
         existing_permit = await context.get(BoardErasurePermit, board_id)
         if existing_permit is not None:
             raise BoardRelationalErasureError(
@@ -358,6 +368,14 @@ class CommunitySqlAlchemyKGGovernanceStore:
             )
         )
         await context.flush()
+        quality_lifecycle = QualityAssessmentLifecycleService()
+        quality_purge_plan = quality_lifecycle.prepare_board_purge(
+            board_id=board_id,
+            board_erasure_permit_id=permit_token,
+        )
+        quality_postcondition = None
+        all_board_purges_completed = False
+        permit_released = False
 
         cognitive_source_ids = tuple(
             str(value)
@@ -381,6 +399,16 @@ class CommunitySqlAlchemyKGGovernanceStore:
         )
 
         try:
+            quality_postcondition = (
+                await CommunitySqlAlchemyQualityAssessmentLifecycle(
+                    context
+                ).apply_purge_plan(quality_purge_plan)
+            )
+            quality_lifecycle.validate_purge_postcondition(
+                plan=quality_purge_plan,
+                postcondition=quality_postcondition,
+            )
+
             # Append-only mutation records hold a RESTRICT/SET NULL reference
             # to the propagation scope, so they must be removed first.
             for model in (
@@ -524,6 +552,7 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 raise BoardRelationalErasureError(
                     f"board_erasure_residuals:{board_id}:{nonzero}"
                 )
+            all_board_purges_completed = True
         finally:
             result = await context.execute(
                 delete(BoardErasurePermit).where(
@@ -531,10 +560,28 @@ class CommunitySqlAlchemyKGGovernanceStore:
                     BoardErasurePermit.permit_token == permit_token,
                 )
             )
-            if int(result.rowcount or 0) != 1:
+            permit_released = int(result.rowcount or 0) == 1
+            if not permit_released:
                 raise BoardRelationalErasureError(
                     f"board_erasure_permit_release_failed:{board_id}"
                 )
+        if quality_postcondition is None:
+            raise BoardRelationalErasureError(
+                f"board_erasure_quality_postcondition_missing:{board_id}"
+            )
+        completion = AssessmentBoardErasureCompletion(
+            target=quality_purge_plan.target,
+            quality_purge_postcondition=quality_postcondition,
+            board_erasure_permit_id=permit_token,
+            all_board_purges_completed=all_board_purges_completed,
+            permit_released=permit_released,
+            verified_at=datetime.now(timezone.utc),
+        )
+        quality_lifecycle.validate_board_erasure_completion(
+            plan=quality_purge_plan,
+            inner_postcondition=quality_postcondition,
+            completion=completion,
+        )
 
     async def stage_board_erasure_job(
         self,

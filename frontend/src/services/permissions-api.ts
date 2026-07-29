@@ -11,6 +11,8 @@ export interface PermissionsResponse {
   board_id: string;
   preset_name: string | null;
   flags: Record<string, unknown>;
+  owner_review_required: boolean;
+  review_reason: string | null;
 }
 
 const BASE = '/api/v1';

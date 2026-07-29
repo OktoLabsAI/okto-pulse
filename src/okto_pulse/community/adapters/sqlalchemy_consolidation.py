@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Sequence
 
-from sqlalchemy import case, delete, exists, func, or_, select, update
+from sqlalchemy import and_, case, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -21,15 +21,34 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationDeadLetter,
     ConsolidationQueue,
     Ideation,
+    IdeationQAItem,
     KGTakedownStateEvent,
+    QualityAssessmentHeadRow,
+    QualityAssessmentReceiptRow,
     Refinement,
+    RefinementQAItem,
+    ResearchDecisionEntryRow,
+    ResearchDecisionHeadRow,
     Spec,
+    SpecQAItem,
     Sprint,
     Story,
 )
 from okto_pulse.core.ports.consolidation import (
     ConsolidationPoisonRow,
+    ConsolidationProjectionInputs,
     ConsolidationQueueRecord,
+    CurrentQualityAssessmentSummary,
+    CurrentResearchDecisionSummary,
+)
+from okto_pulse.core.kg.board_source_store import (
+    quality_current_head_fingerprint,
+    research_decision_current_head_fingerprint,
+)
+from okto_pulse.core.domain.quality_assessment import AssessmentDigestSet
+from okto_pulse.core.services.quality_projection_currentness import (
+    QualityProjectionCurrentnessError,
+    evaluate_quality_projection_currentness,
 )
 from okto_pulse.core.ports.reconcile_intent import (
     ReconcileIntentCreate,
@@ -68,6 +87,12 @@ _MODELS = {
     "sprint": Sprint,
     "card": Card,
     "amendment_hotfix_revision": AmendmentHotfixRevision,
+}
+
+_QUALITY_QA_BINDINGS = {
+    "ideation": (IdeationQAItem, "ideation_id"),
+    "refinement": (RefinementQAItem, "refinement_id"),
+    "spec": (SpecQAItem, "spec_id"),
 }
 
 _DELETION_INTENT_SCHEMA_VERSION = 1
@@ -227,6 +252,304 @@ class CommunitySqlAlchemyConsolidationPersistence:
         elif artifact_type == "card":
             statement = statement.options(selectinload(Card.architecture_designs))
         return (await context.execute(statement)).scalars().first()
+
+    async def load_projection_inputs(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        artifact_type: str,
+        artifact_id: str,
+        artifact: Any | None = None,
+    ) -> ConsolidationProjectionInputs:
+        if artifact_type not in {"ideation", "refinement", "spec"}:
+            return ConsolidationProjectionInputs()
+        if not board_id or not artifact_id:
+            raise ValueError("consolidation_projection_scope_invalid")
+
+        quality_rows = (
+            await context.execute(
+                select(
+                    QualityAssessmentHeadRow,
+                    QualityAssessmentReceiptRow,
+                )
+                .outerjoin(
+                    QualityAssessmentReceiptRow,
+                    and_(
+                        QualityAssessmentReceiptRow.id
+                        == QualityAssessmentHeadRow.receipt_id,
+                        QualityAssessmentReceiptRow.board_id
+                        == QualityAssessmentHeadRow.board_id,
+                        QualityAssessmentReceiptRow.subject_type
+                        == QualityAssessmentHeadRow.subject_type,
+                        QualityAssessmentReceiptRow.subject_id
+                        == QualityAssessmentHeadRow.subject_id,
+                        QualityAssessmentReceiptRow.assessment_kind
+                        == QualityAssessmentHeadRow.assessment_kind,
+                    ),
+                )
+                .where(
+                    QualityAssessmentHeadRow.board_id == board_id,
+                    QualityAssessmentHeadRow.subject_type == artifact_type,
+                    QualityAssessmentHeadRow.subject_id == artifact_id,
+                )
+                .order_by(
+                    QualityAssessmentHeadRow.assessment_kind.asc(),
+                    QualityAssessmentHeadRow.receipt_id.asc(),
+                )
+            )
+        ).all()
+        for head, receipt in quality_rows:
+            if receipt is None:
+                raise RuntimeError("quality_projection_head_dangling")
+            if (
+                receipt.id != head.receipt_id
+                or receipt.board_id != board_id
+                or receipt.subject_type != artifact_type
+                or receipt.subject_id != artifact_id
+                or receipt.assessment_kind != head.assessment_kind
+                or receipt.head_revision != head.revision
+            ):
+                raise RuntimeError("quality_projection_scope_mismatch")
+
+        board_settings: dict[str, object] = {}
+        qa_items: list[object] = []
+        if quality_rows:
+            expected_model = _MODELS[artifact_type]
+            if (
+                artifact is None
+                or not isinstance(artifact, expected_model)
+                or str(getattr(artifact, "id", "")) != artifact_id
+                or str(getattr(artifact, "board_id", "")) != board_id
+            ):
+                raise RuntimeError("quality_projection_subject_mismatch")
+            qa_model, subject_fk = _QUALITY_QA_BINDINGS[artifact_type]
+            context_rows = (
+                await context.execute(
+                    select(Board.settings, qa_model)
+                    .select_from(Board)
+                    .outerjoin(
+                        qa_model,
+                        getattr(qa_model, subject_fk) == artifact_id,
+                    )
+                    .where(Board.id == board_id)
+                    .order_by(qa_model.id.asc())
+                )
+            ).all()
+            if not context_rows:
+                raise RuntimeError("quality_projection_board_missing")
+            settings_value = context_rows[0][0]
+            if settings_value is not None and not isinstance(
+                settings_value,
+                dict,
+            ):
+                raise RuntimeError("quality_projection_board_settings_invalid")
+            board_settings = dict(settings_value or {})
+            qa_items = [row[1] for row in context_rows if row[1] is not None]
+
+        quality_assessments: list[CurrentQualityAssessmentSummary] = []
+        for head, receipt in quality_rows:
+            try:
+                assessed_digests = AssessmentDigestSet(
+                    content_digest=receipt.content_digest,
+                    clarification_digest=receipt.clarification_digest,
+                    ruleset_digest=receipt.ruleset_digest,
+                    taxonomy_digest=receipt.taxonomy_digest,
+                    policy_digest=receipt.policy_digest,
+                    input_digest=receipt.input_digest,
+                    canonicalization_version=(
+                        receipt.canonicalization_version
+                    ),
+                )
+                currentness = evaluate_quality_projection_currentness(
+                    board_id=board_id,
+                    subject_type=artifact_type,
+                    subject_id=artifact_id,
+                    assessed_subject_version=receipt.subject_version,
+                    assessed_digests=assessed_digests,
+                    assessment_kind=receipt.assessment_kind,
+                    origin=receipt.origin,
+                    source=receipt.source,
+                    current_subject=artifact,
+                    qa_items=qa_items,
+                    board_settings=board_settings,
+                )
+            except (QualityProjectionCurrentnessError, ValueError) as exc:
+                raise RuntimeError(
+                    "quality_projection_currentness_unresolvable"
+                ) from exc
+            if not currentness.current:
+                continue
+            fingerprint_payload = {
+                "board_id": receipt.board_id,
+                "subject_type": receipt.subject_type,
+                "subject_id": receipt.subject_id,
+                "subject_version": receipt.subject_version,
+                "assessment_kind": receipt.assessment_kind,
+                "receipt_id": receipt.id,
+                "head_revision": head.revision,
+                "outcome": receipt.outcome,
+                "score": receipt.score,
+                "justification": receipt.justification,
+                "scale_kind": receipt.scale_kind,
+                "scale_minimum": receipt.scale_minimum,
+                "scale_maximum": receipt.scale_maximum,
+                "scale_direction": receipt.scale_direction,
+                "content_digest": receipt.content_digest,
+                "clarification_digest": receipt.clarification_digest,
+                "ruleset_digest": receipt.ruleset_digest,
+                "taxonomy_digest": receipt.taxonomy_digest,
+                "policy_digest": receipt.policy_digest,
+                "input_digest": receipt.input_digest,
+                "canonicalization_version": receipt.canonicalization_version,
+                "ruleset_version": receipt.ruleset_version,
+                "taxonomy_version": receipt.taxonomy_version,
+                "analyzer_version": receipt.analyzer_version,
+                "policy_version": receipt.policy_version,
+                "created_at": receipt.created_at,
+                "updated_at": head.updated_at,
+            }
+            quality_assessments.append(
+                CurrentQualityAssessmentSummary(
+                    board_id=receipt.board_id,
+                    subject_type=receipt.subject_type,
+                    subject_id=receipt.subject_id,
+                    subject_version=receipt.subject_version,
+                    assessment_kind=receipt.assessment_kind,
+                    receipt_id=receipt.id,
+                    head_revision=head.revision,
+                    outcome=receipt.outcome,
+                    score=receipt.score,
+                    justification=receipt.justification,
+                    scale_kind=receipt.scale_kind,
+                    scale_minimum=receipt.scale_minimum,
+                    scale_maximum=receipt.scale_maximum,
+                    scale_direction=receipt.scale_direction,
+                    content_digest=receipt.content_digest,
+                    clarification_digest=receipt.clarification_digest,
+                    ruleset_digest=receipt.ruleset_digest,
+                    taxonomy_digest=receipt.taxonomy_digest,
+                    policy_digest=receipt.policy_digest,
+                    input_digest=receipt.input_digest,
+                    canonicalization_version=(
+                        receipt.canonicalization_version
+                    ),
+                    ruleset_version=receipt.ruleset_version,
+                    taxonomy_version=receipt.taxonomy_version,
+                    analyzer_version=receipt.analyzer_version,
+                    policy_version=receipt.policy_version,
+                    created_at=receipt.created_at,
+                    updated_at=head.updated_at,
+                    projection_fingerprint=(
+                        quality_current_head_fingerprint(fingerprint_payload)
+                    ),
+                )
+            )
+
+        if artifact_type != "refinement":
+            return ConsolidationProjectionInputs(
+                quality_assessments=tuple(quality_assessments)
+            )
+
+        research_rows = (
+            await context.execute(
+                select(
+                    ResearchDecisionHeadRow,
+                    ResearchDecisionEntryRow,
+                )
+                .outerjoin(
+                    ResearchDecisionEntryRow,
+                    ResearchDecisionEntryRow.id
+                    == ResearchDecisionHeadRow.current_entry_id,
+                )
+                .where(
+                    ResearchDecisionHeadRow.board_id == board_id,
+                    ResearchDecisionHeadRow.refinement_id == artifact_id,
+                )
+                .order_by(
+                    ResearchDecisionHeadRow.ledger_id.asc(),
+                    ResearchDecisionHeadRow.current_entry_id.asc(),
+                )
+            )
+        ).all()
+        research_decisions: list[CurrentResearchDecisionSummary] = []
+        for head, entry in research_rows:
+            if entry is None:
+                raise RuntimeError(
+                    "research_decision_projection_head_dangling"
+                )
+            if (
+                entry.id != head.current_entry_id
+                or entry.ledger_id != head.ledger_id
+                or entry.board_id != board_id
+                or entry.refinement_id != artifact_id
+                or entry.refinement_version != head.refinement_version
+                or entry.status != head.status
+            ):
+                raise RuntimeError(
+                    "research_decision_projection_scope_mismatch"
+                )
+            evidence_refs = tuple(str(value) for value in entry.evidence_refs or ())
+            alternatives = tuple(str(value) for value in entry.alternatives or ())
+            fingerprint_payload = {
+                "board_id": entry.board_id,
+                "refinement_id": entry.refinement_id,
+                "refinement_version": entry.refinement_version,
+                "ledger_id": entry.ledger_id,
+                "entry_id": entry.id,
+                "head_revision": head.revision,
+                "predecessor_entry_id": entry.predecessor_entry_id,
+                "unknown": entry.unknown,
+                "status": entry.status,
+                "anchor_type": entry.anchor_type,
+                "anchor_ref": entry.anchor_ref,
+                "evidence_refs": list(evidence_refs),
+                "alternatives": list(alternatives),
+                "decision": entry.decision,
+                "rationale": entry.rationale,
+                "confidence": entry.confidence,
+                "evidence_absence_justification": (
+                    entry.evidence_absence_justification
+                ),
+                "created_by": entry.created_by,
+                "created_at": entry.created_at,
+                "updated_at": head.updated_at,
+            }
+            research_decisions.append(
+                CurrentResearchDecisionSummary(
+                    board_id=entry.board_id,
+                    refinement_id=entry.refinement_id,
+                    refinement_version=entry.refinement_version,
+                    ledger_id=entry.ledger_id,
+                    entry_id=entry.id,
+                    head_revision=head.revision,
+                    predecessor_entry_id=entry.predecessor_entry_id,
+                    unknown=entry.unknown,
+                    status=entry.status,
+                    anchor_type=entry.anchor_type,
+                    anchor_ref=entry.anchor_ref,
+                    evidence_refs=evidence_refs,
+                    alternatives=alternatives,
+                    decision=entry.decision,
+                    rationale=entry.rationale,
+                    confidence=entry.confidence,
+                    evidence_absence_justification=(
+                        entry.evidence_absence_justification
+                    ),
+                    created_by=entry.created_by,
+                    created_at=entry.created_at,
+                    updated_at=head.updated_at,
+                    projection_fingerprint=(
+                        research_decision_current_head_fingerprint(
+                            fingerprint_payload
+                        )
+                    ),
+                )
+            )
+        return ConsolidationProjectionInputs(
+            quality_assessments=tuple(quality_assessments),
+            research_decisions=tuple(research_decisions),
+        )
 
     async def list_artifacts(
         self,

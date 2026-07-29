@@ -63,13 +63,16 @@ _LEDGER: tuple[tuple[str, str, str], ...] = (
     ("_reconcile_builtin_presets", "presets",
      "Refresh built-in preset flags from the code definitions on every startup."),
     ("_reconcile_agent_permission_flags", "permissions",
-     "Backfill missing registry keys into agents' permission_flags (deep-merge, "
-     "non-destructive)."),
+     "Normalize historical agent snapshots into sparse direct permission "
+     "overrides (preset-aware and idempotent)."),
     ("_bootstrap_default_discovery_intents", "discovery_intents",
      "Upsert the v1 seed catalog of Discovery intents (idempotent ON CONFLICT)."),
     ("_backfill_knowledge_propagation_v2", "knowledge_propagation",
      "Grandfather physical legacy Knowledge Base attachments one target and "
      "transaction at a time without activating v2 or rewriting legacy content."),
+    ("_bootstrap_quality_assessment_legacy_import_v1", "quality_assessment",
+     "Resume the durable C7 legacy-assessment epoch board by board, importing "
+     "native-missing receipts and closing zero-candidate boards explicitly."),
 )
 
 

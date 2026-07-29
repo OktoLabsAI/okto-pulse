@@ -28,6 +28,8 @@ class PermissionsResponse(BaseModel):
     board_id: str
     preset_name: str | None
     flags: dict
+    owner_review_required: bool = False
+    review_reason: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -47,9 +49,9 @@ async def get_my_permissions(
     ``False``.
 
     Legacy agents (``permissions`` column non-null, flat list) are mapped
-    through ``map_legacy_permissions`` first. Agents with no granular data
-    at all default to the full registry (True for everything), matching the
-    historical "full access" compat path.
+    through ``map_legacy_permissions`` first. Versioned permission
+    introductions remain fail-closed when absent. Agents with no permission
+    data at all retain the historical trusted/local Full Control path.
     """
     try:
         result = await GetMyPermissionsUseCase().execute(
@@ -71,4 +73,6 @@ async def get_my_permissions(
         board_id=permissions.board_id,
         preset_name=permissions.preset_name,
         flags=permissions.flags,
+        owner_review_required=permissions.owner_review_required,
+        review_reason=permissions.review_reason,
     )

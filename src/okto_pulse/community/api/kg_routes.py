@@ -1335,6 +1335,12 @@ async def stream_kg_events(
         get_kg_events_hub,
     )
 
+    # FastAPI replaces ``Query`` defaults before an HTTP invocation, while
+    # direct adapter calls (used by the Core contract suite) receive the
+    # metadata object itself. Treat that unresolved optional default exactly
+    # like ``None`` so it cannot be mistaken for an explicit resume cursor.
+    if not isinstance(after_event_id, (str, type(None))):
+        after_event_id = None
     if since is None and after_event_id is not None:
         raise HTTPException(status_code=400, detail="after_event_id requires since")
     try:

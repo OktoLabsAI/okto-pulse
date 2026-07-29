@@ -10,22 +10,36 @@ import { PermissionFlagsEditor, countAllFlags, setAllFlags } from './PermissionF
 import type { FlagsMap } from './PermissionFlagsEditor';
 import type { PermissionPreset } from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { PresetLineageInfo } from './PresetLineageInfo';
+import { resolvePresetLineage } from './presetResolution';
 
 interface PresetEditorModalProps {
   /** Preset to edit. Null = create new. */
   preset: PermissionPreset | null;
-  /** Base preset flags for "Reset to Base" (when cloned). */
-  baseFlags?: FlagsMap | null;
+  /** Complete visible catalog used to resolve immutable lineage identities. */
+  presets: readonly PermissionPreset[];
   /** Template flags for new preset (all false by default). */
   templateFlags?: FlagsMap;
   onClose: () => void;
   onSaved: () => void;
 }
 
-export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, onSaved }: PresetEditorModalProps) {
+export function PresetEditorModal({
+  preset,
+  presets,
+  templateFlags,
+  onClose,
+  onSaved,
+}: PresetEditorModalProps) {
   const api = useDashboardApi();
   const isBuiltIn = preset?.is_builtin ?? false;
   const isNew = !preset;
+  const lineage = preset && !preset.is_builtin
+    ? resolvePresetLineage(preset, presets)
+    : null;
+  const baseFlags = lineage?.canResetToBase && lineage.directBase
+    ? lineage.directBase.flags as unknown as FlagsMap
+    : null;
 
   const [name, setName] = useState(preset?.name || '');
   const [description, setDescription] = useState(preset?.description || '');
@@ -65,7 +79,7 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
     if (!preset) return;
     setSaving(true);
     try {
-      await api.createPreset({
+      await api.clonePreset(preset.id, {
         name: `${preset.name} (copy)`,
         description: `Cloned from ${preset.name}`,
         flags: JSON.parse(JSON.stringify(preset.flags)),
@@ -99,6 +113,14 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
               {!isBuiltIn && !isNew && (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-100 text-violet-600 font-medium">custom</span>
               )}
+              {preset?.owner_review_required && (
+                <span
+                  className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 font-medium"
+                  title={preset.review_reason || 'Preset lineage requires owner review'}
+                >
+                  owner review required
+                </span>
+              )}
             </div>
             <p className="text-xs text-gray-400 mt-0.5">{enabled} of {total} flags enabled</p>
           </div>
@@ -110,6 +132,9 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
         {/* Name / Description */}
         {!isBuiltIn && (
           <div className="px-6 py-3 border-b border-gray-100 dark:border-gray-700 space-y-2 shrink-0">
+            {preset && (
+              <PresetLineageInfo preset={preset} presets={presets} />
+            )}
             <div className="flex gap-3">
               <div className="flex-1">
                 <label className="text-[10px] text-gray-400 uppercase tracking-wide">Name</label>
@@ -140,7 +165,11 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
                 Disable All
               </button>
               {baseFlags && (
-                <button onClick={() => setFlags(JSON.parse(JSON.stringify(baseFlags)))} className="text-[10px] px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-300">
+                <button
+                  onClick={() => setFlags(JSON.parse(JSON.stringify(baseFlags)))}
+                  className="text-[10px] px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-300"
+                  title={`Restore flags from ${lineage?.baseLabel ?? 'base preset'}`}
+                >
                   Reset to Base
                 </button>
               )}

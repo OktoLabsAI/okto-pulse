@@ -569,6 +569,256 @@ export const REFINEMENT_STATUS_LABELS: Record<RefinementStatus, string> = {
   cancelled: 'Cancelled',
 };
 
+// Governed quality assessments (SK-A).
+//
+// The API deliberately exposes three related but distinct projections:
+// list summaries use scale.min/max, receipts use scale.minimum/maximum, and
+// list-item currentness is an object rather than the current endpoint string.
+// Keep those shapes separate so a backend contract drift fails at compile time
+// instead of being silently normalized by the UI.
+export type QualitySubjectType = 'ideation' | 'refinement' | 'spec';
+export type QualityAssessmentKind =
+  | 'ambiguity'
+  | 'spec_validation'
+  | 'requirement_lint';
+export type QualityCurrentness = 'current' | 'stale';
+export type QualityAssessmentStaleReason =
+  | 'content_changed'
+  | 'clarification_changed'
+  | 'ruleset_changed'
+  | 'taxonomy_changed'
+  | 'policy_changed'
+  | 'subject_version_changed';
+export type QualityAssessmentReceiptState =
+  | 'current'
+  | 'stale'
+  | 'superseded';
+export type QualityFindingSeverity =
+  | 'info'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'critical';
+export type QualityFindingLifecycle = 'open' | 'resolved' | 'superseded';
+export type QualityFindingAnchorType =
+  | 'whole_artifact'
+  | 'field'
+  | 'structured_child'
+  | 'qa';
+export type QualityScaleKind =
+  | 'ambiguity_score'
+  | 'percentage'
+  | 'finding_count';
+export type QualityScaleDirection = 'lower_better' | 'higher_better';
+
+export interface QualityScaleSummary {
+  kind: QualityScaleKind;
+  min: number;
+  max: number;
+  direction: QualityScaleDirection;
+}
+
+export interface QualityAssessmentSummary {
+  receipt_id: string;
+  subject_version: number;
+  currentness: QualityCurrentness;
+  score: number;
+  scale: QualityScaleSummary;
+  head_revision: number;
+}
+
+/**
+ * Optional on list entities by design:
+ * - omitted: the actor cannot read Quality (or the projection was not asked);
+ * - {}: the actor may read Quality, but no current heads exist.
+ */
+export type QualitySummaryMap = Partial<
+  Record<QualityAssessmentKind, QualityAssessmentSummary>
+>;
+
+export interface QualityReceiptScale {
+  kind: QualityScaleKind;
+  minimum: number;
+  maximum: number;
+  direction: QualityScaleDirection;
+}
+
+export interface QualityReceiptDigests {
+  content_digest: string;
+  clarification_digest: string;
+  ruleset_digest: string;
+  taxonomy_digest: string;
+  policy_digest: string;
+  input_digest: string;
+  canonicalization_version: string;
+}
+
+export interface QualityReceiptVersions {
+  ruleset_version: string;
+  taxonomy_version: string;
+  analyzer_version: string;
+  policy_version: string;
+}
+
+export interface QualityAssessmentReceipt {
+  id: string;
+  board_id: string;
+  subject_type: QualitySubjectType;
+  subject_id: string;
+  subject_version: number;
+  assessment_kind: QualityAssessmentKind;
+  origin:
+    | 'human_or_agent'
+    | 'spec_validation'
+    | 'semantic_writer'
+    | 'legacy_import';
+  source: 'native' | 'legacy_migration';
+  channel: string;
+  outcome: 'recorded' | 'advisory';
+  scale: QualityReceiptScale;
+  score: number;
+  justification: string;
+  digests: QualityReceiptDigests;
+  versions: QualityReceiptVersions;
+  run_identity_digest: string;
+  authority_digest: string;
+  idempotency_key: string;
+  request_digest: string;
+  created_by: string;
+  created_at: string;
+  predecessor_receipt_id: string | null;
+  contract_version: 'quality-assessment/v1';
+}
+
+export interface QualityReceiptCurrentness {
+  current: boolean;
+  state: QualityCurrentness;
+  stale_reasons: QualityAssessmentStaleReason[];
+}
+
+export interface QualityAssessmentListItem {
+  receipt: QualityAssessmentReceipt;
+  is_head: boolean;
+  state: QualityAssessmentReceiptState;
+  currentness: QualityReceiptCurrentness;
+}
+
+export type QualityGateReasonCode =
+  | 'not_applicable'
+  | 'ambiguity_gate_disabled'
+  | 'ambiguity_gate_skipped'
+  | 'ambiguity_assessment_stale'
+  | 'ambiguity_score_exceeds_threshold'
+  | 'ambiguity_gate_ready';
+
+export interface QualityGatePreview {
+  applicable: boolean;
+  enabled: boolean;
+  allowed: boolean;
+  reason_code: QualityGateReasonCode;
+  threshold: number | null;
+  score: number;
+  skipped: boolean;
+}
+
+export interface CurrentQualityAssessment {
+  receipt: QualityAssessmentReceipt;
+  head_revision: number;
+  currentness: QualityCurrentness;
+  stale_reasons: QualityAssessmentStaleReason[];
+  gate_preview: QualityGatePreview;
+}
+
+export interface QualityAssessmentReceiptDetail {
+  receipt: QualityAssessmentReceipt;
+  currentness: QualityCurrentness;
+  stale_reasons: QualityAssessmentStaleReason[];
+}
+
+export interface QualityEvidenceRef {
+  source_type: string;
+  source_id: string;
+  source_version: number;
+  content_hash: string;
+}
+
+export interface QualityFindingAnchor {
+  board_id: string;
+  subject_type: QualitySubjectType;
+  subject_id: string;
+  subject_version: number;
+  input_digest: string;
+  anchor_type: QualityFindingAnchorType;
+  anchor_ref: string | null;
+  excerpt_hash: string | null;
+}
+
+export interface QualityFinding {
+  id: string;
+  receipt_id: string;
+  assessment_kind: QualityAssessmentKind;
+  finding_key: string;
+  category_code: string;
+  taxonomy_version: string;
+  severity: QualityFindingSeverity;
+  confidence: number;
+  deterministic: boolean;
+  blocking_eligible: boolean;
+  title: string;
+  detail: string;
+  anchor: QualityFindingAnchor;
+  evidence_refs: QualityEvidenceRef[];
+  lifecycle: QualityFindingLifecycle;
+  created_at: string;
+  remediation: string | null;
+  rule_code: string | null;
+}
+
+export interface QualityFindingInput {
+  finding_key: string;
+  category_code: string;
+  severity: QualityFindingSeverity;
+  confidence: number;
+  deterministic: boolean;
+  title: string;
+  detail: string;
+  anchor: {
+    anchor_type: QualityFindingAnchorType;
+    anchor_ref?: string | null;
+    excerpt_hash?: string | null;
+  };
+  evidence_refs: QualityEvidenceRef[];
+  remediation?: string | null;
+  rule_code?: string | null;
+}
+
+export interface QualityProposedQuestionInput {
+  client_key: string;
+  question: string;
+  question_type: string;
+  choices: string[];
+  allow_free_text: boolean;
+  category_code?: string | null;
+  finding_keys: string[];
+}
+
+export interface RecordAmbiguityAssessmentRequest {
+  idempotency_key: string;
+  expected_subject_version: number;
+  expected_head_revision: number;
+  score: number;
+  findings: QualityFindingInput[];
+  proposed_questions: QualityProposedQuestionInput[];
+}
+
+export interface RecordAmbiguityAssessmentResponse {
+  outcome: 'success';
+  replayed: boolean;
+  receipt_id: string;
+  head_revision: number;
+  qa_id_map: Record<string, string>;
+}
+
 // Ideation Q&A (same structure as Spec Q&A)
 export interface IdeationQAItem {
   id: string;
@@ -781,6 +1031,8 @@ export interface RefinementSummary {
   updated_at: string;
   labels: string[] | null;
   archived?: boolean;
+  skip_ambiguity_gate?: boolean;
+  quality_summaries?: QualitySummaryMap;
 }
 
 // Business Rule
@@ -957,7 +1209,12 @@ export interface SpecStructuredEntityMutationResult {
 }
 
 // Test Scenario
-export type TestScenarioType = 'unit' | 'integration' | 'e2e' | 'manual';
+export type TestScenarioType =
+  | 'unit'
+  | 'integration'
+  | 'e2e'
+  | 'manual'
+  | 'negative';
 export type TestScenarioStatus = 'draft' | 'ready' | 'automated' | 'passed' | 'failed';
 
 // Re-executable validation evidence contract (spec 9e0bf979).
@@ -1024,7 +1281,8 @@ export interface TestScenario {
   id: string;
   title: string;
   linked_criteria: string[] | null;
-  scenario_type: TestScenarioType;
+  /** Raw read value; legacy rows may expose an unsupported historical type. */
+  scenario_type: string;
   given: string;
   when: string;
   then: string;
@@ -1035,6 +1293,11 @@ export interface TestScenario {
   evidence?: TestScenarioEvidence | null;
   latest_evidence?: TestScenarioEvidence | null;
 }
+
+export type TestScenarioWrite = Omit<TestScenario, 'scenario_type'> & {
+  /** Omission preserves an existing row and defaults a new row to integration. */
+  scenario_type?: TestScenarioType;
+};
 
 // Screen Mockups
 export interface MockupAnnotation {
@@ -1570,6 +1833,7 @@ export interface Spec {
   cards: CardSummaryForSpec[];
   knowledge_bases: SpecKnowledgeSummary[];
   qa_items: SpecQAItem[];
+  quality_summaries?: QualitySummaryMap;
 }
 
 // Spec summary (without nested cards)
@@ -1590,6 +1854,7 @@ export interface SpecSummary {
   labels: string[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   archived?: boolean;
+  quality_summaries?: QualitySummaryMap;
 }
 
 // Ideation
@@ -1624,6 +1889,7 @@ export interface Ideation {
   specs: SpecSummary[];
   knowledge_bases: IdeationKnowledgeSummary[];
   qa_items: IdeationQAItem[];
+  quality_summaries?: QualitySummaryMap;
 }
 
 export interface IdeationSummary {
@@ -1650,6 +1916,7 @@ export interface IdeationSummary {
   labels: string[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   archived?: boolean;
+  quality_summaries?: QualitySummaryMap;
 }
 
 // Refinement (full)
@@ -1674,6 +1941,8 @@ export interface Refinement {
   labels: string[] | null;
   archived?: boolean;
   pre_archive_status?: string | null;
+  // Human-authorized opt-out of the board refinement ambiguity gate.
+  skip_ambiguity_gate?: boolean;
   // Cancellation justification (set only while status === 'cancelled')
   cancellation_reason?: string | null;
   cancelled_at?: string | null;
@@ -1681,6 +1950,19 @@ export interface Refinement {
   specs: SpecSummary[];
   qa_items: RefinementQAItem[];
   knowledge_bases: RefinementKnowledgeSummary[];
+  quality_summaries?: QualitySummaryMap;
+}
+
+export interface RefinementAmbiguityGateSkipRequest {
+  skip_ambiguity_gate: boolean;
+  reason: string;
+  expected_refinement_version: number;
+}
+
+export interface RefinementAmbiguityGateSkipReceipt {
+  skipped: boolean;
+  activity_id: string;
+  version: number;
 }
 
 // Card
@@ -1817,11 +2099,16 @@ export interface LookupPage {
 // Permission Preset
 export interface PermissionPreset {
   id: string;
+  owner_id: string | null;
   name: string;
   description: string | null;
   is_builtin: boolean;
+  base_preset_id: string | null;
   flags: Record<string, Record<string, Record<string, boolean>>>;
+  owner_review_required: boolean;
+  review_reason: string | null;
   created_at: string;
+  updated_at: string | null;
 }
 
 // Agent (global, secret-free; credentials are reveal-once responses)
@@ -1852,6 +2139,11 @@ export interface AgentSummary {
   description: string | null;
   objective: string | null;
   is_active: boolean;
+  preset_id?: string | null;
+  /** Sparse direct delta from the selected preset / Full Control base. */
+  permission_flags?: Record<string, unknown> | null;
+  /** Raw board ceiling; distinct from permission_flags and effective values. */
+  permission_overrides?: Record<string, unknown> | null;
   created_at: string;
   last_used_at: string | null;
 }
@@ -1863,6 +2155,7 @@ export interface AgentBoardGrant {
   board_id: string;
   granted_by: string;
   granted_at: string;
+  permission_overrides?: Record<string, unknown> | null;
 }
 
 // Board
@@ -1895,6 +2188,9 @@ export interface BoardSettings {
   // Blocks evaluating→done when ideation ambiguity is missing or exceeds the threshold.
   require_ideation_ambiguity_gate?: boolean;
   max_ideation_ambiguity?: number; // 1-5, default 3
+  // Ambiguity gate for refinement approval/derivation — opt-in, default off.
+  require_refinement_ambiguity_gate?: boolean;
+  max_refinement_ambiguity?: number; // 1-5, default 3
   // Resource Gate Level 2 - effective spec resources must be copied/attached to tasks.
   require_spec_resource_task_coverage?: boolean;
   // Spec resource automation - copies selected Spec resources to newly-created/linked cards.
@@ -1949,6 +2245,137 @@ export interface SpecValidationList {
   spec_id: string;
   current_validation_id: string | null;
   validations: SpecValidation[];
+}
+
+// Curated Spec checklist (/specify/v1)
+export type ChecklistMode = 'off' | 'advisory' | 'blocking';
+export type ChecklistOutcome = 'pass' | 'fail' | 'not_applicable';
+export type ChecklistStateStatus =
+  | 'off'
+  | 'not_started'
+  | 'current'
+  | 'stale'
+  | 'failed';
+
+export interface ChecklistTemplateItem {
+  item_id: string;
+  title_en: string;
+  title_pt: string;
+  description_en: string;
+  description_pt: string;
+  allow_na: boolean;
+}
+
+export interface ChecklistTemplate {
+  template_id: string;
+  version: '/specify/v1';
+  digest: string;
+  items: ChecklistTemplateItem[];
+}
+
+export interface ChecklistBinding {
+  id: string;
+  board_id: string;
+  target_type: 'spec';
+  phase: 'spec_validation';
+  mode: ChecklistMode;
+  version: number;
+  expected_revision: number;
+  digest: string;
+  template_version_id: '/specify/v1';
+}
+
+export interface ChecklistBindingUpdateResult {
+  binding_id: string;
+  revision: number;
+  effective: ChecklistBinding;
+}
+
+export interface ChecklistItemResult {
+  item_id: string;
+  outcome: ChecklistOutcome;
+  anchor: string;
+  rationale: string | null;
+}
+
+export interface ChecklistReceipt {
+  id: string;
+  board_id: string;
+  spec_id: string;
+  spec_version: number;
+  content_digest: string;
+  input_digest: string;
+  template_version_id: '/specify/v1';
+  template_digest: string;
+  binding_version: number;
+  binding_id: string;
+  binding_mode: ChecklistMode;
+  source: 'native' | 'legacy_unverified';
+  request_digest: string;
+  head_revision: number;
+  predecessor_receipt_id: string | null;
+  created_by: string;
+  created_at: string;
+  outcome: 'pass' | 'fail';
+  results: ChecklistItemResult[];
+  blocking_satisfied: boolean;
+}
+
+export interface ChecklistCurrentness {
+  current: boolean;
+  stale_reasons: string[];
+}
+
+export interface ChecklistGateDecision {
+  mode: ChecklistMode;
+  allowed: boolean;
+  reason: string;
+  currentness: ChecklistCurrentness | null;
+}
+
+export interface ChecklistSpecState {
+  status: ChecklistStateStatus;
+  subject: {
+    board_id: string;
+    spec_id: string;
+    spec_version: number;
+    content_digest: string;
+    input_digest: string;
+    status: string;
+    archived: boolean;
+  };
+  binding: ChecklistBinding;
+  current_receipt: ChecklistReceipt | null;
+  currentness: ChecklistCurrentness | null;
+  gate: ChecklistGateDecision;
+}
+
+export interface ChecklistExecutionStartResult {
+  execution_id: string;
+  items: ChecklistTemplateItem[];
+  subject_digest: string;
+  template_digest: string;
+}
+
+export interface ChecklistExecutionSubmitResult {
+  receipt_id: string;
+  outcome: 'pass' | 'fail';
+  head_revision: number;
+}
+
+export interface ChecklistReceiptView {
+  receipt: ChecklistReceipt;
+  is_head: boolean;
+  currentness: ChecklistCurrentness;
+  gate: ChecklistGateDecision;
+}
+
+export interface ChecklistReceiptPage {
+  items: ChecklistReceiptView[];
+  total_filtered: number;
+  total_overall: number;
+  offset: number;
+  limit: 25 | 50 | 100;
 }
 
 // Guideline types
@@ -2255,6 +2682,7 @@ export interface DefaultBoardConfigTemplate {
   settings_payload: Record<string, unknown>;
   guideline_default_refs: DefaultBoardConfigGuidelineRef[];
   design_system_default_ref: DefaultBoardConfigDesignSystemRef | null;
+  spec_checklist_mode?: ChecklistMode | null;
   created_by: string;
   created_at: string | null;
   updated_at: string | null;
@@ -2294,6 +2722,7 @@ export interface CreateDefaultBoardConfigVersionRequest {
   scope?: string;
   guideline_default_refs?: DefaultBoardConfigGuidelineRef[] | null;
   design_system_default_ref?: DefaultBoardConfigDesignSystemRef | null;
+  spec_checklist_mode?: ChecklistMode;
   activate?: boolean;
 }
 
@@ -2391,8 +2820,8 @@ export interface UpdateAgentRequest {
   objective?: string;
   is_active?: boolean;
   permissions?: string[];
-  preset_id?: string;
-  permission_flags?: Record<string, Record<string, Record<string, boolean>>>;
+  preset_id?: string | null;
+  permission_flags?: Record<string, unknown> | null;
 }
 
 export interface CreateQARequest {
@@ -2447,6 +2876,7 @@ export interface CreateSpecRequest {
   functional_requirements?: string[];
   technical_requirements?: string[];
   acceptance_criteria?: string[];
+  test_scenarios?: TestScenarioWrite[];
   decisions?: Decision[];
   integration_requirements?: IntegrationRequirement[];
   observability_requirements?: ObservabilityRequirement[];
@@ -2464,7 +2894,7 @@ export interface UpdateSpecRequest {
   functional_requirements?: string[];
   technical_requirements?: string[];
   acceptance_criteria?: string[];
-  test_scenarios?: TestScenario[];
+  test_scenarios?: TestScenarioWrite[];
   business_rules?: BusinessRule[];
   api_contracts?: ApiContract[];
   integration_requirements?: IntegrationRequirement[];

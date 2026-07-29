@@ -17,14 +17,12 @@ from types import SimpleNamespace
 
 import pytest
 
-REPO_SRC = Path(__file__).parent.parent / "src"
-WORKSPACE_ROOT = Path(__file__).parent.parent.parent
-CORE_SRC_CANDIDATES = (
-    WORKSPACE_ROOT / "okto_labs_pulse_core" / "src",
-    WORKSPACE_ROOT / "okto-pulse-core" / "src",
-)
+from repo_layout import resolve_core_repo
 
-for p in (str(REPO_SRC), *(str(path) for path in CORE_SRC_CANDIDATES if path.exists())):
+REPO_SRC = Path(__file__).parent.parent / "src"
+CORE_SRC = resolve_core_repo(REPO_SRC.parent) / "src"
+
+for p in (str(REPO_SRC), str(CORE_SRC)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
@@ -233,7 +231,7 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
     pulse_home = tmp_path / "pulse-home"
     hf_home = tmp_path / "empty-hf-cache"
     env = dict(os.environ)
-    source_paths = [REPO_SRC, *(p for p in CORE_SRC_CANDIDATES if p.exists())]
+    source_paths = [REPO_SRC, CORE_SRC]
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = os.pathsep.join(
         [

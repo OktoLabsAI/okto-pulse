@@ -7,8 +7,16 @@ import { X, Plus, Copy, RefreshCw, Trash2, Key, FileJson, Terminal, Shield, Chev
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
-import { PermissionFlagsEditor, PermissionDiffView } from '@/components/permissions';
-import type { FlagsMap } from '@/components/permissions';
+import {
+  applyBoardCeiling,
+  applyPermissionDelta,
+  boardCeilingDelta,
+  permissionDelta,
+  PermissionDiffView,
+  PermissionFlagsEditor,
+  resolveAgentPermissionBase,
+} from '@/components/permissions';
+import type { AgentPermissionBase } from '@/components/permissions';
 import type { Agent, AgentSummary, PermissionPreset } from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
@@ -56,6 +64,27 @@ function getMcpConfigJson(format: McpFormat, apiKey: string): string {
 interface AgentsModalProps {
   isOpen: boolean;
   onClose: () => void;
+}
+
+function hasPermissionDelta(delta: Record<string, unknown>): boolean {
+  return Object.keys(delta).length > 0;
+}
+
+function PermissionBaseReviewNotice({
+  resolution,
+}: {
+  resolution: AgentPermissionBase;
+}) {
+  if (!resolution.ownerReviewRequired) return null;
+  return (
+    <p
+      role="alert"
+      className="text-[10px] rounded border border-red-200 bg-red-50 px-2 py-1 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+    >
+      Owner review required for {resolution.label}
+      {resolution.reviewReason ? ` · ${resolution.reviewReason}` : ''}
+    </p>
+  );
 }
 
 export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
@@ -356,11 +385,23 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                   {myAgents.map((agent) => {
                     const isExpanded = expandedAgentId === agent.id;
                     const revealedKey = revealedAgentKeys[agent.id];
+                    const permissionResolution = resolveAgentPermissionBase(
+                      agent.preset_id,
+                      presets,
+                    );
+                    const permissionBase = permissionResolution.flags;
+                    const effectivePermissions = permissionBase
+                      ? applyPermissionDelta(
+                          permissionBase as unknown as Record<string, unknown>,
+                          agent.permission_flags,
+                        )
+                      : null;
                     return (
                       <div key={agent.id} className="bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-lg overflow-hidden">
                         {/* Agent header */}
                         <div className="flex items-center justify-between p-3">
                           <button
+                            aria-label={`Edit agent ${agent.name}`}
                             onClick={() => setExpandedAgentId(isExpanded ? null : agent.id)}
                             className="flex-1 min-w-0 text-left flex items-center gap-2"
                           >
@@ -463,18 +504,45 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                     ))}
                                   </select>
                                 </div>
-                                {/* Permission flags editor */}
-                                {agent.permission_flags && (
-                                  <PermissionFlagsEditor
-                                    flags={agent.permission_flags as FlagsMap}
-                                    onChange={async (newFlags) => {
-                                      try {
-                                        await api.updateAgent(agent.id, { permission_flags: newFlags } as any);
-                                        await loadMyAgents();
-                                        toast.success('Permissions updated');
-                                      } catch { toast.error('Failed to update'); }
-                                    }}
-                                  />
+                                <PermissionBaseReviewNotice
+                                  resolution={permissionResolution}
+                                />
+                                {/* Always edit the resolved effective tree. The API
+                                    receives only the direct delta from its base. */}
+                                {permissionBase && effectivePermissions ? (
+                                  <>
+                                    <PermissionDiffView
+                                      baseFlags={permissionBase}
+                                      effectiveFlags={effectivePermissions}
+                                      baseLabel={permissionResolution.label}
+                                      restrictionLabel="direct agent customization"
+                                    />
+                                    <PermissionFlagsEditor
+                                      flags={effectivePermissions}
+                                      onChange={async (newFlags) => {
+                                        const delta = permissionDelta(
+                                          permissionBase as unknown as Record<string, unknown>,
+                                          newFlags as unknown as Record<string, unknown>,
+                                        );
+                                        const permissionFlags = hasPermissionDelta(delta)
+                                          ? delta
+                                          : agent.preset_id
+                                            ? {}
+                                            : null;
+                                        try {
+                                          await api.updateAgent(agent.id, {
+                                            permission_flags: permissionFlags,
+                                          });
+                                          await loadMyAgents();
+                                          toast.success('Permissions updated');
+                                        } catch { toast.error('Failed to update'); }
+                                      }}
+                                    />
+                                  </>
+                                ) : (
+                                  <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                                    Permission base unavailable. Refresh presets before editing.
+                                  </p>
                                 )}
                               </div>
                             </div>
@@ -584,6 +652,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                       <div key={agent.id} className="bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-lg overflow-hidden">
                         <div className="flex items-center justify-between p-3">
                           <button
+                            aria-label={`Edit board access for ${agent.name}`}
                             onClick={() => setExpandedAgentId(isBoardExpanded ? null : `board-${agent.id}`)}
                             className="flex-1 min-w-0 text-left flex items-center gap-2"
                           >
@@ -607,7 +676,29 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                         </div>
                         {isBoardExpanded && (() => {
                           const myAgent = myAgents.find((a) => a.id === agent.id);
-                          const baseFlags = myAgent?.permission_flags as FlagsMap | undefined;
+                          const presetId = agent.preset_id !== undefined
+                            ? agent.preset_id
+                            : myAgent?.preset_id;
+                          const directDelta = agent.permission_flags !== undefined
+                            ? agent.permission_flags
+                            : myAgent?.permission_flags;
+                          const permissionResolution = resolveAgentPermissionBase(
+                            presetId,
+                            presets,
+                          );
+                          const presetBase = permissionResolution.flags;
+                          const baseFlags = presetBase
+                            ? applyPermissionDelta(
+                                presetBase as unknown as Record<string, unknown>,
+                                directDelta,
+                              )
+                            : null;
+                          const effectiveFlags = baseFlags
+                            ? applyBoardCeiling(
+                                baseFlags as unknown as Record<string, unknown>,
+                                agent.permission_overrides,
+                              )
+                            : null;
                           return (
                             <div className="px-3 pb-3 border-t border-gray-200 dark:border-gray-700 space-y-2">
                               <div className="mt-2">
@@ -617,6 +708,9 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                 <p className="text-[10px] text-gray-400 mt-0.5 mb-1.5">
                                   Restrict agent permissions on this board. Overrides can only remove permissions, never add.
                                 </p>
+                                <PermissionBaseReviewNotice
+                                  resolution={permissionResolution}
+                                />
                                 <div className="flex items-center gap-2 mb-2">
                                   <select
                                     defaultValue=""
@@ -632,9 +726,21 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                         return;
                                       }
                                       const preset = presets.find((p) => p.id === presetId);
-                                      if (preset) {
+                                      if (preset && baseFlags) {
+                                        const restrictedToPreset = applyBoardCeiling(
+                                          baseFlags as unknown as Record<string, unknown>,
+                                          preset.flags,
+                                        );
+                                        const ceiling = boardCeilingDelta(
+                                          baseFlags as unknown as Record<string, unknown>,
+                                          restrictedToPreset as unknown as Record<string, unknown>,
+                                        );
                                         try {
-                                          await api.updateAgentBoardOverrides(agent.id, currentBoard.id, preset.flags);
+                                          await api.updateAgentBoardOverrides(
+                                            agent.id,
+                                            currentBoard.id,
+                                            ceiling,
+                                          );
                                           toast.success(`Overrides set to ${preset.name}`);
                                           loadBoardAgents();
                                         } catch { toast.error('Failed'); }
@@ -663,12 +769,37 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                     Clear
                                   </button>
                                 </div>
-                                {/* Diff view when base flags available */}
-                                {baseFlags && (
-                                  <PermissionDiffView
-                                    baseFlags={baseFlags}
-                                    effectiveFlags={baseFlags}
-                                  />
+                                {baseFlags && effectiveFlags ? (
+                                  <>
+                                    <PermissionDiffView
+                                      baseFlags={baseFlags}
+                                      effectiveFlags={effectiveFlags}
+                                      baseLabel={`Effective agent permissions (${permissionResolution.label})`}
+                                    />
+                                    <PermissionFlagsEditor
+                                      flags={effectiveFlags}
+                                      onChange={async (newFlags) => {
+                                        if (!currentBoard) return;
+                                        const ceiling = boardCeilingDelta(
+                                          baseFlags as unknown as Record<string, unknown>,
+                                          newFlags as unknown as Record<string, unknown>,
+                                        );
+                                        try {
+                                          await api.updateAgentBoardOverrides(
+                                            agent.id,
+                                            currentBoard.id,
+                                            ceiling,
+                                          );
+                                          toast.success('Board permissions updated');
+                                          loadBoardAgents();
+                                        } catch { toast.error('Failed'); }
+                                      }}
+                                    />
+                                  </>
+                                ) : (
+                                  <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                                    Permission base unavailable. Refresh agents and presets before editing.
+                                  </p>
                                 )}
                               </div>
                             </div>

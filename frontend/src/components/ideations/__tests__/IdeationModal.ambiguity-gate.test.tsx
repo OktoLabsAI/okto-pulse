@@ -15,6 +15,7 @@ const apiMock = vi.hoisted(() => ({
   deleteIdeation: vi.fn(),
   updateIdeation: vi.fn(),
   setIdeationAmbiguityGateSkip: vi.fn(),
+  getCurrentQualityAssessment: vi.fn(),
 }));
 
 const boardState = vi.hoisted(() => ({
@@ -22,6 +23,17 @@ const boardState = vi.hoisted(() => ({
 }));
 
 vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: null,
+    isLoading: false,
+    error: null,
+    ownerReviewRequired: false,
+    has: (flag: string) => (
+      flag === 'ideation.quality.read' || flag === 'ideation.quality.assess'
+    ),
+  }),
+}));
 vi.mock('@/store/dashboard', () => ({ useCurrentBoard: () => boardState.currentBoard }));
 vi.mock('@/lib/exportMarkdown', () => ({
   exportIdeation: vi.fn(() => '# x'),
@@ -75,6 +87,34 @@ function ideationWith(overrides: Partial<Ideation>): Ideation {
   };
 }
 
+function currentAssessment(
+  reasonCode:
+    | 'ambiguity_score_exceeds_threshold'
+    | 'ambiguity_gate_skipped'
+    | 'ambiguity_gate_ready' = 'ambiguity_score_exceeds_threshold',
+) {
+  const skipped = reasonCode === 'ambiguity_gate_skipped';
+  const allowed = skipped || reasonCode === 'ambiguity_gate_ready';
+  return {
+    receipt: {
+      id: 'receipt-1',
+      score: 4,
+    },
+    head_revision: 3,
+    currentness: 'current',
+    stale_reasons: [],
+    gate_preview: {
+      applicable: true,
+      enabled: true,
+      allowed,
+      reason_code: reasonCode,
+      threshold: 3,
+      score: 4,
+      skipped,
+    },
+  };
+}
+
 describe('IdeationModal Max ambiguity gate panel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -101,22 +141,34 @@ describe('IdeationModal Max ambiguity gate panel', () => {
         { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
       ],
     });
+    apiMock.getCurrentQualityAssessment.mockResolvedValue(currentAssessment());
   });
 
-  it('shows gate status, current ambiguity, threshold and skip control when the board gate is enabled', async () => {
+  it('shows the server-projected score, threshold and gate result when the board gate is enabled', async () => {
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Ideation');
     const panel = screen.getByTestId('ambiguity-gate-panel');
-    expect(panel).toHaveTextContent('Board threshold:');
-    expect(panel).toHaveTextContent('Current ambiguity:');
-    // ambiguity 4 > threshold 3, not skipped -> blocks
-    expect(screen.getByTestId('ambiguity-gate-status')).toHaveTextContent('Blocks completion');
+    await screen.findByTestId('quality-gate-preview');
+    expect(apiMock.getCurrentQualityAssessment).toHaveBeenCalledWith(
+      'ideation',
+      'ideation-1',
+      'ambiguity',
+      expect.any(AbortSignal),
+    );
+    expect(panel).toHaveTextContent('Score: 4');
+    expect(panel).toHaveTextContent('Threshold: 3');
+    expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent(
+      'Blocked — score exceeds threshold',
+    );
     expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute('role', 'switch');
     expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute('aria-checked', 'false');
   });
 
   it('persists skip through the dedicated endpoint and refreshes state', async () => {
+    apiMock.getCurrentQualityAssessment
+      .mockResolvedValueOnce(currentAssessment())
+      .mockResolvedValue(currentAssessment('ambiguity_gate_skipped'));
     apiMock.setIdeationAmbiguityGateSkip.mockResolvedValue(ideationWith({ skip_ambiguity_gate: true }));
     const onChanged = vi.fn();
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={onChanged} />);
@@ -126,8 +178,11 @@ describe('IdeationModal Max ambiguity gate panel', () => {
 
     await waitFor(() => expect(apiMock.setIdeationAmbiguityGateSkip).toHaveBeenCalledWith('ideation-1', true));
     expect(onChanged).toHaveBeenCalled();
-    // refreshed state -> status now Skipped
-    await waitFor(() => expect(screen.getByTestId('ambiguity-gate-status')).toHaveTextContent('Skipped'));
+    // Entity skip state refreshes the server preview; the client never infers it.
+    await waitFor(() => expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent(
+      'Skipped by recorded override',
+    ));
+    expect(apiMock.getCurrentQualityAssessment).toHaveBeenCalledTimes(2);
     expect(apiMock.updateIdeation).not.toHaveBeenCalled();
   });
 

@@ -35,6 +35,7 @@ import { IdeationModal } from './IdeationModal';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
 import { usePersistedPagination } from '@/hooks/usePersistedPagination';
+import { QualitySummaryBadges } from '@/components/quality';
 
 interface IdeationsPanelProps {
   boardId: string;
@@ -323,14 +324,19 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
                       {sanitizePreview(ideation.problem_statement)}
                     </p>
                   )}
-                  {/* Evaluation score badges (Domains / Ambiguity / Dependencies) on their own row */}
+                  {/* Legacy scope context. Governed ambiguity is rendered only
+                      from quality_summaries below; it never falls back to
+                      scope_assessment when that projection is omitted. */}
                   {ideation.scope_assessment && typeof ideation.scope_assessment.domains === 'number' && (
                     <div className="flex items-center gap-1.5 flex-wrap mt-2">
                       <ScopeBadge label="Domains" value={ideation.scope_assessment.domains} />
-                      <ScopeBadge label="Ambiguity" value={ideation.scope_assessment.ambiguity} />
                       <ScopeBadge label="Dependencies" value={ideation.scope_assessment.dependencies} />
                     </div>
                   )}
+                  <QualitySummaryBadges
+                    summaries={ideation.quality_summaries}
+                    className="mt-2"
+                  />
                   {/* Open Q&A badge on its own row, above the labels */}
                   {ideation.open_qa_count ? (
                     <div className="mt-2">

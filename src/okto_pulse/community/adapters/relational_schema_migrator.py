@@ -102,6 +102,8 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
      "Add spec-validation-gate columns."),
     ("_migrate_add_ideation_skip_ambiguity_gate", "pre_create_all", False,
      "Add ideation skip-ambiguity-gate column."),
+    ("_migrate_add_refinement_skip_ambiguity_gate", "pre_create_all", False,
+     "Add refinement skip-ambiguity-gate column."),
     ("_migrate_heal_task_validation_field_names", "pre_create_all", False,
      "Heal task-validation field names."),
     ("_migrate_status_renames", "pre_create_all", False,
@@ -161,6 +163,8 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
      "DROP TABLE spec_skills (Skills removal; no data preservation — destructive)."),
     ("_migrate_add_default_config_snapshot", "post_create_all", False,
      "Add default-config snapshot column on Board.settings."),
+    ("_migrate_add_default_config_spec_checklist_mode", "post_create_all", False,
+     "Add curated Spec checklist mode to default-board templates."),
     ("_migrate_add_agent_seen_board_id", "post_create_all", False,
      "Add and backfill board scope on agent seen markers."),
     ("_migrate_add_board_guideline_provenance", "post_create_all", False,
@@ -174,6 +178,9 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
     ("_migrate_repair_known_fixture_fk_orphans", "post_create_all", True,
      "Purge only allowlisted historical test-fixture pollution (including its "
      "synthetic board), then require a clean SQLite foreign_key_check."),
+    ("_migrate_quality_assessment_c7_schema", "post_create_all", False,
+     "Converge quality Q&A lifecycle columns and install permit-aware "
+     "immutability guards for quality, RDL, checklist, and legacy-import rows."),
     ("_migrate_agent_permissions", "post_create_all", False,
      "Schema migration classified as post_create_all so legacy agent permissions "
      "are migrated before permission-flag data reconciliation."),

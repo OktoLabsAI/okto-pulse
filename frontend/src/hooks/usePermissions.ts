@@ -2,10 +2,9 @@
  * usePermissions — React hook that exposes the authenticated agent's
  * effective permission flags for a given board.
  *
- * Fail-open contract: `has(flag)` returns `true` whenever the hook has no
- * data yet (loading, error, or before first fetch). Backend gates the
- * action via 403, so the worst outcome is a toast — much better than
- * blocking the UI while permissions load.
+ * Historical flags keep the render-through behavior while data is
+ * unavailable.  SK-A/v1 introduced flags are fail-closed while loading, on
+ * errors, and whenever the response omits the leaf.
  *
  * Cache: 60s staleTime to avoid a roundtrip on every gated component.
  */
@@ -16,8 +15,28 @@ import {
   getMyPermissions,
   type PermissionsResponse,
 } from '@/services/permissions-api';
+import { SKA_PERMISSION_INTRODUCTION_V1_LEAVES } from '@/components/permissions/permissionLayers';
+
+export { SKA_PERMISSION_INTRODUCTION_V1_LEAVES } from '@/components/permissions/permissionLayers';
 
 const CACHE_TTL_MS = 60_000;
+
+const failClosedIntroducedFlags = new Set<string>(
+  SKA_PERMISSION_INTRODUCTION_V1_LEAVES,
+);
+
+const introducedHistoricalAuthorities: Readonly<Record<string, string>> = {
+  'ideation.quality.read': 'ideation.entity.read',
+  'ideation.quality.assess': 'spec.entity.edit_fields',
+  'refinement.quality.read': 'refinement.entity.read',
+  'refinement.quality.assess': 'spec.entity.edit_fields',
+  'spec.quality.read': 'spec.entity.read',
+  'spec.quality.assess': 'spec.validation.submit',
+  'refinement.research_decisions.read': 'refinement.entity.read',
+  'refinement.research_decisions.append': 'spec.entity.edit_fields',
+  'spec.checklist.read': 'spec.entity.read',
+  'spec.checklist.execute': 'spec.entity.edit_fields',
+};
 
 interface CacheEntry {
   data: PermissionsResponse;
@@ -68,17 +87,32 @@ export interface UsePermissionsResult {
   isLoading: boolean;
   /** Last network error, if any. */
   error: Error | null;
+  /** True when an invalid preset lineage requires an owner decision. */
+  ownerReviewRequired: boolean;
   /**
    * Check whether a flag is effectively enabled.
    *
-   * Fail-open: returns `true` while loading or on network error. This lets
-   * the UI render its full shape before the fetch completes — the backend
-   * is still the real gate and will 403 any unauthorised mutation.
-   *
-   * Absent flags default to `true` as well (backward compat with agents
-   * that predate newer flags — mirrors PermissionSet.has on the backend).
+   * Historical flags render through while data is unavailable. Introduced
+   * SK-A/v1 flags are denied until the backend returns an explicit True.
    */
   has: (flag: string) => boolean;
+}
+
+export function hasEffectivePermission(
+  data: PermissionsResponse | null,
+  flag: string,
+): boolean {
+  const introduced = failClosedIntroducedFlags.has(flag);
+  if (!data) return !introduced;
+  if (introduced && data.owner_review_required) return false;
+  const value = getNested(data.flags, flag);
+  if (value === undefined) return !introduced;
+  if (value !== true) return false;
+  const historicalAuthority = introducedHistoricalAuthorities[flag];
+  return (
+    historicalAuthority === undefined
+    || getNested(data.flags, historicalAuthority) === true
+  );
 }
 
 export function usePermissions(boardId: string | null | undefined): UsePermissionsResult {
@@ -97,10 +131,25 @@ export function usePermissions(boardId: string | null | undefined): UsePermissio
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
-    if (!boardId) return;
+    // Never expose a payload from the previous board while the new scope is
+    // loading.  Clearing all three states also makes boardId=null a real
+    // reset instead of retaining the last successful authorization snapshot.
+    setData(null);
+    setError(null);
+    if (!boardId) {
+      setIsLoading(false);
+      return;
+    }
+
+    const cached = cache.get(boardId);
+    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+      setData(cached.data);
+      setIsLoading(false);
+      return;
+    }
+
     let cancelled = false;
     setIsLoading(true);
-    setError(null);
     fetchWithCache(boardId)
       .then((res) => {
         if (!cancelled) {
@@ -110,6 +159,7 @@ export function usePermissions(boardId: string | null | undefined): UsePermissio
       })
       .catch((e: unknown) => {
         if (!cancelled) {
+          setData(null);
           setError(e instanceof Error ? e : new Error(String(e)));
           setIsLoading(false);
         }
@@ -119,17 +169,20 @@ export function usePermissions(boardId: string | null | undefined): UsePermissio
     };
   }, [boardId]);
 
+  const activeData = (
+    !isLoading
+    && !error
+    && boardId
+    && data?.board_id === boardId
+  )
+    ? data
+    : null;
+
   return {
-    preset: data?.preset_name ?? null,
+    preset: activeData?.preset_name ?? null,
     isLoading,
     error,
-    has: (flag: string) => {
-      // Fail-open: render-through when data is unavailable.
-      if (!data) return true;
-      const value = getNested(data.flags, flag);
-      // Absent flag = default True (backward compat — matches backend).
-      if (value === undefined) return true;
-      return Boolean(value);
-    },
+    ownerReviewRequired: activeData?.owner_review_required ?? false,
+    has: (flag: string) => hasEffectivePermission(activeData, flag),
   };
 }

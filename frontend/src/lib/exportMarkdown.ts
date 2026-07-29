@@ -1343,13 +1343,32 @@ function renderArchitectureDesigns(
 // Q&A
 // ---------------------------------------------------------------------------
 
-function renderQA(items: { question: string; answer?: string | null; asked_by?: string | null; answered_by?: string | null }[]): string {
+type MarkdownQAItem = {
+  question: string;
+  answer?: string | null;
+  asked_by?: string | null;
+  answered_by?: string | null;
+  answered_at?: string | null;
+  choices?: { id: string; label: string }[] | null;
+  selected?: string[] | null;
+};
+
+function selectedChoiceLabels(item: MarkdownQAItem): string[] {
+  const labelsById = new Map((item.choices || []).map((choice) => [choice.id, choice.label]));
+  return (item.selected || []).map((choiceId) => labelsById.get(choiceId) || choiceId);
+}
+
+function renderQA(items: MarkdownQAItem[]): string {
   if (!items?.length) return '';
   const entries = items.map((q, i) => {
     let entry = `### Q${i + 1}: ${q.question}\n\n`;
     if (q.asked_by) entry += `*Asked by: ${q.asked_by}*\n\n`;
-    if (q.answer) {
-      entry += `**A:** ${q.answer}\n\n`;
+    if (q.answered_at != null) {
+      const selectedLabels = selectedChoiceLabels(q);
+      if (selectedLabels.length) {
+        entry += `**Selected:** ${selectedLabels.join(', ')}\n\n`;
+      }
+      if (q.answer) entry += `**A:** ${q.answer}\n\n`;
       if (q.answered_by) entry += `*Answered by: ${q.answered_by}*\n\n`;
     } else {
       entry += `*Unanswered*\n\n`;
@@ -1948,11 +1967,16 @@ export function exportIdeation(ideation: Ideation): string {
   // Scope assessment
   if (ideation.scope_assessment) {
     const sa = ideation.scope_assessment as Record<string, unknown>;
+    const dimensionLabels: Record<string, string> = {
+      domains: 'Domains',
+      ambiguity: 'Scope Ambiguity',
+      dependencies: 'Dependencies',
+    };
     let table = '| Dimension | Score | Justification |\n|-----------|-------|---------------|\n';
     for (const dim of ['domains', 'ambiguity', 'dependencies']) {
       const score = sa[dim] ?? '-';
       const just = sa[`${dim}_justification`] ?? '';
-      table += `| **${dim.charAt(0).toUpperCase() + dim.slice(1)}** | ${score}/5 | ${just} |\n`;
+      table += `| **${dimensionLabels[dim]}** | ${score}/5 | ${just} |\n`;
     }
     md += `## Scope Assessment\n\n${table}\n`;
   }

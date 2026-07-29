@@ -1020,7 +1020,7 @@ function IdeationDetailView({ data }: { data: IdeationAnalytics }) {
         {scope ? (
           <div className="space-y-3 max-w-md">
             {scoreBar('Domains', scope.domains)}
-            {scoreBar('Ambiguity', scope.ambiguity)}
+            {scoreBar('Scope Ambiguity', scope.ambiguity)}
             {scoreBar('Dependencies', scope.dependencies)}
           </div>
         ) : (

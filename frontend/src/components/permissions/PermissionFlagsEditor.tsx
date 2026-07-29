@@ -133,6 +133,7 @@ export function PermissionFlagsEditor({ flags, onChange, readOnly = false }: Per
         return (
           <div key={entity} className="border-b last:border-b-0 border-gray-200 dark:border-gray-700">
             <button
+              aria-label={`Edit ${ENTITY_LABELS[entity] || entity} permissions`}
               onClick={() => setExpandedEntity(isExpanded ? null : entity)}
               className="w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-700/30"
             >
@@ -154,7 +155,12 @@ export function PermissionFlagsEditor({ flags, onChange, readOnly = false }: Per
                     {flatFlags.map(([key, val]) => (
                       <div key={key} className="flex items-center justify-between py-0.5 pl-6">
                         <span className="text-xs text-gray-700 dark:text-gray-300">{key}</span>
-                        <ToggleSwitch enabled={val} onToggle={() => toggleFlag(entity, key, '')} readOnly={readOnly} />
+                        <ToggleSwitch
+                          enabled={val}
+                          label={`${entity}.${key}`}
+                          onToggle={() => toggleFlag(entity, key, '')}
+                          readOnly={readOnly}
+                        />
                       </div>
                     ))}
                   </div>
@@ -182,7 +188,12 @@ export function PermissionFlagsEditor({ flags, onChange, readOnly = false }: Per
                         {Object.entries(actions).map(([action, val]) => (
                           <div key={action} className="flex items-center justify-between py-0.5">
                             <span className="text-xs text-gray-700 dark:text-gray-300">{action}</span>
-                            <ToggleSwitch enabled={val} onToggle={() => toggleFlag(entity, level, action)} readOnly={readOnly} />
+                            <ToggleSwitch
+                              enabled={val}
+                              label={`${entity}.${level}.${action}`}
+                              onToggle={() => toggleFlag(entity, level, action)}
+                              readOnly={readOnly}
+                            />
                           </div>
                         ))}
                       </div>
@@ -204,9 +215,21 @@ export function PermissionFlagsEditor({ flags, onChange, readOnly = false }: Per
 }
 
 /** Simple toggle switch */
-function ToggleSwitch({ enabled, onToggle, readOnly }: { enabled: boolean; onToggle: () => void; readOnly?: boolean }) {
+function ToggleSwitch({
+  enabled,
+  label,
+  onToggle,
+  readOnly,
+}: {
+  enabled: boolean;
+  label: string;
+  onToggle: () => void;
+  readOnly?: boolean;
+}) {
   return (
     <button
+      aria-label={`Toggle ${label}`}
+      aria-pressed={enabled}
       onClick={readOnly ? undefined : onToggle}
       className={`relative w-8 h-4 rounded-full transition-colors shrink-0 ${
         enabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'

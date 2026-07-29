@@ -11,6 +11,8 @@ import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
 import { countPerEntity, ENTITY_LABELS, countAllFlags } from './PermissionFlagsEditor';
 import { PresetEditorModal } from './PresetEditorModal';
 import type { FlagsMap } from './PermissionFlagsEditor';
+import { PresetLineageInfo } from './PresetLineageInfo';
+import { disabledFullControlTemplate } from './presetResolution';
 import type { PermissionPreset } from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
@@ -53,7 +55,7 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
 
   const handleClone = async (preset: PermissionPreset) => {
     try {
-      await api.createPreset({
+      await api.clonePreset(preset.id, {
         name: `${preset.name} (copy)`,
         description: `Cloned from ${preset.name}`,
         flags: JSON.parse(JSON.stringify(preset.flags)),
@@ -122,6 +124,7 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
                   <PresetCard
                     key={preset.id}
                     preset={preset}
+                    presets={presets}
                     onView={() => setEditorPreset(preset)}
                     onClone={() => handleClone(preset)}
                   />
@@ -136,6 +139,7 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
                     <PresetCard
                       key={preset.id}
                       preset={preset}
+                      presets={presets}
                       onView={() => setEditorPreset(preset)}
                       onClone={() => handleClone(preset)}
                       onEdit={() => setEditorPreset(preset)}
@@ -161,19 +165,12 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
       {editorPreset !== null && (
         <PresetEditorModal
           preset={editorPreset === 'new' ? null : editorPreset}
-          baseFlags={editorPreset !== 'new' && !editorPreset.is_builtin ? (builtIn[0]?.flags as FlagsMap) : null}
-          templateFlags={editorPreset === 'new' && builtIn[0] ? (() => {
-            // New preset: start with all flags from Full Control but set to false
-            const template = JSON.parse(JSON.stringify(builtIn[0].flags));
-            const setFalse = (obj: Record<string, any>) => {
-              for (const key of Object.keys(obj)) {
-                if (typeof obj[key] === 'boolean') obj[key] = false;
-                else if (typeof obj[key] === 'object') setFalse(obj[key]);
-              }
-            };
-            setFalse(template);
-            return template as FlagsMap;
-          })() : undefined}
+          presets={presets}
+          templateFlags={
+            editorPreset === 'new'
+              ? disabledFullControlTemplate(presets) ?? undefined
+              : undefined
+          }
           onClose={() => setEditorPreset(null)}
           onSaved={loadPresets}
         />
@@ -184,12 +181,14 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
 
 function PresetCard({
   preset,
+  presets,
   onView,
   onClone,
   onEdit,
   onDelete,
 }: {
   preset: PermissionPreset;
+  presets: readonly PermissionPreset[];
   onView: () => void;
   onClone: () => void;
   onEdit?: () => void;
@@ -219,6 +218,14 @@ function PresetCard({
             }`}>
               {preset.is_builtin ? 'built-in' : 'custom'}
             </span>
+            {preset.owner_review_required && (
+              <span
+                className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                title={preset.review_reason || 'Preset lineage requires owner review'}
+              >
+                owner review
+              </span>
+            )}
           </div>
           {preset.description && (
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{preset.description}</p>
@@ -254,6 +261,7 @@ function PresetCard({
           </span>
         ))}
       </div>
+      <PresetLineageInfo preset={preset} presets={presets} compact />
     </div>
   );
 }

@@ -168,12 +168,58 @@ describe('IdeationModal Markdown export', () => {
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Ideation');
+    expect(screen.getByText('Scope Ambiguity')).toBeInTheDocument();
     fireEvent.click(screen.getByTitle('Download Markdown'));
 
     await waitFor(() => expect(markdownMock.exportIdeation).toHaveBeenCalled());
     expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
     const arg = ((markdownMock.exportIdeation.mock.calls.at(-1) ?? []) as any[])[0];
     expect(arg.architecture_designs).toEqual([]);
+  });
+
+  it.each([
+    {
+      caseName: 'does not highlight a receipt-backed choice-only answer',
+      qa: {
+        answer: null,
+        selected: ['safe'],
+        answered_at: '2026-07-27T12:00:00Z',
+      },
+      expectedClass: 'bg-gray-200',
+    },
+    {
+      caseName: 'highlights a payload that has no answer receipt',
+      qa: {
+        answer: 'A non-authoritative payload',
+        selected: null,
+        answered_at: null,
+      },
+      expectedClass: 'bg-amber-200',
+    },
+  ])('$caseName', async ({ qa, expectedClass }) => {
+    apiMock.getIdeation.mockResolvedValue({
+      ...baseIdeation,
+      qa_items: [
+        {
+          id: 'qa-1',
+          ideation_id: 'ideation-1',
+          question: 'Which rollout?',
+          question_type: 'single_choice',
+          choices: [{ id: 'safe', label: 'Safe rollout' }],
+          allow_free_text: false,
+          asked_by: 'agent-1',
+          answered_by: qa.answered_at ? 'user-1' : null,
+          created_at: '2026-07-27T11:00:00Z',
+          ...qa,
+        },
+      ],
+    });
+
+    render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
+
+    await screen.findByText('My Ideation');
+    const qaTab = screen.getByRole('button', { name: /Q&A/ });
+    expect(qaTab.querySelector('span')).toHaveClass(expectedClass);
   });
 
   it('renders move actions from the allowed_transitions contract', async () => {

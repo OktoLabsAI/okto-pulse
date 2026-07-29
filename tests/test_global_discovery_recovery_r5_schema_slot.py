@@ -292,9 +292,9 @@ def test_r5_schema_migration_is_in_the_canonical_lifecycle_ledger() -> None:
     ids = [step.step_id for step in sorted(ledger, key=lambda step: step.order)]
     assert migration_name in ids
     assert ids.index(migration_name) > ids.index(CREATE_ALL_BOUNDARY_STEP_ID)
-    # 44 includes the additive cognitive-source revision audit and the KB
-    # governance metadata migration after the governed recovery extensions.
-    assert len([step for step in ledger if step.step_id.startswith("_migrate_")]) == 44
+    # 46 = the historical 44 steps plus the SK-A Refinement ambiguity-skip
+    # column and the SK-A/C7 quality-assessment persistence schema.
+    assert len([step for step in ledger if step.step_id.startswith("_migrate_")]) == 46
 
 
 def test_preparation_persists_not_null_sentinels_but_authorizes_by_state(

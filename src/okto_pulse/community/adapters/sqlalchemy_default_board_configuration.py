@@ -32,6 +32,7 @@ def _record(row: Any) -> DefaultBoardTemplateRecord:
         guideline_default_refs=copy.deepcopy(row.guideline_default_refs),
         design_system_default_ref=copy.deepcopy(row.design_system_default_ref),
         created_by=str(row.created_by),
+        spec_checklist_mode=row.spec_checklist_mode,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -46,6 +47,7 @@ def _apply(row: Any, record: DefaultBoardTemplateRecord) -> None:
         "settings_payload",
         "guideline_default_refs",
         "design_system_default_ref",
+        "spec_checklist_mode",
         "created_by",
     ):
         setattr(row, field_name, copy.deepcopy(getattr(record, field_name)))

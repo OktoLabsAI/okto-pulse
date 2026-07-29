@@ -1603,6 +1603,7 @@ describe('exportMarkdown existing entity export regressions', () => {
     }
     expect(storyMarkdown).toContain('## Linked Ideation');
     expect(ideationMarkdown).toContain('## Scope Assessment');
+    expect(ideationMarkdown).toContain('| **Scope Ambiguity** | 1/5 | Clear. |');
     expect(refinementMarkdown).toContain('## In Scope');
     expect(refinementMarkdown).toContain('## Decisions');
     expect(sprintMarkdown).toContain('## Progress');
@@ -1611,7 +1612,96 @@ describe('exportMarkdown existing entity export regressions', () => {
   });
 });
 
+describe('exportMarkdown Q&A answer receipts', () => {
+  it('uses answered_at as authority and exports labels for choice-only answers', () => {
+    const markdown = exportIdeation({
+      title: 'Choice-only Q&A',
+      status: 'review',
+      version: 1,
+      labels: [],
+      qa_items: [
+        {
+          question: 'Which delivery mode?',
+          answer: null,
+          choices: [
+            { id: 'safe', label: 'Safe rollout' },
+            { id: 'fast', label: 'Fast rollout' },
+          ],
+          selected: ['safe'],
+          answered_at: '2026-07-27T12:00:00Z',
+          answered_by: 'user-1',
+        },
+        {
+          question: 'Which fallback?',
+          answer: '',
+          choices: [{ id: 'manual', label: 'Manual fallback' }],
+          selected: ['manual'],
+          answered_at: '2026-07-27T12:01:00Z',
+        },
+        {
+          question: 'Is the stale payload authoritative?',
+          answer: 'No: this text exists without an answer receipt.',
+          choices: [{ id: 'no', label: 'No' }],
+          selected: ['no'],
+          answered_at: null,
+        },
+      ],
+    } as any);
+
+    const firstAnswer = markdown.slice(
+      markdown.indexOf('### Q1:'),
+      markdown.indexOf('### Q2:'),
+    );
+    const secondAnswer = markdown.slice(
+      markdown.indexOf('### Q2:'),
+      markdown.indexOf('### Q3:'),
+    );
+    const unanswered = markdown.slice(markdown.indexOf('### Q3:'));
+
+    expect(firstAnswer).toContain('**Selected:** Safe rollout');
+    expect(firstAnswer).not.toContain('*Unanswered*');
+    expect(secondAnswer).toContain('**Selected:** Manual fallback');
+    expect(secondAnswer).not.toContain('*Unanswered*');
+    expect(unanswered).toContain('*Unanswered*');
+    expect(unanswered).not.toContain('No: this text exists without an answer receipt.');
+    expect(unanswered).not.toContain('**Selected:** No');
+  });
+});
+
 describe('exportMarkdown structured-entity + revoked handling', () => {
+  it('exports negative and historical unknown scenario types without coercion', () => {
+    const md = exportSpec({
+      title: 'Scenario taxonomy spec',
+      status: 'review',
+      version: 1,
+      labels: [],
+      test_scenarios: [
+        {
+          id: 'ts_negative',
+          title: 'Reject forbidden input',
+          scenario_type: 'negative',
+          given: 'forbidden input',
+          when: 'the request is submitted',
+          then: 'the request is rejected',
+          status: 'ready',
+        },
+        {
+          id: 'ts_legacy',
+          title: 'Historical taxonomy entry',
+          scenario_type: 'regression',
+          given: 'legacy data',
+          when: 'the spec is exported',
+          then: 'the original value remains inspectable',
+          status: 'draft',
+        },
+      ],
+    } as unknown as Parameters<typeof exportSpec>[0]);
+
+    expect(md).toContain('**Type:** negative');
+    expect(md).toContain('**Type:** regression');
+    expect(md).not.toContain('**Type:** integration');
+  });
+
   it('excludes revoked FR/AC from the spec export and renders structured .text', () => {
     const md = exportSpec({
       title: 'Revoked handling spec',

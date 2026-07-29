@@ -22,6 +22,7 @@ import { CancellationDetails, CancellationReasonDialog } from '@/components/shar
 import { ActivityLogList } from '@/components/shared/ActivityLogList';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
+import { ScenarioTypeBadge } from '@/components/specs/ScenarioTypeBadge';
 import { EditableField } from '@/components/shared/EditableField';
 import { CardKnowledgeTab } from './CardKnowledgeTab';
 import { ArchitectureTab } from '@/components/architecture';
@@ -1445,7 +1446,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                                   {isNew && (
                                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 font-medium">NEW</span>
                                   )}
-                                  <span className="text-[10px] text-gray-400">{scenario.scenario_type}</span>
+                                  <ScenarioTypeBadge scenarioType={scenario.scenario_type} />
                                 </div>
                               </div>
                             </div>
@@ -1809,9 +1810,7 @@ export function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
                     <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${testScenarioStatusColor(scenario.status)}`}>
                       {scenario.status}
                     </span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
-                      {scenario.scenario_type}
-                    </span>
+                    <ScenarioTypeBadge scenarioType={scenario.scenario_type} />
                     <EvidenceBadge scenario={scenario} />
                   </div>
                   <h3 className="mt-2 text-sm font-semibold text-gray-900 dark:text-gray-100 break-words">{scenario.title}</h3>
@@ -1947,7 +1946,7 @@ function TestScenariosSection({
                 {s.status}
               </span>
               <span className="text-gray-700 dark:text-gray-300 truncate">{s.title}</span>
-              <span className="text-[10px] text-gray-400 shrink-0">{s.scenario_type}</span>
+              <ScenarioTypeBadge scenarioType={s.scenario_type} />
             </div>
             <button
               onClick={() => handleUnlink(s.id)}

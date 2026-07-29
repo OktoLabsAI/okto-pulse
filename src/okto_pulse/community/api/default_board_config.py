@@ -9,7 +9,7 @@ forbid extra fields and named bypass intents are rejected with a structured erro
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -63,6 +63,7 @@ class DefaultBoardConfigVersionCreateRequest(BaseModel):
     scope: str = "global"
     guideline_default_refs: list[Any] | None = None
     design_system_default_ref: dict[str, Any] | None = None
+    spec_checklist_mode: Literal["off", "advisory", "blocking"] | None = None
     activate: bool = False
 
 

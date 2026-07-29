@@ -2430,6 +2430,23 @@ async def _migrate_add_ideation_skip_ambiguity_gate() -> None:
             pass
 
 
+async def _migrate_add_refinement_skip_ambiguity_gate() -> None:
+    """Add the legacy-safe, human-only Refinement ambiguity override."""
+
+    from sqlalchemy import text as sa_text
+
+    async with get_engine().begin() as conn:
+        try:
+            await conn.execute(
+                sa_text(
+                    "ALTER TABLE refinements ADD COLUMN "
+                    "skip_ambiguity_gate BOOLEAN DEFAULT 0 NOT NULL"
+                )
+            )
+        except Exception:
+            pass
+
+
 async def _migrate_heal_task_validation_field_names() -> None:
     """One-shot healing for pre-existing card.validations records that used legacy
     field names (estimated_completeness, estimated_drift, outcome, reviewer_id,
@@ -4078,6 +4095,26 @@ async def _migrate_add_default_config_snapshot() -> None:
             pass
 
 
+async def _migrate_add_default_config_spec_checklist_mode() -> None:
+    """Add the curated Spec checklist default to historical template tables.
+
+    NULL is intentional for existing rows: Core projects it as Advisory, which
+    preserves the new-board behavior from before this default was configurable.
+    """
+    from sqlalchemy import text as sa_text
+
+    async with get_engine().begin() as conn:
+        try:
+            await conn.execute(
+                sa_text(
+                    "ALTER TABLE default_board_configurations "
+                    "ADD COLUMN spec_checklist_mode VARCHAR(20)"
+                )
+            )
+        except Exception:
+            pass
+
+
 async def _migrate_add_agent_seen_board_id() -> None:
     """Board-scope seen markers so tenant predicates remain fail-closed.
 
@@ -4682,6 +4719,284 @@ def _remove_known_fixture_graph_if_present(engine: object) -> bool:
     return True
 
 
+def _quality_c7_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
+    """Return permit-aware append-only guards installed after create_all."""
+
+    board_permit = "kg_board_erasure_permits"
+    subject_permit = "quality_assessment_subject_erasure_permits"
+
+    def board_allowed(board_sql: str) -> str:
+        return (
+            "EXISTS (SELECT 1 "
+            f'FROM "{board_permit}" AS board_permit '
+            f"WHERE board_permit.board_id = {board_sql})"
+        )
+
+    def subject_allowed(
+        board_sql: str,
+        subject_type_sql: str,
+        subject_id_sql: str,
+    ) -> str:
+        return (
+            "EXISTS (SELECT 1 "
+            f'FROM "{subject_permit}" AS subject_permit '
+            f"WHERE subject_permit.board_id = {board_sql} "
+            f"AND subject_permit.subject_type = {subject_type_sql} "
+            f"AND subject_permit.subject_id = {subject_id_sql})"
+        )
+
+    direct_subject_allowed = (
+        f"{board_allowed('OLD.board_id')} OR "
+        f"{subject_allowed('OLD.board_id', 'OLD.subject_type', 'OLD.subject_id')}"
+    )
+    refinement_allowed = (
+        board_allowed("OLD.board_id")
+        + " OR "
+        + subject_allowed(
+            "OLD.board_id",
+            "'refinement'",
+            "OLD.refinement_id",
+        )
+    )
+    derivation_allowed = (
+        board_allowed("OLD.board_id")
+        + " OR "
+        + subject_allowed("OLD.board_id", "'spec'", "OLD.spec_id")
+        + " OR "
+        + subject_allowed(
+            "OLD.board_id",
+            "'refinement'",
+            "OLD.source_refinement_id",
+        )
+    )
+    board_only_allowed = board_allowed("OLD.board_id")
+    manifest: dict[str, tuple[str, str]] = {}
+
+    def add_guard(
+        *,
+        table: str,
+        operation: str,
+        allowed_delete_sql: str | None = None,
+        trigger_name: str | None = None,
+        message: str = "quality_c7_row_immutable",
+    ) -> None:
+        name = trigger_name or f"trg_quality_c7_{table}_immutable_{operation}"
+        when = ""
+        if operation == "delete" and allowed_delete_sql is not None:
+            when = f"\nWHEN NOT ({allowed_delete_sql})"
+        sql = (
+            f'CREATE TRIGGER "{name}"\n'
+            f'BEFORE {operation.upper()} ON "{table}"{when}\n'
+            "BEGIN\n"
+            f"    SELECT RAISE(ABORT, '{message}');\n"
+            "END"
+        )
+        manifest[name] = (table, sql)
+
+    for table in (
+        "quality_assessment_receipts",
+        "quality_findings",
+        "quality_assessment_lifecycle_transitions",
+        "quality_assessment_lifecycle_stale_transitions",
+    ):
+        add_guard(table=table, operation="update")
+        add_guard(
+            table=table,
+            operation="delete",
+            allowed_delete_sql=direct_subject_allowed,
+        )
+
+    receipt_join_allowed = (
+        "EXISTS (SELECT 1 FROM quality_assessment_receipts AS receipt "
+        "WHERE receipt.id = OLD.receipt_id AND ("
+        f"{board_allowed('receipt.board_id')} OR "
+        f"{subject_allowed('receipt.board_id', 'receipt.subject_type', 'receipt.subject_id')}"
+        "))"
+    )
+    add_guard(table="quality_assessment_outbox", operation="update")
+    add_guard(
+        table="quality_assessment_outbox",
+        operation="delete",
+        allowed_delete_sql=receipt_join_allowed,
+    )
+    add_guard(table="quality_proposed_questions", operation="update")
+    add_guard(
+        table="quality_proposed_questions",
+        operation="delete",
+        allowed_delete_sql=receipt_join_allowed,
+    )
+    finding_join_allowed = (
+        "EXISTS (SELECT 1 FROM quality_findings AS finding "
+        "WHERE finding.id = OLD.finding_id "
+        "AND finding.receipt_id = OLD.receipt_id AND ("
+        f"{board_allowed('finding.board_id')} OR "
+        f"{subject_allowed('finding.board_id', 'finding.subject_type', 'finding.subject_id')}"
+        "))"
+    )
+    add_guard(table="quality_finding_qa_links", operation="update")
+    add_guard(
+        table="quality_finding_qa_links",
+        operation="delete",
+        allowed_delete_sql=finding_join_allowed,
+    )
+
+    for table in (
+        "quality_assessment_legacy_import_runs",
+        "quality_assessment_legacy_import_candidates",
+        "quality_assessment_legacy_import_resolutions",
+        "quality_assessment_legacy_import_completions",
+    ):
+        add_guard(table=table, operation="update")
+        add_guard(
+            table=table,
+            operation="delete",
+            allowed_delete_sql=board_only_allowed,
+        )
+    # The checkpoint is the sole mutable epoch row: progress advances through
+    # guarded CAS updates, but deletion is still a board-erasure-only action.
+    add_guard(
+        table="quality_assessment_legacy_import_checkpoints",
+        operation="delete",
+        allowed_delete_sql=board_only_allowed,
+    )
+
+    # Replace the unconditional RDL DELETE triggers emitted when a table is
+    # first created. UPDATE remains unconditionally blocked.
+    for table in (
+        "research_decision_entries",
+        "research_decision_history",
+        "research_decision_snapshots",
+    ):
+        add_guard(
+            table=table,
+            operation="delete",
+            allowed_delete_sql=refinement_allowed,
+            trigger_name=f"trg_{table}_immutable_delete",
+            message="research_decision_entry_immutable",
+        )
+    add_guard(
+        table="research_decision_derivations",
+        operation="delete",
+        allowed_delete_sql=derivation_allowed,
+        trigger_name="trg_research_decision_derivations_immutable_delete",
+        message="research_decision_entry_immutable",
+    )
+
+    add_guard(
+        table="checklist_template_versions",
+        operation="delete",
+        message="checklist_row_immutable",
+        trigger_name="trg_checklist_template_versions_immutable_delete",
+    )
+    add_guard(
+        table="checklist_bindings",
+        operation="delete",
+        allowed_delete_sql=board_only_allowed,
+        message="checklist_row_immutable",
+        trigger_name="trg_checklist_bindings_immutable_delete",
+    )
+    add_guard(
+        table="checklist_receipts",
+        operation="delete",
+        allowed_delete_sql=(
+            board_allowed("OLD.board_id")
+            + " OR "
+            + subject_allowed("OLD.board_id", "'spec'", "OLD.spec_id")
+        ),
+        message="checklist_row_immutable",
+        trigger_name="trg_checklist_receipts_immutable_delete",
+    )
+    checklist_item_allowed = (
+        "EXISTS (SELECT 1 FROM checklist_receipts AS receipt "
+        "WHERE receipt.id = OLD.receipt_id AND ("
+        + board_allowed("receipt.board_id")
+        + " OR "
+        + subject_allowed(
+            "receipt.board_id",
+            "'spec'",
+            "receipt.spec_id",
+        )
+        + "))"
+    )
+    add_guard(
+        table="checklist_item_results",
+        operation="delete",
+        allowed_delete_sql=checklist_item_allowed,
+        message="checklist_row_immutable",
+        trigger_name="trg_checklist_item_results_immutable_delete",
+    )
+    return manifest
+
+
+async def _migrate_quality_assessment_c7_schema() -> None:
+    """Converge additive Q&A fields and permit-aware immutable ledgers."""
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    engine = get_engine()
+    async with engine.begin() as conn:
+        for table_name in (
+            "ideation_qa_items",
+            "refinement_qa_items",
+            "spec_qa_items",
+        ):
+            columns = await conn.run_sync(
+                lambda sync_conn, name=table_name: {
+                    str(column["name"])
+                    for column in sa_inspect(sync_conn).get_columns(name)
+                }
+            )
+            for column_name, ddl in (
+                ("revision", "INTEGER NOT NULL DEFAULT 1"),
+                ("lifecycle", "VARCHAR(20) NOT NULL DEFAULT 'active'"),
+                ("tombstoned", "BOOLEAN NOT NULL DEFAULT false"),
+            ):
+                if column_name not in columns:
+                    await conn.execute(
+                        sa_text(
+                            f'ALTER TABLE "{table_name}" '
+                            f'ADD COLUMN "{column_name}" {ddl}'
+                        )
+                    )
+            await conn.execute(
+                sa_text(
+                    f'UPDATE "{table_name}" '
+                    "SET revision = COALESCE(revision, 1), "
+                    "lifecycle = CASE "
+                    "WHEN COALESCE(tombstoned, false) "
+                    "THEN 'tombstoned' ELSE COALESCE(lifecycle, 'active') END, "
+                    "tombstoned = COALESCE(tombstoned, false)"
+                )
+            )
+
+        if conn.dialect.name != "sqlite":
+            # Metadata provides additive tables/constraints for PostgreSQL.
+            # Community v1's runtime immutability guards are SQLite-owned.
+            return
+
+        manifest = _quality_c7_sqlite_trigger_manifest()
+        for trigger_name, (_table_name, trigger_sql) in manifest.items():
+            await conn.exec_driver_sql(
+                f'DROP TRIGGER IF EXISTS "{trigger_name}"'
+            )
+            await conn.exec_driver_sql(trigger_sql)
+
+        installed = {
+            str(row[0])
+            for row in (
+                await conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+                )
+            ).all()
+        }
+        missing = sorted(set(manifest) - installed)
+        if missing:
+            raise RuntimeError(
+                f"quality C7 trigger convergence incomplete: {missing}"
+            )
+
+
 SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_card_statuses": _migrate_card_statuses,
     "_migrate_add_priority_column": _migrate_add_priority_column,
@@ -4698,6 +5013,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_ir_or_columns": _migrate_add_ir_or_columns,
     "_migrate_add_spec_validation_gate_columns": _migrate_add_spec_validation_gate_columns,
     "_migrate_add_ideation_skip_ambiguity_gate": _migrate_add_ideation_skip_ambiguity_gate,
+    "_migrate_add_refinement_skip_ambiguity_gate": _migrate_add_refinement_skip_ambiguity_gate,
     "_migrate_heal_task_validation_field_names": _migrate_heal_task_validation_field_names,
     "_migrate_status_renames": _migrate_status_renames,
     "_migrate_add_permission_columns": _migrate_add_permission_columns,
@@ -4729,10 +5045,12 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_kg_tick_boards_failed": _migrate_add_kg_tick_boards_failed,
     "_migrate_drop_spec_skills": _migrate_drop_spec_skills,
     "_migrate_add_default_config_snapshot": _migrate_add_default_config_snapshot,
+    "_migrate_add_default_config_spec_checklist_mode": _migrate_add_default_config_spec_checklist_mode,
     "_migrate_add_agent_seen_board_id": _migrate_add_agent_seen_board_id,
     "_migrate_add_board_guideline_provenance": _migrate_add_board_guideline_provenance,
     "_migrate_add_cancellation_columns": _migrate_add_cancellation_columns,
     "_migrate_pagination_indices_and_positions": _migrate_pagination_indices_and_positions,
     "_migrate_repair_known_fixture_fk_orphans": _migrate_repair_known_fixture_fk_orphans,
+    "_migrate_quality_assessment_c7_schema": _migrate_quality_assessment_c7_schema,
     "_migrate_agent_permissions": _migrate_agent_permissions,
 }
