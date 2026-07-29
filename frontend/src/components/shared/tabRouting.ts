@@ -86,6 +86,32 @@ export type SpecModalSubtab =
   | 'spec-validation'
   | 'requirement-lint';
 
+export type CardModalTab =
+  | 'details'
+  | 'tests'
+  | 'resources'
+  | 'qa'
+  | 'comments'
+  | 'references'
+  | 'validation'
+  | 'activity';
+
+export type CardModalSubtab =
+  | 'regression'
+  | 'coverage'
+  | 'amendment'
+  | 'scenarios'
+  | 'evidence'
+  | 'mockups'
+  | 'knowledge'
+  | 'architecture'
+  | 'attachments'
+  | 'lineage'
+  | 'requirements'
+  | 'dependencies'
+  | 'execution-report'
+  | 'task-validation';
+
 export const IDEATION_LEGACY_TAB_ALIASES = {
   quality: { tab: 'evaluation', subtab: 'ambiguity' },
   stories: { tab: 'references', subtab: 'stories' },
@@ -117,6 +143,17 @@ export const SPEC_LEGACY_TAB_ALIASES = {
   cancellation: { tab: 'details', anchorId: 'cancellation-panel' },
   history: { tab: 'activity' },
 } as const satisfies TabAliasMap<SpecModalTab, SpecModalSubtab>;
+
+export const CARD_LEGACY_TAB_ALIASES = {
+  evidence: { tab: 'tests', subtab: 'evidence' },
+  mockups: { tab: 'resources', subtab: 'mockups' },
+  knowledge: { tab: 'resources', subtab: 'knowledge' },
+  architecture: { tab: 'resources', subtab: 'architecture' },
+  conclusion: { tab: 'validation', subtab: 'execution-report' },
+  validations: { tab: 'validation', subtab: 'task-validation' },
+  cancellation: { tab: 'details', anchorId: 'cancellation-panel' },
+  history: { tab: 'activity' },
+} as const satisfies TabAliasMap<CardModalTab, CardModalSubtab>;
 
 function parseRequestedTarget<TTop extends string, TSub extends string>(
   requested: string | TabTarget<TTop, TSub> | null | undefined,

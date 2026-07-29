@@ -2015,17 +2015,103 @@ export interface Card {
   cancelled_by?: string | null;
 }
 
-// Validation entry (from backend validation lifecycle)
+export type TaskValidationRecommendation = 'approve' | 'reject';
+export type TaskValidationOutcome = 'success' | 'failed';
+export type TaskValidationVerdict = 'pass' | 'fail';
+
+/**
+ * Payload accepted by POST /cards/{card_id}/validate.
+ *
+ * The API deliberately keeps the `estimated_*` names for the reviewer scores.
+ * Do not send the clean read aliases (`completeness`, `drift`, `verdict`,
+ * `summary`) here: those are response/history compatibility fields.
+ */
+export interface TaskValidationSubmitPayload {
+  confidence: number;
+  confidence_justification: string;
+  estimated_completeness: number;
+  completeness_justification: string;
+  estimated_drift: number;
+  drift_justification: string;
+  general_justification: string;
+  recommendation: TaskValidationRecommendation;
+}
+
+export interface TaskValidationResolvedThresholds {
+  required?: boolean;
+  min_confidence: number;
+  min_completeness: number;
+  max_drift: number;
+  resolved_from?: 'sprint' | 'spec' | 'board' | 'default';
+  resolved_sources?: {
+    required: 'sprint' | 'spec' | 'board' | 'default';
+    min_confidence: 'sprint' | 'spec' | 'board' | 'default';
+    min_completeness: 'sprint' | 'spec' | 'board' | 'default';
+    max_drift: 'sprint' | 'spec' | 'board' | 'default';
+  };
+  /**
+   * The submit response can contain the complete resolved board gate config.
+   * Keep additional settings readable without weakening the canonical scores.
+   */
+  [key: string]: unknown;
+}
+
+export interface TaskValidationReviewerSeparation {
+  mode: 'off' | 'warn' | 'enforce';
+  allowed: boolean;
+  warning: boolean;
+  conflicts: string[];
+  source: string;
+}
+
+/**
+ * Task-validation history entry.
+ *
+ * Current writes persist both the legacy API names and the clean UI aliases.
+ * All aliases remain optional because cards created before the dual-write
+ * migration may carry only one side of each pair.
+ */
 export interface ValidationEntry {
   id: string;
-  verdict: 'pass' | 'fail';
+  card_id?: string;
+  board_id?: string;
+
+  // Reviewer identity: legacy name + clean UI alias.
+  reviewer_id?: string | null;
+  evaluator_id?: string | null;
+  reviewer_name?: string | null;
+  evaluator_name?: string | null;
+
   confidence: number;
-  completeness: number;
-  drift: number;
-  summary: string | null;
-  evaluator_id: string;
+  confidence_justification?: string | null;
+
+  // Completeness: legacy name + clean UI alias.
+  estimated_completeness?: number;
+  completeness?: number;
+  completeness_justification?: string | null;
+
+  // Drift: legacy name + clean UI alias.
+  estimated_drift?: number;
+  drift?: number;
+  drift_justification?: string | null;
+
+  // General rationale: legacy name + clean UI alias.
+  general_justification?: string | null;
+  summary?: string | null;
+
+  recommendation?: TaskValidationRecommendation;
+  outcome?: TaskValidationOutcome;
+  verdict?: TaskValidationVerdict;
+  threshold_violations?: string[];
+  resolved_thresholds?: TaskValidationResolvedThresholds | null;
+  reviewer_separation?: TaskValidationReviewerSeparation | null;
+
   created_at: string;
+  card_status?: CardStatus | null;
 }
+
+/** Semantic alias for callers that expose the submit endpoint response. */
+export type TaskValidationResponse = ValidationEntry;
 
 // Card for column view (simplified)
 export interface CardSummary {

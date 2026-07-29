@@ -25,6 +25,8 @@ import type {
   CreateCardRequest,
   UpdateCardRequest,
   MoveCardRequest,
+  TaskValidationSubmitPayload,
+  ValidationEntry,
   BugRegressionScenarioPreview,
   AmendmentRevision,
   AmendmentRevisionListResponse,
@@ -2269,7 +2271,10 @@ export function useDashboardApi() {
 
     // ==================== TASK VALIDATION ====================
 
-    async submitTaskValidation(cardId: string, data: any): Promise<any> {
+    async submitTaskValidation(
+      cardId: string,
+      data: TaskValidationSubmitPayload,
+    ): Promise<ValidationEntry> {
       return apiClient.fetchJson(`/cards/${cardId}/validate`, {
         method: 'POST',
         body: JSON.stringify(data),

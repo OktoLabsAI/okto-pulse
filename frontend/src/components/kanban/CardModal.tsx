@@ -2,8 +2,8 @@
  * CardModal - Modal for viewing/editing card details
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Paperclip, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History } from 'lucide-react';
+import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { X, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportCard, downloadMarkdown, markdownFilenameForCard } from '@/lib/exportMarkdown';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
@@ -13,24 +13,30 @@ import {
   useIsCardModalOpen,
   useColumns,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse } from '@/types';
-import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry } from '@/types';
+import { STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { ActivityLogList } from '@/components/shared/ActivityLogList';
-import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
 import { ScenarioTypeBadge } from '@/components/specs/ScenarioTypeBadge';
 import { EditableField } from '@/components/shared/EditableField';
-import { CardKnowledgeTab } from './CardKnowledgeTab';
-import { ArchitectureTab } from '@/components/architecture';
 import { openLineageGraph } from '@/components/traceability';
-import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
 import { usePermissions } from '@/hooks/usePermissions';
 import { SettingsToggle } from '@/components/board/BoardSettingsForm';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import {
+  AccessibleTabList,
+  AccessibleTabPanel,
+} from '@/components/shared/AccessibleTabs';
+import { MetricScoreRing } from '@/components/shared/MetricScoreRing';
+import type {
+  CardModalSubtab,
+  CardModalTab,
+} from '@/components/shared/tabRouting';
+import { CardResourcesPanel } from './CardResourcesPanel';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -53,19 +59,18 @@ function cardTypeLabel(card: Pick<Card, 'card_type'> | null | undefined): string
   return 'Task';
 }
 
-type CardModalTab =
-  | 'details'
-  | 'tests'
-  | 'evidence'
-  | 'mockups'
-  | 'architecture'
-  | 'knowledge'
-  | 'conclusion'
-  | 'validations'
-  | 'qa'
-  | 'comments'
-  | 'activity'
-  | 'cancellation';
+type CardTestsTab = Extract<
+  CardModalSubtab,
+  'regression' | 'coverage' | 'amendment' | 'scenarios' | 'evidence'
+>;
+type CardReferencesTab = Extract<
+  CardModalSubtab,
+  'lineage' | 'requirements' | 'dependencies'
+>;
+type CardValidationTab = Extract<
+  CardModalSubtab,
+  'execution-report' | 'task-validation'
+>;
 
 const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
   'test_file_path',
@@ -261,7 +266,12 @@ interface CardModalProps {
 export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const api = useDashboardApi();
   const perms = usePermissions(boardId);
+  const tabIdBase = useId();
   const selectedCardId = useSelectedCard();
+  const selectedCardIdRef = useRef(selectedCardId);
+  selectedCardIdRef.current = selectedCardId;
+  const cardLoadGenerationRef = useRef(0);
+  const transitionRequestRef = useRef(0);
   const isOpen = useIsCardModalOpen();
   const { closeCardModal, removeCardFromColumn, updateCardInColumn } = useDashboardStore();
   const columns = useColumns();
@@ -272,6 +282,12 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const [card, setCard] = useState<Card | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<CardModalTab>('details');
+  const [testsTab, setTestsTab] = useState<CardTestsTab>('regression');
+  const [referencesTab, setReferencesTab] =
+    useState<CardReferencesTab>('lineage');
+  const [validationTab, setValidationTab] =
+    useState<CardValidationTab>('execution-report');
+  const [allowedStatuses, setAllowedStatuses] = useState<CardStatus[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [boardMembers, setBoardMembers] = useState<{ id: string; name: string }[]>([]);
   const [seenStatus, setSeenStatus] = useState<Record<string, { agent_name: string; seen_at: string }[]>>({});
@@ -313,6 +329,35 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const canReadOR = perms.has('spec.observability_requirements.read');
   const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && perms.has('card.link_to.ir');
   const canLinkORTasks = perms.has('spec.observability_requirements.link_task') && perms.has('card.link_to.or');
+  const canReadTests = perms.has('card.tests.read');
+  const canReadMockups = perms.has('card.mockups.read');
+  const canReadArchitecture = perms.has('card.architecture.read');
+  const canReadAttachments = perms.has('card.attachments.read');
+  const canReadKnowledge = perms.has('card.entity.read');
+  const canReadQA = perms.has('card.qa.read');
+  const canReadComments = perms.has('card.comments.read');
+  const canReadConclusion = perms.has('card.conclusion.read');
+  const canReadValidation = perms.has('card.validation.read');
+  const canReadActivity = perms.has('card.activity_read');
+  const canEditCardFields = perms.has('card.entity.edit_fields');
+  const canAskQA = perms.has('card.qa.ask');
+  const canAnswerQA = perms.has('card.qa.answer');
+  const canCreateComments = perms.has('card.comments.create');
+  const canCreateChoiceComments = perms.has('card.comments.create_choice');
+  const canRespondToChoiceComments = perms.has('card.comments.respond_choice');
+  const canUploadAttachments = perms.has('card.attachments.upload');
+  const canDeleteAttachments = perms.has('card.attachments.delete');
+  const canDeleteCard = perms.has('card.entity.delete');
+  const canManageDependencies = perms.has('card.entity.manage_dependencies');
+  const canLinkScenarios = perms.has('card.link_to.scenario');
+  const canLinkRules = perms.has('card.link_to.rule');
+  const canLinkContracts = perms.has('card.link_to.contract');
+  const canLinkTRs = perms.has('card.link_to.tr');
+  const canSubmitValidation = perms.has('card.validation.submit');
+  const hasAmendmentWorkspace = Boolean(
+    bugRegressionPreview?.semantic_gap_required
+    || (amendmentRevisions?.revisions.length || 0) > 0,
+  );
 
   const resetConclusionPrompt = () => {
     setConclusionDraft('');
@@ -330,24 +375,71 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     return ['not_started', 'started', 'in_progress', 'on_hold'].includes(card.status);
   };
 
+  const loadAllowedStatuses = useCallback((currentCard: Card) => {
+    const requestId = ++transitionRequestRef.current;
+    const isCurrentRequest = () =>
+      requestId === transitionRequestRef.current
+      && selectedCardIdRef.current === currentCard.id;
+    setAllowedStatuses([currentCard.status]);
+    api.getAllowedTransitions(currentCard.board_id, {
+      entity_type: 'card',
+      entity_id: currentCard.id,
+      current_status: currentCard.status,
+    })
+      .then((response) => {
+        if (!isCurrentRequest()) return;
+        const next = response.allowed_transitions
+          .map((transition) => transition.to_status)
+          .filter((status): status is CardStatus =>
+            Object.prototype.hasOwnProperty.call(STATUS_LABELS, status)
+          );
+        setAllowedStatuses([
+          currentCard.status,
+          ...next.filter((status) => status !== currentCard.status),
+        ]);
+      })
+      .catch(() => {
+        if (!isCurrentRequest()) return;
+        // Fail closed: the current state remains visible, but no transition is
+        // invented client-side when the canonical lifecycle cannot be loaded.
+        setAllowedStatuses([currentCard.status]);
+      });
+  }, [api]);
+
   const loadCard = (cardId: string) => {
+    const loadGeneration = ++cardLoadGenerationRef.current;
+    const isCurrentLoad = () =>
+      loadGeneration === cardLoadGenerationRef.current
+      && selectedCardIdRef.current === cardId;
     setIsLoading(true);
     setBugRegressionPreview(null);
     setAmendmentRevisions(null);
+    setSpecKBsFull([]);
     api.getCard(cardId)
       .then((data) => {
+        if (!isCurrentLoad()) return;
         setCard(data);
+        loadAllowedStatuses(data);
         if (data.card_type === 'bug') {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
-            .then(setBugRegressionPreview)
-            .catch(() => setBugRegressionPreview(null));
+            .then((preview) => {
+              if (isCurrentLoad()) setBugRegressionPreview(preview);
+            })
+            .catch(() => {
+              if (isCurrentLoad()) setBugRegressionPreview(null);
+            });
           api.listAmendmentRevisions(data.board_id, data.id)
-            .then(setAmendmentRevisions)
-            .catch(() => setAmendmentRevisions(null));
+            .then((revisions) => {
+              if (isCurrentLoad()) setAmendmentRevisions(revisions);
+            })
+            .catch(() => {
+              if (isCurrentLoad()) setAmendmentRevisions(null);
+            });
         }
         if (data.spec_id) {
           api.getSpec(data.spec_id)
             .then((spec) => {
+              if (!isCurrentLoad()) return;
               setParentSpec({ id: spec.id, title: spec.title });
               setFullSpec(spec);
               setSpecScenarios(spec.test_scenarios || []);
@@ -359,9 +451,26 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
               // Load full KB content for knowledge tab
               Promise.all(
                 (spec.knowledge_bases || []).map((kb: any) => api.getSpecKnowledge(spec.id, kb.id).catch(() => null))
-              ).then((kbs) => setSpecKBsFull(kbs.filter(Boolean) as any[])).catch(() => {});
+              ).then((kbs) => {
+                if (isCurrentLoad()) {
+                  setSpecKBsFull(kbs.filter(Boolean) as any[]);
+                }
+              }).catch(() => {
+                if (isCurrentLoad()) setSpecKBsFull([]);
+              });
             })
-            .catch(() => { setParentSpec(null); setFullSpec(null); setSpecScenarios([]); setSpecRules([]); setSpecContracts([]); setSpecIRs([]); setSpecORs([]); setSpecTRs([]); });
+            .catch(() => {
+              if (!isCurrentLoad()) return;
+              setParentSpec(null);
+              setFullSpec(null);
+              setSpecScenarios([]);
+              setSpecRules([]);
+              setSpecContracts([]);
+              setSpecIRs([]);
+              setSpecORs([]);
+              setSpecTRs([]);
+              setSpecKBsFull([]);
+            });
         } else {
           setParentSpec(null);
           setFullSpec(null);
@@ -371,32 +480,69 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
           setSpecIRs([]);
           setSpecORs([]);
           setSpecTRs([]);
+          setSpecKBsFull([]);
         }
       })
-      .catch(() => toast.error('Failed to load card'))
-      .finally(() => setIsLoading(false));
+      .catch(() => {
+        if (isCurrentLoad()) toast.error('Failed to load card');
+      })
+      .finally(() => {
+        if (isCurrentLoad()) setIsLoading(false);
+      });
     api.listAgentsForBoard(boardId)
-      .then((agents) => setBoardMembers(agents.map((a) => ({ id: a.id, name: a.name }))))
+      .then((agents) => {
+        if (isCurrentLoad()) {
+          setBoardMembers(agents.map((a) => ({ id: a.id, name: a.name })));
+        }
+      })
       .catch(() => {});
     api.getCardSeenStatus(cardId)
-      .then((data) => setSeenStatus(data.items))
+      .then((data) => {
+        if (isCurrentLoad()) setSeenStatus(data.items);
+      })
       .catch(() => {});
-    api.getCardDependencies(cardId).then(setDependencies).catch(() => {});
-    api.getCardDependents(cardId).then(setDependents).catch(() => {});
+    api.getCardDependencies(cardId)
+      .then((items) => {
+        if (isCurrentLoad()) setDependencies(items);
+      })
+      .catch(() => {});
+    api.getCardDependents(cardId)
+      .then((items) => {
+        if (isCurrentLoad()) setDependents(items);
+      })
+      .catch(() => {});
   };
 
   // Silent refresh — updates card data without showing loading spinner
   const silentRefresh = useCallback((cardId: string) => {
     api.getCard(cardId)
       .then((data) => {
+        if (selectedCardIdRef.current !== cardId) return;
         setCard(data);
+        loadAllowedStatuses(data);
         if (data.card_type === 'bug') {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
-            .then(setBugRegressionPreview)
-            .catch(() => setBugRegressionPreview(null));
+            .then((preview) => {
+              if (selectedCardIdRef.current === cardId) {
+                setBugRegressionPreview(preview);
+              }
+            })
+            .catch(() => {
+              if (selectedCardIdRef.current === cardId) {
+                setBugRegressionPreview(null);
+              }
+            });
           api.listAmendmentRevisions(data.board_id, data.id)
-            .then(setAmendmentRevisions)
-            .catch(() => setAmendmentRevisions(null));
+            .then((revisions) => {
+              if (selectedCardIdRef.current === cardId) {
+                setAmendmentRevisions(revisions);
+              }
+            })
+            .catch(() => {
+              if (selectedCardIdRef.current === cardId) {
+                setAmendmentRevisions(null);
+              }
+            });
         } else {
           setBugRegressionPreview(null);
           setAmendmentRevisions(null);
@@ -404,6 +550,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
         if (data.spec_id) {
           api.getSpec(data.spec_id)
             .then((spec) => {
+              if (selectedCardIdRef.current !== cardId) return;
               setParentSpec({ id: spec.id, title: spec.title });
               setSpecScenarios(spec.test_scenarios || []);
               setSpecRules(spec.business_rules || []);
@@ -417,11 +564,21 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       })
       .catch(() => {});
     api.getCardSeenStatus(cardId)
-      .then((data) => setSeenStatus(data.items))
+      .then((data) => {
+        if (selectedCardIdRef.current === cardId) setSeenStatus(data.items);
+      })
       .catch(() => {});
-    api.getCardDependencies(cardId).then(setDependencies).catch(() => {});
-    api.getCardDependents(cardId).then(setDependents).catch(() => {});
-  }, [api]);
+    api.getCardDependencies(cardId)
+      .then((items) => {
+        if (selectedCardIdRef.current === cardId) setDependencies(items);
+      })
+      .catch(() => {});
+    api.getCardDependents(cardId)
+      .then((items) => {
+        if (selectedCardIdRef.current === cardId) setDependents(items);
+      })
+      .catch(() => {});
+  }, [api, loadAllowedStatuses]);
 
   // Path B safe actions (spec be089cd3). User-click only — NO auto-mutation on
   // render, and NEVER a gate skip/bypass; these only REMEDIATE via the new
@@ -462,22 +619,86 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     if (selectedCardId && isOpen) {
       loadCard(selectedCardId);
     } else {
+      cardLoadGenerationRef.current += 1;
       setCard(null);
+      setSpecKBsFull([]);
     }
   }, [selectedCardId, isOpen]);
 
   useEffect(() => {
-    if (activeTab === 'tests' && card?.card_type !== 'bug') {
+    if (!card) return;
+
+    const hasResources =
+      canReadMockups
+      || canReadKnowledge
+      || canReadArchitecture
+      || canReadAttachments;
+    const hasValidation =
+      canReadConclusion
+      || (card.card_type !== 'test' && canReadValidation);
+    const unavailable =
+      (activeTab === 'tests'
+        && (!canReadTests || !['bug', 'test'].includes(card.card_type || 'normal')))
+      || (activeTab === 'resources' && !hasResources)
+      || (activeTab === 'qa' && !canReadQA)
+      || (activeTab === 'comments' && !canReadComments)
+      || (activeTab === 'validation' && !hasValidation)
+      || (activeTab === 'activity' && !canReadActivity);
+
+    if (unavailable) {
       setActiveTab('details');
     }
-    if (activeTab === 'evidence' && card?.card_type !== 'test') {
-      setActiveTab('details');
+
+    if (
+      card.card_type === 'test'
+      && !['scenarios', 'evidence'].includes(testsTab)
+    ) {
+      setTestsTab('scenarios');
     }
-    // The Cancellation tab only exists while the card is cancelled.
-    if (activeTab === 'cancellation' && card && card.status !== 'cancelled') {
-      setActiveTab('details');
+    if (
+      card.card_type === 'bug'
+      && !['regression', 'coverage', 'amendment'].includes(testsTab)
+    ) {
+      setTestsTab('regression');
     }
-  }, [activeTab, card?.card_type, card?.status]);
+    if (
+      card.card_type === 'bug'
+      && testsTab === 'amendment'
+      && !hasAmendmentWorkspace
+    ) {
+      setTestsTab('regression');
+    }
+    if (
+      validationTab === 'task-validation'
+      && (card.card_type === 'test' || !canReadValidation)
+    ) {
+      setValidationTab('execution-report');
+    }
+    if (
+      validationTab === 'execution-report'
+      && !canReadConclusion
+      && card.card_type !== 'test'
+      && canReadValidation
+    ) {
+      setValidationTab('task-validation');
+    }
+  }, [
+    activeTab,
+    canReadActivity,
+    canReadArchitecture,
+    canReadAttachments,
+    canReadComments,
+    canReadConclusion,
+    canReadKnowledge,
+    canReadMockups,
+    canReadQA,
+    canReadTests,
+    canReadValidation,
+    card,
+    hasAmendmentWorkspace,
+    testsTab,
+    validationTab,
+  ]);
 
   // Auto-refresh every 10s while modal is open
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -559,6 +780,15 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
         conclusions: updated.conclusions,
       });
       setCard(updated);
+      loadAllowedStatuses(updated);
+      if (updated.status === 'cancelled') {
+        setActiveTab('details');
+        window.setTimeout(() => {
+          document
+            .getElementById('cancellation-panel')
+            ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        }, 0);
+      }
       toast.success('Status updated');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to update status');
@@ -637,20 +867,116 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !card) return;
-
-    try {
-      const attachment = await api.uploadAttachment(card.board_id, card.id, file);
-      setCard({ ...card, attachments: [...card.attachments, attachment] });
-      toast.success('Attachment uploaded');
-    } catch {
-      toast.error('Failed to upload attachment');
-    }
-  };
-
   const conclusionTargetLabel = STATUS_LABELS[conclusionTargetStatus];
+  const hasVisibleResources =
+    canReadMockups
+    || canReadKnowledge
+    || canReadArchitecture
+    || canReadAttachments;
+  const hasVisibleValidation = Boolean(
+    card
+    && (
+      canReadConclusion
+      || (card.card_type !== 'test' && canReadValidation)
+    )
+  );
+  const unansweredQA = card?.qa_items.filter(
+    (item) => item.answered_at == null,
+  ).length || 0;
+  const resourceCount = card
+    ? (card.screen_mockups?.length || 0)
+      + (card.knowledge_bases?.length || 0)
+      + (card.architecture_designs?.length || 0)
+      + card.attachments.length
+    : 0;
+  const validationCount = card
+    ? (card.conclusions?.length || 0) + (card.validations?.length || 0)
+    : 0;
+  const topTabs: {
+    id: CardModalTab;
+    label: string;
+    icon: ReactNode;
+    count?: number;
+    attention?: boolean;
+  }[] = card
+    ? [
+        {
+          id: 'details',
+          label: 'Details',
+          icon: <FileText size={14} />,
+        },
+        ...(
+          canReadTests && ['bug', 'test'].includes(card.card_type || 'normal')
+            ? [{
+                id: 'tests' as const,
+                label: 'Tests',
+                icon: <FlaskConical size={14} />,
+                count: card.card_type === 'bug'
+                  ? card.linked_test_task_ids?.length || 0
+                  : linkedEvidenceScenarios.length,
+                attention: card.card_type === 'bug'
+                  ? (card.linked_test_task_ids?.length || 0) === 0
+                  : evidenceProvidedCount < linkedEvidenceScenarios.length,
+              }]
+            : []
+        ),
+        ...(
+          hasVisibleResources
+            ? [{
+                id: 'resources' as const,
+                label: 'Resources',
+                icon: <Layers size={14} />,
+                count: resourceCount,
+              }]
+            : []
+        ),
+        ...(
+          canReadQA
+            ? [{
+                id: 'qa' as const,
+                label: 'Q&A',
+                icon: <MessageCircleQuestion size={14} />,
+                count: card.qa_items.length,
+                attention: unansweredQA > 0,
+              }]
+            : []
+        ),
+        ...(
+          canReadComments
+            ? [{
+                id: 'comments' as const,
+                label: 'Comments',
+                icon: <MessageSquare size={14} />,
+                count: card.comments.length,
+              }]
+            : []
+        ),
+        {
+          id: 'references',
+          label: 'References',
+          icon: <Link size={14} />,
+        },
+        ...(
+          hasVisibleValidation
+            ? [{
+                id: 'validation' as const,
+                label: 'Validation',
+                icon: <Shield size={14} />,
+                count: validationCount,
+              }]
+            : []
+        ),
+        ...(
+          canReadActivity
+            ? [{
+                id: 'activity' as const,
+                label: 'Activity',
+                icon: <History size={14} />,
+              }]
+            : []
+        ),
+      ]
+    : [];
 
   if (!isOpen) return null;
 
@@ -663,9 +989,16 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
             <select
               value={card?.status || ''}
               onChange={(e) => handleStatusChange(e.target.value as CardStatus)}
+              disabled={!card || isLoading || knowledgeMutationBusy}
+              aria-label="Card status"
               className="text-sm border border-gray-300 rounded px-2 py-1 bg-white dark:bg-gray-700 dark:border-gray-600 text-gray-900 dark:text-gray-100"
             >
-              {CARD_STATUSES.map((status) => (
+              {(allowedStatuses.length > 0
+                ? allowedStatuses
+                : card
+                  ? [card.status]
+                  : []
+              ).map((status) => (
                 <option key={status} value={status}>
                   {STATUS_LABELS[status]}
                 </option>
@@ -821,111 +1154,44 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
         ) : card ? (
           <>
             {/* Tabs */}
-            <div className="flex border-b border-gray-200 dark:border-gray-700 px-6">
-              {([
-                ...(card.card_type === 'bug'
-                  ? ['details', 'tests', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity']
-                  : card.card_type === 'test'
-                    ? ['details', 'evidence', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity']
-                    : ['details', 'mockups', 'architecture', 'knowledge', 'conclusion', 'validations', 'qa', 'comments', 'activity']),
-                ...(card.status === 'cancelled' ? ['cancellation'] : []),
-              ] as CardModalTab[]).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  disabled={knowledgeMutationBusy}
-                  className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px relative ${
-                    activeTab === tab
-                      ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'
-                  } disabled:cursor-not-allowed disabled:opacity-50`}
-                >
-                  {tab === 'details' && 'Details'}
-                  {tab === 'tests' && (
-                    <>
-                      Tests
-                      {(card.linked_test_task_ids?.length ?? 0) > 0 ? (
-                        <span className="absolute -top-0.5 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-white text-[9px]">
-                          <Check size={8} />
-                        </span>
-                      ) : (
-                        <span className="absolute -top-0.5 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-white text-[9px] font-bold">!</span>
-                      )}
-                    </>
-                  )}
-                  {tab === 'evidence' && (
-                    <>
-                      <CheckCircle size={13} className="inline mr-1" />
-                      Evidence
-                      {linkedEvidenceScenarios.length > 0 && (
-                        <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-emerald-500 text-white text-[9px] px-1">
-                          {evidenceProvidedCount}/{linkedEvidenceScenarios.length}
-                        </span>
-                      )}
-                    </>
-                  )}
-                  {tab === 'mockups' && `Mockups${card.screen_mockups?.length ? ` (${card.screen_mockups.length})` : ''}`}
-                  {tab === 'architecture' && (
-                    <>
-                      <GitBranch size={13} className="inline mr-1" />
-                      {`Architecture${card.architecture_designs?.length ? ` (${card.architecture_designs.length})` : ''}`}
-                    </>
-                  )}
-                  {tab === 'knowledge' && `Knowledge${card.knowledge_bases?.length ? ` (${card.knowledge_bases.length})` : ''}`}
-                  {tab === 'conclusion' && `Conclusion${card.conclusions?.length ? ` (${card.conclusions.length})` : ''}`}
-                  {tab === 'validations' && (
-                    <>
-                      <Shield size={13} className="inline mr-1" />
-                      Validations
-                      {(card.validations?.length ?? 0) > 0 && (
-                        <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-violet-500 text-white text-[9px] px-1">
-                          {card.validations!.length}
-                        </span>
-                      )}
-                    </>
-                  )}
-                  {tab === 'qa' && `Q&A (${card.qa_items.length})`}
-                  {tab === 'comments' && `Comments (${card.comments.length})`}
-                  {tab === 'activity' && (
-                    <>
-                      <History size={13} className="inline mr-1" />
-                      Activity
-                    </>
-                  )}
-                  {tab === 'cancellation' && 'Cancellation'}
-                </button>
-              ))}
-            </div>
+            <AccessibleTabList
+              idBase={`${tabIdBase}-card-${card.id}`}
+              ariaLabel="Card sections"
+              items={topTabs.map((tab) => ({
+                ...tab,
+                disabled: knowledgeMutationBusy,
+              }))}
+              value={activeTab}
+              onValueChange={setActiveTab}
+              className="px-6 pt-3"
+            />
 
             <div className="modal-body">
               {/* Details Tab */}
-              {activeTab === 'details' && (
+              <AccessibleTabPanel
+                idBase={`${tabIdBase}-card-${card.id}`}
+                tabId="details"
+                value={activeTab}
+              >
                 <div className="space-y-4">
-                  <ResourceGateSummary
-                    boardId={boardId}
-                    entityType="card"
-                    entityId={card.id}
-                  />
-                  {(card.card_type ?? 'normal') === 'normal' && (
-                    <div className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-800/60 dark:bg-amber-950/20">
-                      <div className="min-w-0">
-                        <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Skip task requirement link gate</h3>
-                        <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">
-                          Allow this task to start without a direct FR/TR/BR/IR/OR link.
-                        </p>
-                      </div>
-                      <SettingsToggle
-                        checked={card.skip_task_requirement_link_gate ?? false}
-                        onChange={async () => {
-                          const updated = await api.updateCard(card.id, {
-                            skip_task_requirement_link_gate: !(card.skip_task_requirement_link_gate ?? false),
-                          });
-                          setCard(updated);
-                          updateCardInColumn(updated);
-                        }}
-                        ariaLabel="Skip task requirement link gate for this card"
-                        activeColor="amber"
+                  {card.status === 'cancelled' && (
+                    <div className="space-y-2">
+                      <CancellationDetails
+                        id="cancellation-panel"
+                        entityLabel="card"
+                        reason={card.cancellation_reason}
+                        cancelledBy={card.cancelled_by}
+                        cancelledAt={card.cancelled_at}
+                        resolveActorName={(id) =>
+                          resolveActorName(id, boardMembers)
+                        }
                       />
+                      <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                        Cancelling a card can return a validated parent spec to
+                        Approved and make its previous evaluations stale. The
+                        resulting lifecycle changes remain available in
+                        Activity.
+                      </p>
                     </div>
                   )}
                   <div>
@@ -946,60 +1212,6 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                   {/* Bug-specific fields */}
                   {card.card_type === 'bug' && (
                     <>
-                      <div
-                        data-testid="bug-traceability-panel"
-                        className="rounded-lg border border-blue-200 dark:border-blue-700/40 bg-blue-50/70 dark:bg-blue-900/10 p-3"
-                      >
-                        <div className="flex items-center gap-2 mb-3">
-                          <GitBranch size={14} className="text-blue-600 dark:text-blue-300" />
-                          <h3 className="text-xs font-semibold text-blue-900 dark:text-blue-200 uppercase tracking-wide">Bug Traceability</h3>
-                        </div>
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <div className="rounded-md border border-blue-100 dark:border-blue-800/60 bg-white/70 dark:bg-gray-900/30 p-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-300">Origin Task</p>
-                            <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100 break-words">
-                              {originTask?.title || (card.origin_task_id ? shortId(card.origin_task_id) : 'Missing origin task')}
-                            </p>
-                            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                              <span className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
-                                <FileText size={10} />
-                                {originTask ? cardTypeLabel(originTask) : 'Task'}
-                              </span>
-                              {originTask && (
-                                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300">
-                                  {STATUS_LABELS[originTask.status]}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          <div className="rounded-md border border-blue-100 dark:border-blue-800/60 bg-white/70 dark:bg-gray-900/30 p-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-300">Linked Regression Tests</p>
-                            {linkedTestTasks.length > 0 ? (
-                              <div className="mt-2 space-y-1.5">
-                                {linkedTestTasks.map(({ id, card: testTask }) => (
-                                  <div key={id} className="flex items-start gap-2 text-sm text-gray-900 dark:text-gray-100">
-                                    <FlaskConical size={13} className="mt-0.5 shrink-0 text-violet-500" />
-                                    <div className="min-w-0">
-                                      <p className="truncate font-medium">{testTask?.title || shortId(id)}</p>
-                                      {testTask && (
-                                        <p className="text-[10px] text-gray-500 dark:text-gray-400">
-                                          {STATUS_LABELS[testTask.status]}
-                                        </p>
-                                      )}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="mt-2 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
-                                <AlertCircle size={13} />
-                                No regression test linked
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
                       {/* Severity */}
                       <div>
                         <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Severity</h3>
@@ -1168,8 +1380,65 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       </div>
                     </div>
                   )}
+                </div>
+              </AccessibleTabPanel>
 
-                  {/* Dependencies */}
+              <AccessibleTabPanel
+                idBase={`${tabIdBase}-card-${card.id}`}
+                tabId="references"
+                value={activeTab}
+              >
+                <div className="space-y-4">
+                  <AccessibleTabList
+                    idBase={`${tabIdBase}-card-${card.id}-references`}
+                    ariaLabel="Card reference sections"
+                    items={[
+                      {
+                        id: 'lineage' as const,
+                        label: 'Lineage',
+                        icon: <GitBranch size={14} />,
+                      },
+                      {
+                        id: 'requirements' as const,
+                        label: 'Requirements',
+                        icon: <ListChecks size={14} />,
+                      },
+                      {
+                        id: 'dependencies' as const,
+                        label: 'Dependencies',
+                        icon: <Link size={14} />,
+                        count: dependencies.length + dependents.length,
+                        attention: dependencies.some(
+                          (dependency) =>
+                            !['done', 'cancelled'].includes(dependency.status),
+                        ),
+                      },
+                    ]}
+                    value={referencesTab}
+                    onValueChange={setReferencesTab}
+                    variant="secondary"
+                  />
+
+                  <AccessibleTabPanel
+                    idBase={`${tabIdBase}-card-${card.id}-references`}
+                    tabId="lineage"
+                    value={referencesTab}
+                  >
+                    <CardLineagePanel
+                      card={card}
+                      parentSpec={parentSpec}
+                      originTask={originTask}
+                      linkedTestTasks={linkedTestTasks}
+                      onOpenSpec={setViewingSpecId}
+                    />
+                  </AccessibleTabPanel>
+
+                  <AccessibleTabPanel
+                    idBase={`${tabIdBase}-card-${card.id}-references`}
+                    tabId="dependencies"
+                    value={referencesTab}
+                  >
+                    {/* Dependencies */}
                   <DependenciesSection
                     cardId={card.id}
                     dependencies={dependencies}
@@ -1177,10 +1446,49 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                     setDependencies={setDependencies}
                     api={api}
                     allCards={allBoardCards}
+                    canManage={canManageDependencies}
                   />
+                  </AccessibleTabPanel>
 
-                  {/* Test Scenarios */}
-                  {card.spec_id && specScenarios.length > 0 && (
+                  <AccessibleTabPanel
+                    idBase={`${tabIdBase}-card-${card.id}-references`}
+                    tabId="requirements"
+                    value={referencesTab}
+                  >
+                    <div className="space-y-4">
+                    {(card.card_type ?? 'normal') === 'normal' && (
+                      <div className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-800/60 dark:bg-amber-950/20">
+                        <div className="min-w-0">
+                          <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Skip task requirement link gate</h3>
+                          <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">
+                            Allow this task to start without a direct FR/TR/BR/IR/OR link.
+                          </p>
+                        </div>
+                        {canEditCardFields ? (
+                          <SettingsToggle
+                            checked={card.skip_task_requirement_link_gate ?? false}
+                            onChange={async () => {
+                              const updated = await api.updateCard(card.id, {
+                                skip_task_requirement_link_gate: !(card.skip_task_requirement_link_gate ?? false),
+                              });
+                              setCard(updated);
+                              updateCardInColumn(updated);
+                            }}
+                            ariaLabel="Skip task requirement link gate for this card"
+                            activeColor="amber"
+                          />
+                        ) : (
+                          <span className="rounded-full border border-amber-200 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:border-amber-800 dark:bg-gray-900/40 dark:text-amber-300">
+                            {card.skip_task_requirement_link_gate
+                              ? 'Enabled'
+                              : 'Disabled'}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                  {/* Test Scenarios for normal cards; bug and test coverage live in Tests. */}
+                  {(card.card_type ?? 'normal') === 'normal' && card.spec_id && specScenarios.length > 0 && (
                     <TestScenariosSection
                       card={card}
                       specId={card.spec_id}
@@ -1208,6 +1516,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                           conclusions: updatedCard.conclusions,
                         });
                       }}
+                      canLink={canLinkScenarios}
                     />
                   )}
 
@@ -1221,6 +1530,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       label="Business Rules"
                       icon={<Scale size={14} className="inline mr-1" />}
                       api={api}
+                      canLink={canLinkRules}
                       onSpecRefresh={() => {
                         api.getSpec(card.spec_id!).then((spec) => {
                           setSpecRules(spec.business_rules || []);
@@ -1239,6 +1549,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       label="API Contracts"
                       icon={<FileText size={14} className="inline mr-1" />}
                       api={api}
+                      canLink={canLinkContracts}
                       onSpecRefresh={() => {
                         api.getSpec(card.spec_id!).then((spec) => {
                           setSpecContracts(spec.api_contracts || []);
@@ -1295,6 +1606,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       label="Technical Requirements"
                       icon={<FileText size={14} className="inline mr-1" />}
                       api={api}
+                      canLink={canLinkTRs}
                       onSpecRefresh={() => {
                         api.getSpec(card.spec_id!).then((spec) => {
                           setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
@@ -1302,68 +1614,85 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       }}
                     />
                   )}
-
-                  {/* Attachments */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">
-                        <Paperclip size={14} className="inline mr-1" />
-                        Attachments ({card.attachments.length})
-                      </h3>
-                      <label className="text-xs text-blue-600 hover:text-blue-700 dark:hover:text-blue-400 cursor-pointer">
-                        <input
-                          type="file"
-                          className="hidden"
-                          onChange={handleFileUpload}
-                        />
-                        + Add
-                      </label>
                     </div>
-                    <div className="space-y-1">
-                      {card.attachments.map((att) => (
-                        <div
-                          key={att.id}
-                          className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800 rounded text-gray-700 dark:text-gray-300"
-                        >
-                          <span className="text-sm truncate flex-1">{att.original_filename}</span>
-                          <button
-                            onClick={async (e) => {
-                              e.preventDefault();
-                              try {
-                                await api.downloadAttachment(card.board_id, card.id, att.id, att.original_filename);
-                              } catch {
-                                toast.error('Failed to download attachment');
-                              }
-                            }}
-                            className="p-1 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
-                          >
-                            <Download size={16} />
-                          </button>
-                        </div>
-                      ))}
-                      {card.attachments.length === 0 && (
-                        <p className="text-sm text-gray-400 dark:text-gray-500">No attachments</p>
-                      )}
-                    </div>
-                  </div>
+                  </AccessibleTabPanel>
                 </div>
-              )}
+              </AccessibleTabPanel>
 
-              {/* Tests Tab (bug cards only) */}
-              {activeTab === 'tests' && card.card_type === 'bug' && (
+              {canReadTests
+                && ['bug', 'test'].includes(card.card_type || 'normal') && (
+              <AccessibleTabPanel
+                idBase={`${tabIdBase}-card-${card.id}`}
+                tabId="tests"
+                value={activeTab}
+                mount="lazy-keep"
+              >
                 <div className="space-y-4">
+                  <AccessibleTabList
+                    idBase={`${tabIdBase}-card-${card.id}-tests`}
+                    ariaLabel="Card test sections"
+                    items={
+                      card.card_type === 'bug'
+                        ? [
+                            {
+                              id: 'regression' as const,
+                              label: 'Regression',
+                              icon: <FlaskConical size={14} />,
+                              count: card.linked_test_task_ids?.length || 0,
+                              attention:
+                                (card.linked_test_task_ids?.length || 0) === 0,
+                            },
+                            {
+                              id: 'coverage' as const,
+                              label: 'Coverage',
+                              icon: <CheckCircle size={14} />,
+                              count: specScenarios.length,
+                            },
+                            ...(
+                              hasAmendmentWorkspace
+                                ? [{
+                                    id: 'amendment' as const,
+                                    label: 'Amendment',
+                                    icon: <FileText size={14} />,
+                                    count:
+                                      amendmentRevisions?.revisions.length || 0,
+                                  }]
+                                : []
+                            ),
+                          ]
+                        : [
+                            {
+                              id: 'scenarios' as const,
+                              label: 'Scenarios',
+                              icon: <FlaskConical size={14} />,
+                              count: linkedEvidenceScenarios.length,
+                            },
+                            {
+                              id: 'evidence' as const,
+                              label: 'Evidence',
+                              icon: <CheckCircle size={14} />,
+                              count: evidenceProvidedCount,
+                              attention:
+                                evidenceProvidedCount
+                                < linkedEvidenceScenarios.length,
+                            },
+                          ]
+                    }
+                    value={testsTab}
+                    onValueChange={setTestsTab}
+                    variant="secondary"
+                  />
+
+                  {card.card_type === 'bug' && (
+                    <AccessibleTabPanel
+                      idBase={`${tabIdBase}-card-${card.id}-tests`}
+                      tabId="regression"
+                      value={testsTab}
+                    >
+                      <div className="space-y-4">
                   <BugWorkflowRemediationPanel
                     preview={bugRegressionPreview}
                     linkedTestCount={card.linked_test_task_ids?.length ?? 0}
-                  />
-
-                  <PathBRemediationPanel
-                    revisions={amendmentRevisions?.revisions ?? []}
-                    pathBResolution={amendmentRevisions?.path_b_resolution ?? null}
-                    bugRegressionPreview={bugRegressionPreview}
-                    onCreateAmendment={handleCreateAmendment}
-                    onAssociate={handleAssociateAmendment}
-                    busy={amendmentBusy}
                   />
 
                   {/* Linked Test Tasks */}
@@ -1420,9 +1749,18 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       </div>
                     )}
                   </div>
+                      </div>
+                    </AccessibleTabPanel>
+                  )}
 
+                  {card.card_type === 'bug' && (
+                    <AccessibleTabPanel
+                      idBase={`${tabIdBase}-card-${card.id}-tests`}
+                      tabId="coverage"
+                      value={testsTab}
+                    >
                   {/* Test Scenarios from spec */}
-                  {specScenarios.length > 0 && (
+                  {specScenarios.length > 0 ? (
                     <div>
                       <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
                         Test Scenarios (from Spec) — {specScenarios.length}
@@ -1454,147 +1792,218 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                         })}
                       </div>
                     </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-gray-300 px-4 py-8 text-center text-sm text-gray-500 dark:border-gray-600 dark:text-gray-400">
+                      The parent spec has no test scenarios available for
+                      regression coverage.
+                    </div>
+                  )}
+                    </AccessibleTabPanel>
+                  )}
+
+                  {card.card_type === 'bug'
+                    && (
+                      hasAmendmentWorkspace
+                    ) && (
+                    <AccessibleTabPanel
+                      idBase={`${tabIdBase}-card-${card.id}-tests`}
+                      tabId="amendment"
+                      value={testsTab}
+                    >
+                      <PathBRemediationPanel
+                        revisions={amendmentRevisions?.revisions ?? []}
+                        pathBResolution={
+                          amendmentRevisions?.path_b_resolution ?? null
+                        }
+                        bugRegressionPreview={bugRegressionPreview}
+                        onCreateAmendment={handleCreateAmendment}
+                        onAssociate={handleAssociateAmendment}
+                        busy={amendmentBusy}
+                      />
+                    </AccessibleTabPanel>
+                  )}
+
+                  {card.card_type === 'test' && (
+                    <AccessibleTabPanel
+                      idBase={`${tabIdBase}-card-${card.id}-tests`}
+                      tabId="scenarios"
+                      value={testsTab}
+                    >
+                      {card.spec_id ? (
+                        <TestScenariosSection
+                          card={card}
+                          specId={card.spec_id}
+                          scenarios={specScenarios}
+                          api={api}
+                          canLink={canLinkScenarios}
+                          onUpdate={(updatedCard, updatedScenarios) => {
+                            setCard(updatedCard);
+                            setSpecScenarios(updatedScenarios);
+                            updateCardInColumn(updatedCard);
+                          }}
+                        />
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-gray-300 px-4 py-8 text-center text-sm text-gray-500 dark:border-gray-600 dark:text-gray-400">
+                          Link this test card to a spec before associating test
+                          scenarios.
+                        </div>
+                      )}
+                    </AccessibleTabPanel>
+                  )}
+
+                  {card.card_type === 'test' && (
+                    <AccessibleTabPanel
+                      idBase={`${tabIdBase}-card-${card.id}-tests`}
+                      tabId="evidence"
+                      value={testsTab}
+                    >
+                      <TestEvidenceTab scenarios={linkedEvidenceScenarios} />
+                    </AccessibleTabPanel>
                   )}
                 </div>
+              </AccessibleTabPanel>
               )}
 
-              {/* Evidence Tab (test cards only) */}
-              {activeTab === 'evidence' && card.card_type === 'test' && (
-                <TestEvidenceTab scenarios={linkedEvidenceScenarios} />
-              )}
-
-              {/* Mockups Tab */}
-              {activeTab === 'mockups' && (
-                <div className="modal-body">
-                  <MockupsTab
-                    screenMockups={card.screen_mockups}
-                    boardId={card.board_id}
-                    entityType="card"
-                    entityId={card.id}
+              {hasVisibleResources && (
+                <AccessibleTabPanel
+                  idBase={`${tabIdBase}-card-${card.id}`}
+                  tabId="resources"
+                  value={activeTab}
+                  mount="lazy-keep"
+                >
+                  <CardResourcesPanel
+                    card={card}
                     expanded={expanded}
+                    specKnowledgeBases={specKBsFull}
+                    canReadMockups={canReadMockups}
+                    canReadKnowledge={canReadKnowledge}
+                    canReadArchitecture={canReadArchitecture}
+                    canReadAttachments={canReadAttachments}
+                    canUploadAttachments={canUploadAttachments}
+                    canDeleteAttachments={canDeleteAttachments}
+                    onCardChanged={(updated) => {
+                      setCard(updated);
+                      updateCardInColumn(updated);
+                    }}
+                    onBusyChange={setKnowledgeMutationBusy}
                   />
-                </div>
-              )}
-
-              {/* Architecture Tab */}
-              {activeTab === 'architecture' && (
-                <div className="modal-body">
-                  <ArchitectureTab
-                    parentType="card"
-                    parentId={card.id}
-                    boardId={card.board_id}
-                    entityType="card"
-                    entityId={card.id}
-                    specIdForCopy={card.spec_id}
-                    expanded={expanded}
-                    screenMockups={card.screen_mockups || []}
-                    onChanged={(items) => setCard((current) => current ? { ...current, architecture_designs: items } : current)}
-                  />
-                </div>
-              )}
-
-              {/* Knowledge Tab */}
-              {activeTab === 'knowledge' && (
-                <CardKnowledgeTab
-                  card={card}
-                  specKnowledgeBases={specKBsFull}
-                  onUpdate={async (kbs) => {
-                    const updated = await api.updateCard(card.id, { knowledge_bases: kbs } as any);
-                    setCard(updated);
-                  }}
-                  onBusyChange={setKnowledgeMutationBusy}
-                />
+                </AccessibleTabPanel>
               )}
 
               {/* Q&A Tab */}
-              {activeTab === 'qa' && (
-                <QATab card={card} setCard={setCard} api={api} members={boardMembers} seenStatus={seenStatus} />
+              {canReadQA && (
+                <AccessibleTabPanel
+                  idBase={`${tabIdBase}-card-${card.id}`}
+                  tabId="qa"
+                  value={activeTab}
+                >
+                <QATab
+                  card={card}
+                  setCard={setCard}
+                  api={api}
+                  members={boardMembers}
+                  seenStatus={seenStatus}
+                  canAsk={canAskQA}
+                  canAnswer={canAnswerQA}
+                />
+                </AccessibleTabPanel>
               )}
 
               {/* Comments Tab */}
-              {activeTab === 'comments' && (
-                <CommentsTab card={card} setCard={setCard} api={api} members={boardMembers} seenStatus={seenStatus} />
+              {canReadComments && (
+                <AccessibleTabPanel
+                  idBase={`${tabIdBase}-card-${card.id}`}
+                  tabId="comments"
+                  value={activeTab}
+                >
+                <CommentsTab
+                  card={card}
+                  setCard={setCard}
+                  api={api}
+                  members={boardMembers}
+                  seenStatus={seenStatus}
+                  canCreate={canCreateComments}
+                  canCreateChoice={canCreateChoiceComments}
+                  canRespondToChoice={canRespondToChoiceComments}
+                />
+                </AccessibleTabPanel>
               )}
 
-              {/* Conclusion Tab */}
-              {activeTab === 'conclusion' && (
-                <div className="modal-body">
-                  {card.conclusions && card.conclusions.length > 0 ? (
-                    <div className="space-y-3">
-                      {card.conclusions.map((c, i) => (
-                        <div key={i} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                              Conclusion #{i + 1}
-                            </span>
-                            <span className="text-[10px] text-gray-400">
-                              {c.author_id?.slice(0, 12)}... &middot; {new Date(c.created_at).toLocaleString()}
-                            </span>
-                          </div>
-                          <Md>{c.text}</Md>
-                          {/* Completeness & Drift metrics */}
-                          <div className="flex flex-wrap gap-3 mt-3 pt-3 border-t border-gray-100 dark:border-gray-700/50">
-                            <div className="flex-1 min-w-[180px]">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                                  c.completeness >= 90 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                                  : c.completeness >= 70 ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-                                  : c.completeness >= 50 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-                                  : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                                }`}>
-                                  Completeness: {c.completeness}%
-                                </span>
-                              </div>
-                              {c.completeness_justification && (
-                                <p className="text-xs text-gray-500 dark:text-gray-400 ml-1">{c.completeness_justification}</p>
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-[180px]">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                                  c.drift <= 10 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                                  : c.drift <= 25 ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-                                  : c.drift <= 50 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-                                  : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                                }`}>
-                                  Drift: {c.drift}%
-                                </span>
-                              </div>
-                              {c.drift_justification && (
-                                <p className="text-xs text-gray-500 dark:text-gray-400 ml-1">{c.drift_justification}</p>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-8">
-                      <p className="text-gray-500 dark:text-gray-400 text-sm">No conclusion yet</p>
-                      <p className="text-gray-400 dark:text-gray-500 text-xs mt-1">A conclusion is required when moving execution work to Validation or Done</p>
-                    </div>
-                  )}
-                </div>
-              )}
+              {hasVisibleValidation && (
+                <AccessibleTabPanel
+                  idBase={`${tabIdBase}-card-${card.id}`}
+                  tabId="validation"
+                  value={activeTab}
+                >
+                  <div className="space-y-4">
+                    <AccessibleTabList
+                      idBase={`${tabIdBase}-card-${card.id}-validation`}
+                      ariaLabel="Card validation sections"
+                      items={[
+                        ...(canReadConclusion
+                          ? [{
+                              id: 'execution-report' as const,
+                              label: 'Execution report',
+                              icon: <FileText size={14} />,
+                              count: card.conclusions?.length || 0,
+                            }]
+                          : []),
+                        ...(card.card_type !== 'test' && canReadValidation
+                          ? [{
+                              id: 'task-validation' as const,
+                              label: 'Task validation',
+                              icon: <Shield size={14} />,
+                              count: card.validations?.length || 0,
+                            }]
+                          : []),
+                      ]}
+                      value={validationTab}
+                      onValueChange={setValidationTab}
+                      variant="secondary"
+                    />
 
-              {/* Validations Tab */}
-              {activeTab === 'validations' && (
-                <ValidationsTab card={card} setCard={setCard} api={api} members={boardMembers} />
+                    {canReadConclusion && (
+                      <AccessibleTabPanel
+                        idBase={`${tabIdBase}-card-${card.id}-validation`}
+                        tabId="execution-report"
+                        value={validationTab}
+                      >
+                        <ExecutionReportsPanel card={card} />
+                      </AccessibleTabPanel>
+                    )}
+
+                    {card.card_type !== 'test' && canReadValidation && (
+                      <AccessibleTabPanel
+                        idBase={`${tabIdBase}-card-${card.id}-validation`}
+                        tabId="task-validation"
+                        value={validationTab}
+                      >
+                        <ValidationsTab
+                          card={card}
+                          onCardChanged={(updated) => {
+                            setCard(updated);
+                            updateCardInColumn(updated);
+                            loadAllowedStatuses(updated);
+                          }}
+                          api={api}
+                          members={boardMembers}
+                          canSubmit={canSubmitValidation}
+                        />
+                      </AccessibleTabPanel>
+                    )}
+                  </div>
+                </AccessibleTabPanel>
               )}
 
               {/* Activity Tab */}
-              {activeTab === 'activity' && (
-                <ActivityTab cardId={card.id} api={api} />
-              )}
-
-              {/* Cancellation Tab (ITEM 17) — only while status === cancelled */}
-              {activeTab === 'cancellation' && card.status === 'cancelled' && (
-                <CancellationDetails
-                  reason={card.cancellation_reason}
-                  cancelledBy={card.cancelled_by}
-                  cancelledAt={card.cancelled_at}
-                  resolveActorName={(id) => resolveActorName(id, boardMembers)}
-                />
+              {canReadActivity && (
+                <AccessibleTabPanel
+                  idBase={`${tabIdBase}-card-${card.id}`}
+                  tabId="activity"
+                  value={activeTab}
+                >
+                  <ActivityTab cardId={card.id} api={api} />
+                </AccessibleTabPanel>
               )}
             </div>
           </>
@@ -1615,59 +2024,82 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
               rows={6}
               autoFocus
             />
-            {/* Completeness metric */}
-            <div className="mt-3">
-              <label className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-2">
-                Completeness
-                <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${
-                  conclusionCompleteness >= 90 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                  : conclusionCompleteness >= 70 ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-                  : conclusionCompleteness >= 50 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-                  : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                }`}>{conclusionCompleteness}%</span>
-              </label>
-              <input
-                type="range"
-                min={0}
-                max={100}
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div className="flex gap-4 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/20">
+                <MetricScoreRing
+                label="Completeness"
                 value={conclusionCompleteness}
-                onChange={(e) => setConclusionCompleteness(Number(e.target.value))}
-                className="w-full mt-1"
-              />
-              <textarea
-                value={conclusionCompletenessJustification}
-                onChange={(e) => setConclusionCompletenessJustification(e.target.value)}
-                placeholder="Justify the completeness score..."
-                className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg text-xs dark:bg-gray-700 dark:border-gray-600 resize-none"
-                rows={2}
-              />
-            </div>
-            {/* Drift metric */}
-            <div className="mt-3">
-              <label className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-2">
-                Drift
-                <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${
-                  conclusionDrift <= 10 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                  : conclusionDrift <= 25 ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-                  : conclusionDrift <= 50 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-                  : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                }`}>{conclusionDrift}%</span>
-              </label>
-              <input
-                type="range"
-                min={0}
-                max={100}
+                direction="higher-is-better"
+                tone="info"
+                testId="execution-report-completeness-score"
+                />
+                <div className="min-w-0 flex-1">
+                  <label
+                    htmlFor="execution-report-completeness"
+                    className="text-xs font-medium text-gray-600 dark:text-gray-400"
+                  >
+                    Completeness score
+                  </label>
+                  <input
+                    id="execution-report-completeness"
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={conclusionCompleteness}
+                    onChange={(e) =>
+                      setConclusionCompleteness(Number(e.target.value))
+                    }
+                    className="mt-2 w-full"
+                  />
+                  <textarea
+                    value={conclusionCompletenessJustification}
+                    onChange={(e) =>
+                      setConclusionCompletenessJustification(e.target.value)
+                    }
+                    placeholder="Justify the completeness score..."
+                    className="mt-2 w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-xs dark:border-gray-600 dark:bg-gray-700"
+                    rows={3}
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-4 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/20">
+                <MetricScoreRing
+                label="Drift"
                 value={conclusionDrift}
-                onChange={(e) => setConclusionDrift(Number(e.target.value))}
-                className="w-full mt-1"
-              />
-              <textarea
-                value={conclusionDriftJustification}
-                onChange={(e) => setConclusionDriftJustification(e.target.value)}
-                placeholder="Justify the drift score..."
-                className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg text-xs dark:bg-gray-700 dark:border-gray-600 resize-none"
-                rows={2}
-              />
+                direction="lower-is-better"
+                tone="info"
+                testId="execution-report-drift-score"
+                />
+                <div className="min-w-0 flex-1">
+                  <label
+                    htmlFor="execution-report-drift"
+                    className="text-xs font-medium text-gray-600 dark:text-gray-400"
+                  >
+                    Drift score
+                  </label>
+                  <input
+                    id="execution-report-drift"
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={conclusionDrift}
+                    onChange={(e) =>
+                      setConclusionDrift(Number(e.target.value))
+                    }
+                    className="mt-2 w-full"
+                  />
+                  <textarea
+                    value={conclusionDriftJustification}
+                    onChange={(e) =>
+                      setConclusionDriftJustification(e.target.value)
+                    }
+                    placeholder="Justify the drift score..."
+                    className="mt-2 w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-xs dark:border-gray-600 dark:bg-gray-700"
+                    rows={3}
+                  />
+                </div>
+              </div>
             </div>
             <div className="flex justify-end gap-2 mt-3">
               <button onClick={() => setShowConclusionPrompt(false)} className="btn btn-secondary text-xs">Cancel</button>
@@ -1690,13 +2122,14 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
           </div>
         )}
 
-        {/* Footer */}
-        <div className="modal-footer">
-          <button onClick={handleDelete} className="btn btn-danger flex items-center gap-1">
-            <Trash2 size={16} />
-            Delete
-          </button>
-        </div>
+        {canDeleteCard && (
+          <div className="modal-footer">
+            <button onClick={handleDelete} className="btn btn-danger flex items-center gap-1">
+              <Trash2 size={16} />
+              Delete
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Spec modal */}
@@ -1722,6 +2155,248 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
           onCancel={() => setShowCancelDialog(false)}
         />
       </div>
+    </div>
+  );
+}
+
+function CardLineagePanel({
+  card,
+  parentSpec,
+  originTask,
+  linkedTestTasks,
+  onOpenSpec,
+}: {
+  card: Card;
+  parentSpec: { id: string; title: string } | null;
+  originTask: {
+    id: string;
+    title: string;
+    status: CardStatus;
+    card_type?: Card['card_type'];
+  } | null;
+  linkedTestTasks: {
+    id: string;
+    card: {
+      id: string;
+      title: string;
+      status: CardStatus;
+      card_type?: Card['card_type'];
+    } | null;
+  }[];
+  onOpenSpec: (specId: string) => void;
+}) {
+  const lineageType = card.card_type === 'bug'
+    ? 'bug'
+    : card.card_type === 'test'
+      ? 'test'
+      : 'task';
+
+  return (
+    <div className="space-y-4" data-testid="card-lineage-panel">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Parent spec
+          </p>
+          {parentSpec ? (
+            <button
+              type="button"
+              onClick={() => onOpenSpec(parentSpec.id)}
+              className="mt-1 text-left text-sm font-medium text-violet-700 hover:underline dark:text-violet-300"
+            >
+              {parentSpec.title}
+            </button>
+          ) : (
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              No parent spec
+            </p>
+          )}
+        </div>
+        <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Sprint
+          </p>
+          <p className="mt-1 break-all text-sm font-medium text-gray-800 dark:text-gray-200">
+            {card.sprint_id || 'Not assigned to a sprint'}
+          </p>
+        </div>
+        <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Lineage graph
+          </p>
+          <button
+            type="button"
+            onClick={() => openLineageGraph(lineageType, card.id)}
+            className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-blue-700 hover:underline dark:text-blue-300"
+          >
+            <GitBranch size={14} />
+            Open graph
+          </button>
+        </div>
+      </div>
+
+      {card.card_type === 'bug' && (
+        <div
+          data-testid="bug-traceability-panel"
+          className="rounded-lg border border-blue-200 bg-blue-50/70 p-3 dark:border-blue-700/40 dark:bg-blue-900/10"
+        >
+          <div className="mb-3 flex items-center gap-2">
+            <GitBranch
+              size={14}
+              className="text-blue-600 dark:text-blue-300"
+            />
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-blue-900 dark:text-blue-200">
+              Bug Traceability
+            </h3>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-md border border-blue-100 bg-white/70 p-3 dark:border-blue-800/60 dark:bg-gray-900/30">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-300">
+                Origin Task
+              </p>
+              <p className="mt-1 break-words text-sm font-medium text-gray-900 dark:text-gray-100">
+                {originTask?.title
+                  || (card.origin_task_id
+                    ? shortId(card.origin_task_id)
+                    : 'Missing origin task')}
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <span className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                  <FileText size={10} />
+                  {originTask ? cardTypeLabel(originTask) : 'Task'}
+                </span>
+                {originTask && (
+                  <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                    {STATUS_LABELS[originTask.status]}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-blue-100 bg-white/70 p-3 dark:border-blue-800/60 dark:bg-gray-900/30">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-300">
+                Linked Regression Tests
+              </p>
+              {linkedTestTasks.length > 0 ? (
+                <div className="mt-2 space-y-1.5">
+                  {linkedTestTasks.map(({ id, card: testTask }) => (
+                    <div
+                      key={id}
+                      className="flex items-start gap-2 text-sm text-gray-900 dark:text-gray-100"
+                    >
+                      <FlaskConical
+                        size={13}
+                        className="mt-0.5 shrink-0 text-violet-500"
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">
+                          {testTask?.title || shortId(id)}
+                        </p>
+                        {testTask && (
+                          <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                            {STATUS_LABELS[testTask.status]}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-2 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
+                  <AlertCircle size={13} />
+                  No regression test linked
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExecutionReportsPanel({ card }: { card: Card }) {
+  const reports = card.conclusions || [];
+
+  if (reports.length === 0) {
+    return (
+      <div className="py-8 text-center">
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          No execution report yet
+        </p>
+        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+          An execution report is collected when work moves to Validation or
+          Done.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3" data-testid="execution-reports-panel">
+      {[...reports].reverse().map((report, index) => (
+        <article
+          key={`${report.created_at}-${index}`}
+          className="rounded-lg border border-gray-200 p-4 dark:border-gray-700"
+        >
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+                Execution report #{reports.length - index}
+              </p>
+              {report.source === 'task_validation' && (
+                <p className="mt-0.5 text-[10px] text-amber-700 dark:text-amber-300">
+                  Legacy report generated during task validation
+                </p>
+              )}
+            </div>
+            <span className="text-[10px] text-gray-400">
+              {shortId(report.author_id)} ·{' '}
+              {new Date(report.created_at).toLocaleString()}
+            </span>
+          </div>
+
+          <Md>{report.text}</Md>
+
+          <div className="mt-4 grid gap-4 border-t border-gray-100 pt-4 sm:grid-cols-2 dark:border-gray-700/50">
+            <div className="flex gap-4">
+              <MetricScoreRing
+                label="Completeness"
+                value={report.completeness}
+                direction="higher-is-better"
+                tone="info"
+                testId={`execution-report-${index}-completeness-score`}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                  Executor justification
+                </p>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {report.completeness_justification
+                    || 'No justification recorded.'}
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-4">
+              <MetricScoreRing
+                label="Drift"
+                value={report.drift}
+                direction="lower-is-better"
+                tone="info"
+                testId={`execution-report-${index}-drift-score`}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                  Executor justification
+                </p>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {report.drift_justification || 'No justification recorded.'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </article>
+      ))}
     </div>
   );
 }
@@ -1875,13 +2550,14 @@ export function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
 
 // Test Scenarios section in Details tab
 function TestScenariosSection({
-  card, specId, scenarios, api, onUpdate,
+  card, specId, scenarios, api, onUpdate, canLink = true,
 }: {
   card: Card;
   specId: string;
   scenarios: TestScenario[];
   api: ReturnType<typeof useDashboardApi>;
   onUpdate: (card: Card, scenarios: TestScenario[]) => void;
+  canLink?: boolean;
 }) {
   const linkedIds = new Set(card.test_scenario_ids || []);
   const linked = scenarios.filter((s) => linkedIds.has(s.id));
@@ -1924,7 +2600,7 @@ function TestScenariosSection({
           <FlaskConical size={14} className="inline mr-1" />
           Test Scenarios ({linked.length}/{scenarios.length})
         </h3>
-        {unlinked.length > 0 && (
+        {canLink && unlinked.length > 0 && (
           <button
             onClick={() => setShowPicker(!showPicker)}
             className="text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
@@ -1948,13 +2624,15 @@ function TestScenariosSection({
               <span className="text-gray-700 dark:text-gray-300 truncate">{s.title}</span>
               <ScenarioTypeBadge scenarioType={s.scenario_type} />
             </div>
-            <button
-              onClick={() => handleUnlink(s.id)}
-              className="p-0.5 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-              title="Unlink scenario"
-            >
-              <Unlink size={12} />
-            </button>
+            {canLink && (
+              <button
+                onClick={() => handleUnlink(s.id)}
+                className="p-0.5 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                title="Unlink scenario"
+              >
+                <Unlink size={12} />
+              </button>
+            )}
           </div>
         ))}
         {linked.length === 0 && (
@@ -1965,7 +2643,7 @@ function TestScenariosSection({
       </div>
 
       {/* Picker for unlinked scenarios */}
-      {showPicker && unlinked.length > 0 && (
+      {canLink && showPicker && unlinked.length > 0 && (
         <div className="mt-2 border border-gray-200 dark:border-gray-700 rounded-lg p-2 space-y-1 max-h-40 overflow-y-auto">
           <p className="text-[10px] text-gray-400 mb-1">Click to link:</p>
           {unlinked.map((s) => (
@@ -2081,7 +2759,7 @@ function LinkedSpecItemsSection({
 // Q&A Tab Component
 // Dependencies section in Details tab
 function DependenciesSection({
-  cardId, dependencies, dependents, setDependencies, api, allCards,
+  cardId, dependencies, dependents, setDependencies, api, allCards, canManage = true,
 }: {
   cardId: string;
   dependencies: { id: string; title: string; status: string }[];
@@ -2089,6 +2767,7 @@ function DependenciesSection({
   setDependencies: (d: { id: string; title: string; status: string }[]) => void;
   api: ReturnType<typeof useDashboardApi>;
   allCards: { id: string; title: string; status: string }[];
+  canManage?: boolean;
 }) {
   const [selectedDepId, setSelectedDepId] = useState('');
 
@@ -2149,9 +2828,11 @@ function DependenciesSection({
                   {d.status === 'done' ? '✓' : d.status === 'cancelled' ? '✗' : '●'}{' '}
                   {d.title}
                 </span>
-                <button onClick={() => handleRemove(d.id)} className="p-0.5 text-gray-400 dark:text-gray-500 hover:text-red-500" title="Remove dependency">
-                  <Unlink size={12} />
-                </button>
+                {canManage && (
+                  <button onClick={() => handleRemove(d.id)} className="p-0.5 text-gray-400 dark:text-gray-500 hover:text-red-500" title="Remove dependency">
+                    <Unlink size={12} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -2173,6 +2854,7 @@ function DependenciesSection({
       )}
 
       {/* Add dependency */}
+      {canManage && (
       <div className="flex gap-2 mt-2">
         <select
           value={selectedDepId}
@@ -2190,6 +2872,7 @@ function DependenciesSection({
           Add
         </button>
       </div>
+      )}
     </div>
   );
 }
@@ -2218,7 +2901,23 @@ function SeenByIndicator({ itemId, seenStatus }: { itemId: string; seenStatus: S
   );
 }
 
-function QATab({ card, setCard, api, members, seenStatus }: { card: Card; setCard: (c: Card) => void; api: ReturnType<typeof useDashboardApi>; members: { id: string; name: string }[]; seenStatus: SeenMap }) {
+function QATab({
+  card,
+  setCard,
+  api,
+  members,
+  seenStatus,
+  canAsk,
+  canAnswer,
+}: {
+  card: Card;
+  setCard: (c: Card) => void;
+  api: ReturnType<typeof useDashboardApi>;
+  members: { id: string; name: string }[];
+  seenStatus: SeenMap;
+  canAsk: boolean;
+  canAnswer: boolean;
+}) {
   const [newQuestion, setNewQuestion] = useState('');
   const [answerInput, setAnswerInput] = useState<Record<string, string>>({});
 
@@ -2255,19 +2954,21 @@ function QATab({ card, setCard, api, members, seenStatus }: { card: Card; setCar
   return (
     <div className="space-y-4">
       {/* Add question */}
-      <div className="flex gap-2">
-        <div className="flex-1">
-          <MentionInput
-            value={newQuestion}
-            onChange={setNewQuestion}
-            members={members}
-            placeholder="Add a question... (use @ to mention)"
-          />
+      {canAsk && (
+        <div className="flex gap-2">
+          <div className="flex-1">
+            <MentionInput
+              value={newQuestion}
+              onChange={setNewQuestion}
+              members={members}
+              placeholder="Add a question... (use @ to mention)"
+            />
+          </div>
+          <button onClick={handleAskQuestion} className="btn btn-primary">
+            Ask
+          </button>
         </div>
-        <button onClick={handleAskQuestion} className="btn btn-primary">
-          Ask
-        </button>
-      </div>
+      )}
 
       {/* Questions list */}
       <div className="space-y-3">
@@ -2288,7 +2989,7 @@ function QATab({ card, setCard, api, members, seenStatus }: { card: Card; setCar
                   Answered by <span className="font-medium text-gray-500 dark:text-gray-400">{resolveActorName(qa.answered_by, members)}</span>
                 </p>
               </div>
-            ) : (
+            ) : canAnswer ? (
               <div className="mt-2 flex gap-2 pl-5">
                 <input
                   type="text"
@@ -2304,6 +3005,10 @@ function QATab({ card, setCard, api, members, seenStatus }: { card: Card; setCar
                   Answer
                 </button>
               </div>
+            ) : (
+              <p className="mt-2 pl-5 text-xs italic text-gray-400 dark:text-gray-500">
+                Awaiting an answer from an authorized contributor.
+              </p>
             )}
             <SeenByIndicator itemId={qa.id} seenStatus={seenStatus} />
           </div>
@@ -2319,8 +3024,145 @@ function QATab({ card, setCard, api, members, seenStatus }: { card: Card; setCar
   );
 }
 
+function validationVerdict(
+  validation: ValidationEntry,
+): 'pass' | 'fail' {
+  if (validation.verdict) return validation.verdict;
+  if (validation.outcome) {
+    return validation.outcome === 'success' ? 'pass' : 'fail';
+  }
+  return validation.recommendation === 'approve' ? 'pass' : 'fail';
+}
+
+function validationMetricStatus(
+  validation: ValidationEntry,
+  metric: 'confidence' | 'completeness' | 'drift',
+): 'met' | 'not-met' | 'neutral' {
+  if (!validation.threshold_violations) return 'neutral';
+  return validation.threshold_violations.some((violation) =>
+    violation.toLowerCase().includes(metric)
+  )
+    ? 'not-met'
+    : 'met';
+}
+
+function ValidationMetricInput({
+  id,
+  label,
+  value,
+  direction,
+  justification,
+  onValueChange,
+  onJustificationChange,
+}: {
+  id: string;
+  label: string;
+  value: number;
+  direction: 'higher-is-better' | 'lower-is-better';
+  justification: string;
+  onValueChange: (value: number) => void;
+  onJustificationChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex gap-4 rounded-lg border border-violet-200 bg-white p-3 dark:border-violet-800 dark:bg-gray-900/20">
+      <MetricScoreRing
+        label={label}
+        value={value}
+        direction={direction}
+        tone="info"
+        testId={`${id}-score`}
+      />
+      <div className="min-w-0 flex-1">
+        <label
+          htmlFor={id}
+          className="text-xs font-medium text-gray-600 dark:text-gray-400"
+        >
+          {label} score
+        </label>
+        <input
+          id={id}
+          type="range"
+          min={0}
+          max={100}
+          value={value}
+          onChange={(event) => onValueChange(Number(event.target.value))}
+          className="mt-2 w-full"
+        />
+        <textarea
+          value={justification}
+          onChange={(event) => onJustificationChange(event.target.value)}
+          placeholder={`Justify the ${label.toLowerCase()} score...`}
+          className="mt-2 w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+          rows={3}
+        />
+        <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
+          Minimum 10 characters.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ValidationHistoryMetric({
+  label,
+  value,
+  direction,
+  threshold,
+  thresholdSource,
+  status,
+  justification,
+  testId,
+}: {
+  label: string;
+  value: number;
+  direction: 'higher-is-better' | 'lower-is-better';
+  threshold: number | null;
+  thresholdSource?: string | null;
+  status: 'met' | 'not-met' | 'neutral';
+  justification?: string | null;
+  testId: string;
+}) {
+  return (
+    <div className="flex gap-4 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/20">
+      <MetricScoreRing
+        label={label}
+        value={value}
+        direction={direction}
+        threshold={threshold}
+        status={status}
+        testId={testId}
+      />
+      <div className="min-w-0 flex-1">
+        {thresholdSource && (
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+            Threshold source: {thresholdSource}
+          </p>
+        )}
+        <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">
+          Reviewer justification
+        </p>
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          {justification || 'No justification recorded.'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // Validations Tab Component
-function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: (c: Card) => void; api: ReturnType<typeof useDashboardApi>; members: { id: string; name: string }[] }) {
+function ValidationsTab({
+  card,
+  onCardChanged,
+  api,
+  members,
+  canSubmit,
+}: {
+  card: Card;
+  onCardChanged: (card: Card) => void;
+  api: ReturnType<typeof useDashboardApi>;
+  members: { id: string; name: string }[];
+  canSubmit: boolean;
+}) {
   const [confidence, setConfidence] = useState(80);
   const [completeness, setCompleteness] = useState(80);
   const [drift, setDrift] = useState(20);
@@ -2328,25 +3170,43 @@ function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: 
   const [completenessJustification, setCompletenessJustification] = useState('');
   const [driftJustification, setDriftJustification] = useState('');
   const [generalJustification, setGeneralJustification] = useState('');
-  const [verdict, setVerdict] = useState<'pass' | 'fail'>('pass');
+  const [recommendation, setRecommendation] =
+    useState<'approve' | 'reject'>('approve');
   const [submitting, setSubmitting] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const formValid =
+    confidenceJustification.trim().length >= 10
+    && completenessJustification.trim().length >= 10
+    && driftJustification.trim().length >= 10
+    && generalJustification.trim().length >= 20;
 
   const handleSubmit = async () => {
+    if (!formValid) return;
     setSubmitting(true);
     try {
       const data = {
-        verdict,
         confidence,
-        completeness,
-        drift,
         confidence_justification: confidenceJustification.trim(),
+        estimated_completeness: completeness,
         completeness_justification: completenessJustification.trim(),
+        estimated_drift: drift,
         drift_justification: driftJustification.trim(),
-        summary: generalJustification.trim() || null,
+        general_justification: generalJustification.trim(),
+        recommendation,
       };
-      const updated = await api.submitTaskValidation(card.id, data);
-      setCard(updated);
+      const validation = await api.submitTaskValidation(card.id, data);
+      let updatedCard: Card;
+      try {
+        updatedCard = await api.getCard(card.id);
+      } catch {
+        updatedCard = {
+          ...card,
+          status: validation.card_status || card.status,
+          validations: [...(card.validations || []), validation],
+        };
+      }
+      onCardChanged(updatedCard);
+      setExpandedId(validation.id);
       // Reset form
       setConfidence(80);
       setCompleteness(80);
@@ -2355,7 +3215,7 @@ function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: 
       setCompletenessJustification('');
       setDriftJustification('');
       setGeneralJustification('');
-      setVerdict('pass');
+      setRecommendation('approve');
       toast.success('Validation submitted');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to submit validation');
@@ -2364,100 +3224,45 @@ function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: 
     }
   };
 
-  const scoreColor = (score: number, isInverse = false) => {
-    const effective = isInverse ? 100 - score : score;
-    if (effective >= 80) return 'bg-green-500';
-    if (effective >= 60) return 'bg-blue-500';
-    if (effective >= 40) return 'bg-amber-500';
-    return 'bg-red-500';
-  };
-
-  const scoreBadgeColor = (score: number, isInverse = false) => {
-    const effective = isInverse ? 100 - score : score;
-    if (effective >= 80) return 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300';
-    if (effective >= 60) return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300';
-    if (effective >= 40) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300';
-    return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300';
-  };
-
   const validations = card.validations || [];
 
   return (
     <div className="space-y-6">
       {/* Section A: Submit Validation Form — only when status === 'validation' */}
-      {card.status === 'validation' && (
+      {card.status === 'validation' && canSubmit && (
         <div className="bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-700 rounded-xl p-5 space-y-5">
           <h3 className="text-sm font-semibold text-violet-800 dark:text-violet-200 flex items-center gap-2">
             <Shield size={16} />
             Submit Validation
           </h3>
 
-          {/* Confidence */}
-          <div>
-            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-2 mb-1">
-              Confidence
-              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${scoreBadgeColor(confidence)}`}>{confidence}</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={100}
+          <div className="grid gap-4 xl:grid-cols-3">
+            <ValidationMetricInput
+              id="task-validation-confidence"
+              label="Confidence"
               value={confidence}
-              onChange={(e) => setConfidence(Number(e.target.value))}
-              className="w-full"
+              direction="higher-is-better"
+              justification={confidenceJustification}
+              onValueChange={setConfidence}
+              onJustificationChange={setConfidenceJustification}
             />
-            <textarea
-              value={confidenceJustification}
-              onChange={(e) => setConfidenceJustification(e.target.value)}
-              placeholder="Justify the confidence score..."
-              className="w-full mt-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-xs dark:bg-gray-700 resize-none text-gray-900 dark:text-gray-100"
-              rows={2}
-            />
-          </div>
-
-          {/* Completeness */}
-          <div>
-            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-2 mb-1">
-              Completeness
-              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${scoreBadgeColor(completeness)}`}>{completeness}</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={100}
+            <ValidationMetricInput
+              id="task-validation-completeness"
+              label="Completeness"
               value={completeness}
-              onChange={(e) => setCompleteness(Number(e.target.value))}
-              className="w-full"
+              direction="higher-is-better"
+              justification={completenessJustification}
+              onValueChange={setCompleteness}
+              onJustificationChange={setCompletenessJustification}
             />
-            <textarea
-              value={completenessJustification}
-              onChange={(e) => setCompletenessJustification(e.target.value)}
-              placeholder="Justify the completeness score..."
-              className="w-full mt-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-xs dark:bg-gray-700 resize-none text-gray-900 dark:text-gray-100"
-              rows={2}
-            />
-          </div>
-
-          {/* Drift */}
-          <div>
-            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-2 mb-1">
-              Drift
-              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${scoreBadgeColor(drift, true)}`}>{drift}</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={100}
+            <ValidationMetricInput
+              id="task-validation-drift"
+              label="Drift"
               value={drift}
-              onChange={(e) => setDrift(Number(e.target.value))}
-              className="w-full"
-            />
-            <textarea
-              value={driftJustification}
-              onChange={(e) => setDriftJustification(e.target.value)}
-              placeholder="Justify the drift score..."
-              className="w-full mt-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-xs dark:bg-gray-700 resize-none text-gray-900 dark:text-gray-100"
-              rows={2}
+              direction="lower-is-better"
+              justification={driftJustification}
+              onValueChange={setDrift}
+              onJustificationChange={setDriftJustification}
             />
           </div>
 
@@ -2476,9 +3281,10 @@ function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: 
           {/* Approve/Reject Toggle */}
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setVerdict('pass')}
+              onClick={() => setRecommendation('approve')}
+              type="button"
               className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                verdict === 'pass'
+                recommendation === 'approve'
                   ? 'bg-green-600 text-white ring-2 ring-green-300 dark:ring-green-700'
                   : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
               }`}
@@ -2487,9 +3293,10 @@ function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: 
               Approve
             </button>
             <button
-              onClick={() => setVerdict('fail')}
+              onClick={() => setRecommendation('reject')}
+              type="button"
               className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                verdict === 'fail'
+                recommendation === 'reject'
                   ? 'bg-red-600 text-white ring-2 ring-red-300 dark:ring-red-700'
                   : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
               }`}
@@ -2502,15 +3309,29 @@ function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: 
           {/* Submit */}
           <button
             onClick={handleSubmit}
-            disabled={submitting}
+            disabled={submitting || !formValid}
             className={`w-full py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              verdict === 'pass'
+              recommendation === 'approve'
                 ? 'bg-green-600 hover:bg-green-700 text-white'
                 : 'bg-red-600 hover:bg-red-700 text-white'
             } disabled:opacity-50`}
           >
-            {submitting ? 'Submitting...' : `Submit Validation (${verdict === 'pass' ? 'Approve' : 'Reject'})`}
+            {submitting
+              ? 'Submitting...'
+              : `Submit Validation (${recommendation === 'approve' ? 'Approve' : 'Reject'})`}
           </button>
+          {!formValid && (
+            <p className="text-xs text-violet-700 dark:text-violet-300">
+              Each metric justification requires at least 10 characters and
+              the general justification requires at least 20.
+            </p>
+          )}
+        </div>
+      )}
+      {card.status === 'validation' && !canSubmit && (
+        <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-800 dark:border-violet-800 dark:bg-violet-950/20 dark:text-violet-200">
+          This card is awaiting independent validation. Your current role can
+          read the history but cannot submit Task Validation.
         </div>
       )}
 
@@ -2535,26 +3356,32 @@ function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: 
           <div className="space-y-2">
             {[...validations].reverse().map((v) => {
               const isExpanded = expandedId === v.id;
+              const verdict = validationVerdict(v);
+              const completenessScore =
+                v.completeness ?? v.estimated_completeness ?? 0;
+              const driftScore = v.drift ?? v.estimated_drift ?? 0;
+              const summary = v.summary || v.general_justification;
+              const evaluatorId = v.evaluator_id || v.reviewer_id;
               return (
                 <div key={v.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
                   <div
                     className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/30"
                     onClick={() => setExpandedId(isExpanded ? null : v.id)}
                   >
-                    <div className={`w-2 h-2 rounded-full shrink-0 ${v.verdict === 'pass' ? 'bg-green-500' : 'bg-red-500'}`} />
+                    <div className={`w-2 h-2 rounded-full shrink-0 ${verdict === 'pass' ? 'bg-green-500' : 'bg-red-500'}`} />
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0 ${
-                      v.verdict === 'pass'
+                      verdict === 'pass'
                         ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
                         : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
                     }`}>
-                      {v.verdict === 'pass' ? 'SUCCESS' : 'FAILED'}
+                      {verdict === 'pass' ? 'SUCCESS' : 'FAILED'}
                     </span>
                     <span className="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">
-                      {v.summary || (v.verdict === 'pass' ? 'Validation passed' : 'Validation failed')}
+                      {summary || (verdict === 'pass' ? 'Validation passed' : 'Validation failed')}
                     </span>
                     <div className="flex items-center gap-2 shrink-0 text-[10px] text-gray-400">
                       <span className="px-1 py-0.5 rounded bg-violet-100 text-violet-600 dark:bg-violet-900/30 dark:text-violet-300">
-                        {resolveActorName(v.evaluator_id, members)}
+                        {resolveActorName(evaluatorId, members)}
                       </span>
                       <span>{v.created_at ? new Date(v.created_at).toLocaleString() : ''}</span>
                     </div>
@@ -2565,33 +3392,79 @@ function ValidationsTab({ card, setCard, api, members }: { card: Card; setCard: 
 
                   {isExpanded && (
                     <div className="px-4 py-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 space-y-3">
-                      {/* Score bars */}
-                      {[
-                        { label: 'Confidence', value: v.confidence, inverse: false },
-                        { label: 'Completeness', value: v.completeness, inverse: false },
-                        { label: 'Drift', value: v.drift, inverse: true },
-                      ].map((metric) => (
-                        <div key={metric.label}>
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">{metric.label}</span>
-                            <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${scoreBadgeColor(metric.value, metric.inverse)}`}>
-                              {metric.value}
-                            </span>
-                          </div>
-                          <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all ${scoreColor(metric.value, metric.inverse)}`}
-                              style={{ width: `${metric.value}%` }}
-                            />
-                          </div>
-                        </div>
-                      ))}
+                      <div className="grid gap-4 lg:grid-cols-3">
+                        <ValidationHistoryMetric
+                          label="Confidence"
+                          value={v.confidence}
+                          direction="higher-is-better"
+                          threshold={
+                            v.resolved_thresholds?.min_confidence ?? null
+                          }
+                          thresholdSource={
+                            v.resolved_thresholds?.resolved_sources
+                              ?.min_confidence
+                            ?? v.resolved_thresholds?.resolved_from
+                          }
+                          status={validationMetricStatus(
+                            v,
+                            'confidence',
+                          )}
+                          justification={v.confidence_justification}
+                          testId={`task-validation-${v.id}-confidence-score`}
+                        />
+                        <ValidationHistoryMetric
+                          label="Completeness"
+                          value={completenessScore}
+                          direction="higher-is-better"
+                          threshold={
+                            v.resolved_thresholds?.min_completeness ?? null
+                          }
+                          thresholdSource={
+                            v.resolved_thresholds?.resolved_sources
+                              ?.min_completeness
+                            ?? v.resolved_thresholds?.resolved_from
+                          }
+                          status={validationMetricStatus(
+                            v,
+                            'completeness',
+                          )}
+                          justification={v.completeness_justification}
+                          testId={`task-validation-${v.id}-completeness-score`}
+                        />
+                        <ValidationHistoryMetric
+                          label="Drift"
+                          value={driftScore}
+                          direction="lower-is-better"
+                          threshold={
+                            v.resolved_thresholds?.max_drift ?? null
+                          }
+                          thresholdSource={
+                            v.resolved_thresholds?.resolved_sources?.max_drift
+                            ?? v.resolved_thresholds?.resolved_from
+                          }
+                          status={validationMetricStatus(v, 'drift')}
+                          justification={v.drift_justification}
+                          testId={`task-validation-${v.id}-drift-score`}
+                        />
+                      </div>
 
                       {/* Summary */}
-                      {v.summary && (
+                      {summary && (
                         <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
                           <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Summary</p>
-                          <p className="text-sm text-gray-700 dark:text-gray-300">{v.summary}</p>
+                          <p className="text-sm text-gray-700 dark:text-gray-300">{summary}</p>
+                        </div>
+                      )}
+                      {(v.threshold_violations?.length || 0) > 0 && (
+                        <div className="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950/20">
+                          <p className="text-xs font-semibold text-red-700 dark:text-red-300">
+                            Threshold violations
+                          </p>
+                          <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-red-700 dark:text-red-300">
+                            {v.threshold_violations!.map((violation) => (
+                              <li key={violation}>{violation}</li>
+                            ))}
+                          </ul>
                         </div>
                       )}
                     </div>
@@ -2693,12 +3566,20 @@ function MentionInput({
 }
 
 // Comments Tab Component
-function ChoiceBoardRenderer({ comment, api, card, setCard, members }: {
+function ChoiceBoardRenderer({
+  comment,
+  api,
+  card,
+  setCard,
+  members,
+  canRespond,
+}: {
   comment: Comment;
   api: ReturnType<typeof useDashboardApi>;
   card: Card;
   setCard: (c: Card) => void;
   members: { id: string; name: string }[];
+  canRespond: boolean;
 }) {
   const isMulti = comment.comment_type === 'multi_choice';
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -2752,12 +3633,15 @@ function ChoiceBoardRenderer({ comment, api, card, setCard, members }: {
           return (
             <button
               key={opt.id}
-              onClick={() => toggle(opt.id)}
+              onClick={() => {
+                if (canRespond) toggle(opt.id);
+              }}
+              disabled={!canRespond}
               className={`w-full text-left relative rounded-lg border px-3 py-2 text-sm transition-colors ${
                 isSelected
                   ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/30 dark:border-blue-500/50'
                   : 'border-gray-200 dark:border-gray-600 hover:border-gray-300 dark:hover:border-gray-500'
-              }`}
+              } disabled:cursor-default`}
             >
               {/* Progress bar background */}
               {totalResponses > 0 && (
@@ -2785,7 +3669,7 @@ function ChoiceBoardRenderer({ comment, api, card, setCard, members }: {
       </div>
 
       {/* Free text */}
-      {comment.allow_free_text && (
+      {canRespond && comment.allow_free_text && (
         <input
           type="text"
           value={freeText}
@@ -2796,13 +3680,15 @@ function ChoiceBoardRenderer({ comment, api, card, setCard, members }: {
       )}
 
       {/* Submit */}
-      <button
-        onClick={handleSubmit}
-        disabled={selected.size === 0 || submitting}
-        className="btn btn-primary text-sm disabled:opacity-50"
-      >
-        {submitting ? 'Submitting...' : 'Submit Response'}
-      </button>
+      {canRespond && (
+        <button
+          onClick={handleSubmit}
+          disabled={selected.size === 0 || submitting}
+          className="btn btn-primary text-sm disabled:opacity-50"
+        >
+          {submitting ? 'Submitting...' : 'Submit Response'}
+        </button>
+      )}
 
       {/* Responses summary */}
       {totalResponses > 0 && (
@@ -2826,11 +3712,33 @@ function ChoiceBoardRenderer({ comment, api, card, setCard, members }: {
   );
 }
 
-function CommentsTab({ card, setCard, api, members, seenStatus }: { card: Card; setCard: (c: Card) => void; api: ReturnType<typeof useDashboardApi>; members: { id: string; name: string }[]; seenStatus: SeenMap }) {
+function CommentsTab({
+  card,
+  setCard,
+  api,
+  members,
+  seenStatus,
+  canCreate,
+  canCreateChoice,
+  canRespondToChoice,
+}: {
+  card: Card;
+  setCard: (c: Card) => void;
+  api: ReturnType<typeof useDashboardApi>;
+  members: { id: string; name: string }[];
+  seenStatus: SeenMap;
+  canCreate: boolean;
+  canCreateChoice: boolean;
+  canRespondToChoice: boolean;
+}) {
   const [newComment, setNewComment] = useState('');
   const [mode, setMode] = useState<'text' | 'choice' | 'multi_choice'>('text');
   const [choiceOptions, setChoiceOptions] = useState('');
   const [allowFreeText, setAllowFreeText] = useState(false);
+
+  useEffect(() => {
+    if (!canCreateChoice && mode !== 'text') setMode('text');
+  }, [canCreateChoice, mode]);
 
   const handleAddComment = async () => {
     if (mode === 'text') {
@@ -2870,61 +3778,73 @@ function CommentsTab({ card, setCard, api, members, seenStatus }: { card: Card; 
 
   return (
     <div className="space-y-4">
-      {/* Mode selector */}
-      <div className="flex gap-1 text-xs">
-        {([['text', 'Text'], ['choice', 'Single Choice'], ['multi_choice', 'Multi Choice']] as const).map(([m, label]) => (
-          <button
-            key={m}
-            onClick={() => setMode(m)}
-            className={`px-2.5 py-1 rounded-md border transition-colors ${
-              mode === m
-                ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-500/50 text-blue-700 dark:text-blue-300'
-                : 'border-gray-200 dark:border-gray-600 text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {/* Input */}
-      <div>
-        <MentionInput
-          value={newComment}
-          onChange={setNewComment}
-          members={members}
-          placeholder={mode === 'text' ? 'Write a comment... (use @ to mention)' : 'Enter the question or prompt...'}
-          multiline
-        />
-
-        {/* Choice options */}
-        {mode !== 'text' && (
-          <div className="mt-2 space-y-2">
-            <textarea
-              value={choiceOptions}
-              onChange={e => setChoiceOptions(e.target.value)}
-              placeholder="Enter options, one per line..."
-              rows={3}
-              className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200"
-            />
-            <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={allowFreeText}
-                onChange={e => setAllowFreeText(e.target.checked)}
-                className="rounded border-gray-300"
-              />
-              Allow free-text response
-            </label>
+      {canCreate && (
+        <>
+          {/* Mode selector */}
+          <div className="flex gap-1 text-xs">
+            {([
+              ['text', 'Text'],
+              ...(canCreateChoice
+                ? [
+                    ['choice', 'Single Choice'],
+                    ['multi_choice', 'Multi Choice'],
+                  ] as const
+                : []),
+            ] as const).map(([m, label]) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`px-2.5 py-1 rounded-md border transition-colors ${
+                  mode === m
+                    ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-500/50 text-blue-700 dark:text-blue-300'
+                    : 'border-gray-200 dark:border-gray-600 text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-        )}
 
-        <div className="flex justify-end mt-2">
-          <button onClick={handleAddComment} className="btn btn-primary">
-            {mode === 'text' ? 'Comment' : 'Create Choice Board'}
-          </button>
-        </div>
-      </div>
+          {/* Input */}
+          <div>
+            <MentionInput
+              value={newComment}
+              onChange={setNewComment}
+              members={members}
+              placeholder={mode === 'text' ? 'Write a comment... (use @ to mention)' : 'Enter the question or prompt...'}
+              multiline
+            />
+
+            {/* Choice options */}
+            {mode !== 'text' && canCreateChoice && (
+              <div className="mt-2 space-y-2">
+                <textarea
+                  value={choiceOptions}
+                  onChange={e => setChoiceOptions(e.target.value)}
+                  placeholder="Enter options, one per line..."
+                  rows={3}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200"
+                />
+                <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={allowFreeText}
+                    onChange={e => setAllowFreeText(e.target.checked)}
+                    className="rounded border-gray-300"
+                  />
+                  Allow free-text response
+                </label>
+              </div>
+            )}
+
+            <div className="flex justify-end mt-2">
+              <button onClick={handleAddComment} className="btn btn-primary">
+                {mode === 'text' ? 'Comment' : 'Create Choice Board'}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Comments list */}
       <div className="space-y-3">
@@ -2946,7 +3866,14 @@ function CommentsTab({ card, setCard, api, members, seenStatus }: { card: Card; 
             </div>
 
             {comment.comment_type && comment.comment_type !== 'text' ? (
-              <ChoiceBoardRenderer comment={comment} api={api} card={card} setCard={setCard} members={members} />
+              <ChoiceBoardRenderer
+                comment={comment}
+                api={api}
+                card={card}
+                setCard={setCard}
+                members={members}
+                canRespond={canRespondToChoice}
+              />
             ) : (
               <Md>{comment.content}</Md>
             )}
