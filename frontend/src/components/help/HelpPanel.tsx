@@ -1420,7 +1420,7 @@ Every result requires a concrete **anchor** to evidence in the Spec. Items 5, 6,
 
 A completed run produces an immutable, auditable receipt. The Spec modal shows its result, counts, currentness and paginated receipt history.
 
-A receipt becomes **stale** when the evaluated Spec version, content, inputs, or executable checklist identity changes. Changing only the policy from Advisory to Blocking does not make an otherwise current receipt stale; an existing native receipt with no failed items can immediately satisfy Blocking.
+A receipt becomes **stale** when the evaluated Spec technical revision, content, inputs, or executable checklist identity changes. Changing only the policy from Advisory to Blocking does not make an otherwise current receipt stale; an existing native receipt with no failed items can immediately satisfy Blocking.
 
 The visible states are:
 

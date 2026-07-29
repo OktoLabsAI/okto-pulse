@@ -2341,6 +2341,23 @@ async def _migrate_add_archive_columns() -> None:
                     pass
 
 
+async def _migrate_add_spec_edition() -> None:
+    """Add the human-facing Spec edition counter with a legacy-safe backfill."""
+
+    from sqlalchemy import text as sa_text
+
+    async with get_engine().begin() as conn:
+        try:
+            await conn.execute(
+                sa_text(
+                    "ALTER TABLE specs ADD COLUMN "
+                    "edition INTEGER DEFAULT 1 NOT NULL"
+                )
+            )
+        except Exception:
+            pass
+
+
 async def _migrate_add_spec_validation_columns() -> None:
     """Add spec validation columns: skip_contract_coverage, skip_qualitative_validation, validation_threshold, evaluations."""
     from sqlalchemy import text as sa_text
@@ -5009,6 +5026,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_decisions_columns": _migrate_add_decisions_columns,
     "_migrate_decisions_default_false": _migrate_decisions_default_false,
     "_migrate_add_archive_columns": _migrate_add_archive_columns,
+    "_migrate_add_spec_edition": _migrate_add_spec_edition,
     "_migrate_add_spec_validation_columns": _migrate_add_spec_validation_columns,
     "_migrate_add_ir_or_columns": _migrate_add_ir_or_columns,
     "_migrate_add_spec_validation_gate_columns": _migrate_add_spec_validation_gate_columns,

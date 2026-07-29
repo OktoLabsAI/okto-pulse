@@ -94,6 +94,8 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
      "Backfill decisions default to false."),
     ("_migrate_add_archive_columns", "pre_create_all", False,
      "Add archive columns."),
+    ("_migrate_add_spec_edition", "pre_create_all", False,
+     "Add and backfill the human-facing Spec edition counter."),
     ("_migrate_add_spec_validation_columns", "pre_create_all", False,
      "Add spec-validation columns."),
     ("_migrate_add_ir_or_columns", "pre_create_all", False,

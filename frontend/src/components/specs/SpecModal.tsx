@@ -91,6 +91,7 @@ import { RefinementModal } from '@/components/refinements/RefinementModal';
 import { EditableField } from '@/components/shared/EditableField';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 import { ActivityHistoryList } from '@/components/shared/ActivityHistoryList';
+import { SpecEditionLabel } from './SpecEditionLabel';
 import { ArchitectureTab } from '@/components/architecture';
 import {
   getAcceptanceCriterionLabel,
@@ -848,7 +849,16 @@ function HistoryTab({ specId }: { specId: string }) {
     } catch { /* ignore */ } finally { setLoading(false); }
   };
 
-  return <ActivityHistoryList entries={entries} loading={loading} />;
+  return (
+    <ActivityHistoryList
+      entries={entries}
+      loading={loading}
+      versionLabel={(version) => ({
+        text: `r${version}`,
+        title: `Technical revision r${version}`,
+      })}
+    />
+  );
 }
 
 /* ============================================================
@@ -1882,7 +1892,11 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               {SPEC_STATUS_LABELS[spec.status]}
             </span>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{spec.title}</h2>
-            <span className="text-xs text-gray-400 shrink-0">v{spec.version}</span>
+            <SpecEditionLabel
+              edition={spec.edition}
+              technicalRevision={spec.version}
+              className="text-xs text-gray-400 shrink-0"
+            />
           </div>
           <div className="flex items-center gap-1">
             <button

@@ -2,6 +2,7 @@ import { BookOpen, FileText, Layers } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
+import { SpecEditionLabel } from '@/components/specs/SpecEditionLabel';
 import {
   SPEC_STATUS_LABELS,
   STORY_STATUS_LABELS,
@@ -182,7 +183,11 @@ function SpecReference({
         <span className={`rounded px-1.5 py-0.5 text-xs ${SPEC_STATUS_COLORS[spec.status] || ''}`}>
           {SPEC_STATUS_LABELS[spec.status]}
         </span>
-        <span className="text-[10px] text-gray-400">v{spec.version}</span>
+        <SpecEditionLabel
+          edition={spec.edition}
+          technicalRevision={spec.version}
+          className="text-[10px] text-gray-400"
+        />
       </div>
     </>
   );

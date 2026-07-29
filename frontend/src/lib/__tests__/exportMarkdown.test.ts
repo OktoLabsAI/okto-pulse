@@ -206,8 +206,8 @@ describe('exportMarkdown linked criteria resolution', () => {
 
 describe('exportMarkdown markdown download filenames', () => {
   it('builds deterministic sanitized filenames for specs tasks tests and bugs', () => {
-    expect(markdownFilenameForSpec({ title: 'Árvore / Billing?', version: 12 } as any))
-      .toBe('spec_arvore-billing_v12.md');
+    expect(markdownFilenameForSpec({ title: 'Árvore / Billing?', edition: 3 }))
+      .toBe('spec_arvore-billing_v3.md');
     expect(markdownFilenameForCard({ title: 'Run E2E: / KG?', card_type: 'normal' } as any))
       .toBe('task_run-e2e-kg.md');
     expect(markdownFilenameForCard({ title: 'Run E2E: / KG?', card_type: 'test' } as any))
@@ -895,6 +895,7 @@ describe('exportMarkdown complete spec export', () => {
     const md = exportSpec({
       title: 'Complete spec',
       status: 'review',
+      edition: 3,
       version: 7,
       labels: ['export'],
       description: 'Full description.',
@@ -1027,6 +1028,8 @@ describe('exportMarkdown complete spec export', () => {
       expect(md).toContain(heading);
     }
     expect(md).toContain('TR1 body');
+    expect(md).toContain('| **Edition** | v3 |');
+    expect(md).toContain('| **Technical revision** | r7 |');
     expect(md).toContain('- FR1 body (fr-1)');
     expect(md).toContain('- Business rule (br-1)');
     expect(md).toContain('- GET /export (api-1)');

@@ -76,6 +76,7 @@ const spec: Spec = {
   architecture_designs: [],
   skip_test_coverage: false,
   status: 'draft',
+  edition: 2,
   version: 3,
   assignee_id: null,
   created_by: 'user-1',
@@ -136,13 +137,19 @@ describe('SpecModal Activity tab', () => {
     );
 
     await screen.findByText(spec.title);
+    expect(
+      screen.getByLabelText('Edition v2; technical revision r3'),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Activity' }));
 
     await waitFor(() => expect(apiMock.listSpecHistory).toHaveBeenCalledWith(spec.id));
     const actionBadge = await screen.findByText('Updated');
     expect(screen.getByText(historyEntry.summary!)).toBeInTheDocument();
     expect(screen.getByText(historyEntry.actor_name)).toBeInTheDocument();
-    expect(screen.getByText('v12')).toBeInTheDocument();
+    expect(screen.getByText('r12')).toHaveAttribute(
+      'title',
+      'Technical revision r12',
+    );
 
     const entryToggle = actionBadge.closest('button');
     expect(entryToggle).not.toBeNull();

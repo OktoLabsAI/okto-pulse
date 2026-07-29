@@ -275,7 +275,7 @@ export function SpecChecklistPanel({
             Curated Spec Checklist
           </h4>
           <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-            Immutable {template.version} · Spec v{state.subject.spec_version} ·
+            Immutable {template.version} · Spec revision r{state.subject.spec_version} ·
             binding v{state.binding.version}
           </p>
         </div>
@@ -476,7 +476,7 @@ export function SpecChecklistPanel({
       {execution && (
         <div className="space-y-3" data-testid="checklist-execution-form">
           <div className="rounded bg-violet-50 px-3 py-2 text-[10px] text-violet-700 dark:bg-violet-900/20 dark:text-violet-200">
-            Execution {execution.execution_id} is frozen to Spec v
+            Execution {execution.execution_id} is frozen to Spec revision r
             {state.subject.spec_version}. Submit all 10 ordered results together.
           </div>
           {template.items.map((item, index) => {

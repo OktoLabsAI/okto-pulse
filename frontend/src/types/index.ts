@@ -1722,6 +1722,7 @@ export interface SpecHistoryEntry {
   actor_name: string;
   changes: SpecHistoryChange[] | null;
   summary: string | null;
+  /** Technical revision captured by this history entry, not the human edition. */
   version: number | null;
   created_at: string;
 }
@@ -1824,6 +1825,9 @@ export interface Spec {
   cancelled_at?: string | null;
   cancelled_by?: string | null;
   status: SpecStatus;
+  /** Human-facing lifecycle counter; changes only when the Spec re-enters draft. */
+  edition: number;
+  /** Internal technical revision used for CAS, receipts, and currentness. */
   version: number;
   assignee_id: string | null;
   created_by: string;
@@ -1846,6 +1850,9 @@ export interface SpecSummary {
   title: string;
   description: string | null;
   status: SpecStatus;
+  /** Human-facing lifecycle counter; changes only when the Spec re-enters draft. */
+  edition: number;
+  /** Internal technical revision used for CAS, receipts, and currentness. */
   version: number;
   assignee_id: string | null;
   created_by: string;

@@ -118,6 +118,7 @@ _SPEC_FIELDS = (
     "cancelled_at",
     "cancelled_by",
     "status",
+    "edition",
     "version",
     "assignee_id",
     "created_by",

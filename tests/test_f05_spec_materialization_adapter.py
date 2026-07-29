@@ -54,6 +54,7 @@ async def test_community_materialization_adapter_is_durable_and_idempotent(
                     functional_requirements=["FR one"],
                     technical_requirements=["TR one"],
                     acceptance_criteria=["AC one"],
+                    edition=4,
                 )
             )
             await session.commit()
@@ -89,6 +90,7 @@ async def test_community_materialization_adapter_is_durable_and_idempotent(
         assert second["changed"] == 0
         assert second["skipped"] == 1
         assert spec.version == 2
+        assert spec.edition == 4
         assert spec.functional_requirements[0]["id"].startswith("fr_")
         assert spec.technical_requirements[0]["id"].startswith("tr_")
         assert spec.acceptance_criteria[0]["id"].startswith("ac_")

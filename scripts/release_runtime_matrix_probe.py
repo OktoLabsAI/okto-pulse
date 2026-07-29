@@ -307,12 +307,12 @@ def _assert_upgrade_sentinel(path: Path, fixture: dict[str, Any]) -> None:
             (fixture["sentinel_board_id"],),
         ).fetchone()
         spec = connection.execute(
-            "SELECT title, status, version FROM specs WHERE id=?",
+            "SELECT title, status, edition, version FROM specs WHERE id=?",
             (fixture["sentinel_spec_id"],),
         ).fetchone()
     if board != ("Release upgrade sentinel",):
         raise RuntimeError(f"upgrade board sentinel drifted: {board!r}")
-    if spec != ("Release upgrade sentinel", "draft", 1):
+    if spec != ("Release upgrade sentinel", "draft", 1, 1):
         raise RuntimeError(f"upgrade spec sentinel drifted: {spec!r}")
 
 

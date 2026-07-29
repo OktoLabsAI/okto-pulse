@@ -35,6 +35,7 @@ import { QualitySummaryBadges } from '@/components/quality';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
 import { usePersistedPagination } from '@/hooks/usePersistedPagination';
+import { SpecEditionLabel } from './SpecEditionLabel';
 
 interface SpecsPanelProps {
   boardId: string;
@@ -383,7 +384,11 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
                         {STATUS_ICON[spec.status]}
                         {SPEC_STATUS_LABELS[spec.status]}
                       </span>
-                      <span className="text-xs text-gray-400">v{spec.version}</span>
+                      <SpecEditionLabel
+                        edition={spec.edition}
+                        technicalRevision={spec.version}
+                        className="text-xs text-gray-400"
+                      />
                       <CognitivePendingBadge
                         badge={cognitiveBadges[`spec:${spec.id}`]}
                       />

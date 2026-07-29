@@ -85,6 +85,7 @@ function ideationWithReferences(): Ideation {
         title: 'Direct checkout spec',
         description: 'Derived directly from the ideation',
         status: 'approved',
+        edition: 2,
         version: 2,
         assignee_id: null,
         created_by: 'agent-1',
@@ -100,6 +101,7 @@ function ideationWithReferences(): Ideation {
         title: 'Spec derived through refinement',
         description: 'Must not be duplicated in direct specs',
         status: 'draft',
+        edition: 1,
         version: 1,
         assignee_id: null,
         created_by: 'agent-1',
@@ -125,6 +127,11 @@ describe('IdeationReferencesPanel', () => {
     expect(within(screen.getByTestId('ideation-reference-refinements')).getByText('Checkout refinement')).toBeInTheDocument();
     const directSpecs = screen.getByTestId('ideation-reference-specs');
     expect(within(directSpecs).getByText('Direct checkout spec')).toBeInTheDocument();
+    expect(
+      within(directSpecs).getByLabelText(
+        'Edition v2; technical revision r2',
+      ),
+    ).toBeInTheDocument();
     expect(within(directSpecs).queryByText('Spec derived through refinement')).not.toBeInTheDocument();
   });
 

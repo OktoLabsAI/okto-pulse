@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
+import { SpecEditionLabel } from '@/components/specs/SpecEditionLabel';
 import {
   AccessibleTabList,
   AccessibleTabPanel,
@@ -70,9 +71,11 @@ function SpecReference({
       >
         {SPEC_STATUS_LABELS[spec.status]}
       </span>
-      <span className="shrink-0 text-[10px] text-gray-400">
-        v{spec.version}
-      </span>
+      <SpecEditionLabel
+        edition={spec.edition}
+        technicalRevision={spec.version}
+        className="shrink-0 text-[10px] text-gray-400"
+      />
       {spec.archived && (
         <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-200">
           Archived

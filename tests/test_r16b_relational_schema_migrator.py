@@ -144,13 +144,13 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 47 = the historical 44 steps plus the SK-A Refinement ambiguity-skip
-    # column, SK-A/C7 quality-assessment persistence schema, and the curated
-    # Spec checklist mode on default-board templates.
-    assert len(migrate_names) == 47, (
-        f"expected 47 _migrate_*, found {len(migrate_names)}"
+    # 48 = the historical 44 steps plus the SK-A Refinement ambiguity-skip
+    # column, SK-A/C7 quality-assessment persistence schema, the curated Spec
+    # checklist mode, and the human-facing Spec edition counter.
+    assert len(migrate_names) == 48, (
+        f"expected 48 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 47
+    assert len(ledger_migrate_ids) == 48
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]
@@ -229,6 +229,74 @@ def test_legacy_default_template_table_gains_nullable_checklist_mode(
     columns, mode = asyncio.run(drive())
     assert "spec_checklist_mode" in columns
     assert mode is None
+
+
+def test_legacy_specs_gain_backfilled_non_null_edition(
+    tmp_path,
+    _isolate_engine,
+):
+    async def drive():
+        from sqlalchemy import text
+
+        _db_mod.create_database(
+            f"sqlite+aiosqlite:///{tmp_path / 'legacy-spec-edition.db'}"
+        )
+        engine = _db_mod.get_engine()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE TABLE specs ("
+                    "id VARCHAR(36) PRIMARY KEY, "
+                    "title VARCHAR(500) NOT NULL, "
+                    "version INTEGER NOT NULL"
+                    ")"
+                )
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO specs (id, title, version) "
+                    "VALUES ('legacy', 'Legacy spec', 321)"
+                )
+            )
+
+        await _steps_mod._migrate_add_spec_edition()
+        await _steps_mod._migrate_add_spec_edition()
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO specs (id, title, version) "
+                    "VALUES ('new-default', 'Defaulted edition', 1)"
+                )
+            )
+
+        async with engine.connect() as connection:
+            columns = {
+                row[1]: row
+                for row in (
+                    await connection.execute(text("PRAGMA table_info(specs)"))
+                ).all()
+            }
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT edition, version FROM specs WHERE id = 'legacy'"
+                    )
+                )
+            ).one()
+            defaulted_edition = await connection.scalar(
+                text(
+                    "SELECT edition FROM specs WHERE id = 'new-default'"
+                )
+            )
+        await engine.dispose()
+        return columns, row, defaulted_edition
+
+    columns, row, defaulted_edition = asyncio.run(drive())
+    assert columns["edition"][3] == 1  # PRAGMA notnull
+    assert row.edition == 1
+    assert row.version == 321
+    assert defaulted_edition == 1
 
 
 def test_ts_7aacc71a_destructive_steps_are_explicitly_allowlisted():

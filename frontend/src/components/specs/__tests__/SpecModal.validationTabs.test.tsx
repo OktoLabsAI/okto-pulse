@@ -110,6 +110,7 @@ const baseSpec: Spec = {
   architecture_designs: [],
   skip_test_coverage: false,
   status: 'draft',
+  edition: 1,
   version: 4,
   assignee_id: null,
   created_by: 'user-1',

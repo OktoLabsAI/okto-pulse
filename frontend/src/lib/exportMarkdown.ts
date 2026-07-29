@@ -330,8 +330,8 @@ export function sanitizeMarkdownFilename(filename: string, fallback = 'export.md
   return `${withoutExtension}.md`;
 }
 
-export function markdownFilenameForSpec(spec: Pick<Spec, 'title' | 'version'>): string {
-  return sanitizeMarkdownFilename(`spec_${safeSlug(spec.title)}_v${spec.version ?? 1}.md`);
+export function markdownFilenameForSpec(spec: Pick<Spec, 'title' | 'edition'>): string {
+  return sanitizeMarkdownFilename(`spec_${safeSlug(spec.title)}_v${spec.edition}.md`);
 }
 
 export function markdownFilenameForCard(card: Pick<Card, 'title' | 'card_type'>): string {
@@ -2039,7 +2039,7 @@ export function exportSprint(sprint: any, parentSpec: any): string {
   md += metaTable([
     ['Status', sprint.status],
     ['Version', `v${sprint.version}`],
-    ['Spec Version', `v${sprint.spec_version}`],
+    ['Spec technical revision', `r${sprint.spec_version}`],
     ['Spec', parentSpec?.title || sprint.spec_id || 'N/A'],
     ...(sprint.start_date ? [['Start Date', sprint.start_date] as [string, string]] : []),
     ...(sprint.end_date ? [['End Date', sprint.end_date] as [string, string]] : []),
@@ -2119,7 +2119,8 @@ export function exportSpec(spec: Spec): string {
 
   md += metaTable([
     ['Status', spec.status],
-    ['Version', `v${spec.version}`],
+    ['Edition', `v${spec.edition}`],
+    ['Technical revision', `r${spec.version}`],
     ['Assignee', spec.assignee_id || ''],
     ['Created', fmtDate(spec.created_at)],
     ['Updated', fmtDate(spec.updated_at)],

@@ -424,8 +424,8 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
               )}
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
-                  <span className="text-xs text-gray-500">Spec Version</span>
-                  <p className="font-medium text-gray-900 dark:text-white">v{sprint.spec_version}</p>
+                  <span className="text-xs text-gray-500">Spec revision</span>
+                  <p className="font-medium text-gray-900 dark:text-white">r{sprint.spec_version}</p>
                 </div>
                 <div>
                   <span className="text-xs text-gray-500">Sprint Version</span>

@@ -24,6 +24,7 @@ function spec(
     title: 'Derived spec',
     description: null,
     status: 'approved',
+    edition: 1,
     version: 4,
     assignee_id: null,
     created_by: 'agent-1',
@@ -52,6 +53,7 @@ describe('RefinementToSummary', () => {
           spec({
             title: 'Validated spec',
             status: 'validated',
+            edition: 2,
             version: 8,
           }),
         ]}
@@ -62,7 +64,10 @@ describe('RefinementToSummary', () => {
       name: 'Open spec Validated spec',
     });
     expect(validated).toHaveTextContent('Validated');
-    expect(validated).toHaveTextContent('v8');
+    expect(validated).toHaveTextContent('v2');
+    expect(
+      screen.getByLabelText('Edition v2; technical revision r8'),
+    ).toBeInTheDocument();
     expect(screen.getByText('Validated')).toHaveClass('bg-purple-100');
     fireEvent.click(validated);
     expect(pushMock).toHaveBeenCalledWith({

@@ -198,6 +198,12 @@ async def _build_engine(path: Path) -> AsyncEngine:
         )
         await conn.execute(
             text(
+                "UPDATE specs SET edition = 3, version = 42 "
+                "WHERE id = 'p00'"
+            )
+        )
+        await conn.execute(
+            text(
                 "INSERT INTO sprints "
                 "(id, spec_id, board_id, title, spec_version, status, lane_type, "
                 "version, created_by, archived, updated_at) VALUES "
@@ -442,6 +448,20 @@ def test_consumer_search_is_applied_before_the_window(
         assert len(statements) == 7, statements
     else:
         assert 3 <= len(statements) <= 6, statements
+
+
+def test_spec_page_projects_human_edition_and_technical_revision(
+    client: TestClient,
+) -> None:
+    response = client.get(
+        "/api/v1/boards/b1/specs?offset=0&limit=25&search=spec%200"
+    )
+
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["id"] == "p00"
+    assert item["edition"] == 3
+    assert item["version"] == 42
 
 
 def test_ideation_derivation_pending_is_server_side_and_null_safe(

@@ -491,6 +491,7 @@ async def list_specs(
                         "title",
                         "description",
                         "status",
+                        "edition",
                         "version",
                         "assignee_id",
                         "created_by",
