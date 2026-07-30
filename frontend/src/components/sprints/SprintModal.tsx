@@ -19,6 +19,7 @@ import {
   AccessibleTabList,
   AccessibleTabPanel,
 } from '@/components/shared/AccessibleTabs';
+import { HorizontalOverflowNav } from '@/components/shared/HorizontalOverflowNav';
 import {
   PolicyCompliancePanel,
   PolicyComplianceTransitionPreview,
@@ -414,7 +415,10 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
         </div>
 
         {/* Tabs */}
-        <div className="px-6 pt-3 flex gap-1 border-b border-gray-200 dark:border-gray-700 overflow-x-auto">
+        <HorizontalOverflowNav
+          controlsLabel="sprint sections"
+          className="px-6 pt-3 flex gap-1 border-b border-gray-200 dark:border-gray-700 overflow-x-auto"
+        >
           {tabs.map(tab => (
             <button
               key={tab.id}
@@ -437,7 +441,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
               )}
             </button>
           ))}
-        </div>
+        </HorizontalOverflowNav>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">

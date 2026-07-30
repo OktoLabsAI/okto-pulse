@@ -5,7 +5,7 @@
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { showErrorToast } from '@/lib/toastError';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
@@ -47,7 +47,7 @@ export function CreateBoardModal({ isOpen, onClose }: CreateBoardModalProps) {
       setDescription('');
       onClose();
     } catch (err) {
-      toast.error(getErrorMessage(err));
+      showErrorToast(err, 'Failed to create board');
     } finally {
       setIsLoading(false);
     }

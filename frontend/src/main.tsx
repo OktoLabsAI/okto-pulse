@@ -1,6 +1,5 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Toaster } from 'react-hot-toast';
 import { authAdapter, adapterReady } from '@/adapters/auth';
 import App from './App';
 import './index.css';
@@ -16,7 +15,6 @@ function Root() {
     <AuthProvider>
       <ApiProvider onAuthFailure={handleAuthFailure}>
         <App />
-        <Toaster position="top-right" containerStyle={{ zIndex: 20000 }} />
       </ApiProvider>
     </AuthProvider>
   );

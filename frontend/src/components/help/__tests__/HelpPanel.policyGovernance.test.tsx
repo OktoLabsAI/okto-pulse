@@ -54,6 +54,21 @@ describe('HelpPanel Policy Governance guide', () => {
       /Only a structured policy\/v1 rule with explicit target entity types is executable/i,
     );
     expect(dialog).toHaveTextContent(
+      /This context-only form is valid/i,
+    );
+    expect(dialog).toHaveTextContent(
+      /Enforcement belongs to each rule/i,
+    );
+    expect(dialog).toHaveTextContent(
+      /Is present and Is not present do not need a Value/i,
+    );
+    expect(dialog).toHaveTextContent(
+      /Policy class records governance intent/i,
+    );
+    expect(dialog).toHaveTextContent(
+      /They do not invoke a specialized coverage calculator, permission check, reviewer-identity check, or KG lineage check/i,
+    );
+    expect(dialog).toHaveTextContent(
       /An under-bump is rejected before a revision is created/i,
     );
     expect(dialog).toHaveTextContent(/Ready with waivers/i);
@@ -67,6 +82,34 @@ describe('HelpPanel Policy Governance guide', () => {
     expect(
       screen.getByText('okto-pulse://reference/policy-compliance'),
     ).toBeInTheDocument();
+  });
+
+  it('opens the dedicated Fact catalog with configuration guidance and edge cases', () => {
+    render(
+      <HelpPanel
+        initialSectionId="policy-facts"
+        onClose={vi.fn()}
+      />,
+    );
+
+    const dialog = screen.getByRole('dialog', { name: 'Help Guide' });
+    expect(screen.getByRole('heading', {
+      name: 'Policy Facts — Configure deterministic conditions',
+    })).toBeInTheDocument();
+    expect(dialog).toHaveTextContent(
+      /A Fact is a typed, server-owned field from the entity snapshot/i,
+    );
+    expect(dialog).toHaveTextContent(
+      /Conditions decide what those entities must satisfy for the rule to pass/i,
+    );
+    expect(dialog).toHaveTextContent(
+      /Is present only tests whether the field exists; it does not mean true/i,
+    );
+    expect(dialog).toHaveTextContent(/Acceptance criteria coverage/i);
+    expect(dialog).toHaveTextContent(/validation_unavailable/i);
+    expect(dialog).toHaveTextContent(
+      /Evidence count means current, authenticated scenario evidence, not a count of attachments/i,
+    );
   });
 
   it('stacks above an opener dialog and restores accessibility, focus, and Escape ownership', () => {

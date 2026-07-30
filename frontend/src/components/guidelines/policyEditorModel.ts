@@ -19,6 +19,109 @@ export const POLICY_ENTITY_TYPES: readonly PolicyEntityType[] = [
 
 export const POLICY_PREDICATE_CATALOG_VERSION = 'policy/v1';
 
+export const PROTECTED_POLICY_CLASSES = [
+  'coverage',
+  'permissions',
+  'reviewer_separation',
+  'lineage',
+] as const;
+
+export type ProtectedPolicyClass = (typeof PROTECTED_POLICY_CLASSES)[number];
+
+export interface PolicyClassOption {
+  value: 'standard' | ProtectedPolicyClass;
+  label: string;
+  description: string;
+  effect: string;
+  whenToUse: string;
+  waivability: string;
+  protected: boolean;
+}
+
+export const POLICY_CLASS_BEHAVIOR_NOTE =
+  'Policy class records governance intent. Protected classes only make findings non-waivable: they do not run specialized coverage, permission, reviewer-separation, or lineage logic. Policy class never makes a rule blocking (Enforcement controls that) and never changes its Facts or operators.';
+
+export const POLICY_CLASS_OPTIONS: readonly PolicyClassOption[] = [
+  {
+    value: 'standard',
+    label: 'Standard',
+    description:
+      'A general-purpose policy. It can be advisory or blocking and may be waivable.',
+    effect:
+      'Records general intent without a protected-class waiver restriction. The selected conditions and Enforcement define all executable behavior.',
+    whenToUse:
+      'Use for ordinary delivery, quality, or process rules that do not belong to a protected governance category.',
+    waivability: 'May be waivable when Waivable is enabled.',
+    protected: false,
+  },
+  {
+    value: 'coverage',
+    label: 'Coverage',
+    description:
+      'Labels a rule as coverage governance and makes its findings non-waivable.',
+    effect:
+      'Records coverage intent in policy results and forces non-waivable findings. It adds no coverage calculation or check.',
+    whenToUse:
+      'Choose this label only when the configured Facts and conditions already express the required delivery-coverage threshold.',
+    waivability: 'Never waivable.',
+    protected: true,
+  },
+  {
+    value: 'permissions',
+    label: 'Permissions',
+    description:
+      'Labels a rule as permissions governance and makes its findings non-waivable.',
+    effect:
+      'Records permissions intent in policy results and forces non-waivable findings. It runs no ACL check and grants or revokes nothing.',
+    whenToUse:
+      'Choose this label only when the configured Facts already express the access boundary. policy/v1 currently has no direct ACL or capability Fact.',
+    waivability: 'Never waivable.',
+    protected: true,
+  },
+  {
+    value: 'reviewer_separation',
+    label: 'Reviewer separation',
+    description:
+      'Labels a rule as reviewer-separation governance and makes its findings non-waivable.',
+    effect:
+      'Records separation-of-duties intent in policy results and forces non-waivable findings. It performs no identity or reviewer lookup.',
+    whenToUse:
+      'Choose this label only when the configured Facts already prove independent review. policy/v1 currently has no author or reviewer identity Fact.',
+    waivability: 'Never waivable.',
+    protected: true,
+  },
+  {
+    value: 'lineage',
+    label: 'Lineage',
+    description:
+      'Labels a rule as lineage governance and makes its findings non-waivable.',
+    effect:
+      'Records lineage intent in policy results and forces non-waivable findings. It performs no KG traversal and creates no links.',
+    whenToUse:
+      'Use with available link or evidence-count Facts. policy/v1 has no direct KG traversal Fact.',
+    waivability: 'Never waivable.',
+    protected: true,
+  },
+] as const;
+
+export function isProtectedPolicyClass(value: string): boolean {
+  return PROTECTED_POLICY_CLASSES.includes(
+    value.trim().toLowerCase() as ProtectedPolicyClass,
+  );
+}
+
+export function isKnownPolicyClass(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return POLICY_CLASS_OPTIONS.some((option) => option.value === normalized);
+}
+
+export function policyClassDescription(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  return POLICY_CLASS_OPTIONS.find((option) => option.value === normalized)
+    ?.description
+    ?? 'Legacy/custom classification retained for compatibility. Choose a supported class to normalize it.';
+}
+
 export type PolicyPredicateOperator =
   | 'exists'
   | 'not_exists'
@@ -39,17 +142,33 @@ export type PolicyPredicateOperator =
   | 'contains'
   | 'not_contains';
 
-type PolicyFactKind = 'boolean' | 'enum' | 'integer' | 'number' | 'string_set';
+export type PolicyFactKind =
+  | 'boolean'
+  | 'enum'
+  | 'integer'
+  | 'number'
+  | 'string_set';
 
 export interface PolicyFactOption {
   code: string;
   label: string;
   kind: PolicyFactKind;
   targets: readonly PolicyEntityType[] | 'all';
+  description: string;
+  valueGuidance: string;
+  example: string;
   allowedValues?: readonly string[];
   minimum?: number;
   maximum?: number;
 }
+
+export const POLICY_FACT_KIND_LABELS: Readonly<Record<PolicyFactKind, string>> = {
+  boolean: 'True / false',
+  enum: 'Named value',
+  integer: 'Whole number',
+  number: 'Number',
+  string_set: 'Set of text values',
+};
 
 const STATUS_VALUES: Readonly<Record<PolicyEntityType, readonly string[]>> = {
   ideation: ['draft', 'review', 'approved', 'evaluating', 'done', 'cancelled'],
@@ -76,23 +195,50 @@ const STATUS_VALUES: Readonly<Record<PolicyEntityType, readonly string[]>> = {
   test_scenario: ['draft', 'ready', 'automated', 'passed', 'failed'],
 };
 
-const COMMON_FACTS: readonly PolicyFactOption[] = [
-  { code: 'status', label: 'Status', kind: 'enum', targets: 'all' },
-  { code: 'labels', label: 'Labels', kind: 'string_set', targets: 'all' },
+export const POLICY_FACT_CATALOG: readonly PolicyFactOption[] = [
+  {
+    code: 'status',
+    label: 'Status',
+    kind: 'enum',
+    targets: 'all',
+    description:
+      'The entity’s current lifecycle status. Available values are narrowed to the selected executable targets.',
+    valueGuidance:
+      'Choose a presence operator without a value, or compare with one of the statuses offered for every selected target.',
+    example: 'Status — Is present',
+  },
+  {
+    code: 'labels',
+    label: 'Labels',
+    kind: 'string_set',
+    targets: 'all',
+    description:
+      'The normalized labels currently assigned to the entity. The Fact is absent when the entity has no labels.',
+    valueGuidance:
+      'Use Contains or Does not contain for one label, a Count operator for the number of labels, or a presence operator without a value.',
+    example: 'Labels — Contains — security',
+  },
   {
     code: 'resource_gate_ready',
     label: 'Resource gate ready',
     kind: 'boolean',
     targets: 'all',
+    description:
+      'Whether the entity currently satisfies its resource-readiness gate. Sprint and test-scenario snapshots always expose false because those types do not support this gate.',
+    valueGuidance:
+      'Use Equals true to require readiness. Is present only checks that the field exists; it does not mean the gate is ready.',
+    example: 'Resource gate ready — Equals — true',
   },
-];
-
-const TARGET_FACTS: readonly PolicyFactOption[] = [
   {
     code: 'complexity',
     label: 'Complexity',
     kind: 'enum',
     targets: ['ideation'],
+    description:
+      'The complexity classification assigned to an ideation. The Fact is absent until complexity is defined.',
+    valueGuidance:
+      'Choose Equals/Does not equal for one level, or Is one of/Is none of with comma-separated levels.',
+    example: 'Complexity — Equals — large',
     allowedValues: ['small', 'medium', 'large'],
   },
   {
@@ -100,6 +246,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Open Q&A count',
     kind: 'integer',
     targets: ['ideation'],
+    description:
+      'The number of active ideation Q&A items that do not have an answer yet.',
+    valueGuidance:
+      'Compare the whole-number count with Equals, At least, At most, or another numeric operator.',
+    example: 'Open Q&A count — Equals — 0',
     minimum: 0,
   },
   {
@@ -107,14 +258,24 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Ambiguity score',
     kind: 'number',
     targets: ['ideation', 'refinement'],
+    description:
+      'The current ambiguity assessment score for the ideation or refinement, from 1 to 5. The fact is absent when no current assessment exists.',
+    valueGuidance:
+      'Compare with a number from 1 to 5. Lower thresholds are commonly expressed with Is at most.',
+    example: 'Ambiguity score — Is at most — 2',
     minimum: 1,
     maximum: 5,
   },
   {
     code: 'research_open_count',
-    label: 'Open research count',
+    label: 'Unresolved research decisions',
     kind: 'integer',
     targets: ['refinement'],
+    description:
+      'The number of research decisions in the refinement that are not resolved, including open, investigating, and deferred decisions.',
+    valueGuidance:
+      'Compare the whole-number count; use Equals 0 when all research decisions must be resolved.',
+    example: 'Unresolved research decisions — Equals — 0',
     minimum: 0,
   },
   {
@@ -122,6 +283,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Resolved research count',
     kind: 'integer',
     targets: ['refinement'],
+    description:
+      'The number of research decisions in the refinement that are resolved.',
+    valueGuidance:
+      'Compare the whole-number count with the minimum or exact amount of resolved research required.',
+    example: 'Resolved research count — Is at least — 1',
     minimum: 0,
   },
   {
@@ -129,6 +295,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Functional requirement count',
     kind: 'integer',
     targets: ['spec'],
+    description:
+      'The number of functional requirements currently defined in the spec.',
+    valueGuidance:
+      'Compare the whole-number count with the minimum or exact number required.',
+    example: 'Functional requirement count — Is at least — 1',
     minimum: 0,
   },
   {
@@ -136,6 +307,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Acceptance criterion count',
     kind: 'integer',
     targets: ['spec'],
+    description:
+      'The number of acceptance criteria currently defined in the spec.',
+    valueGuidance:
+      'Compare the whole-number count with the minimum or exact number required.',
+    example: 'Acceptance criterion count — Is at least — 1',
     minimum: 0,
   },
   {
@@ -143,13 +319,23 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Technical requirement count',
     kind: 'integer',
     targets: ['spec'],
+    description:
+      'The number of technical requirements currently defined in the spec.',
+    valueGuidance:
+      'Compare the whole-number count with the minimum or exact number required.',
+    example: 'Technical requirement count — Is at least — 1',
     minimum: 0,
   },
   {
     code: 'coverage_percent',
-    label: 'Coverage percent',
+    label: 'Acceptance criteria coverage (%)',
     kind: 'number',
     targets: ['spec'],
+    description:
+      'The spec’s current acceptance-criterion coverage percentage, from 0 to 100. It is 100 when the spec has no acceptance criteria.',
+    valueGuidance:
+      'Use Is at least for a minimum threshold. Add Acceptance criterion count > 0 when an empty spec must not pass.',
+    example: 'Acceptance criteria coverage (%) — Is at least — 80',
     minimum: 0,
     maximum: 100,
   },
@@ -158,12 +344,22 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Validation state',
     kind: 'enum',
     targets: ['spec'],
+    description:
+      'The outcome of the spec’s current validation, or a server-owned state such as not_validated or validation_unavailable.',
+    valueGuidance:
+      'Enter the exact server-owned outcome, such as success, failed, not_validated, or validation_unavailable. Values remain open because providers may add outcomes.',
+    example: 'Validation state — Equals — success',
   },
   {
     code: 'card_count',
     label: 'Card count',
     kind: 'integer',
     targets: ['sprint'],
+    description:
+      'The number of non-archived cards assigned to the sprint.',
+    valueGuidance:
+      'Compare the whole-number count with the minimum, maximum, or exact number required.',
+    example: 'Card count — Is at least — 1',
     minimum: 0,
   },
   {
@@ -171,6 +367,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Open card count',
     kind: 'integer',
     targets: ['sprint'],
+    description:
+      'The number of non-archived sprint cards whose status is neither done nor cancelled.',
+    valueGuidance:
+      'Compare the whole-number count; use Equals 0 when no unfinished cards may remain.',
+    example: 'Open card count — Equals — 0',
     minimum: 0,
   },
   {
@@ -178,6 +379,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Passed scenario count',
     kind: 'integer',
     targets: ['sprint'],
+    description:
+      'The number of test scenarios in the sprint scope whose current status is passed.',
+    valueGuidance:
+      'Compare the whole-number count with the minimum or exact number of passed scenarios required.',
+    example: 'Passed scenario count — Is at least — 1',
     minimum: 0,
   },
   {
@@ -185,6 +391,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Card type',
     kind: 'enum',
     targets: ['card'],
+    description:
+      'The card classification: normal work, bug, or test.',
+    valueGuidance:
+      'Choose Equals/Does not equal for one type, or Is one of/Is none of with comma-separated types.',
+    example: 'Card type — Equals — bug',
     allowedValues: ['normal', 'bug', 'test'],
   },
   {
@@ -192,6 +403,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Priority',
     kind: 'enum',
     targets: ['card'],
+    description:
+      'The priority currently assigned to the card.',
+    valueGuidance:
+      'Choose Equals/Does not equal for one priority, or Is one of/Is none of with comma-separated priorities.',
+    example: 'Priority — Is one of — critical, very_high',
     allowedValues: ['critical', 'very_high', 'high', 'medium', 'low', 'none'],
   },
   {
@@ -199,6 +415,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Open dependency count',
     kind: 'integer',
     targets: ['card'],
+    description:
+      'The number of upstream card dependencies that are neither done nor cancelled.',
+    valueGuidance:
+      'Compare the whole-number count; use Equals 0 when all dependencies must be resolved.',
+    example: 'Open dependency count — Equals — 0',
     minimum: 0,
   },
   {
@@ -206,6 +427,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Scenario type',
     kind: 'enum',
     targets: ['test_scenario'],
+    description:
+      'The test scenario classification. Negative covers invalid, prohibited, or denial paths that the system is expected to reject.',
+    valueGuidance:
+      'Choose Equals/Does not equal for one type, or Is one of/Is none of with comma-separated types.',
+    example: 'Scenario type — Equals — e2e',
     allowedValues: ['unit', 'integration', 'e2e', 'manual', 'negative'],
   },
   {
@@ -213,6 +439,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Linked test card count',
     kind: 'integer',
     targets: ['test_scenario'],
+    description:
+      'The number of non-archived test cards linked to the test scenario.',
+    valueGuidance:
+      'Compare the whole-number count with the minimum or exact number of linked test cards required.',
+    example: 'Linked test card count — Is at least — 1',
     minimum: 0,
   },
   {
@@ -220,6 +451,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Test scenario count',
     kind: 'integer',
     targets: ['spec', 'sprint', 'card'],
+    description:
+      'The number of test scenarios in scope for the selected spec, sprint, or card.',
+    valueGuidance:
+      'Compare the whole-number count with the minimum or exact number of scenarios required.',
+    example: 'Test scenario count — Is at least — 1',
     minimum: 0,
   },
   {
@@ -227,6 +463,11 @@ const TARGET_FACTS: readonly PolicyFactOption[] = [
     label: 'Evidence count',
     kind: 'integer',
     targets: ['card', 'test_scenario'],
+    description:
+      'The count of current, authenticated evidence. A test scenario contributes 0 or 1; a card sums that value across its linked scenarios.',
+    valueGuidance:
+      'Compare the whole-number count with the minimum or exact number of evidence records required.',
+    example: 'Evidence count — Is at least — 1',
     minimum: 0,
   },
 ];
@@ -267,6 +508,7 @@ export interface GuidelineRuleDraft {
   localId: string;
   ruleId: string;
   code: string;
+  originalCode: string | null;
   title: string;
   description: string;
   targetEntityTypes: PolicyEntityType[];
@@ -275,6 +517,7 @@ export interface GuidelineRuleDraft {
   operator: 'all' | 'any';
   waivable: boolean;
   policyClass: string;
+  originalPolicyClass: string | null;
 }
 
 let fallbackId = 0;
@@ -289,9 +532,9 @@ export function createPolicyClientId(prefix: string): string {
 export function factOptionsForTargets(
   targets: readonly PolicyEntityType[],
 ): PolicyFactOption[] {
-  const selectedTargets =
-    targets.length === 0 ? POLICY_ENTITY_TYPES : targets;
-  return [...COMMON_FACTS, ...TARGET_FACTS].filter(
+  if (targets.length === 0) return [];
+  const selectedTargets = targets;
+  return POLICY_FACT_CATALOG.filter(
     (fact) =>
       fact.targets === 'all'
       || selectedTargets.every((target) => fact.targets.includes(target)),
@@ -338,6 +581,43 @@ export function operatorsForFact(
 
 export function operatorNeedsValue(operator: PolicyPredicateOperator): boolean {
   return operator !== 'exists' && operator !== 'not_exists';
+}
+
+export const POLICY_OPERATOR_LABELS: Readonly<
+  Record<PolicyPredicateOperator, string>
+> = {
+  exists: 'Is present',
+  not_exists: 'Is not present',
+  eq: 'Equals',
+  ne: 'Does not equal',
+  in: 'Is one of',
+  not_in: 'Is none of',
+  gt: 'Is greater than',
+  gte: 'Is at least',
+  lt: 'Is less than',
+  lte: 'Is at most',
+  count_eq: 'Count equals',
+  count_ne: 'Count does not equal',
+  count_gt: 'Count is greater than',
+  count_gte: 'Count is at least',
+  count_lt: 'Count is less than',
+  count_lte: 'Count is at most',
+  contains: 'Contains',
+  not_contains: 'Does not contain',
+};
+
+export function suggestRuleKey(title: string): string {
+  const normalized = title
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!normalized) return '';
+  const withLetterPrefix = /^[a-z]/.test(normalized)
+    ? normalized
+    : `rule_${normalized}`;
+  return withLetterPrefix.slice(0, 200).replace(/_+$/g, '');
 }
 
 function factForRule(
@@ -414,12 +694,12 @@ function predicateInput(
 export function validateRuleDraft(rule: GuidelineRuleDraft): string | null {
   if (!rule.ruleId.trim()) return 'Rule ID is required.';
   if (rule.ruleId.trim().length > 64) return 'Rule ID cannot exceed 64 characters.';
-  if (!rule.code.trim()) return 'Rule code is required.';
+  if (!rule.code.trim()) return 'Rule key is required.';
   if (rule.code.trim().length > 200) {
-    return 'Rule code cannot exceed 200 characters.';
+    return 'Rule key cannot exceed 200 characters.';
   }
   if (!/^[A-Za-z][A-Za-z0-9_.:-]*$/.test(rule.code.trim())) {
-    return 'Rule code must start with a letter and use only letters, numbers, _, ., :, or -.';
+    return 'Rule key must start with a letter and use only letters, numbers, _, ., :, or -.';
   }
   if (!rule.title.trim()) return 'Rule title is required.';
   if (rule.title.trim().length > 500) {
@@ -429,15 +709,13 @@ export function validateRuleDraft(rule: GuidelineRuleDraft): string | null {
   if (rule.targetEntityTypes.length === 0) {
     return 'Select at least one executable target.';
   }
-  if (rule.predicates.length === 0) return 'Add at least one predicate.';
+  if (rule.predicates.length === 0) return 'Add at least one condition.';
   if (!rule.policyClass.trim()) return 'Policy class is required.';
   if (rule.policyClass.trim().length > 200) {
     return 'Policy class cannot exceed 200 characters.';
   }
   if (
-    ['coverage', 'permissions', 'reviewer_separation', 'lineage'].includes(
-      rule.policyClass.trim().toLowerCase(),
-    )
+    isProtectedPolicyClass(rule.policyClass)
     && rule.waivable
   ) {
     return `${rule.policyClass.trim()} is a protected non-waivable policy class.`;
@@ -540,7 +818,7 @@ export function validateRuleDrafts(
   }
   const ruleCodes = rules.map((rule) => rule.code.trim());
   if (new Set(ruleCodes).size !== ruleCodes.length) {
-    return 'Rule codes must be unique within a revision.';
+    return 'Rule keys must be unique within a revision.';
   }
   return null;
 }
@@ -586,6 +864,7 @@ export function guidelineRuleToDraft(rule: GuidelineRule): GuidelineRuleDraft {
     localId: createPolicyClientId('rule-draft'),
     ruleId: rule.rule_id,
     code: rule.code,
+    originalCode: rule.code,
     title: rule.title,
     description: rule.description,
     targetEntityTypes: [...rule.target_entity_types],
@@ -601,8 +880,11 @@ export function guidelineRuleToDraft(rule: GuidelineRule): GuidelineRuleDraft {
     }),
     enforcement: rule.enforcement,
     operator: rule.operator,
-    waivable: rule.waivable,
+    waivable: isProtectedPolicyClass(rule.policy_class)
+      ? false
+      : rule.waivable,
     policyClass: rule.policy_class,
+    originalPolicyClass: rule.policy_class,
   };
 }
 
@@ -611,6 +893,7 @@ export function newRuleDraft(): GuidelineRuleDraft {
     localId: createPolicyClientId('rule-draft'),
     ruleId: createPolicyClientId('rule'),
     code: '',
+    originalCode: null,
     title: '',
     description: '',
     targetEntityTypes: [],
@@ -627,6 +910,7 @@ export function newRuleDraft(): GuidelineRuleDraft {
     operator: 'all',
     waivable: false,
     policyClass: 'standard',
+    originalPolicyClass: null,
   };
 }
 

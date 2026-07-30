@@ -84,6 +84,90 @@ describe('AccessibleTabs', () => {
     expect(panel).toHaveAttribute('aria-labelledby', details.id);
   });
 
+  it('shows directional controls only for hidden tabs and keeps native scrolling', () => {
+    const onChanged = vi.fn();
+    render(<Harness onChanged={onChanged} />);
+
+    const list = screen.getByRole('tablist', { name: 'Entity sections' });
+    const tabs = screen.getAllByRole('tab');
+    const scrollTo = vi.fn();
+
+    Object.defineProperties(list, {
+      clientWidth: { configurable: true, value: 220 },
+      scrollWidth: { configurable: true, value: 600 },
+      scrollLeft: { configurable: true, writable: true, value: 0 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+    tabs.forEach((tab, index) => {
+      Object.defineProperties(tab, {
+        offsetLeft: { configurable: true, value: index * 100 },
+        offsetWidth: { configurable: true, value: 100 },
+      });
+    });
+
+    fireEvent(window, new Event('resize'));
+
+    expect(
+      screen.queryByRole('button', { name: 'Scroll Entity sections left' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Scroll Entity sections right' }),
+    );
+    expect(scrollTo).toHaveBeenCalledWith({ left: 22, behavior: 'smooth' });
+    expect(onChanged).not.toHaveBeenCalled();
+
+    Object.defineProperty(list, 'scrollLeft', {
+      configurable: true,
+      writable: true,
+      value: 120,
+    });
+    fireEvent.scroll(list);
+    expect(
+      screen.getByRole('button', { name: 'Scroll Entity sections left' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Scroll Entity sections right' }),
+    ).toBeInTheDocument();
+
+    Object.defineProperty(list, 'scrollLeft', {
+      configurable: true,
+      writable: true,
+      value: 380,
+    });
+    fireEvent.scroll(list);
+    expect(
+      screen.getByRole('button', { name: 'Scroll Entity sections left' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Scroll Entity sections right' }),
+    ).not.toBeInTheDocument();
+
+    const wheelEvent = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaX: 80,
+    });
+    list.dispatchEvent(wheelEvent);
+    expect(wheelEvent.defaultPrevented).toBe(false);
+    expect(list).toHaveClass('overflow-x-auto');
+  });
+
+  it('does not add directional controls when every horizontal tab is visible', () => {
+    render(<Harness />);
+
+    const list = screen.getByRole('tablist', { name: 'Entity sections' });
+    Object.defineProperties(list, {
+      clientWidth: { configurable: true, value: 600 },
+      scrollWidth: { configurable: true, value: 600 },
+      scrollLeft: { configurable: true, writable: true, value: 0 },
+    });
+    fireEvent(window, new Event('resize'));
+
+    expect(
+      screen.queryByRole('button', { name: /Scroll Entity sections/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it('uses manual activation: arrows move focus, Enter and Space activate', () => {
     const onChanged = vi.fn();
     render(<Harness onChanged={onChanged} />);
@@ -172,6 +256,9 @@ describe('AccessibleTabs', () => {
     const resources = screen.getByRole('tab', { name: /Resources\s*3/ });
 
     expect(list).toHaveAttribute('aria-orientation', 'vertical');
+    expect(
+      screen.queryByRole('button', { name: /Scroll Vertical sections/ }),
+    ).not.toBeInTheDocument();
     details.focus();
     fireEvent.keyDown(details, { key: 'ArrowDown' });
     expect(resources).toHaveFocus();

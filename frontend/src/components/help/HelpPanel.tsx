@@ -31,6 +31,12 @@ const WEB_URL = typeof window !== 'undefined' && (window as any).OKTO_PULSE_CONF
 import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Users, Bot, GitBranch, Settings, CheckCircle, ListChecks, Network, Play, RotateCcw, SkipForward, Undo2 } from 'lucide-react';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { useOptionalGuidedHelp, type GuidedHelpSurface, type GuidedHelpTourProgressStatus } from '@/components/guided-help';
+import {
+  POLICY_CLASS_BEHAVIOR_NOTE,
+  POLICY_CLASS_OPTIONS,
+  POLICY_FACT_CATALOG,
+  POLICY_FACT_KIND_LABELS,
+} from '@/components/guidelines/policyEditorModel';
 import pulseIcon from '@/assets/pulse-icon.svg';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import type { HelpSectionId } from './contextualHelp';
@@ -48,6 +54,99 @@ interface Section {
   icon: ReactNode;
   content: string;
 }
+
+const POLICY_TARGET_HELP_LABELS = {
+  ideation: 'Ideation',
+  refinement: 'Refinement',
+  spec: 'Spec',
+  sprint: 'Sprint',
+  card: 'Card',
+  test_scenario: 'Test scenario',
+} as const;
+
+function policyHelpCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+}
+
+function policyClassHelpMarkdown(): string {
+  const rows = POLICY_CLASS_OPTIONS.map((option) => (
+    `| **${option.label}** | ${policyHelpCell(option.effect)} | ${policyHelpCell(option.whenToUse)} | ${policyHelpCell(option.waivability)} |`
+  )).join('\n');
+
+  return `
+#### Policy class reference
+
+${POLICY_CLASS_BEHAVIOR_NOTE}
+
+| Class | Actual impact | Use when | Waivers |
+|-------|---------------|----------|---------|
+${rows}
+
+The four protected classes have the same runtime modifier: their findings are
+non-waivable. Their names distinguish the governance intent in audit evidence.
+They do not invoke a specialized coverage calculator, permission check,
+reviewer-identity check, or KG lineage check. Configure the real check with
+**Targets** and **Conditions**, then choose **Enforcement** separately.
+`;
+}
+
+function policyFactHelpMarkdown(): string {
+  const rows = POLICY_FACT_CATALOG.map((fact) => {
+    const targets = fact.targets === 'all'
+      ? 'All entity types'
+      : fact.targets
+        .map((target) => POLICY_TARGET_HELP_LABELS[target])
+        .join(', ');
+    return `| **${fact.label}** (\`${fact.code}\`) | ${targets} · ${POLICY_FACT_KIND_LABELS[fact.kind]} | ${policyHelpCell(fact.description)} ${policyHelpCell(fact.valueGuidance)} | \`${policyHelpCell(fact.example)}\` |`;
+  }).join('\n');
+
+  return `
+### What a Fact is
+
+A **Fact** is a typed, server-owned field from the entity snapshot evaluated at
+that moment. You configure what must be true; neither the user nor the agent
+supplies the observed Fact value. **Targets** decide which entities are
+evaluated. **Conditions** decide what those entities must satisfy for the rule
+to pass.
+
+When several targets are selected, the editor only offers Facts supported by
+all of them. Status choices are also narrowed to values shared by every
+selected target.
+
+| Fact type | How to configure it |
+|-----------|---------------------|
+| **Boolean** | Use **Equals true/false** to test its meaning. **Is present** only tests whether the field exists; it does not mean true. |
+| **Choice** | Compare one exact value, or use a comma-separated list with **Is one of / Is none of**. |
+| **Whole number / Number** | Compare an exact value or use greater-than / at-least / less-than / at-most thresholds. |
+| **Set of text values** | Test whether it contains a value, or compare the number of values with a Count operator. |
+| **Any type** | **Is present / Is not present** takes no Value. A missing Fact fails every other operator. |
+
+### Available Facts
+
+| Fact | Available for · Type | Meaning and configuration | Example |
+|------|----------------------|---------------------------|---------|
+${rows}
+
+Important edge cases:
+
+- Empty **Labels**, an unset **Complexity**, and a missing or stale
+  **Ambiguity score** may make the Fact absent.
+- **Resource gate ready** is always present. Use **Equals true**, not **Is
+  present**. Sprint and Test scenario currently expose false because they do
+  not have that gate.
+- **Acceptance criteria coverage** is 100 when a spec has no acceptance
+  criteria. Combine it with **Acceptance criterion count > 0** when empty
+  coverage must not pass.
+- **Validation state** is an open, server-owned value. Current common values
+  are \`not_validated\`, \`validation_unavailable\`, \`success\`, and
+  \`failed\`.
+- **Evidence count** means current, authenticated scenario evidence, not a
+  count of attachments.
+`;
+}
+
+const POLICY_CLASS_HELP_MARKDOWN = policyClassHelpMarkdown();
+const POLICY_FACT_HELP_MARKDOWN = policyFactHelpMarkdown();
 
 const surfaceLabels: Record<GuidedHelpSurface, string> = {
   board: 'Board',
@@ -940,14 +1039,16 @@ Guidelines are reusable documents that define standards, patterns, and conventio
 ### Types
 
 - **Board guidelines** — Specific to a single board
-- **Global guidelines** — Available across all boards, can be linked to any board
+- **Global guidelines** — Available across all boards and can be added to each
+  board through a reviewed impact step
 
 ### Creating guidelines
 
 Open **Guidelines** from the menu. The tabs you can see depend on your capabilities:
 
 1. **Board Guidelines** — Review current board guidelines and create inline guidelines
-2. **Global Catalog** — Create immutable revisions, preview impact, and explicitly adopt or unlink exact revisions
+2. **Global Catalog** — Create immutable revisions, add guidelines to the
+   current board, and manage exact adopted revisions
 3. **Waivers** — Request and review governed exceptions when your role permits it
 
 Guideline prose supports **Markdown**, Mermaid diagrams, and tags. Both global
@@ -991,17 +1092,47 @@ the system calculates the minimum semantic-version bump:
 An under-bump is rejected before a revision is created. Use **Retire** or
 **Supersede** instead of deleting governed history.
 
-### Exact pins, impact and adoption
+### Context and executable rules
+
+A guideline can contain prose only. This **context-only** form is valid and
+still helps people and agents without creating a policy gate. Select **Add
+executable rules** only when the guideline must be evaluated deterministically.
+
+Each executable rule defines:
+
+- **Policy class** — classifies the governance intent and controls whether a
+  finding may be waived; it does not make the rule blocking or perform a
+  specialized check
+- **Rule key** — a readable, stable audit key; the internal Rule ID remains
+  stable across revisions
+- **Targets** — the entity types where the rule applies
+- **Conditions** — target-aware Facts and operators that define what must be
+  true for the rule to pass; **Is present** and **Is not present** do not need
+  a Value
+- **Enforcement** — **Advisory** records findings without blocking, while
+  **Blocking** participates in supported transition gates
+
+${POLICY_CLASS_HELP_MARKDOWN}
+
+Changing the target can invalidate an existing condition. Resolve every
+highlighted invalid condition before publishing instead of allowing the editor
+to silently replace it.
+
+### Add to board, review impact and adopt
 
 Boards and Global Defaults pin an exact revision. A newer head is visible as an
 update, but is never adopted automatically.
 
-1. Preview impact for the intended revision, priority and enforcement.
-2. Inspect affected boards, subjects, targets and waivers.
-3. Adopt with the current receipt and binding revision.
-4. If authority changed, refresh and review a new preview.
+1. Select **Add to board** (or **Configure for this board** for an existing
+   binding).
+2. Review the human-readable summary of added, changed and removed rules,
+   affected targets and waivers.
+3. Confirm the exact revision and priority. Enforcement belongs to each rule;
+   there is no separate board-wide enforcement setting.
+4. If authority changed while the dialog was open, refresh and review a new
+   preview before confirming.
 
-Unlinking stops future application while preserving revision, binding,
+**Remove from board** stops future application while preserving revision, binding,
 Activity and KG lineage. Import uses a dry-run before commit and never
 overwrites a different revision with the same identity and version.
 
@@ -1072,6 +1203,20 @@ presets receive only their explicit matrix.
 AI agents should read the single canonical MCP protocol
 \`okto-pulse://reference/policy-compliance\` before authoring, adoption,
 evaluation, transition reliance or waiver operations.
+`,
+    },
+    {
+      id: 'policy-facts',
+      title: 'Policy Facts',
+      icon: <ListChecks size={16} />,
+      content: `
+## Policy Facts — Configure deterministic conditions
+
+Use this catalog while authoring executable guideline rules. It explains what
+each server-owned Fact measures, where it is available, which value shape to
+use, and a concrete condition example.
+
+${POLICY_FACT_HELP_MARKDOWN}
 `,
     },
     {

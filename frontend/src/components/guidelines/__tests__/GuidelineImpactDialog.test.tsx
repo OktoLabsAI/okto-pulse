@@ -284,7 +284,10 @@ describe('GuidelineImpactDialog', () => {
       'guideline-impact-contains-blocking',
     )).toBeInTheDocument();
     expect(screen.getByTestId('guideline-impact-help'))
-      .toHaveTextContent('Adoption guide');
+      .toHaveTextContent('Board guideline guide');
+    expect(
+      screen.queryByTestId('guideline-impact-enforcement'),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('guideline-impact-preview'));
 
@@ -383,7 +386,7 @@ describe('GuidelineImpactDialog', () => {
     expect(policyApiMock.getGuidelineRevision).not.toHaveBeenCalled();
     expect(policyApiMock.previewGuidelineImpact).not.toHaveBeenCalled();
     expect(screen.getByTestId('guideline-impact-help'))
-      .toHaveTextContent('Adoption guide');
+      .toHaveTextContent('Board guideline guide');
   });
 
   it('rejects malformed or mismatched receipts and keeps adoption disabled', async () => {
@@ -399,7 +402,7 @@ describe('GuidelineImpactDialog', () => {
     fireEvent.click(screen.getByTestId('guideline-impact-preview'));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'mismatched or malformed receipt',
+      'impact preview could not be verified',
     );
     expect(screen.getByTestId('guideline-impact-adopt')).toBeDisabled();
     expect(policyApiMock.listGuidelineImpactItems).not.toHaveBeenCalled();
@@ -418,7 +421,7 @@ describe('GuidelineImpactDialog', () => {
     fireEvent.click(screen.getByTestId('guideline-impact-preview'));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'latest guideline revision changed',
+      'newer guideline revision is now available',
     );
     expect(screen.getByTestId('guideline-impact-adopt')).toBeDisabled();
   });
@@ -442,6 +445,91 @@ describe('GuidelineImpactDialog', () => {
       )).not.toBeInTheDocument(),
     );
     expect(screen.getByTestId('guideline-impact-adopt')).toBeDisabled();
+  });
+
+  it('does not preview an unchanged context-only binding and opens the rules editor CTA', async () => {
+    const contextAuthority = authority();
+    contextAuthority.revision.rules = [];
+    policyApiMock.getGuidelineRevision.mockResolvedValue(contextAuthority);
+    const onAddExecutableRules = vi.fn();
+    renderDialog({
+      adoptedBinding: {
+        bindingId: 'binding-1',
+        bindingRevision: 1,
+        bindingState: 'active',
+        revisionId: 'revision-2',
+        semanticVersion: '2.0.0',
+        revisionDigest: digest('a'),
+      },
+      onAddExecutableRules,
+      autoPreview: true,
+    });
+
+    expect(
+      await screen.findByTestId('guideline-impact-no-changes'),
+    ).toHaveTextContent('provides context only');
+    expect(screen.getByTestId('guideline-impact-preview')).toBeDisabled();
+    expect(policyApiMock.previewGuidelineImpact).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('guideline-impact-add-rules'));
+    expect(onAddExecutableRules).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto-previews a new context-only binding with reserved advisory metadata', async () => {
+    const contextAuthority = authority();
+    contextAuthority.revision.rules = [];
+    policyApiMock.getGuidelineRevision.mockResolvedValue(contextAuthority);
+    const unboundReceipt: GuidelineImpactReceipt = {
+      ...receipt(),
+      expected_binding_revision: null,
+      expected_binding_state: null,
+      proposed_default_enforcement: 'advisory',
+      affected_entity_types: [],
+      items: [receipt().items[0]],
+      added_rule_ids: [],
+      changed_rule_ids: [],
+      removed_rule_ids: [],
+      from_revision_id: null,
+      from_semantic_version: null,
+      from_revision_digest: null,
+    };
+    policyApiMock.previewGuidelineImpact.mockResolvedValue({
+      receipt: unboundReceipt,
+    });
+    renderDialog({
+      adoptedBinding: undefined,
+      initialEnforcement: 'blocking',
+      autoPreview: true,
+    });
+
+    await waitFor(() => {
+      expect(policyApiMock.previewGuidelineImpact).toHaveBeenCalledWith(
+        'board-1',
+        'guideline-1',
+        expect.objectContaining({
+          proposed_default_enforcement: 'advisory',
+        }),
+        expect.any(AbortSignal),
+      );
+    });
+    expect(
+      await screen.findByTestId('guideline-impact-current-receipt'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('guideline-impact-adopt'))
+      .toHaveTextContent('Add to board');
+  });
+
+  it('keeps receipt identifiers hidden until technical details are expanded', async () => {
+    renderDialog();
+    await screen.findByText('All entities');
+    fireEvent.click(screen.getByTestId('guideline-impact-preview'));
+    await screen.findByTestId('guideline-impact-current-receipt');
+
+    expect(screen.queryByText(/Preview ID impact-1/)).not.toBeInTheDocument();
+    expect(screen.queryByText(`Digest ${digest('7')}`)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('guideline-impact-technical-toggle'));
+    expect(screen.getByText(/Preview ID impact-1/)).toBeInTheDocument();
+    expect(screen.getByText(`Digest ${digest('7')}`)).toBeInTheDocument();
   });
 
   it('reuses a preview idempotency key for retry and rotates it for explicit reload after conflict', async () => {
@@ -498,7 +586,8 @@ describe('GuidelineImpactDialog', () => {
     await waitFor(() =>
       expect(policyApiMock.previewGuidelineImpact).toHaveBeenCalledTimes(2),
     );
-    expect(await screen.findByText(/Receipt impact-2/)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('guideline-impact-technical-toggle'));
+    expect(await screen.findByText(/Preview ID impact-2/)).toBeInTheDocument();
     const refreshKey = policyApiMock.previewGuidelineImpact.mock.calls[1][2]
       .idempotency_key;
     expect(refreshKey).not.toBe(initialKey);
@@ -596,7 +685,7 @@ describe('GuidelineImpactDialog', () => {
     fireEvent.click(screen.getByTestId('guideline-impact-adopt'));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'mismatched payload',
+      'board update response could not be verified',
     );
     expect(onAdopted).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();

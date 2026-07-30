@@ -10,7 +10,9 @@ import {
   CheckCircle2,
   CircleOff,
   FileWarning,
+  ListChecks,
   Loader2,
+  Plus,
   RefreshCw,
   ShieldAlert,
   X,
@@ -86,6 +88,8 @@ export interface GuidelineImpactDialogProps {
   adoptedBinding?: AdoptedGuidelineBindingAuthority;
   initialPriority: number;
   initialEnforcement: GuidelineEnforcement;
+  autoPreview?: boolean;
+  onAddExecutableRules?: () => void;
   onClose: () => void;
   onAdopted: (
     response: GuidelineAdoptionResponse,
@@ -148,9 +152,6 @@ function ImpactItemRow({ item }: { item: GuidelineImpactPageItem }) {
           {item.item_kind === 'waiver' ? 'Waiver' : 'Related'}: {item.related_id}
         </p>
       )}
-      <p className="mt-2 break-all text-[10px] text-surface-500 dark:text-surface-400">
-        Evidence digest {item.details_digest}
-      </p>
     </li>
   );
 }
@@ -164,6 +165,8 @@ export function GuidelineImpactDialog({
   adoptedBinding,
   initialPriority,
   initialEnforcement,
+  autoPreview = false,
+  onAddExecutableRules,
   onClose,
   onAdopted,
 }: GuidelineImpactDialogProps) {
@@ -172,8 +175,13 @@ export function GuidelineImpactDialog({
   const [priorityInput, setPriorityInput] = useState(
     String(initialPriority),
   );
-  const [enforcement, setEnforcement] =
-    useState<GuidelineEnforcement>(initialEnforcement);
+  // Binding default enforcement is retained in the wire contract for
+  // backwards-compatible receipt currentness. Executable behavior comes from
+  // each rule, so the UI preserves an existing value and uses advisory for a
+  // new binding instead of presenting a misleading control.
+  const enforcement: GuidelineEnforcement = adoptedBinding
+    ? initialEnforcement
+    : 'advisory';
   const [revisionState, setRevisionState] = useState<RevisionState>({
     scope: '',
     status: 'idle',
@@ -188,7 +196,8 @@ export function GuidelineImpactDialog({
   const [conflictMessage, setConflictMessage] = useState<string | null>(null);
   const [adopting, setAdopting] = useState(false);
   const [adoptionError, setAdoptionError] = useState<string | null>(null);
-  const [itemsExpanded, setItemsExpanded] = useState(true);
+  const [itemsExpanded, setItemsExpanded] = useState(false);
+  const [technicalExpanded, setTechnicalExpanded] = useState(false);
 
   const previewControllerRef = useRef<AbortController | null>(null);
   const previewRequestRef = useRef(0);
@@ -200,6 +209,7 @@ export function GuidelineImpactDialog({
   const adoptionRequestRef = useRef(0);
   const adoptionActiveRef = useRef(false);
   const adoptionIntentRef = useRef({ signature: '', idempotencyKey: '' });
+  const autoPreviewAttemptRef = useRef('');
 
   const priority = Number(priorityInput);
   const priorityValid = (
@@ -355,6 +365,18 @@ export function GuidelineImpactDialog({
   const revisionAuthority = activeRevisionState.status === 'ready'
     ? activeRevisionState.authority
     : null;
+  const contextOnly = revisionAuthority?.revision.rules.length === 0;
+  const sameAdoptedRevision = Boolean(
+    adoptedBinding
+    && adoptedBinding.revisionId === targetRevisionId
+    && adoptedBinding.semanticVersion === targetSemanticVersion,
+  );
+  const hasNoProposedChanges = Boolean(
+    sameAdoptedRevision
+    && priorityValid
+    && priority === initialPriority
+    && enforcement === initialEnforcement,
+  );
 
   useEffect(() => {
     previewRequestRef.current += 1;
@@ -434,6 +456,7 @@ export function GuidelineImpactDialog({
         || !canPreview
         || !priorityValid
         || revisionAuthority === null
+        || hasNoProposedChanges
       ) {
         return;
       }
@@ -493,7 +516,7 @@ export function GuidelineImpactDialog({
             !== authoritativeRevision.revision_number
         ) {
           throw new Error(
-            'The latest guideline revision changed. Close this dialog and review the new head before adoption.',
+            'A newer guideline revision is now available. Close this dialog and review the latest version before applying changes.',
           );
         }
         if (
@@ -510,7 +533,7 @@ export function GuidelineImpactDialog({
           })
         ) {
           throw new Error(
-            'Impact preview returned a mismatched or malformed receipt.',
+            'The impact preview could not be verified. Refresh the guideline and try again.',
           );
         }
         setReceipt(response.receipt);
@@ -530,7 +553,7 @@ export function GuidelineImpactDialog({
         }
         if (isGuidelineImpactConflict(error)) {
           setConflictMessage(
-            'The board policy changed while the impact was being prepared. Reload the impact before adoption.',
+            'The board policy changed while this preview was being prepared. Reload it before applying changes.',
           );
         } else {
           setPreviewError(guidelineImpactErrorMessage(error));
@@ -552,6 +575,7 @@ export function GuidelineImpactDialog({
       canPreview,
       adoptedBinding,
       enforcement,
+      hasNoProposedChanges,
       guidelineId,
       previewSignature,
       priority,
@@ -561,6 +585,37 @@ export function GuidelineImpactDialog({
       targetSemanticVersion,
     ],
   );
+
+  useEffect(() => {
+    if (
+      !autoPreview
+      || !canPreview
+      || !priorityValid
+      || revisionAuthority === null
+      || hasNoProposedChanges
+      || previewLoading
+      || receipt !== null
+      || previewError !== null
+      || conflictMessage !== null
+      || autoPreviewAttemptRef.current === previewSignature
+    ) {
+      return;
+    }
+    autoPreviewAttemptRef.current = previewSignature;
+    void runPreview(false);
+  }, [
+    autoPreview,
+    canPreview,
+    conflictMessage,
+    hasNoProposedChanges,
+    previewError,
+    previewLoading,
+    previewSignature,
+    priorityValid,
+    receipt,
+    revisionAuthority,
+    runPreview,
+  ]);
 
   const adopt = useCallback(async () => {
     if (
@@ -618,7 +673,7 @@ export function GuidelineImpactDialog({
         !isGuidelineAdoptionResponseForReceipt(response, currentReceipt)
       ) {
         throw new Error(
-          'Guideline adoption returned a mismatched payload.',
+          'The board update response could not be verified. Refresh the board before trying again.',
         );
       }
       await onAdopted(response);
@@ -634,7 +689,7 @@ export function GuidelineImpactDialog({
         setReceipt(null);
         setReceiptSignature('');
         setConflictMessage(
-          'This impact receipt is no longer current. No board change was applied. Reload the impact and review it again.',
+          'This preview is no longer current. No board change was applied. Reload and review it again.',
         );
       } else {
         setAdoptionError(guidelineImpactErrorMessage(error));
@@ -673,6 +728,16 @@ export function GuidelineImpactDialog({
       (rule) => rule.enforcement === 'blocking',
     ) ?? false
   );
+  const blockingRuleCount = (
+    revisionAuthority?.revision.rules.filter(
+      (rule) => rule.enforcement === 'blocking',
+    ).length ?? 0
+  );
+  const advisoryRuleCount = (
+    revisionAuthority?.revision.rules.filter(
+      (rule) => rule.enforcement === 'advisory',
+    ).length ?? 0
+  );
   const updateAvailable = updateIsAvailable({
     adoptedBinding,
     targetRevisionId,
@@ -686,6 +751,7 @@ export function GuidelineImpactDialog({
     && priorityValid
     && activeRevisionState.status === 'ready'
     && !busy
+    && !hasNoProposedChanges
   );
   const adoptEnabled = (
     canAdopt
@@ -698,10 +764,10 @@ export function GuidelineImpactDialog({
     authorityMessage = 'Checking policy permissions…';
   } else if (permissions.error) {
     authorityMessage =
-      'Policy permissions are unavailable. Preview and adoption are disabled.';
+      'Policy permissions are unavailable. Preview and board changes are disabled.';
   } else if (permissions.ownerReviewRequired) {
     authorityMessage =
-      'Permission lineage requires owner review. Preview and adoption are disabled.';
+      'Permission lineage requires owner review. Preview and board changes are disabled.';
   } else if (!canPreview) {
     authorityMessage =
       'You do not have permission to preview guideline impact.';
@@ -725,16 +791,21 @@ export function GuidelineImpactDialog({
         <header className="flex items-start justify-between gap-4 border-b border-surface-200 px-6 py-4 dark:border-surface-700">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-300">
-              Persisted impact preview
+              Board guideline
             </p>
             <h2
               id="guideline-impact-title"
               className="mt-1 text-xl font-semibold text-surface-900 dark:text-white"
             >
-              Adopt {guidelineTitle} v{targetSemanticVersion}
+              {adoptedBinding
+                ? updateAvailable
+                  ? `Review ${guidelineTitle} update`
+                  : `Configure ${guidelineTitle}`
+                : `Add ${guidelineTitle} to this board`}
             </h2>
             <p className="mt-1 text-sm text-surface-500 dark:text-surface-400">
-              The current board binding does not change until explicit adoption succeeds.
+              Review the expected changes before applying them. Nothing changes
+              on the board until you confirm.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -742,12 +813,12 @@ export function GuidelineImpactDialog({
               sectionId="policy-governance"
               testId="guideline-impact-help"
             >
-              Adoption guide
+              Board guideline guide
             </ContextualHelpLink>
             <button
               type="button"
               data-guideline-impact-initial-focus
-              aria-label="Close impact preview"
+              aria-label="Close guideline configuration"
               disabled={busy}
               onClick={onClose}
               className="rounded-lg p-2 text-surface-400 hover:bg-surface-100 hover:text-surface-700 disabled:opacity-40 dark:hover:bg-surface-800"
@@ -763,7 +834,7 @@ export function GuidelineImpactDialog({
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
                   <div className="text-[10px] font-semibold uppercase text-surface-500">
-                    Adopted
+                    On board
                   </div>
                   <div
                     className="mt-1 text-sm font-semibold text-surface-900 dark:text-white"
@@ -771,7 +842,7 @@ export function GuidelineImpactDialog({
                   >
                     {adoptedBinding
                       ? `v${adoptedBinding.semanticVersion}`
-                      : 'Not adopted'}
+                      : 'Not added'}
                   </div>
                 </div>
                 <div className={`rounded-lg border p-3 ${
@@ -795,7 +866,7 @@ export function GuidelineImpactDialog({
                     >
                       {adoptedBinding
                         ? 'Update available'
-                        : 'Adoption available'}
+                        : 'Ready to add'}
                     </div>
                   )}
                 </div>
@@ -842,11 +913,31 @@ export function GuidelineImpactDialog({
                     Contains blocking rules
                   </div>
                 )}
+                {revisionAuthority && !contextOnly && (
+                  <dl className="mt-3 grid grid-cols-2 gap-2">
+                    <div className="rounded-lg bg-red-50 p-2 dark:bg-red-500/10">
+                      <dt className="text-[10px] font-medium text-red-700 dark:text-red-200">
+                        Blocking rules
+                      </dt>
+                      <dd className="mt-0.5 text-lg font-semibold text-red-900 dark:text-red-100">
+                        {blockingRuleCount}
+                      </dd>
+                    </div>
+                    <div className="rounded-lg bg-blue-50 p-2 dark:bg-blue-500/10">
+                      <dt className="text-[10px] font-medium text-blue-700 dark:text-blue-200">
+                        Advisory rules
+                      </dt>
+                      <dd className="mt-0.5 text-lg font-semibold text-blue-900 dark:text-blue-100">
+                        {advisoryRuleCount}
+                      </dd>
+                    </div>
+                  </dl>
+                )}
               </section>
 
               <section className="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
                 <h3 className="text-xs font-semibold text-surface-800 dark:text-surface-100">
-                  Proposed board binding
+                  Board settings
                 </h3>
                 <label className="mt-3 block text-xs font-medium text-surface-600 dark:text-surface-300">
                   Priority
@@ -867,21 +958,11 @@ export function GuidelineImpactDialog({
                     Priority must be an integer from 0 to {MAX_GUIDELINE_PRIORITY}.
                   </p>
                 )}
-                <label className="mt-3 block text-xs font-medium text-surface-600 dark:text-surface-300">
-                  Binding default enforcement
-                  <select
-                    value={enforcement}
-                    disabled={busy || !canPreview}
-                    onChange={(event) => setEnforcement(
-                      event.target.value as GuidelineEnforcement,
-                    )}
-                    data-testid="guideline-impact-enforcement"
-                    className="mt-1 w-full rounded-md border border-surface-300 bg-white px-3 py-2 text-sm text-surface-900 disabled:opacity-50 dark:border-surface-700 dark:bg-surface-950 dark:text-white"
-                  >
-                    <option value="advisory">Advisory</option>
-                    <option value="blocking">Blocking</option>
-                  </select>
-                </label>
+                <p className="mt-3 text-[11px] text-surface-500 dark:text-surface-400">
+                  Each executable rule defines whether it is advisory or
+                  blocking. Existing compatibility metadata is preserved
+                  automatically.
+                </p>
               </section>
             </aside>
 
@@ -896,14 +977,53 @@ export function GuidelineImpactDialog({
                 </div>
               )}
 
+              {hasNoProposedChanges && (
+                <section
+                  className="rounded-xl border border-blue-200 bg-blue-50 p-4 dark:border-blue-500/30 dark:bg-blue-500/10"
+                  data-testid="guideline-impact-no-changes"
+                >
+                  <div className="flex items-start gap-3">
+                    <ListChecks
+                      size={19}
+                      className="mt-0.5 shrink-0 text-blue-700 dark:text-blue-200"
+                      aria-hidden="true"
+                    />
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-semibold text-blue-950 dark:text-blue-100">
+                        {contextOnly
+                          ? 'This guideline currently provides context only'
+                          : 'This guideline is already configured'}
+                      </h3>
+                      <p className="mt-1 text-xs text-blue-800/80 dark:text-blue-100/75">
+                        {contextOnly
+                          ? 'It has no executable policies, and this exact revision and priority are already active on the board.'
+                          : 'This exact revision and priority are already active on the board. Change the priority to review a configuration update.'}
+                      </p>
+                      {contextOnly && onAddExecutableRules && (
+                        <button
+                          type="button"
+                          onClick={onAddExecutableRules}
+                          data-testid="guideline-impact-add-rules"
+                          className="mt-3 inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+                        >
+                          <Plus size={14} aria-hidden="true" />
+                          Add executable rules
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              )}
+
               <section className="rounded-xl border border-surface-200 p-4 dark:border-surface-700">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-semibold text-surface-900 dark:text-white">
-                      Impact evidence
+                      Expected impact
                     </h3>
                     <p className="mt-1 text-xs text-surface-500 dark:text-surface-400">
-                      Preview persists an immutable receipt but does not mutate the board.
+                      The preview evaluates this exact revision and board
+                      priority without applying any change.
                     </p>
                   </div>
                   <button
@@ -921,10 +1041,10 @@ export function GuidelineImpactDialog({
                     {previewLoading
                       ? 'Generating preview…'
                       : currentReceipt
-                        ? 'Refresh impact'
+                        ? 'Refresh preview'
                         : previewError
-                          ? 'Try preview again'
-                          : 'Preview impact'}
+                          ? 'Try again'
+                          : 'Preview changes'}
                   </button>
                 </div>
 
@@ -964,7 +1084,11 @@ export function GuidelineImpactDialog({
                     data-testid="guideline-impact-no-receipt"
                   >
                     <CircleOff size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                    Adopt stays disabled until a valid receipt is generated for these exact inputs.
+                    {hasNoProposedChanges
+                      ? 'There are no board changes to preview.'
+                      : autoPreview
+                        ? 'Preparing a preview for these settings…'
+                        : 'Preview these settings before applying them to the board.'}
                   </div>
                 )}
 
@@ -976,14 +1100,15 @@ export function GuidelineImpactDialog({
                     >
                       <CheckCircle2 size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
                       <span>
-                        <strong>Current receipt for these inputs.</strong>{' '}
-                        The server will re-check every fence atomically during adoption.
+                        <strong>Impact preview is ready.</strong>{' '}
+                        The server will verify that it is still current when
+                        you apply the change.
                       </span>
                     </div>
 
                     <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                       {([
-                        ['Board bindings', impactCounts.binding],
+                        ['Board configuration', impactCounts.binding],
                         ['Targets', impactCounts.target],
                         ['Artifacts', impactCounts.artifact],
                         ['Waivers', impactCounts.waiver],
@@ -1014,54 +1139,81 @@ export function GuidelineImpactDialog({
 
                     <div className="grid gap-2 sm:grid-cols-3">
                       {([
-                        ['Added rules', currentReceipt.added_rule_ids],
-                        ['Changed rules', currentReceipt.changed_rule_ids],
-                        ['Removed rules', currentReceipt.removed_rule_ids],
+                        ['Added rules', currentReceipt.added_rule_ids.length],
+                        ['Changed rules', currentReceipt.changed_rule_ids.length],
+                        ['Removed rules', currentReceipt.removed_rule_ids.length],
                       ] as const).map(([label, ids]) => (
                         <div
                           key={label}
                           className="rounded-lg border border-surface-200 p-3 dark:border-surface-700"
                         >
                           <div className="text-[10px] font-semibold uppercase text-surface-500">
-                            {label} · {ids.length}
+                            {label}
                           </div>
-                          <p className="mt-1 break-all text-xs text-surface-700 dark:text-surface-200">
-                            {ids.length > 0 ? ids.join(', ') : 'None'}
+                          <p className="mt-1 text-xl font-semibold text-surface-900 dark:text-white">
+                            {ids}
                           </p>
                         </div>
                       ))}
                     </div>
 
-                    <div className="rounded-lg border border-surface-200 p-3 text-xs dark:border-surface-700">
-                      <p className="text-surface-600 dark:text-surface-300">
-                        Affected entity types:{' '}
-                        {currentReceipt.affected_entity_types.length > 0
-                          ? currentReceipt.affected_entity_types.join(', ')
-                          : 'none'}
-                      </p>
-                      <p className="mt-2 text-surface-500 dark:text-surface-400">
-                        Receipt {currentReceipt.impact_receipt_id} ·{' '}
-                        {formatTimestamp(currentReceipt.created_at)}
-                      </p>
-                      <p className="mt-1 break-all font-mono text-[10px] text-surface-500 dark:text-surface-400">
-                        Digest {currentReceipt.impact_digest}
-                      </p>
-                    </div>
+                    <p className="text-xs text-surface-600 dark:text-surface-300">
+                      Affected entity types:{' '}
+                      {currentReceipt.affected_entity_types.length > 0
+                        ? currentReceipt.affected_entity_types.join(', ')
+                        : 'none'}
+                    </p>
                   </div>
                 )}
               </section>
 
               {currentReceipt && (
                 <CollapsibleEvidenceSection
+                  title="Technical details"
+                  description="Immutable identifiers and integrity metadata for support and audit."
+                  expanded={technicalExpanded}
+                  onToggle={() => setTechnicalExpanded((value) => !value)}
+                  testId="guideline-impact-technical"
+                >
+                  <div className="rounded-lg border border-surface-200 p-3 text-xs dark:border-surface-700">
+                    <p className="break-all text-surface-600 dark:text-surface-300">
+                      Preview ID {currentReceipt.impact_receipt_id} ·{' '}
+                      {formatTimestamp(currentReceipt.created_at)}
+                    </p>
+                    <p className="mt-1 break-all font-mono text-[10px] text-surface-500 dark:text-surface-400">
+                      Digest {currentReceipt.impact_digest}
+                    </p>
+                    <dl className="mt-3 grid gap-2 sm:grid-cols-3">
+                      {([
+                        ['Added rule IDs', currentReceipt.added_rule_ids],
+                        ['Changed rule IDs', currentReceipt.changed_rule_ids],
+                        ['Removed rule IDs', currentReceipt.removed_rule_ids],
+                      ] as const).map(([label, ids]) => (
+                        <div key={label}>
+                          <dt className="font-semibold text-surface-600 dark:text-surface-300">
+                            {label}
+                          </dt>
+                          <dd className="mt-0.5 break-all font-mono text-[10px] text-surface-500">
+                            {ids.length > 0 ? ids.join(', ') : 'None'}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                </CollapsibleEvidenceSection>
+              )}
+
+              {currentReceipt && (
+                <CollapsibleEvidenceSection
                   title="Affected items"
-                  description="Immutable detail projection, paginated with an opaque cursor."
+                  description="Detailed affected entities, loaded in pages when needed."
                   expanded={itemsExpanded}
                   onToggle={() => setItemsExpanded((value) => !value)}
                   testId="guideline-impact-items"
                 >
                   {impactItems.loaded && impactItems.items.length === 0 && !impactItems.loading ? (
                     <p className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400">
-                      This receipt has no affected item.
+                      This preview has no affected item.
                     </p>
                   ) : (
                     <ol className="space-y-2">
@@ -1094,10 +1246,12 @@ export function GuidelineImpactDialog({
         <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-200 px-6 py-4 dark:border-surface-700">
           <p className="text-xs text-surface-500 dark:text-surface-400">
             {canPreview && !canAdopt
-              ? 'Preview access only. Adoption permission is required to mutate the board.'
+              ? 'Preview access only. Board configuration permission is required to apply changes.'
               : currentReceipt
-                ? 'Receipt current · explicit adoption is available.'
-                : 'No current receipt · adoption is unavailable.'}
+                ? 'Preview ready · confirm to apply this board change.'
+                : hasNoProposedChanges
+                  ? 'No changes to apply.'
+                  : 'Review the impact before applying this board change.'}
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -1117,8 +1271,12 @@ export function GuidelineImpactDialog({
             >
               {adopting && <Loader2 size={15} className="animate-spin" aria-hidden="true" />}
               {adopting
-                ? 'Adopting…'
-                : `Adopt v${targetSemanticVersion}`}
+                ? 'Applying…'
+                : adoptedBinding
+                  ? updateAvailable
+                    ? `Apply update to v${targetSemanticVersion}`
+                    : 'Save board configuration'
+                  : 'Add to board'}
             </button>
           </div>
           {adoptionError && (

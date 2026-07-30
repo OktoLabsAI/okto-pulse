@@ -64,6 +64,7 @@ const GLOBAL_PAGE_SIZE = 50;
 interface RevisionEditorSelection {
   guideline: Guideline;
   adoptedRevision?: AdoptedGuidelineRevision;
+  initialSection?: 'rules';
 }
 
 interface ImpactDialogSelection {
@@ -198,7 +199,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
 
   const toggleDefault = (guidelineId: string) => {
     if (!canManageAdoption) {
-      toast.error('Guideline adoption permission is required to change defaults');
+      toast.error('You do not have permission to change guideline defaults');
       return;
     }
     if (!defaultInfo) {
@@ -257,7 +258,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
 
   const stageLatestDefaultRevision = (guidelineId: string) => {
     if (!canManageAdoption) {
-      toast.error('Guideline adoption permission is required to change defaults');
+      toast.error('You do not have permission to change guideline defaults');
       return;
     }
     if (!defaultInfo || baseDefaultRefs === null) {
@@ -344,15 +345,23 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     }
   }, [canReadRevisions, fetchBoard, permissions.isLoading]);
 
-  const handleUnlink = async (entry: BoardGuidelineEntry) => {
+  const handleUnlink = async (
+    guidelineId: string,
+    guidelineTitle: string,
+  ) => {
     if (!canManageAdoption) {
-      toast.error('Guideline adoption permission is required to unlink');
+      toast.error('You do not have permission to remove board guidelines');
+      return;
+    }
+    if (!window.confirm(
+      `Remove "${guidelineTitle}" from this board? The global guideline and its revision history will be preserved.`,
+    )) {
       return;
     }
     try {
-      await api.unlinkGuidelineFromBoard(boardId, entry.guideline.id);
+      await api.unlinkGuidelineFromBoard(boardId, guidelineId);
       toast.success('Guideline removed from board');
-      fetchBoard();
+      await fetchBoard();
     } catch { toast.error('Failed to remove'); }
   };
 
@@ -370,18 +379,6 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
       setShowInlineForm(false);
       fetchBoard();
     } catch { toast.error('Failed to create'); }
-  };
-
-  const handleUnlinkByGuidelineId = async (guidelineId: string) => {
-    if (!canManageAdoption) {
-      toast.error('Guideline adoption permission is required to unlink');
-      return;
-    }
-    try {
-      await api.unlinkGuidelineFromBoard(boardId, guidelineId);
-      toast.success('Guideline removed from board');
-      fetchBoard();
-    } catch { toast.error('Failed to remove'); }
   };
 
   // ==================== GLOBAL TAB ====================
@@ -433,6 +430,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
   const openRevisionEditor = (
     guideline: Guideline,
     entry?: BoardGuidelineEntry,
+    initialSection?: 'rules',
   ) => {
     if (!canReadRevisions) {
       toast.error('Guideline revision read permission is required');
@@ -440,6 +438,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     }
     setRevisionEditor({
       guideline,
+      ...(initialSection ? { initialSection } : {}),
       ...(entry?.guideline.semantic_version
         ? {
             adoptedRevision: {
@@ -480,7 +479,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     );
     if (entry && !isCompleteBoardGuidelineBindingAuthority(entry)) {
       toast.error(
-        'The current binding authority is incomplete. Reload before adoption.',
+        'The current board configuration could not be verified. Reload before making changes.',
       );
       return;
     }
@@ -492,7 +491,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
       if (candidate) {
         if (!candidate.eligible || candidate.retired) {
           throw new Error(
-            'The latest guideline revision is unavailable for adoption.',
+            'The latest guideline revision cannot be added to this board.',
           );
         }
         targetRevisionId = candidate.head_revision.revision_id;
@@ -533,7 +532,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
         targetSemanticVersion = latest.semanticVersion;
       } else {
         throw new Error(
-          'The latest guideline revision is unavailable for adoption.',
+          'The latest guideline revision cannot be added to this board.',
         );
       }
       const nextPriority = entries.reduce(
@@ -595,8 +594,26 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
   const handleAdopted = async (
     _response: GuidelineAdoptionResponse,
   ) => {
-    toast.success('Guideline revision adopted');
+    toast.success('Guideline updated on this board');
     await refreshPolicyUi();
+  };
+
+  const openExecutableRulesEditor = () => {
+    if (!impactDialog) return;
+    const entry = entries.find(
+      (item) => item.guideline.id === impactDialog.guidelineId,
+    );
+    const guideline = entry?.guideline ?? globals.find(
+      (item) => item.id === impactDialog.guidelineId,
+    );
+    if (!guideline) {
+      toast.error(
+        'This guideline is no longer available. Refresh the catalog and try again.',
+      );
+      return;
+    }
+    setImpactDialog(null);
+    openRevisionEditor(guideline, entry, 'rules');
   };
 
   const filteredGlobals = globals.filter(g =>
@@ -874,7 +891,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                 <div className="text-center py-12 text-gray-400">
                   <BookOpen size={36} className="mx-auto mb-2 opacity-40" />
                   <p className="text-sm">No guidelines on this board</p>
-                  <p className="text-xs mt-1">Use Global Catalog to link a global guideline, or create an inline one</p>
+                  <p className="text-xs mt-1">Use Global Catalog to add a global guideline, or create an inline one</p>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -915,7 +932,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                                 through impact preview + explicit adoption. */}
                             <span
                               className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[9px] text-gray-500 dark:bg-gray-800 dark:text-gray-300"
-                              title="Binding priority; change through impact preview"
+                              title="Board guideline priority; change through impact review"
                               data-testid={`guideline-priority-${entry.guideline.id}`}
                             >
                               p{entry.priority}
@@ -935,7 +952,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                               {isGlobal ? 'Global' : 'Inline'}
                             </span>
                             <span className="shrink-0 text-[10px] text-gray-500 dark:text-gray-400">
-                              Adopted v{entry.guideline.semantic_version ?? '—'}
+                              On board v{entry.guideline.semantic_version ?? '—'}
                               {' · '}
                               {isGlobal
                                 ? `Latest v${candidate?.head_revision.semantic_version ?? '—'}`
@@ -984,9 +1001,17 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                           >
                             <MarkdownContent content={entry.guideline.content} />
                             {tagBadges(entry.guideline.tags)}
-                            <div className="flex items-center gap-1 mt-3 pt-2 border-t border-gray-100 dark:border-gray-700/50">
+                            <div className="mt-3 grid gap-2 border-t border-gray-100 pt-3 sm:grid-cols-3 dark:border-gray-700/50">
                               {canReadRevisions && (
                                 <>
+                                  <button
+                                    type="button"
+                                    onClick={() => openRevisionEditor(entry.guideline, entry)}
+                                    className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700"
+                                  >
+                                    <Edit3 size={14} aria-hidden="true" />
+                                    Edit guideline
+                                  </button>
                                   <button
                                     type="button"
                                     disabled={
@@ -999,30 +1024,30 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                                       entry,
                                     )}
                                     data-testid={`guideline-review-adoption-${entry.guideline.id}`}
-                                    className="flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40 dark:text-blue-300"
+                                    className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold shadow-sm disabled:cursor-not-allowed disabled:opacity-40 ${
+                                      hasAdoptionUpdate
+                                        ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-950/30 dark:text-amber-200'
+                                        : 'border-blue-200 bg-white text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:bg-surface-900 dark:text-blue-200 dark:hover:bg-blue-950/30'
+                                    }`}
                                   >
-                                    <ShieldCheck size={11} />
+                                    <ShieldCheck size={14} aria-hidden="true" />
                                     {impactOpeningId === entry.guideline.id
                                       ? 'Loading latest…'
                                       : hasAdoptionUpdate
                                         ? 'Review update'
-                                        : 'Review binding'}
+                                        : 'Configure for this board'}
                                   </button>
                                   <button
                                     type="button"
                                     disabled={!canManageAdoption}
-                                    onClick={() => void handleUnlink(entry)}
-                                    className="flex items-center gap-1 text-xs text-orange-500 hover:text-orange-600 disabled:cursor-not-allowed disabled:opacity-40"
+                                    onClick={() => void handleUnlink(
+                                      entry.guideline.id,
+                                      entry.guideline.title,
+                                    )}
+                                    className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-semibold text-red-700 shadow-sm hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-800 dark:bg-surface-900 dark:text-red-300 dark:hover:bg-red-950/20"
                                   >
-                                    <Unlink size={11} /> Unlink from board
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => openRevisionEditor(entry.guideline, entry)}
-                                    className="ml-auto flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 dark:text-blue-300"
-                                  >
-                                    <Edit3 size={11} />
-                                    Open revision editor
+                                    <Unlink size={14} aria-hidden="true" />
+                                    Remove from board
                                   </button>
                                 </>
                               )}
@@ -1105,14 +1130,13 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                             <div className="flex items-center gap-2 mb-1">
                               <h3 className="text-sm font-medium text-gray-900 dark:text-white truncate">{g.title}</h3>
                               <span className="text-[10px] text-gray-500 dark:text-gray-400 shrink-0">
-                                Adopted {boardEntry?.guideline.semantic_version
-                                  ? `v${boardEntry.guideline.semantic_version}`
-                                  : '—'}
+                                {boardEntry?.guideline.semantic_version
+                                  ? `On board v${boardEntry.guideline.semantic_version}`
+                                  : 'Not on board'}
                               </span>
                               <span className="text-[10px] text-gray-500 dark:text-gray-400 shrink-0">
                                 Latest v{candidate?.head_revision.semantic_version ?? g.semantic_version ?? '—'}
                               </span>
-                              {linkedToBoard && <span className="text-[10px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 shrink-0">linked</span>}
                               {boardUpdateAvailable && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 shrink-0">update available</span>}
                               {isDefault && (
                                 <span className="text-[10px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 shrink-0">
@@ -1125,7 +1149,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                             <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{g.content.slice(0, 150)}{g.content.length > 150 ? '...' : ''}</p>
                             {tagBadges(g.tags)}
                           </div>
-                          <div className="flex items-center gap-1 shrink-0">
+                          <div className="flex max-w-[25rem] flex-wrap items-center justify-end gap-1.5 shrink-0">
                             {linkedToBoard ? (
                               <>
                                 <button
@@ -1139,8 +1163,12 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                                     g,
                                     boardEntry,
                                   )}
-                                  className="inline-flex items-center gap-1 rounded border border-blue-200 px-2 py-1 text-[10px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-900/20"
-                                  title="Review a persisted impact receipt before changing this binding"
+                                  className={`inline-flex min-h-8 items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-40 ${
+                                    boardUpdateAvailable
+                                      ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/20 dark:text-amber-200'
+                                      : 'border-blue-200 text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-900/20'
+                                  }`}
+                                  title="Configure this guideline for the current board"
                                   data-testid={`guideline-adopt-board-${g.id}`}
                                 >
                                   <ShieldCheck size={11} />
@@ -1148,18 +1176,18 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                                     ? 'Loading latest…'
                                     : boardUpdateAvailable
                                       ? 'Review update'
-                                      : 'Review binding'}
+                                      : 'Manage on board'}
                                 </button>
                                 <button
                                   type="button"
                                   disabled={!canManageAdoption}
-                                  onClick={() => void handleUnlinkByGuidelineId(g.id)}
-                                  className="inline-flex items-center gap-1 rounded border border-orange-200 px-2 py-1 text-[10px] text-orange-600 hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-900/20"
-                                  title="Unlink this guideline from the current board"
+                                  onClick={() => void handleUnlink(g.id, g.title)}
+                                  className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/20"
+                                  title="Remove this guideline from the current board"
                                   data-testid={`guideline-unlink-board-${g.id}`}
                                 >
                                   <Unlink size={11} />
-                                  Unlink
+                                  Remove
                                 </button>
                               </>
                             ) : (
@@ -1173,14 +1201,14 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                                   || impactOpeningId !== null
                                 }
                                 onClick={() => void openImpactPreview(g)}
-                                className="inline-flex items-center gap-1 rounded border border-blue-200 px-2 py-1 text-[10px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-900/20"
-                                title="Generate a persisted impact receipt before explicit adoption"
+                                className="inline-flex min-h-8 items-center gap-1 rounded-lg bg-blue-600 px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+                                title="Review the impact before adding this guideline to the board"
                                 data-testid={`guideline-adopt-board-${g.id}`}
                               >
                                 <ShieldCheck size={11} />
                                 {impactOpeningId === g.id
                                   ? 'Loading latest…'
-                                  : 'Preview & adopt'}
+                                  : 'Add to board'}
                               </button>
                             )}
                             <button
@@ -1218,11 +1246,11 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                             <button
                               type="button"
                               onClick={() => openRevisionEditor(g, boardEntry)}
-                              className="p-1.5 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded"
-                              title="Open immutable revision editor"
-                              aria-label={`Open revision editor for ${g.title}`}
+                              className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-[11px] font-semibold text-gray-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-gray-600 dark:text-gray-200 dark:hover:border-blue-800 dark:hover:bg-blue-900/20 dark:hover:text-blue-200"
+                              title="Edit this guideline by creating a new immutable revision"
                             >
-                              <Edit3 size={14} />
+                              <Edit3 size={12} aria-hidden="true" />
+                              Edit guideline
                             </button>
                             )}
                           </div>
@@ -1258,6 +1286,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
           boardId={boardId}
           guideline={revisionEditor.guideline}
           adoptedRevision={revisionEditor.adoptedRevision}
+          initialSection={revisionEditor.initialSection}
           successorOptions={successorOptions}
           onClose={() => setRevisionEditor(null)}
           onChanged={refreshPolicyUi}
@@ -1273,6 +1302,8 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
           adoptedBinding={impactDialog.adoptedBinding}
           initialPriority={impactDialog.initialPriority}
           initialEnforcement={impactDialog.initialEnforcement}
+          autoPreview
+          onAddExecutableRules={openExecutableRulesEditor}
           onClose={() => setImpactDialog(null)}
           onAdopted={handleAdopted}
         />

@@ -461,7 +461,7 @@ describe('GuidelinesPanel immutable catalog and defaults', () => {
     fireEvent.click(await screen.findByText('Board Guidelines'));
     fireEvent.click(await screen.findByText('Guideline g-inline'));
 
-    expect(screen.getByText('Open revision editor')).toBeInTheDocument();
+    expect(screen.getByText('Edit guideline')).toBeInTheDocument();
     expect(screen.queryByText(/^Delete$/)).not.toBeInTheDocument();
     expect(screen.queryByTitle('Delete')).not.toBeInTheDocument();
   });
@@ -528,14 +528,14 @@ describe('GuidelinesPanel immutable catalog and defaults', () => {
     )).toBeDisabled();
   });
 
-  it('gates every unlink action on adoption management authority', async () => {
+  it('gates every remove action on adoption management authority', async () => {
     permissionState.allowed.delete('guidelines.adoption.manage');
     render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
     fireEvent.click(await screen.findByText('Board Guidelines'));
     fireEvent.click(await screen.findByTestId('guideline-expand-g1'));
 
-    expect(screen.getByText('Unlink from board')).toBeDisabled();
-    fireEvent.click(screen.getByText('Unlink from board'));
+    expect(screen.getByText('Remove from board')).toBeDisabled();
+    fireEvent.click(screen.getByText('Remove from board'));
     expect(apiMock.unlinkGuidelineFromBoard).not.toHaveBeenCalled();
   });
 
@@ -559,7 +559,7 @@ describe('GuidelinesPanel immutable catalog and defaults', () => {
     });
   });
 
-  it('exposes adoption only through the persisted impact-preview action', async () => {
+  it('presents Add to board while preserving the governed impact flow', async () => {
     apiMock.listGuidelines.mockResolvedValue([guideline('g-available')]);
     apiMock.listDefaultGuidelineCandidates.mockResolvedValue({
       scope: 'global',
@@ -573,7 +573,47 @@ describe('GuidelinesPanel immutable catalog and defaults', () => {
       'guideline-adopt-board-g-available',
     );
     expect(adoption).toBeEnabled();
-    expect(adoption).toHaveTextContent('Preview & adopt');
+    expect(adoption).toHaveTextContent('Add to board');
+    expect(screen.getByText('Not on board')).toBeInTheDocument();
     expect(screen.queryByText(/^Link$/)).not.toBeInTheDocument();
+  });
+
+  it('uses prominent board actions and confirms removal before unlinking', async () => {
+    const confirm = vi.spyOn(window, 'confirm')
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
+    fireEvent.click(await screen.findByText('Board Guidelines'));
+    fireEvent.click(await screen.findByTestId('guideline-expand-g1'));
+
+    expect(screen.getByText('Edit guideline')).toBeInTheDocument();
+    expect(screen.getByText('Review update')).toBeInTheDocument();
+    const remove = screen.getByText('Remove from board');
+
+    fireEvent.click(remove);
+    expect(apiMock.unlinkGuidelineFromBoard).not.toHaveBeenCalled();
+    fireEvent.click(remove);
+
+    await waitFor(() => {
+      expect(apiMock.unlinkGuidelineFromBoard).toHaveBeenCalledWith(
+        'b1',
+        'g1',
+      );
+    });
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining(
+      'The global guideline and its revision history will be preserved.',
+    ));
+    confirm.mockRestore();
+  });
+
+  it('shows explicit edit and manage actions for a global guideline already on the board', async () => {
+    apiMock.listGuidelines.mockResolvedValue([guideline('g1')]);
+    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
+
+    expect(
+      await screen.findByTestId('guideline-adopt-board-g1'),
+    ).toHaveTextContent('Review update');
+    expect(screen.getByText(/On board v/)).toBeInTheDocument();
+    expect(screen.getByText('Edit guideline')).toBeInTheDocument();
   });
 });

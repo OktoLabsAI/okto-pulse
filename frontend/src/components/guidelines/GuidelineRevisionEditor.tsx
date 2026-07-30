@@ -7,9 +7,17 @@ import {
 } from 'react';
 import {
   Archive,
+  CalendarDays,
+  Check,
+  Copy,
+  FileText,
+  FlaskConical,
   History,
+  Lightbulb,
   Plus,
+  Search,
   ShieldAlert,
+  SquareKanban,
   Trash2,
   X,
 } from 'lucide-react';
@@ -37,16 +45,24 @@ import type {
 
 import {
   POLICY_ENTITY_TYPES,
+  POLICY_CLASS_BEHAVIOR_NOTE,
+  POLICY_CLASS_OPTIONS,
+  POLICY_FACT_KIND_LABELS,
+  POLICY_OPERATOR_LABELS,
   POLICY_PREDICATE_CATALOG_VERSION,
   canonicalRuleSet,
   canonicalTags,
   createPolicyClientId,
   factOptionsForTargets,
   guidelineRuleToDraft,
+  isKnownPolicyClass,
+  isProtectedPolicyClass,
   newRuleDraft,
   operatorNeedsValue,
   operatorsForFact,
+  policyClassDescription,
   ruleDraftToInput,
+  suggestRuleKey,
   validateRuleDraft,
   validateRuleDrafts,
   type GuidelineRuleDraft,
@@ -68,11 +84,12 @@ export interface GuidelineSuccessorOption {
   semanticVersion: string;
 }
 
-interface GuidelineRevisionEditorProps {
+export interface GuidelineRevisionEditorProps {
   boardId: string;
   guideline: Guideline;
   adoptedRevision?: AdoptedGuidelineRevision;
   successorOptions?: GuidelineSuccessorOption[];
+  initialSection?: 'rules';
   onClose: () => void;
   onChanged: () => void | Promise<void>;
 }
@@ -116,6 +133,30 @@ function bumpLabel(bump: GuidelineVersionBump): string {
   return `${bump.charAt(0).toUpperCase()}${bump.slice(1)} bump`;
 }
 
+const POLICY_TARGET_LABELS: Readonly<Record<PolicyEntityType, string>> = {
+  ideation: 'Ideation',
+  refinement: 'Refinement',
+  spec: 'Spec',
+  sprint: 'Sprint',
+  card: 'Card',
+  test_scenario: 'Test scenario',
+};
+
+function PolicyTargetIcon({
+  target,
+  size = 18,
+}: {
+  target: PolicyEntityType;
+  size?: number;
+}) {
+  if (target === 'ideation') return <Lightbulb size={size} />;
+  if (target === 'refinement') return <Search size={size} />;
+  if (target === 'spec') return <FileText size={size} />;
+  if (target === 'sprint') return <CalendarDays size={size} />;
+  if (target === 'test_scenario') return <FlaskConical size={size} />;
+  return <SquareKanban size={size} />;
+}
+
 function RuleEditorCard({
   rule,
   index,
@@ -131,6 +172,15 @@ function RuleEditorCard({
 }) {
   const factOptions = factOptionsForTargets(rule.targetEntityTypes);
   const validationError = validateRuleDraft(rule);
+  const protectedPolicyClass = isProtectedPolicyClass(rule.policyClass);
+  const ruleKeyChanged = Boolean(
+    rule.originalCode
+    && rule.code.trim() !== rule.originalCode,
+  );
+  const policyClassChanged = Boolean(
+    rule.originalPolicyClass
+    && rule.policyClass.trim() !== rule.originalPolicyClass,
+  );
 
   const updatePredicate = (
     predicateIndex: number,
@@ -156,6 +206,7 @@ function RuleEditorCard({
   };
 
   const addPredicate = () => {
+    if (rule.targetEntityTypes.length === 0) return;
     onChange({
       ...rule,
       predicates: [
@@ -206,44 +257,96 @@ function RuleEditorCard({
 
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
-          Rule ID
-          <input
-            value={rule.ruleId}
-            disabled={disabled}
-            onChange={(event) => onChange({ ...rule, ruleId: event.target.value })}
-            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 font-mono text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
-          />
-        </label>
-        <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
-          Code
-          <input
-            value={rule.code}
-            disabled={disabled}
-            onChange={(event) => onChange({ ...rule, code: event.target.value })}
-            placeholder="require_acceptance_criteria"
-            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 font-mono text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
-          />
-        </label>
-        <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
           Title
           <input
             value={rule.title}
             disabled={disabled}
-            onChange={(event) => onChange({ ...rule, title: event.target.value })}
+            onChange={(event) => {
+              const nextTitle = event.target.value;
+              const previousSuggestion = suggestRuleKey(rule.title);
+              const shouldSuggestRuleKey =
+                rule.originalCode === null
+                && (
+                  rule.code.trim() === ''
+                  || rule.code === previousSuggestion
+                );
+              onChange({
+                ...rule,
+                title: nextTitle,
+                code: shouldSuggestRuleKey
+                  ? suggestRuleKey(nextTitle)
+                  : rule.code,
+              });
+            }}
             className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
           />
         </label>
-        <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
-          Policy class
+        <div className="text-xs font-medium text-gray-600 dark:text-gray-300">
+          <label htmlFor={`policy-rule-key-${rule.localId}`}>
+            Rule key
+          </label>
           <input
-            value={rule.policyClass}
+            id={`policy-rule-key-${rule.localId}`}
+            value={rule.code}
             disabled={disabled}
-            onChange={(event) =>
-              onChange({ ...rule, policyClass: event.target.value })
-            }
+            onChange={(event) => onChange({ ...rule, code: event.target.value })}
+            placeholder="require_acceptance_criteria"
+            aria-describedby={`policy-rule-key-help-${rule.localId}`}
             className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 font-mono text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
           />
-        </label>
+          <span
+            id={`policy-rule-key-help-${rule.localId}`}
+            className="mt-1 block text-[11px] font-normal text-gray-500"
+          >
+            Stable audit key suggested from the title.
+          </span>
+          {ruleKeyChanged && (
+            <span className="mt-1 block text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+              Changing an existing rule key requires a major version bump.
+            </span>
+          )}
+        </div>
+        <div className="text-xs font-medium text-gray-600 dark:text-gray-300">
+          <label htmlFor={`policy-class-${rule.localId}`}>
+            Policy class
+          </label>
+          <select
+            id={`policy-class-${rule.localId}`}
+            value={rule.policyClass}
+            disabled={disabled}
+            onChange={(event) => {
+              const policyClass = event.target.value;
+              onChange({
+                ...rule,
+                policyClass,
+                waivable: isProtectedPolicyClass(policyClass)
+                  ? false
+                  : rule.waivable,
+              });
+            }}
+            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+          >
+            {!isKnownPolicyClass(rule.policyClass) && (
+              <option value={rule.policyClass}>
+                Legacy/custom — {rule.policyClass}
+              </option>
+            )}
+            {POLICY_CLASS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+                {option.protected ? ' (protected)' : ''}
+              </option>
+            ))}
+          </select>
+          <span className="mt-1 block text-[11px] font-normal text-gray-500">
+            {policyClassDescription(rule.policyClass)}
+          </span>
+          {policyClassChanged && (
+            <span className="mt-1 block text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+              Changing an existing policy class requires a major version bump.
+            </span>
+          )}
+        </div>
       </div>
 
       <label className="mt-3 block text-xs font-medium text-gray-600 dark:text-gray-300">
@@ -259,6 +362,73 @@ function RuleEditorCard({
         />
       </label>
 
+      <details
+        className="mt-3 rounded-md border border-violet-200 bg-violet-50/60 px-3 py-2 dark:border-violet-500/30 dark:bg-violet-500/10"
+        data-testid={`policy-class-help-${index}`}
+      >
+        <summary className="cursor-pointer text-xs font-semibold text-violet-800 dark:text-violet-200">
+          Compare policy classes
+        </summary>
+        <p className="mt-2 text-[11px] leading-relaxed text-gray-600 dark:text-gray-300">
+          {POLICY_CLASS_BEHAVIOR_NOTE}
+        </p>
+        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {POLICY_CLASS_OPTIONS.map((option) => {
+            const selected = option.value === rule.policyClass;
+            return (
+              <section
+                key={option.value}
+                aria-current={selected ? 'true' : undefined}
+                className={`rounded-md border p-2.5 ${
+                  selected
+                    ? 'border-violet-500 bg-white ring-1 ring-violet-500 dark:border-violet-400 dark:bg-gray-900'
+                    : 'border-gray-200 bg-white/70 dark:border-gray-700 dark:bg-gray-900/70'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-xs font-semibold text-gray-900 dark:text-white">
+                    {option.label}
+                  </h4>
+                  <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+                    option.protected
+                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200'
+                      : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'
+                  }`}>
+                    {option.protected ? 'Protected' : 'General'}
+                  </span>
+                </div>
+                <dl className="mt-2 space-y-1 text-[10px] leading-relaxed text-gray-600 dark:text-gray-300">
+                  <div>
+                    <dt className="inline font-semibold text-gray-700 dark:text-gray-200">
+                      Effect:{' '}
+                    </dt>
+                    <dd className="inline">{option.effect}</dd>
+                  </div>
+                  <div>
+                    <dt className="inline font-semibold text-gray-700 dark:text-gray-200">
+                      Use when:{' '}
+                    </dt>
+                    <dd className="inline">{option.whenToUse}</dd>
+                  </div>
+                  <div>
+                    <dt className="inline font-semibold text-gray-700 dark:text-gray-200">
+                      Waivers:{' '}
+                    </dt>
+                    <dd className="inline">{option.waivability}</dd>
+                  </div>
+                </dl>
+              </section>
+            );
+          })}
+        </div>
+        <ContextualHelpLink
+          sectionId="policy-governance"
+          className="mt-3 text-[11px]"
+        >
+          Read the Policy class guide
+        </ContextualHelpLink>
+      </details>
+
       <fieldset className="mt-3">
         <legend className="text-xs font-semibold text-gray-700 dark:text-gray-200">
           Executable targets
@@ -267,21 +437,44 @@ function RuleEditorCard({
           Targets control evaluation. They do not change the guideline context,
           which remains available to all entities.
         </p>
-        <div className="flex flex-wrap gap-2">
-          {POLICY_ENTITY_TYPES.map((target) => (
-            <label
-              key={target}
-              className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 dark:border-gray-700 dark:text-gray-200"
-            >
-              <input
-                type="checkbox"
-                checked={rule.targetEntityTypes.includes(target)}
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {POLICY_ENTITY_TYPES.map((target) => {
+            const selected = rule.targetEntityTypes.includes(target);
+            return (
+              <button
+                key={target}
+                type="button"
+                aria-pressed={selected}
+                aria-label={`${selected ? 'Remove' : 'Add'} ${POLICY_TARGET_LABELS[target]} executable target`}
                 disabled={disabled}
-                onChange={() => toggleTarget(target)}
-              />
-              {target}
-            </label>
-          ))}
+                onClick={() => toggleTarget(target)}
+                className={`group flex min-h-20 items-center gap-3 rounded-lg border p-3 text-left transition ${
+                  selected
+                    ? 'border-blue-500 bg-blue-50 text-blue-900 ring-1 ring-blue-500 dark:border-blue-400 dark:bg-blue-500/15 dark:text-blue-100'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50/50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500/60 dark:hover:bg-blue-500/10'
+                } disabled:cursor-not-allowed disabled:opacity-40`}
+              >
+                <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+                  selected
+                    ? 'bg-blue-600 text-white dark:bg-blue-500'
+                    : 'bg-gray-100 text-gray-500 group-hover:text-blue-600 dark:bg-gray-800 dark:text-gray-300'
+                }`}>
+                  <PolicyTargetIcon target={target} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold">
+                    {POLICY_TARGET_LABELS[target]}
+                  </span>
+                  <span className="mt-0.5 block text-[11px] opacity-70">
+                    Evaluate this entity type
+                  </span>
+                </span>
+                {selected && (
+                  <Check size={16} aria-hidden="true" className="shrink-0" />
+                )}
+              </button>
+            );
+          })}
         </div>
       </fieldset>
 
@@ -304,7 +497,7 @@ function RuleEditorCard({
           </select>
         </label>
         <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
-          Predicate logic
+          Condition matching
           <select
             value={rule.operator}
             disabled={disabled}
@@ -316,50 +509,66 @@ function RuleEditorCard({
             }
             className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-2 text-xs dark:border-gray-700 dark:bg-gray-950"
           >
-            <option value="all">All predicates</option>
-            <option value="any">Any predicate</option>
+            <option value="all">All conditions</option>
+            <option value="any">Any condition</option>
           </select>
         </label>
-        <label className="mt-5 inline-flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
-          <input
-            type="checkbox"
-            checked={rule.waivable}
-            disabled={disabled}
-            onChange={(event) =>
-              onChange({ ...rule, waivable: event.target.checked })
-            }
-          />
-          Waivable
-        </label>
+        <div className="mt-5">
+          <label className="inline-flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
+            <input
+              type="checkbox"
+              checked={rule.waivable}
+              disabled={disabled || protectedPolicyClass}
+              onChange={(event) =>
+                onChange({ ...rule, waivable: event.target.checked })
+              }
+            />
+            Waivable
+          </label>
+          {protectedPolicyClass && (
+            <p className="mt-1 text-[11px] text-gray-500">
+              Protected policy classes cannot be waived.
+            </p>
+          )}
+        </div>
       </div>
 
       <div className="mt-4 rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-950/50">
         <div className="flex items-center justify-between">
           <div>
             <div className="text-xs font-semibold text-gray-700 dark:text-gray-200">
-              Deterministic predicates
+              Conditions — what must be true for this rule to pass
             </div>
             <p className="text-[11px] text-gray-500">
               Only server-owned facts and compatible{' '}
-              {POLICY_PREDICATE_CATALOG_VERSION} operators are offered.
+              {POLICY_PREDICATE_CATALOG_VERSION} operators are offered. Targets
+              decide which entities are evaluated; these conditions decide
+              whether the rule passes.
             </p>
           </div>
           <button
             type="button"
-            disabled={disabled}
+            disabled={disabled || rule.targetEntityTypes.length === 0}
             onClick={addPredicate}
             className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-white disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-900"
           >
             <Plus size={12} />
-            Predicate
+            Add condition
           </button>
         </div>
+
+        {rule.targetEntityTypes.length === 0 && (
+          <div className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200">
+            Select at least one executable target before configuring conditions.
+          </div>
+        )}
 
         <div className="mt-3 space-y-2">
           {rule.predicates.map((predicate, predicateIndex) => {
             const selectedFact =
-              factOptions.find((fact) => fact.code === predicate.fact)
-              ?? factOptions[0];
+              factOptions.find((fact) => fact.code === predicate.fact);
+            const factUnavailable =
+              rule.targetEntityTypes.length > 0 && !selectedFact;
             const operators = selectedFact
               ? operatorsForFact(selectedFact)
               : [];
@@ -371,9 +580,10 @@ function RuleEditorCard({
                 <label className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
                   Fact
                   <select
-                    aria-label={`Rule ${index + 1} predicate ${predicateIndex + 1} fact`}
+                    aria-label={`Rule ${index + 1} condition ${predicateIndex + 1} fact`}
+                    aria-invalid={factUnavailable}
                     value={predicate.fact}
-                    disabled={disabled}
+                    disabled={disabled || rule.targetEntityTypes.length === 0}
                     onChange={(event) => {
                       const fact = factOptions.find(
                         (item) => item.code === event.target.value,
@@ -386,8 +596,17 @@ function RuleEditorCard({
                         rawValue: '',
                       });
                     }}
-                    className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-2 text-xs dark:border-gray-700 dark:bg-gray-900"
+                    className={`mt-1 w-full rounded-md border bg-white px-2 py-2 text-xs dark:bg-gray-900 ${
+                      factUnavailable
+                        ? 'border-red-400 text-red-700 dark:border-red-500 dark:text-red-200'
+                        : 'border-gray-300 dark:border-gray-700'
+                    }`}
                   >
+                    {factUnavailable && (
+                      <option value={predicate.fact}>
+                        Unavailable: {predicate.fact}
+                      </option>
+                    )}
                     {factOptions.map((fact) => (
                       <option key={fact.code} value={fact.code}>
                         {fact.label}
@@ -398,9 +617,9 @@ function RuleEditorCard({
                 <label className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
                   Operator
                   <select
-                    aria-label={`Rule ${index + 1} predicate ${predicateIndex + 1} operator`}
+                    aria-label={`Rule ${index + 1} condition ${predicateIndex + 1} operator`}
                     value={predicate.operator}
-                    disabled={disabled}
+                    disabled={disabled || !selectedFact}
                     onChange={(event) => {
                       const operator =
                         event.target.value as PolicyPredicateOperator;
@@ -413,19 +632,25 @@ function RuleEditorCard({
                     }}
                     className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-2 text-xs dark:border-gray-700 dark:bg-gray-900"
                   >
+                    {!selectedFact && (
+                      <option value={predicate.operator}>
+                        {POLICY_OPERATOR_LABELS[predicate.operator]}
+                      </option>
+                    )}
                     {operators.map((operator) => (
                       <option key={operator} value={operator}>
-                        {operator}
+                        {POLICY_OPERATOR_LABELS[operator]}
                       </option>
                     ))}
                   </select>
                 </label>
-                <label className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                  Value
-                  {selectedFact?.kind === 'boolean'
+                {operatorNeedsValue(predicate.operator) ? (
+                  <label className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                    Value
+                    {selectedFact?.kind === 'boolean'
                     && operatorNeedsValue(predicate.operator) ? (
                        <select
-                         aria-label={`Rule ${index + 1} predicate ${predicateIndex + 1} value`}
+                         aria-label={`Rule ${index + 1} condition ${predicateIndex + 1} value`}
                          value={predicate.rawValue}
                          disabled={disabled}
                         onChange={(event) =>
@@ -445,7 +670,7 @@ function RuleEditorCard({
                       && predicate.operator !== 'in'
                       && predicate.operator !== 'not_in' ? (
                         <select
-                          aria-label={`Rule ${index + 1} predicate ${predicateIndex + 1} value`}
+                          aria-label={`Rule ${index + 1} condition ${predicateIndex + 1} value`}
                           value={predicate.rawValue}
                           disabled={disabled}
                           onChange={(event) =>
@@ -464,11 +689,9 @@ function RuleEditorCard({
                         </select>
                     ) : (
                       <input
-                        aria-label={`Rule ${index + 1} predicate ${predicateIndex + 1} value`}
+                        aria-label={`Rule ${index + 1} condition ${predicateIndex + 1} value`}
                         value={predicate.rawValue}
-                        disabled={
-                          disabled || !operatorNeedsValue(predicate.operator)
-                        }
+                        disabled={disabled || !selectedFact}
                         type={
                           selectedFact?.kind === 'integer'
                           || selectedFact?.kind === 'number'
@@ -499,17 +722,23 @@ function RuleEditorCard({
                           predicate.operator === 'in'
                             || predicate.operator === 'not_in'
                             ? 'comma-separated values'
-                            : operatorNeedsValue(predicate.operator)
-                              ? 'value'
-                              : 'not required'
+                            : 'value'
                         }
                         className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-2 text-xs disabled:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:disabled:bg-gray-800"
                       />
                     )}
-                </label>
+                  </label>
+                ) : (
+                  <div
+                    role="note"
+                    className="rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+                  >
+                    This condition does not require a value.
+                  </div>
+                )}
                 <button
                   type="button"
-                  aria-label={`Remove predicate ${predicateIndex + 1}`}
+                  aria-label={`Remove condition ${predicateIndex + 1}`}
                   disabled={disabled || rule.predicates.length === 1}
                   onClick={() =>
                     onChange({
@@ -523,11 +752,101 @@ function RuleEditorCard({
                 >
                   <Trash2 size={13} />
                 </button>
+                {selectedFact && (
+                  <div
+                    className="rounded-md border border-violet-200 bg-violet-50/70 px-3 py-2 text-[11px] text-gray-600 md:col-span-4 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-gray-300"
+                    data-testid={`policy-fact-help-${index}-${predicateIndex}`}
+                  >
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <strong className="text-gray-800 dark:text-gray-100">
+                        {selectedFact.label}
+                      </strong>
+                      <span>
+                        Data type:{' '}
+                        <strong>
+                          {POLICY_FACT_KIND_LABELS[selectedFact.kind]}
+                        </strong>
+                      </span>
+                    </div>
+                    <p className="mt-1">{selectedFact.description}</p>
+                    <p className="mt-1">
+                      <strong className="text-gray-700 dark:text-gray-200">
+                        Configure:{' '}
+                      </strong>
+                      {selectedFact.valueGuidance}
+                    </p>
+                    <p className="mt-1">
+                      <strong className="text-gray-700 dark:text-gray-200">
+                        Example:{' '}
+                      </strong>
+                      <span className="font-mono">
+                        {selectedFact.example}
+                      </span>
+                    </p>
+                    <ContextualHelpLink
+                      sectionId="policy-facts"
+                      className="mt-2 text-[11px]"
+                    >
+                      See all Policy facts
+                    </ContextualHelpLink>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
+        {rule.predicates.some(
+          (predicate) =>
+            rule.targetEntityTypes.length > 0
+            && !factOptions.some((fact) => fact.code === predicate.fact),
+        ) && (
+          <div
+            role="alert"
+            className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200"
+          >
+            A selected target does not support one or more conditions. Choose
+            a compatible fact or restore the previous target selection.
+          </div>
+        )}
       </div>
+
+      <details className="mt-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950/50">
+        <summary className="cursor-pointer text-xs font-semibold text-gray-700 dark:text-gray-200">
+          Technical details
+        </summary>
+        <div className="mt-3">
+          <label
+            htmlFor={`policy-rule-id-${rule.localId}`}
+            className="text-[11px] font-medium text-gray-600 dark:text-gray-300"
+          >
+            Rule ID
+          </label>
+          <div className="mt-1 flex gap-2">
+            <input
+              id={`policy-rule-id-${rule.localId}`}
+              value={rule.ruleId}
+              readOnly
+              aria-readonly="true"
+              className="min-w-0 flex-1 rounded-md border border-gray-300 bg-gray-100 px-2.5 py-2 font-mono text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+            />
+            <button
+              type="button"
+              aria-label={`Copy rule ${index + 1} ID`}
+              onClick={() => {
+                void globalThis.navigator?.clipboard?.writeText(rule.ruleId);
+              }}
+              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2.5 py-2 text-xs font-medium text-gray-600 hover:bg-white dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-900"
+            >
+              <Copy size={13} />
+              Copy
+            </button>
+          </div>
+          <p className="mt-1 text-[11px] text-gray-500">
+            Stable identity used by findings, waivers, and revision history.
+            It cannot be edited.
+          </p>
+        </div>
+      </details>
 
       {validationError && (
         <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
@@ -726,6 +1045,7 @@ export function GuidelineRevisionEditor({
   guideline,
   adoptedRevision,
   successorOptions = [],
+  initialSection,
   onClose,
   onChanged,
 }: GuidelineRevisionEditorProps) {
@@ -770,6 +1090,8 @@ export function GuidelineRevisionEditor({
   const [tags, setTags] = useState('');
   const [rules, setRules] = useState<GuidelineRuleDraft[]>([]);
   const [declaredVersion, setDeclaredVersion] = useState('');
+  const rulesSectionRef = useRef<HTMLElement | null>(null);
+  const initialSectionAppliedRef = useRef(false);
   const seenHistoryCursorsRef = useRef(new Set<string>());
   const revisionCommandRef = useRef({
     signature: '',
@@ -857,6 +1179,32 @@ export function GuidelineRevisionEditor({
     if (permissions.isLoading) return;
     void loadFirstPage();
   }, [loadFirstPage, permissions.isLoading]);
+
+  useEffect(() => {
+    if (
+      initialSection !== 'rules'
+      || initialSectionAppliedRef.current
+      || loading
+      || !latest
+      || !rulesSectionRef.current
+    ) {
+      return undefined;
+    }
+    initialSectionAppliedRef.current = true;
+    const focusRules = () => {
+      rulesSectionRef.current?.scrollIntoView?.({
+        behavior: 'smooth',
+        block: 'start',
+      });
+      rulesSectionRef.current?.focus({ preventScroll: true });
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      const frame = requestAnimationFrame(focusRules);
+      return () => cancelAnimationFrame(frame);
+    }
+    const timeout = window.setTimeout(focusRules, 0);
+    return () => window.clearTimeout(timeout);
+  }, [initialSection, latest, loading]);
 
   const draftInputs = useMemo(() => {
     try {
@@ -1108,17 +1456,20 @@ export function GuidelineRevisionEditor({
         <header className="flex items-start justify-between gap-4 border-b border-gray-200 bg-white px-6 py-4 dark:border-gray-700 dark:bg-gray-900">
           <div>
             <div className="text-xs font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-300">
-              Immutable policy guideline
+              Guideline revision
             </div>
             <h2
               id="guideline-revision-editor-title"
               className="mt-1 text-xl font-semibold text-gray-900 dark:text-white"
             >
-              {guideline.title}
+              Edit guideline
             </h2>
             <p className="mt-1 text-sm text-gray-500">
-              Create append-only revisions. Existing revision content is never
-              edited in place.
+              <span className="font-medium text-gray-700 dark:text-gray-200">
+                {guideline.title}
+              </span>
+              {' '}· Saving creates a new version so previous content remains
+              traceable.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -1416,10 +1767,18 @@ export function GuidelineRevisionEditor({
                   </label>
                 </section>
 
-                <section>
+                <section
+                  ref={rulesSectionRef}
+                  tabIndex={-1}
+                  aria-labelledby="guideline-executable-rules-title"
+                  className="scroll-mt-6 focus:outline-none"
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <h3 className="text-base font-semibold text-gray-900 dark:text-white">
+                      <h3
+                        id="guideline-executable-rules-title"
+                        className="text-base font-semibold text-gray-900 dark:text-white"
+                      >
                         Executable rules
                       </h3>
                       <p className="mt-1 text-xs text-gray-500">

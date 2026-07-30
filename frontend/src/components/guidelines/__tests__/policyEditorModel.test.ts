@@ -1,14 +1,22 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  POLICY_CLASS_BEHAVIOR_NOTE,
+  POLICY_CLASS_OPTIONS,
   POLICY_ENTITY_TYPES,
+  POLICY_FACT_CATALOG,
+  POLICY_FACT_KIND_LABELS,
   POLICY_PREDICATE_CATALOG_VERSION,
   canonicalRuleSet,
   canonicalTags,
   factOptionsForTargets,
+  guidelineRuleToDraft,
+  isProtectedPolicyClass,
   newRuleDraft,
   operatorsForFact,
+  policyClassDescription,
   ruleDraftToInput,
+  suggestRuleKey,
   validateRuleDraft,
   validateRuleDrafts,
   type GuidelineRuleDraft,
@@ -111,7 +119,7 @@ describe('policyEditorModel policy/v1 closed authoring', () => {
     expect(validateRuleDraft(countRule)).toMatch(/non-negative integer/i);
   });
 
-  it('makes new rules advisory and rejects duplicate IDs or codes in one revision', () => {
+  it('makes new rules advisory and rejects duplicate IDs or keys in one revision', () => {
     expect(newRuleDraft().enforcement).toBe('advisory');
     const first = validRule();
     const second = {
@@ -122,7 +130,82 @@ describe('policyEditorModel policy/v1 closed authoring', () => {
     expect(validateRuleDrafts([first, second])).toMatch(/IDs must be unique/i);
     second.ruleId = 'rule-2';
     second.code = first.code;
-    expect(validateRuleDrafts([first, second])).toMatch(/codes must be unique/i);
+    expect(validateRuleDrafts([first, second])).toMatch(/keys must be unique/i);
+  });
+
+  it('suggests stable rule keys from human titles', () => {
+    expect(suggestRuleKey('Require evidência before release')).toBe(
+      'require_evidencia_before_release',
+    );
+    expect(suggestRuleKey('123 checks')).toBe('rule_123_checks');
+    expect(suggestRuleKey('   ')).toBe('');
+  });
+
+  it('recognizes protected classes and preserves unknown legacy classes', () => {
+    expect(isProtectedPolicyClass('Permissions')).toBe(true);
+    expect(isProtectedPolicyClass('standard')).toBe(false);
+    expect(policyClassDescription('legacy_quality')).toMatch(
+      /legacy\/custom/i,
+    );
+
+    const legacy = guidelineRuleToDraft({
+      rule_id: 'legacy-rule',
+      code: 'legacy_rule',
+      title: 'Legacy rule',
+      description: 'A rule authored before the closed class selector.',
+      target_entity_types: ['spec'],
+      predicates: [{
+        predicate_code: 'exists',
+        parameters: [['fact', 'status']],
+      }],
+      enforcement: 'advisory',
+      operator: 'all',
+      waivable: true,
+      policy_class: 'legacy_quality',
+    });
+    expect(legacy.policyClass).toBe('legacy_quality');
+    expect(ruleDraftToInput(legacy).policy_class).toBe('legacy_quality');
+  });
+
+  it('exposes reusable policy-class behavior and complete fact guidance', () => {
+    expect(POLICY_CLASS_OPTIONS).toHaveLength(5);
+    expect(POLICY_CLASS_BEHAVIOR_NOTE).toMatch(
+      /Enforcement controls that/i,
+    );
+    expect(POLICY_CLASS_OPTIONS.find(
+      (option) => option.value === 'coverage',
+    )).toMatchObject({
+      protected: true,
+      waivability: 'Never waivable.',
+    });
+    expect(POLICY_CLASS_OPTIONS.every(
+      (option) =>
+        option.effect.length > 0
+        && option.whenToUse.length > 0
+        && option.waivability.length > 0,
+    )).toBe(true);
+
+    expect(POLICY_FACT_CATALOG).toHaveLength(23);
+    expect(new Set(POLICY_FACT_CATALOG.map((fact) => fact.code)).size)
+      .toBe(POLICY_FACT_CATALOG.length);
+    expect(POLICY_FACT_CATALOG.every(
+      (fact) =>
+        fact.description.length > 0
+        && fact.valueGuidance.length > 0
+        && fact.example.length > 0
+        && POLICY_FACT_KIND_LABELS[fact.kind].length > 0,
+    )).toBe(true);
+    expect(POLICY_FACT_CATALOG.find(
+      (fact) => fact.code === 'ambiguity_score',
+    )).toMatchObject({
+      kind: 'number',
+      minimum: 1,
+      maximum: 5,
+    });
+  });
+
+  it('requires target selection before facts are offered', () => {
+    expect(factOptionsForTargets([])).toEqual([]);
   });
 
   it('canonicalizes tags, targets, membership values, predicates, and rule order', () => {

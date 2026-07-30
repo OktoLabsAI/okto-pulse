@@ -22,6 +22,7 @@ import { useDashboardApi } from '@/services/api';
 import { MockupsTab } from '@/components/specs/MockupsTab';
 import { EditableField } from '@/components/shared/EditableField';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
+import { HorizontalOverflowNav } from '@/components/shared/HorizontalOverflowNav';
 import { openLineageGraph } from '@/components/traceability';
 import { downloadMarkdown, exportStory, slugify } from '@/lib/exportMarkdown';
 import type {
@@ -817,7 +818,10 @@ export function StoryModal({
           </div>
         </div>
 
-        <div className="flex gap-1 border-b border-gray-200 px-5 dark:border-gray-700">
+        <HorizontalOverflowNav
+          controlsLabel="story sections"
+          className="flex gap-1 overflow-x-auto border-b border-gray-200 px-5 dark:border-gray-700"
+        >
           {(Object.keys(TAB_LABELS) as StoryModalTab[]).map((tab) => (
             <button
               key={tab}
@@ -842,7 +846,7 @@ export function StoryModal({
               )}
             </button>
           ))}
-        </div>
+        </HorizontalOverflowNav>
 
         <div className="flex-1 overflow-auto p-5">
           {loading ? (

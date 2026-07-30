@@ -3,6 +3,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -189,11 +190,13 @@ function renderEditor({
   onClose = vi.fn(),
   onChanged = vi.fn(),
   retirement,
+  initialSection,
 }: {
   latest?: GuidelineRevisionDetail;
   onClose?: () => void;
   onChanged?: () => void | Promise<void>;
   retirement?: 'retired' | 'superseded';
+  initialSection?: 'rules';
 } = {}) {
   policyApiMock.listGuidelineRevisions.mockResolvedValue(page([latest]));
   policyApiMock.getGuidelineRevision.mockResolvedValue(
@@ -210,6 +213,7 @@ function renderEditor({
           bindingRevision: 4,
         }}
         successorOptions={successors}
+        initialSection={initialSection}
         onClose={onClose}
         onChanged={onChanged}
       />,
@@ -237,6 +241,9 @@ describe('GuidelineRevisionEditor', () => {
     const latest = revision({ rules: [blockingRule] });
     renderEditor({ latest });
 
+    expect(await screen.findByRole('heading', {
+      name: 'Edit guideline',
+    })).toBeInTheDocument();
     expect(await screen.findByText('All entities')).toBeInTheDocument();
     expect(screen.getByText('v1.0.0')).toBeInTheDocument();
     expect(screen.getAllByText('v1.1.0')).not.toHaveLength(0);
@@ -318,26 +325,198 @@ describe('GuidelineRevisionEditor', () => {
   it('keeps boolean and enum predicate values explicit instead of displaying phantom defaults', async () => {
     renderEditor();
     fireEvent.click(await screen.findByTestId('add-policy-rule'));
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Add Card executable target',
+    }));
 
     const operator = screen.getByLabelText(
-      'Rule 1 predicate 1 operator',
+      'Rule 1 condition 1 operator',
     );
     fireEvent.change(operator, { target: { value: 'eq' } });
     expect(
-      screen.getByLabelText('Rule 1 predicate 1 value'),
+      screen.getByLabelText('Rule 1 condition 1 value'),
     ).toHaveValue('');
 
     fireEvent.change(
-      screen.getByLabelText('Rule 1 predicate 1 fact'),
+      screen.getByLabelText('Rule 1 condition 1 fact'),
       { target: { value: 'resource_gate_ready' } },
     );
     fireEvent.change(operator, { target: { value: 'eq' } });
     const booleanValue = screen.getByLabelText(
-      'Rule 1 predicate 1 value',
+      'Rule 1 condition 1 value',
     );
     expect(booleanValue).toHaveValue('');
     fireEvent.change(booleanValue, { target: { value: 'true' } });
     expect(booleanValue).toHaveValue('true');
+  });
+
+  it('suggests a rule key, keeps Rule ID read-only in technical details, and omits value for presence conditions', async () => {
+    renderEditor();
+    fireEvent.click(await screen.findByTestId('add-policy-rule'));
+    const card = screen.getByTestId('policy-rule-editor-0');
+
+    fireEvent.change(within(card).getByLabelText('Title'), {
+      target: { value: 'Require acceptance evidence' },
+    });
+    expect(within(card).getByLabelText('Rule key')).toHaveValue(
+      'require_acceptance_evidence',
+    );
+
+    fireEvent.click(within(card).getByRole('button', {
+      name: 'Add Spec executable target',
+    }));
+    expect(within(card).getByText(
+      'This condition does not require a value.',
+    )).toBeInTheDocument();
+    expect(within(card).queryByLabelText(
+      'Rule 1 condition 1 value',
+    )).not.toBeInTheDocument();
+
+    const technicalDetails = within(card).getByText('Technical details')
+      .closest('details');
+    expect(technicalDetails).not.toHaveAttribute('open');
+    fireEvent.click(within(card).getByText('Technical details'));
+    const ruleId = within(card).getByLabelText('Rule ID');
+    expect(ruleId).toHaveAttribute('readonly');
+    expect((ruleId as HTMLInputElement).value).toMatch(/^rule-/);
+    expect(within(card).getByRole('button', {
+      name: 'Copy rule 1 ID',
+    })).toBeInTheDocument();
+  });
+
+  it('uses closed policy classes, disables waivers for protected classes, and round-trips legacy values', async () => {
+    const legacyRule = {
+      ...blockingRule,
+      enforcement: 'advisory' as const,
+      waivable: true,
+      policy_class: 'legacy_quality',
+    };
+    renderEditor({ latest: revision({ rules: [legacyRule] }) });
+    const card = await screen.findByTestId('policy-rule-editor-0');
+    const policyClass = within(card).getByLabelText('Policy class');
+
+    expect(policyClass).toHaveValue('legacy_quality');
+    expect(within(policyClass).getByRole('option', {
+      name: 'Legacy/custom — legacy_quality',
+    })).toBeInTheDocument();
+
+    fireEvent.change(policyClass, { target: { value: 'coverage' } });
+    expect(within(card).getByLabelText('Waivable')).not.toBeChecked();
+    expect(within(card).getByLabelText('Waivable')).toBeDisabled();
+    expect(within(card).getByText(
+      'Protected policy classes cannot be waived.',
+    )).toBeInTheDocument();
+    expect(within(card).getByText(/policy class requires a major version bump/i))
+      .toBeInTheDocument();
+  });
+
+  it('compares policy-class effects and explains the selected Fact dynamically', async () => {
+    const helpListener = vi.fn();
+    window.addEventListener(CONTEXTUAL_HELP_EVENT, helpListener, {
+      once: true,
+    });
+    renderEditor();
+    fireEvent.click(await screen.findByTestId('add-policy-rule'));
+    const card = screen.getByTestId('policy-rule-editor-0');
+
+    fireEvent.click(within(card).getByText('Compare policy classes'));
+    const classHelp = within(card).getByTestId('policy-class-help-0');
+    expect(classHelp).toHaveTextContent(
+      'Policy class never makes a rule blocking (Enforcement controls that)',
+    );
+    expect(within(classHelp).getByText('Standard')).toBeInTheDocument();
+    expect(within(classHelp).getByText('Coverage')).toBeInTheDocument();
+    expect(within(classHelp).getByText('Permissions')).toBeInTheDocument();
+    expect(within(classHelp).getByText('Reviewer separation'))
+      .toBeInTheDocument();
+    expect(within(classHelp).getByText('Lineage')).toBeInTheDocument();
+    expect(within(classHelp).getAllByText('Never waivable.')).toHaveLength(4);
+
+    fireEvent.click(within(card).getByRole('button', {
+      name: 'Add Card executable target',
+    }));
+    expect(within(card).getByText(
+      'Conditions — what must be true for this rule to pass',
+    )).toBeInTheDocument();
+    const factHelp = within(card).getByTestId('policy-fact-help-0-0');
+    expect(factHelp).toHaveTextContent('Status');
+    expect(factHelp).toHaveTextContent('Data type: Named value');
+    expect(factHelp).toHaveTextContent('Configure:');
+    expect(factHelp).toHaveTextContent('Example:');
+
+    fireEvent.change(
+      within(card).getByLabelText('Rule 1 condition 1 fact'),
+      { target: { value: 'dependency_open_count' } },
+    );
+    expect(factHelp).toHaveTextContent('Open dependency count');
+    expect(factHelp).toHaveTextContent(
+      'number of upstream card dependencies',
+    );
+    expect(factHelp).toHaveTextContent(
+      'Open dependency count — Equals — 0',
+    );
+
+    fireEvent.click(within(factHelp).getByRole('button', {
+      name: 'See all Policy facts',
+    }));
+    expect(helpListener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: { sectionId: 'policy-facts' },
+      }),
+    );
+  });
+
+  it('keeps an incompatible condition visible and invalid after targets change', async () => {
+    const ambiguityRule: GuidelineRevisionDetail['rules'][number] = {
+      ...blockingRule,
+      rule_id: 'ambiguity-rule',
+      code: 'limit_ambiguity',
+      target_entity_types: ['ideation'],
+      predicates: [{
+        predicate_code: 'lte',
+        parameters: [
+          ['fact', 'ambiguity_score'],
+          ['value', 3],
+        ],
+      }],
+    };
+    renderEditor({ latest: revision({ rules: [ambiguityRule] }) });
+    const card = await screen.findByTestId('policy-rule-editor-0');
+
+    fireEvent.click(within(card).getByRole('button', {
+      name: 'Add Spec executable target',
+    }));
+
+    const fact = within(card).getByLabelText('Rule 1 condition 1 fact');
+    expect(fact).toHaveValue('ambiguity_score');
+    expect(fact).toHaveAttribute('aria-invalid', 'true');
+    expect(within(card).getByRole('alert')).toHaveTextContent(
+      /does not support one or more conditions/i,
+    );
+  });
+
+  it('warns that changing an existing rule key requires a major bump', async () => {
+    renderEditor({ latest: revision({ rules: [blockingRule] }) });
+    const card = await screen.findByTestId('policy-rule-editor-0');
+
+    fireEvent.change(within(card).getByLabelText('Rule key'), {
+      target: { value: 'require_stronger_evidence' },
+    });
+
+    expect(within(card).getByText(/rule key requires a major version bump/i))
+      .toBeInTheDocument();
+  });
+
+  it('focuses executable rules when opened from a rules CTA', async () => {
+    renderEditor({ initialSection: 'rules' });
+    const heading = await screen.findByRole('heading', {
+      name: 'Executable rules',
+    });
+    const section = heading.closest('section');
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(section);
+    });
   });
 
   it('reuses the idempotency key for an unchanged under-bump retry and keeps the draft editable', async () => {

@@ -6,6 +6,7 @@ import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
 import { Header, Sidebar, CreateBoardModal, AgentsModal } from '@/components/layout';
 import { PulseLoader } from '@/components/shared/PulseLoader';
+import { PulseToaster } from '@/components/shared/PulseToaster';
 import { MetricsSettingsPanel } from '@/components/layout/MetricsSettingsPanel';
 import {
   BoardStageContent,
@@ -29,6 +30,7 @@ import { isCompleted as isOnboardingCompleted } from '@/components/onboarding/on
 import logoLight from '@/assets/logo-light.png';
 import logoDark from '@/assets/logo-dark.png';
 import { CURRENT_METRICS_SCHEMA_VERSION, getMetricsSummary } from '@/services/metrics-api';
+import { showErrorToast } from '@/lib/toastError';
 
 const METRICS_PROMPT_DISMISSED_KEY = `okto-pulse:metrics-opt-in-prompt-dismissed:${CURRENT_METRICS_SCHEMA_VERSION}`;
 
@@ -377,9 +379,9 @@ function App() {
       if (allBoards.length > 0 && !currentBoard) {
         await selectBoard(allBoards[0].id);
       }
-    } catch {
+    } catch (error) {
       setError('Failed to load boards');
-      toast.error('Failed to load boards');
+      showErrorToast(error, 'Failed to load boards');
     } finally {
       setLoading(false);
     }
@@ -390,9 +392,9 @@ function App() {
     try {
       const board = await api.getBoard(boardId);
       setCurrentBoard(board);
-    } catch {
+    } catch (error) {
       setError('Failed to load board');
-      toast.error('Failed to load board');
+      showErrorToast(error, 'Failed to load board');
     } finally {
       setLoading(false);
     }
@@ -406,8 +408,8 @@ function App() {
       setCurrentBoard(board);
       setRefreshKey((k) => k + 1);
       toast.success('Board refreshed!');
-    } catch {
-      toast.error('Failed to refresh board');
+    } catch (error) {
+      showErrorToast(error, 'Failed to refresh board');
     } finally {
       setIsRefreshing(false);
     }
@@ -422,8 +424,8 @@ function App() {
       setColumns({} as any);
       await loadBoards();
       toast.success('Board deleted');
-    } catch {
-      toast.error('Failed to delete board');
+    } catch (error) {
+      showErrorToast(error, 'Failed to delete board');
     }
   };
 
@@ -494,6 +496,7 @@ function App() {
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
       />
+      <PulseToaster />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <Sidebar

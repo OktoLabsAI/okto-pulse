@@ -18,7 +18,12 @@ from okto_pulse.community.api.guidelines import router as legacy_guidelines_rout
 from okto_pulse.community.api.policy_governance import (
     CorePolicyGovernanceFacade,
     GuidelineExportV2Request,
+    GuidelineImpactItemPageResponse,
+    GuidelineRevisionPageResponse,
+    PolicyComplianceFindingPageResponse,
+    PolicyComplianceReceiptPageResponse,
     PolicyErrorEnvelope,
+    PolicyWaiverPageResponse,
     _project_core_result,
     get_policy_governance_facade,
     router,
@@ -39,8 +44,14 @@ from okto_pulse.core.domain.guideline_compliance import PolicyProjection
 from okto_pulse.core.domain.guideline_compliance import (
     GuidelineRevisionListItem,
     GuidelineRevisionProjectionPage,
+    PolicyWaiverListItem,
 )
-from okto_pulse.core.domain.guideline_policy import GuidelineRevisionPageCursor
+from okto_pulse.core.domain.guideline_policy import (
+    GuidelineRevisionPageCursor,
+    PolicyEntityType,
+    PolicySubjectRef,
+    PolicyWaiverStatus,
+)
 from okto_pulse.core.domain.guideline_lifecycle import GuidelineVersionBump
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.inbound.guideline_policy_cursor import (
@@ -877,6 +888,124 @@ def test_revision_projection_is_slim_or_detailed_without_none_leaks() -> None:
     assert detail["items"][0]["rules"] == []
 
 
+def test_initial_revision_keeps_required_nullable_parent_for_validation() -> None:
+    codec = policy_cursor_codec_from_settings(
+        CoreSettings(
+            guideline_policy_cursor_signing_key=(
+                "initial-revision-b13-secret-key-000001"
+            )
+        )
+    )
+    item = GuidelineRevisionListItem(
+        projection=PolicyProjection.DETAIL,
+        revision_id="revision-b13-1",
+        guideline_id="guideline-b13",
+        revision_number=1,
+        semantic_version="1.0.0",
+        title="Initial B13 revision",
+        created_by="owner-b13",
+        created_at=datetime(2026, 7, 29, 18, tzinfo=timezone.utc),
+        parent_revision_id=None,
+        content="Initial policy content.",
+        content_digest="d" * 64,
+        tags=("policy",),
+        rules=(),
+    )
+
+    projected = _project_core_result(
+        SimpleNamespace(
+            page=GuidelineRevisionProjectionPage(
+                items=(item,),
+                limit=10,
+                next_cursor=None,
+                has_more=False,
+            )
+        ),
+        codec=codec,
+    )
+
+    assert projected["items"][0]["parent_revision_id"] is None
+    validated = GuidelineRevisionPageResponse.model_validate(projected)
+    wire = validated.model_dump(mode="json", exclude_unset=True)
+    assert wire["items"][0]["parent_revision_id"] is None
+    assert wire["next_cursor"] is None
+    assert "content" in wire["items"][0]
+
+    client, _ = _client(_Facade(results={"list_revisions": projected}))
+    response = client.get(
+        "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions",
+        params={"projection": "detail"},
+    )
+    assert response.status_code == 200
+    assert response.json()["items"][0]["parent_revision_id"] is None
+    assert response.json()["next_cursor"] is None
+
+
+def test_non_expired_waiver_keeps_required_nullable_reason_for_validation() -> None:
+    codec = policy_cursor_codec_from_settings(
+        CoreSettings(
+            guideline_policy_cursor_signing_key="waiver-b13-secret-key-00000000000001"
+        )
+    )
+    requested_at = datetime(2026, 7, 29, 18, tzinfo=timezone.utc)
+    item = PolicyWaiverListItem(
+        projection=PolicyProjection.SUMMARY,
+        waiver_id="waiver-b13",
+        board_id="board-b13",
+        finding_id="finding-b13",
+        receipt_id="receipt-b13",
+        guideline_id="guideline-b13",
+        revision_id="revision-b13",
+        rule_id="rule-b13",
+        subject=PolicySubjectRef(
+            board_id="board-b13",
+            entity_type=PolicyEntityType.SPEC,
+            subject_id="spec-b13",
+            subject_version=1,
+        ),
+        status=PolicyWaiverStatus.REQUESTED,
+        source_current=True,
+        effective=False,
+        requested_by="owner-b13",
+        requested_at=requested_at,
+        expires_at=datetime(2026, 8, 29, 18, tzinfo=timezone.utc),
+        waiver_revision=1,
+        last_event_at=requested_at,
+        expire_reason_code=None,
+    )
+    page = SimpleNamespace(
+        items=(item,),
+        limit=25,
+        next_cursor=None,
+        has_more=False,
+    )
+
+    projected = _project_core_result(
+        SimpleNamespace(page=page),
+        codec=codec,
+    )
+
+    assert projected["items"][0]["expire_reason_code"] is None
+    validated = PolicyWaiverPageResponse.model_validate(projected)
+    wire = validated.model_dump(mode="json", exclude_unset=True)
+    assert wire["items"][0]["expire_reason_code"] is None
+    assert wire["next_cursor"] is None
+    assert "justification" not in wire["items"][0]
+
+    client, _ = _client(_Facade(results={"list_waivers": projected}))
+    response = client.get(
+        "/api/v1/boards/board-b13/policy-waivers",
+        params={
+            "projection": "summary",
+            "evaluated_at": "2026-07-29T18:00:00Z",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["items"][0]["expire_reason_code"] is None
+    assert response.json()["next_cursor"] is None
+    assert "justification" not in response.json()["items"][0]
+
+
 def test_revision_cursor_is_bound_to_projection_profile() -> None:
     secret = "cross-profile-b13-secret-key-0000001"
     settings = CoreSettings(guideline_policy_cursor_signing_key=secret)
@@ -962,6 +1091,25 @@ async def test_local_auth_materializes_canonical_full_control_permissions() -> N
 def test_every_governance_route_declares_a_closed_response_model() -> None:
     assert router.routes
     assert all(route.response_model is not None for route in router.routes)
+
+
+def test_paginated_routes_preserve_required_nulls_and_omit_unset_projection_fields() -> None:
+    page_models = {
+        GuidelineImpactItemPageResponse,
+        GuidelineRevisionPageResponse,
+        PolicyComplianceFindingPageResponse,
+        PolicyComplianceReceiptPageResponse,
+        PolicyWaiverPageResponse,
+    }
+    page_routes = [
+        route
+        for route in router.routes
+        if route.response_model in page_models
+    ]
+
+    assert len(page_routes) == 5
+    assert all(route.response_model_exclude_unset is True for route in page_routes)
+    assert all(route.response_model_exclude_none is False for route in page_routes)
 
 
 def test_legacy_patch_and_delete_delegate_immutable_append_and_retirement() -> None:

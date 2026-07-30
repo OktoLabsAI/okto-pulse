@@ -51,6 +51,9 @@ from okto_pulse.community.adapters.scheduler import SingletonSchedulerControl
 from okto_pulse.community.adapters.workers import build_community_worker_registry
 from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
+from okto_pulse.community.local_secrets import (
+    provision_guideline_policy_cursor_signing_key,
+)
 from okto_pulse.community.api import metrics_router
 from okto_pulse.community.runtime import (
     AccessLogQueryRedactionMiddleware,
@@ -456,7 +459,7 @@ FRONTEND_DIR = Path(__file__).parent / "frontend_dist"
 
 
 def _ensure_data_dir(settings: CommunitySettings) -> None:
-    """Create data directory structure if it doesn't exist."""
+    """Create local state and provision installation-owned secrets."""
     data_path = Path(settings.data_dir).expanduser().resolve()
     kg_base = Path(settings.kg_base_dir).expanduser().resolve()
     metrics_path = Path(settings.metrics_dir).expanduser().resolve()
@@ -477,6 +480,7 @@ def _ensure_data_dir(settings: CommunitySettings) -> None:
         os.chmod(str(data_path), 0o700)
     except (OSError, NotImplementedError):
         pass
+    provision_guideline_policy_cursor_signing_key(settings)
 
 
 # The former _configure_sqlite_pragmas helper (a partial WAL + foreign_keys

@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { HorizontalOverflowNav } from './HorizontalOverflowNav';
 
 export type AccessibleTabMountStrategy = 'active' | 'lazy-keep' | 'always';
 
@@ -156,20 +157,13 @@ export function AccessibleTabList<TId extends string>({
   };
 
   const listTone = variant === 'secondary'
-    ? 'inline-flex rounded-lg border border-surface-200 bg-surface-50 p-1 dark:border-surface-700 dark:bg-surface-900'
+    ? 'inline-flex max-w-full rounded-lg border border-surface-200 bg-surface-50 p-1 dark:border-surface-700 dark:bg-surface-900'
     : 'flex border-b border-gray-200 dark:border-gray-700';
   const orientationClass = orientation === 'vertical'
     ? 'flex-col overflow-y-auto'
     : 'items-center gap-1 overflow-x-auto pb-1';
 
-  return (
-    <div
-      role="tablist"
-      aria-label={ariaLabel}
-      aria-orientation={orientation}
-      className={`${listTone} ${orientationClass} ${className}`.trim()}
-    >
-      {items.map((item) => {
+  const tabButtons = items.map((item) => {
         const selected = item.id === value;
         const primaryTone = selected ? PRIMARY_SELECTED : PRIMARY_IDLE;
         const secondaryTone = selected ? SECONDARY_SELECTED : SECONDARY_IDLE;
@@ -217,8 +211,34 @@ export function AccessibleTabList<TId extends string>({
             )}
           </button>
         );
-      })}
-    </div>
+      });
+
+  const listClassName =
+    `${listTone} ${orientationClass} ${className}`.trim();
+
+  if (orientation === 'vertical') {
+    return (
+      <div
+        role="tablist"
+        aria-label={ariaLabel}
+        aria-orientation={orientation}
+        className={listClassName}
+      >
+        {tabButtons}
+      </div>
+    );
+  }
+
+  return (
+    <HorizontalOverflowNav
+      role="tablist"
+      aria-label={ariaLabel}
+      aria-orientation={orientation}
+      controlsLabel={ariaLabel}
+      className={listClassName}
+    >
+      {tabButtons}
+    </HorizontalOverflowNav>
   );
 }
 

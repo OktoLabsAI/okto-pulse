@@ -674,7 +674,7 @@ export const GUIDELINE_IMPACT_KIND_LABEL: Record<
   GuidelineImpactItemKind,
   string
 > = {
-  binding: 'Board binding',
+  binding: 'Board configuration',
   target: 'Executable target',
   artifact: 'Affected artifact',
   waiver: 'Governed waiver',
@@ -688,6 +688,18 @@ export function createGuidelinePolicyClientId(prefix: string): string {
 
 export function guidelineImpactErrorMessage(error: unknown): string {
   if (error instanceof PolicyGovernanceApiError) {
+    const reasonCode = error.details.reason_code ?? error.code;
+    if (reasonCode === 'guideline_impact_no_changes') {
+      return 'This exact guideline revision and board configuration are already active. Change the priority or edit the guideline before reviewing impact again.';
+    }
+    if (
+      error.kind === 'not_found'
+      || error.status === 404
+      || reasonCode === 'guideline_not_found'
+      || reasonCode === 'guideline_revision_not_found'
+    ) {
+      return 'This guideline or revision is no longer available. Refresh the catalog and verify that you selected the latest version.';
+    }
     return error.nextAction
       ? `${error.message} Next: ${error.nextAction}.`
       : error.message;

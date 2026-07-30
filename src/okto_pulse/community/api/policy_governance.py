@@ -1243,6 +1243,31 @@ def _wire_result(result: object) -> object:
     return jsonable_encoder(result)
 
 
+def _jsonable_page_items(items: object) -> object:
+    """Keep projections slim without deleting required nullable fields.
+
+    A dataclass field with no default remains required even when its annotation
+    permits ``None``. Preserve those explicit nulls so validation and the
+    route's ``response_model_exclude_unset`` serialization retain them, while
+    optional projection-only fields stay absent from the Pydantic field set.
+    """
+
+    encoded = jsonable_encoder(items, exclude_none=True)
+    if not isinstance(items, tuple | list) or not isinstance(encoded, list):
+        return encoded
+    for item, payload in zip(items, encoded, strict=True):
+        if not is_dataclass(item) or not isinstance(payload, dict):
+            continue
+        for dataclass_field in fields(item):
+            required = (
+                dataclass_field.default is MISSING
+                and dataclass_field.default_factory is MISSING
+            )
+            if required and getattr(item, dataclass_field.name) is None:
+                payload[dataclass_field.name] = None
+    return encoded
+
+
 def _project_core_result(
     result: object,
     *,
@@ -1257,7 +1282,7 @@ def _project_core_result(
         raise RuntimeError("guideline_policy_cursor_codec_missing")
     next_cursor = getattr(page, "next_cursor", None)
     return {
-        "items": jsonable_encoder(page.items, exclude_none=True),
+        "items": _jsonable_page_items(page.items),
         "limit": page.limit,
         "has_more": page.has_more,
         "next_cursor": codec.encode(next_cursor) if next_cursor is not None else None,
@@ -1354,7 +1379,7 @@ async def import_guideline_policy_v2(
 @router.get(
     "/boards/{board_id}/guidelines/{guideline_id}/revisions",
     response_model=GuidelineRevisionPageResponse,
-    response_model_exclude_none=True,
+    response_model_exclude_unset=True,
 )
 async def list_guideline_revisions(
     board_id: BoardId,
@@ -1546,7 +1571,7 @@ async def get_guideline_impact(
 @router.get(
     "/boards/{board_id}/guidelines/{guideline_id}/impact-previews/{receipt_id}/items",
     response_model=GuidelineImpactItemPageResponse,
-    response_model_exclude_none=True,
+    response_model_exclude_unset=True,
 )
 async def list_guideline_impact_items(
     board_id: BoardId,
@@ -1631,7 +1656,7 @@ async def evaluate_policy_compliance(
 @router.get(
     "/boards/{board_id}/policy-compliance/receipts",
     response_model=PolicyComplianceReceiptPageResponse,
-    response_model_exclude_none=True,
+    response_model_exclude_unset=True,
 )
 async def list_policy_compliance_receipts(
     board_id: BoardId,
@@ -1723,7 +1748,7 @@ async def get_policy_compliance_receipt(
 @router.get(
     "/boards/{board_id}/policy-compliance/findings",
     response_model=PolicyComplianceFindingPageResponse,
-    response_model_exclude_none=True,
+    response_model_exclude_unset=True,
 )
 async def list_policy_compliance_findings(
     board_id: BoardId,
@@ -1778,7 +1803,7 @@ async def list_policy_compliance_findings(
 @router.get(
     "/boards/{board_id}/policy-waivers",
     response_model=PolicyWaiverPageResponse,
-    response_model_exclude_none=True,
+    response_model_exclude_unset=True,
 )
 async def list_policy_waivers(
     board_id: BoardId,

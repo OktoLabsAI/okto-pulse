@@ -11,6 +11,7 @@ import type {
 
 import {
   countGuidelineImpactItems,
+  guidelineImpactErrorMessage,
   isCompleteBoardGuidelineBindingAuthority,
   isGuidelineAdoptionResponseForReceipt,
   isGuidelineImpactConflict,
@@ -412,5 +413,21 @@ describe('guidelineImpactModel closed contracts', () => {
       code: 'validation_failed',
       details: { reason_code: 'guideline_impact_stale' },
     }))).toBe(true);
+  });
+
+  it('projects no-change and missing-resource failures into actionable language', () => {
+    expect(guidelineImpactErrorMessage(new PolicyGovernanceApiError({
+      message: 'validation failed',
+      status: 400,
+      code: 'validation_failed',
+      details: { reason_code: 'guideline_impact_no_changes' },
+    }))).toContain('already active');
+
+    expect(guidelineImpactErrorMessage(new PolicyGovernanceApiError({
+      message: 'resource not found',
+      status: 404,
+      kind: 'not_found',
+      code: 'not_found',
+    }))).toContain('Refresh the catalog');
   });
 });
