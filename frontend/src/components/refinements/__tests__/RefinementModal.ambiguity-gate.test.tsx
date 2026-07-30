@@ -111,6 +111,42 @@ vi.mock('../ResearchDecisionPanel', () => ({
     <input aria-label="Research decision draft" defaultValue="" />
   ),
 }));
+vi.mock('@/components/policy-compliance', () => ({
+  requirePolicyTransitionEnvelope: (response: {
+    allowed_transitions: unknown[];
+  }) => response.allowed_transitions,
+  readPolicyTransitionRejection: () => null,
+  policyTransitionRejectionMessage: () => 'Policy Compliance rejected',
+  isAllowedTransitionActionable: (transition: {
+    policy_compliance?: boolean;
+    policy_compliance_decision?: { allowed?: boolean } | null;
+  }) => (
+    transition.policy_compliance === false
+    || (
+      transition.policy_compliance === true
+      && transition.policy_compliance_decision?.allowed === true
+    )
+  ),
+  PolicyCompliancePanel: ({
+    boardId,
+    entityType,
+    subjectId,
+  }: {
+    boardId: string;
+    entityType: string;
+    subjectId: string;
+  }) => (
+    <div
+      data-testid="policy-compliance-panel"
+      data-board-id={boardId}
+      data-entity-type={entityType}
+      data-subject-id={subjectId}
+    />
+  ),
+  PolicyComplianceTransitionPreview: () => (
+    <div data-testid="policy-transition-preview" />
+  ),
+}));
 
 function refinementWith(overrides: Partial<Refinement> = {}): Refinement {
   return {
@@ -211,6 +247,25 @@ function currentAssessment(
   };
 }
 
+function blockedPolicyDecision() {
+  return {
+    state: 'policy_compliance_receipt_missing',
+    allowed: false,
+    policy_compliance_required: true,
+    reason_codes: ['policy_compliance_receipt_missing'],
+    decision_digest: 'a'.repeat(64),
+    fence_digest: 'b'.repeat(64),
+    receipt_id: null,
+    currentness: null,
+    currentness_reasons: [],
+    applicable_rule_count: 1,
+    applicable_blocking_rule_count: 1,
+    blocking_rule_count: 0,
+    waived_rule_count: 0,
+    advisory_issue_count: 0,
+  };
+}
+
 describe('RefinementModal ambiguity gate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -239,7 +294,7 @@ describe('RefinementModal ambiguity gate', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'approved',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [],
     });
     apiMock.getCurrentQualityAssessment.mockResolvedValue(currentAssessment());
@@ -523,6 +578,95 @@ describe('RefinementModal ambiguity gate', () => {
     expect(
       screen.queryByRole('tab', { name: 'Validation' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('keeps Validation available and selects Policy Compliance for a policy-only actor', async () => {
+    boardState.currentBoard = {
+      id: 'board-1',
+      owner_id: 'owner-1',
+      agents: [],
+      settings: { require_refinement_ambiguity_gate: false },
+    };
+    permissionState.flags = new Set([
+      'guidelines.compliance.read',
+    ]);
+
+    render(
+      <RefinementModal
+        refinementId="refinement-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('My Refinement');
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+
+    expect(
+      screen.getByRole('tab', { name: 'Policy Compliance' }),
+    ).toHaveAttribute('aria-selected', 'true');
+    expect(
+      screen.queryByRole('tab', { name: 'Ambiguity Assessment' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-board-id',
+      'board-1',
+    );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-entity-type',
+      'refinement',
+    );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-subject-id',
+      'refinement-1',
+    );
+    expect(
+      screen.getByTestId('policy-transition-preview'),
+    ).toBeInTheDocument();
+  });
+
+  it('fails closed on approved-to-done while keeping cancellation available', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'refinement',
+      entity_id: 'refinement-1',
+      current_status: 'approved',
+      source: 'core_sdlc_registry_v1',
+      allowed_transitions: [
+        {
+          to_status: 'done',
+          label: 'Done',
+          gate: 'refinement_completion',
+          policy_compliance: true,
+          policy_compliance_decision: blockedPolicyDecision(),
+        },
+        {
+          to_status: 'cancelled',
+          label: 'Cancelled',
+          gate: 'cancel',
+          policy_compliance: false,
+          policy_compliance_decision: null,
+        },
+      ],
+    });
+
+    render(
+      <RefinementModal
+        refinementId="refinement-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('My Refinement');
+    expect(
+      screen.queryByRole('button', { name: 'Done' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Cancelled' }),
+    ).toBeInTheDocument();
   });
 
   it('keeps the Research Decision tab mounted while another tab is active', async () => {

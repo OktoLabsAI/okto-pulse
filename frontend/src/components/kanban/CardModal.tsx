@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { X, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks } from 'lucide-react';
+import { X, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportCard, downloadMarkdown, markdownFilenameForCard } from '@/lib/exportMarkdown';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
@@ -32,6 +32,13 @@ import {
   AccessibleTabPanel,
 } from '@/components/shared/AccessibleTabs';
 import { MetricScoreRing } from '@/components/shared/MetricScoreRing';
+import {
+  PolicyCompliancePanel,
+  PolicyComplianceTransitionPreview,
+  policyTransitionRejectionMessage,
+  readPolicyTransitionRejection,
+  usePolicyTransitionAuthority,
+} from '@/components/policy-compliance';
 import type {
   CardModalSubtab,
   CardModalTab,
@@ -69,7 +76,7 @@ type CardReferencesTab = Extract<
 >;
 type CardValidationTab = Extract<
   CardModalSubtab,
-  'execution-report' | 'task-validation'
+  'execution-report' | 'task-validation' | 'policy-compliance'
 >;
 
 const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
@@ -271,7 +278,6 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const selectedCardIdRef = useRef(selectedCardId);
   selectedCardIdRef.current = selectedCardId;
   const cardLoadGenerationRef = useRef(0);
-  const transitionRequestRef = useRef(0);
   const isOpen = useIsCardModalOpen();
   const { closeCardModal, removeCardFromColumn, updateCardInColumn } = useDashboardStore();
   const columns = useColumns();
@@ -287,7 +293,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     useState<CardReferencesTab>('lineage');
   const [validationTab, setValidationTab] =
     useState<CardValidationTab>('execution-report');
-  const [allowedStatuses, setAllowedStatuses] = useState<CardStatus[]>([]);
+  const [policyAuthorityRefreshKey, setPolicyAuthorityRefreshKey] = useState(0);
+  const [movingStatus, setMovingStatus] = useState<CardStatus | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [boardMembers, setBoardMembers] = useState<{ id: string; name: string }[]>([]);
   const [seenStatus, setSeenStatus] = useState<Record<string, { agent_name: string; seen_at: string }[]>>({});
@@ -338,6 +345,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const canReadComments = perms.has('card.comments.read');
   const canReadConclusion = perms.has('card.conclusion.read');
   const canReadValidation = perms.has('card.validation.read');
+  const canReadPolicyCompliance = perms.has('guidelines.compliance.read');
   const canReadActivity = perms.has('card.activity_read');
   const canEditCardFields = perms.has('card.entity.edit_fields');
   const canAskQA = perms.has('card.qa.ask');
@@ -359,6 +367,25 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     || (amendmentRevisions?.revisions.length || 0) > 0,
   );
 
+  const policyTransitionAuthority = usePolicyTransitionAuthority({
+    boardId: card?.board_id ?? boardId,
+    entityType: 'card',
+    subjectId: card?.id,
+    currentStatus: card?.status,
+    enabled: isOpen,
+    refreshKey: policyAuthorityRefreshKey,
+  });
+
+  const notePolicySubjectChanged = useCallback(() => {
+    setPolicyAuthorityRefreshKey((current) => current + 1);
+  }, []);
+
+  const applyCardUpdate = useCallback((updated: Card) => {
+    setCard(updated);
+    updateCardInColumn(updated);
+    notePolicySubjectChanged();
+  }, [notePolicySubjectChanged, updateCardInColumn]);
+
   const resetConclusionPrompt = () => {
     setConclusionDraft('');
     setConclusionCompleteness(100);
@@ -375,37 +402,6 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     return ['not_started', 'started', 'in_progress', 'on_hold'].includes(card.status);
   };
 
-  const loadAllowedStatuses = useCallback((currentCard: Card) => {
-    const requestId = ++transitionRequestRef.current;
-    const isCurrentRequest = () =>
-      requestId === transitionRequestRef.current
-      && selectedCardIdRef.current === currentCard.id;
-    setAllowedStatuses([currentCard.status]);
-    api.getAllowedTransitions(currentCard.board_id, {
-      entity_type: 'card',
-      entity_id: currentCard.id,
-      current_status: currentCard.status,
-    })
-      .then((response) => {
-        if (!isCurrentRequest()) return;
-        const next = response.allowed_transitions
-          .map((transition) => transition.to_status)
-          .filter((status): status is CardStatus =>
-            Object.prototype.hasOwnProperty.call(STATUS_LABELS, status)
-          );
-        setAllowedStatuses([
-          currentCard.status,
-          ...next.filter((status) => status !== currentCard.status),
-        ]);
-      })
-      .catch(() => {
-        if (!isCurrentRequest()) return;
-        // Fail closed: the current state remains visible, but no transition is
-        // invented client-side when the canonical lifecycle cannot be loaded.
-        setAllowedStatuses([currentCard.status]);
-      });
-  }, [api]);
-
   const loadCard = (cardId: string) => {
     const loadGeneration = ++cardLoadGenerationRef.current;
     const isCurrentLoad = () =>
@@ -419,7 +415,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       .then((data) => {
         if (!isCurrentLoad()) return;
         setCard(data);
-        loadAllowedStatuses(data);
+        notePolicySubjectChanged();
         if (data.card_type === 'bug') {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
             .then((preview) => {
@@ -518,8 +514,13 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     api.getCard(cardId)
       .then((data) => {
         if (selectedCardIdRef.current !== cardId) return;
+        const subjectChanged =
+          card?.id === data.id
+          && card.updated_at !== data.updated_at;
         setCard(data);
-        loadAllowedStatuses(data);
+        if (subjectChanged) {
+          notePolicySubjectChanged();
+        }
         if (data.card_type === 'bug') {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
             .then((preview) => {
@@ -578,7 +579,12 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
         if (selectedCardIdRef.current === cardId) setDependents(items);
       })
       .catch(() => {});
-  }, [api, loadAllowedStatuses]);
+  }, [
+    api,
+    card?.id,
+    card?.updated_at,
+    notePolicySubjectChanged,
+  ]);
 
   // Path B safe actions (spec be089cd3). User-click only — NO auto-mutation on
   // render, and NEVER a gate skip/bypass; these only REMEDIATE via the new
@@ -635,7 +641,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       || canReadAttachments;
     const hasValidation =
       canReadConclusion
-      || (card.card_type !== 'test' && canReadValidation);
+      || (card.card_type !== 'test' && canReadValidation)
+      || canReadPolicyCompliance;
     const unavailable =
       (activeTab === 'tests'
         && (!canReadTests || !['bug', 'test'].includes(card.card_type || 'normal')))
@@ -668,19 +675,18 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     ) {
       setTestsTab('regression');
     }
+    const visibleValidationTabs: CardValidationTab[] = [
+      ...(canReadConclusion ? ['execution-report' as const] : []),
+      ...(card.card_type !== 'test' && canReadValidation
+        ? ['task-validation' as const]
+        : []),
+      ...(canReadPolicyCompliance ? ['policy-compliance' as const] : []),
+    ];
     if (
-      validationTab === 'task-validation'
-      && (card.card_type === 'test' || !canReadValidation)
+      visibleValidationTabs.length > 0
+      && !visibleValidationTabs.includes(validationTab)
     ) {
-      setValidationTab('execution-report');
-    }
-    if (
-      validationTab === 'execution-report'
-      && !canReadConclusion
-      && card.card_type !== 'test'
-      && canReadValidation
-    ) {
-      setValidationTab('task-validation');
+      setValidationTab(visibleValidationTabs[0]);
     }
   }, [
     activeTab,
@@ -691,6 +697,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     canReadConclusion,
     canReadKnowledge,
     canReadMockups,
+    canReadPolicyCompliance,
     canReadQA,
     canReadTests,
     canReadValidation,
@@ -735,7 +742,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   );
 
   const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string) => {
-    if (!card) return;
+    if (!card || status === card.status) return;
 
     // ITEM 17: cancelling requires a justification — intercept with the dialog.
     if (status === 'cancelled' && !cancellationReason) {
@@ -751,6 +758,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       return;
     }
 
+    setMovingStatus(status);
+    policyTransitionAuthority.clearRejection();
     try {
       const updated = await api.moveCard(card.id, {
         status,
@@ -761,26 +770,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
         drift_justification: metrics?.drift_justification,
         ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
       });
-      updateCardInColumn({
-        id: updated.id,
-        board_id: updated.board_id,
-        spec_id: updated.spec_id,
-        title: updated.title,
-        description: updated.description,
-        status: updated.status,
-        priority: updated.priority,
-        position: updated.position,
-        assignee_id: updated.assignee_id,
-        created_by: updated.created_by,
-        created_at: updated.created_at,
-        updated_at: updated.updated_at,
-        due_date: updated.due_date,
-        labels: updated.labels,
-        test_scenario_ids: updated.test_scenario_ids,
-        conclusions: updated.conclusions,
-      });
-      setCard(updated);
-      loadAllowedStatuses(updated);
+      applyCardUpdate(updated);
       if (updated.status === 'cancelled') {
         setActiveTab('details');
         window.setTimeout(() => {
@@ -791,7 +781,27 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       }
       toast.success('Status updated');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to update status');
+      const rejection = readPolicyTransitionRejection(err, {
+        boardId: card.board_id,
+        entityType: 'card',
+        subjectId: card.id,
+        currentStatus: card.status,
+        toStatus: status,
+      });
+      const handled =
+        await policyTransitionAuthority.handleTransitionError(err, status);
+      if (!handled) {
+        await policyTransitionAuthority.refresh();
+      }
+      toast.error(
+        rejection
+          ? policyTransitionRejectionMessage(rejection)
+          : err instanceof Error
+            ? err.message
+            : 'Failed to update status',
+      );
+    } finally {
+      setMovingStatus(null);
     }
   };
 
@@ -799,25 +809,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     if (!card) return;
     try {
       const updated = await api.updateCard(card.id, { assignee_id: assigneeId || undefined });
-      setCard(updated);
-      updateCardInColumn({
-        id: updated.id,
-        board_id: updated.board_id,
-        spec_id: updated.spec_id,
-        title: updated.title,
-        description: updated.description,
-        status: updated.status,
-        priority: updated.priority,
-        position: updated.position,
-        assignee_id: updated.assignee_id,
-        created_by: updated.created_by,
-        created_at: updated.created_at,
-        updated_at: updated.updated_at,
-        due_date: updated.due_date,
-        labels: updated.labels,
-        test_scenario_ids: updated.test_scenario_ids,
-        conclusions: updated.conclusions,
-      });
+      applyCardUpdate(updated);
       toast.success('Assignee updated');
     } catch {
       toast.error('Failed to update assignee');
@@ -828,25 +820,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     if (!card) return;
     try {
       const updated = await api.updateCard(card.id, { priority: priority as CardPriority });
-      setCard(updated);
-      updateCardInColumn({
-        id: updated.id,
-        board_id: updated.board_id,
-        spec_id: updated.spec_id,
-        title: updated.title,
-        description: updated.description,
-        status: updated.status,
-        priority: updated.priority,
-        position: updated.position,
-        assignee_id: updated.assignee_id,
-        created_by: updated.created_by,
-        created_at: updated.created_at,
-        updated_at: updated.updated_at,
-        due_date: updated.due_date,
-        labels: updated.labels,
-        test_scenario_ids: updated.test_scenario_ids,
-        conclusions: updated.conclusions,
-      });
+      applyCardUpdate(updated);
       toast.success('Priority updated');
     } catch {
       toast.error('Failed to update priority');
@@ -878,6 +852,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     && (
       canReadConclusion
       || (card.card_type !== 'test' && canReadValidation)
+      || canReadPolicyCompliance
     )
   );
   const unansweredQA = card?.qa_items.filter(
@@ -892,6 +867,20 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const validationCount = card
     ? (card.conclusions?.length || 0) + (card.validations?.length || 0)
     : 0;
+  const allowedStatuses: CardStatus[] = card
+    ? [
+        card.status,
+        ...policyTransitionAuthority.actionableTransitions
+          .map((transition) => transition.to_status)
+          .filter(
+            (status): status is CardStatus =>
+              Object.prototype.hasOwnProperty.call(STATUS_LABELS, status)
+              && status !== card.status,
+          ),
+      ].filter(
+        (status, index, statuses) => statuses.indexOf(status) === index,
+      )
+    : [];
   const topTabs: {
     id: CardModalTab;
     label: string;
@@ -989,16 +978,17 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
             <select
               value={card?.status || ''}
               onChange={(e) => handleStatusChange(e.target.value as CardStatus)}
-              disabled={!card || isLoading || knowledgeMutationBusy}
+              disabled={
+                !card
+                || isLoading
+                || knowledgeMutationBusy
+                || movingStatus !== null
+                || policyTransitionAuthority.preview.status !== 'ready'
+              }
               aria-label="Card status"
               className="text-sm border border-gray-300 rounded px-2 py-1 bg-white dark:bg-gray-700 dark:border-gray-600 text-gray-900 dark:text-gray-100"
             >
-              {(allowedStatuses.length > 0
-                ? allowedStatuses
-                : card
-                  ? [card.status]
-                  : []
-              ).map((status) => (
+              {allowedStatuses.map((status) => (
                 <option key={status} value={status}>
                   {STATUS_LABELS[status]}
                 </option>
@@ -1029,25 +1019,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                 }
                 try {
                   const updated = await api.updateCard(card.id, { title: newTitle });
-                  setCard(updated);
-                  updateCardInColumn({
-                    id: updated.id,
-                    board_id: updated.board_id,
-                    spec_id: updated.spec_id,
-                    title: updated.title,
-                    description: updated.description,
-                    status: updated.status,
-                    priority: updated.priority,
-                    position: updated.position,
-                    assignee_id: updated.assignee_id,
-                    created_by: updated.created_by,
-                    created_at: updated.created_at,
-                    updated_at: updated.updated_at,
-                    due_date: updated.due_date,
-                    labels: updated.labels,
-                    test_scenario_ids: updated.test_scenario_ids,
-                    conclusions: updated.conclusions,
-                  });
+                  applyCardUpdate(updated);
                   toast.success('Title updated');
                 } catch {
                   e.currentTarget.textContent = card.title;
@@ -1200,8 +1172,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       value={card.description || ''}
                       onSave={async (val) => {
                         const updated = await api.updateCard(card.id, { description: val });
-                        setCard(updated);
-                        updateCardInColumn(updated);
+                        applyCardUpdate(updated);
                       }}
                       multiline
                       renderView={(v) => <Md>{v}</Md>}
@@ -1221,8 +1192,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                               key={sev}
                               onClick={async () => {
                                 const updated = await api.updateCard(card.id, { severity: sev });
-                                setCard(updated);
-                                updateCardInColumn(updated);
+                                applyCardUpdate(updated);
                               }}
                               className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                                 card.severity === sev
@@ -1246,7 +1216,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                             value={card.expected_behavior || ''}
                             onSave={async (val) => {
                               const updated = await api.updateCard(card.id, { expected_behavior: val });
-                              setCard(updated);
+                              applyCardUpdate(updated);
                             }}
                             multiline
                             renderView={(v) => <div className="p-3 text-sm text-gray-800 dark:text-gray-200"><Md>{v}</Md></div>}
@@ -1263,7 +1233,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                             value={card.observed_behavior || ''}
                             onSave={async (val) => {
                               const updated = await api.updateCard(card.id, { observed_behavior: val });
-                              setCard(updated);
+                              applyCardUpdate(updated);
                             }}
                             multiline
                             renderView={(v) => <div className="p-3 text-sm text-gray-800 dark:text-gray-200"><Md>{v}</Md></div>}
@@ -1280,7 +1250,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                             value={card.steps_to_reproduce || ''}
                             onSave={async (val) => {
                               const updated = await api.updateCard(card.id, { steps_to_reproduce: val });
-                              setCard(updated);
+                              applyCardUpdate(updated);
                             }}
                             multiline
                             renderView={(v) => <div className="p-3 text-sm text-gray-800 dark:text-gray-200"><Md>{v}</Md></div>}
@@ -1297,7 +1267,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                             value={card.action_plan || ''}
                             onSave={async (val) => {
                               const updated = await api.updateCard(card.id, { action_plan: val });
-                              setCard(updated);
+                              applyCardUpdate(updated);
                             }}
                             multiline
                             renderView={(v) => <div className="p-3 text-sm text-gray-800 dark:text-gray-200"><Md>{v}</Md></div>}
@@ -1356,8 +1326,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       value={card.details || ''}
                       onSave={async (val) => {
                         const updated = await api.updateCard(card.id, { details: val });
-                        setCard(updated);
-                        updateCardInColumn(updated);
+                        applyCardUpdate(updated);
                       }}
                       multiline
                       renderView={(v) => <Md>{v}</Md>}
@@ -1447,6 +1416,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                     api={api}
                     allCards={allBoardCards}
                     canManage={canManageDependencies}
+                    onSubjectChanged={notePolicySubjectChanged}
                   />
                   </AccessibleTabPanel>
 
@@ -1471,8 +1441,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                               const updated = await api.updateCard(card.id, {
                                 skip_task_requirement_link_gate: !(card.skip_task_requirement_link_gate ?? false),
                               });
-                              setCard(updated);
-                              updateCardInColumn(updated);
+                              applyCardUpdate(updated);
                             }}
                             ariaLabel="Skip task requirement link gate for this card"
                             activeColor="amber"
@@ -1495,26 +1464,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       scenarios={specScenarios}
                       api={api}
                       onUpdate={(updatedCard, updatedScenarios) => {
-                        setCard(updatedCard);
+                        applyCardUpdate(updatedCard);
                         setSpecScenarios(updatedScenarios);
-                        updateCardInColumn({
-                          id: updatedCard.id,
-                          board_id: updatedCard.board_id,
-                          spec_id: updatedCard.spec_id,
-                          title: updatedCard.title,
-                          description: updatedCard.description,
-                          status: updatedCard.status,
-                          priority: updatedCard.priority,
-                          position: updatedCard.position,
-                          assignee_id: updatedCard.assignee_id,
-                          created_by: updatedCard.created_by,
-                          created_at: updatedCard.created_at,
-                          updated_at: updatedCard.updated_at,
-                          due_date: updatedCard.due_date,
-                          labels: updatedCard.labels,
-                          test_scenario_ids: updatedCard.test_scenario_ids,
-                          conclusions: updatedCard.conclusions,
-                        });
                       }}
                       canLink={canLinkScenarios}
                     />
@@ -1531,6 +1482,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       icon={<Scale size={14} className="inline mr-1" />}
                       api={api}
                       canLink={canLinkRules}
+                      onSubjectChanged={notePolicySubjectChanged}
                       onSpecRefresh={() => {
                         api.getSpec(card.spec_id!).then((spec) => {
                           setSpecRules(spec.business_rules || []);
@@ -1550,6 +1502,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       icon={<FileText size={14} className="inline mr-1" />}
                       api={api}
                       canLink={canLinkContracts}
+                      onSubjectChanged={notePolicySubjectChanged}
                       onSpecRefresh={() => {
                         api.getSpec(card.spec_id!).then((spec) => {
                           setSpecContracts(spec.api_contracts || []);
@@ -1569,6 +1522,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       icon={<Network size={14} className="inline mr-1" />}
                       api={api}
                       canLink={canLinkIRTasks}
+                      onSubjectChanged={notePolicySubjectChanged}
                       onSpecRefresh={() => {
                         api.getSpec(card.spec_id!).then((spec) => {
                           setSpecIRs(spec.integration_requirements || []);
@@ -1588,6 +1542,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       icon={<Gauge size={14} className="inline mr-1" />}
                       api={api}
                       canLink={canLinkORTasks}
+                      onSubjectChanged={notePolicySubjectChanged}
                       onSpecRefresh={() => {
                         api.getSpec(card.spec_id!).then((spec) => {
                           setSpecORs(spec.observability_requirements || []);
@@ -1607,6 +1562,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       icon={<FileText size={14} className="inline mr-1" />}
                       api={api}
                       canLink={canLinkTRs}
+                      onSubjectChanged={notePolicySubjectChanged}
                       onSpecRefresh={() => {
                         api.getSpec(card.spec_id!).then((spec) => {
                           setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
@@ -1725,8 +1681,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                                 onClick={async () => {
                                   try {
                                     await api.unlinkTestTaskFromBug(card.id, taskId);
-                                    const linked = (card.linked_test_task_ids || []).filter(id => id !== taskId);
-                                    setCard({ ...card, linked_test_task_ids: linked });
+                                    const updated = await api.getCard(card.id);
+                                    applyCardUpdate(updated);
                                     toast.success('Test task unlinked');
                                   } catch {
                                     toast.error('Failed to unlink');
@@ -1837,9 +1793,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                           api={api}
                           canLink={canLinkScenarios}
                           onUpdate={(updatedCard, updatedScenarios) => {
-                            setCard(updatedCard);
+                            applyCardUpdate(updatedCard);
                             setSpecScenarios(updatedScenarios);
-                            updateCardInColumn(updatedCard);
                           }}
                         />
                       ) : (
@@ -1885,6 +1840,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       setCard(updated);
                       updateCardInColumn(updated);
                     }}
+                    onSubjectChanged={notePolicySubjectChanged}
                     onBusyChange={setKnowledgeMutationBusy}
                   />
                 </AccessibleTabPanel>
@@ -1956,6 +1912,13 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                               count: card.validations?.length || 0,
                             }]
                           : []),
+                        ...(canReadPolicyCompliance
+                          ? [{
+                              id: 'policy-compliance' as const,
+                              label: 'Policy Compliance',
+                              icon: <ShieldCheck size={14} />,
+                            }]
+                          : []),
                       ]}
                       value={validationTab}
                       onValueChange={setValidationTab}
@@ -1981,13 +1944,40 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                         <ValidationsTab
                           card={card}
                           onCardChanged={(updated) => {
-                            setCard(updated);
-                            updateCardInColumn(updated);
-                            loadAllowedStatuses(updated);
+                            applyCardUpdate(updated);
                           }}
                           api={api}
                           members={boardMembers}
                           canSubmit={canSubmitValidation}
+                        />
+                      </AccessibleTabPanel>
+                    )}
+
+                    {canReadPolicyCompliance && (
+                      <AccessibleTabPanel
+                        idBase={`${tabIdBase}-card-${card.id}-validation`}
+                        tabId="policy-compliance"
+                        value={validationTab}
+                        mount="lazy-keep"
+                        className="space-y-4"
+                      >
+                        <PolicyComplianceTransitionPreview
+                          preview={policyTransitionAuthority.preview}
+                          rejection={policyTransitionAuthority.rejection}
+                        />
+                        <PolicyCompliancePanel
+                          boardId={card.board_id}
+                          entityType="card"
+                          subjectId={card.id}
+                          refreshKey={policyAuthorityRefreshKey}
+                          onEvaluated={() => {
+                            policyTransitionAuthority.clearRejection();
+                            void policyTransitionAuthority.refresh();
+                          }}
+                          onRefreshed={() => {
+                            policyTransitionAuthority.clearRejection();
+                            void policyTransitionAuthority.refresh();
+                          }}
                         />
                       </AccessibleTabPanel>
                     )}
@@ -2670,7 +2660,8 @@ function TestScenariosSection({
  * Mirrors TestScenariosSection but works with any spec item type that has {id, linked_task_ids}.
  */
 function LinkedSpecItemsSection({
-  card, specId, items, field, label, icon, api, onSpecRefresh, canLink = true,
+  card, specId, items, field, label, icon, api, onSpecRefresh,
+  onSubjectChanged, canLink = true,
 }: {
   card: Card;
   specId: string;
@@ -2680,6 +2671,7 @@ function LinkedSpecItemsSection({
   icon: React.ReactNode;
   api: ReturnType<typeof useDashboardApi>;
   onSpecRefresh: () => void;
+  onSubjectChanged: () => void;
   canLink?: boolean;
 }) {
   const linkedItems = items.filter(i => (i.linked_task_ids || []).includes(card.id));
@@ -2693,6 +2685,7 @@ function LinkedSpecItemsSection({
     try {
       await api.linkTaskToSpecItem(specId, field, itemId, card.id);
       onSpecRefresh();
+      onSubjectChanged();
       toast.success(`${label} linked`);
     } catch {
       toast.error(`Failed to link ${label.toLowerCase()}`);
@@ -2703,6 +2696,7 @@ function LinkedSpecItemsSection({
     try {
       await api.unlinkTaskFromSpecItem(specId, field, itemId, card.id);
       onSpecRefresh();
+      onSubjectChanged();
       toast.success(`${label} unlinked`);
     } catch {
       toast.error(`Failed to unlink ${label.toLowerCase()}`);
@@ -2759,7 +2753,8 @@ function LinkedSpecItemsSection({
 // Q&A Tab Component
 // Dependencies section in Details tab
 function DependenciesSection({
-  cardId, dependencies, dependents, setDependencies, api, allCards, canManage = true,
+  cardId, dependencies, dependents, setDependencies, api, allCards,
+  onSubjectChanged, canManage = true,
 }: {
   cardId: string;
   dependencies: { id: string; title: string; status: string }[];
@@ -2767,6 +2762,7 @@ function DependenciesSection({
   setDependencies: (d: { id: string; title: string; status: string }[]) => void;
   api: ReturnType<typeof useDashboardApi>;
   allCards: { id: string; title: string; status: string }[];
+  onSubjectChanged: () => void;
   canManage?: boolean;
 }) {
   const [selectedDepId, setSelectedDepId] = useState('');
@@ -2788,6 +2784,7 @@ function DependenciesSection({
       const fresh = await api.getCardDependencies(cardId);
       setDependencies(fresh);
       setSelectedDepId('');
+      onSubjectChanged();
       toast.success('Dependency added');
     } catch (e: any) {
       const msg = e?.message?.includes('409') ? 'Circular or duplicate dependency' : 'Failed to add dependency';
@@ -2799,6 +2796,7 @@ function DependenciesSection({
     try {
       await api.removeCardDependency(cardId, depId);
       setDependencies(dependencies.filter((d) => d.id !== depId));
+      onSubjectChanged();
       toast.success('Dependency removed');
     } catch {
       toast.error('Failed to remove dependency');

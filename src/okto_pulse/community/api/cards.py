@@ -78,6 +78,9 @@ from okto_pulse.core.application.use_cases.knowledge_propagation import (
     ReplaceCardKnowledgeAssignmentsUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.core.domain.guideline_policy_transition import (
+    PolicyTransitionRejected,
+)
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models import (
@@ -270,6 +273,8 @@ async def move_card(
             status_code=status.HTTP_409_CONFLICT,
             detail=_resource_gate_detail(e),
         )
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except EntityNotFoundError:
@@ -534,6 +539,8 @@ async def submit_task_validation(
             status_code=status.HTTP_409_CONFLICT,
             detail=_resource_gate_detail(e),
         )
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)

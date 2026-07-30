@@ -2,7 +2,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ReactNode,
 } from 'react';
 import {
   AlertTriangle,
@@ -22,6 +21,7 @@ import {
   type PageEnvelope,
 } from '@/services/api';
 import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
+import { CollapsibleEvidenceSection } from '@/components/shared/CollapsibleEvidenceSection';
 import type { PaginationPageSize } from '@/hooks/usePersistedPagination';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import type {
@@ -882,69 +882,6 @@ export interface QualityPanelProps {
   refreshKey?: number;
 }
 
-interface CollapsibleQualitySectionProps {
-  title: string;
-  description: string;
-  expanded: boolean;
-  onToggle: () => void;
-  testId: string;
-  children: ReactNode;
-}
-
-function CollapsibleQualitySection({
-  title,
-  description,
-  expanded,
-  onToggle,
-  testId,
-  children,
-}: CollapsibleQualitySectionProps) {
-  const contentId = `${testId}-content`;
-  return (
-    <section className="rounded-xl border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900/30">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        aria-controls={contentId}
-        data-testid={`${testId}-toggle`}
-        className="flex w-full items-center justify-between gap-3 rounded-lg p-1 text-left hover:bg-surface-50 dark:hover:bg-surface-800/60"
-      >
-        <span>
-          <span className="block text-sm font-semibold text-surface-800 dark:text-surface-100">
-            {title}
-          </span>
-          <span className="mt-0.5 block text-[11px] text-surface-500 dark:text-surface-400">
-            {description}
-          </span>
-        </span>
-        {expanded ? (
-          <ChevronUp
-            size={16}
-            className="shrink-0 text-surface-500"
-            aria-hidden="true"
-          />
-        ) : (
-          <ChevronDown
-            size={16}
-            className="shrink-0 text-surface-500"
-            aria-hidden="true"
-          />
-        )}
-      </button>
-      {expanded && (
-        <div
-          id={contentId}
-          className="mt-3 space-y-3 border-t border-surface-200 pt-3 dark:border-surface-700"
-          data-testid={`${testId}-content`}
-        >
-          {children}
-        </div>
-      )}
-    </section>
-  );
-}
-
 function RequirementLintAdvisoryNotice({
   onOpenHelp,
 }: {
@@ -1291,7 +1228,7 @@ export function QualityPanel({
         )
       )}
 
-      <CollapsibleQualitySection
+      <CollapsibleEvidenceSection
         title="Receipt history"
         description="History is append-only; superseded and stale receipts remain traceable."
         expanded={historyExpanded}
@@ -1335,9 +1272,9 @@ export function QualityPanel({
           testId="quality-history-paginator"
           compact
         />
-      </CollapsibleQualitySection>
+      </CollapsibleEvidenceSection>
 
-      <CollapsibleQualitySection
+      <CollapsibleEvidenceSection
         title="Pinpoint findings"
         description="Filtered server-side without loading receipts one by one."
         expanded={findingsExpanded}
@@ -1409,7 +1346,7 @@ export function QualityPanel({
           testId="quality-findings-paginator"
           compact
         />
-      </CollapsibleQualitySection>
+      </CollapsibleEvidenceSection>
     </div>
   );
 }

@@ -47,10 +47,11 @@ async def test_live_catalog_initialize_tools_list_and_manifest_agree(
     assert initialized.serverInfo.version == "0.3.1"
     assert version("okto-pulse-core") == initialized.serverInfo.version
     assert version("okto-pulse") == initialized.serverInfo.version
-    assert len(names) == manifest["tool_inventory"]["count"] == 292
-    assert len(names) - len(aliases) == 284
+    assert len(names) == manifest["tool_inventory"]["count"] == 312
+    assert len(names) - len(aliases) == 304
     assert len(aliases) == 8
-    assert len(listed_resources) == 52
+    # SK-B adds the canonical policy-compliance guidance resource.
+    assert len(listed_resources) == 53
     assert manifest["tool_inventory"]["sha256"] == tool_inventory_sha256(
         {"tools": names, "aliases": aliases}
     )

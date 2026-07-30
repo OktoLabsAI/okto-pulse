@@ -24,6 +24,12 @@ const apiMock = vi.hoisted(() => ({
 const boardState = vi.hoisted(() => ({
   currentBoard: null as Board | null,
 }));
+const permissionState = vi.hoisted(() => ({
+  isLoading: false,
+  error: null as Error | null,
+  ownerReviewRequired: false,
+  allowed: new Set<string>(),
+}));
 
 const checklistBinding = {
   id: 'a'.repeat(64),
@@ -76,6 +82,16 @@ vi.mock('@/adapters', () => ({
 
 vi.mock('@/hooks/useTheme', () => ({
   useTheme: () => ({ theme: 'light', toggle: vi.fn() }),
+}));
+
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'Custom',
+    isLoading: permissionState.isLoading,
+    error: permissionState.error,
+    ownerReviewRequired: permissionState.ownerReviewRequired,
+    has: (flag: string) => permissionState.allowed.has(flag),
+  }),
 }));
 
 vi.mock('@/components/layout/RuntimeSettingsPanel', () => ({
@@ -159,6 +175,14 @@ function renderOpenHeader() {
   });
 }
 
+function grant(...permissions: string[]) {
+  permissionState.allowed = new Set(permissions);
+}
+
+function openHeaderMenu() {
+  fireEvent.click(screen.getAllByRole('button')[1]);
+}
+
 describe('Header Board settings resource automation', () => {
   beforeEach(() => {
     apiMock.updateBoard.mockReset();
@@ -197,6 +221,89 @@ describe('Header Board settings resource automation', () => {
     apiMock.listChecklistTemplates.mockReturnValue(new Promise(() => {}));
     apiMock.updateChecklistBinding.mockReset();
     boardState.currentBoard = boardWith({});
+    permissionState.isLoading = false;
+    permissionState.error = null;
+    permissionState.ownerReviewRequired = false;
+    grant(
+      'guidelines.revisions.read',
+      'guidelines.adoption.manage',
+    );
+  });
+
+  it.each([
+    ['revision reader', ['guidelines.revisions.read']],
+    ['revision creator', ['guidelines.revisions.create']],
+    ['waiver reader', ['guidelines.waiver.read']],
+  ])(
+    'shows the Guidelines entry for an authorized %s',
+    (_label, permissions) => {
+      grant(...permissions);
+      render(<Header />);
+
+      openHeaderMenu();
+
+      expect(screen.getByTestId('menu-guidelines')).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    {
+      label: 'loading',
+      isLoading: true,
+      error: null,
+      ownerReviewRequired: false,
+      permissions: ['guidelines.revisions.read'],
+    },
+    {
+      label: 'permission error',
+      isLoading: false,
+      error: new Error('permission service unavailable'),
+      ownerReviewRequired: false,
+      permissions: ['guidelines.revisions.read'],
+    },
+    {
+      label: 'owner review',
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: true,
+      permissions: ['guidelines.revisions.read'],
+    },
+    {
+      label: 'explicit deny',
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: false,
+      permissions: [],
+    },
+  ])(
+    'hides the Guidelines entry while authority is $label',
+    ({
+      isLoading,
+      error,
+      ownerReviewRequired,
+      permissions,
+    }) => {
+      permissionState.isLoading = isLoading;
+      permissionState.error = error;
+      permissionState.ownerReviewRequired = ownerReviewRequired;
+      grant(...permissions);
+      render(<Header />);
+
+      openHeaderMenu();
+
+      expect(screen.queryByTestId('menu-guidelines')).not.toBeInTheDocument();
+    },
+  );
+
+  it('does not read board guidelines when revision-read authority is denied', async () => {
+    grant('guidelines.adoption.manage');
+
+    renderOpenHeader();
+
+    const warning = await screen.findByTestId('board-context-warning');
+    expect(warning).toHaveTextContent('Board description is empty');
+    expect(warning).not.toHaveTextContent('Board guidelines are empty');
+    expect(apiMock.getBoardGuidelines).not.toHaveBeenCalled();
   });
 
   it('enabling automation with no selected types sends all resource types', async () => {

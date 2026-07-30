@@ -16,6 +16,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     PermissionIntroductionAudit,
 )
 from okto_pulse.community.adapters.sqlalchemy_repositories import PermissionPreset
+from okto_pulse.core.ports.permission_policy import (
+    permission_introduction_manifests,
+)
 
 
 async def _factory():
@@ -78,15 +81,23 @@ def test_reconcile_twice_emits_no_second_write_and_preserves_custom() -> None:
     assert custom is not None
     assert custom.name == "My custom preset"
     assert custom.flags == {"board": {"read": False}}
-    assert len(audits) == 2
-    assert all(audit.manifest_version == "SK-A/v1" for audit in audits)
-    assert sorted(audit.mutation_count for audit in audits) == [0, 7]
+    manifests = permission_introduction_manifests()
+    expected_versions = [manifest.version for manifest in manifests]
+    assert len(audits) == 2 * len(manifests)
+    assert {audit.manifest_version for audit in audits} == set(expected_versions)
+    for manifest_order, version in enumerate(expected_versions):
+        version_rows = [audit for audit in audits if audit.manifest_version == version]
+        assert sorted(audit.mutation_count for audit in version_rows) == [0, 7]
+        assert all(
+            audit.details["manifest_order"] == manifest_order for audit in version_rows
+        )
     assert all(
         len(audit.before_digest) == 64 and len(audit.after_digest) == 64
         for audit in audits
     )
-    replay_audit = next(audit for audit in audits if audit.mutation_count == 0)
-    assert replay_audit.before_digest == replay_audit.after_digest
+    replay_audits = [audit for audit in audits if audit.mutation_count == 0]
+    assert len(replay_audits) == len(manifests)
+    assert all(audit.before_digest == audit.after_digest for audit in replay_audits)
 
 
 def test_reconcile_updates_only_drifted_builtin() -> None:
@@ -133,6 +144,7 @@ def test_failure_mid_plan_rolls_back_and_retry_converges() -> None:
     async def drive():
         engine, factory = await _factory()
         try:
+
             def fail_before_second(index, command):
                 if index == 1:
                     raise RuntimeError("injected preset failure")

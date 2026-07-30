@@ -105,12 +105,12 @@ LEGACY_CORE_SCHEMA_SHA256 = (
     "e86da78734745e3f1f2fab55a4eaefc5a60d8b6b97053d5d0914cf43609f4d74"
 )
 
-# Current inherited schema after the governed tenant-scope migration and the
-# additive nullable governance_metadata/content_hash columns on all three
-# Knowledge Base tables. Keep the pre-extraction hash above immutable so
-# migration provenance remains independently verifiable.
+# Current inherited schema after the governed tenant-scope/Knowledge Base
+# migrations and the SK-B internal policy-version fences on Spec and Card.
+# Keep the pre-extraction hash above immutable so migration provenance remains
+# independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "227109980d23880272ee054eed1c6be1943b1ed50bb10028c8a8ad8ded9fdd48"
+    "8b85622b7a469e814de9326ddf196903d5aaa9c419f3d875d9012b02a977aac5"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
@@ -135,6 +135,50 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "global_discovery_recovery_dispatches",
         "global_discovery_recovery_transitions",
         "global_discovery_source_revision",
+        "checklist_binding_heads",
+        "checklist_bindings",
+        "checklist_execution_heads",
+        "checklist_executions",
+        "checklist_item_results",
+        "checklist_receipts",
+        "checklist_template_versions",
+        "guideline_revisions",
+        "guideline_heads",
+        "guideline_board_bindings",
+        "guideline_import_binding_candidates",
+        "guideline_impact_receipts",
+        "guideline_impact_items",
+        "guideline_impact_adoptions",
+        "guideline_impact_unlinks",
+        "guideline_retirement_impacts",
+        "guideline_retirements",
+        "permission_introduction_audit",
+        "policy_compliance_receipts",
+        "policy_compliance_adopted_revisions",
+        "policy_compliance_findings",
+        "policy_waivers",
+        "policy_waiver_events",
+        "quality_assessment_heads",
+        "quality_assessment_legacy_import_candidates",
+        "quality_assessment_legacy_import_checkpoints",
+        "quality_assessment_legacy_import_completions",
+        "quality_assessment_legacy_import_resolutions",
+        "quality_assessment_legacy_import_runs",
+        "quality_assessment_lifecycle_stale_transitions",
+        "quality_assessment_lifecycle_transitions",
+        "quality_assessment_outbox",
+        "quality_assessment_receipts",
+        "quality_assessment_subject_erasure_permits",
+        "quality_finding_qa_links",
+        "quality_findings",
+        "quality_proposed_questions",
+        "research_decision_derivations",
+        "research_decision_entries",
+        "research_decision_heads",
+        "research_decision_history",
+        "research_decision_idempotency",
+        "research_decision_outbox",
+        "research_decision_snapshots",
         "knowledge_propagation_scopes",
         "knowledge_propagation_assignments",
         "knowledge_propagation_snapshots",

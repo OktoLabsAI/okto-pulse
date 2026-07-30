@@ -15,6 +15,9 @@ from okto_pulse.community.api.comments import router as comments_router
 from okto_pulse.community.api.ideations import router as ideations_router
 from okto_pulse.community.api.refinements import router as refinements_router
 from okto_pulse.community.api.guidelines import router as guidelines_router
+from okto_pulse.community.api.policy_governance import (
+    router as policy_governance_router,
+)
 from okto_pulse.community.api.specs import router as specs_router
 from okto_pulse.community.api.stories import router as stories_router
 from okto_pulse.community.api.analytics import router as analytics_router
@@ -94,6 +97,11 @@ api_router.include_router(allowed_transitions_router, tags=["allowed-transitions
 # match routes in registration order, so the param route would swallow the literal path
 # and return 404 "Guideline not found"). Regression: test_guidelines_route_order.py.
 api_router.include_router(default_board_config_router, tags=["default-board-config"])
+# Board-scoped policy governance owns literal import/export and action routes.
+# Keep it before the historical guideline router: Starlette route matching is
+# registration-ordered and `/guidelines/{guideline_id}` must never capture a
+# governance literal.
+api_router.include_router(policy_governance_router, tags=["policy-governance"])
 api_router.include_router(guidelines_router, tags=["guidelines"])
 api_router.include_router(agents_router, prefix="/agents", tags=["agents"])
 api_router.include_router(

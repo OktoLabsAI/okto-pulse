@@ -105,7 +105,11 @@ export class AuthenticatedFetch {
         message,
         status: response.status,
         code: typeof rawCode === 'string' ? rawCode : null,
-        details: errorData.details ?? detailRecord?.details ?? null,
+        details:
+          errorData.details
+          ?? detailRecord?.details
+          ?? detailRecord
+          ?? null,
         retryable: Boolean(errorData.retryable ?? detailRecord?.retryable),
       });
     }

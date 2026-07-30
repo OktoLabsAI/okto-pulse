@@ -15,7 +15,22 @@ const apiMock = vi.hoisted(() => ({
   listDefaultGuidelineCandidates: vi.fn(),
   updateDefaultGuidelineRefs: vi.fn(),
 }));
+const permissionState = vi.hoisted(() => ({
+  isLoading: false,
+  error: null as Error | null,
+  ownerReviewRequired: false,
+  allowed: new Set<string>(),
+}));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'Custom',
+    isLoading: permissionState.isLoading,
+    error: permissionState.error,
+    ownerReviewRequired: permissionState.ownerReviewRequired,
+    has: (flag: string) => permissionState.allowed.has(flag),
+  }),
+}));
 // The Export/Import buttons pull the import-export service through the API
 // context; stub the hook so this panel test does not need an ApiProvider.
 vi.mock('@/services/import-export-api', () => ({
@@ -35,6 +50,7 @@ vi.mock('@/services/import-export-api', () => ({
 }));
 
 
+import { CONTEXTUAL_HELP_EVENT } from '@/components/help';
 import { DefaultBoardConfigPanel } from '../DefaultBoardConfigPanel';
 
 function tmpl(over: Record<string, unknown> = {}) {
@@ -46,9 +62,75 @@ function tmpl(over: Record<string, unknown> = {}) {
   };
 }
 
+function revisionPin(
+  guidelineId: 'g1' | 'g2',
+  revisionNumber = 1,
+) {
+  return {
+    revision_id: `${guidelineId}-revision-${revisionNumber}`,
+    revision_number: revisionNumber,
+    semantic_version: `${revisionNumber}.0.0`,
+    revision_digest: (guidelineId === 'g1' ? 'a' : 'b').repeat(64),
+  };
+}
+
+function guidelineRef(
+  guidelineId: 'g1' | 'g2',
+  priority: number,
+  revisionNumber = 1,
+) {
+  return {
+    guideline_id: guidelineId,
+    priority,
+    ...revisionPin(guidelineId, revisionNumber),
+  };
+}
+
+function candidate(
+  guidelineId: 'g1' | 'g2',
+  isDefault: boolean,
+  priority: number | null,
+  {
+    headRevisionNumber = 1,
+    defaultRevisionNumber = headRevisionNumber,
+  }: {
+    headRevisionNumber?: number;
+    defaultRevisionNumber?: number;
+  } = {},
+) {
+  const head = revisionPin(guidelineId, headRevisionNumber);
+  return {
+    guideline_id: guidelineId,
+    title: guidelineId === 'g1' ? 'Already default' : 'Not default yet',
+    scope: 'global',
+    guideline_version: 1,
+    ...head,
+    head_revision: head,
+    default_revision: isDefault
+      ? revisionPin(guidelineId, defaultRevisionNumber)
+      : null,
+    retired: false,
+    eligible: true,
+    eligibility_reason: null,
+    is_default: isDefault,
+    priority,
+  };
+}
+
+function grant(...permissions: string[]) {
+  permissionState.allowed = new Set(permissions);
+}
+
 describe('DefaultBoardConfigPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionState.isLoading = false;
+    permissionState.error = null;
+    permissionState.ownerReviewRequired = false;
+    grant(
+      'guidelines.revisions.read',
+      'guidelines.adoption.manage',
+    );
     apiMock.getActiveDefaultBoardConfig.mockResolvedValue({
       scope: 'global',
       active: tmpl({
@@ -60,7 +142,7 @@ describe('DefaultBoardConfigPanel', () => {
           require_spec_validation: true,
           design_system_gate_mode: 'advisory',
         },
-        guideline_default_refs: [{ guideline_id: 'g1', priority: 1 }],
+        guideline_default_refs: [guidelineRef('g1', 1)],
         design_system_default_ref: { design_system_id: 'ds-1', gate_mode: 'advisory' },
       }),
     });
@@ -83,11 +165,101 @@ describe('DefaultBoardConfigPanel', () => {
     apiMock.listDefaultGuidelineCandidates.mockResolvedValue({
       scope: 'global', template_id: 't2', template_version: 2,
       candidates: [
-        { guideline_id: 'g1', title: 'Already default', scope: 'global', guideline_version: 1, eligible: true, is_default: true, priority: 1 },
-        { guideline_id: 'g2', title: 'Not default yet', scope: 'global', guideline_version: 1, eligible: true, is_default: false, priority: null },
+        candidate('g1', true, 1),
+        candidate('g2', false, null),
       ],
     });
     apiMock.updateDefaultGuidelineRefs.mockResolvedValue(tmpl());
+  });
+
+  it.each([
+    {
+      label: 'loading',
+      isLoading: true,
+      error: null,
+      ownerReviewRequired: false,
+      permissions: ['guidelines.revisions.read'],
+    },
+    {
+      label: 'permission error',
+      isLoading: false,
+      error: new Error('permission service unavailable'),
+      ownerReviewRequired: false,
+      permissions: ['guidelines.revisions.read'],
+    },
+    {
+      label: 'owner review',
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: true,
+      permissions: ['guidelines.revisions.read'],
+    },
+    {
+      label: 'explicit deny',
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: false,
+      permissions: ['guidelines.adoption.manage'],
+    },
+  ])(
+    'fails closed for guideline defaults while authority is $label and keeps Help visible',
+    async ({
+      isLoading,
+      error,
+      ownerReviewRequired,
+      permissions,
+    }) => {
+      permissionState.isLoading = isLoading;
+      permissionState.error = error;
+      permissionState.ownerReviewRequired = ownerReviewRequired;
+      grant(...permissions);
+
+      render(<DefaultBoardConfigPanel boardId="b1" />);
+
+      expect(
+        await screen.findByTestId('dbc-guideline-authority-unavailable'),
+      ).toHaveTextContent('guidelines.revisions.read');
+      expect(
+        screen.getByTestId('default-guideline-policy-help'),
+      ).toHaveTextContent('How exact pins work');
+      expect(apiMock.listDefaultGuidelineCandidates).not.toHaveBeenCalled();
+    },
+  );
+
+  it('loads exact pins for a read-only actor but disables every adoption affordance', async () => {
+    grant('guidelines.revisions.read');
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    expect(
+      await screen.findByTestId('dbc-guideline-candidates'),
+    ).toBeInTheDocument();
+    expect(apiMock.listDefaultGuidelineCandidates).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('dbc-toggle-default-g1')).toBeDisabled();
+    expect(screen.getByTestId('dbc-toggle-default-g2')).toBeDisabled();
+    expect(screen.getByTestId('default-guideline-policy-help'))
+      .toBeInTheDocument();
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+  });
+
+  it('enables guideline-default management only with both capabilities and opens canonical Help', async () => {
+    const helpListener = vi.fn();
+    window.addEventListener(CONTEXTUAL_HELP_EVENT, helpListener, {
+      once: true,
+    });
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    expect(
+      await screen.findByTestId('dbc-toggle-default-g2'),
+    ).toBeEnabled();
+    fireEvent.click(screen.getByTestId('default-guideline-policy-help'));
+
+    expect(helpListener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: { sectionId: 'policy-governance' },
+      }),
+    );
   });
 
   it('renders active template, defaults, design system, and override diff from REAL api data', async () => {
@@ -183,12 +355,113 @@ describe('DefaultBoardConfigPanel', () => {
     expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(expect.objectContaining({
       activate: true,
       guideline_default_refs: [
-        { guideline_id: 'g1', priority: 1 },
-        { guideline_id: 'g2', priority: 2 },
+        guidelineRef('g1', 1),
+        guidelineRef('g2', 2),
       ],
     }));
     // The unified Save path no longer uses the standalone guideline-refs endpoint.
     expect(apiMock.updateDefaultGuidelineRefs).not.toHaveBeenCalled();
+  });
+
+  it('does not silently promote an existing default when its guideline has a newer head', async () => {
+    apiMock.listDefaultGuidelineCandidates.mockResolvedValue({
+      scope: 'global',
+      template_id: 't2',
+      template_version: 2,
+      candidates: [
+        candidate('g1', true, 1, {
+          headRevisionNumber: 2,
+          defaultRevisionNumber: 1,
+        }),
+        candidate('g2', false, null),
+      ],
+    });
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    fireEvent.click(
+      await screen.findByTestId('dbc-toggle-default-g2'),
+    );
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    await waitFor(() =>
+      expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1),
+    );
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guideline_default_refs: [
+          guidelineRef('g1', 1, 1),
+          guidelineRef('g2', 2, 1),
+        ],
+      }),
+    );
+  });
+
+  it('shows pinned and latest versions separately and updates the pin only after explicit Use latest plus Save', async () => {
+    apiMock.listDefaultGuidelineCandidates.mockResolvedValue({
+      scope: 'global',
+      template_id: 't2',
+      template_version: 2,
+      candidates: [
+        candidate('g1', true, 1, {
+          headRevisionNumber: 2,
+          defaultRevisionNumber: 1,
+        }),
+      ],
+    });
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    const row = await screen.findByTestId('dbc-cand-g1');
+    expect(row).toHaveTextContent('Default v1.0.0');
+    expect(row).toHaveTextContent('Latest v2.0.0');
+    expect(screen.getByTestId('dbc-cand-update-g1'))
+      .toHaveTextContent('Update available');
+
+    fireEvent.click(screen.getByTestId('dbc-use-latest-g1'));
+
+    expect(row).toHaveTextContent('Default v2.0.0');
+    expect(screen.queryByTestId('dbc-cand-update-g1')).not.toBeInTheDocument();
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+    await waitFor(() =>
+      expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1),
+    );
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guideline_default_refs: [guidelineRef('g1', 1, 2)],
+      }),
+    );
+  });
+
+  it('requires a retired default to be unset before another default is added', async () => {
+    apiMock.listDefaultGuidelineCandidates.mockResolvedValue({
+      scope: 'global',
+      template_id: 't2',
+      template_version: 2,
+      candidates: [
+        {
+          ...candidate('g1', true, 1),
+          retired: true,
+          eligible: false,
+          eligibility_reason: 'guideline_retired',
+        },
+        candidate('g2', false, null),
+      ],
+    });
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    expect(
+      await screen.findByTestId('dbc-retired-default-warning'),
+    ).toHaveTextContent('Unset the retired default');
+    expect(
+      screen.getByTestId('dbc-toggle-default-g2'),
+    ).toBeDisabled();
+    expect(screen.getByTestId('dbc-toggle-default-g1')).not.toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('dbc-toggle-default-g1'));
+    expect(screen.getByTestId('dbc-toggle-default-g2')).not.toBeDisabled();
   });
 
   it('unsetting a default stages an empty ref list, committed on Save', async () => {
@@ -214,12 +487,35 @@ describe('DefaultBoardConfigPanel', () => {
     expect(screen.queryByText('Guideline not found')).not.toBeInTheDocument();
   });
 
+  it('preserves authoritative exact guideline pins when candidates are unavailable', async () => {
+    apiMock.listDefaultGuidelineCandidates.mockRejectedValue(
+      new Error('catalog unavailable'),
+    );
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    fireEvent.click(
+      await screen.findByRole('switch', {
+        name: 'Require task validation',
+      }),
+    );
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    await waitFor(() =>
+      expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1),
+    );
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guideline_default_refs: [guidelineRef('g1', 1)],
+      }),
+    );
+  });
+
   it('creates the first template with the staged guideline default on Save when none exists', async () => {
     apiMock.getActiveDefaultBoardConfig.mockResolvedValue({ scope: 'global', active: null });
     apiMock.listDefaultGuidelineCandidates.mockResolvedValue({
       scope: 'global', template_id: null, template_version: null,
       candidates: [
-        { guideline_id: 'g2', title: 'Not default yet', scope: 'global', guideline_version: 1, eligible: true, is_default: false, priority: null },
+        candidate('g2', false, null),
       ],
     });
 
@@ -230,7 +526,7 @@ describe('DefaultBoardConfigPanel', () => {
     await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalled());
     expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(expect.objectContaining({
       activate: true,
-      guideline_default_refs: [{ guideline_id: 'g2', priority: 1 }],
+      guideline_default_refs: [guidelineRef('g2', 1)],
     }));
     expect(apiMock.updateDefaultGuidelineRefs).not.toHaveBeenCalled();
   });
@@ -250,7 +546,7 @@ describe('DefaultBoardConfigPanel', () => {
     await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
     expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(expect.objectContaining({
       activate: true,
-      guideline_default_refs: [{ guideline_id: 'g1', priority: 1 }],
+      guideline_default_refs: [guidelineRef('g1', 1)],
       design_system_default_ref: { design_system_id: 'ds-1', gate_mode: 'advisory' },
       settings_payload: expect.objectContaining({
         require_task_validation: false,

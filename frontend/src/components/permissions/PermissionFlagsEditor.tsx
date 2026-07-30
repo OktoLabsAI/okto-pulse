@@ -38,6 +38,10 @@ const ENTITY_COLORS: Record<string, string> = {
 };
 
 type FlagValue = boolean;
+// Versioned permission introductions remain ordinary entity.level.action
+// leaves here (for example guidelines.waiver.revalidate).  Keeping the editor
+// generic lets the canonical backend registry drive visibility without a
+// second UI-only permission catalog.
 type FlagLevel = Record<string, FlagValue>;
 type FlagEntity = Record<string, FlagLevel | FlagValue>;
 export type FlagsMap = Record<string, FlagEntity>;
@@ -133,6 +137,7 @@ export function PermissionFlagsEditor({ flags, onChange, readOnly = false }: Per
         return (
           <div key={entity} className="border-b last:border-b-0 border-gray-200 dark:border-gray-700">
             <button
+              type="button"
               aria-label={`Edit ${ENTITY_LABELS[entity] || entity} permissions`}
               onClick={() => setExpandedEntity(isExpanded ? null : entity)}
               className="w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-700/30"
@@ -178,8 +183,8 @@ export function PermissionFlagsEditor({ flags, onChange, readOnly = false }: Per
                           <span className="text-[10px] text-gray-400">{levelEnabled}/{levelTotal}</span>
                           {!readOnly && (
                             <>
-                              <button onClick={() => setLevelAll(entity, level, true)} className="text-[10px] text-blue-500 hover:text-blue-600">all on</button>
-                              <button onClick={() => setLevelAll(entity, level, false)} className="text-[10px] text-red-400 hover:text-red-500">all off</button>
+                              <button type="button" onClick={() => setLevelAll(entity, level, true)} className="text-[10px] text-blue-500 hover:text-blue-600">all on</button>
+                              <button type="button" onClick={() => setLevelAll(entity, level, false)} className="text-[10px] text-red-400 hover:text-red-500">all off</button>
                             </>
                           )}
                         </div>
@@ -228,6 +233,7 @@ function ToggleSwitch({
 }) {
   return (
     <button
+      type="button"
       aria-label={`Toggle ${label}`}
       aria-pressed={enabled}
       onClick={readOnly ? undefined : onToggle}

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import delete, event, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+import okto_pulse.community.adapters.sqlalchemy_research_decision_ledger as rdl_adapter_module
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     Board,
@@ -162,7 +164,7 @@ async def _schema_engine(path: Path) -> AsyncEngine:
     return engine
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(loop_scope="function")
 async def rig(tmp_path: Path):
     engine = await _schema_engine(tmp_path / "rdl.db")
     factory = async_sessionmaker(
@@ -212,14 +214,42 @@ async def _counts(session: AsyncSession) -> tuple[int, ...]:
     values = []
     for table in tables:
         values.append(
-            int(
-                await session.scalar(
-                    select(func.count()).select_from(table)
-                )
-                or 0
-            )
+            int(await session.scalar(select(func.count()).select_from(table)) or 0)
         )
     return tuple(values)
+
+
+async def test_bulk_refinement_write_acquires_policy_board_mutex(
+    rig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    original = rdl_adapter_module.lock_policy_board
+
+    async def recording_mutex(
+        session: AsyncSession,
+        *,
+        board_id: str,
+    ) -> None:
+        calls.append(board_id)
+        await original(session, board_id=board_id)
+
+    monkeypatch.setattr(
+        rdl_adapter_module,
+        "lock_policy_board",
+        recording_mutex,
+    )
+    async with rig() as session:
+        adapter = CommunitySqlAlchemyResearchDecisionLedger(session)
+        await adapter.apply_bundle_cas(
+            _append_bundle(
+                "policy-board-mutex",
+                idempotency_key="rdl-policy-board-mutex",
+            )
+        )
+        await session.commit()
+
+    assert calls == [BOARD_ID]
 
 
 async def test_append_commits_complete_bundle_and_exact_replay(rig) -> None:
@@ -252,8 +282,7 @@ async def test_append_commits_complete_bundle_and_exact_replay(rig) -> None:
         execution = await session.scalar(
             select(DomainEventHandlerExecution).where(
                 DomainEventHandlerExecution.event_id == event_row.id,
-                DomainEventHandlerExecution.handler_name
-                == "ConsolidationEnqueuer",
+                DomainEventHandlerExecution.handler_name == "ConsolidationEnqueuer",
             )
         )
         assert execution is not None
@@ -295,9 +324,12 @@ async def test_same_idempotency_key_with_different_payload_fails_closed(rig) -> 
             )
 
         assert await _counts(session) == before
-        assert await session.scalar(
-            select(Refinement.version).where(Refinement.id == REFINEMENT_ID)
-        ) == 2
+        assert (
+            await session.scalar(
+                select(Refinement.version).where(Refinement.id == REFINEMENT_ID)
+            )
+            == 2
+        )
 
 
 async def test_supersede_inserts_successor_and_advances_head_cas(rig) -> None:
@@ -359,9 +391,12 @@ async def test_stale_refinement_cas_produces_zero_delta(rig) -> None:
             await adapter.apply_bundle_cas(loser)
 
         assert await _counts(session) == before
-        assert await session.scalar(
-            select(Refinement.version).where(Refinement.id == REFINEMENT_ID)
-        ) == 2
+        assert (
+            await session.scalar(
+                select(Refinement.version).where(Refinement.id == REFINEMENT_ID)
+            )
+            == 2
+        )
 
 
 @pytest.mark.parametrize(
@@ -397,15 +432,16 @@ async def test_fault_after_each_write_rolls_back_complete_bundle(
         assert await _counts(session) == (0, 0, 0, 0, 0, 0)
         assert (
             await session.scalar(
-                select(func.count()).select_from(
-                    DomainEventHandlerExecution
-                )
+                select(func.count()).select_from(DomainEventHandlerExecution)
             )
             == 0
         )
-        assert await session.scalar(
-            select(Refinement.version).where(Refinement.id == REFINEMENT_ID)
-        ) == 1
+        assert (
+            await session.scalar(
+                select(Refinement.version).where(Refinement.id == REFINEMENT_ID)
+            )
+            == 1
+        )
 
 
 async def test_entry_update_and_delete_are_rejected_by_storage(rig) -> None:
@@ -482,9 +518,7 @@ async def test_list_uses_stable_bounded_keyset_pagination(rig) -> None:
             "Unknown 1",
         ]
         assert first.has_more is True
-        assert [entry.content.unknown for entry in second.items] == [
-            "Unknown 0"
-        ]
+        assert [entry.content.unknown for entry in second.items] == ["Unknown 0"]
         assert second.has_more is False
 
 
@@ -649,14 +683,12 @@ async def test_consolidation_projection_loads_current_rdl_heads_with_two_queries
             record_statement,
         )
         try:
-            projection = (
-                await CommunitySqlAlchemyConsolidationPersistence().load_projection_inputs(
-                    session,
-                    board_id=BOARD_ID,
-                    artifact_type="refinement",
-                    artifact_id=REFINEMENT_ID,
-                    artifact=artifact,
-                )
+            projection = await CommunitySqlAlchemyConsolidationPersistence().load_projection_inputs(
+                session,
+                board_id=BOARD_ID,
+                artifact_type="refinement",
+                artifact_id=REFINEMENT_ID,
+                artifact=artifact,
             )
         finally:
             event.remove(
@@ -688,11 +720,9 @@ async def test_consolidation_projection_loads_current_rdl_heads_with_two_queries
 
     with sqlite3.connect(database_path) as connection:
         connection.row_factory = sqlite3.Row
-        rebuild_fingerprints = (
-            _current_research_decision_head_fingerprints(
-                connection,
-                board_id=BOARD_ID,
-            )
+        rebuild_fingerprints = _current_research_decision_head_fingerprints(
+            connection,
+            board_id=BOARD_ID,
         )
     projection_key = (BOARD_ID, "refinement", REFINEMENT_ID)
     assert rebuild_fingerprints[projection_key] == (
@@ -700,14 +730,10 @@ async def test_consolidation_projection_loads_current_rdl_heads_with_two_queries
     )
     assert projected_root_content_hash(
         "b" * 64,
-        research_decision_head_fingerprints=(
-            current_summary.projection_fingerprint,
-        ),
+        research_decision_head_fingerprints=(current_summary.projection_fingerprint,),
     ) == projected_root_content_hash(
         "b" * 64,
-        research_decision_head_fingerprints=(
-            rebuild_fingerprints[projection_key]
-        ),
+        research_decision_head_fingerprints=(rebuild_fingerprints[projection_key]),
     )
 
 
@@ -799,13 +825,10 @@ async def test_snapshot_and_spec_derivation_are_version_bound_references_only(
         assert len(stored_snapshot.heads) == 2
         assert len(stored_derivation.references) == 1
         assert stored_derivation.references[0].entry_id == resolved.entry.id
-        assert (
-            stored_derivation.references[0].content_digest
-            == next(
-                head.content_digest
-                for head in stored_snapshot.heads
-                if head.entry_id == resolved.entry.id
-            )
+        assert stored_derivation.references[0].content_digest == next(
+            head.content_digest
+            for head in stored_snapshot.heads
+            if head.entry_id == resolved.entry.id
         )
         assert stored_derivation.source_refinement_version == 4
         assert stored_derivation.spec_version == 1
@@ -815,8 +838,7 @@ async def test_snapshot_and_spec_derivation_are_version_bound_references_only(
         )
         assert snapshot_row is not None
         assert all(
-            len(item["content_digest"]) == 64
-            for item in snapshot_row.heads_json
+            len(item["content_digest"]) == 64 for item in snapshot_row.heads_json
         )
         derivation_row = await session.scalar(
             select(ResearchDecisionDerivationRow).where(
@@ -825,20 +847,24 @@ async def test_snapshot_and_spec_derivation_are_version_bound_references_only(
         )
         assert derivation_row is not None
         assert len(derivation_row.references_json[0]["content_digest"]) == 64
-        assert await adapter.get_snapshot_for_version(
-            board_id=BOARD_ID,
-            refinement_id=REFINEMENT_ID,
-            refinement_version=4,
-        ) == stored_snapshot
-        assert await adapter.get_derivation(
-            board_id=BOARD_ID,
-            spec_id=spec.id,
-            spec_version=1,
-        ) == stored_derivation
         assert (
-            await session.scalar(
-                select(Spec.decisions).where(Spec.id == spec.id)
+            await adapter.get_snapshot_for_version(
+                board_id=BOARD_ID,
+                refinement_id=REFINEMENT_ID,
+                refinement_version=4,
             )
+            == stored_snapshot
+        )
+        assert (
+            await adapter.get_derivation(
+                board_id=BOARD_ID,
+                spec_id=spec.id,
+                spec_version=1,
+            )
+            == stored_derivation
+        )
+        assert (
+            await session.scalar(select(Spec.decisions).where(Spec.id == spec.id))
             == sentinel_decisions
         )
 
@@ -880,9 +906,7 @@ async def test_snapshot_hydration_rejects_content_digest_tampering(rig) -> None:
                         "ledger_id": result.entry.ledger_id,
                         "entry_id": result.entry.id,
                         "head_revision": result.head.revision,
-                        "head_refinement_version": (
-                            result.head.refinement_version
-                        ),
+                        "head_refinement_version": (result.head.refinement_version),
                         "status": result.entry.status.value,
                         "content_digest": "0" * 64,
                     }

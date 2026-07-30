@@ -109,12 +109,18 @@ const transitionsResponse = (allowed: string[]) => ({
   entity_type: 'refinement',
   entity_id: 'refinement-1',
   current_status: 'review',
-  source: 'programmatic_backend_transition_authority',
+  source: 'core_sdlc_registry_v1',
   allowed_transitions: allowed.map((to_status) => ({
     to_status,
     label: to_status,
     gate: 'none',
     blocked_reason: null,
+    preconditions: [],
+    capabilities: [],
+    effects: [],
+    reason_codes: [],
+    policy_compliance: false,
+    policy_compliance_decision: null,
   })),
 });
 

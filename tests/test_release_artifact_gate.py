@@ -22,8 +22,8 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     spec.loader.exec_module(module)
 
     assert module.EXPECTED_VERSION == "0.3.1"
-    assert module.EXPECTED_MCP_TOOL_COUNT == 292
-    assert module.EXPECTED_CANONICAL_TOOL_COUNT == 284
+    assert module.EXPECTED_MCP_TOOL_COUNT == 312
+    assert module.EXPECTED_CANONICAL_TOOL_COUNT == 304
     assert module.EXPECTED_TOOL_ALIAS_COUNT == 8
     assert module.EXPECTED_RESOURCE_COUNT == 52
     assert module.MINIMUM_SUPPORTED_PYTHON == (3, 11)
@@ -194,8 +194,8 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
-    assert mcp_http["tool_count"] == 292
-    assert mcp_http["canonical_tool_count"] == 284
+    assert mcp_http["tool_count"] == 312
+    assert mcp_http["canonical_tool_count"] == 304
     assert mcp_http["tool_alias_count"] == 8
     assert mcp_http["resource_count"] == 52
     assert mcp_http["ska_tool_count"] == 11

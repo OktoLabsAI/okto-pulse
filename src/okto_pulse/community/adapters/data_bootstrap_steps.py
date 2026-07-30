@@ -15,9 +15,9 @@ from okto_pulse.core.ports.permission_policy import (
     get_permission_flag,
     merge_permission_registry_defaults,
     normalize_agent_permission_layer,
+    permission_introduction_manifests,
     resolve_effective_permissions,
     resolve_preset_lineage,
-    ska_permission_introduction_v1,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import (
     get_engine,
@@ -132,8 +132,8 @@ async def _reconcile_agent_permission_flags() -> None:
     Missing permission leaves are deliberately not materialized.  Historical
     Full Control snapshots become the trusted ``None`` sentinel, while agents
     linked to a preset retain only their direct delta.  This lets reconciled
-    preset grants (including SK-A introductions) propagate without erasing
-    explicit sparse overrides.
+    preset grants from every ordered permission-introduction manifest
+    propagate without erasing explicit sparse overrides.
     """
     import logging
 
@@ -169,7 +169,7 @@ async def _reconcile_agent_permission_flags() -> None:
                     )
                     for row in preset_result.mappings().all()
                 )
-            manifest = ska_permission_introduction_v1()
+            manifests = permission_introduction_manifests()
             # SQLite's CURRENT_TIMESTAMP has only second precision.  Two
             # reconciliation passes in the same second would otherwise have
             # an indeterminate audit order once UUIDs were used as the
@@ -201,13 +201,8 @@ async def _reconcile_agent_permission_flags() -> None:
                         review_reason = lineage.review_reason
                         classification = "invalid_preset_lineage"
                     preset_flags = lineage.flags
-                candidate = normalize_agent_permission_layer(
-                    stored_dict, preset_flags
-                )
-                if (
-                    preset_id is None
-                    and candidate is not None
-                ):
+                candidate = normalize_agent_permission_layer(stored_dict, preset_flags)
+                if preset_id is None and candidate is not None:
                     # A sparse/direct document has no durable lineage or
                     # recognized Full Control fingerprint. Preserve it for
                     # owner inspection, but keep runtime authority all-denied.
@@ -240,15 +235,63 @@ async def _reconcile_agent_permission_flags() -> None:
                     owner_review_required=owner_review_required,
                     review_reason=review_reason,
                 )
-                true_count = sum(
-                    get_permission_flag(effective.flags, leaf) is True
-                    for leaf in manifest.leaves
-                )
                 before_digest = _permission_audit_digest(stored_dict)
                 after_digest = _permission_audit_digest(normalized)
                 audit_digests.append((before_digest, after_digest))
                 if owner_review_required:
                     review_required_count += 1
+                for manifest_order, manifest in enumerate(manifests):
+                    true_count = sum(
+                        get_permission_flag(effective.flags, leaf) is True
+                        for leaf in manifest.leaves
+                    )
+                    await session.execute(
+                        sa_text(
+                            "INSERT INTO permission_introduction_audit "
+                            "(id, manifest_version, phase, classification, "
+                            "subject_id, base_preset_id, before_digest, "
+                            "after_digest, introduced_true_count, "
+                            "introduced_false_count, owner_review_required, "
+                            "mutation_count, details, created_at) VALUES "
+                            "(:id, :manifest_version, :phase, :classification, "
+                            ":subject_id, :base_preset_id, :before_digest, "
+                            ":after_digest, :true_count, :false_count, "
+                            ":owner_review_required, :mutation_count, :details, "
+                            ":created_at)"
+                        ).bindparams(
+                            bindparam("details", type_=sa_JSON),
+                            bindparam(
+                                "created_at",
+                                type_=sa_DateTime(timezone=True),
+                            ),
+                        ),
+                        {
+                            "id": str(_uuid.uuid4()),
+                            "manifest_version": manifest.version,
+                            "phase": "agent_reconciliation",
+                            "classification": classification,
+                            "subject_id": agent["id"],
+                            "base_preset_id": preset_id,
+                            "before_digest": before_digest,
+                            "after_digest": after_digest,
+                            "true_count": true_count,
+                            "false_count": len(manifest.leaves) - true_count,
+                            "owner_review_required": owner_review_required,
+                            "mutation_count": int(normalized != stored_dict),
+                            "details": {
+                                "review_reason": review_reason,
+                                "manifest_order": manifest_order,
+                            },
+                            "created_at": run_started_at,
+                        },
+                    )
+            summary_before = _permission_audit_digest(
+                [before for before, _after in audit_digests]
+            )
+            summary_after = _permission_audit_digest(
+                [after for _before, after in audit_digests]
+            )
+            for manifest_order, manifest in enumerate(manifests):
                 await session.execute(
                     sa_text(
                         "INSERT INTO permission_introduction_audit "
@@ -258,71 +301,33 @@ async def _reconcile_agent_permission_flags() -> None:
                         "introduced_false_count, owner_review_required, "
                         "mutation_count, details, created_at) VALUES "
                         "(:id, :manifest_version, :phase, :classification, "
-                        ":subject_id, :base_preset_id, :before_digest, "
-                        ":after_digest, :true_count, :false_count, "
+                        "NULL, NULL, :before_digest, :after_digest, 0, 0, "
                         ":owner_review_required, :mutation_count, :details, "
                         ":created_at)"
                     ).bindparams(
                         bindparam("details", type_=sa_JSON),
-                        bindparam("created_at", type_=sa_DateTime(timezone=True)),
+                        bindparam(
+                            "created_at",
+                            type_=sa_DateTime(timezone=True),
+                        ),
                     ),
                     {
                         "id": str(_uuid.uuid4()),
                         "manifest_version": manifest.version,
                         "phase": "agent_reconciliation",
-                        "classification": classification,
-                        "subject_id": agent["id"],
-                        "base_preset_id": preset_id,
-                        "before_digest": before_digest,
-                        "after_digest": after_digest,
-                        "true_count": true_count,
-                        "false_count": len(manifest.leaves) - true_count,
-                        "owner_review_required": owner_review_required,
-                        "mutation_count": int(normalized != stored_dict),
+                        "classification": "run_summary",
+                        "before_digest": summary_before,
+                        "after_digest": summary_after,
+                        "owner_review_required": bool(review_required_count),
+                        "mutation_count": updated,
                         "details": {
-                            "review_reason": review_reason,
+                            "agents_considered": len(audit_digests),
+                            "owner_review_required_count": (review_required_count),
+                            "manifest_order": manifest_order,
                         },
                         "created_at": run_started_at,
                     },
                 )
-            summary_before = _permission_audit_digest(
-                [before for before, _after in audit_digests]
-            )
-            summary_after = _permission_audit_digest(
-                [after for _before, after in audit_digests]
-            )
-            await session.execute(
-                sa_text(
-                    "INSERT INTO permission_introduction_audit "
-                    "(id, manifest_version, phase, classification, "
-                    "subject_id, base_preset_id, before_digest, "
-                    "after_digest, introduced_true_count, "
-                    "introduced_false_count, owner_review_required, "
-                    "mutation_count, details, created_at) VALUES "
-                    "(:id, :manifest_version, :phase, :classification, "
-                    "NULL, NULL, :before_digest, :after_digest, 0, 0, "
-                    ":owner_review_required, :mutation_count, :details, "
-                    ":created_at)"
-                ).bindparams(
-                    bindparam("details", type_=sa_JSON),
-                    bindparam("created_at", type_=sa_DateTime(timezone=True)),
-                ),
-                {
-                    "id": str(_uuid.uuid4()),
-                    "manifest_version": manifest.version,
-                    "phase": "agent_reconciliation",
-                    "classification": "run_summary",
-                    "before_digest": summary_before,
-                    "after_digest": summary_after,
-                    "owner_review_required": bool(review_required_count),
-                    "mutation_count": updated,
-                    "details": {
-                        "agents_considered": len(audit_digests),
-                        "owner_review_required_count": review_required_count,
-                    },
-                    "created_at": run_started_at,
-                },
-            )
             await session.commit()
             if updated:
                 logger.info(
@@ -452,9 +457,7 @@ async def _bootstrap_quality_assessment_legacy_import_v1() -> str | None:
     if not board_ids:
         return "skipped"
 
-    persistence = CommunitySqlAlchemyQualityAssessmentLegacyImport(
-        session_factory
-    )
+    persistence = CommunitySqlAlchemyQualityAssessmentLegacyImport(session_factory)
     service = QualityAssessmentLegacyImportService()
     for board_id in board_ids:
         await service.run(

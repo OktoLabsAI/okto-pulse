@@ -79,6 +79,8 @@ import type {
   CreateSpecKnowledgeRequest,
   SpecQAItem,
   SpecHistoryEntry,
+  TestScenarioStatusUpdateRequest,
+  TestScenarioStatusUpdateResponse,
   Ideation,
   IdeationSummary,
   IdeationStatus,
@@ -1143,6 +1145,20 @@ export function useDashboardApi() {
 
     async unlinkTaskFromScenario(specId: string, scenarioId: string, cardId: string): Promise<void> {
       await apiClient.fetchJson(`/specs/${specId}/scenarios/${scenarioId}/unlink-task/${cardId}`, { method: 'POST' });
+    },
+
+    async updateTestScenarioStatus(
+      specId: string,
+      scenarioId: string,
+      data: TestScenarioStatusUpdateRequest,
+    ): Promise<TestScenarioStatusUpdateResponse> {
+      return apiClient.fetchJson<TestScenarioStatusUpdateResponse>(
+        `/specs/${specId}/scenarios/${scenarioId}/status`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify(data),
+        },
+      );
     },
 
     async linkTaskToSpecItem(

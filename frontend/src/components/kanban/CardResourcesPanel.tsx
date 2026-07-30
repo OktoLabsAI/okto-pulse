@@ -53,6 +53,7 @@ interface CardResourcesPanelProps {
   canUploadAttachments: boolean;
   canDeleteAttachments: boolean;
   onCardChanged: (card: Card) => void;
+  onSubjectChanged: () => void;
   onBusyChange: (busy: boolean) => void;
 }
 
@@ -200,6 +201,7 @@ export function CardResourcesPanel({
   canUploadAttachments,
   canDeleteAttachments,
   onCardChanged,
+  onSubjectChanged,
   onBusyChange,
 }: CardResourcesPanelProps) {
   const api = useDashboardApi();
@@ -264,6 +266,7 @@ export function CardResourcesPanel({
 
   const noteResourceChanged = () => {
     setResourceRevision((current) => current + 1);
+    onSubjectChanged();
   };
 
   return (
@@ -312,11 +315,11 @@ export function CardResourcesPanel({
           <CardKnowledgeTab
             card={card}
             specKnowledgeBases={specKnowledgeBases}
-            onUpdate={async (knowledgeBases) => {
-              const updated = await api.updateCard(card.id, {
-                knowledge_bases: knowledgeBases,
-              } as any);
-              onCardChanged(updated);
+            onUpdate={async () => {
+              const updated = await api.getCard(card.id).catch(() => null);
+              if (updated) {
+                onCardChanged(updated);
+              }
               noteResourceChanged();
             }}
             onBusyChange={onBusyChange}

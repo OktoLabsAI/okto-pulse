@@ -56,9 +56,7 @@ def _schema_process_lock_path(runtime: CommunityDatabaseRuntime) -> Path | None:
     database_path = runtime.local_database_path()
     if database_path is None:
         return None
-    return database_path.with_name(
-        f"{database_path.name}.schema-lifecycle.lock"
-    )
+    return database_path.with_name(f"{database_path.name}.schema-lifecycle.lock")
 
 
 @asynccontextmanager
@@ -348,6 +346,11 @@ def build_community_session_factory(
     ``class_=AsyncSession`` and ``expire_on_commit=False`` are preserved so the
     repositories keep read-after-write semantics on committed instances.
     """
+    from .sqlalchemy_policy_subject_versioning import (
+        install_policy_subject_versioning,
+    )
+
+    install_policy_subject_versioning()
     return async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -476,14 +479,10 @@ def install_community_pool_observability(engine: AsyncEngine) -> None:
             ) in checked_out.values()
             if now - started_at > _POOL_STALE_CHECKOUT_WARN_SECONDS
         ]
-        if (
-            stale
-            and now - last_stale_warn_at > _POOL_STALE_WARN_INTERVAL_SECONDS
-        ):
+        if stale and now - last_stale_warn_at > _POOL_STALE_WARN_INTERVAL_SECONDS:
             last_stale_warn_at = now
             oldest = max(
-                age
-                for age, _task_name, _task, _site, _owner, _statement in stale
+                age for age, _task_name, _task, _site, _owner, _statement in stale
             )
             stale_tasks = sorted(
                 {
@@ -512,10 +511,7 @@ def install_community_pool_observability(engine: AsyncEngine) -> None:
                 }
             )
             checkout_owners = sorted(
-                {
-                    owner
-                    for _age, _task_name, _task, _site, owner, _statement in stale
-                }
+                {owner for _age, _task_name, _task, _site, owner, _statement in stale}
             )
             last_statements = sorted(
                 {

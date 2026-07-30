@@ -1,55 +1,86 @@
-// ITEM 19 — GuidelinesPanel Export/Import buttons: Export hits GET
-// /guidelines/export and triggers a blob download (guidelines-YYYYMMDD.json);
-// Import parses the picked .json file, POSTs the envelope to
-// /guidelines/import and reports created/skipped/errors via toast.
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import toast from 'react-hot-toast';
 
-const apiMock = vi.hoisted(() => ({
+const dashboardApiMock = vi.hoisted(() => ({
   getBoardGuidelines: vi.fn(),
   listDefaultGuidelineCandidates: vi.fn(),
   listGuidelines: vi.fn(),
 }));
-// The panel's data layer is mocked; the import-export service runs FOR REAL
-// against a mocked AuthenticatedFetch so the test covers the actual
-// endpoint paths, the blob download and the toast summary.
-const fetchJsonMock = vi.hoisted(() => vi.fn());
-vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
-vi.mock('@/contexts/ApiContext', () => ({
-  useApiClient: () => ({ fetchJson: fetchJsonMock }),
+const policyApiMock = vi.hoisted(() => ({
+  exportGuidelinePolicy: vi.fn(),
+  importGuidelinePolicy: vi.fn(),
 }));
-vi.mock('react-hot-toast', () => ({
-  default: { success: vi.fn(), error: vi.fn() },
+const toastMock = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
 }));
+const permissionState = vi.hoisted(() => ({
+  allowed: new Set<string>(),
+}));
+
+vi.mock('@/services/api', () => ({
+  useDashboardApi: () => dashboardApiMock,
+}));
+vi.mock('@/services/policy-governance-api', () => ({
+  PolicyGovernanceApiError: class extends Error {},
+  usePolicyGovernanceApi: () => policyApiMock,
+}));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'Full Control',
+    isLoading: false,
+    error: null,
+    ownerReviewRequired: false,
+    has: (permission: string) => permissionState.allowed.has(permission),
+  }),
+}));
+vi.mock('react-hot-toast', () => ({ default: toastMock }));
 
 import { GuidelinesPanel } from '../GuidelinesPanel';
 
 const ENVELOPE = {
-  schema_version: '1',
-  kind: 'guidelines',
-  exported_at: '2026-07-10T00:00:00+00:00',
-  items: [
-    { title: 'Global rule', content: 'c', tags: null, scope: 'global', board_id: null },
-    { title: 'Inline rule', content: 'c', tags: null, scope: 'inline', board_id: 'b1' },
-  ],
+  contract_version: 'guideline-export/v2' as const,
+  schema_version: '2' as const,
+  kind: 'guidelines' as const,
+  exported_at: '2026-07-29T00:00:00Z',
+  source_board_id: 'b1',
+  content_digest: 'a'.repeat(64),
+  guidelines: [],
 };
 
-describe('GuidelinesPanel import/export', () => {
+function envelopeWithRule(enforcement: unknown) {
+  return {
+    ...ENVELOPE,
+    guidelines: [{
+      revisions: [{
+        rules: [{ enforcement }],
+      }],
+    }],
+  };
+}
+
+describe('GuidelinesPanel immutable policy import/export', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    apiMock.getBoardGuidelines.mockResolvedValue([]);
-    apiMock.listDefaultGuidelineCandidates.mockResolvedValue({
-      scope: 'global', template_id: null, template_version: null, candidates: [],
+    permissionState.allowed = new Set([
+      'guidelines.revisions.read',
+      'guidelines.revisions.create',
+      'guidelines.rules.author_blocking',
+    ]);
+    dashboardApiMock.getBoardGuidelines.mockResolvedValue([]);
+    dashboardApiMock.listDefaultGuidelineCandidates.mockResolvedValue({
+      scope: 'global',
+      template_id: null,
+      template_version: null,
+      candidates: [],
     });
-    apiMock.listGuidelines.mockResolvedValue([]);
-    // jsdom has no object-URL implementation.
-    URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+    dashboardApiMock.listGuidelines.mockResolvedValue([]);
+    URL.createObjectURL = vi.fn(() => 'blob:policy-export');
     URL.revokeObjectURL = vi.fn();
   });
 
-  it('exports the guidelines envelope as a dated .json blob download', async () => {
-    fetchJsonMock.mockResolvedValueOnce(ENVELOPE);
+  it('exports guideline-export/v2 without using the lossy legacy envelope', async () => {
+    policyApiMock.exportGuidelinePolicy.mockResolvedValue(ENVELOPE);
     const clickSpy = vi
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(() => {});
@@ -57,77 +88,202 @@ describe('GuidelinesPanel import/export', () => {
     render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
     fireEvent.click(await screen.findByTestId('guidelines-export'));
 
-    await waitFor(() =>
-      expect(fetchJsonMock).toHaveBeenCalledWith('/guidelines/export?board_id=b1'),
-    );
-    // A blob URL was created and the download anchor was clicked with the
-    // kind-YYYYMMDD.json filename.
-    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
-    const blob = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.calls[0][0] as Blob;
-    expect(blob.type).toBe('application/json');
-    expect(await blob.text()).toBe(JSON.stringify(ENVELOPE, null, 2));
-    expect(clickSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(policyApiMock.exportGuidelinePolicy).toHaveBeenCalledWith('b1');
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    });
     const anchor = clickSpy.mock.instances[0] as HTMLAnchorElement;
-    expect(anchor.download).toMatch(/^guidelines-\d{8}\.json$/);
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
-    expect(toast.success).toHaveBeenCalledWith('Exported 2 items');
+    expect(anchor.download).toBe('guideline-policy-b1.json');
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Exported 0 guideline aggregate(s).',
+    );
     clickSpy.mockRestore();
   });
 
-  it('imports a picked .json file via POST and toasts the created/skipped summary', async () => {
-    fetchJsonMock.mockResolvedValueOnce({
-      created: 1,
-      skipped: [{ index: 0, title: 'Global rule', reason: 'duplicate_global_title' }],
-      errors: [],
-      dry_run: false,
-    });
+  it('dry-runs a v2 import before committing and refreshes policy lists', async () => {
+    policyApiMock.importGuidelinePolicy
+      .mockResolvedValueOnce({
+        transaction_status: 'dry_run',
+        created_count: 2,
+        skip_identical_count: 1,
+        conflict_count: 0,
+        overwritten_row_count: 0,
+        dry_run: true,
+      })
+      .mockResolvedValueOnce({
+        transaction_status: 'committed',
+        created_count: 2,
+        skip_identical_count: 1,
+        conflict_count: 0,
+        overwritten_row_count: 0,
+        dry_run: false,
+      });
 
     render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
-    const refreshCallsBefore = apiMock.getBoardGuidelines.mock.calls.length;
-    const input = await screen.findByTestId('guidelines-import-input');
-    const file = new File([JSON.stringify(ENVELOPE)], 'guidelines-20260710.json', {
-      type: 'application/json',
-    });
-    fireEvent.change(input, { target: { files: [file] } });
+    const boardReadsBefore = dashboardApiMock.getBoardGuidelines.mock.calls.length;
+    const file = new File(
+      [JSON.stringify(ENVELOPE)],
+      'guideline-policy.json',
+      { type: 'application/json' },
+    );
+    fireEvent.change(
+      await screen.findByTestId('guidelines-import-input'),
+      { target: { files: [file] } },
+    );
 
-    await waitFor(() =>
-      expect(fetchJsonMock).toHaveBeenCalledWith('/guidelines/import?board_id=b1', {
-        method: 'POST',
-        body: JSON.stringify(ENVELOPE),
-      }),
+    await waitFor(() => {
+      expect(policyApiMock.importGuidelinePolicy).toHaveBeenNthCalledWith(
+        1,
+        'b1',
+        ENVELOPE,
+        { dryRun: true },
+      );
+      expect(policyApiMock.importGuidelinePolicy).toHaveBeenNthCalledWith(
+        2,
+        'b1',
+        ENVELOPE,
+      );
+    });
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Imported 2; skipped 1 identical aggregate(s).',
     );
-    await waitFor(() =>
-      expect(toast.success).toHaveBeenCalledWith('Import: 1 created, 1 skipped'),
-    );
-    // The panel refreshes its lists after a successful import.
-    await waitFor(() =>
-      expect(apiMock.getBoardGuidelines.mock.calls.length).toBeGreaterThan(refreshCallsBefore),
-    );
+    await waitFor(() => {
+      expect(
+        dashboardApiMock.getBoardGuidelines.mock.calls.length,
+      ).toBeGreaterThan(boardReadsBefore);
+    });
   });
 
-  it('surfaces a backend 400 (invalid item, nothing mutated) as a toast error', async () => {
-    fetchJsonMock.mockRejectedValueOnce(new Error('HTTP 400: Bad Request'));
-
-    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
-    const input = await screen.findByTestId('guidelines-import-input');
-    const file = new File([JSON.stringify(ENVELOPE)], 'guidelines.json', {
-      type: 'application/json',
+  it('stops after a conflicting dry-run and never overwrites history', async () => {
+    policyApiMock.importGuidelinePolicy.mockResolvedValueOnce({
+      transaction_status: 'rolled_back',
+      created_count: 0,
+      skip_identical_count: 0,
+      conflict_count: 1,
+      overwritten_row_count: 0,
+      dry_run: true,
+      error_code: 'guideline_import_conflict',
     });
-    fireEvent.change(input, { target: { files: [file] } });
+    const file = new File(
+      [JSON.stringify(ENVELOPE)],
+      'guideline-policy.json',
+      { type: 'application/json' },
+    );
+    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
+    fireEvent.change(
+      await screen.findByTestId('guidelines-import-input'),
+      { target: { files: [file] } },
+    );
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('HTTP 400: Bad Request'));
-    expect(toast.success).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(toastMock.error).toHaveBeenCalledWith(
+        'guideline_import_conflict',
+      );
+    });
+    expect(policyApiMock.importGuidelinePolicy).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a non-JSON file locally without calling the API', async () => {
-    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
-    const input = await screen.findByTestId('guidelines-import-input');
-    const file = new File(['not json {'], 'broken.json', { type: 'application/json' });
-    fireEvent.change(input, { target: { files: [file] } });
+  it('imports advisory-only policy with revision authority alone', async () => {
+    permissionState.allowed = new Set(['guidelines.revisions.create']);
+    const advisoryEnvelope = envelopeWithRule('advisory');
+    policyApiMock.importGuidelinePolicy
+      .mockResolvedValueOnce({
+        transaction_status: 'dry_run',
+        created_count: 1,
+        skip_identical_count: 0,
+        conflict_count: 0,
+        overwritten_row_count: 0,
+        dry_run: true,
+      })
+      .mockResolvedValueOnce({
+        transaction_status: 'committed',
+        created_count: 1,
+        skip_identical_count: 0,
+        conflict_count: 0,
+        overwritten_row_count: 0,
+        dry_run: false,
+      });
 
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith('Invalid file: not valid JSON'),
+    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
+    expect(await screen.findByTestId('guidelines-import')).not.toBeDisabled();
+    fireEvent.change(screen.getByTestId('guidelines-import-input'), {
+      target: {
+        files: [new File(
+          [JSON.stringify(advisoryEnvelope)],
+          'advisory.json',
+          { type: 'application/json' },
+        )],
+      },
+    });
+
+    await waitFor(() => {
+      expect(policyApiMock.importGuidelinePolicy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('requires blocking-rule authority only when the envelope contains blocking rules', async () => {
+    permissionState.allowed = new Set(['guidelines.revisions.create']);
+    const blockingEnvelope = envelopeWithRule('blocking');
+
+    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
+    fireEvent.change(await screen.findByTestId('guidelines-import-input'), {
+      target: {
+        files: [new File(
+          [JSON.stringify(blockingEnvelope)],
+          'blocking.json',
+          { type: 'application/json' },
+        )],
+      },
+    });
+
+    await waitFor(() => {
+      expect(toastMock.error).toHaveBeenCalledWith(
+        'Importing blocking rules requires guidelines.rules.author_blocking.',
+      );
+    });
+    expect(policyApiMock.importGuidelinePolicy).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when imported rule enforcement cannot be classified', async () => {
+    permissionState.allowed = new Set(['guidelines.revisions.create']);
+    const malformedEnvelope = envelopeWithRule('mystery');
+
+    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
+    fireEvent.change(await screen.findByTestId('guidelines-import-input'), {
+      target: {
+        files: [new File(
+          [JSON.stringify(malformedEnvelope)],
+          'malformed.json',
+          { type: 'application/json' },
+        )],
+      },
+    });
+
+    await waitFor(() => {
+      expect(toastMock.error).toHaveBeenCalledWith(
+        'Unable to classify policy rules in this import.',
+      );
+    });
+    expect(policyApiMock.importGuidelinePolicy).not.toHaveBeenCalled();
+  });
+
+  it('rejects legacy and malformed envelopes before any API mutation', async () => {
+    const legacyFile = new File(
+      [JSON.stringify({ schema_version: '1', kind: 'guidelines', items: [] })],
+      'legacy.json',
+      { type: 'application/json' },
     );
-    expect(fetchJsonMock).not.toHaveBeenCalled();
+    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
+    fireEvent.change(
+      await screen.findByTestId('guidelines-import-input'),
+      { target: { files: [legacyFile] } },
+    );
+
+    await waitFor(() => {
+      expect(toastMock.error).toHaveBeenCalledWith(
+        'Select a guideline-export/v2 JSON file.',
+      );
+    });
+    expect(policyApiMock.importGuidelinePolicy).not.toHaveBeenCalled();
   });
 });

@@ -2,7 +2,12 @@
  * SpecModal - View and edit a spec, derive cards, manage knowledge bases
  */
 
-import { useEffect, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   X,
   ChevronRight,
@@ -68,6 +73,10 @@ import {
   ScenarioTypeBadge,
   isSupportedScenarioType,
 } from './ScenarioTypeBadge';
+import {
+  TestScenarioPolicyCompliance,
+  TestScenarioStatusBadge,
+} from './TestScenarioPolicyCompliance';
 import { persistTestScenariosWithWriteGuard } from './scenarioWriteGuard';
 import { usePermissions } from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
@@ -79,6 +88,14 @@ import { IntegrationRequirementsTab } from './IntegrationRequirementsTab';
 import { ObservabilityRequirementsTab } from './ObservabilityRequirementsTab';
 import { KGValidationTab } from './KGValidationTab';
 import { SpecValidationPanel } from './SpecValidationPanel';
+import {
+  isAllowedTransitionActionable,
+  policyTransitionRejectionMessage,
+  readPolicyTransitionRejection,
+  requirePolicyTransitionEnvelope,
+  type PolicyTransitionRejection,
+  type PolicyTransitionPreviewLoadState,
+} from '@/components/policy-compliance';
 import { isSpecValidationAvailable } from './specValidationAvailability';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
 import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
@@ -469,21 +486,21 @@ function stableEntityPayload(item: StructuredObjectEntity): Record<string, unkno
   return JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
 }
 
-const SCENARIO_STATUSES = ['draft', 'ready', 'automated', 'passed', 'failed'] as const;
-
-function isScenarioStatus(value: string): value is TestScenario['status'] {
-  return (SCENARIO_STATUSES as readonly string[]).includes(value);
-}
-
-const SCENARIO_STATUS_COLORS: Record<string, string> = {
-  draft: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
-  ready: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
-  automated: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  passed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
-  failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-};
-
-function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpdate: (scenarios: TestScenario[]) => void; onSpecUpdate: (data: Record<string, unknown>) => Promise<void> }) {
+function TestScenariosTab({
+  spec,
+  onUpdate,
+  onSpecUpdate,
+  onSpecRefreshed,
+  canReadPolicyCompliance,
+  policyRefreshKey,
+}: {
+  spec: Spec;
+  onUpdate: (scenarios: TestScenario[]) => void;
+  onSpecUpdate: (data: Record<string, unknown>) => Promise<void>;
+  onSpecRefreshed: (updated: Spec) => void;
+  canReadPolicyCompliance: boolean;
+  policyRefreshKey: number;
+}) {
   const api = useDashboardApi();
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -523,11 +540,6 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
 
   const handleRemove = (id: string) => {
     onUpdate(scenarios.filter((s) => s.id !== id));
-  };
-
-  const handleStatusChange = (id: string, status: string) => {
-    if (!isScenarioStatus(status)) return;
-    onUpdate(scenarios.map((s) => s.id === id ? { ...s, status } : s));
   };
 
   // Coverage matrix
@@ -623,14 +635,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
               <FlaskConical size={14} className={linkedCards > 0 ? 'text-violet-500 shrink-0' : 'text-amber-500 shrink-0'} />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{scenario.title}</span>
               <ScenarioTypeBadge scenarioType={scenario.scenario_type} />
-              <select
-                value={scenario.status}
-                onChange={(e) => { e.stopPropagation(); handleStatusChange(scenario.id, e.target.value); }}
-                onClick={(e) => e.stopPropagation()}
-                className={`text-[10px] px-1.5 py-0.5 rounded border-0 cursor-pointer ${SCENARIO_STATUS_COLORS[scenario.status] || ''}`}
-              >
-                {SCENARIO_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
+              <TestScenarioStatusBadge status={scenario.status} />
               <EvidenceBadge scenario={scenario} />
               {linkedCards > 0 ? (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 font-medium">
@@ -641,7 +646,14 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
                   no tasks
                 </span>
               )}
-              <button onClick={(e) => { e.stopPropagation(); handleRemove(scenario.id); }} className="p-0.5 text-gray-400 hover:text-red-500">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRemove(scenario.id);
+                }}
+                className="p-0.5 text-gray-400 hover:text-red-500"
+                aria-label={`Delete test scenario ${scenario.title}`}
+              >
                 <Trash2 size={12} />
               </button>
             </div>
@@ -712,7 +724,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
                                   try {
                                     await api.unlinkTaskFromScenario(spec.id, scenario.id, taskId);
                                     const updated = await api.getSpec(spec.id);
-                                    onUpdate(updated.test_scenarios || []);
+                                    onSpecRefreshed(updated);
                                     toast.success('Task unlinked');
                                   } catch { toast.error('Failed to unlink'); }
                                 }}
@@ -742,7 +754,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
                               try {
                                 await api.linkTaskToScenario(spec.id, scenario.id, c.id);
                                 const updated = await api.getSpec(spec.id);
-                                onUpdate(updated.test_scenarios || []);
+                                onSpecRefreshed(updated);
                                 setLinkingScenarioId(null);
                                 toast.success('Task linked');
                               } catch { toast.error('Failed to link'); }
@@ -759,6 +771,15 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
                     </div>
                   )}
                 </div>
+                <TestScenarioPolicyCompliance
+                  boardId={spec.board_id}
+                  specId={spec.id}
+                  specArchived={Boolean(spec.archived)}
+                  scenario={scenario}
+                  canReadPolicyCompliance={canReadPolicyCompliance}
+                  refreshKey={policyRefreshKey}
+                  onSpecRefreshed={onSpecRefreshed}
+                />
               </div>
             )}
           </div>
@@ -1392,10 +1413,27 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const canReadChecklist = perms.has('spec.checklist.read');
   const canExecuteChecklist = perms.has('spec.checklist.execute');
   const canReadSpecValidation = perms.has('spec.validation.read');
+  const canReadPolicyCompliance = perms.has(
+    'guidelines.compliance.read',
+  );
   const [spec, setSpec] = useState<Spec | null>(null);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<SpecStatus | null>(null);
   const [nextStatuses, setNextStatuses] = useState<SpecStatus[]>([]);
+  const [
+    policyTransitionPreview,
+    setPolicyTransitionPreview,
+  ] = useState<PolicyTransitionPreviewLoadState>({
+    status: 'loading',
+    transitions: [],
+    error: null,
+  });
+  const [
+    policyTransitionRejection,
+    setPolicyTransitionRejection,
+  ] = useState<PolicyTransitionRejection | null>(null);
+  const lastTransitionSubjectKey = useRef<string | null>(null);
+  const transitionRequestId = useRef(0);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [resourceTab, setResourceTab] =
     useState<ResourceSubTab>('mockups');
@@ -1403,6 +1441,10 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     useState<ReferenceSubTab>('origin');
   const [resourceGateRefreshKey, setResourceGateRefreshKey] =
     useState(0);
+  const [
+    testScenarioPolicyRefreshKey,
+    setTestScenarioPolicyRefreshKey,
+  ] = useState(0);
   const [detailsStructuredEditor, setDetailsStructuredEditor] = useState<{
     tab: ModalTab;
     mode: 'add' | 'edit';
@@ -1430,6 +1472,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   useEffect(() => {
     const validationAvailable =
       canReadQuality ||
+      canReadPolicyCompliance ||
       Boolean(
         currentSpecStatus &&
         isSpecValidationAvailable(currentSpecStatus) &&
@@ -1444,6 +1487,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   }, [
     activeTab,
     canReadChecklist,
+    canReadPolicyCompliance,
     canReadQuality,
     canReadSpecValidation,
     currentSpecStatus,
@@ -1483,21 +1527,75 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
 
   useEffect(() => { loadSpec(); }, [specId]);
 
-  const loadAllowedTransitions = async (data: Spec) => {
+  const loadAllowedTransitions = useCallback(async (data: Spec) => {
+    const requestId = transitionRequestId.current + 1;
+    transitionRequestId.current = requestId;
+    lastTransitionSubjectKey.current = [
+      data.id,
+      data.version,
+      data.status,
+    ].join(':');
+    setPolicyTransitionRejection(null);
+    setNextStatuses([]);
+    setPolicyTransitionPreview({
+      status: 'loading',
+      transitions: [],
+      error: null,
+    });
     try {
       const response = await api.getAllowedTransitions(data.board_id, {
         entity_type: 'spec',
         entity_id: data.id,
       });
+      if (transitionRequestId.current !== requestId) {
+        return;
+      }
+      const transitions = requirePolicyTransitionEnvelope(response, {
+        boardId: data.board_id,
+        entityType: 'spec',
+        subjectId: data.id,
+        currentStatus: data.status,
+      });
+      setPolicyTransitionPreview({
+        status: 'ready',
+        transitions,
+        error: null,
+      });
       setNextStatuses(
-        response.allowed_transitions
+        transitions
+          .filter(isAllowedTransitionActionable)
           .map((item) => item.to_status)
           .filter((status): status is SpecStatus => SPEC_STATUSES.includes(status as SpecStatus))
       );
-    } catch {
+    } catch (caught) {
+      if (transitionRequestId.current !== requestId) {
+        return;
+      }
       setNextStatuses([]);
+      setPolicyTransitionPreview({
+        status: 'error',
+        transitions: [],
+        error: caught instanceof Error
+          ? caught.message
+          : 'The server transition contract could not be loaded.',
+      });
     }
-  };
+  }, [api]);
+
+  useEffect(() => {
+    if (!spec) {
+      return;
+    }
+    const subjectKey = [
+      spec.id,
+      spec.version,
+      spec.status,
+    ].join(':');
+    if (lastTransitionSubjectKey.current === subjectKey) {
+      return;
+    }
+    void loadAllowedTransitions(spec);
+  }, [loadAllowedTransitions, spec]);
 
   const loadSpec = async () => {
     setLoading(true);
@@ -1804,12 +1902,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
         }
       } catch (err: any) {
         setValidateResult({ success: false, error: err?.message || 'Validation failed' });
+        await loadAllowedTransitions(spec);
       } finally {
         setValidating(false);
       }
       return;
     }
     setMovingTo(status);
+    setPolicyTransitionRejection(null);
     try {
       const updated = await api.moveSpec(specId, {
         status,
@@ -1819,7 +1919,22 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
       await loadAllowedTransitions(updated);
       onChanged();
       toast.success(`Spec moved to ${SPEC_STATUS_LABELS[status]}`);
-    } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
+    } catch (err) {
+      const rejection = readPolicyTransitionRejection(err, {
+        boardId: spec.board_id,
+        entityType: 'spec',
+        subjectId: spec.id,
+        currentStatus: spec.status,
+        toStatus: status,
+      });
+      toast.error(
+        rejection
+          ? policyTransitionRejectionMessage(rejection)
+          : getErrorMessage(err),
+      );
+      await loadAllowedTransitions(spec);
+      setPolicyTransitionRejection(rejection);
+    } finally { setMovingTo(null); }
   };
 
   const handleDelete = async () => {
@@ -1856,6 +1971,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const unansweredQA = spec.qa_items?.filter((q) => !q.answered_at).length || 0;
   const showValidationTab =
     canReadQuality ||
+    canReadPolicyCompliance ||
     (
       isSpecValidationAvailable(spec.status) &&
       (canReadChecklist || canReadSpecValidation)
@@ -2304,6 +2420,8 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
           {activeTab === 'tests' && spec && (
             <TestScenariosTab
               spec={spec}
+              canReadPolicyCompliance={canReadPolicyCompliance}
+              policyRefreshKey={testScenarioPolicyRefreshKey}
               onUpdate={async (scenarios) => {
                 try {
                   const updated = await persistTestScenariosWithWriteGuard(
@@ -2313,12 +2431,19 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
                     scenarios,
                   );
                   setSpec(updated);
+                  setTestScenarioPolicyRefreshKey((value) => value + 1);
+                  onChanged();
                 } catch (err) {
                   // Surface the backend validation message (e.g. the strict
                   // scenario_type contract) instead of a generic string so a
                   // stale client/agent can correct the request (spec ac16b3c9).
                   toast.error(err instanceof Error && err.message ? err.message : 'Failed to update test scenarios');
                 }
+              }}
+              onSpecRefreshed={(updated) => {
+                setSpec(updated);
+                setTestScenarioPolicyRefreshKey((value) => value + 1);
+                onChanged();
               }}
               onSpecUpdate={async (data) => {
                 try {
@@ -2597,6 +2722,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
                         ? { ...current, architecture_designs: items }
                         : current);
                       setResourceGateRefreshKey((value) => value + 1);
+                      void loadSpec();
                     }}
                   />
               </AccessibleTabPanel>
@@ -2612,11 +2738,17 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               canExecuteChecklist={canExecuteChecklist}
               canReadValidation={canReadSpecValidation}
               canReadQuality={canReadQuality}
+              canReadPolicyCompliance={canReadPolicyCompliance}
+              policyTransitionPreview={policyTransitionPreview}
+              policyTransitionRejection={policyTransitionRejection}
               specArchived={spec.archived ?? false}
               validationHistoryRefreshKey={
                 validationHistoryRefreshKey
               }
               onAssessmentRecorded={onChanged}
+              onPolicyEvaluated={() => {
+                void loadAllowedTransitions(spec);
+              }}
               onOpenRequirementLintHelp={() =>
                 openContextualHelp('requirement-lint')}
             />

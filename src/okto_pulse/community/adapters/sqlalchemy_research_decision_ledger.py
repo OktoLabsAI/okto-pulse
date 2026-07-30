@@ -25,6 +25,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.community.adapters.ska_observability import (
     observed_ska_projection,
 )
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    lock_policy_board,
+)
 from okto_pulse.core.domain.enums import RefinementStatus
 from okto_pulse.core.domain.research_decision_ledger import (
     RESEARCH_DECISION_LEDGER_CONTRACT_VERSION,
@@ -105,9 +108,7 @@ def _head_from_row(row: ResearchDecisionHeadRow) -> ResearchDecisionHead:
     )
 
 
-class CommunitySqlAlchemyResearchDecisionLedger(
-    ResearchDecisionLedgerPersistencePort
-):
+class CommunitySqlAlchemyResearchDecisionLedger(ResearchDecisionLedgerPersistencePort):
     """SQLite-backed RDL source of truth that never owns the outer transaction."""
 
     def __init__(
@@ -153,8 +154,7 @@ class CommunitySqlAlchemyResearchDecisionLedger(
             select(ResearchDecisionEntryRow, ResearchDecisionHeadRow)
             .join(
                 ResearchDecisionEntryRow,
-                ResearchDecisionEntryRow.id
-                == ResearchDecisionHeadRow.current_entry_id,
+                ResearchDecisionEntryRow.id == ResearchDecisionHeadRow.current_entry_id,
             )
             .where(
                 ResearchDecisionHeadRow.ledger_id == ledger_id,
@@ -245,8 +245,7 @@ class CommunitySqlAlchemyResearchDecisionLedger(
                 or_(
                     ResearchDecisionEntryRow.created_at < query.cursor.created_at,
                     and_(
-                        ResearchDecisionEntryRow.created_at
-                        == query.cursor.created_at,
+                        ResearchDecisionEntryRow.created_at == query.cursor.created_at,
                         ResearchDecisionEntryRow.id < query.cursor.entry_id,
                     ),
                 )
@@ -391,8 +390,7 @@ class CommunitySqlAlchemyResearchDecisionLedger(
             select(ResearchDecisionSnapshotRow).where(
                 ResearchDecisionSnapshotRow.board_id == board_id,
                 ResearchDecisionSnapshotRow.refinement_id == refinement_id,
-                ResearchDecisionSnapshotRow.refinement_version
-                == refinement_version,
+                ResearchDecisionSnapshotRow.refinement_version == refinement_version,
             )
         )
         if row is None:
@@ -424,9 +422,7 @@ class CommunitySqlAlchemyResearchDecisionLedger(
                 ResearchDecisionDerivationRef(
                     source_snapshot_id=item["source_snapshot_id"],
                     source_refinement_id=item["source_refinement_id"],
-                    source_refinement_version=item[
-                        "source_refinement_version"
-                    ],
+                    source_refinement_version=item["source_refinement_version"],
                     ledger_id=item["ledger_id"],
                     entry_id=item["entry_id"],
                     head_revision=item["head_revision"],
@@ -503,8 +499,7 @@ class CommunitySqlAlchemyResearchDecisionLedger(
             select(ResearchDecisionIdempotencyRow).where(
                 ResearchDecisionIdempotencyRow.board_id == board_id,
                 ResearchDecisionIdempotencyRow.refinement_id == refinement_id,
-                ResearchDecisionIdempotencyRow.idempotency_key
-                == idempotency_key,
+                ResearchDecisionIdempotencyRow.idempotency_key == idempotency_key,
             )
         )
         if binding is None:
@@ -555,6 +550,13 @@ class CommunitySqlAlchemyResearchDecisionLedger(
             return replay
 
         try:
+            await lock_policy_board(
+                self._session,
+                board_id=bundle.entry.board_id,
+            )
+            replay = await self._resolve_bundle_replay(bundle)
+            if replay is not None:
+                return replay
             async with self._session.begin_nested():
                 await self._assert_append_head_absent(bundle)
                 await self._advance_refinement_version(bundle)
@@ -599,15 +601,11 @@ class CommunitySqlAlchemyResearchDecisionLedger(
                         refinement_id=bundle.history.refinement_id,
                         ledger_id=bundle.history.ledger_id,
                         entry_id=bundle.history.entry_id,
-                        predecessor_entry_id=(
-                            bundle.history.predecessor_entry_id
-                        ),
+                        predecessor_entry_id=(bundle.history.predecessor_entry_id),
                         from_refinement_version=(
                             bundle.history.from_refinement_version
                         ),
-                        to_refinement_version=(
-                            bundle.history.to_refinement_version
-                        ),
+                        to_refinement_version=(bundle.history.to_refinement_version),
                         actor_id=bundle.history.actor_id,
                         created_at=bundle.history.created_at,
                     )
@@ -711,9 +709,7 @@ class CommunitySqlAlchemyResearchDecisionLedger(
         snapshot: ResearchDecisionLedgerSnapshot,
     ) -> ResearchDecisionLedgerSnapshot:
         if not isinstance(snapshot, ResearchDecisionLedgerSnapshot):
-            raise ResearchDecisionPersistenceError(
-                "research_decision_snapshot_invalid"
-            )
+            raise ResearchDecisionPersistenceError("research_decision_snapshot_invalid")
         await self._validate_content_digests(
             board_id=snapshot.board_id,
             refinement_id=snapshot.refinement_id,
@@ -798,9 +794,7 @@ class CommunitySqlAlchemyResearchDecisionLedger(
             {
                 "source_snapshot_id": reference.source_snapshot_id,
                 "source_refinement_id": reference.source_refinement_id,
-                "source_refinement_version": (
-                    reference.source_refinement_version
-                ),
+                "source_refinement_version": (reference.source_refinement_version),
                 "ledger_id": reference.ledger_id,
                 "entry_id": reference.entry_id,
                 "head_revision": reference.head_revision,
@@ -816,9 +810,7 @@ class CommunitySqlAlchemyResearchDecisionLedger(
                         board_id=derivation.board_id,
                         spec_id=derivation.spec_id,
                         spec_version=derivation.spec_version,
-                        source_refinement_id=(
-                            derivation.source_refinement_id
-                        ),
+                        source_refinement_id=(derivation.source_refinement_id),
                         source_refinement_version=(
                             derivation.source_refinement_version
                         ),
@@ -924,10 +916,8 @@ class CommunitySqlAlchemyResearchDecisionLedger(
             .where(
                 ResearchDecisionHeadRow.ledger_id == bundle.next_head.ledger_id,
                 ResearchDecisionHeadRow.board_id == bundle.next_head.board_id,
-                ResearchDecisionHeadRow.refinement_id
-                == bundle.next_head.refinement_id,
-                ResearchDecisionHeadRow.revision
-                == bundle.expected_head_revision,
+                ResearchDecisionHeadRow.refinement_id == bundle.next_head.refinement_id,
+                ResearchDecisionHeadRow.revision == bundle.expected_head_revision,
                 ResearchDecisionHeadRow.current_entry_id
                 == bundle.expected_head_entry_id,
             )

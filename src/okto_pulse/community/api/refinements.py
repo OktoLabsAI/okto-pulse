@@ -108,6 +108,9 @@ from okto_pulse.core.application.knowledge_propagation_projection import (
     project_derive_spec_response,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.core.domain.guideline_policy_transition import (
+    PolicyTransitionRejected,
+)
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models.schemas import (
     BoardRefinementPageItem,
@@ -510,6 +513,8 @@ async def move_refinement(
         )
     except CancellationReasonRequiredError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:

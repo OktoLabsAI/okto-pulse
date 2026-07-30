@@ -5,6 +5,8 @@ Maps a REST request to an ``ActorContext`` and use case errors to
 status codes / detail payloads the legacy first-cut handlers produced
 (CommandValidationError→400, EntityNotFoundError→404, AmbiguityGateError→400,
 ResourceGateError→409 with the {error,message,details} envelope, ValueError→409).
+Policy Compliance transition rejections use a stable 409 projection shared with
+MCP, including decision/currentness evidence and bounded rule counts.
 Each route catches only the error types it currently handles and routes them
 through ``http_error`` so its observable behavior is preserved; anything else
 propagates unchanged.
@@ -24,6 +26,12 @@ from okto_pulse.core.application.use_cases.base import actor_context_from_princi
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.application.errors import AmbiguityGateError
+from okto_pulse.core.domain.guideline_policy_transition import (
+    PolicyTransitionRejected,
+)
+from okto_pulse.core.inbound.policy_transition_error import (
+    project_policy_transition_rejection,
+)
 from okto_pulse.core.services.resource_gate import ResourceGateError
 
 
@@ -67,11 +75,13 @@ class RESTAdapterContract:
         )
 
     @staticmethod
-    def http_error(exc: Exception, *, not_found_detail: str = "Not found") -> HTTPException:
+    def http_error(
+        exc: Exception, *, not_found_detail: str = "Not found"
+    ) -> HTTPException:
         """Map a transport-neutral / domain error to the legacy HTTPException.
 
-        Order matters: AmbiguityGateError and ResourceGateError are ValueError
-        subclasses and must be matched before the plain ValueError fallback.
+        Order matters: the typed gate errors are ValueError subclasses and must
+        be matched before the plain ValueError fallback.
         """
         if isinstance(exc, CommandValidationError):
             return HTTPException(
@@ -92,9 +102,12 @@ class RESTAdapterContract:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"error": exc.code, "message": str(exc), "details": exc.details},
             )
-        if isinstance(exc, ValueError):
+        if isinstance(exc, PolicyTransitionRejected):
             return HTTPException(
-                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+                status_code=status.HTTP_409_CONFLICT,
+                detail=project_policy_transition_rejection(exc),
             )
+        if isinstance(exc, ValueError):
+            return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
         # Not an error this contract owns — re-raise for the framework (500).
         raise exc

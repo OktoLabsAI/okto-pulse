@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import update
@@ -104,7 +104,14 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
                 board_id=row.board_id,
                 actor_id=row.actor_id,
                 actor_type=row.actor_type,
-                occurred_at=row.occurred_at,
+                # SQLite drops timezone metadata even for
+                # ``DateTime(timezone=True)``.  Domain events require an aware
+                # UTC instant at the delivery boundary.
+                occurred_at=(
+                    row.occurred_at.replace(tzinfo=timezone.utc)
+                    if row.occurred_at.tzinfo is None
+                    else row.occurred_at.astimezone(timezone.utc)
+                ),
                 payload=(
                     dict(row.payload_json)
                     if isinstance(row.payload_json, dict)

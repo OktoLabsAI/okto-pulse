@@ -55,6 +55,43 @@ vi.mock('@/components/quality', () => ({
   QualityPanel: () => <div data-testid="requirement-lint-panel" />,
 }));
 
+vi.mock('@/components/policy-compliance', () => ({
+  requirePolicyTransitionEnvelope: (response: {
+    allowed_transitions: unknown[];
+  }) => response.allowed_transitions,
+  readPolicyTransitionRejection: () => null,
+  policyTransitionRejectionMessage: () => 'Policy Compliance rejected',
+  isAllowedTransitionActionable: (transition: {
+    policy_compliance?: boolean;
+    policy_compliance_decision?: { allowed?: boolean } | null;
+  }) => (
+    transition.policy_compliance === false
+    || (
+      transition.policy_compliance === true
+      && transition.policy_compliance_decision?.allowed === true
+    )
+  ),
+  PolicyCompliancePanel: ({
+    boardId,
+    entityType,
+    subjectId,
+  }: {
+    boardId: string;
+    entityType: string;
+    subjectId: string;
+  }) => (
+    <div
+      data-testid="policy-compliance-panel"
+      data-board-id={boardId}
+      data-entity-type={entityType}
+      data-subject-id={subjectId}
+    />
+  ),
+  PolicyComplianceTransitionPreview: () => (
+    <div data-testid="policy-transition-preview" />
+  ),
+}));
+
 vi.mock('@/components/shared/ValidationGateOverride', () => ({
   ValidationGateOverride: () => <div />,
 }));
@@ -135,6 +172,25 @@ function renderSpec(status: SpecStatus) {
   );
 }
 
+function blockedPolicyDecision() {
+  return {
+    state: 'policy_compliance_receipt_stale',
+    allowed: false,
+    policy_compliance_required: true,
+    reason_codes: ['policy_compliance_receipt_stale'],
+    decision_digest: 'a'.repeat(64),
+    fence_digest: 'b'.repeat(64),
+    receipt_id: 'receipt-stale',
+    currentness: 'stale',
+    currentness_reasons: ['subject_content_changed'],
+    applicable_rule_count: 2,
+    applicable_blocking_rule_count: 1,
+    blocking_rule_count: 0,
+    waived_rule_count: 0,
+    advisory_issue_count: 0,
+  };
+}
+
 describe('SpecModal validation navigation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -192,10 +248,14 @@ describe('SpecModal validation navigation', () => {
     const lintTab = within(tabList).getByRole('tab', {
       name: /Requirement lint/,
     });
+    const policyTab = within(tabList).getByRole('tab', {
+      name: 'Policy Compliance',
+    });
 
     expect(checklistTab).toHaveAttribute('aria-selected', 'true');
     expect(validationTab).toHaveAttribute('aria-selected', 'false');
     expect(lintTab).toHaveAttribute('aria-selected', 'false');
+    expect(policyTab).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByTestId('checklist-panel')).toHaveAttribute(
       'data-can-execute',
       'true',
@@ -229,6 +289,136 @@ describe('SpecModal validation navigation', () => {
     expect(
       screen.queryByRole('tab', { name: 'Validation' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('keeps Validation reachable for a policy-only actor in Draft', async () => {
+    permissionMock.allowAll = false;
+    permissionMock.allowed = new Set([
+      'guidelines.compliance.read',
+    ]);
+    renderSpec('draft');
+
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(
+      screen.getByRole('tab', { name: 'Validation' }),
+    );
+
+    const tabList = screen.getByRole('tablist', {
+      name: 'Spec validation sections',
+    });
+    expect(
+      within(tabList).getByRole('tab', {
+        name: 'Policy Compliance',
+      }),
+    ).toHaveAttribute('aria-selected', 'true');
+    expect(
+      within(tabList).queryByRole('tab', {
+        name: /Requirement lint/,
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-board-id',
+      'board-1',
+    );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-entity-type',
+      'spec',
+    );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-subject-id',
+      baseSpec.id,
+    );
+    expect(
+      screen.getByTestId('policy-transition-preview'),
+    ).toBeInTheDocument();
+  });
+
+  it('falls back from an active Policy tab when its permission is revoked', async () => {
+    permissionMock.allowAll = false;
+    permissionMock.allowed = new Set([
+      'guidelines.compliance.read',
+      'spec.quality.read',
+    ]);
+    const rendered = renderSpec('draft');
+
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(
+      screen.getByRole('tab', { name: 'Policy Compliance' }),
+    );
+    expect(screen.getByTestId('policy-compliance-panel'))
+      .toBeInTheDocument();
+
+    permissionMock.allowed = new Set(['spec.quality.read']);
+    rendered.rerender(
+      <SpecModal
+        specId={baseSpec.id}
+        boardId={baseSpec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByRole('tab', { name: 'Policy Compliance' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('tab', { name: /Requirement lint/ }),
+    ).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('requirement-lint-panel'))
+      .toBeInTheDocument();
+  });
+
+  it('withholds every transition action while authority loading fails', async () => {
+    apiMock.getAllowedTransitions.mockRejectedValue(
+      new Error('transition authority unavailable'),
+    );
+
+    renderSpec('approved');
+
+    await screen.findByText(baseSpec.title);
+    expect(
+      screen.queryByRole('button', { name: 'Validate' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Draft' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('withholds Validate on a blocked policy edge while preserving recovery', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'spec',
+      entity_id: baseSpec.id,
+      current_status: 'approved',
+      source: 'core_sdlc_registry_v1',
+      allowed_transitions: [
+        {
+          to_status: 'validated',
+          label: 'Validated',
+          gate: 'spec_validation',
+          policy_compliance: true,
+          policy_compliance_decision: blockedPolicyDecision(),
+        },
+        {
+          to_status: 'draft',
+          label: 'Draft',
+          gate: 'reopen',
+          policy_compliance: false,
+          policy_compliance_decision: null,
+        },
+      ],
+    });
+    renderSpec('approved');
+
+    await screen.findByText(baseSpec.title);
+
+    expect(
+      screen.queryByRole('button', { name: 'Validate' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Draft' }),
+    ).toBeInTheDocument();
   });
 
   it('shows only the validation history allowed by the preset', async () => {

@@ -46,6 +46,9 @@ from okto_pulse.core.ports.application_persistence import (
 from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgePropagationPortError,
 )
+from okto_pulse.core.domain.guideline_policy_transition import (
+    PolicyTransitionRejected,
+)
 from okto_pulse.core.application.use_cases import (
     AnswerSpecQuestionCommand,
     AnswerSpecQuestionUseCase,
@@ -771,6 +774,8 @@ async def move_spec(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
     except SprintOperationError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError:
@@ -998,6 +1003,8 @@ async def update_test_scenario_status(
         )
     except StatusNotMutableError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except PolicyTransitionRejected as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except ValueError as exc:
         msg = str(exc)
         if msg.startswith("scenario_not_found"):
@@ -1299,6 +1306,8 @@ async def submit_spec_validation(
             status_code=status.HTTP_409_CONFLICT,
             detail=e.to_dict(),
         ) from e
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except (
         CommandValidationError,
         EntityNotFoundError,

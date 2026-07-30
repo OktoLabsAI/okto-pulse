@@ -60,4 +60,28 @@ describe('contextual Help events', () => {
     });
     unsubscribe();
   });
+
+  it('opens Policy Governance without submitting a surrounding form', () => {
+    const listener = vi.fn();
+    const onSubmit = vi.fn((event: React.FormEvent) => event.preventDefault());
+    const unsubscribe = subscribeContextualHelp(listener);
+    render(
+      <form onSubmit={onSubmit}>
+        <ContextualHelpLink
+          sectionId="policy-governance"
+          testId="policy-governance-help"
+        >
+          Policy governance help
+        </ContextualHelpLink>
+      </form>,
+    );
+
+    fireEvent.click(screen.getByTestId('policy-governance-help'));
+
+    expect(listener).toHaveBeenCalledWith({
+      sectionId: 'policy-governance',
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    unsubscribe();
+  });
 });

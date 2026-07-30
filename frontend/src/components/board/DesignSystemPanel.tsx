@@ -20,6 +20,7 @@ import {
 import { useDashboardApi } from '@/services/api';
 import { useImportExportApi } from '@/services/import-export-api';
 import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
+import { canonicalDefaultGuidelineRefs } from '@/components/guidelines/defaultGuidelineRefs';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import type {
   BoardDesignSystemEffectiveResponse,
@@ -253,7 +254,9 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
     if (!tpl) return;
     await apiRef.current.createDefaultBoardConfigVersion({
       settings_payload: tpl.settings_payload ?? {},
-      guideline_default_refs: tpl.guideline_default_refs ?? [],
+      guideline_default_refs: canonicalDefaultGuidelineRefs(
+        tpl.guideline_default_refs ?? [],
+      ),
       design_system_default_ref: null,
       activate: true,
     });

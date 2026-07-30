@@ -31,6 +31,10 @@ const boardState = vi.hoisted(() => ({
 const permissionState = vi.hoisted(() => ({
   canReadQuality: true,
   canAssessQuality: true,
+  canReadPolicyCompliance: true,
+}));
+const policyRejectionState = vi.hoisted(() => ({
+  value: null as null | { code: string },
 }));
 
 vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
@@ -43,6 +47,9 @@ vi.mock('@/hooks/usePermissions', () => ({
     has: (flag: string) => {
       if (flag === 'ideation.quality.read') return permissionState.canReadQuality;
       if (flag === 'ideation.quality.assess') return permissionState.canAssessQuality;
+      if (flag === 'guidelines.compliance.read') {
+        return permissionState.canReadPolicyCompliance;
+      }
       return false;
     },
   }),
@@ -66,6 +73,49 @@ vi.mock('@/components/shared/ContextSelector', () => ({
 }));
 vi.mock('@/components/shared/EditableField', () => ({
   EditableField: ({ value, renderView, placeholder }: any) => <div>{value ? renderView(value) : placeholder}</div>,
+}));
+vi.mock('@/components/policy-compliance', () => ({
+  requirePolicyTransitionEnvelope: (response: {
+    allowed_transitions: unknown[];
+  }) => response.allowed_transitions,
+  readPolicyTransitionRejection: () => policyRejectionState.value,
+  policyTransitionRejectionMessage: (rejection: { code: string }) =>
+    `Authoritative rejection: ${rejection.code}`,
+  isAllowedTransitionActionable: (transition: {
+    policy_compliance?: boolean;
+    policy_compliance_decision?: { allowed?: boolean } | null;
+  }) => (
+    transition.policy_compliance === false
+    || (
+      transition.policy_compliance === true
+      && transition.policy_compliance_decision?.allowed === true
+    )
+  ),
+  PolicyCompliancePanel: ({
+    boardId,
+    entityType,
+    subjectId,
+  }: {
+    boardId: string;
+    entityType: string;
+    subjectId: string;
+  }) => (
+    <div
+      data-testid="policy-compliance-panel"
+      data-board-id={boardId}
+      data-entity-type={entityType}
+      data-subject-id={subjectId}
+    />
+  ),
+  PolicyComplianceTransitionPreview: ({
+    rejection,
+  }: {
+    rejection?: { code: string } | null;
+  }) => (
+    <div data-testid="policy-transition-preview">
+      {rejection?.code}
+    </div>
+  ),
 }));
 
 const toastMock = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
@@ -181,6 +231,25 @@ function page<T>(items: T[]) {
   };
 }
 
+function blockedPolicyDecision() {
+  return {
+    state: 'policy_compliance_blocked',
+    allowed: false,
+    policy_compliance_required: true,
+    reason_codes: ['policy_compliance_blocked'],
+    decision_digest: 'a'.repeat(64),
+    fence_digest: 'b'.repeat(64),
+    receipt_id: 'policy-receipt-1',
+    currentness: 'current',
+    currentness_reasons: [],
+    applicable_rule_count: 2,
+    applicable_blocking_rule_count: 1,
+    blocking_rule_count: 1,
+    waived_rule_count: 0,
+    advisory_issue_count: 0,
+  };
+}
+
 function openAmbiguityAssessment() {
   fireEvent.click(screen.getByRole('tab', { name: 'Evaluation' }));
   fireEvent.click(screen.getByRole('tab', { name: 'Ambiguity Assessment' }));
@@ -191,6 +260,8 @@ describe('IdeationModal Max ambiguity gate panel', () => {
     vi.clearAllMocks();
     permissionState.canReadQuality = true;
     permissionState.canAssessQuality = true;
+    permissionState.canReadPolicyCompliance = true;
+    policyRejectionState.value = null;
     boardState.currentBoard = {
       id: 'board-1',
       owner_id: 'owner-1',
@@ -207,11 +278,11 @@ describe('IdeationModal Max ambiguity gate panel', () => {
       entity_type: 'ideation',
       entity_id: 'ideation-1',
       current_status: 'evaluating',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'done', label: 'Done', gate: 'ambiguity_resource_cognitive', blocked_reason: null },
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
+        { to_status: 'done', label: 'Done', gate: 'ambiguity_resource_cognitive', blocked_reason: null, policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getCurrentQualityAssessment.mockResolvedValue(currentAssessment());
@@ -247,6 +318,118 @@ describe('IdeationModal Max ambiguity gate panel', () => {
     );
     expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute('role', 'switch');
     expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('composes Policy Compliance inside Evaluation with exact subject identity', async () => {
+    render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
+
+    await screen.findByText('My Ideation');
+    fireEvent.click(screen.getByRole('tab', { name: 'Evaluation' }));
+    fireEvent.click(
+      screen.getByRole('tab', { name: 'Policy Compliance' }),
+    );
+
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-board-id',
+      'board-1',
+    );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-entity-type',
+      'ideation',
+    );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-subject-id',
+      'ideation-1',
+    );
+    expect(
+      screen.getByTestId('policy-transition-preview'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not expose Policy Compliance without its exact read capability', async () => {
+    permissionState.canReadPolicyCompliance = false;
+    render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
+
+    await screen.findByText('My Ideation');
+    fireEvent.click(screen.getByRole('tab', { name: 'Evaluation' }));
+
+    expect(
+      screen.queryByRole('tab', { name: 'Policy Compliance' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('policy-compliance-panel'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('fails closed on the governed forward action and preserves cancellation', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'ideation',
+      entity_id: 'ideation-1',
+      current_status: 'evaluating',
+      source: 'core_sdlc_registry_v1',
+      allowed_transitions: [
+        {
+          to_status: 'done',
+          label: 'Done',
+          gate: 'ideation_completion',
+          policy_compliance: true,
+          policy_compliance_decision: blockedPolicyDecision(),
+        },
+        {
+          to_status: 'cancelled',
+          label: 'Cancelled',
+          gate: 'cancel',
+          policy_compliance: false,
+          policy_compliance_decision: null,
+        },
+      ],
+    });
+
+    render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
+
+    await screen.findByText('My Ideation');
+    expect(
+      screen.queryByRole('button', { name: 'Done' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Cancelled' }),
+    ).toBeInTheDocument();
+  });
+
+  it('surfaces a structured mutation rejection and refreshes authority', async () => {
+    policyRejectionState.value = {
+      code: 'policy_compliance_blocked',
+    };
+    apiMock.moveIdeation.mockRejectedValue(new Error('409 conflict'));
+
+    render(
+      <IdeationModal
+        ideationId="ideation-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('My Ideation');
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    await waitFor(() => {
+      expect(toastMock.error).toHaveBeenCalledWith(
+        'Authoritative rejection: policy_compliance_blocked',
+      );
+    });
+    await waitFor(() => {
+      expect(apiMock.getAllowedTransitions).toHaveBeenCalledTimes(2);
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Evaluation' }));
+    fireEvent.click(
+      screen.getByRole('tab', { name: 'Policy Compliance' }),
+    );
+    expect(screen.getByTestId('policy-transition-preview'))
+      .toHaveTextContent('policy_compliance_blocked');
   });
 
   it('persists skip through the dedicated endpoint and refreshes state', async () => {

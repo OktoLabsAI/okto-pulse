@@ -322,10 +322,8 @@ describe('SpecModal Activity tab', () => {
     apiMock.getSpec.mockResolvedValue(legacySpec);
     apiMock.updateSpec.mockResolvedValue({
       ...legacySpec,
-      test_scenarios: legacySpec.test_scenarios!.map((scenario) =>
-        scenario.id === 'ts-legacy'
-          ? { ...scenario, status: 'ready' as const }
-          : scenario,
+      test_scenarios: legacySpec.test_scenarios!.filter(
+        (scenario) => scenario.id !== 'ts-negative',
       ),
     });
 
@@ -344,26 +342,26 @@ describe('SpecModal Activity tab', () => {
       await screen.findByText('regression (unsupported)'),
     ).toBeInTheDocument();
 
-    fireEvent.change(screen.getAllByDisplayValue('draft')[0], {
-      target: { value: 'ready' },
-    });
+    expect(screen.getAllByTestId('test-scenario-status-badge')).toHaveLength(2);
+    expect(screen.queryByDisplayValue('draft')).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Delete test scenario Supported negative type',
+      }),
+    );
 
     await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledTimes(1));
     const request = apiMock.updateSpec.mock.calls[0][1];
-    expect(request.test_scenarios).toHaveLength(2);
+    expect(request.test_scenarios).toHaveLength(1);
     const legacyRequest = request.test_scenarios.find(
       (scenario: { id: string }) => scenario.id === 'ts-legacy',
-    );
-    const negativeRequest = request.test_scenarios.find(
-      (scenario: { id: string }) => scenario.id === 'ts-negative',
     );
     expect(legacyRequest).toMatchObject({
       id: 'ts-legacy',
       title: 'Historical regression type',
-      status: 'ready',
+      status: 'draft',
     });
     expect(legacyRequest).not.toHaveProperty('scenario_type');
-    expect(negativeRequest).toHaveProperty('scenario_type', 'negative');
   });
 
   it('blocks a tampered new scenario with an absent type before the request', async () => {

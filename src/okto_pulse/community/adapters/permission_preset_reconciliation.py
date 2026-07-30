@@ -25,7 +25,7 @@ from okto_pulse.core.ports.permission_preset_reconciliation import (
 )
 from okto_pulse.core.ports.permission_policy import (
     get_permission_flag,
-    ska_permission_introduction_v1,
+    permission_introduction_manifests,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory
 
@@ -184,52 +184,55 @@ async def reconcile_community_permission_presets(
             before = tuple(await repository.list_permission_presets())
             result = await ReconcilePermissionPresetsUseCase().execute(repository)
             after = tuple(await repository.list_permission_presets())
-            manifest = ska_permission_introduction_v1()
             builtins = tuple(item for item in after if item.is_builtin)
-            introduced_true_count = sum(
-                get_permission_flag(item.flags, leaf) is True
-                for item in builtins
-                for leaf in manifest.leaves
-            )
-            introduced_total = len(builtins) * len(manifest.leaves)
-            await session.execute(
-                text(
-                    "INSERT INTO permission_introduction_audit "
-                    "(id, manifest_version, phase, classification, subject_id, "
-                    "base_preset_id, before_digest, after_digest, "
-                    "introduced_true_count, introduced_false_count, "
-                    "owner_review_required, mutation_count, details) VALUES "
-                    "(:id, :manifest_version, :phase, :classification, NULL, "
-                    "NULL, :before_digest, :after_digest, :true_count, "
-                    ":false_count, :owner_review_required, :mutation_count, "
-                    ":details)"
-                ).bindparams(bindparam("details", type_=JSON)),
+            before_digest = _audit_digest(_preset_audit_snapshot(before))
+            after_digest = _audit_digest(_preset_audit_snapshot(after))
+            actions = [
                 {
-                    "id": str(uuid.uuid4()),
-                    "manifest_version": manifest.version,
-                    "phase": "preset_reconciliation",
-                    "classification": "builtin_catalog",
-                    "before_digest": _audit_digest(
-                        _preset_audit_snapshot(before)
-                    ),
-                    "after_digest": _audit_digest(
-                        _preset_audit_snapshot(after)
-                    ),
-                    "true_count": introduced_true_count,
-                    "false_count": introduced_total - introduced_true_count,
-                    "owner_review_required": False,
-                    "mutation_count": len(result.commands),
-                    "details": {
-                        "actions": [
-                            {
-                                "action": command.action.value,
-                                "preset": command.definition.name,
-                            }
-                            for command in result.commands
-                        ],
+                    "action": command.action.value,
+                    "preset": command.definition.name,
+                }
+                for command in result.commands
+            ]
+            for manifest_order, manifest in enumerate(
+                permission_introduction_manifests()
+            ):
+                introduced_true_count = sum(
+                    get_permission_flag(item.flags, leaf) is True
+                    for item in builtins
+                    for leaf in manifest.leaves
+                )
+                introduced_total = len(builtins) * len(manifest.leaves)
+                await session.execute(
+                    text(
+                        "INSERT INTO permission_introduction_audit "
+                        "(id, manifest_version, phase, classification, "
+                        "subject_id, base_preset_id, before_digest, "
+                        "after_digest, introduced_true_count, "
+                        "introduced_false_count, owner_review_required, "
+                        "mutation_count, details) VALUES "
+                        "(:id, :manifest_version, :phase, :classification, "
+                        "NULL, NULL, :before_digest, :after_digest, "
+                        ":true_count, :false_count, "
+                        ":owner_review_required, :mutation_count, :details)"
+                    ).bindparams(bindparam("details", type_=JSON)),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "manifest_version": manifest.version,
+                        "phase": "preset_reconciliation",
+                        "classification": "builtin_catalog",
+                        "before_digest": before_digest,
+                        "after_digest": after_digest,
+                        "true_count": introduced_true_count,
+                        "false_count": (introduced_total - introduced_true_count),
+                        "owner_review_required": False,
+                        "mutation_count": len(result.commands),
+                        "details": {
+                            "actions": actions,
+                            "manifest_order": manifest_order,
+                        },
                     },
-                },
-            )
+                )
             return result
 
 

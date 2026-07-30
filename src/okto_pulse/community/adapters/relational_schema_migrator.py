@@ -72,76 +72,184 @@ StepCallable = Callable[[], "Awaitable[object] | object"]
 # ---------------------------------------------------------------------------
 _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
     # --- pre_create_all: schema ALTERs applied BEFORE create_all ---
-    ("_migrate_card_statuses", "pre_create_all", False,
-     "Migrate the card status enum/values before create_all (avoids PG enum conflicts)."),
-    ("_migrate_add_priority_column", "pre_create_all", False,
-     "Add the card priority column."),
-    ("_migrate_add_realm_id", "pre_create_all", False,
-     "Add the realm_id column."),
-    ("_migrate_add_comment_choice_columns", "pre_create_all", False,
-     "Add comment choice columns."),
-    ("_migrate_add_bug_card_columns", "pre_create_all", False,
-     "Add bug-card columns."),
-    ("_migrate_add_task_requirement_gate_card_column", "pre_create_all", False,
-     "Add task requirement-link gate skip column on cards."),
-    ("_migrate_add_skip_rules_coverage", "pre_create_all", False,
-     "Add skip-rules-coverage column."),
-    ("_migrate_add_skip_trs_coverage", "pre_create_all", False,
-     "Add skip-TRs-coverage column."),
-    ("_migrate_add_decisions_columns", "pre_create_all", False,
-     "Add decisions columns."),
-    ("_migrate_decisions_default_false", "pre_create_all", False,
-     "Backfill decisions default to false."),
-    ("_migrate_add_archive_columns", "pre_create_all", False,
-     "Add archive columns."),
-    ("_migrate_add_spec_edition", "pre_create_all", False,
-     "Add and backfill the human-facing Spec edition counter."),
-    ("_migrate_add_spec_validation_columns", "pre_create_all", False,
-     "Add spec-validation columns."),
-    ("_migrate_add_ir_or_columns", "pre_create_all", False,
-     "Add integration-requirement OR columns."),
-    ("_migrate_add_spec_validation_gate_columns", "pre_create_all", False,
-     "Add spec-validation-gate columns."),
-    ("_migrate_add_ideation_skip_ambiguity_gate", "pre_create_all", False,
-     "Add ideation skip-ambiguity-gate column."),
-    ("_migrate_add_refinement_skip_ambiguity_gate", "pre_create_all", False,
-     "Add refinement skip-ambiguity-gate column."),
-    ("_migrate_heal_task_validation_field_names", "pre_create_all", False,
-     "Heal task-validation field names."),
-    ("_migrate_status_renames", "pre_create_all", False,
-     "Apply status renames (value transforms; preserves rows)."),
-    ("_migrate_add_permission_columns", "pre_create_all", False,
-     "Add permission columns."),
-    ("_migrate_add_event_tables", "pre_create_all", False,
-     "Add the event/outbox tables ahead of create_all."),
+    (
+        "_migrate_card_statuses",
+        "pre_create_all",
+        False,
+        "Migrate the card status enum/values before create_all (avoids PG enum conflicts).",
+    ),
+    (
+        "_migrate_add_priority_column",
+        "pre_create_all",
+        False,
+        "Add the card priority column.",
+    ),
+    ("_migrate_add_realm_id", "pre_create_all", False, "Add the realm_id column."),
+    (
+        "_migrate_add_comment_choice_columns",
+        "pre_create_all",
+        False,
+        "Add comment choice columns.",
+    ),
+    ("_migrate_add_bug_card_columns", "pre_create_all", False, "Add bug-card columns."),
+    (
+        "_migrate_add_task_requirement_gate_card_column",
+        "pre_create_all",
+        False,
+        "Add task requirement-link gate skip column on cards.",
+    ),
+    (
+        "_migrate_add_skip_rules_coverage",
+        "pre_create_all",
+        False,
+        "Add skip-rules-coverage column.",
+    ),
+    (
+        "_migrate_add_skip_trs_coverage",
+        "pre_create_all",
+        False,
+        "Add skip-TRs-coverage column.",
+    ),
+    (
+        "_migrate_add_decisions_columns",
+        "pre_create_all",
+        False,
+        "Add decisions columns.",
+    ),
+    (
+        "_migrate_decisions_default_false",
+        "pre_create_all",
+        False,
+        "Backfill decisions default to false.",
+    ),
+    ("_migrate_add_archive_columns", "pre_create_all", False, "Add archive columns."),
+    (
+        "_migrate_add_spec_edition",
+        "pre_create_all",
+        False,
+        "Add and backfill the human-facing Spec edition counter.",
+    ),
+    (
+        "_migrate_add_spec_validation_columns",
+        "pre_create_all",
+        False,
+        "Add spec-validation columns.",
+    ),
+    (
+        "_migrate_add_ir_or_columns",
+        "pre_create_all",
+        False,
+        "Add integration-requirement OR columns.",
+    ),
+    (
+        "_migrate_add_spec_validation_gate_columns",
+        "pre_create_all",
+        False,
+        "Add spec-validation-gate columns.",
+    ),
+    (
+        "_migrate_add_ideation_skip_ambiguity_gate",
+        "pre_create_all",
+        False,
+        "Add ideation skip-ambiguity-gate column.",
+    ),
+    (
+        "_migrate_add_refinement_skip_ambiguity_gate",
+        "pre_create_all",
+        False,
+        "Add refinement skip-ambiguity-gate column.",
+    ),
+    (
+        "_migrate_heal_task_validation_field_names",
+        "pre_create_all",
+        False,
+        "Heal task-validation field names.",
+    ),
+    (
+        "_migrate_status_renames",
+        "pre_create_all",
+        False,
+        "Apply status renames (value transforms; preserves rows).",
+    ),
+    (
+        "_migrate_add_permission_columns",
+        "pre_create_all",
+        False,
+        "Add permission columns.",
+    ),
+    (
+        "_migrate_add_event_tables",
+        "pre_create_all",
+        False,
+        "Add the event/outbox tables ahead of create_all.",
+    ),
     # --- create_all_boundary ---
-    (CREATE_ALL_BOUNDARY_STEP_ID, "create_all_boundary", False,
-     "Base.metadata.create_all — the table-create boundary."),
+    (
+        CREATE_ALL_BOUNDARY_STEP_ID,
+        "create_all_boundary",
+        False,
+        "Base.metadata.create_all — the table-create boundary.",
+    ),
     # --- post_create_all: schema ALTERs applied AFTER create_all ---
-    ("_migrate_add_consolidation_work_kinds", "post_create_all", False,
-     "Rebuild the legacy consolidation queue into the governed multi-kind, "
-     "generation-aware contract."),
-    ("_migrate_global_discovery_delivery_contract", "post_create_all", False,
-     "Create and validate the durable GD delivery ledger, and widen the "
-     "Global Update Outbox physical attempt key without losing rows."),
-    ("_migrate_cognitive_source_revision_ledger", "post_create_all", False,
-     "Audit the additive cognitive-source revision ledger and install "
-     "immutable UPDATE/DELETE guards."),
-    ("_migrate_global_discovery_recovery_control_plane", "post_create_all", False,
-     "Converge the durable Global Discovery recovery attempt, singleton slot, "
-     "and claimed-dispatch control-plane schema."),
-    ("_migrate_story_ideation_single_link", "post_create_all", False,
-     "Enforce single story->ideation link."),
-    ("_migrate_add_card_sprint_id", "post_create_all", False,
-     "Add card.sprint_id."),
-    ("_migrate_add_card_knowledge_bases", "post_create_all", False,
-     "Add card knowledge-base columns."),
-    ("_migrate_add_knowledge_source_columns", "post_create_all", False,
-     "Add knowledge-source columns."),
-    ("_migrate_add_kb_lineage_columns", "post_create_all", False,
-     "Add knowledge-base lineage columns."),
-    ("_migrate_add_kb_governance_metadata", "post_create_all", False,
-     "Add and validate nullable JSON governance metadata on entity knowledge bases."),
+    (
+        "_migrate_add_consolidation_work_kinds",
+        "post_create_all",
+        False,
+        "Rebuild the legacy consolidation queue into the governed multi-kind, "
+        "generation-aware contract.",
+    ),
+    (
+        "_migrate_global_discovery_delivery_contract",
+        "post_create_all",
+        False,
+        "Create and validate the durable GD delivery ledger, and widen the "
+        "Global Update Outbox physical attempt key without losing rows.",
+    ),
+    (
+        "_migrate_cognitive_source_revision_ledger",
+        "post_create_all",
+        False,
+        "Audit the additive cognitive-source revision ledger and install "
+        "immutable UPDATE/DELETE guards.",
+    ),
+    (
+        "_migrate_global_discovery_recovery_control_plane",
+        "post_create_all",
+        False,
+        "Converge the durable Global Discovery recovery attempt, singleton slot, "
+        "and claimed-dispatch control-plane schema.",
+    ),
+    (
+        "_migrate_story_ideation_single_link",
+        "post_create_all",
+        False,
+        "Enforce single story->ideation link.",
+    ),
+    ("_migrate_add_card_sprint_id", "post_create_all", False, "Add card.sprint_id."),
+    (
+        "_migrate_add_card_knowledge_bases",
+        "post_create_all",
+        False,
+        "Add card knowledge-base columns.",
+    ),
+    (
+        "_migrate_add_knowledge_source_columns",
+        "post_create_all",
+        False,
+        "Add knowledge-source columns.",
+    ),
+    (
+        "_migrate_add_kb_lineage_columns",
+        "post_create_all",
+        False,
+        "Add knowledge-base lineage columns.",
+    ),
+    (
+        "_migrate_add_kb_governance_metadata",
+        "post_create_all",
+        False,
+        "Add and validate nullable JSON governance metadata on entity knowledge bases.",
+    ),
     (
         "_migrate_knowledge_propagation_v2_schema",
         "post_create_all",
@@ -149,43 +257,150 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Create and post-validate target scopes, temporal assignments, governed "
         "snapshots, DROP tombstones, and append-only mutation ledgers.",
     ),
-    ("_migrate_add_sprint_scope_fields", "post_create_all", False,
-     "Add sprint scope fields."),
-    ("_migrate_add_sprint_lane_fields", "post_create_all", False,
-     "Add sprint lane fields."),
-    ("_migrate_agent_boards", "post_create_all", False,
-     "Backfill the agent_boards junction table."),
-    ("_migrate_add_task_validation_columns", "post_create_all", False,
-     "Add task-validation columns."),
-    ("_migrate_add_consolidation_resilience_columns", "post_create_all", False,
-     "Add consolidation-resilience columns."),
-    ("_migrate_add_kg_tick_boards_failed", "post_create_all", False,
-     "Add kg_tick boards_failed column."),
-    ("_migrate_drop_spec_skills", "post_create_all", True,
-     "DROP TABLE spec_skills (Skills removal; no data preservation — destructive)."),
-    ("_migrate_add_default_config_snapshot", "post_create_all", False,
-     "Add default-config snapshot column on Board.settings."),
-    ("_migrate_add_default_config_spec_checklist_mode", "post_create_all", False,
-     "Add curated Spec checklist mode to default-board templates."),
-    ("_migrate_add_agent_seen_board_id", "post_create_all", False,
-     "Add and backfill board scope on agent seen markers."),
-    ("_migrate_add_board_guideline_provenance", "post_create_all", False,
-     "Add board-guideline provenance columns."),
-    ("_migrate_add_cancellation_columns", "post_create_all", False,
-     "Add cancellation-justification columns (reason/at/by) to ideations, "
-     "refinements, specs, sprints, and cards (ITEM 17)."),
-    ("_migrate_pagination_indices_and_positions", "post_create_all", False,
-     "Pagination covering indices + dense card-position backfill "
-     "(actives 0..n-1, archived n..m; idempotent — spec 8b33f9a8)."),
-    ("_migrate_repair_known_fixture_fk_orphans", "post_create_all", True,
-     "Purge only allowlisted historical test-fixture pollution (including its "
-     "synthetic board), then require a clean SQLite foreign_key_check."),
-    ("_migrate_quality_assessment_c7_schema", "post_create_all", False,
-     "Converge quality Q&A lifecycle columns and install permit-aware "
-     "immutability guards for quality, RDL, checklist, and legacy-import rows."),
-    ("_migrate_agent_permissions", "post_create_all", False,
-     "Schema migration classified as post_create_all so legacy agent permissions "
-     "are migrated before permission-flag data reconciliation."),
+    (
+        "_migrate_add_sprint_scope_fields",
+        "post_create_all",
+        False,
+        "Add sprint scope fields.",
+    ),
+    (
+        "_migrate_add_sprint_lane_fields",
+        "post_create_all",
+        False,
+        "Add sprint lane fields.",
+    ),
+    (
+        "_migrate_agent_boards",
+        "post_create_all",
+        False,
+        "Backfill the agent_boards junction table.",
+    ),
+    (
+        "_migrate_add_task_validation_columns",
+        "post_create_all",
+        False,
+        "Add task-validation columns.",
+    ),
+    (
+        "_migrate_add_consolidation_resilience_columns",
+        "post_create_all",
+        False,
+        "Add consolidation-resilience columns.",
+    ),
+    (
+        "_migrate_add_kg_tick_boards_failed",
+        "post_create_all",
+        False,
+        "Add kg_tick boards_failed column.",
+    ),
+    (
+        "_migrate_drop_spec_skills",
+        "post_create_all",
+        True,
+        "DROP TABLE spec_skills (Skills removal; no data preservation — destructive).",
+    ),
+    (
+        "_migrate_add_default_config_snapshot",
+        "post_create_all",
+        False,
+        "Add default-config snapshot column on Board.settings.",
+    ),
+    (
+        "_migrate_add_default_config_spec_checklist_mode",
+        "post_create_all",
+        False,
+        "Add curated Spec checklist mode to default-board templates.",
+    ),
+    (
+        "_migrate_add_agent_seen_board_id",
+        "post_create_all",
+        False,
+        "Add and backfill board scope on agent seen markers.",
+    ),
+    (
+        "_migrate_add_board_guideline_provenance",
+        "post_create_all",
+        False,
+        "Add board-guideline provenance columns.",
+    ),
+    (
+        "_migrate_add_cancellation_columns",
+        "post_create_all",
+        False,
+        "Add cancellation-justification columns (reason/at/by) to ideations, "
+        "refinements, specs, sprints, and cards (ITEM 17).",
+    ),
+    (
+        "_migrate_pagination_indices_and_positions",
+        "post_create_all",
+        False,
+        "Pagination covering indices + dense card-position backfill "
+        "(actives 0..n-1, archived n..m; idempotent — spec 8b33f9a8).",
+    ),
+    (
+        "_migrate_repair_known_fixture_fk_orphans",
+        "post_create_all",
+        True,
+        "Purge only allowlisted historical test-fixture pollution (including its "
+        "synthetic board), then require a clean SQLite foreign_key_check.",
+    ),
+    (
+        "_migrate_guideline_policy_lifecycle_substrate",
+        "post_create_all",
+        False,
+        "Add and validate append-only guideline binding lifecycle state and "
+        "the terminal retirement plus inert import-candidate substrates before "
+        "the strict B03 authority audit.",
+    ),
+    (
+        "_migrate_guideline_impact_substrate",
+        "post_create_all",
+        False,
+        "Add guideline impact receipt/item/adoption tables and the nullable "
+        "binding evidence pin before the strict B03 authority audit.",
+    ),
+    (
+        "_migrate_guideline_policy_v1_schema",
+        "post_create_all",
+        False,
+        "Backfill exact immutable guideline revisions, heads, and board bindings; "
+        "pin default refs and install permit-aware append-only guards.",
+    ),
+    (
+        "_migrate_guideline_impact_v1_schema",
+        "post_create_all",
+        False,
+        "Seal immutable impact evidence and explicit-adoption integrity after "
+        "legacy/global guideline bindings have been backfilled.",
+    ),
+    (
+        "_migrate_policy_compliance_v1_schema",
+        "post_create_all",
+        False,
+        "Add policy subject version fences; persist immutable compliance "
+        "receipts, adopted revisions, and findings with keyset indexes.",
+    ),
+    (
+        "_migrate_policy_waiver_v1_schema",
+        "post_create_all",
+        False,
+        "Persist governed waiver heads and append-only lifecycle events; "
+        "install CAS, immutability, and board-erasure guards.",
+    ),
+    (
+        "_migrate_quality_assessment_c7_schema",
+        "post_create_all",
+        False,
+        "Converge quality Q&A lifecycle columns and install permit-aware "
+        "immutability guards for quality, RDL, checklist, and legacy-import rows.",
+    ),
+    (
+        "_migrate_agent_permissions",
+        "post_create_all",
+        False,
+        "Schema migration classified as post_create_all so legacy agent permissions "
+        "are migrated before permission-flag data reconciliation.",
+    ),
     # Data bootstrap (_seed_builtin_presets / _reconcile_* /
     # _bootstrap_default_discovery_intents) runs after the schema ledger.
 )
@@ -204,7 +419,9 @@ def build_community_migration_ledger() -> tuple[MigrationStep, ...]:
     1-based lifecycle call position; ``owner='community'``.
     """
     steps: list[MigrationStep] = []
-    for order, (step_id, phase, destructive, description) in enumerate(_LEDGER, start=1):
+    for order, (step_id, phase, destructive, description) in enumerate(
+        _LEDGER, start=1
+    ):
         metadata: dict[str, object] = {
             "source": "okto_pulse.community.adapters.relational_schema_steps"
         }
@@ -269,7 +486,9 @@ class CommunityRelationalSchemaMigrator:
                 "migration_step_count": sum(
                     1 for s in self._steps if s.phase != "create_all_boundary"
                 ),
-                "create_all_boundary_order": boundary_orders[0] if boundary_orders else None,
+                "create_all_boundary_order": boundary_orders[0]
+                if boundary_orders
+                else None,
             },
         )
 

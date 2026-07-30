@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = REPO_ROOT.parent
@@ -84,6 +85,35 @@ def _reset_relational_schema_lifecycle_seam():
         yield
     finally:
         restore_runtime_values_for_tests(saved_runtime)
+
+
+@pytest_asyncio.fixture(autouse=True, loop_scope="function")
+async def _close_test_community_database_runtime(
+    _reset_relational_schema_lifecycle_seam,
+):
+    """Dispose a test-created Community runtime before its loop is closed.
+
+    The registry-isolation fixture above restores the caller's complete
+    runtime snapshot after this dependent fixture tears down.  Consequently,
+    only a runtime created inside the current test is visible here: a saved
+    external runtime is neither resolved nor closed.
+    """
+
+    yield
+
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        CommunityDatabaseRuntime,
+    )
+    from okto_pulse.core.ports.relational_runtime import (
+        is_database_runtime_configured,
+        resolve_database_runtime,
+    )
+
+    if not is_database_runtime_configured():
+        return
+    runtime = resolve_database_runtime()
+    if isinstance(runtime, CommunityDatabaseRuntime):
+        await runtime.close()
 
 
 def require_active_runtime_registry():

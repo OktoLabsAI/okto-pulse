@@ -47,6 +47,15 @@ function ds(over: Record<string, unknown> = {}) {
   };
 }
 
+const pinnedGuidelineDefault = {
+  guideline_id: 'policy-guideline-1',
+  priority: 2,
+  revision_id: 'policy-guideline-1-revision-3',
+  revision_number: 3,
+  semantic_version: '1.2.0',
+  revision_digest: 'a'.repeat(64),
+};
+
 describe('DesignSystemPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -67,7 +76,7 @@ describe('DesignSystemPanel', () => {
         is_active: true,
         scope: 'global',
         settings_payload: { design_system_gate_mode: 'blocking' },
-        guideline_default_refs: [],
+        guideline_default_refs: [pinnedGuidelineDefault],
         design_system_default_ref: { design_system_id: 'g1', version: 1, gate_mode: 'blocking' },
         created_by: 'u',
         created_at: null,
@@ -318,7 +327,11 @@ describe('DesignSystemPanel', () => {
 
     await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalled());
     expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
-      expect.objectContaining({ design_system_default_ref: null, activate: true }),
+      expect.objectContaining({
+        guideline_default_refs: [pinnedGuidelineDefault],
+        design_system_default_ref: null,
+        activate: true,
+      }),
     );
     // Unsetting must NOT go through the set-default endpoint.
     expect(apiMock.setDefaultDesignSystem).not.toHaveBeenCalled();

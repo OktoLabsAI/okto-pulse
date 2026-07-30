@@ -142,11 +142,11 @@ describe('IdeationModal Markdown export', () => {
       entity_type: 'ideation',
       entity_id: 'ideation-1',
       current_status: 'review',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null },
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getArchitectureDesign.mockImplementation((id: string) =>
@@ -255,9 +255,9 @@ describe('IdeationModal Markdown export', () => {
       entity_type: 'ideation',
       entity_id: 'ideation-1',
       current_status: 'review',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
 
@@ -323,6 +323,13 @@ describe('IdeationModal Markdown export', () => {
   });
 
   it('refreshes Resource Gate and resource counts after Architecture mutations', async () => {
+    apiMock.getIdeation
+      .mockResolvedValueOnce(baseIdeation)
+      .mockResolvedValue({
+        ...baseIdeation,
+        version: baseIdeation.version + 1,
+        architecture_designs: [{ id: 'architecture-1' }],
+      });
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Ideation');
@@ -340,5 +347,6 @@ describe('IdeationModal Markdown export', () => {
       );
     });
     expect(screen.getByRole('tab', { name: /Architecture 1/ })).toBeInTheDocument();
+    expect(apiMock.getIdeation).toHaveBeenCalledTimes(2);
   });
 });

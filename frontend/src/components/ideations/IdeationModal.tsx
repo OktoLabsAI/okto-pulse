@@ -2,7 +2,12 @@
  * IdeationModal - View and manage an ideation, evaluate scope, derive specs
  */
 
-import { useEffect, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   X,
   ChevronRight,
@@ -74,6 +79,16 @@ import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { usePermissions } from '@/hooks/usePermissions';
 import { QualityPanel } from '@/components/quality';
+import {
+  PolicyCompliancePanel,
+  PolicyComplianceTransitionPreview,
+  isAllowedTransitionActionable,
+  policyTransitionRejectionMessage,
+  readPolicyTransitionRejection,
+  requirePolicyTransitionEnvelope,
+  type PolicyTransitionRejection,
+  type PolicyTransitionPreviewLoadState,
+} from '@/components/policy-compliance';
 import { IdeationReferencesPanel } from './IdeationReferencesPanel';
 
 interface IdeationModalProps {
@@ -93,7 +108,10 @@ type ModalTab =
   | 'versions'
   | 'activity';
 type ResourceSubTab = 'mockups' | 'knowledge' | 'architecture';
-type EvaluationSubTab = 'evaluation' | 'ambiguity';
+type EvaluationSubTab =
+  | 'evaluation'
+  | 'ambiguity'
+  | 'policy-compliance';
 
 const STATUS_ICON: Record<IdeationStatus, React.ReactNode> = {
   draft: <Lightbulb size={14} />,
@@ -922,6 +940,9 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
   const canReadQuality = perms.has('ideation.quality.read');
   const canAssessQuality = perms.has('ideation.quality.assess');
   const canProposeQualityQuestions = perms.has('ideation.qa.ask');
+  const canReadPolicyCompliance = perms.has(
+    'guidelines.compliance.read',
+  );
   const ambiguityGateRequired = Boolean(
     currentBoard?.settings?.require_ideation_ambiguity_gate,
   );
@@ -930,6 +951,20 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<IdeationStatus | null>(null);
   const [nextStatuses, setNextStatuses] = useState<IdeationStatus[]>([]);
+  const [
+    policyTransitionPreview,
+    setPolicyTransitionPreview,
+  ] = useState<PolicyTransitionPreviewLoadState>({
+    status: 'loading',
+    transitions: [],
+    error: null,
+  });
+  const [
+    policyTransitionRejection,
+    setPolicyTransitionRejection,
+  ] = useState<PolicyTransitionRejection | null>(null);
+  const lastTransitionSubjectKey = useRef<string | null>(null);
+  const transitionRequestId = useRef(0);
   const [savingSkip, setSavingSkip] = useState(false);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
   const [resourceSubTab, setResourceSubTab] = useState<ResourceSubTab>('mockups');
@@ -944,8 +979,19 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
   useEffect(() => {
     if (evaluationSubTab === 'ambiguity' && !canAccessAmbiguityAssessment) {
       setEvaluationSubTab('evaluation');
+      return;
     }
-  }, [canAccessAmbiguityAssessment, evaluationSubTab]);
+    if (
+      evaluationSubTab === 'policy-compliance'
+      && !canReadPolicyCompliance
+    ) {
+      setEvaluationSubTab('evaluation');
+    }
+  }, [
+    canAccessAmbiguityAssessment,
+    canReadPolicyCompliance,
+    evaluationSubTab,
+  ]);
 
   // Evaluate form
   const [showEvalForm, setShowEvalForm] = useState(false);
@@ -972,21 +1018,75 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
 
   useEffect(() => { loadIdeation(); }, [ideationId]);
 
-  const loadAllowedTransitions = async (data: Ideation) => {
+  const loadAllowedTransitions = useCallback(async (data: Ideation) => {
+    const requestId = transitionRequestId.current + 1;
+    transitionRequestId.current = requestId;
+    lastTransitionSubjectKey.current = [
+      data.id,
+      data.version,
+      data.status,
+    ].join(':');
+    setPolicyTransitionRejection(null);
+    setNextStatuses([]);
+    setPolicyTransitionPreview({
+      status: 'loading',
+      transitions: [],
+      error: null,
+    });
     try {
       const response = await api.getAllowedTransitions(data.board_id || _boardId, {
         entity_type: 'ideation',
         entity_id: data.id,
       });
+      if (transitionRequestId.current !== requestId) {
+        return;
+      }
+      const transitions = requirePolicyTransitionEnvelope(response, {
+        boardId: data.board_id || _boardId,
+        entityType: 'ideation',
+        subjectId: data.id,
+        currentStatus: data.status,
+      });
+      setPolicyTransitionPreview({
+        status: 'ready',
+        transitions,
+        error: null,
+      });
       setNextStatuses(
-        response.allowed_transitions
+        transitions
+          .filter(isAllowedTransitionActionable)
           .map((item) => item.to_status)
           .filter((status): status is IdeationStatus => IDEATION_STATUSES.includes(status as IdeationStatus))
       );
-    } catch {
+    } catch (caught) {
+      if (transitionRequestId.current !== requestId) {
+        return;
+      }
       setNextStatuses([]);
+      setPolicyTransitionPreview({
+        status: 'error',
+        transitions: [],
+        error: caught instanceof Error
+          ? caught.message
+          : 'The server transition contract could not be loaded.',
+      });
     }
-  };
+  }, [api, _boardId]);
+
+  useEffect(() => {
+    if (!ideation) {
+      return;
+    }
+    const subjectKey = [
+      ideation.id,
+      ideation.version,
+      ideation.status,
+    ].join(':');
+    if (lastTransitionSubjectKey.current === subjectKey) {
+      return;
+    }
+    void loadAllowedTransitions(ideation);
+  }, [ideation, loadAllowedTransitions]);
 
   const loadIdeation = async () => {
     setLoading(true);
@@ -1000,6 +1100,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
   const performMove = async (status: IdeationStatus, cancellationReason?: string) => {
     if (!ideation) return;
     setMovingTo(status);
+    setPolicyTransitionRejection(null);
     try {
       const updated = await api.moveIdeation(ideationId, {
         status,
@@ -1009,7 +1110,22 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
       await loadAllowedTransitions(updated);
       onChanged();
       toast.success(`Ideation moved to ${IDEATION_STATUS_LABELS[status]}`);
-    } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
+    } catch (err) {
+      const rejection = readPolicyTransitionRejection(err, {
+        boardId: ideation.board_id || _boardId,
+        entityType: 'ideation',
+        subjectId: ideation.id,
+        currentStatus: ideation.status,
+        toStatus: status,
+      });
+      toast.error(
+        rejection
+          ? policyTransitionRejectionMessage(rejection)
+          : getErrorMessage(err),
+      );
+      await loadAllowedTransitions(ideation);
+      setPolicyTransitionRejection(rejection);
+    } finally { setMovingTo(null); }
   };
 
   const handleMove = async (status: IdeationStatus) => {
@@ -1146,6 +1262,9 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
     { id: 'evaluation', label: 'Evaluation' },
     ...(canAccessAmbiguityAssessment
       ? [{ id: 'ambiguity' as const, label: 'Ambiguity Assessment' }]
+      : []),
+    ...(canReadPolicyCompliance
+      ? [{ id: 'policy-compliance' as const, label: 'Policy Compliance' }]
       : []),
   ];
 
@@ -1386,6 +1505,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                         ? { ...current, architecture_designs: items }
                         : current);
                       setResourceGateRefreshKey((value) => value + 1);
+                      void loadIdeation();
                     }}
                   />
               </AccessibleTabPanel>
@@ -1571,6 +1691,33 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                       }}
                     />
                   ) : null}
+                </AccessibleTabPanel>
+              )}
+
+              {canReadPolicyCompliance && (
+                <AccessibleTabPanel
+                  idBase={`ideation-${ideationId}-evaluation`}
+                  tabId="policy-compliance"
+                  value={evaluationSubTab}
+                  mount="lazy-keep"
+                  className="space-y-4"
+                >
+                  <PolicyComplianceTransitionPreview
+                    preview={policyTransitionPreview}
+                    rejection={policyTransitionRejection}
+                  />
+                  <PolicyCompliancePanel
+                    boardId={ideation.board_id || _boardId}
+                    entityType="ideation"
+                    subjectId={ideation.id}
+                    refreshKey={ideation.version}
+                    onEvaluated={() => {
+                      void loadAllowedTransitions(ideation);
+                    }}
+                    onRefreshed={() => {
+                      void loadAllowedTransitions(ideation);
+                    }}
+                  />
                 </AccessibleTabPanel>
               )}
             </div>

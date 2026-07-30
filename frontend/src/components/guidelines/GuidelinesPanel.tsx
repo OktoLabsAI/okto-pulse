@@ -2,32 +2,127 @@
  * GuidelinesPanel - Two-tab modal for managing board + global guidelines
  */
 
-import { useState, useEffect, useCallback } from 'react';
 import {
-  X, Plus, Search, BookOpen, Link, Unlink, Trash2,
-  ChevronUp, ChevronDown, Tag, Globe, FileText, Edit3, Eye, EyeOff,
-  HelpCircle,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from 'react';
+import {
+  X, Plus, Search, BookOpen, Unlink,
+  Tag, Globe, FileText, Edit3, Eye, EyeOff,
+  HelpCircle, ShieldCheck,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
-import { useImportExportApi } from '@/services/import-export-api';
+import { usePolicyGovernanceApi } from '@/services/policy-governance-api';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
-import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
 import toast from 'react-hot-toast';
-import type { BoardGuidelineEntry, DefaultGuidelineCandidatesResponse, Guideline } from '@/types';
+import type {
+  BoardGuidelineEntry,
+  DefaultBoardConfigGuidelineRef,
+  DefaultGuidelineCandidatesResponse,
+  Guideline,
+} from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
+import { usePermissions } from '@/hooks/usePermissions';
+import { PolicyWaiverPanel } from '@/components/policy-compliance/PolicyWaiverPanel';
+import { ContextualHelpLink } from '@/components/help';
+import {
+  GuidelineRevisionEditor,
+  type AdoptedGuidelineRevision,
+} from './GuidelineRevisionEditor';
+import {
+  currentDefaultGuidelineRefs,
+  defaultGuidelineRefFromCandidate,
+} from './defaultGuidelineRefs';
+import { GuidelinePolicyTransfer } from './GuidelinePolicyTransfer';
+import {
+  GuidelineImpactDialog,
+  type AdoptedGuidelineBindingAuthority,
+} from './GuidelineImpactDialog';
+import {
+  guidelineImpactErrorMessage,
+  isCompleteBoardGuidelineBindingAuthority,
+  isGuidelineRevisionAuthorityForTarget,
+  latestGuidelineRevisionTargetFromAuthority,
+} from './guidelineImpactModel';
+import type {
+  GuidelineAdoptionResponse,
+  GuidelineEnforcement,
+} from '@/types/policy-governance';
 
 interface GuidelinesPanelProps {
   boardId: string;
   onClose: () => void;
 }
 
-type Tab = 'board' | 'global';
+type Tab = 'board' | 'global' | 'waivers';
+const GLOBAL_PAGE_SIZE = 50;
+
+interface RevisionEditorSelection {
+  guideline: Guideline;
+  adoptedRevision?: AdoptedGuidelineRevision;
+}
+
+interface ImpactDialogSelection {
+  guidelineId: string;
+  guidelineTitle: string;
+  targetRevisionId: string;
+  targetSemanticVersion: string;
+  adoptedBinding?: AdoptedGuidelineBindingAuthority;
+  initialPriority: number;
+  initialEnforcement: GuidelineEnforcement;
+}
 
 export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
-  useEscapeToClose(onClose);
   const api = useDashboardApi();
-  const importExportApi = useImportExportApi();
+  const policyApi = usePolicyGovernanceApi();
+  const permissions = usePermissions(boardId);
+  const policyAuthorityReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadRevisions = (
+    policyAuthorityReady
+    && permissions.has('guidelines.revisions.read')
+  );
+  const canCreateRevisions = (
+    policyAuthorityReady
+    && permissions.has('guidelines.revisions.create')
+  );
+  const canOpenImpact = (
+    canReadRevisions
+    && permissions.has('guidelines.impact.preview')
+  );
+  const canManageAdoption = (
+    policyAuthorityReady
+    && permissions.has('guidelines.adoption.manage')
+  );
+  const canReadWaivers = (
+    policyAuthorityReady
+    && permissions.has('guidelines.waiver.read')
+  );
   const [activeTab, setActiveTab] = useState<Tab>('global');
+  const [revisionEditor, setRevisionEditor] =
+    useState<RevisionEditorSelection | null>(null);
+  const [impactDialog, setImpactDialog] =
+    useState<ImpactDialogSelection | null>(null);
+  const [impactOpeningId, setImpactOpeningId] = useState<string | null>(null);
+  const impactOpeningRef = useRef<string | null>(null);
+  const childDialogOpen = (
+    revisionEditor !== null
+    || impactDialog !== null
+  );
+  useEscapeToClose(onClose, {
+    enabled: !childDialogOpen,
+  });
+  const focusTrap = useDialogFocusTrap(
+    !childDialogOpen,
+    '[data-guidelines-initial-focus]',
+  );
 
   // Board tab state
   const [entries, setEntries] = useState<BoardGuidelineEntry[]>([]);
@@ -38,8 +133,9 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
   // Global tab state
   const [globals, setGlobals] = useState<Guideline[]>([]);
   const [globalLoading, setGlobalLoading] = useState(false);
+  const [globalLoadingMore, setGlobalLoadingMore] = useState(false);
+  const [globalHasMore, setGlobalHasMore] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
-  const [editingGlobal, setEditingGlobal] = useState<Guideline | null>(null);
   const [showGlobalForm, setShowGlobalForm] = useState(false);
 
   // Form state (shared between inline create, global create, and edit)
@@ -52,6 +148,11 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
   // card 5cb88511). Only GLOBAL catalog guidelines are eligible defaults; the
   // Set-default action is blocked for inline guidelines (FR5/AC7).
   const [defaultInfo, setDefaultInfo] = useState<DefaultGuidelineCandidatesResponse | null>(null);
+  const [draftDefaultRefs, setDraftDefaultRefs] =
+    useState<DefaultBoardConfigGuidelineRef[] | null>(null);
+  const [savingDefaults, setSavingDefaults] = useState(false);
+  const draftDefaultRefsRef =
+    useRef<DefaultBoardConfigGuidelineRef[] | null>(null);
 
   const fetchDefaults = useCallback(async () => {
     try {
@@ -59,51 +160,163 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
       setDefaultInfo(info);
       return info;
     } catch {
+      setDefaultInfo(null);
+      setDraftDefaultRefs(null);
       return null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { fetchDefaults(); }, [fetchDefaults]);
+  useEffect(() => {
+    if (canReadRevisions) {
+      void fetchDefaults();
+    } else if (!permissions.isLoading) {
+      setDefaultInfo(null);
+      setDraftDefaultRefs(null);
+    }
+  }, [canReadRevisions, fetchDefaults, permissions.isLoading]);
 
-  const isGuidelineDefault = (guidelineId: string) =>
-    (defaultInfo?.candidates ?? []).some((c) => c.guideline_id === guidelineId && c.is_default);
-
-  const toggleDefault = async (guidelineId: string) => {
-    let templateId = defaultInfo?.template_id;
-    const current = (defaultInfo?.candidates ?? [])
-      .filter((c) => c.is_default)
-      .map((c) => ({ guideline_id: c.guideline_id, priority: c.priority ?? 0 }));
-    const already = current.some((r) => r.guideline_id === guidelineId);
-    const refs = already
-      ? current.filter((r) => r.guideline_id !== guidelineId)
-      : [...current, { guideline_id: guidelineId, priority: current.reduce((m, r) => Math.max(m, r.priority ?? 0), 0) + 1 }];
+  const baseDefaultRefs = useMemo(() => {
     try {
-      if (!templateId) {
-        const template = await api.createDefaultBoardConfigVersion({ activate: true });
-        templateId = template.id;
+      return defaultInfo
+        ? currentDefaultGuidelineRefs(defaultInfo.candidates)
+        : null;
+    } catch {
+      return null;
+    }
+  }, [defaultInfo]);
+  const effectiveDefaultRefs =
+    draftDefaultRefs ?? baseDefaultRefs ?? [];
+  draftDefaultRefsRef.current = draftDefaultRefs;
+  const defaultRefsDirty = (
+    draftDefaultRefs !== null
+    && JSON.stringify(draftDefaultRefs)
+      !== JSON.stringify(baseDefaultRefs ?? [])
+  );
+  const isGuidelineDefault = (guidelineId: string) =>
+    effectiveDefaultRefs.some((ref) => ref.guideline_id === guidelineId);
+
+  const toggleDefault = (guidelineId: string) => {
+    if (!canManageAdoption) {
+      toast.error('Guideline adoption permission is required to change defaults');
+      return;
+    }
+    if (!defaultInfo) {
+      toast.error('Default guideline authority is unavailable');
+      return;
+    }
+    const candidate = defaultInfo.candidates.find(
+      (item) => item.guideline_id === guidelineId,
+    );
+    if (!candidate) {
+      toast.error('Guideline candidate is unavailable');
+      return;
+    }
+    let current: DefaultBoardConfigGuidelineRef[];
+    try {
+      if (baseDefaultRefs === null) {
+        throw new Error('default_guideline_refs_invalid');
       }
-      await api.updateDefaultGuidelineRefs(templateId, refs);
-      setDefaultInfo((prev) => {
-        if (!prev) return prev;
-        const nextRef = refs.find((ref) => ref.guideline_id === guidelineId);
-        return {
-          ...prev,
-          template_id: templateId ?? prev.template_id,
-          candidates: prev.candidates.map((candidate) =>
-            candidate.guideline_id === guidelineId
-              ? {
-                  ...candidate,
-                  is_default: !already,
-                  priority: nextRef?.priority ?? null,
-                }
-              : candidate,
+      current = effectiveDefaultRefs;
+    } catch {
+      toast.error('A persisted default revision pin is invalid');
+      return;
+    }
+    const already = current.some((ref) => ref.guideline_id === guidelineId);
+    if (!already && (!candidate.eligible || candidate.retired)) {
+      toast.error('Retired guidelines cannot become new defaults');
+      return;
+    }
+    if (
+      !already
+      && defaultInfo.candidates.some(
+        (item) => (
+          item.retired
+          && current.some((ref) => ref.guideline_id === item.guideline_id)
+        ),
+      )
+    ) {
+      toast.error('Remove retired defaults before adding another guideline');
+      return;
+    }
+    const refs = already
+      ? current.filter((ref) => ref.guideline_id !== guidelineId)
+      : [
+          ...current,
+          defaultGuidelineRefFromCandidate(
+            candidate,
+            'head',
+            current.reduce(
+              (maximum, ref) => Math.max(maximum, ref.priority),
+              0,
+            ) + 1,
           ),
-        };
-      });
-      toast.success(already ? 'Removed from defaults' : 'Set as board default');
+        ];
+    setDraftDefaultRefs(refs);
+  };
+
+  const stageLatestDefaultRevision = (guidelineId: string) => {
+    if (!canManageAdoption) {
+      toast.error('Guideline adoption permission is required to change defaults');
+      return;
+    }
+    if (!defaultInfo || baseDefaultRefs === null) {
+      toast.error('Default guideline authority is unavailable');
+      return;
+    }
+    const candidate = defaultInfo.candidates.find(
+      (item) => item.guideline_id === guidelineId,
+    );
+    const current = effectiveDefaultRefs;
+    const existing = current.find(
+      (ref) => ref.guideline_id === guidelineId,
+    );
+    if (!candidate || !existing || !candidate.eligible || candidate.retired) {
+      toast.error('This guideline cannot be pinned to its latest revision');
+      return;
+    }
+    setDraftDefaultRefs(
+      current.map((ref) => (
+        ref.guideline_id === guidelineId
+          ? defaultGuidelineRefFromCandidate(
+              candidate,
+              'head',
+              ref.priority,
+            )
+          : ref
+      )),
+    );
+  };
+
+  const saveDefaultChanges = async () => {
+    const refs = draftDefaultRefsRef.current;
+    if (
+      !canManageAdoption
+      || !defaultInfo
+      || refs === null
+      || savingDefaults
+    ) return;
+    setSavingDefaults(true);
+    try {
+      if (!defaultInfo.template_id) {
+        await api.createDefaultBoardConfigVersion({
+          guideline_default_refs: refs,
+          activate: true,
+        });
+      } else {
+        await api.updateDefaultGuidelineRefs(
+          defaultInfo.template_id,
+          refs,
+        );
+      }
+      toast.success('Guideline defaults saved as a new template version');
+      setDraftDefaultRefs(null);
       await fetchDefaults();
-    } catch { toast.error('Failed to update default'); }
+    } catch {
+      toast.error('Failed to save guideline defaults');
+    } finally {
+      setSavingDefaults(false);
+    }
   };
 
   const resetForm = () => { setFormTitle(''); setFormContent(''); setFormTags(''); };
@@ -122,9 +335,20 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId]);
 
-  useEffect(() => { fetchBoard(); }, [fetchBoard]);
+  useEffect(() => {
+    if (canReadRevisions) {
+      void fetchBoard();
+    } else if (!permissions.isLoading) {
+      setEntries([]);
+      setBoardLoading(false);
+    }
+  }, [canReadRevisions, fetchBoard, permissions.isLoading]);
 
   const handleUnlink = async (entry: BoardGuidelineEntry) => {
+    if (!canManageAdoption) {
+      toast.error('Guideline adoption permission is required to unlink');
+      return;
+    }
     try {
       await api.unlinkGuidelineFromBoard(boardId, entry.guideline.id);
       toast.success('Guideline removed from board');
@@ -132,29 +356,11 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     } catch { toast.error('Failed to remove'); }
   };
 
-  const handleDeleteInline = async (entry: BoardGuidelineEntry) => {
-    if (!confirm(`Delete "${entry.guideline.title}"? This cannot be undone.`)) return;
-    try {
-      await api.deleteGuideline(entry.guideline.id);
-      toast.success('Guideline deleted');
-      fetchBoard();
-    } catch { toast.error('Failed to delete'); }
-  };
-
-  const handlePriority = async (entry: BoardGuidelineEntry, dir: 'up' | 'down') => {
-    const sorted = [...entries].sort((a, b) => a.priority - b.priority);
-    const idx = sorted.findIndex(e => e.id === entry.id);
-    const swapIdx = dir === 'up' ? idx - 1 : idx + 1;
-    if (swapIdx < 0 || swapIdx >= sorted.length) return;
-    const other = sorted[swapIdx];
-    try {
-      await api.updateGuidelinePriority(boardId, entry.guideline.id, other.priority);
-      await api.updateGuidelinePriority(boardId, other.guideline.id, entry.priority);
-      fetchBoard();
-    } catch { toast.error('Failed to reorder'); }
-  };
-
   const handleCreateInline = async () => {
+    if (!canCreateRevisions) {
+      toast.error('Guideline revision creation permission is required');
+      return;
+    }
     if (!formTitle.trim() || !formContent.trim()) { toast.error('Title and content required'); return; }
     try {
       const tags = parseTags();
@@ -166,15 +372,11 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     } catch { toast.error('Failed to create'); }
   };
 
-  const handleLink = async (id: string) => {
-    try {
-      await api.linkGuidelineToBoard(boardId, id);
-      toast.success('Guideline linked');
-      fetchBoard();
-    } catch { toast.error('Failed to link'); }
-  };
-
   const handleUnlinkByGuidelineId = async (guidelineId: string) => {
+    if (!canManageAdoption) {
+      toast.error('Guideline adoption permission is required to unlink');
+      return;
+    }
     try {
       await api.unlinkGuidelineFromBoard(boardId, guidelineId);
       toast.success('Guideline removed from board');
@@ -184,19 +386,39 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
 
   // ==================== GLOBAL TAB ====================
 
-  const fetchGlobals = useCallback(async () => {
+  const fetchGlobals = useCallback(async (offset = 0) => {
+    const loadingFirstPage = offset === 0;
     try {
-      setGlobalLoading(true);
-      const all = await api.listGuidelines(0, 200);
-      setGlobals(all.filter(g => g.scope === 'global'));
+      if (loadingFirstPage) setGlobalLoading(true);
+      else setGlobalLoadingMore(true);
+      const page = await api.listGuidelines(offset, GLOBAL_PAGE_SIZE);
+      const globalPage = page.filter((guideline) => guideline.scope === 'global');
+      setGlobals((current) => {
+        const base = loadingFirstPage ? [] : current;
+        const existing = new Set(base.map((guideline) => guideline.id));
+        return [
+          ...base,
+          ...globalPage.filter((guideline) => !existing.has(guideline.id)),
+        ];
+      });
+      setGlobalHasMore(page.length === GLOBAL_PAGE_SIZE);
     } catch { toast.error('Failed to load global guidelines'); }
-    finally { setGlobalLoading(false); }
+    finally {
+      setGlobalLoading(false);
+      setGlobalLoadingMore(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { if (activeTab === 'global') fetchGlobals(); }, [activeTab, fetchGlobals]);
+  useEffect(() => {
+    if (activeTab === 'global' && canReadRevisions) void fetchGlobals(0);
+  }, [activeTab, canReadRevisions, fetchGlobals]);
 
   const handleCreateGlobal = async () => {
+    if (!canCreateRevisions) {
+      toast.error('Guideline revision creation permission is required');
+      return;
+    }
     if (!formTitle.trim() || !formContent.trim()) { toast.error('Title and content required'); return; }
     try {
       const tags = parseTags();
@@ -204,43 +426,195 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
       toast.success('Global guideline created');
       resetForm();
       setShowGlobalForm(false);
-      fetchGlobals();
+      await Promise.all([fetchGlobals(0), fetchDefaults()]);
     } catch { toast.error('Failed to create'); }
   };
 
-  const handleUpdateGlobal = async () => {
-    if (!editingGlobal || !formTitle.trim() || !formContent.trim()) { toast.error('Title and content required'); return; }
-    try {
-      const tags = parseTags();
-      await api.updateGuideline(editingGlobal.id, { title: formTitle.trim(), content: formContent.trim(), tags: tags.length ? tags : [] });
-      toast.success('Guideline updated (version bumped)');
-      setEditingGlobal(null);
-      resetForm();
-      fetchGlobals();
-    } catch { toast.error('Failed to update'); }
+  const openRevisionEditor = (
+    guideline: Guideline,
+    entry?: BoardGuidelineEntry,
+  ) => {
+    if (!canReadRevisions) {
+      toast.error('Guideline revision read permission is required');
+      return;
+    }
+    setRevisionEditor({
+      guideline,
+      ...(entry?.guideline.semantic_version
+        ? {
+            adoptedRevision: {
+              semanticVersion: entry.guideline.semantic_version,
+              revisionId: entry.guideline.revision_id,
+              bindingRevision: entry.binding_revision,
+            },
+          }
+        : {}),
+    });
   };
 
-  const handleDeleteGlobal = async (g: Guideline) => {
-    if (!confirm(`Delete "${g.title}"? This will remove it from all linked boards.`)) return;
+  useEffect(() => {
+    if (permissions.isLoading) return;
+    if (activeTab === 'waivers' && !canReadWaivers && canReadRevisions) {
+      setActiveTab('global');
+    } else if (
+      (activeTab === 'global' || activeTab === 'board')
+      && !canReadRevisions
+      && canReadWaivers
+    ) {
+      setActiveTab('waivers');
+    }
+  }, [
+    activeTab,
+    canReadRevisions,
+    canReadWaivers,
+    permissions.isLoading,
+  ]);
+
+  const openImpactPreview = async (
+    guideline: Guideline,
+    entry?: BoardGuidelineEntry,
+  ) => {
+    if (!canOpenImpact || impactOpeningRef.current !== null) return;
+    const candidate = defaultInfo?.candidates.find(
+      (item) => item.guideline_id === guideline.id,
+    );
+    if (entry && !isCompleteBoardGuidelineBindingAuthority(entry)) {
+      toast.error(
+        'The current binding authority is incomplete. Reload before adoption.',
+      );
+      return;
+    }
+    impactOpeningRef.current = guideline.id;
+    setImpactOpeningId(guideline.id);
     try {
-      await api.deleteGuideline(g.id);
-      toast.success('Guideline deleted');
-      fetchGlobals();
-      fetchBoard(); // refresh board tab too
-    } catch { toast.error('Failed to delete'); }
+      let targetRevisionId: string;
+      let targetSemanticVersion: string;
+      if (candidate) {
+        if (!candidate.eligible || candidate.retired) {
+          throw new Error(
+            'The latest guideline revision is unavailable for adoption.',
+          );
+        }
+        targetRevisionId = candidate.head_revision.revision_id;
+        targetSemanticVersion = candidate.head_revision.semantic_version;
+      } else if (entry?.guideline.revision_id) {
+        const adoptedAuthority = await policyApi.getGuidelineRevision(
+          boardId,
+          guideline.id,
+          entry.guideline.revision_id,
+        );
+        const latest = latestGuidelineRevisionTargetFromAuthority(
+          adoptedAuthority,
+          {
+            guidelineId: guideline.id,
+            requestedRevisionId: entry.guideline.revision_id,
+          },
+        );
+        if (!latest) {
+          throw new Error(
+            'The latest guideline revision authority is malformed or retired.',
+          );
+        }
+        const latestAuthority = await policyApi.getGuidelineRevision(
+          boardId,
+          guideline.id,
+          latest.revisionId,
+        );
+        if (!isGuidelineRevisionAuthorityForTarget(latestAuthority, {
+          guidelineId: guideline.id,
+          revisionId: latest.revisionId,
+          semanticVersion: latest.semanticVersion,
+        })) {
+          throw new Error(
+            'The latest guideline revision authority changed during discovery.',
+          );
+        }
+        targetRevisionId = latest.revisionId;
+        targetSemanticVersion = latest.semanticVersion;
+      } else {
+        throw new Error(
+          'The latest guideline revision is unavailable for adoption.',
+        );
+      }
+      const nextPriority = entries.reduce(
+        (maximum, current) => Math.max(maximum, current.priority),
+        -1,
+      ) + 1;
+      setImpactDialog({
+        guidelineId: guideline.id,
+        guidelineTitle: guideline.title,
+        targetRevisionId,
+        targetSemanticVersion,
+        ...(entry && isCompleteBoardGuidelineBindingAuthority(entry)
+          ? {
+              adoptedBinding: {
+                bindingId: entry.binding_id,
+                bindingRevision: entry.binding_revision,
+                bindingState: entry.binding_state,
+                revisionId: entry.guideline.revision_id,
+                semanticVersion: entry.guideline.semantic_version,
+                revisionDigest: entry.guideline.revision_digest,
+              },
+            }
+          : {}),
+        initialPriority: entry?.priority ?? nextPriority,
+        initialEnforcement: entry?.default_enforcement ?? 'advisory',
+      });
+    } catch (error: unknown) {
+      toast.error(guidelineImpactErrorMessage(error));
+    } finally {
+      if (impactOpeningRef.current === guideline.id) {
+        impactOpeningRef.current = null;
+        setImpactOpeningId(null);
+      }
+    }
   };
 
-  const openEditGlobal = (g: Guideline) => {
-    setEditingGlobal(g);
-    setFormTitle(g.title);
-    setFormContent(g.content);
-    setFormTags(g.tags?.join(', ') ?? '');
-    setShowGlobalForm(false);
+  const adoptionUpdateAvailable = (
+    candidate: DefaultGuidelineCandidatesResponse['candidates'][number] | undefined,
+    entry: BoardGuidelineEntry | undefined,
+  ) => {
+    if (!candidate || !entry) return false;
+    if (entry.guideline.revision_id) {
+      return (
+        entry.guideline.revision_id
+        !== candidate.head_revision.revision_id
+      );
+    }
+    return (
+      entry.guideline.semantic_version
+      !== candidate.head_revision.semantic_version
+    );
+  };
+
+  const refreshPolicyUi = async () => {
+    if (!canReadRevisions) return;
+    await Promise.all([fetchBoard(), fetchGlobals(0), fetchDefaults()]);
+  };
+
+  const handleAdopted = async (
+    _response: GuidelineAdoptionResponse,
+  ) => {
+    toast.success('Guideline revision adopted');
+    await refreshPolicyUi();
   };
 
   const filteredGlobals = globals.filter(g =>
     !globalSearch || g.title.toLowerCase().includes(globalSearch.toLowerCase())
   );
+  const successorOptions = (defaultInfo?.candidates ?? [])
+    .filter(
+      (candidate) =>
+        candidate.scope === 'global'
+        && !candidate.retired
+        && candidate.eligible
+        && candidate.guideline_id !== revisionEditor?.guideline.id,
+    )
+    .map((candidate) => ({
+      guidelineId: candidate.guideline_id,
+      title: candidate.title,
+      semanticVersion: candidate.semantic_version,
+    }));
 
   // ==================== SHARED RENDERERS ====================
 
@@ -301,27 +675,56 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
           </p>
         </div>
       </div>
+      <div className="mt-3 border-t border-blue-200 pt-3 dark:border-blue-500/30">
+        <ContextualHelpLink
+          sectionId="policy-governance"
+          testId="guideline-policy-governance-help"
+        >
+          Open the Policy Governance guide
+        </ContextualHelpLink>
+      </div>
     </section>
   );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+      <div
+        ref={focusTrap.dialogRef}
+        role="dialog"
+        aria-modal={
+          !childDialogOpen
+            ? 'true'
+            : undefined
+        }
+        aria-hidden={
+          childDialogOpen
+            ? 'true'
+            : undefined
+        }
+        aria-labelledby="guidelines-panel-title"
+        tabIndex={-1}
+        onKeyDown={focusTrap.onKeyDown}
+        className="flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
           <div className="flex items-center gap-2">
             <BookOpen size={20} className="text-blue-500" />
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Guidelines</h2>
+            <h2 id="guidelines-panel-title" className="text-lg font-semibold text-gray-900 dark:text-white">Guidelines</h2>
           </div>
           <div className="flex items-center gap-2">
-            <ImportExportButtons
-              kind="guidelines"
-              onExport={() => importExportApi.exportGuidelines(boardId)}
-              onImport={(envelope) => importExportApi.importGuidelines(envelope, { boardId })}
-              onImported={async () => {
-                await Promise.all([fetchBoard(), fetchGlobals(), fetchDefaults()]);
-              }}
-            />
+            {(canReadRevisions || canCreateRevisions) && (
+              <GuidelinePolicyTransfer
+                boardId={boardId}
+                onImported={refreshPolicyUi}
+              />
+            )}
+            <ContextualHelpLink
+              sectionId="policy-governance"
+              testId="guidelines-contextual-help"
+            >
+              Policy guide
+            </ContextualHelpLink>
             <button
               type="button"
               onClick={() => setShowHelp((value) => !value)}
@@ -329,9 +732,15 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
               className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
             >
               <HelpCircle size={14} />
-              Help
+              Examples
             </button>
-            <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
+            <button
+              type="button"
+              data-guidelines-initial-focus
+              aria-label="Close guidelines"
+              onClick={onClose}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
+            >
               <X size={18} />
             </button>
           </div>
@@ -341,8 +750,20 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
           <aside className="border-r border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-950/30">
             <nav className="space-y-1 text-sm">
               {([
-                { id: 'global' as Tab, label: 'Global Catalog', icon: <Globe size={14} />, count: globals.length || defaultInfo?.candidates?.length || 0 },
-                { id: 'board' as Tab, label: 'Board Guidelines', icon: <FileText size={14} />, count: entries.length },
+                ...(canReadRevisions
+                  ? [
+                      { id: 'global' as Tab, label: 'Global Catalog', icon: <Globe size={14} />, count: globals.length || defaultInfo?.candidates?.length || 0 },
+                      { id: 'board' as Tab, label: 'Board Guidelines', icon: <FileText size={14} />, count: entries.length },
+                    ]
+                  : []),
+                ...(canReadWaivers
+                  ? [{
+                      id: 'waivers' as Tab,
+                      label: 'Waivers',
+                      icon: <ShieldCheck size={14} />,
+                      count: null,
+                    }]
+                  : []),
               ]).map(tab => (
                 <button
                   key={tab.id}
@@ -357,36 +778,94 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                     {tab.icon}
                     <span className="truncate">{tab.label}</span>
                   </span>
-                  <span className="shrink-0 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-300">
-                    {tab.count}
-                  </span>
+                  {tab.count !== null && (
+                    <span className="shrink-0 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                      {tab.count}
+                    </span>
+                  )}
                 </button>
               ))}
+              {canReadRevisions && (
               <div className="mt-3 rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400">
                 <div className="font-medium text-gray-700 dark:text-gray-200">Default template</div>
                 <div className="mt-0.5">
                   {defaultInfo?.template_version ? `v${defaultInfo.template_version}` : 'No active template'}
                 </div>
+                <p className="mt-1 text-[10px] leading-4">
+                  Changes are staged and affect only boards created from the next saved template version.
+                </p>
+                {defaultRefsDirty && (
+                  <div
+                    className="mt-3 space-y-2 border-t border-gray-200 pt-2 dark:border-gray-700"
+                    data-testid="guideline-default-draft"
+                  >
+                    <p className="font-medium text-amber-700 dark:text-amber-300">
+                      Unsaved default changes
+                    </p>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        disabled={savingDefaults || !canManageAdoption}
+                        onClick={() => void saveDefaultChanges()}
+                        data-testid="guideline-default-save"
+                        className="rounded bg-blue-600 px-2 py-1 text-[10px] font-semibold text-white disabled:opacity-40"
+                      >
+                        {savingDefaults ? 'Saving…' : 'Save defaults'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingDefaults}
+                        onClick={() => setDraftDefaultRefs(null)}
+                        data-testid="guideline-default-discard"
+                        className="rounded border border-gray-300 px-2 py-1 text-[10px] font-medium dark:border-gray-700"
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
+              )}
             </nav>
           </aside>
 
           {/* Body */}
           <main className="min-w-0 flex-1 overflow-y-auto p-6">
           {helpPanel}
+          {!permissions.isLoading
+            && !canReadRevisions
+            && !canReadWaivers && (
+            <section
+              role="alert"
+              data-testid="guidelines-authority-unavailable"
+              className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
+            >
+              {canCreateRevisions
+                ? 'No readable guideline view is granted. Authorized policy imports remain available above.'
+                : 'Guideline governance is unavailable because current board authority could not be verified or no applicable capability is granted.'}
+            </section>
+          )}
 
           {/* ==================== BOARD TAB ==================== */}
-          {activeTab === 'board' && (
+          {activeTab === 'board' && canReadRevisions && (
             <div className="space-y-4">
               {/* Actions */}
               <div className="flex items-center gap-2">
-                <button onClick={() => { resetForm(); setShowInlineForm(!showInlineForm); }} className="btn btn-secondary flex items-center gap-1 text-sm">
-                  <Plus size={14} /> Create Inline
-                </button>
+                {canCreateRevisions && (
+                  <button
+                    type="button"
+                    onClick={() => { resetForm(); setShowInlineForm(!showInlineForm); }}
+                    className="btn btn-secondary flex items-center gap-1 text-sm"
+                  >
+                    <Plus size={14} /> Create Inline
+                  </button>
+                )}
               </div>
 
               {/* Inline create form */}
-              {showInlineForm && guidelineForm(handleCreateInline, () => setShowInlineForm(false), 'Create Inline')}
+              {canCreateRevisions
+                && showInlineForm
+                && guidelineForm(handleCreateInline, () => setShowInlineForm(false), 'Create Inline')}
 
               {/* Guidelines list */}
               {boardLoading ? (
@@ -399,9 +878,18 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {entries.map((entry, idx) => {
+                  {entries.map((entry) => {
                     const isGlobal = entry.scope === 'global';
                     const isExpanded = expandedId === entry.id;
+                    const candidate = defaultInfo?.candidates.find(
+                      (item) => item.guideline_id === entry.guideline.id,
+                    );
+                    const hasAdoptionUpdate = adoptionUpdateAvailable(
+                      candidate,
+                      entry,
+                    );
+                    const bindingAuthorityComplete =
+                      isCompleteBoardGuidelineBindingAuthority(entry);
                     return (
                       <div
                         key={entry.id}
@@ -412,35 +900,70 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                         }`}
                       >
                         {/* Header row */}
-                        <div className="flex items-center gap-2 px-3 py-2.5 cursor-pointer" onClick={() => setExpandedId(isExpanded ? null : entry.id)}>
-                          {/* Priority */}
-                          <div className="flex flex-col items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
-                            <button onClick={() => handlePriority(entry, 'up')} disabled={idx === 0} className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-20"><ChevronUp size={12} /></button>
-                            <span className="text-[9px] text-gray-400 font-mono">{entry.priority}</span>
-                            <button onClick={() => handlePriority(entry, 'down')} disabled={idx === entries.length - 1} className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-20"><ChevronDown size={12} /></button>
-                          </div>
+                        <div className="flex items-center gap-2 px-3 py-2.5">
+                          <button
+                            type="button"
+                            aria-expanded={isExpanded}
+                            aria-controls={`guideline-details-${entry.id}`}
+                            onClick={() => setExpandedId(
+                              isExpanded ? null : entry.id,
+                            )}
+                            data-testid={`guideline-expand-${entry.guideline.id}`}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          >
+                            {/* Priority is policy-governed. It is edited only
+                                through impact preview + explicit adoption. */}
+                            <span
+                              className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[9px] text-gray-500 dark:bg-gray-800 dark:text-gray-300"
+                              title="Binding priority; change through impact preview"
+                              data-testid={`guideline-priority-${entry.guideline.id}`}
+                            >
+                              p{entry.priority}
+                            </span>
 
-                          {/* Scope indicator */}
-                          {isGlobal ? (
-                            <Globe size={14} className="text-blue-500 shrink-0" />
-                          ) : (
-                            <FileText size={14} className="text-gray-400 shrink-0" />
-                          )}
-
-                          {/* Title */}
-                          <h3 className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{entry.guideline.title}</h3>
-
-                          {/* Scope badge */}
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
-                            isGlobal ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
-                          }`}>
-                            {isGlobal ? 'Global' : 'Inline'}
-                          </span>
+                            {isGlobal ? (
+                              <Globe size={14} className="text-blue-500 shrink-0" />
+                            ) : (
+                              <FileText size={14} className="text-gray-400 shrink-0" />
+                            )}
+                            <h3 className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">
+                              {entry.guideline.title}
+                            </h3>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
+                              isGlobal ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                            }`}>
+                              {isGlobal ? 'Global' : 'Inline'}
+                            </span>
+                            <span className="shrink-0 text-[10px] text-gray-500 dark:text-gray-400">
+                              Adopted v{entry.guideline.semantic_version ?? '—'}
+                              {' · '}
+                              {isGlobal
+                                ? `Latest v${candidate?.head_revision.semantic_version ?? '—'}`
+                                : 'Latest checked on review'}
+                            </span>
+                            {hasAdoptionUpdate && (
+                              <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-200">
+                                Update available
+                              </span>
+                            )}
+                            {isExpanded ? (
+                              <EyeOff size={12} className="text-gray-400 shrink-0" />
+                            ) : (
+                              <Eye size={12} className="text-gray-400 shrink-0" />
+                            )}
+                          </button>
 
                           {/* Default state + Set-default action (blocked for inline, FR5/AC7) */}
                           <button
-                            onClick={(e) => { e.stopPropagation(); toggleDefault(entry.guideline.id); }}
-                            disabled={!isGlobal}
+                            type="button"
+                            onClick={() => toggleDefault(entry.guideline.id)}
+                            disabled={
+                              !isGlobal
+                              || !canManageAdoption
+                              || savingDefaults
+                              || !defaultInfo
+                              || baseDefaultRefs === null
+                            }
                             title={isGlobal ? 'Toggle as a global default for new boards' : 'Inline guidelines cannot be defaults'}
                             data-testid={`guideline-set-default-${entry.guideline.id}`}
                             className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
@@ -451,29 +974,57 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                           >
                             {isGuidelineDefault(entry.guideline.id) ? 'Default ✓' : 'Set default'}
                           </button>
-
-                          {entry.guideline.version && entry.guideline.version > 1 && (
-                            <span className="text-[10px] text-gray-400 shrink-0">v{entry.guideline.version}</span>
-                          )}
-
-                          {/* Toggle expand */}
-                          {isExpanded ? <EyeOff size={12} className="text-gray-400 shrink-0" /> : <Eye size={12} className="text-gray-400 shrink-0" />}
                         </div>
 
                         {/* Expanded content */}
                         {isExpanded && (
-                          <div className="px-4 pb-3 border-t border-gray-100 dark:border-gray-700/50 pt-2">
+                          <div
+                            id={`guideline-details-${entry.id}`}
+                            className="px-4 pb-3 border-t border-gray-100 dark:border-gray-700/50 pt-2"
+                          >
                             <MarkdownContent content={entry.guideline.content} />
                             {tagBadges(entry.guideline.tags)}
                             <div className="flex items-center gap-1 mt-3 pt-2 border-t border-gray-100 dark:border-gray-700/50">
-                              {isGlobal ? (
-                                <button onClick={() => handleUnlink(entry)} className="text-xs text-orange-500 hover:text-orange-600 flex items-center gap-1">
-                                  <Unlink size={11} /> Unlink from board
-                                </button>
-                              ) : (
-                                <button onClick={() => handleDeleteInline(entry)} className="text-xs text-red-500 hover:text-red-600 flex items-center gap-1">
-                                  <Trash2 size={11} /> Delete
-                                </button>
+                              {canReadRevisions && (
+                                <>
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      !canOpenImpact
+                                      || !bindingAuthorityComplete
+                                      || impactOpeningId !== null
+                                    }
+                                    onClick={() => void openImpactPreview(
+                                      entry.guideline,
+                                      entry,
+                                    )}
+                                    data-testid={`guideline-review-adoption-${entry.guideline.id}`}
+                                    className="flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40 dark:text-blue-300"
+                                  >
+                                    <ShieldCheck size={11} />
+                                    {impactOpeningId === entry.guideline.id
+                                      ? 'Loading latest…'
+                                      : hasAdoptionUpdate
+                                        ? 'Review update'
+                                        : 'Review binding'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={!canManageAdoption}
+                                    onClick={() => void handleUnlink(entry)}
+                                    className="flex items-center gap-1 text-xs text-orange-500 hover:text-orange-600 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Unlink size={11} /> Unlink from board
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => openRevisionEditor(entry.guideline, entry)}
+                                    className="ml-auto flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 dark:text-blue-300"
+                                  >
+                                    <Edit3 size={11} />
+                                    Open revision editor
+                                  </button>
+                                </>
                               )}
                             </div>
                           </div>
@@ -487,13 +1038,19 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
           )}
 
           {/* ==================== GLOBAL TAB ==================== */}
-          {activeTab === 'global' && (
+          {activeTab === 'global' && canReadRevisions && (
             <div className="space-y-4">
               {/* Actions */}
               <div className="flex items-center gap-2">
-                <button onClick={() => { resetForm(); setEditingGlobal(null); setShowGlobalForm(!showGlobalForm); }} className="btn btn-primary flex items-center gap-1 text-sm">
-                  <Plus size={14} /> New Global Guideline
-                </button>
+                {canCreateRevisions && (
+                  <button
+                    type="button"
+                    onClick={() => { resetForm(); setShowGlobalForm(!showGlobalForm); }}
+                    className="btn btn-primary flex items-center gap-1 text-sm"
+                  >
+                    <Plus size={14} /> New Global Guideline
+                  </button>
+                )}
                 <div className="relative flex-1">
                   <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                   <input type="text" value={globalSearch} onChange={e => setGlobalSearch(e.target.value)} placeholder="Search..." className="w-full pl-9 pr-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white outline-none" />
@@ -501,10 +1058,9 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
               </div>
 
               {/* Create form */}
-              {showGlobalForm && !editingGlobal && guidelineForm(handleCreateGlobal, () => setShowGlobalForm(false), 'Create Global')}
-
-              {/* Edit form */}
-              {editingGlobal && guidelineForm(handleUpdateGlobal, () => { setEditingGlobal(null); resetForm(); }, 'Save (bumps version)')}
+              {canCreateRevisions
+                && showGlobalForm
+                && guidelineForm(handleCreateGlobal, () => setShowGlobalForm(false), 'Create Global')}
 
               {/* List */}
               {globalLoading ? (
@@ -517,61 +1073,158 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
               ) : (
                 <div className="space-y-2">
                   {filteredGlobals.map(g => {
-                    const linkedToBoard = entries.some(e => e.guideline.id === g.id);
+                    const boardEntry = entries.find(e => e.guideline.id === g.id);
+                    const linkedToBoard = Boolean(boardEntry);
                     const isDefault = isGuidelineDefault(g.id);
+                    const candidate = defaultInfo?.candidates.find(
+                      (item) => item.guideline_id === g.id,
+                    );
+                    const defaultRef = effectiveDefaultRefs.find(
+                      (ref) => ref.guideline_id === g.id,
+                    );
+                    const defaultUpdateAvailable = Boolean(
+                      defaultRef
+                      && candidate
+                      && (
+                        defaultRef.revision_id
+                        !== candidate.head_revision.revision_id
+                      ),
+                    );
+                    const boardUpdateAvailable = adoptionUpdateAvailable(
+                      candidate,
+                      boardEntry,
+                    );
+                    const bindingAuthorityComplete = (
+                      !boardEntry
+                      || isCompleteBoardGuidelineBindingAuthority(boardEntry)
+                    );
                     return (
                       <div key={g.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-white dark:bg-gray-800/50">
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-1">
                               <h3 className="text-sm font-medium text-gray-900 dark:text-white truncate">{g.title}</h3>
-                              <span className="text-[10px] text-gray-400 shrink-0">v{g.version || 1}</span>
+                              <span className="text-[10px] text-gray-500 dark:text-gray-400 shrink-0">
+                                Adopted {boardEntry?.guideline.semantic_version
+                                  ? `v${boardEntry.guideline.semantic_version}`
+                                  : '—'}
+                              </span>
+                              <span className="text-[10px] text-gray-500 dark:text-gray-400 shrink-0">
+                                Latest v{candidate?.head_revision.semantic_version ?? g.semantic_version ?? '—'}
+                              </span>
                               {linkedToBoard && <span className="text-[10px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 shrink-0">linked</span>}
-                              {isDefault && <span className="text-[10px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 shrink-0">default</span>}
+                              {boardUpdateAvailable && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 shrink-0">update available</span>}
+                              {isDefault && (
+                                <span className="text-[10px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 shrink-0">
+                                  default v{defaultRef?.semantic_version ?? '—'}
+                                </span>
+                              )}
+                              {defaultUpdateAvailable && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 shrink-0">default update available</span>}
+                              {candidate?.retired && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 shrink-0">retired</span>}
                             </div>
                             <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{g.content.slice(0, 150)}{g.content.length > 150 ? '...' : ''}</p>
                             {tagBadges(g.tags)}
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
                             {linkedToBoard ? (
-                              <button
-                                onClick={() => handleUnlinkByGuidelineId(g.id)}
-                                className="inline-flex items-center gap-1 rounded border border-orange-200 px-2 py-1 text-[10px] text-orange-600 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-900/20"
-                                title="Unlink this guideline from the current board"
-                                data-testid={`guideline-unlink-board-${g.id}`}
-                              >
-                                <Unlink size={11} />
-                                Unlink
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={
+                                    !canOpenImpact
+                                    || !bindingAuthorityComplete
+                                    || impactOpeningId !== null
+                                  }
+                                  onClick={() => void openImpactPreview(
+                                    g,
+                                    boardEntry,
+                                  )}
+                                  className="inline-flex items-center gap-1 rounded border border-blue-200 px-2 py-1 text-[10px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-900/20"
+                                  title="Review a persisted impact receipt before changing this binding"
+                                  data-testid={`guideline-adopt-board-${g.id}`}
+                                >
+                                  <ShieldCheck size={11} />
+                                  {impactOpeningId === g.id
+                                    ? 'Loading latest…'
+                                    : boardUpdateAvailable
+                                      ? 'Review update'
+                                      : 'Review binding'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={!canManageAdoption}
+                                  onClick={() => void handleUnlinkByGuidelineId(g.id)}
+                                  className="inline-flex items-center gap-1 rounded border border-orange-200 px-2 py-1 text-[10px] text-orange-600 hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-900/20"
+                                  title="Unlink this guideline from the current board"
+                                  data-testid={`guideline-unlink-board-${g.id}`}
+                                >
+                                  <Unlink size={11} />
+                                  Unlink
+                                </button>
+                              </>
                             ) : (
                               <button
-                                onClick={() => handleLink(g.id)}
-                                className="inline-flex items-center gap-1 rounded border border-green-200 px-2 py-1 text-[10px] text-green-700 hover:bg-green-50 dark:border-green-800 dark:text-green-300 dark:hover:bg-green-900/20"
-                                title="Link this guideline to the current board"
-                                data-testid={`guideline-link-board-${g.id}`}
+                                type="button"
+                                disabled={
+                                  !canOpenImpact
+                                  || !candidate
+                                  || !candidate.eligible
+                                  || candidate.retired
+                                  || impactOpeningId !== null
+                                }
+                                onClick={() => void openImpactPreview(g)}
+                                className="inline-flex items-center gap-1 rounded border border-blue-200 px-2 py-1 text-[10px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-900/20"
+                                title="Generate a persisted impact receipt before explicit adoption"
+                                data-testid={`guideline-adopt-board-${g.id}`}
                               >
-                                <Link size={11} />
-                                Link
+                                <ShieldCheck size={11} />
+                                {impactOpeningId === g.id
+                                  ? 'Loading latest…'
+                                  : 'Preview & adopt'}
                               </button>
                             )}
                             <button
                               onClick={() => toggleDefault(g.id)}
-                              title="Toggle as a global default for new boards"
+                              disabled={
+                                !canManageAdoption
+                                ||
+                                savingDefaults
+                                || baseDefaultRefs === null
+                                || !defaultInfo
+                                || (!isDefault && (!candidate?.eligible || candidate.retired))
+                              }
+                              title="Stage this guideline as a global default for new boards"
                               data-testid={`guideline-set-default-${g.id}`}
                               className={`text-[10px] px-2 py-1 rounded border shrink-0 ${
                                 isDefault
                                   ? 'bg-blue-500 text-white border-blue-500'
                                   : 'text-gray-500 border-gray-300 dark:border-gray-600'
-                              }`}
+                                } disabled:cursor-not-allowed disabled:opacity-40`}
                             >
                               {isDefault ? 'Default' : 'Set default'}
                             </button>
-                            <button onClick={() => openEditGlobal(g)} className="p-1.5 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded" title="Edit">
+                            {defaultUpdateAvailable && (
+                              <button
+                                type="button"
+                                disabled={savingDefaults || !canManageAdoption}
+                                onClick={() => stageLatestDefaultRevision(g.id)}
+                                data-testid={`guideline-default-use-latest-${g.id}`}
+                                className="rounded border border-amber-300 px-2 py-1 text-[10px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-40 dark:border-amber-700 dark:text-amber-200 dark:hover:bg-amber-950/20"
+                              >
+                                Use latest
+                              </button>
+                            )}
+                            {canReadRevisions && (
+                            <button
+                              type="button"
+                              onClick={() => openRevisionEditor(g, boardEntry)}
+                              className="p-1.5 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded"
+                              title="Open immutable revision editor"
+                              aria-label={`Open revision editor for ${g.title}`}
+                            >
                               <Edit3 size={14} />
                             </button>
-                            <button onClick={() => handleDeleteGlobal(g)} className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded" title="Delete">
-                              <Trash2 size={14} />
-                            </button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -579,11 +1232,51 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                   })}
                 </div>
               )}
+              {!globalLoading && globalHasMore && !globalSearch && (
+                <button
+                  type="button"
+                  disabled={globalLoadingMore}
+                  onClick={() => void fetchGlobals(globals.length)}
+                  data-testid="guidelines-load-more"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  {globalLoadingMore ? 'Loading…' : 'Load more guidelines'}
+                </button>
+              )}
             </div>
+          )}
+
+          {/* ==================== WAIVERS TAB ==================== */}
+          {activeTab === 'waivers' && canReadWaivers && (
+            <PolicyWaiverPanel boardId={boardId} />
           )}
           </main>
         </div>
       </div>
+      {revisionEditor && (
+        <GuidelineRevisionEditor
+          boardId={boardId}
+          guideline={revisionEditor.guideline}
+          adoptedRevision={revisionEditor.adoptedRevision}
+          successorOptions={successorOptions}
+          onClose={() => setRevisionEditor(null)}
+          onChanged={refreshPolicyUi}
+        />
+      )}
+      {impactDialog && (
+        <GuidelineImpactDialog
+          boardId={boardId}
+          guidelineId={impactDialog.guidelineId}
+          guidelineTitle={impactDialog.guidelineTitle}
+          targetRevisionId={impactDialog.targetRevisionId}
+          targetSemanticVersion={impactDialog.targetSemanticVersion}
+          adoptedBinding={impactDialog.adoptedBinding}
+          initialPriority={impactDialog.initialPriority}
+          initialEnforcement={impactDialog.initialEnforcement}
+          onClose={() => setImpactDialog(null)}
+          onAdopted={handleAdopted}
+        />
+      )}
     </div>
   );
 }

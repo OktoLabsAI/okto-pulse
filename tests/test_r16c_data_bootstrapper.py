@@ -262,12 +262,10 @@ def test_c7_legacy_quality_bootstrap_imports_and_replays_without_drift(
                         .select_from(DomainEventHandlerExecution)
                         .join(
                             DomainEventRow,
-                            DomainEventRow.id
-                            == DomainEventHandlerExecution.event_id,
+                            DomainEventRow.id == DomainEventHandlerExecution.event_id,
                         )
                         .where(
-                            DomainEventRow.board_id
-                            == "board-c7-bootstrap",
+                            DomainEventRow.board_id == "board-c7-bootstrap",
                             DomainEventHandlerExecution.handler_name
                             == "ConsolidationEnqueuer",
                         )
@@ -379,10 +377,8 @@ def test_c7_legacy_quality_bootstrap_replays_after_subject_purge(
                         select(func.count())
                         .select_from(ActivityLog)
                         .where(
-                            ActivityLog.board_id
-                            == "board-c7-purge-replay",
-                            ActivityLog.action
-                            == "quality_assessment_legacy_imported",
+                            ActivityLog.board_id == "board-c7-purge-replay",
+                            ActivityLog.action == "quality_assessment_legacy_imported",
                         )
                     )
                     or 0
@@ -450,12 +446,8 @@ def test_c7_legacy_quality_bootstrap_replays_after_subject_purge(
             subject_id="ideation-c7-purge-replay",
         )
         async with _db_mod.get_session_factory()() as session:
-            persistence = CommunitySqlAlchemyQualityAssessmentLifecycle(
-                session
-            )
-            purge_postcondition = await persistence.apply_purge_plan(
-                purge_plan
-            )
+            persistence = CommunitySqlAlchemyQualityAssessmentLifecycle(session)
+            purge_postcondition = await persistence.apply_purge_plan(purge_plan)
             lifecycle.validate_purge_postcondition(
                 plan=purge_plan,
                 postcondition=purge_postcondition,
@@ -471,9 +463,7 @@ def test_c7_legacy_quality_bootstrap_replays_after_subject_purge(
         await _db_mod.get_engine().dispose()
         return first_result, after_purge, replay_result, after_replay
 
-    first_result, after_purge, replay_result, after_replay = asyncio.run(
-        drive()
-    )
+    first_result, after_purge, replay_result, after_replay = asyncio.run(drive())
     assert first_result.is_success, first_result.failure_reason
     # The one-shot completion ledger survives while its subject-scoped
     # receipt/event/outbox/history bundle is legitimately gone.
@@ -576,6 +566,7 @@ def test_permission_upgrade_normalizes_full_control_and_preset_snapshots(
 
     from okto_pulse.core.ports.permission_policy import (
         get_permission_flag,
+        permission_introduction_manifests,
         registered_permission_flags,
         set_permission_flag,
         ska_permission_introduction_v1,
@@ -736,14 +727,16 @@ def test_permission_upgrade_normalizes_full_control_and_preset_snapshots(
     }
     assert after_second == after_first
 
-    manifest = ska_permission_introduction_v1()
+    manifests = permission_introduction_manifests()
+    manifest_by_version = {manifest.version: manifest for manifest in manifests}
+    ska_manifest = ska_permission_introduction_v1()
     assert all(
         get_permission_flag(
             effective["upgrade-full-owner"].flags,
             leaf,
         )
         is True
-        for leaf in manifest.leaves
+        for leaf in ska_manifest.leaves
     )
     extension_effective = effective["upgrade-extension-owner"]
     assert extension_effective.owner_review_required is True
@@ -752,11 +745,11 @@ def test_permission_upgrade_normalizes_full_control_and_preset_snapshots(
         "grant": False,
         "audit": False,
     }
-    spec_grants = set(manifest.grants_for("Spec"))
+    spec_grants = set(ska_manifest.grants_for("Spec"))
     for owner in ("upgrade-preset-owner", "upgrade-faulty-owner"):
         assert {
             leaf
-            for leaf in manifest.leaves
+            for leaf in ska_manifest.leaves
             if get_permission_flag(effective[owner].flags, leaf) is True
         } == spec_grants
     assert (
@@ -775,25 +768,40 @@ def test_permission_upgrade_normalizes_full_control_and_preset_snapshots(
     )
     agent_audits = [row for row in audits if row.phase == "agent_reconciliation"]
     assert agent_audits
-    assert all(row.manifest_version == manifest.version for row in agent_audits)
+    assert {row.manifest_version for row in agent_audits} == set(manifest_by_version)
     assert all(
         len(row.before_digest) == 64 and len(row.after_digest) == 64
+        for row in agent_audits
+    )
+    assert all(
+        row.details["manifest_order"]
+        == next(
+            index
+            for index, manifest in enumerate(manifests)
+            if manifest.version == row.manifest_version
+        )
         for row in agent_audits
     )
     extension_rows = [
         row for row in agent_audits if row.subject_id == "upgrade-extension"
     ]
-    assert len(extension_rows) == 2
+    assert len(extension_rows) == 2 * len(manifests)
     assert all(
         row.classification == "direct_unrecognized"
         and row.owner_review_required is True
         and row.introduced_true_count == 0
-        and row.introduced_false_count == len(manifest.leaves)
+        and row.introduced_false_count
+        == len(manifest_by_version[row.manifest_version].leaves)
         for row in extension_rows
     )
     summaries = [row for row in agent_audits if row.classification == "run_summary"]
-    assert len(summaries) >= 2
-    assert summaries[-1].mutation_count == 0
+    assert len(summaries) >= 2 * len(manifests)
+    for manifest in manifests:
+        version_summaries = [
+            row for row in summaries if row.manifest_version == manifest.version
+        ]
+        assert len(version_summaries) >= 2
+        assert any(row.mutation_count == 0 for row in version_summaries)
 
 
 @pytest.mark.parametrize(

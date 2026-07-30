@@ -46,7 +46,7 @@ interface CardKnowledgeTabProps {
     root_source_kb_id?: string | null;
     governance?: Record<string, unknown>;
   }[];
-  onUpdate: (kbs: any[]) => Promise<void>;
+  onUpdate: () => Promise<void>;
   onBusyChange?: (busy: boolean) => void;
 }
 
@@ -99,6 +99,7 @@ function isKnowledgeConflict(error: unknown): boolean {
 export function CardKnowledgeTab({
   card,
   specKnowledgeBases,
+  onUpdate,
   onBusyChange,
 }: CardKnowledgeTabProps) {
   const api = useDashboardApi();
@@ -287,6 +288,7 @@ export function CardKnowledgeTab({
           : 'Knowledge assignments saved',
       );
       resetMutation();
+      await onUpdate();
       reload();
     } catch (error) {
       const message = mutationErrorMessage(error);
@@ -320,6 +322,7 @@ export function CardKnowledgeTab({
       });
       refreshIntentRef.current = null;
       toast.success('Knowledge snapshot refreshed');
+      await onUpdate();
       reload();
     } catch (error) {
       toast.error(mutationErrorMessage(error));

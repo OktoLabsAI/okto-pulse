@@ -9,6 +9,9 @@ from uuid import uuid4
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm.attributes import flag_modified
 
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    lock_policy_board,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
     Board,
@@ -20,6 +23,16 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     DesignSystemGateAudit,
     GlobalDiscoveryDeliveryRedriveControl,
     GlobalUpdateOutbox,
+    Guideline,
+    GuidelineBoardBindingRow,
+    GuidelineHeadRow,
+    GuidelineImpactAdoptionRow,
+    GuidelineImpactItemRow,
+    GuidelineImpactReceiptRow,
+    GuidelineImpactUnlinkRow,
+    GuidelineRetirementImpactRow,
+    GuidelineRetirementRow,
+    GuidelineRevisionRow,
     Ideation,
     KGCognitiveSource,
     KGCognitiveSourceRevision,
@@ -32,6 +45,11 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     KnowledgeSnapshotRecord,
     KnowledgeTombstoneRecord,
     KuzuNodeRef,
+    PolicyComplianceAdoptedRevisionRow,
+    PolicyComplianceFindingRow,
+    PolicyComplianceReceiptRow,
+    PolicyWaiverEventRow,
+    PolicyWaiverRow,
     Refinement,
     Spec,
     Sprint,
@@ -354,6 +372,13 @@ class CommunitySqlAlchemyKGGovernanceStore:
             QualityAssessmentLifecycleService,
         )
 
+        try:
+            await lock_policy_board(context, board_id=board_id)
+        except (TypeError, ValueError) as exc:
+            raise BoardRelationalErasureError(
+                f"board_erasure_mutex_failed:{board_id}"
+            ) from exc
+
         existing_permit = await context.get(BoardErasurePermit, board_id)
         if existing_permit is not None:
             raise BoardRelationalErasureError(
@@ -397,17 +422,156 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 )
             ).scalars()
         )
+        inline_guideline_ids = tuple(
+            str(value)
+            for value in (
+                await context.execute(
+                    select(Guideline.id).where(
+                        Guideline.board_id == board_id,
+                        Guideline.scope == "inline",
+                    )
+                )
+            ).scalars()
+        )
 
         try:
-            quality_postcondition = (
-                await CommunitySqlAlchemyQualityAssessmentLifecycle(
-                    context
-                ).apply_purge_plan(quality_purge_plan)
-            )
+            quality_postcondition = await CommunitySqlAlchemyQualityAssessmentLifecycle(
+                context
+            ).apply_purge_plan(quality_purge_plan)
             quality_lifecycle.validate_purge_postcondition(
                 plan=quality_purge_plan,
                 postcondition=quality_postcondition,
             )
+
+            # SK-B policy history is append-only during ordinary lifecycle
+            # operations.  Right-to-erasure is the sole physical-delete path:
+            # remove receipt children before their exact binding/revision pins,
+            # then remove bindings and inline revision clusters while the
+            # scoped permit is still visible to the immutable guards.
+            receipt_ids = tuple(
+                str(value)
+                for value in (
+                    await context.execute(
+                        select(PolicyComplianceReceiptRow.receipt_id).where(
+                            PolicyComplianceReceiptRow.board_id == board_id
+                        )
+                    )
+                ).scalars()
+            )
+            waiver_event_ids = tuple(
+                str(value)
+                for value in (
+                    await context.execute(
+                        select(PolicyWaiverEventRow.event_id)
+                        .where(PolicyWaiverEventRow.board_id == board_id)
+                        .order_by(
+                            PolicyWaiverEventRow.waiver_id.asc(),
+                            PolicyWaiverEventRow.waiver_revision.desc(),
+                        )
+                    )
+                ).scalars()
+            )
+            for event_id in waiver_event_ids:
+                result = await context.execute(
+                    delete(PolicyWaiverEventRow).where(
+                        PolicyWaiverEventRow.event_id == event_id
+                    )
+                )
+                if int(result.rowcount or 0) != 1:
+                    raise BoardRelationalErasureError(
+                        "board_erasure_waiver_event_delete_mismatch:" + event_id
+                    )
+            await context.execute(
+                delete(PolicyWaiverRow).where(PolicyWaiverRow.board_id == board_id)
+            )
+            await context.execute(
+                delete(PolicyComplianceFindingRow).where(
+                    PolicyComplianceFindingRow.board_id == board_id
+                )
+            )
+            if receipt_ids:
+                await context.execute(
+                    delete(PolicyComplianceAdoptedRevisionRow).where(
+                        PolicyComplianceAdoptedRevisionRow.receipt_id.in_(receipt_ids)
+                    )
+                )
+            await context.execute(
+                delete(PolicyComplianceReceiptRow).where(
+                    PolicyComplianceReceiptRow.board_id == board_id
+                )
+            )
+            # B08 has deferred binding -> operation proofs and reciprocal
+            # operation -> binding lineage. Remove both ledgers inside this
+            # permit-scoped transaction before bindings, then receipt evidence.
+            await context.execute(
+                delete(GuidelineRetirementImpactRow).where(
+                    GuidelineRetirementImpactRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(GuidelineImpactUnlinkRow).where(
+                    GuidelineImpactUnlinkRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(GuidelineImpactAdoptionRow).where(
+                    GuidelineImpactAdoptionRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(GuidelineBoardBindingRow).where(
+                    GuidelineBoardBindingRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(GuidelineImpactItemRow).where(
+                    GuidelineImpactItemRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(GuidelineImpactReceiptRow).where(
+                    GuidelineImpactReceiptRow.board_id == board_id
+                )
+            )
+            if inline_guideline_ids:
+                await context.execute(
+                    delete(GuidelineBoardBindingRow).where(
+                        GuidelineBoardBindingRow.guideline_id.in_(inline_guideline_ids)
+                    )
+                )
+                await context.execute(
+                    delete(GuidelineHeadRow).where(
+                        GuidelineHeadRow.guideline_id.in_(inline_guideline_ids)
+                    )
+                )
+                await context.execute(
+                    delete(GuidelineRetirementRow).where(
+                        GuidelineRetirementRow.guideline_id.in_(inline_guideline_ids)
+                    )
+                )
+                inline_revision_ids = tuple(
+                    str(value)
+                    for value in (
+                        await context.execute(
+                            select(GuidelineRevisionRow.revision_id)
+                            .where(
+                                GuidelineRevisionRow.guideline_id.in_(
+                                    inline_guideline_ids
+                                )
+                            )
+                            .order_by(
+                                GuidelineRevisionRow.revision_number.desc(),
+                                GuidelineRevisionRow.revision_id.desc(),
+                            )
+                        )
+                    ).scalars()
+                )
+                for revision_id in inline_revision_ids:
+                    await context.execute(
+                        delete(GuidelineRevisionRow).where(
+                            GuidelineRevisionRow.revision_id == revision_id
+                        )
+                    )
 
             # Append-only mutation records hold a RESTRICT/SET NULL reference
             # to the propagation scope, so they must be removed first.
@@ -520,6 +684,81 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 )
                 for model in direct_models
             }
+            residuals[GuidelineBoardBindingRow.__tablename__] = await _count_where(
+                context,
+                GuidelineBoardBindingRow,
+                GuidelineBoardBindingRow.board_id == board_id,
+            )
+            residuals[GuidelineImpactAdoptionRow.__tablename__] = await _count_where(
+                context,
+                GuidelineImpactAdoptionRow,
+                GuidelineImpactAdoptionRow.board_id == board_id,
+            )
+            residuals[GuidelineImpactUnlinkRow.__tablename__] = await _count_where(
+                context,
+                GuidelineImpactUnlinkRow,
+                GuidelineImpactUnlinkRow.board_id == board_id,
+            )
+            residuals[GuidelineRetirementImpactRow.__tablename__] = await _count_where(
+                context,
+                GuidelineRetirementImpactRow,
+                GuidelineRetirementImpactRow.board_id == board_id,
+            )
+            residuals[GuidelineImpactItemRow.__tablename__] = await _count_where(
+                context,
+                GuidelineImpactItemRow,
+                GuidelineImpactItemRow.board_id == board_id,
+            )
+            residuals[GuidelineImpactReceiptRow.__tablename__] = await _count_where(
+                context,
+                GuidelineImpactReceiptRow,
+                GuidelineImpactReceiptRow.board_id == board_id,
+            )
+            residuals[PolicyComplianceReceiptRow.__tablename__] = await _count_where(
+                context,
+                PolicyComplianceReceiptRow,
+                PolicyComplianceReceiptRow.board_id == board_id,
+            )
+            residuals[PolicyWaiverRow.__tablename__] = await _count_where(
+                context,
+                PolicyWaiverRow,
+                PolicyWaiverRow.board_id == board_id,
+            )
+            residuals[PolicyWaiverEventRow.__tablename__] = await _count_where(
+                context,
+                PolicyWaiverEventRow,
+                PolicyWaiverEventRow.board_id == board_id,
+            )
+            residuals[PolicyComplianceFindingRow.__tablename__] = await _count_where(
+                context,
+                PolicyComplianceFindingRow,
+                PolicyComplianceFindingRow.board_id == board_id,
+            )
+            residuals[PolicyComplianceAdoptedRevisionRow.__tablename__] = 0
+            if receipt_ids:
+                residuals[
+                    PolicyComplianceAdoptedRevisionRow.__tablename__
+                ] = await _count_where(
+                    context,
+                    PolicyComplianceAdoptedRevisionRow,
+                    PolicyComplianceAdoptedRevisionRow.receipt_id.in_(receipt_ids),
+                )
+            if inline_guideline_ids:
+                residuals[GuidelineHeadRow.__tablename__] = await _count_where(
+                    context,
+                    GuidelineHeadRow,
+                    GuidelineHeadRow.guideline_id.in_(inline_guideline_ids),
+                )
+                residuals[GuidelineRevisionRow.__tablename__] = await _count_where(
+                    context,
+                    GuidelineRevisionRow,
+                    GuidelineRevisionRow.guideline_id.in_(inline_guideline_ids),
+                )
+                residuals[GuidelineRetirementRow.__tablename__] = await _count_where(
+                    context,
+                    GuidelineRetirementRow,
+                    GuidelineRetirementRow.guideline_id.in_(inline_guideline_ids),
+                )
             if cognitive_source_ids:
                 residuals[KGCognitiveSourceRevision.__tablename__] = await _count_where(
                     context,

@@ -1,17 +1,159 @@
 import type { FlagsMap } from './PermissionFlagsEditor';
 
-export const SKA_PERMISSION_INTRODUCTION_V1_LEAVES = [
-  'ideation.quality.read',
-  'ideation.quality.assess',
-  'refinement.quality.read',
-  'refinement.quality.assess',
-  'spec.quality.read',
-  'spec.quality.assess',
-  'refinement.research_decisions.read',
-  'refinement.research_decisions.append',
-  'spec.checklist.read',
-  'spec.checklist.execute',
-] as const;
+export interface PermissionIntroductionManifest {
+  readonly version: string;
+  readonly leaves: readonly string[];
+  readonly historicalAuthorities: Readonly<Record<string, string>>;
+}
+
+export interface ComposedPermissionIntroductions {
+  readonly leaves: readonly string[];
+  readonly historicalAuthorities: Readonly<Record<string, string>>;
+}
+
+/**
+ * Compose versioned introductions in declared order and reject ambiguous
+ * authority before any permission document is evaluated.
+ *
+ * Historical authorities must point to pre-manifest leaves. The current
+ * resolver deliberately performs one authority check, so introduced-to-
+ * introduced chains are rejected instead of being partially authorized.
+ */
+export function composePermissionIntroductionManifests(
+  manifests: readonly PermissionIntroductionManifest[],
+): ComposedPermissionIntroductions {
+  const versions = new Set<string>();
+  const allLeaves = new Set<string>();
+
+  for (const manifest of manifests) {
+    const version = manifest.version.trim();
+    if (!version || versions.has(version)) {
+      throw new Error('permission_introduction_manifest_version_invalid');
+    }
+    versions.add(version);
+    for (const leaf of manifest.leaves) {
+      if (!leaf.trim() || allLeaves.has(leaf)) {
+        throw new Error('permission_introduction_leaf_collision');
+      }
+      allLeaves.add(leaf);
+    }
+  }
+
+  const leaves: string[] = [];
+  const historicalAuthorities: Record<string, string> = {};
+  for (const manifest of manifests) {
+    const leafSet = new Set(manifest.leaves);
+    const authorityKeys = Object.keys(manifest.historicalAuthorities);
+    if (
+      authorityKeys.length !== leafSet.size
+      || authorityKeys.some((leaf) => !leafSet.has(leaf))
+    ) {
+      throw new Error('permission_introduction_authority_set_mismatch');
+    }
+    for (const leaf of manifest.leaves) {
+      const authority = manifest.historicalAuthorities[leaf]?.trim();
+      if (
+        !authority
+        || authority === leaf
+        || allLeaves.has(authority)
+      ) {
+        throw new Error('permission_introduction_authority_invalid');
+      }
+      leaves.push(leaf);
+      historicalAuthorities[leaf] = authority;
+    }
+  }
+
+  return Object.freeze({
+    leaves: Object.freeze(leaves),
+    historicalAuthorities: Object.freeze(historicalAuthorities),
+  });
+}
+
+export const SKA_PERMISSION_INTRODUCTION_V1 = {
+  version: 'SK-A/v1',
+  leaves: [
+    'ideation.quality.read',
+    'ideation.quality.assess',
+    'refinement.quality.read',
+    'refinement.quality.assess',
+    'spec.quality.read',
+    'spec.quality.assess',
+    'refinement.research_decisions.read',
+    'refinement.research_decisions.append',
+    'spec.checklist.read',
+    'spec.checklist.execute',
+  ],
+  historicalAuthorities: {
+    'ideation.quality.read': 'ideation.entity.read',
+    'ideation.quality.assess': 'spec.entity.edit_fields',
+    'refinement.quality.read': 'refinement.entity.read',
+    'refinement.quality.assess': 'spec.entity.edit_fields',
+    'spec.quality.read': 'spec.entity.read',
+    'spec.quality.assess': 'spec.validation.submit',
+    'refinement.research_decisions.read': 'refinement.entity.read',
+    'refinement.research_decisions.append': 'spec.entity.edit_fields',
+    'spec.checklist.read': 'spec.entity.read',
+    'spec.checklist.execute': 'spec.entity.edit_fields',
+  },
+} as const satisfies PermissionIntroductionManifest;
+
+export const SKB_PERMISSION_INTRODUCTION_V1 = {
+  version: 'SK-B/v1',
+  leaves: [
+    'guidelines.revisions.read',
+    'guidelines.revisions.create',
+    'guidelines.revisions.retire',
+    'guidelines.rules.author_blocking',
+    'guidelines.impact.preview',
+    'guidelines.adoption.manage',
+    'guidelines.compliance.read',
+    'guidelines.compliance.evaluate',
+    'guidelines.waiver.read',
+    'guidelines.waiver.request',
+    'guidelines.waiver.review',
+    'guidelines.waiver.revoke',
+    'guidelines.waiver.revalidate',
+  ],
+  historicalAuthorities: {
+    'guidelines.revisions.read': 'guidelines.read',
+    'guidelines.revisions.create': 'spec.entity.edit_fields',
+    'guidelines.revisions.retire': 'guidelines.delete',
+    'guidelines.rules.author_blocking': 'spec.entity.edit_fields',
+    'guidelines.impact.preview': 'guidelines.read',
+    'guidelines.adoption.manage': 'spec.entity.edit_fields',
+    'guidelines.compliance.read': 'guidelines.read',
+    'guidelines.compliance.evaluate': 'guidelines.read',
+    'guidelines.waiver.read': 'guidelines.read',
+    'guidelines.waiver.request': 'guidelines.read',
+    'guidelines.waiver.review': 'spec.validation.submit',
+    'guidelines.waiver.revoke': 'guidelines.delete',
+    'guidelines.waiver.revalidate': 'spec.validation.submit',
+  },
+} as const satisfies PermissionIntroductionManifest;
+
+export const PERMISSION_INTRODUCTION_MANIFESTS = [
+  SKA_PERMISSION_INTRODUCTION_V1,
+  SKB_PERMISSION_INTRODUCTION_V1,
+] as const satisfies readonly PermissionIntroductionManifest[];
+
+export const SKA_PERMISSION_INTRODUCTION_V1_LEAVES =
+  SKA_PERMISSION_INTRODUCTION_V1.leaves;
+export const SKB_PERMISSION_INTRODUCTION_V1_LEAVES =
+  SKB_PERMISSION_INTRODUCTION_V1.leaves;
+
+const COMPOSED_PERMISSION_INTRODUCTIONS =
+  composePermissionIntroductionManifests(
+    PERMISSION_INTRODUCTION_MANIFESTS,
+  );
+
+export const INTRODUCED_PERMISSION_LEAVES: readonly string[] =
+  COMPOSED_PERMISSION_INTRODUCTIONS.leaves;
+
+export const INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES:
+Readonly<Record<string, string>> = (
+  COMPOSED_PERMISSION_INTRODUCTIONS.historicalAuthorities
+);
 
 type PermissionDocument = Record<string, unknown>;
 
@@ -154,8 +296,11 @@ export function applyBoardCeiling(
   for (const [path, value] of booleanLeaves(ceiling)) {
     if (value === false) setNested(effective, path, false);
   }
-  for (const path of SKA_PERMISSION_INTRODUCTION_V1_LEAVES) {
-    if (getNested(ceiling, path).value !== true) {
+  for (const path of INTRODUCED_PERMISSION_LEAVES) {
+    if (
+      getNested(base, path).present
+      && getNested(ceiling, path).value !== true
+    ) {
       setNested(effective, path, false);
     }
   }
@@ -184,7 +329,7 @@ export function boardCeilingDelta(
 
   const ceiling: PermissionDocument = {};
   for (const path of restrictions) setNested(ceiling, path, false);
-  for (const path of SKA_PERMISSION_INTRODUCTION_V1_LEAVES) {
+  for (const path of INTRODUCED_PERMISSION_LEAVES) {
     const baseValue = getNested(base, path).value;
     const desiredValue = getNested(desired, path).value;
     if (baseValue === true && desiredValue === true) {

@@ -144,13 +144,33 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 48 = the historical 44 steps plus the SK-A Refinement ambiguity-skip
+    # 54 = the historical 44 steps plus the SK-A Refinement ambiguity-skip
     # column, SK-A/C7 quality-assessment persistence schema, the curated Spec
-    # checklist mode, and the human-facing Spec edition counter.
-    assert len(migrate_names) == 48, (
-        f"expected 48 _migrate_*, found {len(migrate_names)}"
+    # checklist mode, the human-facing Spec edition counter, and SK-B's
+    # immutable guideline-policy authority, its B04 lifecycle substrate, and
+    # B07 immutable compliance evidence/currentness fences, B08's ordered
+    # impact substrate + sealed evidence guards, and B09 governed append-only
+    # waiver lifecycle persistence.
+    assert len(migrate_names) == 54, (
+        f"expected 54 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 48
+    assert len(ledger_migrate_ids) == 54
+    ordered_ids = [step.step_id for step in ledger]
+    assert ordered_ids.index(
+        "_migrate_guideline_policy_lifecycle_substrate"
+    ) < ordered_ids.index("_migrate_guideline_impact_substrate")
+    assert ordered_ids.index("_migrate_guideline_impact_substrate") < ordered_ids.index(
+        "_migrate_guideline_policy_v1_schema"
+    )
+    assert ordered_ids.index("_migrate_guideline_policy_v1_schema") < ordered_ids.index(
+        "_migrate_guideline_impact_v1_schema"
+    )
+    assert ordered_ids.index("_migrate_guideline_impact_v1_schema") < ordered_ids.index(
+        "_migrate_policy_compliance_v1_schema"
+    )
+    assert ordered_ids.index(
+        "_migrate_policy_compliance_v1_schema"
+    ) < ordered_ids.index("_migrate_policy_waiver_v1_schema")
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]
@@ -170,6 +190,30 @@ def test_ts_7aacc71a_ledger_order_matches_community_step_registry():
         if s.step_id != CREATE_ALL_BOUNDARY_STEP_ID
     ]
     assert _step_callable_order() == ledger_migrate_order
+
+
+def test_postgresql_policy_materialization_trigger_matches_json_column_type():
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateTable
+
+    from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow
+
+    source = STEPS_PY.read_text(encoding="utf-8")
+    table_ddl = str(
+        CreateTable(DomainEventRow.__table__).compile(
+            dialect=postgresql.dialect()
+        )
+    )
+
+    # The mapped column is JSON (not JSONB), so every function in this trigger
+    # block must use PostgreSQL's JSON family unless the SQL casts explicitly.
+    assert "payload_json JSON NOT NULL" in table_ddl
+    assert "jsonb_object_length(" not in source
+    assert (
+        "SELECT COUNT(*)\n"
+        "                          FROM json_object_keys(event.payload_json)"
+    ) in source
+    assert "json_typeof(\n                          event.payload_json->" in source
 
 
 def test_legacy_default_template_table_gains_nullable_checklist_mode(
@@ -279,15 +323,11 @@ def test_legacy_specs_gain_backfilled_non_null_edition(
             }
             row = (
                 await connection.execute(
-                    text(
-                        "SELECT edition, version FROM specs WHERE id = 'legacy'"
-                    )
+                    text("SELECT edition, version FROM specs WHERE id = 'legacy'")
                 )
             ).one()
             defaulted_edition = await connection.scalar(
-                text(
-                    "SELECT edition FROM specs WHERE id = 'new-default'"
-                )
+                text("SELECT edition FROM specs WHERE id = 'new-default'")
             )
         await engine.dispose()
         return columns, row, defaulted_edition
@@ -403,6 +443,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         governed_queue_convergence_step,
         delivery_convergence_step,
         kb_governance_convergence_step,
+        "_migrate_guideline_impact_substrate",
     }
     replay_skip_steps = {
         repair_step,
@@ -410,6 +451,12 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         governed_queue_convergence_step,
         delivery_convergence_step,
         "_migrate_cognitive_source_revision_ledger",
+        "_migrate_guideline_policy_v1_schema",
+        "_migrate_guideline_policy_lifecycle_substrate",
+        "_migrate_guideline_impact_substrate",
+        "_migrate_guideline_impact_v1_schema",
+        "_migrate_policy_compliance_v1_schema",
+        "_migrate_policy_waiver_v1_schema",
         kb_governance_convergence_step,
         "_migrate_knowledge_propagation_v2_schema",
     }

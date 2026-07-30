@@ -29,6 +29,54 @@ const storyTopicFlags: FlagsMap = {
   },
 };
 
+const guidelinePolicyFlags: FlagsMap = {
+  guidelines: {
+    revisions: {
+      read: true,
+      create: true,
+      retire: false,
+    },
+    rules: { author_blocking: true },
+    impact: { preview: true },
+    adoption: { manage: true },
+    compliance: { read: true, evaluate: true },
+    waiver: {
+      read: true,
+      request: true,
+      review: false,
+      revoke: false,
+      revalidate: false,
+    },
+  },
+};
+
+const skbGuidelineLeaves = [
+  ['guidelines.revisions.read', true],
+  ['guidelines.revisions.create', true],
+  ['guidelines.revisions.retire', false],
+  ['guidelines.rules.author_blocking', true],
+  ['guidelines.impact.preview', true],
+  ['guidelines.adoption.manage', true],
+  ['guidelines.compliance.read', true],
+  ['guidelines.compliance.evaluate', true],
+  ['guidelines.waiver.read', true],
+  ['guidelines.waiver.request', true],
+  ['guidelines.waiver.review', false],
+  ['guidelines.waiver.revoke', false],
+  ['guidelines.waiver.revalidate', false],
+] as const;
+
+function guidelineFlagsWithToggledLeaf(path: string): FlagsMap {
+  const updated = structuredClone(guidelinePolicyFlags);
+  const [, level, action] = path.split('.');
+  const group = updated.guidelines[level];
+  if (typeof group !== 'object' || group === null) {
+    throw new Error(`Missing guideline permission group: ${level}`);
+  }
+  group[action] = !group[action];
+  return updated;
+}
+
 describe('PermissionFlagsEditor', () => {
   it('labels Stories and Topics as native permission sections', () => {
     render(<PermissionFlagsEditor flags={storyTopicFlags} readOnly />);
@@ -78,5 +126,76 @@ describe('PermissionFlagsEditor', () => {
 
   it('counts flat and nested Story/Topic flags together', () => {
     expect(countAllFlags(storyTopicFlags)).toEqual({ enabled: 6, total: 9 });
+  });
+
+  it('renders and edits every SK-B guideline permission leaf generically', () => {
+    const onChange = vi.fn();
+    render(
+      <PermissionFlagsEditor
+        flags={guidelinePolicyFlags}
+        onChange={onChange}
+      />,
+    );
+
+    expect(
+      screen.getByRole('button', { name: /Guidelines/i }),
+    ).toHaveTextContent('9/13');
+    fireEvent.click(screen.getByRole('button', { name: /Guidelines/i }));
+
+    for (const level of [
+      'revisions',
+      'rules',
+      'impact',
+      'adoption',
+      'compliance',
+      'waiver',
+    ]) {
+      expect(screen.getByText(level)).toBeInTheDocument();
+    }
+
+    for (const [path, enabled] of skbGuidelineLeaves) {
+      const toggle = screen.getByRole('button', {
+        name: `Toggle ${path}`,
+      });
+      expect(toggle).toHaveAttribute('type', 'button');
+      expect(toggle).toHaveAttribute('aria-pressed', String(enabled));
+
+      onChange.mockClear();
+      fireEvent.click(toggle);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith(
+        guidelineFlagsWithToggledLeaf(path),
+      );
+    }
+
+    for (const button of screen.getAllByRole('button')) {
+      expect(button).toHaveAttribute('type', 'button');
+    }
+  });
+
+  it('keeps every SK-B guideline permission immutable in read-only mode', () => {
+    const onChange = vi.fn();
+    render(
+      <PermissionFlagsEditor
+        flags={guidelinePolicyFlags}
+        onChange={onChange}
+        readOnly
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Guidelines/i }));
+
+    for (const [path, enabled] of skbGuidelineLeaves) {
+      const toggle = screen.getByRole('button', {
+        name: `Toggle ${path}`,
+      });
+      expect(toggle).toBeDisabled();
+      expect(toggle).toHaveAttribute('type', 'button');
+      expect(toggle).toHaveAttribute('aria-pressed', String(enabled));
+      fireEvent.click(toggle);
+    }
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'all on' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'all off' })).not.toBeInTheDocument();
   });
 });

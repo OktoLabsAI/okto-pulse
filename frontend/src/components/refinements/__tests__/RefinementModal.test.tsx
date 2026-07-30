@@ -199,11 +199,11 @@ describe('RefinementModal handleMove error surfacing (AC1)', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'review',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null },
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getArchitectureDesign.mockResolvedValue(null);
@@ -294,11 +294,11 @@ describe('RefinementModal Markdown export', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'review',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null },
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getArchitectureDesign.mockImplementation((id: string) =>
@@ -355,9 +355,9 @@ describe('RefinementModal Markdown export', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'review',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
 
@@ -392,7 +392,7 @@ describe('RefinementModal Knowledge tab markdown rendering', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'review',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [],
     });
     apiMock.getArchitectureDesign.mockResolvedValue(null);
@@ -571,7 +571,7 @@ describe('RefinementModal selective Knowledge derivation', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'done',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [],
     });
     apiMock.deriveSpecFromRefinement.mockResolvedValue({

@@ -7,8 +7,11 @@ so we only test the subparser shape here.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import hashlib
 import json
 import os
+import os as _os
 import sqlite3
 import subprocess
 import sys
@@ -518,24 +521,20 @@ def test_af14_ts6_api_key_cli_preserves_governed_legacy_plaintext(
 # msg_424bda2a9a5c44d5b3a8e52efd9d5a6e + durable INV-E2 marker contract).
 # ---------------------------------------------------------------------------
 
-import hashlib
-import os as _os
-from contextlib import contextmanager
-
-import okto_pulse.core.services.application_kg as _application_kg
-import okto_pulse.community.cli as _cli
-from okto_pulse.community.adapters.global_discovery_runtime import (
+import okto_pulse.core.services.application_kg as _application_kg  # noqa: E402
+import okto_pulse.community.cli as _cli  # noqa: E402
+from okto_pulse.community.adapters.global_discovery_runtime import (  # noqa: E402
     CommunityGlobalDiscoveryRuntime as _GDRuntime,
 )
-from okto_pulse.community.adapters.global_discovery_bootstrap_marker import (
+from okto_pulse.community.adapters.global_discovery_bootstrap_marker import (  # noqa: E402
     bootstrap_marker_present as _marker_present,
     write_bootstrap_marker as _write_marker,
 )
-from okto_pulse.core.kg.global_discovery_writer import (
+from okto_pulse.core.kg.global_discovery_writer import (  # noqa: E402
     GlobalDiscoveryWriterContention as _WriterContention,
     GlobalDiscoveryWriterLease as _WriterLease,
 )
-from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+from okto_pulse.core.kg.interfaces.graph_runtime_store import (  # noqa: E402
     GraphRuntimeObservationState as _ObsState,
 )
 

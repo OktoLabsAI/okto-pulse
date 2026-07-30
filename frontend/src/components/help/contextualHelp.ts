@@ -11,6 +11,7 @@ export const HELP_SECTION_IDS = [
   'bugs',
   'analytics',
   'guidelines',
+  'policy-governance',
   'governance',
   'sprints',
   'knowledge-graph',

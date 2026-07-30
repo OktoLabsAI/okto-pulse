@@ -3,7 +3,7 @@
  * effective permission flags for a given board.
  *
  * Historical flags keep the render-through behavior while data is
- * unavailable.  SK-A/v1 introduced flags are fail-closed while loading, on
+ * unavailable.  Versioned introduced flags are fail-closed while loading, on
  * errors, and whenever the response omits the leaf.
  *
  * Cache: 60s staleTime to avoid a roundtrip on every gated component.
@@ -15,28 +15,22 @@ import {
   getMyPermissions,
   type PermissionsResponse,
 } from '@/services/permissions-api';
-import { SKA_PERMISSION_INTRODUCTION_V1_LEAVES } from '@/components/permissions/permissionLayers';
+import {
+  INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES,
+  INTRODUCED_PERMISSION_LEAVES,
+} from '@/components/permissions/permissionLayers';
 
-export { SKA_PERMISSION_INTRODUCTION_V1_LEAVES } from '@/components/permissions/permissionLayers';
+export {
+  PERMISSION_INTRODUCTION_MANIFESTS,
+  SKA_PERMISSION_INTRODUCTION_V1_LEAVES,
+  SKB_PERMISSION_INTRODUCTION_V1_LEAVES,
+} from '@/components/permissions/permissionLayers';
 
 const CACHE_TTL_MS = 60_000;
 
 const failClosedIntroducedFlags = new Set<string>(
-  SKA_PERMISSION_INTRODUCTION_V1_LEAVES,
+  INTRODUCED_PERMISSION_LEAVES,
 );
-
-const introducedHistoricalAuthorities: Readonly<Record<string, string>> = {
-  'ideation.quality.read': 'ideation.entity.read',
-  'ideation.quality.assess': 'spec.entity.edit_fields',
-  'refinement.quality.read': 'refinement.entity.read',
-  'refinement.quality.assess': 'spec.entity.edit_fields',
-  'spec.quality.read': 'spec.entity.read',
-  'spec.quality.assess': 'spec.validation.submit',
-  'refinement.research_decisions.read': 'refinement.entity.read',
-  'refinement.research_decisions.append': 'spec.entity.edit_fields',
-  'spec.checklist.read': 'spec.entity.read',
-  'spec.checklist.execute': 'spec.entity.edit_fields',
-};
 
 interface CacheEntry {
   data: PermissionsResponse;
@@ -93,7 +87,7 @@ export interface UsePermissionsResult {
    * Check whether a flag is effectively enabled.
    *
    * Historical flags render through while data is unavailable. Introduced
-   * SK-A/v1 flags are denied until the backend returns an explicit True.
+   * Versioned flags are denied until the backend returns an explicit True.
    */
   has: (flag: string) => boolean;
 }
@@ -108,7 +102,8 @@ export function hasEffectivePermission(
   const value = getNested(data.flags, flag);
   if (value === undefined) return !introduced;
   if (value !== true) return false;
-  const historicalAuthority = introducedHistoricalAuthorities[flag];
+  const historicalAuthority =
+    INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES[flag];
   return (
     historicalAuthority === undefined
     || getNested(data.flags, historicalAuthority) === true

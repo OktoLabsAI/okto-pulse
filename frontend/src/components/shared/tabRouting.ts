@@ -37,6 +37,7 @@ export type IdeationModalSubtab =
   | 'architecture'
   | 'scope'
   | 'ambiguity'
+  | 'policy-compliance'
   | 'stories'
   | 'refinements'
   | 'specs';
@@ -57,7 +58,8 @@ export type RefinementModalSubtab =
   | 'architecture'
   | 'ideation'
   | 'specs'
-  | 'ambiguity';
+  | 'ambiguity'
+  | 'policy-compliance';
 
 export type SpecModalTab =
   | 'details'
@@ -84,7 +86,8 @@ export type SpecModalSubtab =
   | 'cards'
   | 'checklist'
   | 'spec-validation'
-  | 'requirement-lint';
+  | 'requirement-lint'
+  | 'policy-compliance';
 
 export type CardModalTab =
   | 'details'
@@ -110,7 +113,8 @@ export type CardModalSubtab =
   | 'requirements'
   | 'dependencies'
   | 'execution-report'
-  | 'task-validation';
+  | 'task-validation'
+  | 'policy-compliance';
 
 export const IDEATION_LEGACY_TAB_ALIASES = {
   quality: { tab: 'evaluation', subtab: 'ambiguity' },

@@ -7,6 +7,12 @@ import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
 import { isSpecValidationAvailable } from './specValidationAvailability';
 import { QualityPanel } from '@/components/quality';
 import {
+  PolicyCompliancePanel,
+  PolicyComplianceTransitionPreview,
+  type PolicyTransitionRejection,
+  type PolicyTransitionPreviewLoadState,
+} from '@/components/policy-compliance';
+import {
   AccessibleTabList,
   AccessibleTabPanel,
 } from '@/components/shared/AccessibleTabs';
@@ -14,7 +20,8 @@ import {
 type ValidationSubTab =
   | 'checklist'
   | 'spec-validation'
-  | 'requirement-lint';
+  | 'requirement-lint'
+  | 'policy-compliance';
 
 interface SpecValidationPanelProps {
   boardId: string;
@@ -25,9 +32,13 @@ interface SpecValidationPanelProps {
   canExecuteChecklist: boolean;
   canReadValidation: boolean;
   canReadQuality: boolean;
+  canReadPolicyCompliance: boolean;
+  policyTransitionPreview: PolicyTransitionPreviewLoadState;
+  policyTransitionRejection?: PolicyTransitionRejection | null;
   specArchived: boolean;
   validationHistoryRefreshKey?: number;
   onAssessmentRecorded?: () => void;
+  onPolicyEvaluated?: () => void;
   onOpenRequirementLintHelp?: () => void;
 }
 
@@ -37,10 +48,25 @@ function preferredValidationTab(
 ): ValidationSubTab {
   const preference: ValidationSubTab[] =
     specStatus === 'approved'
-      ? ['checklist', 'spec-validation', 'requirement-lint']
+      ? [
+          'checklist',
+          'spec-validation',
+          'requirement-lint',
+          'policy-compliance',
+        ]
       : ['validated', 'in_progress', 'done'].includes(specStatus)
-        ? ['spec-validation', 'checklist', 'requirement-lint']
-        : ['requirement-lint', 'checklist', 'spec-validation'];
+        ? [
+            'spec-validation',
+            'checklist',
+            'requirement-lint',
+            'policy-compliance',
+          ]
+        : [
+            'requirement-lint',
+            'checklist',
+            'spec-validation',
+            'policy-compliance',
+          ];
   return preference.find((tab) => availableTabs.includes(tab))
     ?? availableTabs[0]
     ?? 'requirement-lint';
@@ -55,9 +81,13 @@ export function SpecValidationPanel({
   canExecuteChecklist,
   canReadValidation,
   canReadQuality,
+  canReadPolicyCompliance,
+  policyTransitionPreview,
+  policyTransitionRejection = null,
   specArchived,
   validationHistoryRefreshKey = 0,
   onAssessmentRecorded,
+  onPolicyEvaluated,
   onOpenRequirementLintHelp,
 }: SpecValidationPanelProps) {
   const validationStageAvailable = isSpecValidationAvailable(specStatus);
@@ -79,8 +109,15 @@ export function SpecValidationPanel({
           advisory: true,
         }]
       : []),
+    ...(canReadPolicyCompliance
+      ? [{
+          id: 'policy-compliance' as const,
+          label: 'Policy Compliance',
+        }]
+      : []),
   ], [
     canReadChecklist,
+    canReadPolicyCompliance,
     canReadQuality,
     canReadValidation,
     validationStageAvailable,
@@ -174,6 +211,28 @@ export function SpecValidationPanel({
             canProposeQuestions={false}
             onAssessmentRecorded={onAssessmentRecorded}
             onOpenHelp={onOpenRequirementLintHelp}
+          />
+        </AccessibleTabPanel>
+      )}
+
+      {activeTab === 'policy-compliance' && canReadPolicyCompliance && (
+        <AccessibleTabPanel
+          idBase={tabIdPrefix}
+          tabId="policy-compliance"
+          value={activeTab}
+          className="space-y-4"
+        >
+          <PolicyComplianceTransitionPreview
+            preview={policyTransitionPreview}
+            rejection={policyTransitionRejection}
+          />
+          <PolicyCompliancePanel
+            boardId={boardId}
+            entityType="spec"
+            subjectId={specId}
+            refreshKey={specVersion}
+            onEvaluated={onPolicyEvaluated}
+            onRefreshed={onPolicyEvaluated}
           />
         </AccessibleTabPanel>
       )}

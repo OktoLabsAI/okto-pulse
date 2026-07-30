@@ -31,6 +31,7 @@ import pulseIcon from '@/assets/pulse-icon.svg';
 import oktolabsIcon from '@/assets/oktolabs-icon.svg';
 import { useTheme } from '@/hooks/useTheme';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 import { useDashboardApi } from '@/services/api';
 import toast from 'react-hot-toast';
 import type { BoardSettings } from '@/types';
@@ -57,6 +58,29 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const { isSignedIn, isLoaded } = authAdapter.useAuth();
   const AdapterUserButton = authAdapter.UserButton;
   const currentBoard = useCurrentBoard();
+  const permissions = usePermissions(currentBoard?.id);
+  const policyAuthorityReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadGuidelineRevisions = (
+    policyAuthorityReady
+    && permissions.has('guidelines.revisions.read')
+  );
+  const canReadPolicyWaivers = (
+    policyAuthorityReady
+    && permissions.has('guidelines.waiver.read')
+  );
+  const canCreateGuidelineRevisions = (
+    policyAuthorityReady
+    && permissions.has('guidelines.revisions.create')
+  );
+  const canOpenGuidelines = (
+    canReadGuidelineRevisions
+    || canCreateGuidelineRevisions
+    || canReadPolicyWaivers
+  );
   const { theme, toggle: toggleTheme } = useTheme();
   const api = useDashboardApi();
   const [showSettings, setShowSettings] = useState(false);
@@ -92,6 +116,15 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     }
     onHelpOpenChange?.(true);
   }), [helpOpen, onHelpOpenChange]);
+  useEffect(() => {
+    if (
+      showGuidelines
+      && !permissions.isLoading
+      && !canOpenGuidelines
+    ) {
+      setShowGuidelines(false);
+    }
+  }, [canOpenGuidelines, permissions.isLoading, showGuidelines]);
   const showKnowledgeGraph = knowledgeGraphOpen ?? localShowKnowledgeGraph;
   const setShowKnowledgeGraph = (open: boolean) => {
     if (knowledgeGraphOpen === undefined) {
@@ -139,7 +172,11 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   }, []);
 
   useEffect(() => {
-    if (!showSettings || !currentBoard?.id) {
+    if (
+      !showSettings
+      || !currentBoard?.id
+      || !canReadGuidelineRevisions
+    ) {
       setBoardGuidelineCount(null);
       setBoardGuidelinesLoadFailed(false);
       return;
@@ -159,7 +196,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     return () => {
       cancelled = true;
     };
-  }, [showSettings, currentBoard?.id]);
+  }, [api, canReadGuidelineRevisions, showSettings, currentBoard?.id]);
 
   const settings: BoardSettings = currentBoard?.settings
     ? {
@@ -343,13 +380,17 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     <hr className="my-1 border-gray-200 dark:border-gray-700" />
 
                     {/* Guidelines */}
-                    <button
-                      onClick={() => { setShowMenu(false); setShowGuidelines(true); }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
-                    >
-                      <BookOpen size={14} />
-                      Guidelines
-                    </button>
+                    {canOpenGuidelines && (
+                      <button
+                        type="button"
+                        data-testid="menu-guidelines"
+                        onClick={() => { setShowMenu(false); setShowGuidelines(true); }}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                      >
+                        <BookOpen size={14} />
+                        Guidelines
+                      </button>
+                    )}
 
                     {/* Design System */}
                     <button
@@ -634,7 +675,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
     </header>
 
-      {showGuidelines && currentBoard && (
+      {showGuidelines && currentBoard && canOpenGuidelines && (
         <GuidelinesPanel
           boardId={currentBoard.id}
           onClose={() => setShowGuidelines(false)}

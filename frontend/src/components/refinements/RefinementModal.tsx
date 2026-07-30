@@ -2,7 +2,12 @@
  * RefinementModal - View and manage a refinement, derive specs
  */
 
-import { useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   X,
   ChevronRight,
@@ -67,6 +72,16 @@ import { AmbiguityGateSkipToggle } from '@/components/shared/AmbiguityGateSkipTo
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { usePermissions } from '@/hooks/usePermissions';
 import { QualityPanel } from '@/components/quality';
+import {
+  PolicyCompliancePanel,
+  PolicyComplianceTransitionPreview,
+  isAllowedTransitionActionable,
+  policyTransitionRejectionMessage,
+  readPolicyTransitionRejection,
+  requirePolicyTransitionEnvelope,
+  type PolicyTransitionRejection,
+  type PolicyTransitionPreviewLoadState,
+} from '@/components/policy-compliance';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import type { RefinementModalTab } from '@/components/shared/tabRouting';
 import { ResearchDecisionTab } from './ResearchDecisionPanel';
@@ -86,6 +101,7 @@ interface RefinementModalProps {
 }
 
 type ModalTab = RefinementModalTab;
+type ValidationSubTab = 'ambiguity' | 'policy-compliance';
 
 const STATUS_ICON: Record<RefinementStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -763,15 +779,37 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const canAssessQuality = perms.has('refinement.quality.assess');
   const canProposeQualityQuestions = perms.has('refinement.qa.ask');
   const canReadResearchDecisions = perms.has('refinement.research_decisions.read');
+  const canReadPolicyCompliance = perms.has(
+    'guidelines.compliance.read',
+  );
   const requiresAmbiguityGate =
     currentBoard?.settings?.require_refinement_ambiguity_gate ?? false;
-  const canViewValidation = canReadQuality || requiresAmbiguityGate;
+  const canAccessAmbiguityAssessment =
+    canReadQuality || requiresAmbiguityGate;
+  const canViewValidation =
+    canAccessAmbiguityAssessment || canReadPolicyCompliance;
   const [refinement, setRefinement] = useState<Refinement | null>(null);
   const [loading, setLoading] = useState(true);
   const [derivingSpec, setDerivingSpec] = useState(false);
   const [movingTo, setMovingTo] = useState<RefinementStatus | null>(null);
   const [nextStatuses, setNextStatuses] = useState<RefinementStatus[]>([]);
+  const [
+    policyTransitionPreview,
+    setPolicyTransitionPreview,
+  ] = useState<PolicyTransitionPreviewLoadState>({
+    status: 'loading',
+    transitions: [],
+    error: null,
+  });
+  const [
+    policyTransitionRejection,
+    setPolicyTransitionRejection,
+  ] = useState<PolicyTransitionRejection | null>(null);
+  const lastTransitionSubjectKey = useRef<string | null>(null);
+  const transitionRequestId = useRef(0);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
+  const [validationSubTab, setValidationSubTab] =
+    useState<ValidationSubTab>('ambiguity');
   const [referenceTab, setReferenceTab] =
     useState<RefinementReferenceTab>('ideation');
   const [expanded, setExpanded] = useState(false);
@@ -793,6 +831,30 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
     canViewValidation,
   ]);
 
+  useEffect(() => {
+    if (!canViewValidation) {
+      return;
+    }
+    if (
+      validationSubTab === 'ambiguity'
+      && !canAccessAmbiguityAssessment
+    ) {
+      setValidationSubTab('policy-compliance');
+      return;
+    }
+    if (
+      validationSubTab === 'policy-compliance'
+      && !canReadPolicyCompliance
+    ) {
+      setValidationSubTab('ambiguity');
+    }
+  }, [
+    canAccessAmbiguityAssessment,
+    canReadPolicyCompliance,
+    canViewValidation,
+    validationSubTab,
+  ]);
+
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
   if (currentBoard) {
@@ -811,21 +873,75 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
     loadRefinement();
   }, [refinementId]);
 
-  const loadAllowedTransitions = async (data: Refinement) => {
+  const loadAllowedTransitions = useCallback(async (data: Refinement) => {
+    const requestId = transitionRequestId.current + 1;
+    transitionRequestId.current = requestId;
+    lastTransitionSubjectKey.current = [
+      data.id,
+      data.version,
+      data.status,
+    ].join(':');
+    setPolicyTransitionRejection(null);
+    setNextStatuses([]);
+    setPolicyTransitionPreview({
+      status: 'loading',
+      transitions: [],
+      error: null,
+    });
     try {
       const response = await api.getAllowedTransitions(data.board_id || _boardId, {
         entity_type: 'refinement',
         entity_id: data.id,
       });
+      if (transitionRequestId.current !== requestId) {
+        return;
+      }
+      const transitions = requirePolicyTransitionEnvelope(response, {
+        boardId: data.board_id || _boardId,
+        entityType: 'refinement',
+        subjectId: data.id,
+        currentStatus: data.status,
+      });
+      setPolicyTransitionPreview({
+        status: 'ready',
+        transitions,
+        error: null,
+      });
       setNextStatuses(
-        response.allowed_transitions
+        transitions
+          .filter(isAllowedTransitionActionable)
           .map((item) => item.to_status)
           .filter((status): status is RefinementStatus => REFINEMENT_STATUSES.includes(status as RefinementStatus))
       );
-    } catch {
+    } catch (caught) {
+      if (transitionRequestId.current !== requestId) {
+        return;
+      }
       setNextStatuses([]);
+      setPolicyTransitionPreview({
+        status: 'error',
+        transitions: [],
+        error: caught instanceof Error
+          ? caught.message
+          : 'The server transition contract could not be loaded.',
+      });
     }
-  };
+  }, [api, _boardId]);
+
+  useEffect(() => {
+    if (!refinement) {
+      return;
+    }
+    const subjectKey = [
+      refinement.id,
+      refinement.version,
+      refinement.status,
+    ].join(':');
+    if (lastTransitionSubjectKey.current === subjectKey) {
+      return;
+    }
+    void loadAllowedTransitions(refinement);
+  }, [loadAllowedTransitions, refinement]);
 
   const loadRefinement = async () => {
     setLoading(true);
@@ -845,6 +961,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const performMove = async (status: RefinementStatus, cancellationReason?: string) => {
     if (!refinement) return;
     setMovingTo(status);
+    setPolicyTransitionRejection(null);
     try {
       const updated = await api.moveRefinement(refinementId, {
         status,
@@ -854,7 +971,22 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
       await loadAllowedTransitions(updated);
       onChanged();
       toast.success(`Refinement moved to ${REFINEMENT_STATUS_LABELS[status]}`);
-    } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
+    } catch (err) {
+      const rejection = readPolicyTransitionRejection(err, {
+        boardId: refinement.board_id || _boardId,
+        entityType: 'refinement',
+        subjectId: refinement.id,
+        currentStatus: refinement.status,
+        toStatus: status,
+      });
+      toast.error(
+        rejection
+          ? policyTransitionRejectionMessage(rejection)
+          : getErrorMessage(err),
+      );
+      await loadAllowedTransitions(refinement);
+      setPolicyTransitionRejection(rejection);
+    } finally { setMovingTo(null); }
   };
 
   const handleMove = async (status: RefinementStatus) => {
@@ -1023,6 +1155,20 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const canDeriveSpec = refinement.status === 'done';
 
   const unansweredQA = refinement.qa_items?.filter((q) => q.answered_at == null).length || 0;
+  const validationTabs: {
+    id: ValidationSubTab;
+    label: string;
+  }[] = [
+    ...(canAccessAmbiguityAssessment
+      ? [{ id: 'ambiguity' as const, label: 'Ambiguity Assessment' }]
+      : []),
+    ...(canReadPolicyCompliance
+      ? [{
+          id: 'policy-compliance' as const,
+          label: 'Policy Compliance',
+        }]
+      : []),
+  ];
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     { id: 'research-decisions', label: 'Research decisions', icon: <Lightbulb size={14} />, permission: 'refinement.research_decisions.read' },
@@ -1267,6 +1413,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                     ? { ...current, architecture_designs: items }
                     : current,
                 );
+                void loadRefinement();
                 onChanged();
               }}
               onKnowledgeCreated={(knowledge) => {
@@ -1281,6 +1428,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                       }
                     : current,
                 );
+                void loadRefinement();
                 onChanged();
               }}
               onKnowledgeDeleted={(knowledgeId) => {
@@ -1294,6 +1442,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                       }
                     : current,
                 );
+                void loadRefinement();
                 onChanged();
               }}
             />
@@ -1309,17 +1458,65 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                 className="space-y-4"
                 data-testid="refinement-validation-panel"
               >
-                {requiresAmbiguityGate ? (
-                  <section
-                    className="space-y-4"
-                    data-testid="refinement-ambiguity-gate-panel"
+                <AccessibleTabList
+                  idBase={`refinement-${refinement.id}-validation`}
+                  ariaLabel="Refinement validation"
+                  items={validationTabs}
+                  value={validationSubTab}
+                  onValueChange={setValidationSubTab}
+                  variant="secondary"
+                />
+
+                {canAccessAmbiguityAssessment && (
+                  <AccessibleTabPanel
+                    idBase={`refinement-${refinement.id}-validation`}
+                    tabId="ambiguity"
+                    value={validationSubTab}
+                    mount="lazy-keep"
                   >
-                    <h3 className="flex items-center gap-1.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
-                      <Shield size={15} /> Ambiguity assessment and gate
-                    </h3>
-                    {canReadQuality ? (
+                    {requiresAmbiguityGate ? (
+                      <section
+                        className="space-y-4"
+                        data-testid="refinement-ambiguity-gate-panel"
+                      >
+                        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
+                          <Shield size={15} /> Ambiguity assessment and gate
+                        </h3>
+                        {canReadQuality ? (
+                          <QualityPanel
+                            key={`${refinement.id}:${refinement.version}:${refinement.skip_ambiguity_gate ?? false}`}
+                            subjectType="refinement"
+                            subjectId={refinementId}
+                            subjectVersion={refinement.version}
+                            subjectStatus={refinement.status}
+                            subjectArchived={refinement.archived ?? false}
+                            canRead={canReadQuality}
+                            canAssess={canAssessQuality}
+                            canProposeQuestions={canProposeQualityQuestions}
+                            onAssessmentRecorded={() => {
+                              void loadRefinement();
+                              onChanged();
+                            }}
+                          />
+                        ) : (
+                          <p
+                            className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
+                            data-testid="refinement-ambiguity-currentness-note"
+                          >
+                            The assessment and server gate preview are omitted because Quality read permission is not available.
+                          </p>
+                        )}
+                        <AmbiguityGateSkipToggle
+                          subjectLabel="refinement"
+                          checked={refinement.skip_ambiguity_gate ?? false}
+                          disabled={savingAmbiguitySkip}
+                          onCheckedChange={(checked) => {
+                            void handleToggleAmbiguitySkip(checked);
+                          }}
+                        />
+                      </section>
+                    ) : canReadQuality ? (
                       <QualityPanel
-                        key={`${refinement.id}:${refinement.version}:${refinement.skip_ambiguity_gate ?? false}`}
                         subjectType="refinement"
                         subjectId={refinementId}
                         subjectVersion={refinement.version}
@@ -1333,39 +1530,36 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                           onChanged();
                         }}
                       />
-                    ) : (
-                      <p
-                        className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
-                        data-testid="refinement-ambiguity-currentness-note"
-                      >
-                        The assessment and server gate preview are omitted because Quality read permission is not available.
-                      </p>
-                    )}
-                    <AmbiguityGateSkipToggle
-                      subjectLabel="refinement"
-                      checked={refinement.skip_ambiguity_gate ?? false}
-                      disabled={savingAmbiguitySkip}
-                      onCheckedChange={(checked) => {
-                        void handleToggleAmbiguitySkip(checked);
+                    ) : null}
+                  </AccessibleTabPanel>
+                )}
+
+                {canReadPolicyCompliance && (
+                  <AccessibleTabPanel
+                    idBase={`refinement-${refinement.id}-validation`}
+                    tabId="policy-compliance"
+                    value={validationSubTab}
+                    mount="lazy-keep"
+                    className="space-y-4"
+                  >
+                    <PolicyComplianceTransitionPreview
+                      preview={policyTransitionPreview}
+                      rejection={policyTransitionRejection}
+                    />
+                    <PolicyCompliancePanel
+                      boardId={refinement.board_id || _boardId}
+                      entityType="refinement"
+                      subjectId={refinement.id}
+                      refreshKey={refinement.version}
+                      onEvaluated={() => {
+                        void loadAllowedTransitions(refinement);
+                      }}
+                      onRefreshed={() => {
+                        void loadAllowedTransitions(refinement);
                       }}
                     />
-                  </section>
-                ) : canReadQuality ? (
-                  <QualityPanel
-                    subjectType="refinement"
-                    subjectId={refinementId}
-                    subjectVersion={refinement.version}
-                    subjectStatus={refinement.status}
-                    subjectArchived={refinement.archived ?? false}
-                    canRead={canReadQuality}
-                    canAssess={canAssessQuality}
-                    canProposeQuestions={canProposeQualityQuestions}
-                    onAssessmentRecorded={() => {
-                      void loadRefinement();
-                      onChanged();
-                    }}
-                  />
-                ) : null}
+                  </AccessibleTabPanel>
+                )}
               </div>
             </AccessibleTabPanel>
           )}

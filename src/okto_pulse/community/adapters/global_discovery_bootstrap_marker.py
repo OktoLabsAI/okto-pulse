@@ -22,7 +22,6 @@ second persistence protocol.  Content is intentionally bounded to
 from __future__ import annotations
 
 import logging
-import os
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path

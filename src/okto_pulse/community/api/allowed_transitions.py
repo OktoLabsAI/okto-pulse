@@ -22,6 +22,23 @@ from okto_pulse.core.repositories import PulseUnitOfWork
 router = APIRouter()
 
 
+class AllowedTransitionPolicyComplianceDecisionResponse(BaseModel):
+    state: str
+    allowed: bool | None
+    policy_compliance_required: bool
+    reason_codes: list[str] = []
+    decision_digest: str | None = None
+    fence_digest: str | None = None
+    receipt_id: str | None = None
+    currentness: str | None = None
+    currentness_reasons: list[str] = []
+    applicable_rule_count: int | None = None
+    applicable_blocking_rule_count: int | None = None
+    blocking_rule_count: int | None = None
+    waived_rule_count: int | None = None
+    advisory_issue_count: int | None = None
+
+
 class AllowedTransitionResponse(BaseModel):
     to_status: str
     label: str
@@ -31,6 +48,10 @@ class AllowedTransitionResponse(BaseModel):
     capabilities: list[str] = []
     effects: list[str] = []
     reason_codes: list[str] = []
+    policy_compliance: bool = False
+    policy_compliance_decision: (
+        AllowedTransitionPolicyComplianceDecisionResponse | None
+    ) = None
 
 
 class AllowedTransitionsResponse(BaseModel):

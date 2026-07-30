@@ -2,6 +2,8 @@
  * Type definitions for the Dashboard application
  */
 
+import type { PolicyComplianceTransitionDecision } from './policy-governance';
+
 // Card status enum matching backend
 export type CardStatus =
   | 'not_started'
@@ -122,17 +124,26 @@ export interface LineageGraphResponse {
   warnings: string[];
 }
 
-export type AllowedTransitionEntityType = 'story' | 'ideation' | 'refinement' | 'spec' | 'card' | 'sprint';
+export type AllowedTransitionEntityType =
+  | 'story'
+  | 'ideation'
+  | 'refinement'
+  | 'spec'
+  | 'card'
+  | 'sprint'
+  | 'test_scenario';
 
 export interface AllowedTransition {
   to_status: string;
   label: string;
   gate: string;
-  blocked_reason?: string | null;
-  preconditions?: string[];
-  capabilities?: string[];
-  effects?: string[];
-  reason_codes?: string[];
+  blocked_reason: string | null;
+  preconditions: string[];
+  capabilities: string[];
+  effects: string[];
+  reason_codes: string[];
+  policy_compliance: boolean;
+  policy_compliance_decision: PolicyComplianceTransitionDecision | null;
 }
 
 export interface AllowedTransitionsResponse {
@@ -1292,6 +1303,27 @@ export interface TestScenario {
   created_at?: string;
   evidence?: TestScenarioEvidence | null;
   latest_evidence?: TestScenarioEvidence | null;
+}
+
+export interface TestScenarioStatusUpdateRequest {
+  status: TestScenarioStatus;
+  evidence?: TestScenarioEvidence | null;
+}
+
+export interface TestScenarioStatusUpdateResponse {
+  id: string;
+  scenario: {
+    id: string;
+    status: TestScenarioStatus;
+  };
+  result: {
+    scenario_id: string;
+    old_status: TestScenarioStatus;
+    new_status: TestScenarioStatus;
+    evidence_provided: boolean;
+    evidence_gate_skipped: boolean;
+    evidence_verification_status?: string;
+  };
 }
 
 export type TestScenarioWrite = Omit<TestScenario, 'scenario_type'> & {
@@ -2483,6 +2515,10 @@ export interface Guideline {
   board_id: string | null;
   owner_id: string;
   version?: number;
+  semantic_version?: string;
+  revision_id?: string;
+  revision_digest?: string;
+  context_scope?: 'all';
   created_at: string;
   updated_at: string;
 }
@@ -2492,6 +2528,15 @@ export interface BoardGuidelineEntry {
   guideline: Guideline;
   priority: number;
   scope: GuidelineScope;
+  binding_id?: string;
+  binding_revision?: number;
+  /**
+   * Exact policy-binding fields. Optional only for backwards-compatible
+   * deserialization; policy mutation UIs must fail closed when they are absent.
+   */
+  default_enforcement?: 'advisory' | 'blocking';
+  binding_state?: 'active' | 'unlinked';
+  source_kind?: 'native' | 'default_materialization';
 }
 
 export interface Board {
@@ -2747,9 +2792,17 @@ export interface AssociateAmendmentArtifactsRequest {
 
 // ==================== DEFAULT BOARD CONFIGURATION (spec 9df814bc) ============
 
-export interface DefaultBoardConfigGuidelineRef {
+export interface DefaultGuidelineRevisionPin {
+  revision_id: string;
+  revision_number: number;
+  semantic_version: string;
+  revision_digest: string;
+}
+
+export interface DefaultBoardConfigGuidelineRef
+  extends DefaultGuidelineRevisionPin {
   guideline_id: string;
-  priority?: number;
+  priority: number;
 }
 
 export interface DefaultBoardConfigDesignSystemRef {
@@ -2824,8 +2877,16 @@ export interface DefaultGuidelineCandidate {
   guideline_id: string;
   title: string;
   scope: string;
-  guideline_version: number | null;
+  guideline_version: number;
+  revision_id: string;
+  revision_number: number;
+  semantic_version: string;
+  revision_digest: string;
+  head_revision: DefaultGuidelineRevisionPin;
+  default_revision: DefaultGuidelineRevisionPin | null;
+  retired: boolean;
   eligible: boolean;
+  eligibility_reason: 'guideline_retired' | null;
   is_default: boolean;
   priority: number | null;
 }
@@ -2836,6 +2897,8 @@ export interface DefaultGuidelineCandidatesResponse {
   template_version: number | null;
   candidates: DefaultGuidelineCandidate[];
 }
+
+export type * from './policy-governance';
 
 // Design System catalog (spec 3a006f65 / card 1392f59d)
 export interface DesignSystem {

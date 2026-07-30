@@ -944,11 +944,15 @@ Guidelines are reusable documents that define standards, patterns, and conventio
 
 ### Creating guidelines
 
-Open **Guidelines** from the menu. You'll see two tabs:
-1. **Board Guidelines** — Review current board guidelines and create inline guidelines
-2. **Global Catalog** — Create, edit, link, and unlink global guidelines for the current board
+Open **Guidelines** from the menu. The tabs you can see depend on your capabilities:
 
-Guidelines support **Markdown** with Mermaid diagrams, tags, and version tracking (global only).
+1. **Board Guidelines** — Review current board guidelines and create inline guidelines
+2. **Global Catalog** — Create immutable revisions, preview impact, and explicitly adopt or unlink exact revisions
+3. **Waivers** — Request and review governed exceptions when your role permits it
+
+Guideline prose supports **Markdown**, Mermaid diagrams, and tags. Both global
+and inline guidelines have immutable revision history; publishing a new
+revision never silently changes a board or a Global Default.
 
 ### Use cases
 
@@ -957,6 +961,117 @@ Guidelines support **Markdown** with Mermaid diagrams, tags, and version trackin
 - Review checklists
 - Onboarding documentation
 - Decision records
+
+For executable rules, revision adoption, compliance receipts, waivers and
+permissions, read **Policy Governance** in this Help guide.
+`,
+    },
+    {
+      id: 'policy-governance',
+      title: 'Policy Governance',
+      icon: <Shield size={16} />,
+      content: `
+## Policy Governance — Versioned rules with auditable enforcement
+
+Policy Governance adds deterministic, executable rules to ordinary guideline
+context without turning every guideline into a gate. Prose remains useful
+assistant context. Only a structured \`policy/v1\` rule with explicit target
+entity types is executable.
+
+### Revisions and semantic versions
+
+Published guideline revisions are immutable. Editing creates a successor and
+the system calculates the minimum semantic-version bump:
+
+- **Patch** — compatible wording or metadata correction
+- **Minor** — compatible advisory expansion
+- **Major** — a rule, target, predicate, blocking behavior, or waiver policy
+  changes incompatibly
+
+An under-bump is rejected before a revision is created. Use **Retire** or
+**Supersede** instead of deleting governed history.
+
+### Exact pins, impact and adoption
+
+Boards and Global Defaults pin an exact revision. A newer head is visible as an
+update, but is never adopted automatically.
+
+1. Preview impact for the intended revision, priority and enforcement.
+2. Inspect affected boards, subjects, targets and waivers.
+3. Adopt with the current receipt and binding revision.
+4. If authority changed, refresh and review a new preview.
+
+Unlinking stops future application while preserving revision, binding,
+Activity and KG lineage. Import uses a dry-run before commit and never
+overwrites a different revision with the same identity and version.
+
+### Policy Compliance
+
+Evaluation is deterministic and records an immutable receipt plus pinpoint
+findings. The visible result is one of:
+
+| State | Meaning |
+|-------|---------|
+| **Ready** | Applicable rules passed, or only advisory findings remain |
+| **Blocked** | A current blocking finding prevents a supported transition |
+| **Ready with waivers** | Blocking findings are covered by effective waivers |
+| **Not applicable** | No adopted executable rule targets this subject |
+
+A receipt is current only while the subject version, adopted policy set,
+catalog/ruleset version and binding head still match. Stale history remains
+auditable but never authorizes a transition. Fix the subject or policy and
+evaluate again.
+
+Advisory findings never block. Blocking rules compose with the existing
+entity gate at supported completion transitions; they do not create another
+state machine or replace ambiguity, Resources, checklist, validation,
+evaluation, test or cognitive gates. Policy Compliance is not a Quality score.
+
+### Governed waivers
+
+A waiver belongs to one exact, waivable finding. A request requires a
+justification, evidence and future expiry. An authorized reviewer who is
+independent from the requester may approve or reject it; revalidation also
+requires that separation.
+
+**Approved** does not always mean **effective**. The waiver must still be
+unexpired and match current subject, guideline revision and rule evidence.
+Expiry, revocation or source drift removes its effect. Protected rule classes
+cannot be waived.
+
+### Lists and evidence
+
+Policy lists use opaque keyset cursors. Keep filters and projection unchanged
+between pages, pass the cursor back without decoding it, and keep the same
+waiver snapshot time. **Summary** is for browsing; load **Detail** only for the
+bounded evidence you need. Receipt and waiver-event history is append-only.
+
+### Capabilities and fail-closed UI
+
+| Area | Capability group |
+|------|------------------|
+| Revisions | \`guidelines.revisions.*\` |
+| Blocking-rule authoring | \`guidelines.rules.author_blocking\` |
+| Impact and adoption | \`guidelines.impact.preview\`, \`guidelines.adoption.manage\` |
+| Compliance | \`guidelines.compliance.read\`, \`guidelines.compliance.evaluate\` |
+| Waivers | \`guidelines.waiver.*\` |
+
+Menus, tabs and actions remain hidden or disabled until current board authority
+is known. A missing capability, malformed permission response or custom deny
+does not inherit access. Full Control receives all introduced leaves; other
+presets receive only their explicit matrix.
+
+### Recover safely
+
+- **Permission denied** — request the exact capability; unchanged retry is not recovery.
+- **Invalid cursor** — restart from the first page with a new snapshot.
+- **Conflict** — refresh the exact revision, receipt or waiver head and review again; do not auto-replay.
+- **Under-bump** — choose at least the minimum version returned by the server.
+- **Unavailable evaluation** — blocking policy fails closed; report or retry without changing the intent.
+
+AI agents should read the single canonical MCP protocol
+\`okto-pulse://reference/policy-compliance\` before authoring, adoption,
+evaluation, transition reliance or waiver operations.
 `,
     },
     {
@@ -1548,7 +1663,7 @@ Both appear in the sidebar for quick switching.
 }
 
 export function HelpPanel({ onClose, initialSectionId }: HelpPanelProps) {
-  useEscapeToClose(onClose);
+  useEscapeToClose(onClose, { priority: 200 });
   const dialogRef = useRef<HTMLDivElement>(null);
   const sections = getSections();
   const [activeSection, setActiveSection] = useState(() => (
@@ -1570,12 +1685,35 @@ export function HelpPanel({ onClose, initialSectionId }: HelpPanelProps) {
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
+    const openerDialog = previouslyFocused?.closest<HTMLElement>(
+      '[role="dialog"]',
+    ) ?? null;
+    const openerAriaModal = openerDialog?.getAttribute('aria-modal') ?? null;
+    const openerAriaHidden = openerDialog?.getAttribute('aria-hidden') ?? null;
+    if (openerDialog && openerDialog !== dialogRef.current) {
+      openerDialog.removeAttribute('aria-modal');
+      openerDialog.setAttribute('aria-hidden', 'true');
+    }
     dialogRef.current?.focus();
-    return () => previouslyFocused?.focus();
+    return () => {
+      if (openerDialog && openerDialog !== dialogRef.current) {
+        if (openerAriaModal === null) {
+          openerDialog.removeAttribute('aria-modal');
+        } else {
+          openerDialog.setAttribute('aria-modal', openerAriaModal);
+        }
+        if (openerAriaHidden === null) {
+          openerDialog.removeAttribute('aria-hidden');
+        } else {
+          openerDialog.setAttribute('aria-hidden', openerAriaHidden);
+        }
+      }
+      previouslyFocused?.focus();
+    };
   }, []);
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={onClose}>
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40" onClick={onClose}>
       <div
         ref={dialogRef}
         role="dialog"

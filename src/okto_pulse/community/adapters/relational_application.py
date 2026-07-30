@@ -664,6 +664,23 @@ class CommunityRelationalApplicationAdapter:
 
         return CommunitySqlAlchemyResearchDecisionLedger(session)
 
+    def guideline_policy(self, session: AsyncSession):
+        """Bind the SK-B policy authority to the caller-owned transaction."""
+
+        from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
+            CommunitySqlAlchemyGuidelinePolicy,
+        )
+        from okto_pulse.community.adapters.sqlalchemy_policy_subject_snapshot import (
+            CommunitySqlAlchemyPolicySubjectSnapshotResolver,
+        )
+
+        return CommunitySqlAlchemyGuidelinePolicy(
+            session,
+            current_snapshot_resolver=(
+                CommunitySqlAlchemyPolicySubjectSnapshotResolver(session)
+            ),
+        )
+
     def amendment_revision_backend(
         self, session: AsyncSession
     ) -> CommunityAmendmentRevisionApiBackend:

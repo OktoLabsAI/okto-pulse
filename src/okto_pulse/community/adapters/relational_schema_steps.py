@@ -90,6 +90,1732 @@ END''',
 COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX = "trg_kg_cognitive_source_immutable"
 
 KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX = "trg_knowledge_propagation_v2"
+GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX = "trg_guideline_policy_immutable"
+GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX = (
+    "trg_guideline_import_binding_candidate"
+)
+GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX = "trg_guideline_revision_noop"
+GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX = "trg_guideline_impact_v1"
+POLICY_COMPLIANCE_IMMUTABILITY_TRIGGER_PREFIX = "trg_policy_compliance_immutable"
+POLICY_WAIVER_TRIGGER_PREFIX = "trg_policy_waiver_v2"
+POLICY_WAIVER_PREDECESSOR_TRIGGER_PREFIX = "trg_policy_waiver_v1"
+
+
+def guideline_revision_noop_trigger_manifest(
+    *,
+    allow_board_erasure: bool = True,
+) -> dict[str, tuple[str, str]]:
+    """SQLite CAS and append-only guards for the revision no-op ledger."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
+        Guideline,
+        GuidelineHeadRow,
+        GuidelineRevisionNoopReplayRow,
+    )
+
+    table_name = GuidelineRevisionNoopReplayRow.__tablename__
+    head_table = GuidelineHeadRow.__tablename__
+    guideline_table = Guideline.__tablename__
+    permit_table = BoardErasurePermit.__tablename__
+    insert_name = f"{GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX}_insert"
+    update_name = f"{GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX}_update"
+    delete_name = f"{GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX}_delete"
+    delete_when = ""
+    if allow_board_erasure:
+        delete_when = f'''
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM "{permit_table}" AS permit
+    JOIN "{guideline_table}" AS guideline
+      ON guideline."board_id" = permit."board_id"
+    WHERE guideline."id" = OLD."guideline_id"
+      AND guideline."scope" = 'inline'
+)'''
+    return {
+        insert_name: (
+            table_name,
+            f'''CREATE TRIGGER "{insert_name}"
+BEFORE INSERT ON "{table_name}"
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_revision_noop_head_conflict')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM "{head_table}" AS head
+        WHERE head."guideline_id" = NEW."guideline_id"
+          AND head."revision_id" = NEW."revision_id"
+          AND head."revision_number" = NEW."revision_number"
+          AND head."semantic_version" = NEW."semantic_version"
+          AND head."head_revision" = NEW."original_head_revision"
+          AND head."updated_at" = NEW."original_head_updated_at"
+    );
+END''',
+        ),
+        update_name: (
+            table_name,
+            f'''CREATE TRIGGER "{update_name}"
+BEFORE UPDATE ON "{table_name}"
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_revision_noop_immutable');
+END''',
+        ),
+        delete_name: (
+            table_name,
+            f'''CREATE TRIGGER "{delete_name}"
+BEFORE DELETE ON "{table_name}"{delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_revision_noop_immutable');
+END''',
+        ),
+    }
+
+
+def guideline_revision_noop_postgresql_ddl() -> tuple[str, str]:
+    """PostgreSQL CAS/immutability function and trigger for the no-op ledger."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
+        Guideline,
+        GuidelineHeadRow,
+        GuidelineRevisionNoopReplayRow,
+    )
+
+    table_name = GuidelineRevisionNoopReplayRow.__tablename__
+    head_table = GuidelineHeadRow.__tablename__
+    guideline_table = Guideline.__tablename__
+    permit_table = BoardErasurePermit.__tablename__
+    function_name = "pulse_guideline_revision_noop_guard"
+    trigger_name = GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX
+    function = f'''CREATE OR REPLACE FUNCTION "{function_name}"()
+RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM "{head_table}" AS head
+            WHERE head."guideline_id" = NEW."guideline_id"
+              AND head."revision_id" = NEW."revision_id"
+              AND head."revision_number" = NEW."revision_number"
+              AND head."semantic_version" = NEW."semantic_version"
+              AND head."head_revision" = NEW."original_head_revision"
+              AND head."updated_at" = NEW."original_head_updated_at"
+        ) THEN
+            RAISE EXCEPTION 'guideline_revision_noop_head_conflict';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' AND EXISTS (
+        SELECT 1
+        FROM "{permit_table}" AS permit
+        JOIN "{guideline_table}" AS guideline
+          ON guideline."board_id" = permit."board_id"
+        WHERE guideline."id" = OLD."guideline_id"
+          AND guideline."scope" = 'inline'
+    ) THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'guideline_revision_noop_immutable';
+END;
+$$ LANGUAGE plpgsql'''
+    trigger = f'''CREATE TRIGGER "{trigger_name}"
+BEFORE INSERT OR UPDATE OR DELETE ON "{table_name}"
+FOR EACH ROW EXECUTE FUNCTION "{function_name}"()'''
+    return function, trigger
+
+
+def guideline_import_binding_candidate_trigger_manifest(
+    *,
+    allow_board_erasure: bool = True,
+) -> dict[str, tuple[str, str]]:
+    """SQLite append-only guards for inert imported binding evidence."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
+        GuidelineImportBindingCandidateRow,
+    )
+
+    table_name = GuidelineImportBindingCandidateRow.__tablename__
+    permit_table = BoardErasurePermit.__tablename__
+    manifest: dict[str, tuple[str, str]] = {}
+    for operation in ("update", "delete"):
+        trigger_name = (
+            f"{GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX}_{operation}"
+        )
+        when = ""
+        if allow_board_erasure and operation == "delete":
+            when = f'''
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM "{permit_table}" AS permit
+    WHERE permit."board_id" = OLD."target_board_id"
+)'''
+        manifest[trigger_name] = (
+            table_name,
+            f'''CREATE TRIGGER "{trigger_name}"
+BEFORE {operation.upper()} ON "{table_name}"{when}
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_import_binding_candidate_immutable');
+END''',
+        )
+    return manifest
+
+
+def guideline_import_binding_candidate_postgresql_ddl() -> tuple[str, str]:
+    """PostgreSQL function/trigger pair matching the SQLite guard."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
+        GuidelineImportBindingCandidateRow,
+    )
+
+    table_name = GuidelineImportBindingCandidateRow.__tablename__
+    permit_table = BoardErasurePermit.__tablename__
+    function_name = "pulse_guideline_import_binding_candidate_guard"
+    trigger_name = GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX
+    function = f'''CREATE OR REPLACE FUNCTION "{function_name}"()
+RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'DELETE' AND EXISTS (
+        SELECT 1
+        FROM "{permit_table}" AS permit
+        WHERE permit."board_id" = OLD."target_board_id"
+    ) THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'guideline_import_binding_candidate_immutable';
+END;
+$$ LANGUAGE plpgsql'''
+    trigger = f'''CREATE TRIGGER "{trigger_name}"
+BEFORE UPDATE OR DELETE ON "{table_name}"
+FOR EACH ROW EXECUTE FUNCTION "{function_name}"()'''
+    return function, trigger
+
+
+def guideline_impact_immutability_trigger_manifest(
+    *,
+    allow_board_erasure: bool = True,
+    include_unlink: bool = True,
+    include_retirement: bool = True,
+    require_retirement_head_match: bool = False,
+    verify_full_adoption_evidence: bool = True,
+    verify_full_unlink_evidence: bool = True,
+    verify_full_retirement_evidence: bool = True,
+    verify_default_materialization: bool = True,
+    protect_materialized_events: bool = True,
+) -> dict[str, tuple[str, str]]:
+    """Exact SQLite guards for sealed B08 preview/adoption evidence.
+
+    The feature flags intentionally describe exact deployed predecessor
+    manifests that may be upgraded in place.  They are not runtime policy
+    switches: callers install the default manifest and use the variants only
+    for exact predecessor recognition.
+    """
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
+        DomainEventHandlerExecution,
+        GuidelineImpactAdoptionRow,
+        GuidelineImpactItemRow,
+        GuidelineImpactReceiptRow,
+        GuidelineImpactUnlinkRow,
+        GuidelineRetirementImpactRow,
+    )
+    from okto_pulse.core.events.types import (
+        PolicyAdoptionChanged,
+        POLICY_BINDING_MATERIALIZED_EVENT_TYPE,
+        PolicyRetirementChanged,
+    )
+
+    permit_table = BoardErasurePermit.__tablename__
+    receipt_table = GuidelineImpactReceiptRow.__tablename__
+    item_table = GuidelineImpactItemRow.__tablename__
+    adoption_table = GuidelineImpactAdoptionRow.__tablename__
+    unlink_table = GuidelineImpactUnlinkRow.__tablename__
+    retirement_impact_table = GuidelineRetirementImpactRow.__tablename__
+    execution_table = DomainEventHandlerExecution.__tablename__
+    manifest: dict[str, tuple[str, str]] = {}
+    unlink_absent = (
+        '\n          AND NEW."impact_unlink_id" IS NULL' if include_unlink else ""
+    )
+    retirement_head_match = (
+        '''
+      AND retirement."retired_revision_id" = NEW."revision_id"
+      AND retirement."retired_revision_number" =
+          NEW."revision_number"
+      AND retirement."retired_semantic_version" =
+          NEW."semantic_version"
+      AND retirement."retired_revision_digest" =
+          NEW."revision_digest"'''
+        if require_retirement_head_match
+        else ""
+    )
+    adoption_full_evidence = (
+        """
+      AND receipt."requires_explicit_adoption" = 1
+      AND binding."impact_unlink_id" IS NULL
+      AND binding."binding_revision" =
+          COALESCE(receipt."expected_binding_revision", 0) + 1
+      AND binding."idempotency_key" = NEW."idempotency_key"
+      AND binding."request_digest" = NEW."request_digest"
+      AND length(NEW."adoption_digest") = 64
+      AND event."actor_type" = activity."actor_type"
+      AND event."actor_type" IN ('agent', 'user', 'system')
+      AND activity."actor_name" = NEW."adopted_by"
+      AND json_type(event."payload_json") = 'object'
+      AND (
+          SELECT COUNT(*)
+          FROM json_each(event."payload_json")
+      ) = 28
+      AND json_extract(
+          event."payload_json", '$.event_schema_version'
+      ) = 'guideline-impact/v1'
+      AND json_extract(event."payload_json", '$.event_id') =
+          NEW."event_id"
+      AND (
+          (
+              receipt."expected_binding_revision" IS NULL
+              AND json_type(
+                  event."payload_json", '$.previous_binding_revision'
+              ) = 'null'
+          )
+          OR json_extract(
+              event."payload_json", '$.previous_binding_revision'
+          ) = receipt."expected_binding_revision"
+      )
+      AND (
+          (
+              receipt."from_revision_id" IS NULL
+              AND json_type(
+                  event."payload_json", '$.from_revision_id'
+              ) = 'null'
+          )
+          OR json_extract(
+              event."payload_json", '$.from_revision_id'
+          ) = receipt."from_revision_id"
+      )
+      AND (
+          (
+              receipt."from_semantic_version" IS NULL
+              AND json_type(
+                  event."payload_json", '$.from_semantic_version'
+              ) = 'null'
+          )
+          OR json_extract(
+              event."payload_json", '$.from_semantic_version'
+          ) = receipt."from_semantic_version"
+      )
+      AND (
+          (
+              receipt."from_revision_digest" IS NULL
+              AND json_type(
+                  event."payload_json", '$.from_revision_digest'
+              ) = 'null'
+          )
+          OR json_extract(
+              event."payload_json", '$.from_revision_digest'
+          ) = receipt."from_revision_digest"
+      )
+      AND json_extract(event."payload_json", '$.to_revision_id') =
+          receipt."to_revision_id"
+      AND json_extract(
+          event."payload_json", '$.to_semantic_version'
+      ) = receipt."to_semantic_version"
+      AND json_extract(
+          event."payload_json", '$.to_revision_digest'
+      ) = receipt."to_revision_digest"
+      AND json_extract(
+          event."payload_json", '$.binding_digest_before'
+      ) = receipt."binding_digest"
+      AND json_extract(
+          event."payload_json", '$.binding_head_digest_before'
+      ) = receipt."binding_head_digest_before"
+      AND json_extract(
+          event."payload_json", '$.binding_head_digest_after'
+      ) = receipt."binding_head_digest_after"
+      AND json_extract(
+          event."payload_json", '$.policy_set_digest'
+      ) = receipt."policy_set_digest_after"
+      AND json(json_extract(
+          event."payload_json", '$.added_rule_ids'
+      )) = json(receipt."added_rule_ids")
+      AND json(json_extract(
+          event."payload_json", '$.changed_rule_ids'
+      )) = json(receipt."changed_rule_ids")
+      AND json(json_extract(
+          event."payload_json", '$.removed_rule_ids'
+      )) = json(receipt."removed_rule_ids")
+      AND json_extract(event."payload_json", '$.actor_id') =
+          NEW."adopted_by"
+      AND json_extract(event."payload_json", '$.actor_type') =
+          event."actor_type"
+      AND julianday(
+          json_extract(event."payload_json", '$.occurred_at')
+      ) = julianday(NEW."adopted_at")"""
+        if verify_full_adoption_evidence
+        else ""
+    )
+    unlink_full_evidence = (
+        """
+      AND length(NEW."unlink_digest") = 64
+      AND event."actor_type" = activity."actor_type"
+      AND event."actor_type" IN ('agent', 'user', 'system')
+      AND activity."actor_name" = NEW."unlinked_by"
+      AND json_type(event."payload_json") = 'object'
+      AND (
+          SELECT COUNT(*)
+          FROM json_each(event."payload_json")
+      ) = 28
+      AND json_extract(
+          event."payload_json", '$.event_schema_version'
+      ) = 'guideline-impact/v1'
+      AND json_extract(event."payload_json", '$.event_id') =
+          NEW."event_id"
+      AND julianday(
+          json_extract(event."payload_json", '$.occurred_at')
+      ) = julianday(NEW."unlinked_at")"""
+        if verify_full_unlink_evidence
+        else ""
+    )
+    retirement_full_evidence = (
+        """
+      AND retirement."request_digest" = NEW."request_digest"
+      AND event."actor_type" = activity."actor_type"
+      AND event."actor_type" IN ('agent', 'user', 'system')
+      AND activity."actor_name" = NEW."retired_by"
+      AND json_type(event."payload_json") = 'object'
+      AND (
+          SELECT COUNT(*)
+          FROM json_each(event."payload_json")
+      ) = 25"""
+        if verify_full_retirement_evidence
+        else ""
+    )
+
+    immutable_receipt_columns = tuple(
+        column.name
+        for column in GuidelineImpactReceiptRow.__table__.columns
+        if column.name != "sealed"
+    )
+    unchanged_receipt = "\n    AND ".join(
+        f'NEW."{column_name}" IS OLD."{column_name}"'
+        for column_name in immutable_receipt_columns
+    )
+    receipt_update_name = (
+        f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{receipt_table}_update"
+    )
+    manifest[receipt_update_name] = (
+        receipt_table,
+        f'''CREATE TRIGGER "{receipt_update_name}"
+BEFORE UPDATE ON "{receipt_table}"
+WHEN NOT (
+    OLD."sealed" = 0
+    AND NEW."sealed" = 1
+    AND {unchanged_receipt}
+    AND NEW."item_count" = (
+        SELECT COUNT(*)
+        FROM "{item_table}" AS item
+        WHERE item."impact_receipt_id" = OLD."impact_receipt_id"
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_impact_evidence_immutable');
+END''',
+    )
+
+    item_insert_name = (
+        f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{item_table}_insert"
+    )
+    manifest[item_insert_name] = (
+        item_table,
+        f'''CREATE TRIGGER "{item_insert_name}"
+BEFORE INSERT ON "{item_table}"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM "{receipt_table}" AS receipt
+    WHERE receipt."impact_receipt_id" = NEW."impact_receipt_id"
+      AND receipt."board_id" = NEW."board_id"
+      AND receipt."guideline_id" = NEW."guideline_id"
+      AND receipt."sealed" = 0
+)
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_impact_evidence_sealed');
+END''',
+    )
+
+    adoption_insert_name = (
+        f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{adoption_table}_insert"
+    )
+    manifest[adoption_insert_name] = (
+        adoption_table,
+        f'''CREATE TRIGGER "{adoption_insert_name}"
+BEFORE INSERT ON "{adoption_table}"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM "{receipt_table}" AS receipt
+    JOIN "guideline_board_bindings" AS binding
+      ON binding."binding_id" = NEW."binding_id"
+     AND binding."binding_revision" = NEW."binding_revision"
+     AND binding."impact_receipt_id" = NEW."impact_receipt_id"
+     AND binding."impact_adoption_id" = NEW."adoption_id"
+     AND binding."board_id" = NEW."board_id"
+     AND binding."guideline_id" = NEW."guideline_id"
+     AND binding."state" = 'active'
+     AND binding."revision_id" = receipt."to_revision_id"
+     AND binding."semantic_version" = receipt."to_semantic_version"
+     AND binding."revision_digest" = receipt."to_revision_digest"
+     AND binding."priority" = receipt."proposed_priority"
+     AND binding."default_enforcement" =
+         receipt."proposed_default_enforcement"
+     AND binding."adopted_by" = NEW."adopted_by"
+     AND binding."adopted_at" = NEW."adopted_at"
+    JOIN "domain_events" AS event
+      ON event."id" = NEW."event_id"
+     AND event."event_type" = 'board.policy_adoption_changed.v1'
+     AND event."board_id" = NEW."board_id"
+     AND event."actor_id" = NEW."adopted_by"
+     AND event."occurred_at" = NEW."adopted_at"
+    JOIN "activity_logs" AS activity
+      ON activity."id" = NEW."activity_id"
+     AND activity."board_id" = NEW."board_id"
+     AND activity."card_id" IS NULL
+     AND activity."action" = 'guideline_revision_adopted'
+     AND activity."actor_id" = NEW."adopted_by"
+     AND activity."actor_type" = event."actor_type"
+     AND activity."created_at" = NEW."adopted_at"
+     AND json(activity."details") = json(event."payload_json")
+    WHERE receipt."impact_receipt_id" = NEW."impact_receipt_id"
+      AND receipt."board_id" = NEW."board_id"
+      AND receipt."guideline_id" = NEW."guideline_id"
+      AND receipt."binding_id" = NEW."binding_id"
+      AND receipt."impact_digest" = NEW."impact_digest"
+      AND receipt."binding_digest" = NEW."binding_digest"
+      AND receipt."expected_binding_revision"
+          IS NEW."expected_binding_revision"
+      AND receipt."sealed" = 1
+      AND json_extract(event."payload_json", '$.operation') = 'adopt'
+      AND json_extract(event."payload_json", '$.board_id') = NEW."board_id"
+      AND json_extract(event."payload_json", '$.guideline_id') =
+          NEW."guideline_id"
+      AND json_extract(event."payload_json", '$.binding_id') =
+          NEW."binding_id"
+      AND json_extract(event."payload_json", '$.binding_revision') =
+          NEW."binding_revision"
+      AND json_extract(event."payload_json", '$.impact_receipt_id') =
+          NEW."impact_receipt_id"
+      AND json_extract(event."payload_json", '$.impact_digest') =
+          NEW."impact_digest"
+      AND json_extract(
+          event."payload_json", '$.policy_set_digest_before'
+      ) = receipt."policy_set_digest_before"
+      AND json_extract(
+          event."payload_json", '$.policy_set_digest_after'
+      ) = receipt."policy_set_digest_after"{adoption_full_evidence}
+)
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_impact_adoption_evidence_invalid');
+END''',
+    )
+
+    if include_unlink:
+        unlink_insert_name = (
+            f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{unlink_table}_insert"
+        )
+        manifest[unlink_insert_name] = (
+            unlink_table,
+            f'''CREATE TRIGGER "{unlink_insert_name}"
+BEFORE INSERT ON "{unlink_table}"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM "guideline_board_bindings" AS binding
+    JOIN "guideline_board_bindings" AS previous
+      ON previous."binding_id" = NEW."binding_id"
+     AND previous."binding_revision" = NEW."previous_binding_revision"
+     AND previous."board_id" = NEW."board_id"
+     AND previous."guideline_id" = NEW."guideline_id"
+     AND previous."state" = 'active'
+    JOIN "domain_events" AS event
+      ON event."id" = NEW."event_id"
+     AND event."event_type" = 'board.policy_adoption_changed.v1'
+     AND event."board_id" = NEW."board_id"
+     AND event."actor_id" = NEW."unlinked_by"
+     AND event."actor_type" = NEW."actor_type"
+     AND event."occurred_at" = NEW."unlinked_at"
+    JOIN "activity_logs" AS activity
+      ON activity."id" = NEW."activity_id"
+     AND activity."board_id" = NEW."board_id"
+     AND activity."card_id" IS NULL
+     AND activity."action" = 'guideline_unlinked'
+     AND activity."actor_id" = NEW."unlinked_by"
+     AND activity."actor_type" = NEW."actor_type"
+     AND activity."created_at" = NEW."unlinked_at"
+     AND json(activity."details") = json(event."payload_json")
+    WHERE binding."binding_id" = NEW."binding_id"
+      AND binding."binding_revision" = NEW."binding_revision"
+      AND binding."board_id" = NEW."board_id"
+      AND binding."guideline_id" = NEW."guideline_id"
+      AND binding."state" = 'unlinked'
+      AND binding."impact_receipt_id" IS NULL
+      AND binding."impact_adoption_id" IS NULL
+      AND binding."impact_unlink_id" = NEW."unlink_id"
+      AND binding."binding_revision" =
+          previous."binding_revision" + 1
+      AND binding."revision_id" = previous."revision_id"
+      AND binding."semantic_version" = previous."semantic_version"
+      AND binding."revision_digest" = previous."revision_digest"
+      AND binding."priority" = previous."priority"
+      AND binding."default_enforcement" =
+          previous."default_enforcement"
+      AND binding."source_kind" = previous."source_kind"
+      AND binding."binding_origin" = previous."binding_origin"
+      AND binding."legacy_source_id" IS previous."legacy_source_id"
+      AND binding."legacy_guideline_version"
+          IS previous."legacy_guideline_version"
+      AND binding."legacy_template_id" IS previous."legacy_template_id"
+      AND binding."legacy_template_version"
+          IS previous."legacy_template_version"
+      AND binding."legacy_version_unresolvable" =
+          previous."legacy_version_unresolvable"
+      AND binding."adopted_by" = NEW."unlinked_by"
+      AND binding."adopted_at" = NEW."unlinked_at"
+      AND binding."idempotency_key" = NEW."idempotency_key"
+      AND binding."request_digest" = NEW."request_digest"
+      AND json_extract(event."payload_json", '$.operation') = 'unlink'
+      AND json_extract(event."payload_json", '$.board_id') =
+          NEW."board_id"
+      AND json_extract(event."payload_json", '$.guideline_id') =
+          NEW."guideline_id"
+      AND json_extract(event."payload_json", '$.binding_id') =
+          NEW."binding_id"
+      AND json_extract(
+          event."payload_json", '$.previous_binding_revision'
+      ) = NEW."previous_binding_revision"
+      AND json_extract(event."payload_json", '$.binding_revision') =
+          NEW."binding_revision"
+      AND json_extract(event."payload_json", '$.from_revision_id') =
+          previous."revision_id"
+      AND json_extract(
+          event."payload_json", '$.from_semantic_version'
+      ) = previous."semantic_version"
+      AND json_extract(event."payload_json", '$.from_revision_digest') =
+          previous."revision_digest"
+      AND json_type(event."payload_json", '$.to_revision_id') = 'null'
+      AND json_type(
+          event."payload_json", '$.to_semantic_version'
+      ) = 'null'
+      AND json_type(
+          event."payload_json", '$.to_revision_digest'
+      ) = 'null'
+      AND json_type(
+          event."payload_json", '$.impact_receipt_id'
+      ) = 'null'
+      AND json_type(event."payload_json", '$.impact_digest') = 'null'
+      AND json_extract(
+          event."payload_json", '$.binding_digest_before'
+      ) = NEW."binding_digest_before"
+      AND json_extract(
+          event."payload_json", '$.binding_head_digest_before'
+      ) = NEW."binding_head_digest_before"
+      AND json_extract(
+          event."payload_json", '$.binding_head_digest_after'
+      ) = NEW."binding_head_digest_after"
+      AND json_extract(
+          event."payload_json", '$.policy_set_digest_before'
+      ) = NEW."policy_set_digest_before"
+      AND json_extract(
+          event."payload_json", '$.policy_set_digest_after'
+      ) = NEW."policy_set_digest_after"
+      AND json_extract(
+          event."payload_json", '$.policy_set_digest'
+      ) = NEW."policy_set_digest_after"
+      AND json(json_extract(
+          event."payload_json", '$.added_rule_ids'
+      )) =
+          json('[]')
+      AND json(json_extract(
+          event."payload_json", '$.changed_rule_ids'
+      )) =
+          json('[]')
+      AND json(json_extract(
+          event."payload_json", '$.removed_rule_ids'
+      )) =
+          json(NEW."removed_rule_ids")
+      AND json_extract(event."payload_json", '$.actor_id') =
+          NEW."unlinked_by"
+      AND json_extract(event."payload_json", '$.actor_type') =
+          NEW."actor_type"{unlink_full_evidence}
+)
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_impact_unlink_evidence_invalid');
+END''',
+        )
+
+    if include_retirement:
+        retirement_insert_name = (
+            f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_"
+            f"{retirement_impact_table}_insert"
+        )
+        manifest[retirement_insert_name] = (
+            retirement_impact_table,
+            f'''CREATE TRIGGER "{retirement_insert_name}"
+BEFORE INSERT ON "{retirement_impact_table}"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM "guideline_retirements" AS retirement
+    JOIN "guideline_board_bindings" AS binding
+      ON binding."binding_id" = NEW."binding_id"
+     AND binding."binding_revision" = NEW."binding_revision"
+     AND binding."board_id" = NEW."board_id"
+     AND binding."guideline_id" = NEW."guideline_id"
+     AND binding."state" = 'active'
+     AND binding."revision_id" = NEW."revision_id"
+     AND binding."semantic_version" = NEW."semantic_version"
+     AND binding."revision_digest" = NEW."revision_digest"
+    JOIN "domain_events" AS event
+      ON event."id" = NEW."event_id"
+     AND event."event_type" = 'board.policy_retirement_changed.v1'
+     AND event."board_id" = NEW."board_id"
+     AND event."actor_id" = NEW."retired_by"
+     AND event."actor_type" = NEW."actor_type"
+     AND event."occurred_at" = NEW."retired_at"
+    JOIN "activity_logs" AS activity
+      ON activity."id" = NEW."activity_id"
+     AND activity."board_id" = NEW."board_id"
+     AND activity."card_id" IS NULL
+     AND activity."action" = 'guideline_retired'
+     AND activity."actor_id" = NEW."retired_by"
+     AND activity."actor_type" = NEW."actor_type"
+     AND activity."created_at" = NEW."retired_at"
+     AND json(activity."details") = json(event."payload_json")
+    WHERE retirement."retirement_id" = NEW."retirement_id"
+      AND retirement."guideline_id" = NEW."guideline_id"
+      AND retirement."status" = NEW."retirement_status"
+      AND retirement."superseded_by_guideline_id"
+          IS NEW."superseded_by_guideline_id"{retirement_head_match}
+      AND retirement."retired_by" = NEW."retired_by"
+      AND retirement."retired_at" = NEW."retired_at"
+      AND NOT EXISTS (
+          SELECT 1
+          FROM "guideline_board_bindings" AS later
+          WHERE later."board_id" = binding."board_id"
+            AND later."guideline_id" = binding."guideline_id"
+            AND later."binding_revision" > binding."binding_revision"
+      )
+      AND json_extract(
+          event."payload_json", '$.event_schema_version'
+      ) = 'guideline-impact/v1'
+      AND json_extract(event."payload_json", '$.event_id') =
+          NEW."event_id"
+      AND json_extract(event."payload_json", '$.operation') = 'retire'
+      AND json_extract(event."payload_json", '$.board_id') =
+          NEW."board_id"
+      AND json_extract(event."payload_json", '$.guideline_id') =
+          NEW."guideline_id"
+      AND json_extract(event."payload_json", '$.retirement_id') =
+          NEW."retirement_id"
+      AND json_extract(
+          event."payload_json", '$.retirement_status'
+      ) = NEW."retirement_status"
+      AND (
+          (
+              NEW."superseded_by_guideline_id" IS NULL
+              AND json_type(
+                  event."payload_json", '$.superseded_by_guideline_id'
+              ) = 'null'
+          )
+          OR json_extract(
+              event."payload_json", '$.superseded_by_guideline_id'
+          ) = NEW."superseded_by_guideline_id"
+      )
+      AND json_extract(event."payload_json", '$.binding_id') =
+          NEW."binding_id"
+      AND json_extract(event."payload_json", '$.binding_revision') =
+          NEW."binding_revision"
+      AND json_extract(event."payload_json", '$.revision_id') =
+          NEW."revision_id"
+      AND json_extract(event."payload_json", '$.revision_number') =
+          NEW."revision_number"
+      AND json_extract(event."payload_json", '$.semantic_version') =
+          NEW."semantic_version"
+      AND json_extract(event."payload_json", '$.revision_digest') =
+          NEW."revision_digest"
+      AND json_extract(
+          event."payload_json", '$.binding_digest_before'
+      ) = NEW."binding_digest_before"
+      AND json_extract(
+          event."payload_json", '$.binding_head_digest_before'
+      ) = NEW."binding_head_digest_before"
+      AND json_extract(
+          event."payload_json", '$.binding_head_digest_after'
+      ) = NEW."binding_head_digest_after"
+      AND json_extract(
+          event."payload_json", '$.policy_set_digest_before'
+      ) = NEW."policy_set_digest_before"
+      AND json_extract(
+          event."payload_json", '$.policy_set_digest_after'
+      ) = NEW."policy_set_digest_after"
+      AND json_extract(
+          event."payload_json", '$.policy_set_digest'
+      ) = NEW."policy_set_digest_after"
+      AND json(json_extract(
+          event."payload_json", '$.removed_rule_ids'
+      )) = json(NEW."removed_rule_ids")
+      AND json_extract(event."payload_json", '$.actor_id') =
+          NEW."retired_by"
+      AND json_extract(event."payload_json", '$.actor_type') =
+          NEW."actor_type"
+      AND julianday(
+          json_extract(event."payload_json", '$.occurred_at')
+      ) = julianday(NEW."retired_at")
+      AND json_extract(event."payload_json", '$.request_digest') =
+          NEW."request_digest"{retirement_full_evidence}
+)
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'guideline_retirement_impact_evidence_invalid'
+    );
+END''',
+        )
+
+    default_materialization_proof = (
+        """
+          AND EXISTS (
+              SELECT 1
+              FROM "boards" AS board
+              JOIN "default_board_configurations" AS template
+                ON template."id" = json_extract(
+                    board."default_config_snapshot", '$.template_id'
+                )
+               AND template."version" = json_extract(
+                    board."default_config_snapshot", '$.template_version'
+                )
+              JOIN json_each(template."guideline_default_refs") AS ref
+              WHERE board."id" = NEW."board_id"
+                AND NEW."legacy_template_id" = template."id"
+                AND NEW."legacy_template_version" =
+                    template."version"
+                AND json_extract(ref."value", '$.guideline_id') =
+                    NEW."guideline_id"
+                AND json_extract(ref."value", '$.revision_id') =
+                    NEW."revision_id"
+                AND json_extract(ref."value", '$.semantic_version') =
+                    NEW."semantic_version"
+                AND json_extract(ref."value", '$.revision_digest') =
+                    NEW."revision_digest"
+                AND json_extract(ref."value", '$.priority') =
+                    NEW."priority"
+                AND json_extract(ref."value", '$.revision_number') =
+                    NEW."legacy_guideline_version"
+          )"""
+        if verify_default_materialization
+        else ""
+    )
+    binding_scope = (
+        """(
+      NEW."state" = 'active'
+      AND EXISTS (
+          SELECT 1
+          FROM "guidelines" AS guideline
+          WHERE guideline."id" = NEW."guideline_id"
+            AND guideline."scope" = 'global'
+            AND guideline."board_id" IS NULL
+      )
+  )
+  OR NEW."state" = 'unlinked'"""
+        if include_unlink
+        else """NEW."state" = 'active'
+  AND EXISTS (
+      SELECT 1
+      FROM "guidelines" AS guideline
+      WHERE guideline."id" = NEW."guideline_id"
+        AND guideline."scope" = 'global'
+        AND guideline."board_id" IS NULL
+  )"""
+    )
+    unlink_binding_branch = (
+        """
+      OR (
+          NEW."state" = 'unlinked'
+          AND NEW."impact_receipt_id" IS NULL
+          AND NEW."impact_adoption_id" IS NULL
+          AND NEW."impact_unlink_id" IS NOT NULL
+          AND NEW."binding_revision" > 1
+          AND EXISTS (
+              SELECT 1
+              FROM "guideline_board_bindings" AS previous
+              WHERE previous."binding_id" = NEW."binding_id"
+                AND previous."binding_revision" =
+                    NEW."binding_revision" - 1
+                AND previous."board_id" = NEW."board_id"
+                AND previous."guideline_id" = NEW."guideline_id"
+                AND previous."state" = 'active'
+                AND previous."revision_id" = NEW."revision_id"
+                AND previous."semantic_version" =
+                    NEW."semantic_version"
+                AND previous."revision_digest" =
+                    NEW."revision_digest"
+                AND previous."priority" = NEW."priority"
+                AND previous."default_enforcement" =
+                    NEW."default_enforcement"
+                AND previous."source_kind" = NEW."source_kind"
+                AND previous."binding_origin" = NEW."binding_origin"
+                AND previous."legacy_source_id" IS
+                    NEW."legacy_source_id"
+                AND previous."legacy_guideline_version" IS
+                    NEW."legacy_guideline_version"
+                AND previous."legacy_template_id" IS
+                    NEW."legacy_template_id"
+                AND previous."legacy_template_version" IS
+                    NEW."legacy_template_version"
+                AND previous."legacy_version_unresolvable" =
+                    NEW."legacy_version_unresolvable"
+          )
+      )"""
+        if include_unlink
+        else ""
+    )
+
+    binding_insert_name = (
+        f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_binding_insert"
+    )
+    manifest[binding_insert_name] = (
+        "guideline_board_bindings",
+        f'''CREATE TRIGGER "{binding_insert_name}"
+BEFORE INSERT ON "guideline_board_bindings"
+WHEN ({binding_scope})
+  AND NOT (
+      (
+          NEW."state" = 'active'
+          AND NEW."binding_origin" = 'default_materialization'
+          AND NEW."binding_revision" = 1
+          AND NEW."impact_receipt_id" IS NULL
+          AND NEW."impact_adoption_id" IS NULL
+          {unlink_absent}
+          AND NEW."default_enforcement" = 'advisory'
+          AND NEW."legacy_version_unresolvable" = 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM "guideline_board_bindings" AS previous
+              WHERE previous."board_id" = NEW."board_id"
+                AND previous."guideline_id" = NEW."guideline_id"
+          )
+          {default_materialization_proof}
+      )
+      OR (
+          NEW."state" = 'active'
+          AND NEW."impact_adoption_id" IS NOT NULL
+          {unlink_absent}
+          AND EXISTS (
+              SELECT 1
+              FROM "{receipt_table}" AS receipt
+              WHERE receipt."impact_receipt_id" = NEW."impact_receipt_id"
+                AND receipt."board_id" = NEW."board_id"
+                AND receipt."guideline_id" = NEW."guideline_id"
+                AND receipt."binding_id" = NEW."binding_id"
+                AND NEW."impact_adoption_id" IS NOT NULL
+                AND receipt."to_revision_id" = NEW."revision_id"
+                AND receipt."to_semantic_version" =
+                    NEW."semantic_version"
+                AND receipt."to_revision_digest" =
+                    NEW."revision_digest"
+                AND receipt."proposed_priority" = NEW."priority"
+                AND receipt."proposed_default_enforcement" =
+                    NEW."default_enforcement"
+                AND receipt."sealed" = 1
+                AND (
+                    (
+                        NEW."binding_revision" = 1
+                        AND receipt."expected_binding_revision" IS NULL
+                        AND receipt."expected_binding_state" IS NULL
+                    )
+                    OR (
+                        NEW."binding_revision" > 1
+                        AND receipt."expected_binding_revision" =
+                            NEW."binding_revision" - 1
+                        AND EXISTS (
+                            SELECT 1
+                            FROM "guideline_board_bindings" AS previous
+                            WHERE previous."binding_id" = NEW."binding_id"
+                              AND previous."binding_revision" =
+                                  NEW."binding_revision" - 1
+                              AND previous."board_id" = NEW."board_id"
+                              AND previous."guideline_id" =
+                                  NEW."guideline_id"
+                              AND previous."revision_id" =
+                                  receipt."from_revision_id"
+                              AND previous."semantic_version" =
+                                  receipt."from_semantic_version"
+                              AND previous."revision_digest" =
+                                  receipt."from_revision_digest"
+                              AND previous."state" =
+                                  receipt."expected_binding_state"
+                       )
+                   )
+           )
+       )
+      )
+      {unlink_binding_branch}
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_impact_preview_required');
+END''',
+    )
+
+    immutable_tables = [receipt_table, item_table, adoption_table]
+    if include_unlink:
+        immutable_tables.append(unlink_table)
+    if include_retirement:
+        immutable_tables.append(retirement_impact_table)
+    for table_name in immutable_tables:
+        for operation in ("update", "delete"):
+            if table_name == receipt_table and operation == "update":
+                continue
+            trigger_name = (
+                f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_"
+                f"{table_name}_{operation}"
+            )
+            when = ""
+            if allow_board_erasure and operation == "delete":
+                if table_name in {
+                    receipt_table,
+                    adoption_table,
+                    unlink_table,
+                    retirement_impact_table,
+                }:
+                    allowed = (
+                        "SELECT 1 "
+                        f'FROM "{permit_table}" AS permit '
+                        "WHERE permit.board_id = OLD.board_id"
+                    )
+                else:
+                    allowed = (
+                        "SELECT 1 "
+                        f'FROM "{permit_table}" AS permit '
+                        f'JOIN "{receipt_table}" AS receipt '
+                        "ON receipt.board_id = permit.board_id "
+                        "WHERE receipt.impact_receipt_id = "
+                        "OLD.impact_receipt_id"
+                    )
+                when = f"\nWHEN NOT EXISTS (\n    {allowed}\n)"
+            manifest[trigger_name] = (
+                table_name,
+                f'''CREATE TRIGGER "{trigger_name}"
+BEFORE {operation.upper()} ON "{table_name}"{when}
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_impact_evidence_immutable');
+END''',
+            )
+    for table_name, id_column in (
+        ("domain_events", "event_id"),
+        ("activity_logs", "activity_id"),
+    ):
+        for operation in ("update", "delete"):
+            trigger_name = (
+                f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_"
+                f"{table_name}_{operation}"
+            )
+            referenced = (
+                "EXISTS (\n"
+                f'    SELECT 1 FROM "{adoption_table}" AS adoption\n'
+                f'    WHERE adoption."{id_column}" = OLD."id"\n'
+                + (
+                    "    UNION ALL\n"
+                    f'    SELECT 1 FROM "{unlink_table}" AS unlink\n'
+                    f'    WHERE unlink."{id_column}" = OLD."id"\n'
+                    if include_unlink
+                    else ""
+                )
+                + (
+                    "    UNION ALL\n"
+                    f'    SELECT 1 FROM "{retirement_impact_table}" '
+                    "AS retirement\n"
+                    f'    WHERE retirement."{id_column}" = OLD."id"\n'
+                    if include_retirement
+                    else ""
+                )
+                + ")"
+            )
+            if table_name == "domain_events" and protect_materialized_events:
+                referenced = (
+                    f"({referenced} OR OLD.\"event_type\" = "
+                    f"'{POLICY_BINDING_MATERIALIZED_EVENT_TYPE}')"
+                )
+            if allow_board_erasure and operation == "delete":
+                referenced = (
+                    f"({referenced}) AND NOT EXISTS (\n"
+                    f'    SELECT 1 FROM "{permit_table}" AS permit\n'
+                    '    WHERE permit."board_id" = OLD."board_id"\n'
+                    ")"
+                )
+            when = f"\nWHEN {referenced}"
+            manifest[trigger_name] = (
+                table_name,
+                f'''CREATE TRIGGER "{trigger_name}"
+BEFORE {operation.upper()} ON "{table_name}"{when}
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_impact_audit_evidence_immutable');
+END''',
+            )
+    execution_trigger_name = (
+        f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_"
+        f"{execution_table}_policy_constraint_insert"
+    )
+    manifest[execution_trigger_name] = (
+        execution_table,
+        f'''CREATE TRIGGER "{execution_trigger_name}"
+BEFORE INSERT ON "{execution_table}"
+WHEN NEW."handler_name" = 'PolicyConstraintProjectionHandler'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM "domain_events" AS event
+      WHERE event."id" = NEW."event_id"
+        AND json_type(event."payload_json") = 'object'
+        AND (
+            (
+                event."event_type" = '{PolicyAdoptionChanged.event_type}'
+                AND json_extract(
+                    event."payload_json", '$.event_schema_version'
+                ) = 'guideline-impact/v1'
+                AND json_extract(event."payload_json", '$.operation')
+                    IN ('adopt', 'unlink')
+                AND json_type(
+                    event."payload_json", '$.guideline_id'
+                ) = 'text'
+            )
+            OR (
+                event."event_type" = '{PolicyRetirementChanged.event_type}'
+                AND json_extract(
+                    event."payload_json", '$.event_schema_version'
+                ) = 'guideline-impact/v1'
+                AND json_extract(event."payload_json", '$.operation')
+                    = 'retire'
+                AND json_type(
+                    event."payload_json", '$.revision_id'
+                ) = 'text'
+            )
+            OR (
+                event."event_type" =
+                    '{POLICY_BINDING_MATERIALIZED_EVENT_TYPE}'
+                AND (
+                    SELECT COUNT(*)
+                    FROM json_each(event."payload_json")
+                ) = 11
+                AND json_extract(
+                    event."payload_json", '$.event_schema_version'
+                ) = 'policy-binding-materialized/v1'
+                AND json_extract(event."payload_json", '$.operation')
+                    = 'adopt'
+                AND json_type(
+                    event."payload_json", '$.revision_id'
+                ) = 'text'
+                AND json_extract(event."payload_json", '$.source_kind')
+                    IN ('native', 'default_materialization')
+            )
+        )
+  )
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'policy_constraint_execution_event_invalid'
+    );
+END''',
+    )
+    return manifest
+
+
+def policy_compliance_immutability_trigger_manifest(
+    *,
+    allow_board_erasure: bool = True,
+    allow_aggregate_sealing: bool = True,
+) -> dict[str, tuple[str, str]]:
+    """Exact SQLite guards for immutable B07 receipts and rule evidence."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
+        PolicyComplianceAdoptedRevisionRow,
+        PolicyComplianceFindingRow,
+        PolicyComplianceReceiptRow,
+    )
+
+    permit_table = BoardErasurePermit.__tablename__
+    receipt_table = PolicyComplianceReceiptRow.__tablename__
+    adopted_table = PolicyComplianceAdoptedRevisionRow.__tablename__
+    finding_table = PolicyComplianceFindingRow.__tablename__
+    manifest: dict[str, tuple[str, str]] = {}
+
+    if allow_aggregate_sealing:
+        immutable_receipt_columns = tuple(
+            column.name
+            for column in PolicyComplianceReceiptRow.__table__.columns
+            if column.name != "sealed"
+        )
+        unchanged_receipt = "\n    AND ".join(
+            f'NEW."{column_name}" IS OLD."{column_name}"'
+            for column_name in immutable_receipt_columns
+        )
+        receipt_update_name = (
+            f"{POLICY_COMPLIANCE_IMMUTABILITY_TRIGGER_PREFIX}_{receipt_table}_update"
+        )
+        manifest[receipt_update_name] = (
+            receipt_table,
+            f'''CREATE TRIGGER "{receipt_update_name}"
+BEFORE UPDATE ON "{receipt_table}"
+WHEN NOT (
+    OLD."sealed" = 0
+    AND NEW."sealed" = 1
+    AND {unchanged_receipt}
+)
+BEGIN
+    SELECT RAISE(ABORT, 'policy_compliance_evidence_immutable');
+END''',
+        )
+
+    for table_name in (receipt_table, adopted_table, finding_table):
+        for operation in ("update", "delete"):
+            if (
+                allow_aggregate_sealing
+                and table_name == receipt_table
+                and operation == "update"
+            ):
+                continue
+            trigger_name = (
+                f"{POLICY_COMPLIANCE_IMMUTABILITY_TRIGGER_PREFIX}_"
+                f"{table_name}_{operation}"
+            )
+            when = ""
+            if allow_board_erasure and operation == "delete":
+                if table_name in {receipt_table, finding_table}:
+                    allowed = (
+                        "SELECT 1 "
+                        f'FROM "{permit_table}" AS permit '
+                        "WHERE permit.board_id = OLD.board_id"
+                    )
+                else:
+                    allowed = (
+                        "SELECT 1 "
+                        f'FROM "{permit_table}" AS permit '
+                        f'JOIN "{receipt_table}" AS receipt '
+                        "ON receipt.board_id = permit.board_id "
+                        "WHERE receipt.receipt_id = OLD.receipt_id"
+                    )
+                when = f"\nWHEN NOT EXISTS (\n    {allowed}\n)"
+            manifest[trigger_name] = (
+                table_name,
+                f'''CREATE TRIGGER "{trigger_name}"
+BEFORE {operation.upper()} ON "{table_name}"{when}
+BEGIN
+    SELECT RAISE(ABORT, 'policy_compliance_evidence_immutable');
+END''',
+            )
+    if allow_aggregate_sealing:
+        for table_name in (adopted_table, finding_table):
+            trigger_name = (
+                f"{POLICY_COMPLIANCE_IMMUTABILITY_TRIGGER_PREFIX}_{table_name}_insert"
+            )
+            manifest[trigger_name] = (
+                table_name,
+                f'''CREATE TRIGGER "{trigger_name}"
+BEFORE INSERT ON "{table_name}"
+WHEN EXISTS (
+    SELECT 1
+    FROM "{receipt_table}" AS receipt
+    WHERE receipt.receipt_id = NEW.receipt_id
+      AND receipt.sealed = 1
+)
+BEGIN
+    SELECT RAISE(ABORT, 'policy_compliance_evidence_sealed');
+END''',
+            )
+    return manifest
+
+
+def policy_waiver_immutability_trigger_manifest(
+    *,
+    allow_board_erasure: bool = True,
+) -> dict[str, tuple[str, str]]:
+    """Exact SQLite CAS and append-only guards for ``waiver-event/v1``."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
+        PolicyWaiverEventRow,
+        PolicyWaiverRow,
+    )
+
+    head_table = PolicyWaiverRow.__tablename__
+    event_table = PolicyWaiverEventRow.__tablename__
+    permit_table = BoardErasurePermit.__tablename__
+    manifest: dict[str, tuple[str, str]] = {}
+    immutable_head_columns = (
+        "waiver_id",
+        "board_id",
+        "finding_id",
+        "receipt_id",
+        "guideline_id",
+        "revision_id",
+        "rule_id",
+        "entity_type",
+        "subject_id",
+        "subject_version",
+        "scope_digest",
+        "justification",
+        "evidence_refs",
+        "requested_by",
+        "requested_at",
+        "original_expires_at",
+        "idempotency_key",
+        "request_digest",
+    )
+    unchanged = "\n    AND ".join(
+        f'NEW."{column}" IS OLD."{column}"' for column in immutable_head_columns
+    )
+    head_insert_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_head_insert"
+    manifest[head_insert_name] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_insert_name}"
+BEFORE INSERT ON "{head_table}"
+WHEN NEW."status" <> 'requested'
+  OR NEW."waiver_revision" <> 1
+  OR NEW."last_event_type" <> 'request'
+  OR NEW."requested_at" >= NEW."expires_at"
+  OR json_array_length(NEW."evidence_refs") = 0
+  OR NOT EXISTS (
+      SELECT 1
+      FROM "policy_compliance_findings" AS finding
+      JOIN "policy_compliance_receipts" AS receipt
+        ON receipt.receipt_id = finding.receipt_id
+       AND receipt.board_id = finding.board_id
+       AND receipt.sealed = 1
+      WHERE finding.finding_id = NEW.finding_id
+        AND finding.receipt_id = NEW.receipt_id
+        AND finding.board_id = NEW.board_id
+        AND finding.guideline_id = NEW.guideline_id
+        AND finding.revision_id = NEW.revision_id
+        AND finding.rule_id = NEW.rule_id
+        AND finding.entity_type = NEW.entity_type
+        AND finding.subject_id = NEW.subject_id
+        AND finding.subject_version = NEW.subject_version
+        AND finding.outcome = 'fail'
+        AND finding.waiver_id IS NULL
+        AND finding.created_at <= NEW.requested_at
+  )
+  OR EXISTS (
+      SELECT 1
+      FROM "{head_table}" AS active
+      WHERE active.board_id = NEW.board_id
+        AND active.guideline_id = NEW.guideline_id
+        AND active.revision_id = NEW.revision_id
+        AND active.rule_id = NEW.rule_id
+        AND active.entity_type = NEW.entity_type
+        AND active.subject_id = NEW.subject_id
+        AND active.subject_version = NEW.subject_version
+        AND active.status IN ('requested', 'approved')
+        AND active.expires_at > NEW.requested_at
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'policy_waiver_request_invalid');
+END''',
+    )
+    head_update_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_head_update"
+    manifest[head_update_name] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_update_name}"
+BEFORE UPDATE ON "{head_table}"
+WHEN NOT (
+    {unchanged}
+    AND NEW."waiver_revision" = OLD."waiver_revision" + 1
+    AND NEW."last_event_id" <> OLD."last_event_id"
+    AND NEW."last_event_at" >= OLD."last_event_at"
+)
+BEGIN
+    SELECT RAISE(ABORT, 'policy_waiver_head_cas_invalid');
+END''',
+    )
+    head_delete_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_head_delete"
+    head_delete_when = ""
+    if allow_board_erasure:
+        head_delete_when = (
+            "\nWHEN NOT EXISTS (\n"
+            "    SELECT 1\n"
+            f'    FROM "{permit_table}" AS permit\n'
+            "    WHERE permit.board_id = OLD.board_id\n"
+            ")"
+        )
+    manifest[head_delete_name] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_delete_name}"
+BEFORE DELETE ON "{head_table}"{head_delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'policy_waiver_head_immutable');
+END''',
+    )
+    event_insert_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_event_insert"
+    manifest[event_insert_name] = (
+        event_table,
+        f'''CREATE TRIGGER "{event_insert_name}"
+BEFORE INSERT ON "{event_table}"
+WHEN length(trim(NEW."actor_id")) = 0
+  OR length(trim(NEW."reason")) = 0
+  OR json_array_length(NEW."evidence_refs") = 0
+  OR NOT EXISTS (
+      SELECT 1
+      FROM "{head_table}" AS head
+      WHERE head.waiver_id = NEW.waiver_id
+        AND head.board_id = NEW.board_id
+        AND head.waiver_revision = NEW.waiver_revision
+        AND head.last_event_id = NEW.event_id
+        AND head.last_event_type = NEW.event_type
+        AND head.last_event_at = NEW.occurred_at
+        AND head.status = NEW.to_status
+        AND head.expires_at = NEW.expires_at
+        AND head.expire_reason_code IS NEW.expire_reason_code
+        AND head.scope_digest = NEW.scope_digest
+        AND head.head_digest = NEW.waiver_digest
+        AND head.reviewed_by IS NEW.reviewed_by
+        AND head.reviewed_at IS NEW.reviewed_at
+        AND head.review_reason IS NEW.review_reason
+        AND head.revoked_by IS NEW.revoked_by
+        AND head.revoked_at IS NEW.revoked_at
+        AND (
+            NEW.event_type <> 'request'
+            OR (
+                NEW.actor_id = head.requested_by
+                AND NEW.occurred_at = head.requested_at
+                AND NEW.reason = head.justification
+                AND json(NEW.evidence_refs) = json(head.evidence_refs)
+                AND NEW.expires_at = head.original_expires_at
+                AND NEW.idempotency_key = head.idempotency_key
+                AND NEW.request_digest = head.request_digest
+            )
+        )
+        AND (
+            NEW.event_type NOT IN ('approve', 'reject', 'revalidate')
+            OR (
+                NEW.actor_id = head.reviewed_by
+                AND NEW.occurred_at = head.reviewed_at
+                AND NEW.reason = head.review_reason
+            )
+        )
+        AND (
+            NEW.event_type <> 'revoke'
+            OR (
+                NEW.actor_id = head.revoked_by
+                AND NEW.occurred_at = head.revoked_at
+            )
+        )
+  )
+  OR (
+      NEW."event_type" = 'request'
+      AND (
+          NEW."predecessor_event_id" IS NOT NULL
+          OR EXISTS (
+              SELECT 1 FROM "{event_table}" AS prior
+              WHERE prior.waiver_id = NEW.waiver_id
+          )
+      )
+  )
+  OR (
+      NEW."event_type" <> 'request'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM "{event_table}" AS predecessor
+          WHERE predecessor.event_id = NEW.predecessor_event_id
+            AND predecessor.waiver_id = NEW.waiver_id
+            AND predecessor.board_id = NEW.board_id
+            AND predecessor.waiver_revision = NEW.waiver_revision - 1
+            AND predecessor.to_status = NEW.from_status
+            AND (
+                (
+                    NEW.event_type = 'revalidate'
+                    AND NEW.expires_at > predecessor.expires_at
+                    AND (
+                        (
+                            predecessor.to_status = 'approved'
+                            AND NEW.occurred_at < predecessor.expires_at
+                        )
+                        OR (
+                            predecessor.to_status = 'expired'
+                            AND predecessor.expire_reason_code
+                                = 'scheduled_expiry'
+                        )
+                    )
+                )
+                OR (
+                    NEW.event_type <> 'revalidate'
+                    AND NEW.expires_at = predecessor.expires_at
+                )
+            )
+            AND (
+                NEW.event_type IN ('approve', 'reject', 'revalidate')
+                OR (
+                    NEW.reviewed_by IS predecessor.reviewed_by
+                    AND NEW.reviewed_at IS predecessor.reviewed_at
+                    AND NEW.review_reason IS predecessor.review_reason
+                )
+            )
+            AND (
+                NEW.event_type = 'revoke'
+                OR (
+                    NEW.revoked_by IS predecessor.revoked_by
+                    AND NEW.revoked_at IS predecessor.revoked_at
+                )
+            )
+      )
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'policy_waiver_event_append_invalid');
+END''',
+    )
+    event_update_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_event_update"
+    manifest[event_update_name] = (
+        event_table,
+        f'''CREATE TRIGGER "{event_update_name}"
+BEFORE UPDATE ON "{event_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'policy_waiver_event_immutable');
+END''',
+    )
+    event_delete_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_event_delete"
+    event_delete_when = ""
+    if allow_board_erasure:
+        event_delete_when = (
+            "\nWHEN NOT EXISTS (\n"
+            "    SELECT 1\n"
+            f'    FROM "{permit_table}" AS permit\n'
+            "    WHERE permit.board_id = OLD.board_id\n"
+            ")"
+        )
+    manifest[event_delete_name] = (
+        event_table,
+        f'''CREATE TRIGGER "{event_delete_name}"
+BEFORE DELETE ON "{event_table}"{event_delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'policy_waiver_event_immutable');
+END''',
+    )
+    return manifest
+
+
+def policy_waiver_postgresql_immutability_ddl() -> tuple[str, ...]:
+    """PostgreSQL counterpart of the exact SQLite B09 guards."""
+
+    function_name = "policy_waiver_guard_v2"
+    return (
+        f"""
+CREATE OR REPLACE FUNCTION {function_name}() RETURNS trigger AS $$
+BEGIN
+    IF TG_TABLE_NAME = 'policy_waiver_events' THEN
+        IF TG_OP = 'UPDATE' THEN
+            RAISE EXCEPTION 'policy_waiver_event_immutable';
+        END IF;
+        IF TG_OP = 'DELETE' THEN
+            IF EXISTS (
+                SELECT 1 FROM kg_board_erasure_permits AS permit
+                WHERE permit.board_id = OLD.board_id
+            ) THEN
+                RETURN OLD;
+            END IF;
+            RAISE EXCEPTION 'policy_waiver_event_immutable';
+        END IF;
+        IF length(btrim(NEW.actor_id)) = 0
+           OR length(btrim(NEW.reason)) = 0
+           OR json_array_length(NEW.evidence_refs) = 0
+           OR NOT EXISTS (
+               SELECT 1 FROM policy_waivers AS head
+               WHERE head.waiver_id = NEW.waiver_id
+                 AND head.board_id = NEW.board_id
+                 AND head.waiver_revision = NEW.waiver_revision
+                 AND head.last_event_id = NEW.event_id
+                 AND head.last_event_type = NEW.event_type
+                 AND head.last_event_at = NEW.occurred_at
+                 AND head.status = NEW.to_status
+                 AND head.expires_at = NEW.expires_at
+                 AND head.expire_reason_code
+                     IS NOT DISTINCT FROM NEW.expire_reason_code
+                 AND head.scope_digest = NEW.scope_digest
+                 AND head.head_digest = NEW.waiver_digest
+                 AND head.reviewed_by IS NOT DISTINCT FROM NEW.reviewed_by
+                 AND head.reviewed_at IS NOT DISTINCT FROM NEW.reviewed_at
+                 AND head.review_reason
+                     IS NOT DISTINCT FROM NEW.review_reason
+                 AND head.revoked_by IS NOT DISTINCT FROM NEW.revoked_by
+                 AND head.revoked_at IS NOT DISTINCT FROM NEW.revoked_at
+                 AND (
+                     NEW.event_type <> 'request'
+                     OR (
+                         NEW.actor_id = head.requested_by
+                         AND NEW.occurred_at = head.requested_at
+                         AND NEW.reason = head.justification
+                         AND NEW.evidence_refs::jsonb
+                             = head.evidence_refs::jsonb
+                         AND NEW.expires_at = head.original_expires_at
+                         AND NEW.idempotency_key = head.idempotency_key
+                         AND NEW.request_digest = head.request_digest
+                     )
+                 )
+                 AND (
+                     NEW.event_type NOT IN ('approve', 'reject', 'revalidate')
+                     OR (
+                         NEW.actor_id = head.reviewed_by
+                         AND NEW.occurred_at = head.reviewed_at
+                         AND NEW.reason = head.review_reason
+                     )
+                 )
+                 AND (
+                     NEW.event_type <> 'revoke'
+                     OR (
+                         NEW.actor_id = head.revoked_by
+                         AND NEW.occurred_at = head.revoked_at
+                     )
+                 )
+           )
+        THEN
+            RAISE EXCEPTION 'policy_waiver_event_append_invalid';
+        END IF;
+        IF NEW.event_type = 'request' THEN
+            IF NEW.predecessor_event_id IS NOT NULL OR EXISTS (
+                SELECT 1 FROM policy_waiver_events AS prior
+                WHERE prior.waiver_id = NEW.waiver_id
+            ) THEN
+                RAISE EXCEPTION 'policy_waiver_event_append_invalid';
+            END IF;
+        ELSIF NOT EXISTS (
+            SELECT 1 FROM policy_waiver_events AS predecessor
+            WHERE predecessor.event_id = NEW.predecessor_event_id
+              AND predecessor.waiver_id = NEW.waiver_id
+              AND predecessor.board_id = NEW.board_id
+              AND predecessor.waiver_revision = NEW.waiver_revision - 1
+              AND predecessor.to_status = NEW.from_status
+              AND (
+                  (
+                      NEW.event_type = 'revalidate'
+                      AND NEW.expires_at > predecessor.expires_at
+                      AND (
+                          (
+                              predecessor.to_status = 'approved'
+                              AND NEW.occurred_at < predecessor.expires_at
+                          )
+                          OR (
+                              predecessor.to_status = 'expired'
+                              AND predecessor.expire_reason_code
+                                  = 'scheduled_expiry'
+                          )
+                      )
+                  )
+                  OR (
+                      NEW.event_type <> 'revalidate'
+                      AND NEW.expires_at = predecessor.expires_at
+                  )
+              )
+              AND (
+                  NEW.event_type IN ('approve', 'reject', 'revalidate')
+                  OR (
+                      NEW.reviewed_by
+                          IS NOT DISTINCT FROM predecessor.reviewed_by
+                      AND NEW.reviewed_at
+                          IS NOT DISTINCT FROM predecessor.reviewed_at
+                      AND NEW.review_reason
+                          IS NOT DISTINCT FROM predecessor.review_reason
+                  )
+              )
+              AND (
+                  NEW.event_type = 'revoke'
+                  OR (
+                      NEW.revoked_by
+                          IS NOT DISTINCT FROM predecessor.revoked_by
+                      AND NEW.revoked_at
+                          IS NOT DISTINCT FROM predecessor.revoked_at
+                  )
+              )
+        ) THEN
+            RAISE EXCEPTION 'policy_waiver_event_append_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.status <> 'requested'
+           OR NEW.waiver_revision <> 1
+           OR NEW.last_event_type <> 'request'
+           OR NEW.requested_at >= NEW.expires_at
+           OR json_array_length(NEW.evidence_refs) = 0
+           OR NOT EXISTS (
+               SELECT 1
+               FROM policy_compliance_findings AS finding
+               JOIN policy_compliance_receipts AS receipt
+                 ON receipt.receipt_id = finding.receipt_id
+                AND receipt.board_id = finding.board_id
+                AND receipt.sealed = TRUE
+               WHERE finding.finding_id = NEW.finding_id
+                 AND finding.receipt_id = NEW.receipt_id
+                 AND finding.board_id = NEW.board_id
+                 AND finding.guideline_id = NEW.guideline_id
+                 AND finding.revision_id = NEW.revision_id
+                 AND finding.rule_id = NEW.rule_id
+                 AND finding.entity_type = NEW.entity_type
+                 AND finding.subject_id = NEW.subject_id
+                 AND finding.subject_version = NEW.subject_version
+                 AND finding.outcome = 'fail'
+                 AND finding.waiver_id IS NULL
+                 AND finding.created_at <= NEW.requested_at
+           )
+           OR EXISTS (
+               SELECT 1 FROM policy_waivers AS active
+               WHERE active.board_id = NEW.board_id
+                 AND active.guideline_id = NEW.guideline_id
+                 AND active.revision_id = NEW.revision_id
+                 AND active.rule_id = NEW.rule_id
+                 AND active.entity_type = NEW.entity_type
+                 AND active.subject_id = NEW.subject_id
+                 AND active.subject_version = NEW.subject_version
+                 AND active.status IN ('requested', 'approved')
+                 AND active.expires_at > NEW.requested_at
+           )
+        THEN
+            RAISE EXCEPTION 'policy_waiver_request_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (
+            SELECT 1 FROM kg_board_erasure_permits AS permit
+            WHERE permit.board_id = OLD.board_id
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'policy_waiver_head_immutable';
+    END IF;
+    IF TG_OP = 'UPDATE' AND (
+        ROW(
+            NEW.waiver_id, NEW.board_id, NEW.finding_id, NEW.receipt_id,
+            NEW.guideline_id, NEW.revision_id, NEW.rule_id, NEW.entity_type,
+            NEW.subject_id, NEW.subject_version, NEW.scope_digest,
+            NEW.justification, NEW.evidence_refs::jsonb, NEW.requested_by,
+            NEW.requested_at, NEW.original_expires_at, NEW.idempotency_key,
+            NEW.request_digest
+        ) IS DISTINCT FROM ROW(
+            OLD.waiver_id, OLD.board_id, OLD.finding_id, OLD.receipt_id,
+            OLD.guideline_id, OLD.revision_id, OLD.rule_id, OLD.entity_type,
+            OLD.subject_id, OLD.subject_version, OLD.scope_digest,
+            OLD.justification, OLD.evidence_refs::jsonb, OLD.requested_by,
+            OLD.requested_at, OLD.original_expires_at, OLD.idempotency_key,
+            OLD.request_digest
+        )
+        OR NEW.waiver_revision <> OLD.waiver_revision + 1
+        OR NEW.last_event_id = OLD.last_event_id
+        OR NEW.last_event_at < OLD.last_event_at
+    ) THEN
+        RAISE EXCEPTION 'policy_waiver_head_cas_invalid';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql
+""".strip(),
+        f'''CREATE TRIGGER "{POLICY_WAIVER_TRIGGER_PREFIX}_head"
+BEFORE INSERT OR UPDATE OR DELETE ON "policy_waivers"
+FOR EACH ROW EXECUTE FUNCTION {function_name}()''',
+        f'''CREATE TRIGGER "{POLICY_WAIVER_TRIGGER_PREFIX}_event"
+BEFORE INSERT OR UPDATE OR DELETE ON "policy_waiver_events"
+FOR EACH ROW EXECUTE FUNCTION {function_name}()''',
+    )
 
 
 def cognitive_source_immutability_trigger_manifest(
@@ -141,6 +1867,766 @@ BEGIN
 END'''
             expected[trigger_name] = (table_name, trigger_sql)
     return expected
+
+
+def guideline_policy_immutability_trigger_manifest(
+    *,
+    allow_board_erasure: bool = True,
+) -> dict[str, tuple[str, str]]:
+    """Return exact SQLite guards for the SK-B append-only authority."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
+        Guideline,
+        GuidelineBoardBindingRow,
+        GuidelineHeadRow,
+        GuidelineRetirementRow,
+        GuidelineRevisionRow,
+    )
+
+    revision_table = GuidelineRevisionRow.__tablename__
+    head_table = GuidelineHeadRow.__tablename__
+    binding_table = GuidelineBoardBindingRow.__tablename__
+    retirement_table = GuidelineRetirementRow.__tablename__
+    permit_table = BoardErasurePermit.__tablename__
+    guideline_table = Guideline.__tablename__
+    expected: dict[str, tuple[str, str]] = {}
+
+    revision_insert = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_revision_insert"
+    expected[revision_insert] = (
+        revision_table,
+        f'''CREATE TRIGGER "{revision_insert}"
+BEFORE INSERT ON "{revision_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_retired')
+    WHERE EXISTS (
+        SELECT 1
+        FROM "{retirement_table}" AS retirement
+        WHERE retirement.guideline_id = NEW.guideline_id
+    );
+END''',
+    )
+    revision_update = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_revision_update"
+    expected[revision_update] = (
+        revision_table,
+        f'''CREATE TRIGGER "{revision_update}"
+BEFORE UPDATE ON "{revision_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_revision_immutable');
+END''',
+    )
+    revision_delete = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_revision_delete"
+    revision_delete_when = ""
+    if allow_board_erasure:
+        revision_delete_when = (
+            "\nWHEN NOT EXISTS (\n"
+            "    SELECT 1\n"
+            f'    FROM "{permit_table}" AS permit\n'
+            f'    JOIN "{guideline_table}" AS guideline\n'
+            "      ON guideline.board_id = permit.board_id\n"
+            "    WHERE guideline.id = OLD.guideline_id\n"
+            "      AND guideline.scope = 'inline'\n"
+            ")"
+        )
+    expected[revision_delete] = (
+        revision_table,
+        f'''CREATE TRIGGER "{revision_delete}"
+BEFORE DELETE ON "{revision_table}"{revision_delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_revision_immutable');
+END''',
+    )
+
+    head_update = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_head_update"
+    expected[head_update] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_update}"
+BEFORE UPDATE ON "{head_table}"
+WHEN EXISTS (
+    SELECT 1
+    FROM "{retirement_table}" AS retirement
+    WHERE retirement.guideline_id = OLD.guideline_id
+)
+  OR NEW.guideline_id <> OLD.guideline_id
+  OR NEW.head_revision <> OLD.head_revision + 1
+  OR NEW.revision_number <> OLD.revision_number + 1
+  OR NEW.revision_id = OLD.revision_id
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_head_cas_invalid');
+END''',
+    )
+    head_delete = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_head_delete"
+    head_delete_when = ""
+    if allow_board_erasure:
+        head_delete_when = (
+            "\nWHEN NOT EXISTS (\n"
+            "    SELECT 1\n"
+            f'    FROM "{permit_table}" AS permit\n'
+            f'    JOIN "{guideline_table}" AS guideline\n'
+            "      ON guideline.board_id = permit.board_id\n"
+            "    WHERE guideline.id = OLD.guideline_id\n"
+            "      AND guideline.scope = 'inline'\n"
+            ")"
+        )
+    expected[head_delete] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_delete}"
+BEFORE DELETE ON "{head_table}"{head_delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_head_immutable');
+END''',
+    )
+
+    binding_insert = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_binding_insert"
+    expected[binding_insert] = (
+        binding_table,
+        f'''CREATE TRIGGER "{binding_insert}"
+BEFORE INSERT ON "{binding_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_retired')
+    WHERE EXISTS (
+        SELECT 1
+        FROM "{retirement_table}" AS retirement
+        WHERE retirement.guideline_id = NEW.guideline_id
+    )
+      AND NOT (
+        NEW.state = 'unlinked'
+        AND NEW.binding_revision > 1
+        AND (
+            SELECT previous.state
+            FROM "{binding_table}" AS previous
+            WHERE previous.binding_id = NEW.binding_id
+              AND previous.binding_revision = NEW.binding_revision - 1
+        ) = 'active'
+      );
+    SELECT RAISE(ABORT, 'guideline_binding_scope_invalid')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM "{guideline_table}" AS guideline
+        WHERE guideline.id = NEW.guideline_id
+          AND (
+            (guideline.scope = 'global' AND guideline.board_id IS NULL)
+            OR (
+                guideline.scope = 'inline'
+                AND guideline.board_id = NEW.board_id
+            )
+          )
+    );
+    SELECT RAISE(ABORT, 'guideline_binding_identity_reused')
+    WHERE EXISTS (
+        SELECT 1
+        FROM "{binding_table}" AS previous
+        WHERE previous.binding_id = NEW.binding_id
+          AND (
+            previous.board_id <> NEW.board_id
+            OR previous.guideline_id <> NEW.guideline_id
+          )
+    );
+    SELECT RAISE(ABORT, 'guideline_binding_sequence_invalid')
+    WHERE (
+        NEW.binding_revision = 1
+        AND EXISTS (
+            SELECT 1
+            FROM "{binding_table}" AS previous
+            WHERE previous.binding_id = NEW.binding_id
+        )
+    ) OR (
+        NEW.binding_revision > 1
+        AND (
+            COALESCE((
+                SELECT MAX(previous.binding_revision)
+                FROM "{binding_table}" AS previous
+                WHERE previous.binding_id = NEW.binding_id
+            ), 0) <> NEW.binding_revision - 1
+            OR NOT EXISTS (
+                SELECT 1
+                FROM "{binding_table}" AS previous
+                WHERE previous.binding_id = NEW.binding_id
+                  AND previous.binding_revision = NEW.binding_revision - 1
+                  AND previous.board_id = NEW.board_id
+                  AND previous.guideline_id = NEW.guideline_id
+            )
+        )
+    );
+    SELECT RAISE(ABORT, 'guideline_binding_state_transition_invalid')
+    WHERE (
+        NEW.binding_revision = 1
+        AND NEW.state <> 'active'
+    ) OR (
+        NEW.binding_revision > 1
+        AND (
+            (
+                NEW.state = 'unlinked'
+                AND (
+                    NEW.revision_id <> (
+                        SELECT previous.revision_id
+                        FROM "{binding_table}" AS previous
+                        WHERE previous.binding_id = NEW.binding_id
+                          AND previous.binding_revision = NEW.binding_revision - 1
+                    )
+                    OR NEW.semantic_version <> (
+                        SELECT previous.semantic_version
+                        FROM "{binding_table}" AS previous
+                        WHERE previous.binding_id = NEW.binding_id
+                          AND previous.binding_revision = NEW.binding_revision - 1
+                    )
+                    OR NEW.revision_digest <> (
+                        SELECT previous.revision_digest
+                        FROM "{binding_table}" AS previous
+                        WHERE previous.binding_id = NEW.binding_id
+                          AND previous.binding_revision = NEW.binding_revision - 1
+                    )
+                    OR NEW.priority <> (
+                        SELECT previous.priority
+                        FROM "{binding_table}" AS previous
+                        WHERE previous.binding_id = NEW.binding_id
+                          AND previous.binding_revision = NEW.binding_revision - 1
+                    )
+                    OR NEW.default_enforcement <> (
+                        SELECT previous.default_enforcement
+                        FROM "{binding_table}" AS previous
+                        WHERE previous.binding_id = NEW.binding_id
+                          AND previous.binding_revision = NEW.binding_revision - 1
+                    )
+                )
+            )
+            OR (
+            (
+                SELECT previous.state
+                FROM "{binding_table}" AS previous
+                WHERE previous.binding_id = NEW.binding_id
+                  AND previous.binding_revision = NEW.binding_revision - 1
+            ) = 'unlinked'
+            AND NEW.state <> 'active'
+            )
+        )
+    );
+END''',
+    )
+    binding_update = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_binding_update"
+    expected[binding_update] = (
+        binding_table,
+        f'''CREATE TRIGGER "{binding_update}"
+BEFORE UPDATE ON "{binding_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_binding_immutable');
+END''',
+    )
+    binding_delete = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_binding_delete"
+    binding_delete_when = ""
+    if allow_board_erasure:
+        binding_delete_when = (
+            "\nWHEN NOT EXISTS (\n"
+            "    SELECT 1\n"
+            f'    FROM "{permit_table}" AS permit\n'
+            "    WHERE permit.board_id = OLD.board_id\n"
+            ")"
+        )
+    expected[binding_delete] = (
+        binding_table,
+        f'''CREATE TRIGGER "{binding_delete}"
+BEFORE DELETE ON "{binding_table}"{binding_delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_binding_immutable');
+END''',
+    )
+    retirement_insert = (
+        f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_retirement_insert"
+    )
+    expected[retirement_insert] = (
+        retirement_table,
+        f'''CREATE TRIGGER "{retirement_insert}"
+BEFORE INSERT ON "{retirement_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_retirement_head_conflict')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM "{head_table}" AS head
+        WHERE head.guideline_id = NEW.guideline_id
+          AND head.revision_id = NEW.retired_revision_id
+          AND head.revision_number = NEW.retired_revision_number
+          AND head.semantic_version = NEW.retired_semantic_version
+          AND head.head_revision = NEW.retired_head_revision
+    );
+    SELECT RAISE(ABORT, 'guideline_supersedence_successor_invalid')
+    WHERE NEW.status = 'superseded'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "{guideline_table}" AS successor
+        WHERE successor.id = NEW.superseded_by_guideline_id
+          AND successor.scope = 'global'
+          AND successor.board_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "{retirement_table}" AS successor_retirement
+            WHERE successor_retirement.guideline_id = successor.id
+          )
+      );
+END''',
+    )
+    retirement_update = (
+        f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_retirement_update"
+    )
+    expected[retirement_update] = (
+        retirement_table,
+        f'''CREATE TRIGGER "{retirement_update}"
+BEFORE UPDATE ON "{retirement_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_retirement_immutable');
+END''',
+    )
+    retirement_delete = (
+        f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_retirement_delete"
+    )
+    retirement_delete_when = ""
+    if allow_board_erasure:
+        retirement_delete_when = (
+            "\nWHEN NOT EXISTS (\n"
+            "    SELECT 1\n"
+            f'    FROM "{permit_table}" AS permit\n'
+            f'    JOIN "{guideline_table}" AS guideline\n'
+            "      ON guideline.board_id = permit.board_id\n"
+            "    WHERE guideline.id = OLD.guideline_id\n"
+            "      AND guideline.scope = 'inline'\n"
+            ")"
+        )
+    expected[retirement_delete] = (
+        retirement_table,
+        f'''CREATE TRIGGER "{retirement_delete}"
+BEFORE DELETE ON "{retirement_table}"{retirement_delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_retirement_immutable');
+END''',
+    )
+    return expected
+
+
+def guideline_policy_b03_sqlite_trigger_predecessors() -> dict[str, tuple[str, str]]:
+    """Exact B03 trigger bodies replaced by the B04 lifecycle contract.
+
+    Only these two installed B03 triggers changed shape.  Keeping their exact
+    predecessor SQL makes the upgrade convergent without accepting arbitrary
+    trigger drift under the owned prefix.
+    """
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        GuidelineBoardBindingRow,
+        GuidelineHeadRow,
+    )
+
+    prefix = GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX
+    head_table = GuidelineHeadRow.__tablename__
+    binding_table = GuidelineBoardBindingRow.__tablename__
+    head_update = f"{prefix}_head_update"
+    binding_insert = f"{prefix}_binding_insert"
+    return {
+        head_update: (
+            head_table,
+            f'''CREATE TRIGGER "{head_update}"
+BEFORE UPDATE ON "{head_table}"
+WHEN NEW.guideline_id <> OLD.guideline_id
+  OR NEW.head_revision <> OLD.head_revision + 1
+  OR NEW.revision_number <> OLD.revision_number + 1
+  OR NEW.revision_id = OLD.revision_id
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_head_cas_invalid');
+END''',
+        ),
+        binding_insert: (
+            binding_table,
+            f'''CREATE TRIGGER "{binding_insert}"
+BEFORE INSERT ON "{binding_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_binding_scope_invalid')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM "guidelines" AS guideline
+        WHERE guideline.id = NEW.guideline_id
+          AND (
+            (guideline.scope = 'global' AND guideline.board_id IS NULL)
+            OR (
+                guideline.scope = 'inline'
+                AND guideline.board_id = NEW.board_id
+            )
+          )
+    );
+    SELECT RAISE(ABORT, 'guideline_binding_identity_reused')
+    WHERE EXISTS (
+        SELECT 1
+        FROM "{binding_table}" AS previous
+        WHERE previous.binding_id = NEW.binding_id
+          AND (
+            previous.board_id <> NEW.board_id
+            OR previous.guideline_id <> NEW.guideline_id
+          )
+    );
+    SELECT RAISE(ABORT, 'guideline_binding_sequence_invalid')
+    WHERE (
+        NEW.binding_revision = 1
+        AND EXISTS (
+            SELECT 1
+            FROM "{binding_table}" AS previous
+            WHERE previous.binding_id = NEW.binding_id
+        )
+    ) OR (
+        NEW.binding_revision > 1
+        AND (
+            COALESCE((
+                SELECT MAX(previous.binding_revision)
+                FROM "{binding_table}" AS previous
+                WHERE previous.binding_id = NEW.binding_id
+            ), 0) <> NEW.binding_revision - 1
+            OR NOT EXISTS (
+                SELECT 1
+                FROM "{binding_table}" AS previous
+                WHERE previous.binding_id = NEW.binding_id
+                  AND previous.binding_revision = NEW.binding_revision - 1
+                  AND previous.board_id = NEW.board_id
+                  AND previous.guideline_id = NEW.guideline_id
+            )
+        )
+    );
+END''',
+        ),
+    }
+
+
+def guideline_policy_postgresql_immutability_ddl() -> tuple[str, ...]:
+    """Return PostgreSQL functions/triggers equivalent to the SQLite guards."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
+        Guideline,
+        GuidelineBoardBindingRow,
+        GuidelineHeadRow,
+        GuidelineRetirementRow,
+        GuidelineRevisionRow,
+    )
+
+    revision_table = GuidelineRevisionRow.__tablename__
+    head_table = GuidelineHeadRow.__tablename__
+    binding_table = GuidelineBoardBindingRow.__tablename__
+    retirement_table = GuidelineRetirementRow.__tablename__
+    permit_table = BoardErasurePermit.__tablename__
+    guideline_table = Guideline.__tablename__
+    revision_function = "pulse_guideline_revision_immutable_guard"
+    head_function = "pulse_guideline_head_guard"
+    binding_function = "pulse_guideline_binding_immutable_guard"
+    retirement_function = "pulse_guideline_retirement_immutable_guard"
+    revision_trigger = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_revision_guard"
+    head_trigger = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_head_guard"
+    binding_trigger = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_binding_guard"
+    retirement_trigger = (
+        f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_retirement_guard"
+    )
+    return (
+        f'''CREATE OR REPLACE FUNCTION "{revision_function}"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF EXISTS (
+            SELECT 1
+            FROM "{retirement_table}" AS retirement
+            WHERE retirement.guideline_id = NEW.guideline_id
+        ) THEN
+            RAISE EXCEPTION 'guideline_retired'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' AND EXISTS (
+        SELECT 1
+        FROM "{permit_table}" AS permit
+        JOIN "{guideline_table}" AS guideline
+          ON guideline.board_id = permit.board_id
+        WHERE guideline.id = OLD.guideline_id
+          AND guideline.scope = 'inline'
+    ) THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'guideline_revision_immutable'
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$''',
+        f'''CREATE OR REPLACE FUNCTION "{head_function}"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'UPDATE'
+       AND NEW.guideline_id = OLD.guideline_id
+       AND NEW.head_revision = OLD.head_revision + 1
+       AND NEW.revision_number = OLD.revision_number + 1
+       AND NEW.revision_id <> OLD.revision_id
+       AND NOT EXISTS (
+           SELECT 1
+           FROM "{retirement_table}" AS retirement
+           WHERE retirement.guideline_id = OLD.guideline_id
+       )
+    THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' AND EXISTS (
+        SELECT 1
+        FROM "{permit_table}" AS permit
+        JOIN "{guideline_table}" AS guideline
+          ON guideline.board_id = permit.board_id
+        WHERE guideline.id = OLD.guideline_id
+          AND guideline.scope = 'inline'
+    ) THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'guideline_head_immutable'
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$''',
+        f'''CREATE OR REPLACE FUNCTION "{binding_function}"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    identity_scope text;
+    identity_board_id text;
+    previous_max integer;
+    previous_state text;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        SELECT previous.state
+        INTO previous_state
+        FROM "{binding_table}" AS previous
+        WHERE previous.binding_id = NEW.binding_id
+          AND previous.binding_revision = NEW.binding_revision - 1;
+        IF EXISTS (
+            SELECT 1
+            FROM "{retirement_table}" AS retirement
+            WHERE retirement.guideline_id = NEW.guideline_id
+        ) AND NOT (
+            NEW.state = 'unlinked'
+            AND NEW.binding_revision > 1
+            AND previous_state = 'active'
+        ) THEN
+            RAISE EXCEPTION 'guideline_retired'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        SELECT guideline.scope, guideline.board_id
+        INTO identity_scope, identity_board_id
+        FROM "{guideline_table}" AS guideline
+        WHERE guideline.id = NEW.guideline_id;
+        IF NOT FOUND OR NOT (
+            (identity_scope = 'global' AND identity_board_id IS NULL)
+            OR (
+                identity_scope = 'inline'
+                AND identity_board_id = NEW.board_id
+            )
+        ) THEN
+            RAISE EXCEPTION 'guideline_binding_scope_invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        SELECT MAX(previous.binding_revision)
+        INTO previous_max
+        FROM "{binding_table}" AS previous
+        WHERE previous.binding_id = NEW.binding_id;
+        IF NEW.binding_revision = 1 THEN
+            IF previous_max IS NOT NULL THEN
+                RAISE EXCEPTION 'guideline_binding_identity_reused'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+        ELSIF previous_max IS DISTINCT FROM NEW.binding_revision - 1
+           OR NOT EXISTS (
+               SELECT 1
+               FROM "{binding_table}" AS previous
+               WHERE previous.binding_id = NEW.binding_id
+                 AND previous.binding_revision = NEW.binding_revision - 1
+                 AND previous.board_id = NEW.board_id
+                 AND previous.guideline_id = NEW.guideline_id
+           )
+        THEN
+            RAISE EXCEPTION 'guideline_binding_sequence_invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        IF NEW.binding_revision > 1 AND EXISTS (
+            SELECT 1
+            FROM "{binding_table}" AS previous
+            WHERE previous.binding_id = NEW.binding_id
+              AND previous.binding_revision = NEW.binding_revision - 1
+              AND NEW.state = 'unlinked'
+              AND (
+                  NEW.revision_id IS DISTINCT FROM previous.revision_id
+                  OR NEW.semantic_version
+                     IS DISTINCT FROM previous.semantic_version
+                  OR NEW.revision_digest
+                     IS DISTINCT FROM previous.revision_digest
+                  OR NEW.priority IS DISTINCT FROM previous.priority
+                  OR NEW.default_enforcement
+                     IS DISTINCT FROM previous.default_enforcement
+              )
+        ) THEN
+            RAISE EXCEPTION 'guideline_binding_state_transition_invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        IF (NEW.binding_revision = 1 AND NEW.state <> 'active')
+           OR (
+               NEW.binding_revision > 1
+               AND previous_state = 'unlinked'
+               AND NEW.state <> 'active'
+           )
+        THEN
+            RAISE EXCEPTION 'guideline_binding_state_transition_invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' AND EXISTS (
+        SELECT 1
+        FROM "{permit_table}" AS permit
+        WHERE permit.board_id = OLD.board_id
+    ) THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'guideline_binding_immutable'
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$''',
+        f'''CREATE OR REPLACE FUNCTION "{retirement_function}"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM "{head_table}" AS head
+            WHERE head.guideline_id = NEW.guideline_id
+              AND head.revision_id = NEW.retired_revision_id
+              AND head.revision_number = NEW.retired_revision_number
+              AND head.semantic_version = NEW.retired_semantic_version
+              AND head.head_revision = NEW.retired_head_revision
+        ) THEN
+            RAISE EXCEPTION 'guideline_retirement_head_conflict'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        IF NEW.status = 'superseded' AND NOT EXISTS (
+            SELECT 1
+            FROM "{guideline_table}" AS successor
+            WHERE successor.id = NEW.superseded_by_guideline_id
+              AND successor.scope = 'global'
+              AND successor.board_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM "{retirement_table}" AS successor_retirement
+                  WHERE successor_retirement.guideline_id = successor.id
+              )
+        ) THEN
+            RAISE EXCEPTION 'guideline_supersedence_successor_invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' AND EXISTS (
+        SELECT 1
+        FROM "{permit_table}" AS permit
+        JOIN "{guideline_table}" AS guideline
+          ON guideline.board_id = permit.board_id
+        WHERE guideline.id = OLD.guideline_id
+          AND guideline.scope = 'inline'
+    ) THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'guideline_retirement_immutable'
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$''',
+        f'''CREATE TRIGGER "{revision_trigger}"
+BEFORE INSERT OR UPDATE OR DELETE ON "{revision_table}"
+FOR EACH ROW EXECUTE FUNCTION "{revision_function}"()''',
+        f'''CREATE TRIGGER "{head_trigger}"
+BEFORE UPDATE OR DELETE ON "{head_table}"
+FOR EACH ROW EXECUTE FUNCTION "{head_function}"()''',
+        f'''CREATE TRIGGER "{binding_trigger}"
+BEFORE INSERT OR UPDATE OR DELETE ON "{binding_table}"
+FOR EACH ROW EXECUTE FUNCTION "{binding_function}"()''',
+        f'''CREATE TRIGGER "{retirement_trigger}"
+BEFORE INSERT OR UPDATE OR DELETE ON "{retirement_table}"
+FOR EACH ROW EXECUTE FUNCTION "{retirement_function}"()''',
+    )
+
+
+def guideline_policy_postgresql_trigger_contracts() -> dict[str, dict[str, object]]:
+    """Return the exact non-internal PostgreSQL trigger catalog contract."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        GuidelineBoardBindingRow,
+        GuidelineHeadRow,
+        GuidelineRetirementRow,
+        GuidelineRevisionRow,
+    )
+
+    prefix = GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX
+    return {
+        f"{prefix}_revision_guard": {
+            "table_name": GuidelineRevisionRow.__tablename__,
+            "function_name": "pulse_guideline_revision_immutable_guard",
+            "tgtype": 31,  # ROW | BEFORE | INSERT | DELETE | UPDATE
+        },
+        f"{prefix}_head_guard": {
+            "table_name": GuidelineHeadRow.__tablename__,
+            "function_name": "pulse_guideline_head_guard",
+            "tgtype": 27,
+        },
+        f"{prefix}_binding_guard": {
+            "table_name": GuidelineBoardBindingRow.__tablename__,
+            "function_name": "pulse_guideline_binding_immutable_guard",
+            "tgtype": 31,  # ROW | BEFORE | INSERT | DELETE | UPDATE
+        },
+        f"{prefix}_retirement_guard": {
+            "table_name": GuidelineRetirementRow.__tablename__,
+            "function_name": "pulse_guideline_retirement_immutable_guard",
+            "tgtype": 31,
+        },
+    }
+
+
+def audit_guideline_policy_postgresql_trigger_rows(
+    rows: list[object] | tuple[object, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Audit exact PG catalog rows and identify only the known predecessor."""
+
+    expected = guideline_policy_postgresql_trigger_contracts()
+    existing = {str(row["name"]): row for row in rows}
+    unexpected = set(existing) - set(expected)
+    if unexpected:
+        raise RuntimeError(
+            "guideline policy has unexpected PostgreSQL owned triggers: "
+            + ", ".join(sorted(unexpected))
+        )
+    missing = tuple(sorted(set(expected) - set(existing)))
+    predecessors: list[str] = []
+    binding_name = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_binding_guard"
+    revision_name = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_revision_guard"
+    for trigger_name, row in existing.items():
+        contract = expected[trigger_name]
+        common_exact = (
+            str(row["table_name"]) == contract["table_name"]
+            and str(row["function_name"]) == contract["function_name"]
+            and str(row["tgenabled"]) == "O"
+            and row["tgqual"] is None
+        )
+        observed_type = int(row["tgtype"])
+        if common_exact and observed_type == contract["tgtype"]:
+            continue
+        if (
+            trigger_name in {binding_name, revision_name}
+            and common_exact
+            and observed_type == 27
+        ):
+            predecessors.append(trigger_name)
+            continue
+        raise RuntimeError(
+            "guideline policy PostgreSQL trigger is corrupt: " + trigger_name
+        )
+    return missing, tuple(sorted(predecessors))
 
 
 def _knowledge_propagation_v2_trigger_manifest(
@@ -656,31 +3142,107 @@ def _sqlite_owned_table_contract(
                 ),
             )
         )
+    inline_impact_columns = {
+        "impact_receipt_id",
+        "impact_adoption_id",
+        "impact_unlink_id",
+    }
+    pragma_foreign_keys: dict[str, list[dict[str, object]]] = {}
+    table_ddl = ""
+    if table.name == "guideline_board_bindings":
+        pragma_rows = (
+            sync_conn.exec_driver_sql(f'PRAGMA foreign_key_list("{table.name}")')
+            .mappings()
+            .all()
+        )
+        for row in pragma_rows:
+            pragma_foreign_keys.setdefault(str(row["from"]), []).append(dict(row))
+        table_ddl = str(
+            sync_conn.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table.name,),
+            ).scalar_one()
+        )
+
+    def _inline_constraint_name(column_name: str) -> str | None:
+        identifier = (
+            rf'(?:"{re.escape(column_name)}"|'
+            rf"`{re.escape(column_name)}`|"
+            rf"\[{re.escape(column_name)}\]|"
+            rf"{re.escape(column_name)})"
+        )
+        name = (
+            r'(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|'
+            r"([A-Za-z_][A-Za-z0-9_$]*))"
+        )
+        inline = re.search(
+            rf"(?is)(?:\(|,)\s*{identifier}\s+[^,]*?"
+            rf"\bCONSTRAINT\s+{name}\s+REFERENCES\b",
+            table_ddl,
+        )
+        if inline is not None:
+            return next(
+                (value for value in inline.groups() if value is not None),
+                None,
+            )
+        table_level = re.search(
+            rf"(?is)\bCONSTRAINT\s+{name}\s+FOREIGN\s+KEY\s*"
+            rf"\(\s*{identifier}\s*\)",
+            table_ddl,
+        )
+        if table_level is None:
+            return None
+        return next(
+            (value for value in table_level.groups() if value is not None),
+            None,
+        )
+
     observed_foreign_keys = []
     for constraint in inspector.get_foreign_keys(table.name):
         options = constraint.get("options") or {}
+        constrained_columns = tuple(
+            str(column) for column in constraint.get("constrained_columns") or ()
+        )
+        constraint_name = constraint.get("name")
+        referred_schema = constraint.get("referred_schema")
+        referred_table = constraint.get("referred_table")
+        referred_columns = tuple(
+            str(column) for column in constraint.get("referred_columns") or ()
+        )
+        ondelete = (
+            str(options.get("ondelete")).upper() if options.get("ondelete") else None
+        )
+        onupdate = (
+            str(options.get("onupdate")).upper() if options.get("onupdate") else None
+        )
+        if (
+            len(constrained_columns) == 1
+            and constrained_columns[0] in inline_impact_columns
+            and pragma_foreign_keys
+        ):
+            pragma_rows = pragma_foreign_keys.get(
+                constrained_columns[0],
+                [],
+            )
+            if len(pragma_rows) == 1:
+                pragma = pragma_rows[0]
+                constraint_name = _inline_constraint_name(constrained_columns[0])
+                referred_schema = None
+                referred_table = str(pragma["table"])
+                referred_columns = (str(pragma["to"]),)
+                pragma_ondelete = str(pragma["on_delete"]).upper()
+                pragma_onupdate = str(pragma["on_update"]).upper()
+                ondelete = None if pragma_ondelete == "NO ACTION" else pragma_ondelete
+                onupdate = None if pragma_onupdate == "NO ACTION" else pragma_onupdate
         observed_foreign_keys.append(
             (
-                constraint.get("name"),
-                tuple(
-                    str(column)
-                    for column in constraint.get("constrained_columns") or ()
-                ),
-                constraint.get("referred_schema"),
-                constraint.get("referred_table"),
-                tuple(
-                    str(column) for column in constraint.get("referred_columns") or ()
-                ),
-                (
-                    str(options.get("ondelete")).upper()
-                    if options.get("ondelete")
-                    else None
-                ),
-                (
-                    str(options.get("onupdate")).upper()
-                    if options.get("onupdate")
-                    else None
-                ),
+                constraint_name,
+                constrained_columns,
+                referred_schema,
+                referred_table,
+                referred_columns,
+                ondelete,
+                onupdate,
             )
         )
 
@@ -712,6 +3274,408 @@ def _sqlite_owned_table_contract(
             "foreign_keys": tuple(sorted(observed_foreign_keys, key=repr)),
         },
     }
+
+
+def _postgresql_owned_table_contract(
+    sync_conn: object,
+    table: object,
+) -> dict[str, dict[str, object]]:
+    """Return the exact PostgreSQL structure owned by one ORM table.
+
+    PostgreSQL assigns implementation-specific names to primary-key indexes and
+    may expose ``NO ACTION`` instead of an omitted referential action.  Those
+    two representation details are normalized; columns, named uniques/checks,
+    explicit indexes, and every FK option (including deferred cycles) remain
+    exact.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+
+    inspector = sa_inspect(sync_conn)
+
+    def _compiled_type(value: object) -> str:
+        compile_value = getattr(value, "compile")
+        return re.sub(
+            r"\s+",
+            " ",
+            str(compile_value(dialect=sync_conn.dialect)).strip().lower(),
+        )
+
+    def _strip_outer_parentheses(value: str) -> str:
+        normalized = value.strip()
+        while normalized.startswith("(") and normalized.endswith(")"):
+            depth = 0
+            wraps_complete_expression = True
+            for position, character in enumerate(normalized):
+                if character == "(":
+                    depth += 1
+                elif character == ")":
+                    depth -= 1
+                    if depth == 0 and position != len(normalized) - 1:
+                        wraps_complete_expression = False
+                        break
+            if not wraps_complete_expression or depth != 0:
+                break
+            normalized = normalized[1:-1].strip()
+        return normalized
+
+    def _normalized_expression(value: object) -> str:
+        normalized = "" if value is None else str(value)
+        normalized = re.sub(
+            r"::\s*(?:character\s+varying(?:\(\d+\))?|"
+            r"varchar(?:\(\d+\))?|text|smallint|integer|bigint|"
+            r"boolean|timestamp(?:\s+with(?:out)?\s+time\s+zone)?)"
+            r"(?:\[\])?",
+            "",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        simple_atom = (
+            r'(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$.]*|'
+            r"'(?:''|[^'])*')"
+        )
+        while True:
+            without_redundant_atom_parentheses = re.sub(
+                rf"\(\s*({simple_atom})\s*\)",
+                r"\1",
+                normalized,
+            )
+            if without_redundant_atom_parentheses == normalized:
+                break
+            normalized = without_redundant_atom_parentheses
+        normalized = re.sub(
+            r"(?P<left>[A-Za-z0-9_\".]+)\s*=\s*ANY\s*"
+            r"\(\s*(?:\(\s*)?ARRAY\s*\[(?P<values>.*?)\]"
+            r"\s*(?:\)\s*)?\)",
+            lambda match: f"{match.group('left')} IN ({match.group('values')})",
+            normalized,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        comparison = re.compile(
+            r"(?:<>|<=|>=|=|<|>|\bIS\b|\bIN\b)",
+            flags=re.IGNORECASE,
+        )
+        boolean_operator = re.compile(
+            r"\b(?:AND|OR)\b",
+            flags=re.IGNORECASE,
+        )
+        arithmetic_operator = re.compile(r"(?:\+|-|\*|/|%)")
+        comparison_suffix = re.compile(r"(?:<>|<=|>=|=|<|>)\s*$")
+
+        def _parenthesis_pairs(expression: str) -> list[tuple[int, int]]:
+            pairs: list[tuple[int, int]] = []
+            stack: list[int] = []
+            quote: str | None = None
+            position = 0
+            while position < len(expression):
+                character = expression[position]
+                if quote is not None:
+                    if character == quote:
+                        if (
+                            quote == "'"
+                            and position + 1 < len(expression)
+                            and expression[position + 1] == quote
+                        ):
+                            position += 2
+                            continue
+                        quote = None
+                    position += 1
+                    continue
+                if character in {"'", '"'}:
+                    quote = character
+                elif character == "(":
+                    stack.append(position)
+                elif character == ")" and stack:
+                    pairs.append((stack.pop(), position))
+                position += 1
+            return pairs
+
+        def _top_level_sql(expression: str) -> str:
+            top_level: list[str] = []
+            depth = 0
+            quote: str | None = None
+            position = 0
+            while position < len(expression):
+                character = expression[position]
+                if quote is not None:
+                    if character == quote:
+                        if (
+                            quote == "'"
+                            and position + 1 < len(expression)
+                            and expression[position + 1] == quote
+                        ):
+                            position += 2
+                            continue
+                        quote = None
+                    top_level.append(" ")
+                    position += 1
+                    continue
+                if character in {"'", '"'}:
+                    quote = character
+                    top_level.append(" ")
+                elif character == "(":
+                    depth += 1
+                    top_level.append(" ")
+                elif character == ")":
+                    depth = max(0, depth - 1)
+                    top_level.append(" ")
+                elif depth == 0:
+                    top_level.append(character)
+                else:
+                    top_level.append(" ")
+                position += 1
+            return "".join(top_level)
+
+        def _without_one_atomic_predicate_wrapper(
+            expression: str,
+        ) -> str:
+            for start, end in _parenthesis_pairs(expression):
+                body = expression[start + 1 : end].strip()
+                top_level = _top_level_sql(body)
+                if comparison.search(top_level) and not (
+                    boolean_operator.search(top_level)
+                ):
+                    return expression[:start] + body + expression[end + 1 :]
+            return expression
+
+        def _without_one_redundant_rhs_wrapper(
+            expression: str,
+        ) -> str:
+            for start, end in _parenthesis_pairs(expression):
+                body = expression[start + 1 : end].strip()
+                top_level = _top_level_sql(body)
+                if (
+                    comparison_suffix.search(expression[:start])
+                    and arithmetic_operator.search(top_level)
+                    and not comparison.search(top_level)
+                    and not boolean_operator.search(top_level)
+                ):
+                    return expression[:start] + body + expression[end + 1 :]
+            return expression
+
+        while True:
+            without_atomic_predicate_parentheses = (
+                _without_one_atomic_predicate_wrapper(
+                    normalized,
+                )
+            )
+            without_redundant_rhs_parentheses = _without_one_redundant_rhs_wrapper(
+                without_atomic_predicate_parentheses,
+            )
+            without_duplicate_parentheses = re.sub(
+                r"\(\s*\(([^()]*)\)\s*\)",
+                r"(\1)",
+                without_redundant_rhs_parentheses,
+            )
+            if without_duplicate_parentheses == normalized:
+                break
+            normalized = without_duplicate_parentheses
+        normalized = _strip_outer_parentheses(normalized)
+        return _normalize_sqlite_contract_ddl(normalized)
+
+    def _server_default(value: object) -> str | None:
+        if value is None:
+            return None
+        argument = getattr(value, "arg", value)
+        compile_value = getattr(argument, "compile", None)
+        raw = (
+            str(
+                compile_value(
+                    dialect=sync_conn.dialect,
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+            if callable(compile_value)
+            else str(argument)
+        )
+        normalized = _normalized_expression(raw)
+        if normalized in {"'true'", "true"}:
+            return "true"
+        if normalized in {"'false'", "false"}:
+            return "false"
+        return normalized
+
+    def _action(value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        return None if normalized in {"", "NO ACTION"} else normalized
+
+    def _fk_contract(constraint: object) -> tuple[object, ...]:
+        elements = tuple(constraint.elements)
+        remote_table = elements[0].column.table if elements else None
+        return (
+            constraint.name,
+            tuple(str(element.parent.name) for element in elements),
+            getattr(remote_table, "schema", None),
+            getattr(remote_table, "name", None),
+            tuple(str(element.column.name) for element in elements),
+            _action(getattr(constraint, "ondelete", None)),
+            _action(getattr(constraint, "onupdate", None)),
+            (
+                bool(constraint.deferrable)
+                if constraint.deferrable is not None
+                else None
+            ),
+            (
+                str(constraint.initially).upper()
+                if constraint.initially is not None
+                else None
+            ),
+        )
+
+    def _observed_fk_contract(constraint: dict[str, object]) -> tuple[object, ...]:
+        options = constraint.get("options") or {}
+        deferrable = options.get("deferrable")
+        return (
+            constraint.get("name"),
+            tuple(
+                str(column) for column in constraint.get("constrained_columns") or ()
+            ),
+            constraint.get("referred_schema"),
+            constraint.get("referred_table"),
+            tuple(str(column) for column in constraint.get("referred_columns") or ()),
+            _action(options.get("ondelete")),
+            _action(options.get("onupdate")),
+            bool(deferrable) if deferrable is not None else None,
+            (
+                str(options.get("initially")).upper()
+                if options.get("initially") is not None
+                else None
+            ),
+        )
+
+    expected = {
+        "columns": tuple(
+            (
+                str(column.name),
+                _compiled_type(column.type),
+                bool(column.nullable),
+                _server_default(column.server_default),
+            )
+            for column in table.columns
+        ),
+        "primary_key": tuple(str(column.name) for column in table.primary_key.columns),
+        "unique_constraints": tuple(
+            sorted(
+                [
+                    (
+                        constraint.name,
+                        tuple(str(column.name) for column in constraint.columns),
+                    )
+                    for constraint in table.constraints
+                    if constraint.__class__.__name__ == "UniqueConstraint"
+                ],
+                key=repr,
+            )
+        ),
+        "checks": tuple(
+            sorted(
+                [
+                    (
+                        constraint.name,
+                        _normalized_expression(constraint.sqltext),
+                    )
+                    for constraint in table.constraints
+                    if constraint.__class__.__name__ == "CheckConstraint"
+                ],
+                key=repr,
+            )
+        ),
+        "indexes": tuple(
+            sorted(
+                [
+                    (
+                        index.name,
+                        bool(index.unique),
+                        tuple(
+                            str(getattr(expression, "name", expression))
+                            for expression in index.expressions
+                        ),
+                    )
+                    for index in table.indexes
+                ],
+                key=repr,
+            )
+        ),
+        "foreign_keys": tuple(
+            sorted(
+                [
+                    _fk_contract(constraint)
+                    for constraint in table.foreign_key_constraints
+                ],
+                key=repr,
+            )
+        ),
+    }
+    primary_key = inspector.get_pk_constraint(table.name)
+    observed = {
+        "columns": tuple(
+            (
+                str(column["name"]),
+                _compiled_type(column["type"]),
+                bool(column["nullable"]),
+                _server_default(column.get("default")),
+            )
+            for column in inspector.get_columns(table.name)
+        ),
+        "primary_key": tuple(
+            str(column) for column in primary_key.get("constrained_columns") or ()
+        ),
+        "unique_constraints": tuple(
+            sorted(
+                [
+                    (
+                        constraint.get("name"),
+                        tuple(
+                            str(column)
+                            for column in constraint.get("column_names") or ()
+                        ),
+                    )
+                    for constraint in inspector.get_unique_constraints(table.name)
+                ],
+                key=repr,
+            )
+        ),
+        "checks": tuple(
+            sorted(
+                [
+                    (
+                        constraint.get("name"),
+                        _normalized_expression(constraint.get("sqltext")),
+                    )
+                    for constraint in inspector.get_check_constraints(table.name)
+                ],
+                key=repr,
+            )
+        ),
+        "indexes": tuple(
+            sorted(
+                [
+                    (
+                        index.get("name"),
+                        bool(index.get("unique")),
+                        tuple(
+                            str(column) for column in index.get("column_names") or ()
+                        ),
+                    )
+                    for index in inspector.get_indexes(table.name)
+                    if not index.get("duplicates_constraint")
+                ],
+                key=repr,
+            )
+        ),
+        "foreign_keys": tuple(
+            sorted(
+                [
+                    _observed_fk_contract(constraint)
+                    for constraint in inspector.get_foreign_keys(table.name)
+                ],
+                key=repr,
+            )
+        ),
+    }
+    return {"expected": expected, "observed": observed}
 
 
 async def create_all_boundary() -> None:
@@ -2350,8 +5314,7 @@ async def _migrate_add_spec_edition() -> None:
         try:
             await conn.execute(
                 sa_text(
-                    "ALTER TABLE specs ADD COLUMN "
-                    "edition INTEGER DEFAULT 1 NOT NULL"
+                    "ALTER TABLE specs ADD COLUMN edition INTEGER DEFAULT 1 NOT NULL"
                 )
             )
         except Exception:
@@ -4211,6 +7174,4711 @@ async def _migrate_add_board_guideline_provenance() -> None:
                 pass
 
 
+async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
+    """Converge the additive B04 column/table before the strict B03 audit.
+
+    Existing B03 databases do not have ``binding.state`` or the retirement
+    table.  The following B03 convergence step selects the declarative binding
+    table and performs an exact SQLite contract audit, so this raw/introspective
+    substrate step must precede it in the ordered migration ledger.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        GuidelineBoardBindingRow,
+        GuidelineImportBindingCandidateRow,
+        GuidelineRetirementRow,
+        GuidelineRevisionNoopReplayRow,
+        GuidelineRevisionRow,
+    )
+
+    engine = get_engine()
+    changed = False
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "guideline policy lifecycle migration supports only SQLite "
+                "and PostgreSQL"
+            )
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        binding_table = GuidelineBoardBindingRow.__tablename__
+        if binding_table not in table_names:
+            raise RuntimeError(
+                "guideline policy lifecycle migration requires create_all; "
+                f"missing table: {binding_table}"
+            )
+        binding_columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns(binding_table)
+            }
+        )
+        if "state" not in binding_columns:
+            state_constraint = (
+                " CONSTRAINT ck_guideline_binding_state "
+                "CHECK (state IN ('active', 'unlinked'))"
+                if dialect == "sqlite"
+                else ""
+            )
+            await conn.execute(
+                sa_text(
+                    f'ALTER TABLE "{binding_table}" '
+                    "ADD COLUMN state VARCHAR(20) "
+                    "NOT NULL DEFAULT 'active'" + state_constraint
+                )
+            )
+            if dialect == "postgresql":
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{binding_table}" '
+                        "ADD CONSTRAINT ck_guideline_binding_state "
+                        "CHECK (state IN ('active', 'unlinked'))"
+                    )
+                )
+            changed = True
+        if GuidelineRetirementRow.__tablename__ not in table_names:
+            await conn.run_sync(
+                lambda sync_conn: GuidelineRetirementRow.__table__.create(
+                    sync_conn,
+                    checkfirst=True,
+                )
+            )
+            changed = True
+        noop_table = GuidelineRevisionNoopReplayRow.__tablename__
+        if noop_table not in table_names:
+            await conn.run_sync(
+                lambda sync_conn: GuidelineRevisionNoopReplayRow.__table__.create(
+                    sync_conn,
+                    checkfirst=True,
+                )
+            )
+            changed = True
+        revision_table = GuidelineRevisionRow.__tablename__
+        if revision_table not in table_names:
+            raise RuntimeError(
+                "guideline policy lifecycle migration requires create_all; "
+                f"missing table: {revision_table}"
+            )
+        revision_columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns(
+                    revision_table
+                )
+            }
+        )
+        if "legacy_version_text" not in revision_columns:
+            await conn.execute(
+                sa_text(
+                    f'ALTER TABLE "{revision_table}" '
+                    "ADD COLUMN legacy_version_text VARCHAR(64)"
+                )
+            )
+            changed = True
+        backfilled_legacy_versions = await conn.execute(
+            sa_text(
+                f'UPDATE "{revision_table}" '
+                "SET legacy_version_text = CAST(legacy_version AS VARCHAR) "
+                "WHERE legacy_version IS NOT NULL "
+                "AND legacy_version_text IS NULL"
+            )
+        )
+        changed = (
+            changed or int(backfilled_legacy_versions.rowcount or 0) > 0
+        )
+        if GuidelineImportBindingCandidateRow.__tablename__ not in table_names:
+            await conn.run_sync(
+                lambda sync_conn: GuidelineImportBindingCandidateRow.__table__.create(
+                    sync_conn,
+                    checkfirst=True,
+                )
+            )
+            changed = True
+        if dialect == "sqlite":
+            noop_contract = await conn.run_sync(
+                lambda sync_conn: _sqlite_owned_table_contract(
+                    sync_conn,
+                    GuidelineRevisionNoopReplayRow.__table__,
+                )
+            )
+            if noop_contract["observed"] != noop_contract["expected"]:
+                raise RuntimeError(
+                    "guideline revision no-op ledger has a non-canonical "
+                    "contract"
+                )
+            expected_noop_triggers = guideline_revision_noop_trigger_manifest()
+            noop_trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {
+                            "prefix": (
+                                f"{GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX}%"
+                            )
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            observed_noop_triggers = {
+                str(row["name"]): row for row in noop_trigger_rows
+            }
+            if set(observed_noop_triggers) - set(expected_noop_triggers):
+                raise RuntimeError(
+                    "guideline revision no-op ledger has unexpected owned "
+                    "triggers"
+                )
+            for trigger_name, (table_name, trigger_sql) in (
+                expected_noop_triggers.items()
+            ):
+                observed = observed_noop_triggers.get(trigger_name)
+                if observed is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "guideline revision no-op trigger drift: "
+                        + trigger_name
+                    )
+            candidate_contract = await conn.run_sync(
+                lambda sync_conn: _sqlite_owned_table_contract(
+                    sync_conn,
+                    GuidelineImportBindingCandidateRow.__table__,
+                )
+            )
+            if candidate_contract["observed"] != candidate_contract["expected"]:
+                raise RuntimeError(
+                    "guideline import binding candidate table has a "
+                    "non-canonical contract"
+                )
+            expected_triggers = (
+                guideline_import_binding_candidate_trigger_manifest()
+            )
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {
+                            "prefix": (
+                                f"{GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX}%"
+                            )
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            observed_triggers = {
+                str(row["name"]): row for row in trigger_rows
+            }
+            unexpected = set(observed_triggers) - set(expected_triggers)
+            if unexpected:
+                raise RuntimeError(
+                    "guideline import candidate has unexpected owned "
+                    "triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in (
+                expected_triggers.items()
+            ):
+                observed = observed_triggers.get(trigger_name)
+                if observed is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "guideline import candidate trigger drift: "
+                        + trigger_name
+                    )
+        else:
+            noop_function_ddl, noop_trigger_ddl = (
+                guideline_revision_noop_postgresql_ddl()
+            )
+            await conn.execute(sa_text(noop_function_ddl))
+            noop_trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT trigger.tgname AS name, "
+                            "relation.relname AS table_name, "
+                            "procedure.proname AS function_name, "
+                            "trigger.tgenabled AS enabled, "
+                            "trigger.tgtype AS trigger_type, "
+                            "pg_get_triggerdef(trigger.oid, true) "
+                            "AS definition "
+                            "FROM pg_trigger AS trigger "
+                            "JOIN pg_class AS relation "
+                            "ON relation.oid = trigger.tgrelid "
+                            "JOIN pg_proc AS procedure "
+                            "ON procedure.oid = trigger.tgfoid "
+                            "WHERE NOT trigger.tgisinternal "
+                            "AND trigger.tgname = :name"
+                        ),
+                        {"name": GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if not noop_trigger_rows:
+                await conn.execute(sa_text(noop_trigger_ddl))
+                changed = True
+            elif (
+                len(noop_trigger_rows) != 1
+                or str(noop_trigger_rows[0]["table_name"]) != noop_table
+                or str(noop_trigger_rows[0]["function_name"])
+                != "pulse_guideline_revision_noop_guard"
+                or str(noop_trigger_rows[0]["enabled"]) != "O"
+                or int(noop_trigger_rows[0]["trigger_type"]) != 31
+            ):
+                raise RuntimeError(
+                    "guideline revision no-op PostgreSQL trigger drift"
+                )
+            function_ddl, trigger_ddl = (
+                guideline_import_binding_candidate_postgresql_ddl()
+            )
+            await conn.execute(sa_text(function_ddl))
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT trigger.tgname AS name, "
+                            "relation.relname AS table_name, "
+                            "procedure.proname AS function_name, "
+                            "trigger.tgenabled AS enabled, "
+                            "trigger.tgtype AS trigger_type, "
+                            "pg_get_triggerdef(trigger.oid, true) "
+                            "AS definition "
+                            "FROM pg_trigger AS trigger "
+                            "JOIN pg_class AS relation "
+                            "ON relation.oid = trigger.tgrelid "
+                            "JOIN pg_proc AS procedure "
+                            "ON procedure.oid = trigger.tgfoid "
+                            "WHERE NOT trigger.tgisinternal "
+                            "AND trigger.tgname = :name"
+                        ),
+                        {"name": GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if not trigger_rows:
+                await conn.execute(sa_text(trigger_ddl))
+                changed = True
+            else:
+                definition = " ".join(
+                    str(trigger_rows[0]["definition"]).lower().split()
+                )
+                events_are_exact = (
+                    " before delete or update " in definition
+                    or " before update or delete " in definition
+                )
+                if (
+                    len(trigger_rows) != 1
+                    or str(trigger_rows[0]["table_name"])
+                    != GuidelineImportBindingCandidateRow.__tablename__
+                    or str(trigger_rows[0]["function_name"])
+                    != "pulse_guideline_import_binding_candidate_guard"
+                    or str(trigger_rows[0]["enabled"]) != "O"
+                    # PostgreSQL pg_trigger bitmask: ROW(1) | BEFORE(2)
+                    # | DELETE(8) | UPDATE(16).
+                    or int(trigger_rows[0]["trigger_type"]) != 27
+                    or not events_are_exact
+                    or " for each row execute function " not in definition
+                    or "pulse_guideline_import_binding_candidate_guard"
+                    not in definition
+                ):
+                    raise RuntimeError(
+                        "guideline import candidate PostgreSQL trigger drift"
+                    )
+        invalid_states = int(
+            (
+                await conn.execute(
+                    sa_text(
+                        f'SELECT COUNT(*) FROM "{binding_table}" '
+                        "WHERE state IS NULL "
+                        "OR state NOT IN ('active', 'unlinked')"
+                    )
+                )
+            ).scalar_one()
+        )
+        if invalid_states:
+            raise RuntimeError(
+                "guideline policy lifecycle migration found invalid binding "
+                f"states: {invalid_states}"
+            )
+    return None if changed else "skipped"
+
+
+async def _migrate_guideline_policy_v1_schema() -> str | None:
+    """Backfill the immutable SK-B guideline authority and install its guards.
+
+    The legacy ``guidelines`` and ``board_guidelines`` tables remain readable
+    during register-before-remove.  Each observed legacy guideline becomes one
+    honest ``1.0.0`` baseline revision; counters above one are retained as
+    provenance and explicitly marked unresolvable instead of being expanded
+    into invented history.  Board links and inline guidelines are then pinned
+    to that exact baseline.  Default-template JSON receives the same exact
+    revision identity while retaining every pre-existing field and key order.
+
+    The migration is replay-safe: stable UUID5 identities, scoped idempotency
+    constraints, exact row comparisons, and audited owned triggers make a
+    second execution a true ``skipped`` result with no row delta.
+    """
+
+    import hashlib
+    import json
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from uuid import NAMESPACE_URL, uuid5
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
+        guideline_revision_content_digest,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardGuideline,
+        DefaultBoardConfiguration,
+        Guideline,
+        GuidelineBoardBindingRow,
+        GuidelineHeadRow,
+        GuidelineImportBindingCandidateRow,
+        GuidelineRetirementRow,
+        GuidelineRevisionNoopReplayRow,
+        GuidelineRevisionRow,
+    )
+
+    tables = (
+        GuidelineRevisionRow.__table__,
+        GuidelineHeadRow.__table__,
+        GuidelineBoardBindingRow.__table__,
+        GuidelineImportBindingCandidateRow.__table__,
+        GuidelineRevisionNoopReplayRow.__table__,
+        GuidelineRetirementRow.__table__,
+    )
+
+    def _stable_id(kind: str, *parts: object) -> str:
+        material = "/".join(str(part) for part in parts)
+        return str(
+            uuid5(
+                NAMESPACE_URL,
+                f"okto-pulse/guideline-policy/v1/{kind}/{material}",
+            )
+        )
+
+    def _request_digest(payload: object) -> str:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _require_exact(
+        *,
+        kind: str,
+        identity: str,
+        observed: object,
+        expected: dict[str, object],
+    ) -> None:
+        if observed is None:
+            return
+
+        def _comparable(value: object) -> object:
+            if isinstance(value, datetime):
+                if value.tzinfo is None or value.utcoffset() is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                return value.astimezone(timezone.utc)
+            return value
+
+        mismatches: list[str] = []
+        for field, expected_value in expected.items():
+            observed_value = getattr(observed, field)
+            if _comparable(observed_value) != _comparable(expected_value):
+                mismatches.append(
+                    f"{field}={observed_value!r} (expected {expected_value!r})"
+                )
+        if mismatches:
+            raise RuntimeError(
+                f"guideline policy {kind} drift for {identity}: "
+                + "; ".join(mismatches)
+            )
+
+    async def _fetch_one(conn: object, table: object, **criteria: object):
+        statement = select(table)
+        for column_name, value in criteria.items():
+            statement = statement.where(table.c[column_name] == value)
+        row = (await conn.execute(statement)).mappings().one_or_none()
+        return SimpleNamespace(**dict(row)) if row is not None else None
+
+    async def _fetch_all(
+        conn: object,
+        table: object,
+        *,
+        where: tuple[object, ...] = (),
+        order_by: tuple[object, ...] = (),
+    ) -> list[SimpleNamespace]:
+        statement = select(table)
+        if where:
+            statement = statement.where(*where)
+        if order_by:
+            statement = statement.order_by(*order_by)
+        return [
+            SimpleNamespace(**dict(row))
+            for row in (await conn.execute(statement)).mappings().all()
+        ]
+
+    async def _install_sqlite_triggers(conn: object) -> bool:
+        expected = guideline_policy_immutability_trigger_manifest()
+        predecessor = guideline_policy_immutability_trigger_manifest(
+            allow_board_erasure=False,
+        )
+        b03_predecessors = guideline_policy_b03_sqlite_trigger_predecessors()
+        rows = (
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name LIKE :prefix"
+                    ),
+                    {"prefix": (f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}%")},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        existing = {str(row["name"]): row for row in rows}
+        unexpected = set(existing) - set(expected)
+        if unexpected:
+            raise RuntimeError(
+                "guideline policy has unexpected owned triggers: "
+                + ", ".join(sorted(unexpected))
+            )
+        changed = False
+        for trigger_name, (table_name, trigger_sql) in expected.items():
+            row = existing.get(trigger_name)
+            if row is None:
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+                continue
+            observed_table = str(row["tbl_name"])
+            observed_sql = normalize_global_discovery_source_revision_trigger_sql(
+                row["sql"]
+            )
+            expected_sql = normalize_global_discovery_source_revision_trigger_sql(
+                trigger_sql
+            )
+            if observed_table == table_name and observed_sql == expected_sql:
+                continue
+            b03_predecessor = b03_predecessors.get(trigger_name)
+            if b03_predecessor is not None:
+                predecessor_table, predecessor_sql = b03_predecessor
+                if observed_table == predecessor_table and observed_sql == (
+                    normalize_global_discovery_source_revision_trigger_sql(
+                        predecessor_sql
+                    )
+                ):
+                    await conn.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+            predecessor_table, predecessor_sql = predecessor[trigger_name]
+            if observed_table == predecessor_table and observed_sql == (
+                normalize_global_discovery_source_revision_trigger_sql(predecessor_sql)
+            ):
+                await conn.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+                continue
+            raise RuntimeError(
+                f"guideline policy immutability trigger {trigger_name} is corrupt"
+            )
+
+        final_rows = (
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name LIKE :prefix"
+                    ),
+                    {"prefix": (f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}%")},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        final = {str(row["name"]): row for row in final_rows}
+        if set(final) != set(expected):
+            raise RuntimeError(
+                "guideline policy immutability trigger installation is incomplete"
+            )
+        for trigger_name, (table_name, trigger_sql) in expected.items():
+            row = final[trigger_name]
+            if str(row["tbl_name"]) != table_name or (
+                normalize_global_discovery_source_revision_trigger_sql(row["sql"])
+                != normalize_global_discovery_source_revision_trigger_sql(trigger_sql)
+            ):
+                raise RuntimeError(
+                    "guideline policy immutability trigger audit failed: "
+                    + trigger_name
+                )
+        return changed
+
+    async def _install_postgresql_triggers(conn: object) -> bool:
+        ddl = guideline_policy_postgresql_immutability_ddl()
+        # CREATE OR REPLACE functions are safe and keep the permit policy
+        # convergent. Trigger identities are separately audited below.
+        for function_ddl in ddl[:4]:
+            await conn.execute(sa_text(function_ddl))
+        expected_trigger_ddl = {
+            f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_revision_guard": ddl[4],
+            f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_head_guard": ddl[5],
+            f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_binding_guard": ddl[6],
+            f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_retirement_guard": ddl[7],
+        }
+
+        async def _catalog_rows() -> list[object]:
+            return list(
+                (
+                    (
+                        await conn.execute(
+                            sa_text(
+                                "SELECT trigger.tgname AS name, "
+                                "relation.relname AS table_name, "
+                                "procedure.proname AS function_name, "
+                                "trigger.tgenabled AS tgenabled, "
+                                "trigger.tgtype::integer AS tgtype, "
+                                "trigger.tgqual AS tgqual "
+                                "FROM pg_trigger AS trigger "
+                                "JOIN pg_class AS relation "
+                                "ON relation.oid = trigger.tgrelid "
+                                "JOIN pg_proc AS procedure "
+                                "ON procedure.oid = trigger.tgfoid "
+                                "WHERE NOT trigger.tgisinternal "
+                                "AND trigger.tgname LIKE :prefix"
+                            ),
+                            {
+                                "prefix": (
+                                    f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}%"
+                                )
+                            },
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            )
+
+        missing, predecessors = audit_guideline_policy_postgresql_trigger_rows(
+            await _catalog_rows()
+        )
+        changed = False
+        contracts = guideline_policy_postgresql_trigger_contracts()
+        for trigger_name in predecessors:
+            table_name = str(contracts[trigger_name]["table_name"])
+            await conn.exec_driver_sql(
+                f'DROP TRIGGER "{trigger_name}" ON "{table_name}"'
+            )
+            await conn.execute(sa_text(expected_trigger_ddl[trigger_name]))
+            changed = True
+        for trigger_name in missing:
+            await conn.execute(sa_text(expected_trigger_ddl[trigger_name]))
+            changed = True
+        final_missing, final_predecessors = (
+            audit_guideline_policy_postgresql_trigger_rows(await _catalog_rows())
+        )
+        if final_missing or final_predecessors:
+            raise RuntimeError(
+                "guideline policy PostgreSQL trigger convergence incomplete"
+            )
+        return changed
+
+    engine = get_engine()
+    changed = False
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "guideline policy migration supports only SQLite and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        required = {
+            Guideline.__tablename__,
+            BoardGuideline.__tablename__,
+            DefaultBoardConfiguration.__tablename__,
+            *(table.name for table in tables),
+        }
+        missing = required - table_names
+        if missing:
+            raise RuntimeError(
+                "guideline policy migration requires create_all; missing tables: "
+                + ", ".join(sorted(missing))
+            )
+        if dialect == "sqlite":
+            for table in tables:
+                contract = await conn.run_sync(
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn,
+                        owned,
+                    )
+                )
+                if contract["observed"] != contract["expected"]:
+                    raise RuntimeError(
+                        "guideline policy table has a non-canonical contract: "
+                        + table.name
+                    )
+
+        guideline_rows = await _fetch_all(
+            conn,
+            Guideline.__table__,
+            order_by=(Guideline.__table__.c.id.asc(),),
+        )
+        baselines: dict[str, GuidelineRevisionRow] = {}
+        guidelines: dict[str, Guideline] = {}
+        for legacy in guideline_rows:
+            if legacy.scope not in {"global", "inline"}:
+                raise RuntimeError(
+                    f"guideline policy legacy scope invalid: {legacy.id}"
+                )
+            if legacy.scope == "global" and legacy.board_id is not None:
+                raise RuntimeError(
+                    f"guideline policy global guideline has board_id: {legacy.id}"
+                )
+            if legacy.scope == "inline" and legacy.board_id is None:
+                raise RuntimeError(
+                    f"guideline policy inline guideline lacks board_id: {legacy.id}"
+                )
+            if not isinstance(legacy.version, int) or legacy.version < 1:
+                raise RuntimeError(
+                    f"guideline policy legacy version invalid: {legacy.id}"
+                )
+            if (
+                not isinstance(legacy.title, str)
+                or not legacy.title.strip()
+                or not isinstance(legacy.content, str)
+                or not legacy.content.strip()
+            ):
+                raise RuntimeError(
+                    f"guideline policy legacy semantic text invalid: {legacy.id}"
+                )
+            canonical_title = legacy.title.strip()
+            canonical_content = legacy.content.strip()
+            if legacy.tags is not None and (
+                not isinstance(legacy.tags, list)
+                or any(
+                    not isinstance(tag, str) or not tag.strip() for tag in legacy.tags
+                )
+            ):
+                raise RuntimeError(f"guideline policy legacy tags invalid: {legacy.id}")
+            canonical_tags = tuple(sorted(tag.strip() for tag in (legacy.tags or ())))
+            if len(set(canonical_tags)) != len(canonical_tags):
+                raise RuntimeError(
+                    f"guideline policy legacy tags duplicate: {legacy.id}"
+                )
+            guidelines[legacy.id] = legacy
+            migration_revision_id = _stable_id(
+                "guideline",
+                legacy.id,
+                "revision",
+                "1.0.0",
+            )
+            content_digest = guideline_revision_content_digest(
+                title=canonical_title,
+                content=canonical_content,
+                rules=(),
+                tags=canonical_tags,
+            )
+            revision_key = f"migration:guideline:{legacy.id}:baseline:1.0.0"
+            revision_request_digest = _request_digest(
+                {
+                    "guideline_id": legacy.id,
+                    "revision_id": migration_revision_id,
+                    "title": canonical_title,
+                    "content": canonical_content,
+                    "legacy_title": legacy.title,
+                    "legacy_content": legacy.content,
+                    "content_digest": content_digest,
+                    "legacy_version": legacy.version,
+                    "legacy_tags": legacy.tags,
+                }
+            )
+            revision_expected = {
+                "guideline_id": legacy.id,
+                "revision_number": 1,
+                "semantic_version": "1.0.0",
+                "title": canonical_title,
+                "content": canonical_content,
+                "content_digest": content_digest,
+                "tags": list(canonical_tags),
+                "rules": [],
+                "created_by": legacy.owner_id,
+                "created_at": legacy.created_at,
+                "published_head_revision": 1,
+                "published_head_updated_at": (legacy.updated_at or legacy.created_at),
+                "parent_revision_id": None,
+                "legacy_version": legacy.version,
+                "legacy_version_unresolvable": legacy.version != 1,
+                "legacy_tags": legacy.tags,
+                "idempotency_key": revision_key,
+                "request_digest": revision_request_digest,
+                "legacy_version_text": str(legacy.version),
+            }
+            existing_revisions = await _fetch_all(
+                conn,
+                GuidelineRevisionRow.__table__,
+                where=(GuidelineRevisionRow.__table__.c.guideline_id == legacy.id,),
+                order_by=(
+                    GuidelineRevisionRow.__table__.c.revision_number.asc(),
+                    GuidelineRevisionRow.__table__.c.revision_id.asc(),
+                ),
+            )
+            if not existing_revisions:
+                await conn.execute(
+                    GuidelineRevisionRow.__table__.insert().values(
+                        revision_id=migration_revision_id,
+                        **revision_expected,
+                    )
+                )
+                changed = True
+                existing_revisions = await _fetch_all(
+                    conn,
+                    GuidelineRevisionRow.__table__,
+                    where=(GuidelineRevisionRow.__table__.c.guideline_id == legacy.id,),
+                    order_by=(
+                        GuidelineRevisionRow.__table__.c.revision_number.asc(),
+                        GuidelineRevisionRow.__table__.c.revision_id.asc(),
+                    ),
+                )
+            initial_revisions = [
+                row for row in existing_revisions if row.revision_number == 1
+            ]
+            if len(initial_revisions) != 1:
+                raise RuntimeError(
+                    "guideline policy requires exactly one initial revision: "
+                    + legacy.id
+                )
+            baseline = initial_revisions[0]
+            is_migrated_legacy = baseline.legacy_version is not None
+            if is_migrated_legacy:
+                if baseline.revision_id != migration_revision_id:
+                    raise RuntimeError(
+                        "guideline policy migrated baseline identity drift: "
+                        + legacy.id
+                    )
+                _require_exact(
+                    kind="baseline revision",
+                    identity=legacy.id,
+                    observed=baseline,
+                    expected=revision_expected,
+                )
+            else:
+                # A native authority already owns revision #1.  Its revision
+                # identity is caller-generated and must never be replaced by
+                # the deterministic legacy UUID5 on a later startup.
+                if (
+                    baseline.parent_revision_id is not None
+                    or baseline.semantic_version != "1.0.0"
+                    or baseline.legacy_version_unresolvable
+                    or baseline.legacy_tags is not None
+                ):
+                    raise RuntimeError(
+                        "guideline policy native baseline contract invalid: "
+                        + legacy.id
+                    )
+            previous_revision = None
+            for position, revision in enumerate(existing_revisions, start=1):
+                expected_parent = (
+                    None if previous_revision is None else previous_revision.revision_id
+                )
+                if (
+                    revision.revision_number != position
+                    or revision.parent_revision_id != expected_parent
+                    or revision.published_head_revision != position
+                ):
+                    raise RuntimeError(
+                        "guideline policy revision lineage invalid: "
+                        f"{legacy.id}:{revision.revision_id}"
+                    )
+                previous_revision = revision
+            baselines[legacy.id] = baseline
+
+            head = await _fetch_one(
+                conn,
+                GuidelineHeadRow.__table__,
+                guideline_id=legacy.id,
+            )
+            if head is None:
+                if len(existing_revisions) != 1 or not is_migrated_legacy:
+                    raise RuntimeError(
+                        "guideline policy cannot infer a missing head after "
+                        f"native or post-baseline revisions: {legacy.id}"
+                    )
+                await conn.execute(
+                    GuidelineHeadRow.__table__.insert().values(
+                        guideline_id=legacy.id,
+                        revision_id=baseline.revision_id,
+                        revision_number=1,
+                        semantic_version=baseline.semantic_version,
+                        head_revision=1,
+                        updated_at=legacy.updated_at or legacy.created_at,
+                    )
+                )
+                changed = True
+            else:
+                pointed = existing_revisions[-1]
+                if (
+                    pointed.guideline_id != legacy.id
+                    or pointed.revision_id != head.revision_id
+                    or pointed.revision_number != head.revision_number
+                    or pointed.semantic_version != head.semantic_version
+                    or head.head_revision != pointed.revision_number
+                ):
+                    raise RuntimeError(
+                        f"guideline policy head is not exact: {legacy.id}"
+                    )
+
+        link_rows = await _fetch_all(
+            conn,
+            BoardGuideline.__table__,
+            order_by=(BoardGuideline.__table__.c.id.asc(),),
+        )
+        linked_inline_ids: set[str] = set()
+        for link in link_rows:
+            legacy = guidelines.get(link.guideline_id)
+            baseline = baselines.get(link.guideline_id)
+            if legacy is None or baseline is None:
+                raise RuntimeError(
+                    f"guideline policy link references missing guideline: {link.id}"
+                )
+            if link.priority < 0:
+                raise RuntimeError(f"guideline policy link priority invalid: {link.id}")
+            if legacy.scope == "inline":
+                linked_inline_ids.add(legacy.id)
+                raise RuntimeError(
+                    f"guideline policy inline guideline also has a link: {link.id}"
+                )
+            binding_key = f"migration:board-guideline:{link.id}:binding:1"
+            unresolved = bool(
+                legacy.version != 1
+                or (
+                    link.guideline_version is not None
+                    and link.guideline_version != legacy.version
+                )
+            )
+            expected = {
+                "binding_id": link.id,
+                "binding_revision": 1,
+                "board_id": link.board_id,
+                "guideline_id": link.guideline_id,
+                "revision_id": baseline.revision_id,
+                "semantic_version": baseline.semantic_version,
+                "revision_digest": baseline.content_digest,
+                "priority": link.priority,
+                "adopted_by": legacy.owner_id,
+                "adopted_at": link.added_at,
+                "default_enforcement": "advisory",
+                "source_kind": "legacy_board_guideline",
+                "legacy_source_id": link.id,
+                "legacy_guideline_version": link.guideline_version,
+                "legacy_template_id": link.template_id,
+                "legacy_template_version": link.template_version,
+                "legacy_version_unresolvable": unresolved,
+                "idempotency_key": binding_key,
+            }
+            expected["request_digest"] = _request_digest(expected)
+            expected["state"] = "active"
+            existing = await _fetch_one(
+                conn,
+                GuidelineBoardBindingRow.__table__,
+                binding_id=link.id,
+                binding_revision=1,
+            )
+            if existing is None:
+                await conn.execute(
+                    GuidelineBoardBindingRow.__table__.insert().values(**expected)
+                )
+                changed = True
+                existing = await _fetch_one(
+                    conn,
+                    GuidelineBoardBindingRow.__table__,
+                    binding_id=link.id,
+                    binding_revision=1,
+                )
+            _require_exact(
+                kind="legacy board binding",
+                identity=link.id,
+                observed=existing,
+                expected=expected,
+            )
+
+        for legacy in guideline_rows:
+            if legacy.scope != "inline":
+                continue
+            if legacy.id in linked_inline_ids:
+                raise RuntimeError(
+                    f"guideline policy duplicate inline link: {legacy.id}"
+                )
+            baseline = baselines[legacy.id]
+            binding_id = _stable_id(
+                "board",
+                legacy.board_id,
+                "inline",
+                legacy.id,
+                "binding",
+            )
+            existing_inline_bindings = await _fetch_all(
+                conn,
+                GuidelineBoardBindingRow.__table__,
+                where=(GuidelineBoardBindingRow.__table__.c.guideline_id == legacy.id,),
+                order_by=(
+                    GuidelineBoardBindingRow.__table__.c.binding_revision.asc(),
+                    GuidelineBoardBindingRow.__table__.c.binding_id.asc(),
+                ),
+            )
+            if existing_inline_bindings and not any(
+                row.binding_id == binding_id and row.binding_revision == 1
+                for row in existing_inline_bindings
+            ):
+                # Native inline creation already appended its exact ACTIVE
+                # binding in the caller transaction.  Reuse that stable
+                # identity rather than inventing the legacy UUID5 lineage.
+                continue
+            binding_key = f"migration:inline:{legacy.id}:binding:1"
+            expected = {
+                "binding_id": binding_id,
+                "binding_revision": 1,
+                "board_id": legacy.board_id,
+                "guideline_id": legacy.id,
+                "revision_id": baseline.revision_id,
+                "semantic_version": baseline.semantic_version,
+                "revision_digest": baseline.content_digest,
+                "priority": 0,
+                "adopted_by": legacy.owner_id,
+                "adopted_at": legacy.created_at,
+                "default_enforcement": "advisory",
+                "source_kind": "legacy_inline_guideline",
+                "legacy_source_id": None,
+                "legacy_guideline_version": legacy.version,
+                "legacy_template_id": None,
+                "legacy_template_version": None,
+                "legacy_version_unresolvable": legacy.version != 1,
+                "idempotency_key": binding_key,
+            }
+            expected["request_digest"] = _request_digest(expected)
+            expected["state"] = "active"
+            existing = await _fetch_one(
+                conn,
+                GuidelineBoardBindingRow.__table__,
+                binding_id=binding_id,
+                binding_revision=1,
+            )
+            if existing is None:
+                await conn.execute(
+                    GuidelineBoardBindingRow.__table__.insert().values(**expected)
+                )
+                changed = True
+                existing = await _fetch_one(
+                    conn,
+                    GuidelineBoardBindingRow.__table__,
+                    binding_id=binding_id,
+                    binding_revision=1,
+                )
+            _require_exact(
+                kind="inline board binding",
+                identity=legacy.id,
+                observed=existing,
+                expected=expected,
+            )
+
+        binding_rows = await _fetch_all(
+            conn,
+            GuidelineBoardBindingRow.__table__,
+            order_by=(
+                GuidelineBoardBindingRow.__table__.c.binding_id.asc(),
+                GuidelineBoardBindingRow.__table__.c.binding_revision.asc(),
+            ),
+        )
+        binding_lineage: dict[str, tuple[str, str, int]] = {}
+        binding_states: dict[str, str] = {}
+        binding_identity_by_pair: dict[tuple[str, str], str] = {}
+        for binding in binding_rows:
+            identity = guidelines.get(binding.guideline_id)
+            valid_scope = identity is not None and (
+                (identity.scope == "global" and identity.board_id is None)
+                or (
+                    identity.scope == "inline" and identity.board_id == binding.board_id
+                )
+            )
+            if not valid_scope:
+                raise RuntimeError(
+                    "guideline policy existing binding scope invalid: "
+                    + binding.binding_id
+                )
+            previous = binding_lineage.get(binding.binding_id)
+            if previous is None:
+                valid_lineage = (
+                    binding.binding_revision == 1 and binding.state == "active"
+                )
+            else:
+                previous_board, previous_guideline, previous_revision = previous
+                previous_state = binding_states[binding.binding_id]
+                valid_lineage = (
+                    binding.board_id == previous_board
+                    and binding.guideline_id == previous_guideline
+                    and binding.binding_revision == previous_revision + 1
+                    and not (previous_state == "unlinked" and binding.state != "active")
+                )
+            if not valid_lineage:
+                raise RuntimeError(
+                    "guideline policy existing binding lineage invalid: "
+                    + binding.binding_id
+                )
+            binding_lineage[binding.binding_id] = (
+                binding.board_id,
+                binding.guideline_id,
+                binding.binding_revision,
+            )
+            binding_states[binding.binding_id] = binding.state
+            pair = (binding.board_id, binding.guideline_id)
+            existing_identity = binding_identity_by_pair.setdefault(
+                pair,
+                binding.binding_id,
+            )
+            if existing_identity != binding.binding_id:
+                raise RuntimeError(
+                    "guideline policy binding pair has multiple identities: "
+                    f"{binding.board_id}:{binding.guideline_id}"
+                )
+
+        defaults = await _fetch_all(
+            conn,
+            DefaultBoardConfiguration.__table__,
+            order_by=(DefaultBoardConfiguration.__table__.c.id.asc(),),
+        )
+        for default in defaults:
+            refs = default.guideline_default_refs
+            if refs is None:
+                continue
+            if not isinstance(refs, list):
+                raise RuntimeError(
+                    "guideline policy default refs must be a JSON array: " + default.id
+                )
+            normalized_refs: list[object] = []
+            refs_changed = False
+            for position, raw_ref in enumerate(refs):
+                if not isinstance(raw_ref, dict):
+                    raise RuntimeError(
+                        "guideline policy default ref must be an object: "
+                        f"{default.id}:{position}"
+                    )
+                normalized = dict(raw_ref)
+                guideline_id = normalized.get("guideline_id")
+                if not isinstance(guideline_id, str) or not guideline_id.strip():
+                    raise RuntimeError(
+                        "guideline policy default ref lacks guideline_id: "
+                        f"{default.id}:{position}"
+                    )
+                guideline_id = guideline_id.strip()
+                priority = normalized.get("priority", 0)
+                if type(priority) is not int or priority < 0:
+                    raise RuntimeError(
+                        "guideline policy default ref has an invalid priority: "
+                        f"{default.id}:{position}"
+                    )
+                baseline = baselines.get(guideline_id)
+                legacy = guidelines.get(guideline_id)
+                if baseline is None or legacy is None:
+                    if default.is_active or default.status == "active":
+                        raise RuntimeError(
+                            "guideline_policy_unresolved_active_reference:"
+                            f"{default.id}:{position}:dangling_reference:"
+                            f"{guideline_id}"
+                        )
+                    additions = {
+                        "revision_id": None,
+                        "legacy_version_unresolvable": True,
+                    }
+                elif legacy.scope == "inline":
+                    if default.is_active or default.status == "active":
+                        raise RuntimeError(
+                            "guideline_policy_unresolved_active_reference:"
+                            f"{default.id}:{position}:inline_reference:"
+                            f"{guideline_id}"
+                        )
+                    if normalized.get("revision_id") is not None or any(
+                        normalized.get(key) is not None
+                        for key in ("semantic_version", "revision_digest")
+                    ):
+                        raise RuntimeError(
+                            "guideline policy inactive inline default has an "
+                            f"exact pin: {default.id}:{position}"
+                        )
+                    additions = {
+                        "revision_id": None,
+                        "legacy_version": normalized.get("guideline_version"),
+                        "legacy_version_unresolvable": True,
+                    }
+                else:
+                    supplied_revision = normalized.get("revision_id")
+                    supplied_number = normalized.get("revision_number")
+                    captured_version = normalized.get("guideline_version")
+                    for field_name, value in (
+                        ("revision_number", supplied_number),
+                        ("guideline_version", captured_version),
+                    ):
+                        if value is None:
+                            continue
+                        if type(value) is not int or value < 1:
+                            raise RuntimeError(
+                                "guideline policy default ref has an invalid "
+                                f"{field_name}: {default.id}:{position}"
+                            )
+                    supplied_number = normalized.get("revision_number")
+                    captured_version = normalized.get("guideline_version")
+                    migrated_legacy = baseline.legacy_version is not None
+                    if supplied_revision is not None:
+                        pointed = await _fetch_one(
+                            conn,
+                            GuidelineRevisionRow.__table__,
+                            revision_id=str(supplied_revision),
+                        )
+                        if pointed is None or pointed.guideline_id != guideline_id:
+                            raise RuntimeError(
+                                "guideline policy default ref pins a foreign "
+                                f"revision: {default.id}:{position}"
+                            )
+                        resolved = pointed
+                    elif supplied_number is not None:
+                        resolved = await _fetch_one(
+                            conn,
+                            GuidelineRevisionRow.__table__,
+                            guideline_id=guideline_id,
+                            revision_number=supplied_number,
+                        )
+                    elif migrated_legacy:
+                        # ``guideline_version`` on the mutable predecessor was
+                        # not an immutable revision selector.  Preserve it as
+                        # legacy metadata while pinning the migrated baseline.
+                        resolved = baseline
+                    elif captured_version is not None:
+                        resolved = await _fetch_one(
+                            conn,
+                            GuidelineRevisionRow.__table__,
+                            guideline_id=guideline_id,
+                            revision_number=captured_version,
+                        )
+                    else:
+                        head = await _fetch_one(
+                            conn,
+                            GuidelineHeadRow.__table__,
+                            guideline_id=guideline_id,
+                        )
+                        resolved = (
+                            await _fetch_one(
+                                conn,
+                                GuidelineRevisionRow.__table__,
+                                guideline_id=guideline_id,
+                                revision_id=head.revision_id,
+                            )
+                            if head is not None
+                            else None
+                        )
+                    if resolved is None:
+                        raise RuntimeError(
+                            "guideline policy default ref revision does not "
+                            f"exist: {default.id}:{position}"
+                        )
+                    declared_fields = {
+                        "semantic_version": normalized.get("semantic_version"),
+                        "revision_digest": normalized.get("revision_digest"),
+                        "revision_number": supplied_number,
+                    }
+                    actual_fields = {
+                        "semantic_version": resolved.semantic_version,
+                        "revision_digest": resolved.content_digest,
+                        "revision_number": resolved.revision_number,
+                    }
+                    for field_name, declared in declared_fields.items():
+                        if (
+                            declared is not None
+                            and declared != actual_fields[field_name]
+                        ):
+                            raise RuntimeError(
+                                "guideline policy default ref exact pin drift: "
+                                f"{default.id}:{position}:{field_name}"
+                            )
+                    existing_legacy_version = normalized.get("legacy_version")
+                    legacy_input = migrated_legacy and (
+                        existing_legacy_version is None
+                        or existing_legacy_version == captured_version
+                    )
+                    if (
+                        captured_version is not None
+                        and captured_version != resolved.revision_number
+                        and not legacy_input
+                    ):
+                        raise RuntimeError(
+                            "guideline policy default ref exact pin drift: "
+                            f"{default.id}:{position}:guideline_version"
+                        )
+                    legacy_version = (
+                        existing_legacy_version
+                        if existing_legacy_version is not None
+                        else captured_version
+                        if migrated_legacy
+                        else None
+                    )
+                    normalized.update(
+                        {
+                            "revision_id": resolved.revision_id,
+                            "semantic_version": resolved.semantic_version,
+                            "revision_digest": resolved.content_digest,
+                            "revision_number": resolved.revision_number,
+                            "guideline_version": resolved.revision_number,
+                            "legacy_version": legacy_version,
+                            "legacy_version_unresolvable": bool(
+                                migrated_legacy
+                                and (
+                                    legacy_version is None
+                                    or legacy_version != resolved.revision_number
+                                )
+                            ),
+                        }
+                    )
+                    additions = {}
+                for key, value in additions.items():
+                    if key in normalized:
+                        if normalized[key] != value:
+                            raise RuntimeError(
+                                "guideline policy default ref exact pin drift: "
+                                f"{default.id}:{position}:{key}"
+                            )
+                        continue
+                    normalized[key] = value
+                if normalized != raw_ref:
+                    refs_changed = True
+                normalized_refs.append(normalized)
+            if refs_changed:
+                await conn.execute(
+                    DefaultBoardConfiguration.__table__.update()
+                    .where(DefaultBoardConfiguration.id == default.id)
+                    .values(guideline_default_refs=normalized_refs)
+                )
+                changed = True
+
+        if dialect == "sqlite":
+            changed = await _install_sqlite_triggers(conn) or changed
+            violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if violations:
+                raise RuntimeError(
+                    "guideline policy migration left foreign-key violations: "
+                    + repr(violations[:10])
+                )
+        else:
+            changed = await _install_postgresql_triggers(conn) or changed
+
+    return None if changed else "skipped"
+
+
+async def _migrate_guideline_impact_substrate() -> str | None:
+    """Create B08 tables/pin before B03's strict binding-table audit."""
+
+    from sqlalchemy import inspect as sa_inspect
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        GuidelineBoardBindingRow,
+        GuidelineImpactAdoptionRow,
+        GuidelineImpactItemRow,
+        GuidelineImpactReceiptRow,
+        GuidelineImpactUnlinkRow,
+        GuidelineRetirementImpactRow,
+    )
+
+    receipt_table = GuidelineImpactReceiptRow.__tablename__
+    binding_table = GuidelineBoardBindingRow.__tablename__
+    tables = (
+        GuidelineImpactReceiptRow.__table__,
+        GuidelineImpactItemRow.__table__,
+        GuidelineImpactAdoptionRow.__table__,
+        GuidelineImpactUnlinkRow.__table__,
+        GuidelineRetirementImpactRow.__table__,
+    )
+    engine = get_engine()
+    changed = False
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "guideline impact substrate supports only SQLite and PostgreSQL"
+            )
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        if binding_table not in table_names:
+            raise RuntimeError(
+                "guideline impact substrate requires create_all; missing table: "
+                + binding_table
+            )
+        for table in tables:
+            if table.name not in table_names:
+                await conn.run_sync(
+                    lambda sync_conn, owned=table: owned.create(
+                        sync_conn,
+                        checkfirst=True,
+                    )
+                )
+                table_names.add(table.name)
+                changed = True
+        binding_columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns(binding_table)
+            }
+        )
+        if "impact_receipt_id" not in binding_columns:
+            if dialect == "sqlite":
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{binding_table}" '
+                    'ADD COLUMN "impact_receipt_id" VARCHAR(64) '
+                    "CONSTRAINT fk_guideline_binding_impact_receipt "
+                    f'REFERENCES "{receipt_table}" ("impact_receipt_id") '
+                    "ON DELETE RESTRICT ON UPDATE RESTRICT"
+                )
+            else:
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{binding_table}" '
+                    'ADD COLUMN "impact_receipt_id" VARCHAR(64)'
+                )
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{binding_table}" '
+                    "ADD CONSTRAINT "
+                    '"fk_guideline_binding_impact_receipt" '
+                    'FOREIGN KEY ("impact_receipt_id") '
+                    f'REFERENCES "{receipt_table}" ("impact_receipt_id") '
+                    "ON DELETE RESTRICT ON UPDATE RESTRICT"
+                )
+            changed = True
+        if "binding_origin" not in binding_columns:
+            origin_check = (
+                " CONSTRAINT ck_guideline_binding_origin "
+                "CHECK (binding_origin IN "
+                "('native', 'default_materialization'))"
+                if dialect == "sqlite"
+                else ""
+            )
+            await conn.exec_driver_sql(
+                f'ALTER TABLE "{binding_table}" '
+                'ADD COLUMN "binding_origin" VARCHAR(32) '
+                "NOT NULL DEFAULT 'native'" + origin_check
+            )
+            if dialect == "postgresql":
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{binding_table}" '
+                    "ADD CONSTRAINT ck_guideline_binding_origin "
+                    "CHECK (binding_origin IN "
+                    "('native', 'default_materialization'))"
+                )
+            changed = True
+        if "impact_adoption_id" not in binding_columns:
+            if dialect == "sqlite":
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{binding_table}" '
+                    'ADD COLUMN "impact_adoption_id" VARCHAR(36) '
+                    "CONSTRAINT fk_guideline_binding_impact_adoption "
+                    'REFERENCES "guideline_impact_adoptions" '
+                    '("adoption_id") '
+                    "ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED"
+                )
+            else:
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{binding_table}" '
+                    'ADD COLUMN "impact_adoption_id" VARCHAR(36)'
+                )
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{binding_table}" '
+                    "ADD CONSTRAINT "
+                    '"fk_guideline_binding_impact_adoption" '
+                    'FOREIGN KEY ("impact_adoption_id") '
+                    'REFERENCES "guideline_impact_adoptions" '
+                    '("adoption_id") '
+                    "ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED"
+                )
+            changed = True
+        if "impact_unlink_id" not in binding_columns:
+            if dialect == "sqlite":
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{binding_table}" '
+                    'ADD COLUMN "impact_unlink_id" VARCHAR(36) '
+                    "CONSTRAINT fk_guideline_binding_impact_unlink "
+                    'REFERENCES "guideline_impact_unlinks" '
+                    '("unlink_id") '
+                    "ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED"
+                )
+            else:
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{binding_table}" '
+                    'ADD COLUMN "impact_unlink_id" VARCHAR(36)'
+                )
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{binding_table}" '
+                    "ADD CONSTRAINT "
+                    '"fk_guideline_binding_impact_unlink" '
+                    'FOREIGN KEY ("impact_unlink_id") '
+                    'REFERENCES "guideline_impact_unlinks" '
+                    '("unlink_id") '
+                    "ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED"
+                )
+            changed = True
+        binding_contract = await conn.run_sync(
+            lambda sync_conn: (
+                sa_inspect(sync_conn).get_columns(binding_table),
+                sa_inspect(sync_conn).get_foreign_keys(binding_table),
+            )
+        )
+        columns, foreign_keys = binding_contract
+        sqlite_foreign_keys: dict[str, list[dict[str, object]]] = {}
+        if dialect == "sqlite":
+            # SQLAlchemy's SQLite inspector loses ON UPDATE/DELETE options for
+            # inline references appended with ALTER TABLE ADD COLUMN.  SQLite's
+            # own catalog is authoritative for those actions.
+            pragma_rows = (
+                (
+                    await conn.exec_driver_sql(
+                        f'PRAGMA foreign_key_list("{binding_table}")'
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            for row in pragma_rows:
+                sqlite_foreign_keys.setdefault(str(row["from"]), []).append(dict(row))
+        impact_columns = [
+            column for column in columns if str(column["name"]) == "impact_receipt_id"
+        ]
+        if len(impact_columns) != 1:
+            raise RuntimeError(
+                "guideline impact binding pin column is missing or duplicated"
+            )
+        impact_column = impact_columns[0]
+        if (
+            not bool(impact_column["nullable"])
+            or getattr(impact_column["type"], "length", None) != 64
+        ):
+            raise RuntimeError("guideline impact binding pin column contract drift")
+        if dialect == "sqlite":
+            impact_foreign_keys = sqlite_foreign_keys.get(
+                "impact_receipt_id",
+                [],
+            )
+            if len(impact_foreign_keys) != 1:
+                raise RuntimeError(
+                    "guideline impact binding pin foreign key missing or duplicated"
+                )
+            impact_foreign_key = impact_foreign_keys[0]
+            if (
+                str(impact_foreign_key["table"]) != receipt_table
+                or str(impact_foreign_key["to"]) != "impact_receipt_id"
+                or str(impact_foreign_key["on_delete"]).upper() != "RESTRICT"
+                or str(impact_foreign_key["on_update"]).upper() != "RESTRICT"
+            ):
+                raise RuntimeError(
+                    "guideline impact binding pin foreign key contract drift"
+                )
+        else:
+            impact_foreign_keys = [
+                foreign_key
+                for foreign_key in foreign_keys
+                if tuple(foreign_key.get("constrained_columns") or ())
+                == ("impact_receipt_id",)
+            ]
+            if len(impact_foreign_keys) != 1:
+                raise RuntimeError(
+                    "guideline impact binding pin foreign key missing or duplicated"
+                )
+            impact_foreign_key = impact_foreign_keys[0]
+            options = {
+                str(key).lower(): str(value).upper()
+                for key, value in (impact_foreign_key.get("options") or {}).items()
+            }
+            if (
+                impact_foreign_key.get("referred_table") != receipt_table
+                or tuple(impact_foreign_key.get("referred_columns") or ())
+                != ("impact_receipt_id",)
+                or options.get("ondelete") != "RESTRICT"
+                or options.get("onupdate") != "RESTRICT"
+                or impact_foreign_key.get("name")
+                != "fk_guideline_binding_impact_receipt"
+            ):
+                raise RuntimeError(
+                    "guideline impact binding pin foreign key contract drift"
+                )
+        origin_columns = [
+            column for column in columns if str(column["name"]) == "binding_origin"
+        ]
+        if (
+            len(origin_columns) != 1
+            or bool(origin_columns[0]["nullable"])
+            or getattr(origin_columns[0]["type"], "length", None) != 32
+        ):
+            raise RuntimeError("guideline impact binding origin column contract drift")
+        adoption_columns = [
+            column for column in columns if str(column["name"]) == "impact_adoption_id"
+        ]
+        if (
+            len(adoption_columns) != 1
+            or not bool(adoption_columns[0]["nullable"])
+            or getattr(adoption_columns[0]["type"], "length", None) != 36
+        ):
+            raise RuntimeError(
+                "guideline impact binding adoption column contract drift"
+            )
+        if dialect == "sqlite":
+            adoption_foreign_keys = sqlite_foreign_keys.get(
+                "impact_adoption_id",
+                [],
+            )
+            if len(adoption_foreign_keys) != 1:
+                raise RuntimeError(
+                    "guideline impact binding adoption foreign key drift"
+                )
+            adoption_foreign_key = adoption_foreign_keys[0]
+            if (
+                str(adoption_foreign_key["table"]) != "guideline_impact_adoptions"
+                or str(adoption_foreign_key["to"]) != "adoption_id"
+                or str(adoption_foreign_key["on_delete"]).upper() != "NO ACTION"
+                or str(adoption_foreign_key["on_update"]).upper() != "RESTRICT"
+            ):
+                raise RuntimeError(
+                    "guideline impact binding adoption foreign key drift"
+                )
+        else:
+            adoption_foreign_keys = [
+                foreign_key
+                for foreign_key in foreign_keys
+                if tuple(foreign_key.get("constrained_columns") or ())
+                == ("impact_adoption_id",)
+            ]
+            if len(adoption_foreign_keys) != 1:
+                raise RuntimeError(
+                    "guideline impact binding adoption foreign key drift"
+                )
+            adoption_foreign_key = adoption_foreign_keys[0]
+            adoption_options = {
+                str(key).lower(): str(value).upper()
+                for key, value in (adoption_foreign_key.get("options") or {}).items()
+            }
+            if (
+                adoption_foreign_key.get("referred_table")
+                != "guideline_impact_adoptions"
+                or tuple(adoption_foreign_key.get("referred_columns") or ())
+                != ("adoption_id",)
+                or adoption_options.get("ondelete") is not None
+                or adoption_options.get("onupdate") != "RESTRICT"
+                or adoption_options.get("deferrable") != "TRUE"
+                or adoption_options.get("initially") != "DEFERRED"
+                or adoption_foreign_key.get("name")
+                != "fk_guideline_binding_impact_adoption"
+            ):
+                raise RuntimeError(
+                    "guideline impact binding adoption foreign key drift"
+                )
+        unlink_columns = [
+            column for column in columns if str(column["name"]) == "impact_unlink_id"
+        ]
+        if (
+            len(unlink_columns) != 1
+            or not bool(unlink_columns[0]["nullable"])
+            or getattr(unlink_columns[0]["type"], "length", None) != 36
+        ):
+            raise RuntimeError("guideline impact binding unlink column contract drift")
+        if dialect == "sqlite":
+            unlink_foreign_keys = sqlite_foreign_keys.get(
+                "impact_unlink_id",
+                [],
+            )
+            if len(unlink_foreign_keys) != 1:
+                raise RuntimeError("guideline impact binding unlink foreign key drift")
+            unlink_foreign_key = unlink_foreign_keys[0]
+            if (
+                str(unlink_foreign_key["table"]) != "guideline_impact_unlinks"
+                or str(unlink_foreign_key["to"]) != "unlink_id"
+                or str(unlink_foreign_key["on_delete"]).upper() != "NO ACTION"
+                or str(unlink_foreign_key["on_update"]).upper() != "RESTRICT"
+            ):
+                raise RuntimeError("guideline impact binding unlink foreign key drift")
+        else:
+            unlink_foreign_keys = [
+                foreign_key
+                for foreign_key in foreign_keys
+                if tuple(foreign_key.get("constrained_columns") or ())
+                == ("impact_unlink_id",)
+            ]
+            if len(unlink_foreign_keys) != 1:
+                raise RuntimeError("guideline impact binding unlink foreign key drift")
+            unlink_foreign_key = unlink_foreign_keys[0]
+            unlink_options = {
+                str(key).lower(): str(value).upper()
+                for key, value in (unlink_foreign_key.get("options") or {}).items()
+            }
+            if (
+                unlink_foreign_key.get("referred_table") != "guideline_impact_unlinks"
+                or tuple(unlink_foreign_key.get("referred_columns") or ())
+                != ("unlink_id",)
+                or unlink_options.get("ondelete") is not None
+                or unlink_options.get("onupdate") != "RESTRICT"
+                or unlink_options.get("deferrable") != "TRUE"
+                or unlink_options.get("initially") != "DEFERRED"
+                or unlink_foreign_key.get("name")
+                != "fk_guideline_binding_impact_unlink"
+            ):
+                raise RuntimeError(
+                    "guideline impact binding unlink foreign key contract drift"
+                )
+    return None if changed else "skipped"
+
+
+async def _migrate_guideline_impact_v1_schema() -> str | None:
+    """Converge sealed B08 impact receipts and explicit-adoption evidence."""
+
+    from datetime import timezone
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select
+    from sqlalchemy import text as sa_text
+    from sqlalchemy.orm import aliased
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        ActivityLog,
+        BoardErasurePermit,
+        DomainEventHandlerExecution,
+        DomainEventRow,
+        GuidelineBoardBindingRow,
+        GuidelineImpactAdoptionRow,
+        GuidelineImpactItemRow,
+        GuidelineImpactReceiptRow,
+        GuidelineImpactUnlinkRow,
+        GuidelineRetirementImpactRow,
+        GuidelineRetirementRow,
+    )
+    from okto_pulse.core.domain.quality_canonicalization import (
+        canonical_sha256,
+    )
+    from okto_pulse.core.events.types import (
+        POLICY_BINDING_MATERIALIZED_EVENT_TYPE,
+        PolicyAdoptionChanged,
+        PolicyRetirementChanged,
+    )
+
+    receipt_table = GuidelineImpactReceiptRow.__tablename__
+    item_table = GuidelineImpactItemRow.__tablename__
+    adoption_table = GuidelineImpactAdoptionRow.__tablename__
+    unlink_table = GuidelineImpactUnlinkRow.__tablename__
+    retirement_impact_table = GuidelineRetirementImpactRow.__tablename__
+    binding_table = GuidelineBoardBindingRow.__tablename__
+    permit_table = BoardErasurePermit.__tablename__
+    execution_table = DomainEventHandlerExecution.__tablename__
+    tables = (
+        GuidelineImpactReceiptRow.__table__,
+        GuidelineImpactItemRow.__table__,
+        GuidelineImpactAdoptionRow.__table__,
+        GuidelineImpactUnlinkRow.__table__,
+        GuidelineRetirementImpactRow.__table__,
+    )
+
+    async def _install_sqlite_triggers(conn: object) -> bool:
+        expected = guideline_impact_immutability_trigger_manifest()
+        predecessors = tuple(
+            guideline_impact_immutability_trigger_manifest(
+                allow_board_erasure=allow_board_erasure,
+                include_unlink=include_unlink,
+                include_retirement=include_retirement,
+                require_retirement_head_match=(require_retirement_head_match),
+                verify_full_adoption_evidence=(verify_full_adoption_evidence),
+                verify_full_unlink_evidence=(verify_full_unlink_evidence),
+                verify_full_retirement_evidence=(verify_full_retirement_evidence),
+                verify_default_materialization=verify_default_materialization,
+                protect_materialized_events=protect_materialized_events,
+            )
+            for allow_board_erasure in (False, True)
+            for include_unlink in (False, True)
+            for include_retirement in (False, True)
+            for require_retirement_head_match in (False, True)
+            for verify_full_adoption_evidence in (False, True)
+            for verify_full_unlink_evidence in (False, True)
+            for verify_full_retirement_evidence in (False, True)
+            for verify_default_materialization in (False, True)
+            for protect_materialized_events in (False, True)
+            if not (
+                allow_board_erasure
+                and include_unlink
+                and include_retirement
+                and not require_retirement_head_match
+                and verify_full_adoption_evidence
+                and verify_full_unlink_evidence
+                and verify_full_retirement_evidence
+                and verify_default_materialization
+                and protect_materialized_events
+            )
+            and (include_unlink or not verify_full_unlink_evidence)
+            and (include_retirement or not verify_full_retirement_evidence)
+        )
+        rows = (
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name LIKE :prefix"
+                    ),
+                    {"prefix": (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}%")},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        existing = {str(row["name"]): row for row in rows}
+        unexpected = set(existing) - set(expected)
+        if unexpected:
+            raise RuntimeError(
+                "guideline impact has unexpected owned triggers: "
+                + ", ".join(sorted(unexpected))
+            )
+        changed = False
+        for trigger_name, (table_name, trigger_sql) in expected.items():
+            row = existing.get(trigger_name)
+            if row is None:
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+                continue
+            observed = normalize_global_discovery_source_revision_trigger_sql(
+                row["sql"]
+            )
+            wanted = normalize_global_discovery_source_revision_trigger_sql(trigger_sql)
+            if str(row["tbl_name"]) == table_name and observed == wanted:
+                continue
+            recognized_predecessor = any(
+                trigger_name in predecessor
+                and str(row["tbl_name"]) == predecessor[trigger_name][0]
+                and observed
+                == normalize_global_discovery_source_revision_trigger_sql(
+                    predecessor[trigger_name][1]
+                )
+                for predecessor in predecessors
+            )
+            if not recognized_predecessor:
+                raise RuntimeError(
+                    "guideline impact immutability trigger drift: " + trigger_name
+                )
+            await conn.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+            await conn.execute(sa_text(trigger_sql))
+            changed = True
+        final_rows = (
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name LIKE :prefix"
+                    ),
+                    {"prefix": (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}%")},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        final = {str(row["name"]): row for row in final_rows}
+        if set(final) != set(expected):
+            raise RuntimeError("guideline impact trigger convergence is incomplete")
+        for trigger_name, (table_name, trigger_sql) in expected.items():
+            row = final[trigger_name]
+            if str(
+                row["tbl_name"]
+            ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
+                row["sql"]
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
+                raise RuntimeError(
+                    "guideline impact trigger audit failed: " + trigger_name
+                )
+        return changed
+
+    async def _install_postgresql_triggers(conn: object) -> bool:
+        function_name = "guideline_impact_v1_guard"
+        function_ddl = f'''
+CREATE OR REPLACE FUNCTION "{function_name}"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    permitted boolean;
+    evidence_id varchar;
+BEGIN
+    IF TG_TABLE_NAME = '{execution_table}' THEN
+        IF NEW.handler_name <> 'PolicyConstraintProjectionHandler' THEN
+            RETURN NEW;
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM domain_events AS event
+            WHERE event.id = NEW.event_id
+              AND (
+                  (
+                      event.event_type = '{PolicyAdoptionChanged.event_type}'
+                      AND event.payload_json->>'event_schema_version' =
+                          'guideline-impact/v1'
+                      AND event.payload_json->>'operation'
+                          IN ('adopt', 'unlink')
+                      AND json_typeof(
+                          event.payload_json->'guideline_id'
+                      ) = 'string'
+                  )
+                  OR (
+                      event.event_type =
+                          '{PolicyRetirementChanged.event_type}'
+                      AND event.payload_json->>'event_schema_version' =
+                          'guideline-impact/v1'
+                      AND event.payload_json->>'operation' = 'retire'
+                      AND json_typeof(
+                          event.payload_json->'revision_id'
+                      ) = 'string'
+                  )
+                  OR (
+                      event.event_type =
+                          '{POLICY_BINDING_MATERIALIZED_EVENT_TYPE}'
+                      AND (
+                          SELECT COUNT(*)
+                          FROM json_object_keys(event.payload_json)
+                      ) = 11
+                      AND event.payload_json->>'event_schema_version' =
+                          'policy-binding-materialized/v1'
+                      AND event.payload_json->>'operation' = 'adopt'
+                      AND json_typeof(
+                          event.payload_json->'revision_id'
+                      ) = 'string'
+                      AND event.payload_json->>'source_kind'
+                          IN ('native', 'default_materialization')
+                  )
+              )
+        ) THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION 'policy_constraint_execution_event_invalid';
+    END IF;
+
+    IF TG_TABLE_NAME = 'domain_events' THEN
+        evidence_id := OLD.id;
+        IF NOT EXISTS (
+            SELECT 1 FROM "{adoption_table}" AS adoption
+            WHERE adoption.event_id = evidence_id
+            UNION ALL
+            SELECT 1 FROM "{unlink_table}" AS unlink
+            WHERE unlink.event_id = evidence_id
+            UNION ALL
+            SELECT 1 FROM "{retirement_impact_table}" AS retirement
+            WHERE retirement.event_id = evidence_id
+        ) AND OLD.event_type <> 'board.policy_binding_materialized.v1' THEN
+            IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+            RETURN NEW;
+        END IF;
+    ELSIF TG_TABLE_NAME = 'activity_logs' THEN
+        evidence_id := OLD.id;
+        IF NOT EXISTS (
+            SELECT 1 FROM "{adoption_table}" AS adoption
+            WHERE adoption.activity_id = evidence_id
+            UNION ALL
+            SELECT 1 FROM "{unlink_table}" AS unlink
+            WHERE unlink.activity_id = evidence_id
+            UNION ALL
+            SELECT 1 FROM "{retirement_impact_table}" AS retirement
+            WHERE retirement.activity_id = evidence_id
+        ) THEN
+            IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+            RETURN NEW;
+        END IF;
+    END IF;
+
+    IF TG_OP = 'DELETE' THEN
+        SELECT EXISTS (
+            SELECT 1
+            FROM "{permit_table}" AS permit
+            WHERE permit.board_id = OLD.board_id
+        ) INTO permitted;
+        IF permitted THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'guideline_impact_evidence_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = '{receipt_table}' AND TG_OP = 'UPDATE' THEN
+        IF OLD.sealed = false
+           AND NEW.sealed = true
+           AND (to_jsonb(NEW) - 'sealed') = (to_jsonb(OLD) - 'sealed')
+           AND NEW.item_count = (
+               SELECT COUNT(*)
+               FROM "{item_table}" AS item
+               WHERE item.impact_receipt_id = OLD.impact_receipt_id
+           )
+        THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION 'guideline_impact_evidence_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = '{item_table}' AND TG_OP = 'INSERT' THEN
+        IF EXISTS (
+            SELECT 1
+            FROM "{receipt_table}" AS receipt
+            WHERE receipt.impact_receipt_id = NEW.impact_receipt_id
+              AND receipt.board_id = NEW.board_id
+              AND receipt.guideline_id = NEW.guideline_id
+              AND receipt.sealed = false
+        ) THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION 'guideline_impact_evidence_sealed';
+    END IF;
+
+    IF TG_TABLE_NAME = '{binding_table}' AND TG_OP = 'INSERT' THEN
+        IF NEW.state NOT IN ('active', 'unlinked') THEN
+            RETURN NEW;
+        END IF;
+        IF NEW.state = 'active'
+           AND NOT EXISTS (
+               SELECT 1 FROM guidelines AS guideline
+               WHERE guideline.id = NEW.guideline_id
+                 AND guideline.scope = 'global'
+                 AND guideline.board_id IS NULL
+           )
+        THEN
+            RETURN NEW;
+        END IF;
+        IF NEW.state = 'active'
+           AND NEW.binding_origin = 'default_materialization'
+           AND NEW.binding_revision = 1
+           AND NEW.impact_receipt_id IS NULL
+           AND NEW.impact_adoption_id IS NULL
+           AND NEW.impact_unlink_id IS NULL
+           AND NEW.default_enforcement = 'advisory'
+           AND NEW.legacy_version_unresolvable = false
+           AND NOT EXISTS (
+               SELECT 1 FROM "{binding_table}" AS previous
+               WHERE previous.board_id = NEW.board_id
+                 AND previous.guideline_id = NEW.guideline_id
+           )
+           AND EXISTS (
+               SELECT 1
+               FROM boards AS board
+               JOIN default_board_configurations AS template
+                 ON template.id = (
+                     board.default_config_snapshot::jsonb ->> 'template_id'
+                 )
+                AND template.version = (
+                    board.default_config_snapshot::jsonb
+                    ->> 'template_version'
+                )::integer
+               CROSS JOIN LATERAL jsonb_array_elements(
+                   CASE
+                       WHEN jsonb_typeof(
+                           template.guideline_default_refs::jsonb
+                       ) = 'array'
+                       THEN template.guideline_default_refs::jsonb
+                       ELSE '[]'::jsonb
+                   END
+               ) AS ref(value)
+               WHERE board.id = NEW.board_id
+                 AND NEW.legacy_template_id = template.id
+                 AND NEW.legacy_template_version = template.version
+                 AND ref.value ->> 'guideline_id' = NEW.guideline_id
+                 AND ref.value ->> 'revision_id' = NEW.revision_id
+                 AND ref.value ->> 'semantic_version' =
+                     NEW.semantic_version
+                 AND ref.value ->> 'revision_digest' =
+                     NEW.revision_digest
+                 AND (ref.value ->> 'priority')::integer =
+                     NEW.priority
+                 AND (ref.value ->> 'revision_number')::integer =
+                     NEW.legacy_guideline_version
+           )
+        THEN
+            RETURN NEW;
+        END IF;
+        IF NEW.state = 'active'
+           AND NEW.impact_adoption_id IS NOT NULL
+           AND NEW.impact_unlink_id IS NULL
+           AND EXISTS (
+               SELECT 1
+               FROM "{receipt_table}" AS receipt
+               WHERE receipt.impact_receipt_id = NEW.impact_receipt_id
+                 AND receipt.board_id = NEW.board_id
+                 AND receipt.guideline_id = NEW.guideline_id
+                 AND receipt.binding_id = NEW.binding_id
+                 AND receipt.to_revision_id = NEW.revision_id
+                 AND receipt.to_semantic_version = NEW.semantic_version
+                 AND receipt.to_revision_digest = NEW.revision_digest
+                 AND receipt.proposed_priority = NEW.priority
+                 AND receipt.proposed_default_enforcement =
+                     NEW.default_enforcement
+                 AND receipt.sealed = true
+                 AND (
+                     (
+                         NEW.binding_revision = 1
+                         AND receipt.expected_binding_revision IS NULL
+                         AND receipt.expected_binding_state IS NULL
+                     )
+                     OR (
+                         NEW.binding_revision > 1
+                         AND receipt.expected_binding_revision =
+                             NEW.binding_revision - 1
+                         AND EXISTS (
+                             SELECT 1
+                             FROM "{binding_table}" AS previous
+                             WHERE previous.binding_id = NEW.binding_id
+                               AND previous.binding_revision =
+                                   NEW.binding_revision - 1
+                               AND previous.board_id = NEW.board_id
+                               AND previous.guideline_id = NEW.guideline_id
+                               AND previous.revision_id =
+                                   receipt.from_revision_id
+                               AND previous.semantic_version =
+                                   receipt.from_semantic_version
+                               AND previous.revision_digest =
+                                   receipt.from_revision_digest
+                               AND previous.state =
+                                   receipt.expected_binding_state
+                         )
+                     )
+                 )
+           )
+        THEN
+            RETURN NEW;
+        END IF;
+        IF NEW.state = 'unlinked'
+           AND NEW.impact_receipt_id IS NULL
+           AND NEW.impact_adoption_id IS NULL
+           AND NEW.impact_unlink_id IS NOT NULL
+           AND NEW.binding_revision > 1
+           AND EXISTS (
+               SELECT 1
+               FROM "{binding_table}" AS previous
+               WHERE previous.binding_id = NEW.binding_id
+                 AND previous.binding_revision =
+                     NEW.binding_revision - 1
+                 AND previous.board_id = NEW.board_id
+                 AND previous.guideline_id = NEW.guideline_id
+                 AND previous.state = 'active'
+                 AND previous.revision_id = NEW.revision_id
+                 AND previous.semantic_version = NEW.semantic_version
+                 AND previous.revision_digest = NEW.revision_digest
+                 AND previous.priority = NEW.priority
+                 AND previous.default_enforcement =
+                     NEW.default_enforcement
+                 AND previous.source_kind = NEW.source_kind
+                 AND previous.binding_origin = NEW.binding_origin
+                 AND previous.legacy_source_id
+                     IS NOT DISTINCT FROM NEW.legacy_source_id
+                 AND previous.legacy_guideline_version
+                     IS NOT DISTINCT FROM NEW.legacy_guideline_version
+                 AND previous.legacy_template_id
+                     IS NOT DISTINCT FROM NEW.legacy_template_id
+                 AND previous.legacy_template_version
+                     IS NOT DISTINCT FROM NEW.legacy_template_version
+                 AND previous.legacy_version_unresolvable =
+                     NEW.legacy_version_unresolvable
+           )
+        THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION 'guideline_impact_preview_required';
+    END IF;
+
+    IF TG_TABLE_NAME = '{adoption_table}' AND TG_OP = 'INSERT' THEN
+        IF EXISTS (
+            SELECT 1
+            FROM "{receipt_table}" AS receipt
+            JOIN "{binding_table}" AS binding
+              ON binding.binding_id = NEW.binding_id
+             AND binding.binding_revision = NEW.binding_revision
+             AND binding.impact_receipt_id = NEW.impact_receipt_id
+             AND binding.impact_adoption_id = NEW.adoption_id
+             AND binding.impact_unlink_id IS NULL
+             AND binding.board_id = NEW.board_id
+             AND binding.guideline_id = NEW.guideline_id
+             AND binding.state = 'active'
+             AND binding.revision_id = receipt.to_revision_id
+             AND binding.semantic_version = receipt.to_semantic_version
+             AND binding.revision_digest = receipt.to_revision_digest
+             AND binding.priority = receipt.proposed_priority
+             AND binding.default_enforcement =
+                 receipt.proposed_default_enforcement
+             AND binding.adopted_by = NEW.adopted_by
+             AND binding.adopted_at = NEW.adopted_at
+            JOIN domain_events AS event
+              ON event.id = NEW.event_id
+             AND event.event_type = 'board.policy_adoption_changed.v1'
+             AND event.board_id = NEW.board_id
+             AND event.actor_id = NEW.adopted_by
+             AND event.occurred_at = NEW.adopted_at
+            JOIN activity_logs AS activity
+              ON activity.id = NEW.activity_id
+             AND activity.board_id = NEW.board_id
+             AND activity.card_id IS NULL
+             AND activity.action = 'guideline_revision_adopted'
+             AND activity.actor_id = NEW.adopted_by
+             AND activity.actor_type = event.actor_type
+             AND activity.created_at = NEW.adopted_at
+             AND activity.details::jsonb = event.payload_json::jsonb
+            WHERE receipt.impact_receipt_id = NEW.impact_receipt_id
+              AND receipt.board_id = NEW.board_id
+              AND receipt.guideline_id = NEW.guideline_id
+              AND receipt.binding_id = NEW.binding_id
+              AND receipt.impact_digest = NEW.impact_digest
+              AND receipt.binding_digest = NEW.binding_digest
+              AND receipt.expected_binding_revision
+                  IS NOT DISTINCT FROM NEW.expected_binding_revision
+              AND receipt.sealed = true
+              AND event.payload_json->>'operation' = 'adopt'
+              AND event.payload_json->>'board_id' = NEW.board_id
+              AND event.payload_json->>'guideline_id' = NEW.guideline_id
+              AND event.payload_json->>'binding_id' = NEW.binding_id
+              AND (event.payload_json->>'binding_revision')::integer =
+                  NEW.binding_revision
+              AND event.payload_json->>'impact_receipt_id' =
+                  NEW.impact_receipt_id
+              AND event.payload_json->>'impact_digest' = NEW.impact_digest
+              AND event.payload_json->>'policy_set_digest_before' =
+                  receipt.policy_set_digest_before
+              AND event.payload_json->>'policy_set_digest_after' =
+                  receipt.policy_set_digest_after
+              AND receipt.requires_explicit_adoption = true
+              AND binding.binding_revision =
+                  COALESCE(receipt.expected_binding_revision, 0) + 1
+              AND binding.idempotency_key = NEW.idempotency_key
+              AND binding.request_digest = NEW.request_digest
+              AND length(NEW.adoption_digest) = 64
+              AND event.actor_type = activity.actor_type
+              AND event.actor_type IN ('agent', 'user', 'system')
+              AND activity.actor_name = NEW.adopted_by
+              AND event.payload_json->>'event_schema_version' =
+                  'guideline-impact/v1'
+              AND event.payload_json->>'event_id' = NEW.event_id
+              AND (
+                  (
+                      receipt.expected_binding_revision IS NULL
+                      AND event.payload_json ?
+                          'previous_binding_revision'
+                      AND event.payload_json
+                          ->'previous_binding_revision' = 'null'::jsonb
+                  )
+                  OR (
+                      event.payload_json
+                          ->>'previous_binding_revision'
+                      )::integer =
+                      receipt.expected_binding_revision
+              )
+              AND (
+                  (
+                      receipt.from_revision_id IS NULL
+                      AND event.payload_json ? 'from_revision_id'
+                      AND event.payload_json->'from_revision_id' =
+                          'null'::jsonb
+                  )
+                  OR event.payload_json->>'from_revision_id' =
+                      receipt.from_revision_id
+              )
+              AND (
+                  (
+                      receipt.from_semantic_version IS NULL
+                      AND event.payload_json ? 'from_semantic_version'
+                      AND event.payload_json->'from_semantic_version' =
+                          'null'::jsonb
+                  )
+                  OR event.payload_json->>'from_semantic_version' =
+                      receipt.from_semantic_version
+              )
+              AND (
+                  (
+                      receipt.from_revision_digest IS NULL
+                      AND event.payload_json ? 'from_revision_digest'
+                      AND event.payload_json->'from_revision_digest' =
+                          'null'::jsonb
+                  )
+                  OR event.payload_json->>'from_revision_digest' =
+                      receipt.from_revision_digest
+              )
+              AND event.payload_json->>'to_revision_id' =
+                  receipt.to_revision_id
+              AND event.payload_json->>'to_semantic_version' =
+                  receipt.to_semantic_version
+              AND event.payload_json->>'to_revision_digest' =
+                  receipt.to_revision_digest
+              AND event.payload_json->>'binding_digest_before' =
+                  receipt.binding_digest
+              AND event.payload_json->>'binding_head_digest_before' =
+                  receipt.binding_head_digest_before
+              AND event.payload_json->>'binding_head_digest_after' =
+                  receipt.binding_head_digest_after
+              AND event.payload_json->>'policy_set_digest' =
+                  receipt.policy_set_digest_after
+              AND event.payload_json->'added_rule_ids' =
+                  receipt.added_rule_ids::jsonb
+              AND event.payload_json->'changed_rule_ids' =
+                  receipt.changed_rule_ids::jsonb
+              AND event.payload_json->'removed_rule_ids' =
+                  receipt.removed_rule_ids::jsonb
+              AND event.payload_json->>'actor_id' = NEW.adopted_by
+              AND event.payload_json->>'actor_type' = event.actor_type
+              AND (
+                  event.payload_json->>'occurred_at'
+              )::timestamptz = NEW.adopted_at
+              AND event.payload_json::jsonb = jsonb_build_object(
+                  'event_schema_version', 'guideline-impact/v1',
+                  'event_id', NEW.event_id,
+                  'operation', 'adopt',
+                  'board_id', NEW.board_id,
+                  'guideline_id', NEW.guideline_id,
+                  'binding_id', NEW.binding_id,
+                  'previous_binding_revision',
+                      receipt.expected_binding_revision,
+                  'binding_revision', NEW.binding_revision,
+                  'from_revision_id', receipt.from_revision_id,
+                  'from_semantic_version',
+                      receipt.from_semantic_version,
+                  'from_revision_digest', receipt.from_revision_digest,
+                  'to_revision_id', receipt.to_revision_id,
+                  'to_semantic_version', receipt.to_semantic_version,
+                  'to_revision_digest', receipt.to_revision_digest,
+                  'impact_receipt_id', NEW.impact_receipt_id,
+                  'impact_digest', NEW.impact_digest,
+                  'binding_digest_before', receipt.binding_digest,
+                  'binding_head_digest_before',
+                      receipt.binding_head_digest_before,
+                  'binding_head_digest_after',
+                      receipt.binding_head_digest_after,
+                  'policy_set_digest_before',
+                      receipt.policy_set_digest_before,
+                  'policy_set_digest_after',
+                      receipt.policy_set_digest_after,
+                  'policy_set_digest', receipt.policy_set_digest_after,
+                  'added_rule_ids', receipt.added_rule_ids::jsonb,
+                  'changed_rule_ids', receipt.changed_rule_ids::jsonb,
+                  'removed_rule_ids', receipt.removed_rule_ids::jsonb,
+                  'actor_id', NEW.adopted_by,
+                  'actor_type', event.actor_type,
+                  'occurred_at', event.payload_json->'occurred_at'
+              )
+        ) THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION 'guideline_impact_adoption_evidence_invalid';
+    END IF;
+
+    IF TG_TABLE_NAME = '{unlink_table}' AND TG_OP = 'INSERT' THEN
+        IF EXISTS (
+            SELECT 1
+            FROM "{binding_table}" AS binding
+            JOIN "{binding_table}" AS previous
+              ON previous.binding_id = NEW.binding_id
+             AND previous.binding_revision =
+                 NEW.previous_binding_revision
+             AND previous.board_id = NEW.board_id
+             AND previous.guideline_id = NEW.guideline_id
+             AND previous.state = 'active'
+            JOIN domain_events AS event
+              ON event.id = NEW.event_id
+             AND event.event_type = 'board.policy_adoption_changed.v1'
+             AND event.board_id = NEW.board_id
+             AND event.actor_id = NEW.unlinked_by
+             AND event.actor_type = NEW.actor_type
+             AND event.occurred_at = NEW.unlinked_at
+            JOIN activity_logs AS activity
+              ON activity.id = NEW.activity_id
+             AND activity.board_id = NEW.board_id
+             AND activity.card_id IS NULL
+             AND activity.action = 'guideline_unlinked'
+             AND activity.actor_id = NEW.unlinked_by
+             AND activity.actor_type = NEW.actor_type
+             AND activity.created_at = NEW.unlinked_at
+             AND activity.details::jsonb = event.payload_json::jsonb
+            WHERE binding.binding_id = NEW.binding_id
+              AND binding.binding_revision = NEW.binding_revision
+              AND binding.board_id = NEW.board_id
+              AND binding.guideline_id = NEW.guideline_id
+              AND binding.state = 'unlinked'
+              AND binding.impact_receipt_id IS NULL
+              AND binding.impact_adoption_id IS NULL
+              AND binding.impact_unlink_id = NEW.unlink_id
+              AND binding.binding_revision =
+                  previous.binding_revision + 1
+              AND binding.revision_id = previous.revision_id
+              AND binding.semantic_version = previous.semantic_version
+              AND binding.revision_digest = previous.revision_digest
+              AND binding.priority = previous.priority
+              AND binding.default_enforcement =
+                  previous.default_enforcement
+              AND binding.source_kind = previous.source_kind
+              AND binding.binding_origin = previous.binding_origin
+              AND binding.legacy_source_id
+                  IS NOT DISTINCT FROM previous.legacy_source_id
+              AND binding.legacy_guideline_version
+                  IS NOT DISTINCT FROM previous.legacy_guideline_version
+              AND binding.legacy_template_id
+                  IS NOT DISTINCT FROM previous.legacy_template_id
+              AND binding.legacy_template_version
+                  IS NOT DISTINCT FROM previous.legacy_template_version
+              AND binding.legacy_version_unresolvable =
+                  previous.legacy_version_unresolvable
+              AND binding.adopted_by = NEW.unlinked_by
+              AND binding.adopted_at = NEW.unlinked_at
+              AND binding.idempotency_key = NEW.idempotency_key
+              AND binding.request_digest = NEW.request_digest
+              AND length(NEW.unlink_digest) = 64
+              AND event.actor_type = activity.actor_type
+              AND event.actor_type IN ('agent', 'user', 'system')
+              AND activity.actor_name = NEW.unlinked_by
+              AND event.payload_json->>'event_schema_version' =
+                  'guideline-impact/v1'
+              AND event.payload_json->>'event_id' = NEW.event_id
+              AND event.payload_json->>'operation' = 'unlink'
+              AND event.payload_json->>'board_id' = NEW.board_id
+              AND event.payload_json->>'guideline_id' = NEW.guideline_id
+              AND event.payload_json->>'binding_id' = NEW.binding_id
+              AND (
+                  event.payload_json->>'previous_binding_revision'
+              )::integer = NEW.previous_binding_revision
+              AND (event.payload_json->>'binding_revision')::integer =
+                  NEW.binding_revision
+              AND event.payload_json->>'from_revision_id' =
+                  previous.revision_id
+              AND event.payload_json->>'from_semantic_version' =
+                  previous.semantic_version
+              AND event.payload_json->>'from_revision_digest' =
+                  previous.revision_digest
+              AND event.payload_json ? 'to_revision_id'
+              AND event.payload_json->'to_revision_id' = 'null'::jsonb
+              AND event.payload_json ? 'to_semantic_version'
+              AND event.payload_json->'to_semantic_version' =
+                  'null'::jsonb
+              AND event.payload_json ? 'to_revision_digest'
+              AND event.payload_json->'to_revision_digest' =
+                  'null'::jsonb
+              AND event.payload_json ? 'impact_receipt_id'
+              AND event.payload_json->'impact_receipt_id' =
+                  'null'::jsonb
+              AND event.payload_json ? 'impact_digest'
+              AND event.payload_json->'impact_digest' = 'null'::jsonb
+              AND event.payload_json->>'binding_digest_before' =
+                  NEW.binding_digest_before
+              AND event.payload_json->>'binding_head_digest_before' =
+                  NEW.binding_head_digest_before
+              AND event.payload_json->>'binding_head_digest_after' =
+                  NEW.binding_head_digest_after
+              AND event.payload_json->>'policy_set_digest_before' =
+                  NEW.policy_set_digest_before
+              AND event.payload_json->>'policy_set_digest_after' =
+                  NEW.policy_set_digest_after
+              AND event.payload_json->>'policy_set_digest' =
+                  NEW.policy_set_digest_after
+              AND event.payload_json->'added_rule_ids' = '[]'::jsonb
+              AND event.payload_json->'changed_rule_ids' = '[]'::jsonb
+              AND event.payload_json->'removed_rule_ids' =
+                  NEW.removed_rule_ids::jsonb
+              AND event.payload_json->>'actor_id' = NEW.unlinked_by
+              AND event.payload_json->>'actor_type' = NEW.actor_type
+              AND (
+                  event.payload_json->>'occurred_at'
+              )::timestamptz = NEW.unlinked_at
+              AND event.payload_json::jsonb = jsonb_build_object(
+                  'event_schema_version', 'guideline-impact/v1',
+                  'event_id', NEW.event_id,
+                  'operation', 'unlink',
+                  'board_id', NEW.board_id,
+                  'guideline_id', NEW.guideline_id,
+                  'binding_id', NEW.binding_id,
+                  'previous_binding_revision',
+                      NEW.previous_binding_revision,
+                  'binding_revision', NEW.binding_revision,
+                  'from_revision_id', previous.revision_id,
+                  'from_semantic_version',
+                      previous.semantic_version,
+                  'from_revision_digest', previous.revision_digest,
+                  'to_revision_id', NULL,
+                  'to_semantic_version', NULL,
+                  'to_revision_digest', NULL,
+                  'impact_receipt_id', NULL,
+                  'impact_digest', NULL,
+                  'binding_digest_before',
+                      NEW.binding_digest_before,
+                  'binding_head_digest_before',
+                      NEW.binding_head_digest_before,
+                  'binding_head_digest_after',
+                      NEW.binding_head_digest_after,
+                  'policy_set_digest_before',
+                      NEW.policy_set_digest_before,
+                  'policy_set_digest_after',
+                      NEW.policy_set_digest_after,
+                  'policy_set_digest',
+                      NEW.policy_set_digest_after,
+                  'added_rule_ids', '[]'::jsonb,
+                  'changed_rule_ids', '[]'::jsonb,
+                  'removed_rule_ids', NEW.removed_rule_ids::jsonb,
+                  'actor_id', NEW.unlinked_by,
+                  'actor_type', NEW.actor_type,
+                  'occurred_at', event.payload_json->'occurred_at'
+              )
+        ) THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION 'guideline_impact_unlink_evidence_invalid';
+    END IF;
+
+    IF TG_TABLE_NAME = '{retirement_impact_table}'
+       AND TG_OP = 'INSERT'
+    THEN
+        IF EXISTS (
+            SELECT 1
+            FROM guideline_retirements AS retirement
+            JOIN "{binding_table}" AS binding
+              ON binding.binding_id = NEW.binding_id
+             AND binding.binding_revision = NEW.binding_revision
+             AND binding.board_id = NEW.board_id
+             AND binding.guideline_id = NEW.guideline_id
+             AND binding.state = 'active'
+             AND binding.revision_id = NEW.revision_id
+             AND binding.semantic_version = NEW.semantic_version
+             AND binding.revision_digest = NEW.revision_digest
+            JOIN domain_events AS event
+              ON event.id = NEW.event_id
+             AND event.event_type = 'board.policy_retirement_changed.v1'
+             AND event.board_id = NEW.board_id
+             AND event.actor_id = NEW.retired_by
+             AND event.actor_type = NEW.actor_type
+             AND event.occurred_at = NEW.retired_at
+            JOIN activity_logs AS activity
+              ON activity.id = NEW.activity_id
+             AND activity.board_id = NEW.board_id
+             AND activity.card_id IS NULL
+             AND activity.action = 'guideline_retired'
+             AND activity.actor_id = NEW.retired_by
+             AND activity.actor_type = NEW.actor_type
+             AND activity.created_at = NEW.retired_at
+             AND activity.details::jsonb = event.payload_json::jsonb
+            WHERE retirement.retirement_id = NEW.retirement_id
+              AND retirement.guideline_id = NEW.guideline_id
+              AND retirement.status = NEW.retirement_status
+              AND retirement.superseded_by_guideline_id
+                  IS NOT DISTINCT FROM NEW.superseded_by_guideline_id
+              AND retirement.retired_by = NEW.retired_by
+              AND retirement.retired_at = NEW.retired_at
+              AND retirement.request_digest = NEW.request_digest
+              AND event.actor_type = activity.actor_type
+              AND event.actor_type IN ('agent', 'user', 'system')
+              AND activity.actor_name = NEW.retired_by
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM "{binding_table}" AS later
+                  WHERE later.board_id = binding.board_id
+                    AND later.guideline_id = binding.guideline_id
+                    AND later.binding_revision > binding.binding_revision
+              )
+              AND event.payload_json->>'event_schema_version' =
+                  'guideline-impact/v1'
+              AND event.payload_json->>'event_id' = NEW.event_id
+              AND event.payload_json->>'operation' = 'retire'
+              AND event.payload_json->>'board_id' = NEW.board_id
+              AND event.payload_json->>'guideline_id' = NEW.guideline_id
+              AND event.payload_json->>'retirement_id' =
+                  NEW.retirement_id
+              AND event.payload_json->>'retirement_status' =
+                  NEW.retirement_status
+              AND (
+                  (
+                      NEW.superseded_by_guideline_id IS NULL
+                      AND event.payload_json ?
+                          'superseded_by_guideline_id'
+                      AND event.payload_json
+                          ->'superseded_by_guideline_id' = 'null'::jsonb
+                  )
+                  OR event.payload_json
+                      ->>'superseded_by_guideline_id' =
+                      NEW.superseded_by_guideline_id
+              )
+              AND event.payload_json->>'binding_id' = NEW.binding_id
+              AND (event.payload_json->>'binding_revision')::integer =
+                  NEW.binding_revision
+              AND event.payload_json->>'revision_id' = NEW.revision_id
+              AND (event.payload_json->>'revision_number')::integer =
+                  NEW.revision_number
+              AND event.payload_json->>'semantic_version' =
+                  NEW.semantic_version
+              AND event.payload_json->>'revision_digest' =
+                  NEW.revision_digest
+              AND event.payload_json->>'binding_digest_before' =
+                  NEW.binding_digest_before
+              AND event.payload_json->>'binding_head_digest_before' =
+                  NEW.binding_head_digest_before
+              AND event.payload_json->>'binding_head_digest_after' =
+                  NEW.binding_head_digest_after
+              AND event.payload_json->>'policy_set_digest_before' =
+                  NEW.policy_set_digest_before
+              AND event.payload_json->>'policy_set_digest_after' =
+                  NEW.policy_set_digest_after
+              AND event.payload_json->>'policy_set_digest' =
+                  NEW.policy_set_digest_after
+              AND event.payload_json->'removed_rule_ids' =
+                  NEW.removed_rule_ids::jsonb
+              AND event.payload_json->>'actor_id' = NEW.retired_by
+              AND event.payload_json->>'actor_type' = NEW.actor_type
+              AND (
+                  event.payload_json->>'occurred_at'
+              )::timestamptz = NEW.retired_at
+              AND event.payload_json->>'request_digest' =
+                  NEW.request_digest
+              AND event.payload_json::jsonb = jsonb_build_object(
+                  'event_schema_version', 'guideline-impact/v1',
+                  'event_id', NEW.event_id,
+                  'operation', 'retire',
+                  'board_id', NEW.board_id,
+                  'guideline_id', NEW.guideline_id,
+                  'retirement_id', NEW.retirement_id,
+                  'retirement_status', NEW.retirement_status,
+                  'superseded_by_guideline_id',
+                      NEW.superseded_by_guideline_id,
+                  'binding_id', NEW.binding_id,
+                  'binding_revision', NEW.binding_revision,
+                  'revision_id', NEW.revision_id,
+                  'revision_number', NEW.revision_number,
+                  'semantic_version', NEW.semantic_version,
+                  'revision_digest', NEW.revision_digest,
+                  'binding_digest_before',
+                      NEW.binding_digest_before,
+                  'binding_head_digest_before',
+                      NEW.binding_head_digest_before,
+                  'binding_head_digest_after',
+                      NEW.binding_head_digest_after,
+                  'policy_set_digest_before',
+                      NEW.policy_set_digest_before,
+                  'policy_set_digest_after',
+                      NEW.policy_set_digest_after,
+                  'policy_set_digest',
+                      NEW.policy_set_digest_after,
+                  'removed_rule_ids', NEW.removed_rule_ids::jsonb,
+                  'actor_id', NEW.retired_by,
+                  'actor_type', NEW.actor_type,
+                  'occurred_at', event.payload_json->'occurred_at',
+                  'request_digest', NEW.request_digest
+              )
+        ) THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION
+            'guideline_retirement_impact_evidence_invalid';
+    END IF;
+
+    RAISE EXCEPTION 'guideline_impact_evidence_immutable';
+END;
+$$
+'''
+        await conn.execute(sa_text(function_ddl))
+        contracts = {
+            (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{receipt_table}_guard"): (
+                receipt_table,
+                "UPDATE OR DELETE",
+            ),
+            (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{item_table}_guard"): (
+                item_table,
+                "INSERT OR UPDATE OR DELETE",
+            ),
+            (
+                f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{adoption_table}_guard"
+            ): (adoption_table, "INSERT OR UPDATE OR DELETE"),
+            (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{unlink_table}_guard"): (
+                unlink_table,
+                "INSERT OR UPDATE OR DELETE",
+            ),
+            (
+                f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_"
+                f"{retirement_impact_table}_guard"
+            ): (
+                retirement_impact_table,
+                "INSERT OR UPDATE OR DELETE",
+            ),
+            (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_binding_guard"): (
+                binding_table,
+                "INSERT",
+            ),
+            (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_event_guard"): (
+                "domain_events",
+                "UPDATE OR DELETE",
+            ),
+            (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_activity_guard"): (
+                "activity_logs",
+                "UPDATE OR DELETE",
+            ),
+            (
+                f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_"
+                f"{execution_table}_policy_constraint_insert"
+            ): (
+                execution_table,
+                "INSERT",
+            ),
+        }
+        rows = (
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT trigger.tgname AS name, "
+                        "relation.relname AS table_name, "
+                        "procedure.proname AS function_name "
+                        ", trigger.tgenabled AS enabled "
+                        ", trigger.tgtype::integer AS trigger_type "
+                        ", trigger.tgqual AS predicate "
+                        "FROM pg_trigger AS trigger "
+                        "JOIN pg_class AS relation "
+                        "ON relation.oid = trigger.tgrelid "
+                        "JOIN pg_proc AS procedure "
+                        "ON procedure.oid = trigger.tgfoid "
+                        "WHERE NOT trigger.tgisinternal "
+                        "AND trigger.tgname LIKE :prefix"
+                    ),
+                    {"prefix": (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}%")},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        existing = {str(row["name"]): row for row in rows}
+        unexpected = set(existing) - set(contracts)
+        if unexpected:
+            raise RuntimeError(
+                "guideline impact has unexpected PostgreSQL triggers: "
+                + ", ".join(sorted(unexpected))
+            )
+        changed = False
+        operation_types = {
+            "UPDATE OR DELETE": 27,
+            "INSERT OR UPDATE OR DELETE": 31,
+            "INSERT": 7,
+        }
+        for trigger_name, (table_name, operations) in contracts.items():
+            row = existing.get(trigger_name)
+            if row is not None:
+                if (
+                    str(row["table_name"]) != table_name
+                    or str(row["function_name"]) != function_name
+                    or str(row["enabled"]) != "O"
+                    or int(row["trigger_type"]) != operation_types[operations]
+                    or row["predicate"] is not None
+                ):
+                    raise RuntimeError(
+                        "guideline impact PostgreSQL trigger drift: " + trigger_name
+                    )
+                continue
+            await conn.execute(
+                sa_text(
+                    f'CREATE TRIGGER "{trigger_name}" '
+                    f"BEFORE {operations} "
+                    f'ON "{table_name}" FOR EACH ROW '
+                    f'EXECUTE FUNCTION "{function_name}"()'
+                )
+            )
+            changed = True
+        return changed
+
+    engine = get_engine()
+    changed = False
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "guideline impact migration supports only SQLite and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        required_predecessors = {
+            binding_table,
+            "boards",
+            "guidelines",
+            "guideline_revisions",
+            "guideline_retirements",
+            "domain_events",
+            "activity_logs",
+            "default_board_configurations",
+            permit_table,
+            *(table.name for table in tables),
+        }
+        missing = required_predecessors - table_names
+        if missing:
+            raise RuntimeError(
+                "guideline impact migration requires create_all; missing tables: "
+                + ", ".join(sorted(missing))
+            )
+        binding_columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns(binding_table)
+            }
+        )
+        missing_binding_columns = {
+            "impact_receipt_id",
+            "binding_origin",
+            "impact_adoption_id",
+            "impact_unlink_id",
+        } - binding_columns
+        if missing_binding_columns:
+            raise RuntimeError(
+                "guideline impact substrate did not add binding evidence: "
+                + ", ".join(sorted(missing_binding_columns))
+            )
+
+        for table in tables:
+            if dialect == "sqlite":
+                contract = await conn.run_sync(
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+            else:
+                contract = await conn.run_sync(
+                    lambda sync_conn, owned=table: _postgresql_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "guideline impact table has a non-canonical contract: " + table.name
+                )
+        if dialect == "sqlite":
+            binding_contract = await conn.run_sync(
+                lambda sync_conn: _sqlite_owned_table_contract(
+                    sync_conn,
+                    GuidelineBoardBindingRow.__table__,
+                )
+            )
+            if binding_contract["observed"] != binding_contract["expected"]:
+                raise RuntimeError(
+                    "guideline impact binding substrate is non-canonical"
+                )
+
+        if dialect == "sqlite":
+            adoption_payload_audit = """
+              AND json(activity."details") =
+                  json(event."payload_json")
+              AND json_type(event."payload_json") = 'object'
+              AND (
+                  SELECT COUNT(*)
+                  FROM json_each(event."payload_json")
+              ) = 28
+              AND json_extract(
+                  event."payload_json", '$.event_schema_version'
+              ) = 'guideline-impact/v1'
+              AND json_extract(event."payload_json", '$.event_id') =
+                  adoption."event_id"
+              AND json_extract(event."payload_json", '$.operation') =
+                  'adopt'
+              AND json_extract(event."payload_json", '$.board_id') =
+                  adoption."board_id"
+              AND json_extract(event."payload_json", '$.guideline_id') =
+                  adoption."guideline_id"
+              AND json_extract(event."payload_json", '$.binding_id') =
+                  adoption."binding_id"
+              AND json_extract(
+                  event."payload_json", '$.binding_revision'
+              ) = adoption."binding_revision"
+              AND (
+                  (
+                      receipt."expected_binding_revision" IS NULL
+                      AND json_type(
+                          event."payload_json",
+                          '$.previous_binding_revision'
+                      ) = 'null'
+                  )
+                  OR json_extract(
+                      event."payload_json",
+                      '$.previous_binding_revision'
+                  ) = receipt."expected_binding_revision"
+              )
+              AND (
+                  (
+                      receipt."from_revision_id" IS NULL
+                      AND json_type(
+                          event."payload_json", '$.from_revision_id'
+                      ) = 'null'
+                  )
+                  OR json_extract(
+                      event."payload_json", '$.from_revision_id'
+                  ) = receipt."from_revision_id"
+              )
+              AND (
+                  (
+                      receipt."from_semantic_version" IS NULL
+                      AND json_type(
+                          event."payload_json", '$.from_semantic_version'
+                      ) = 'null'
+                  )
+                  OR json_extract(
+                      event."payload_json", '$.from_semantic_version'
+                  ) = receipt."from_semantic_version"
+              )
+              AND (
+                  (
+                      receipt."from_revision_digest" IS NULL
+                      AND json_type(
+                          event."payload_json", '$.from_revision_digest'
+                      ) = 'null'
+                  )
+                  OR json_extract(
+                      event."payload_json", '$.from_revision_digest'
+                  ) = receipt."from_revision_digest"
+              )
+              AND json_extract(
+                  event."payload_json", '$.to_revision_id'
+              ) = receipt."to_revision_id"
+              AND json_extract(
+                  event."payload_json", '$.to_semantic_version'
+              ) = receipt."to_semantic_version"
+              AND json_extract(
+                  event."payload_json", '$.to_revision_digest'
+              ) = receipt."to_revision_digest"
+              AND json_extract(
+                  event."payload_json", '$.impact_receipt_id'
+              ) = adoption."impact_receipt_id"
+              AND json_extract(
+                  event."payload_json", '$.impact_digest'
+              ) = adoption."impact_digest"
+              AND json_extract(
+                  event."payload_json", '$.binding_digest_before'
+              ) = receipt."binding_digest"
+              AND json_extract(
+                  event."payload_json", '$.binding_head_digest_before'
+              ) = receipt."binding_head_digest_before"
+              AND json_extract(
+                  event."payload_json", '$.binding_head_digest_after'
+              ) = receipt."binding_head_digest_after"
+              AND json_extract(
+                  event."payload_json", '$.policy_set_digest_before'
+              ) = receipt."policy_set_digest_before"
+              AND json_extract(
+                  event."payload_json", '$.policy_set_digest_after'
+              ) = receipt."policy_set_digest_after"
+              AND json_extract(
+                  event."payload_json", '$.policy_set_digest'
+              ) = receipt."policy_set_digest_after"
+              AND json(json_extract(
+                  event."payload_json", '$.added_rule_ids'
+              )) = json(receipt."added_rule_ids")
+              AND json(json_extract(
+                  event."payload_json", '$.changed_rule_ids'
+              )) = json(receipt."changed_rule_ids")
+              AND json(json_extract(
+                  event."payload_json", '$.removed_rule_ids'
+              )) = json(receipt."removed_rule_ids")
+              AND json_extract(event."payload_json", '$.actor_id') =
+                  adoption."adopted_by"
+              AND json_extract(event."payload_json", '$.actor_type') =
+                  event."actor_type"
+              AND julianday(json_extract(
+                  event."payload_json", '$.occurred_at'
+              )) = julianday(adoption."adopted_at")"""
+        else:
+            adoption_payload_audit = """
+              AND activity."details"::jsonb =
+                  event."payload_json"::jsonb
+              AND event."payload_json"->>'event_schema_version' =
+                  'guideline-impact/v1'
+              AND event."payload_json"->>'event_id' =
+                  adoption."event_id"
+              AND event."payload_json"->>'operation' = 'adopt'
+              AND event."payload_json"->>'board_id' =
+                  adoption."board_id"
+              AND event."payload_json"->>'guideline_id' =
+                  adoption."guideline_id"
+              AND event."payload_json"->>'binding_id' =
+                  adoption."binding_id"
+              AND (
+                  event."payload_json"->>'binding_revision'
+              )::integer = adoption."binding_revision"
+              AND (
+                  (
+                      receipt."expected_binding_revision" IS NULL
+                      AND event."payload_json" ?
+                          'previous_binding_revision'
+                      AND event."payload_json"
+                          ->'previous_binding_revision' = 'null'::jsonb
+                  )
+                  OR (
+                      event."payload_json"
+                          ->>'previous_binding_revision'
+                  )::integer = receipt."expected_binding_revision"
+              )
+              AND (
+                  (
+                      receipt."from_revision_id" IS NULL
+                      AND event."payload_json" ? 'from_revision_id'
+                      AND event."payload_json"->'from_revision_id' =
+                          'null'::jsonb
+                  )
+                  OR event."payload_json"->>'from_revision_id' =
+                      receipt."from_revision_id"
+              )
+              AND (
+                  (
+                      receipt."from_semantic_version" IS NULL
+                      AND event."payload_json" ? 'from_semantic_version'
+                      AND event."payload_json"->'from_semantic_version' =
+                          'null'::jsonb
+                  )
+                  OR event."payload_json"->>'from_semantic_version' =
+                      receipt."from_semantic_version"
+              )
+              AND (
+                  (
+                      receipt."from_revision_digest" IS NULL
+                      AND event."payload_json" ? 'from_revision_digest'
+                      AND event."payload_json"->'from_revision_digest' =
+                          'null'::jsonb
+                  )
+                  OR event."payload_json"->>'from_revision_digest' =
+                      receipt."from_revision_digest"
+              )
+              AND event."payload_json"->>'to_revision_id' =
+                  receipt."to_revision_id"
+              AND event."payload_json"->>'to_semantic_version' =
+                  receipt."to_semantic_version"
+              AND event."payload_json"->>'to_revision_digest' =
+                  receipt."to_revision_digest"
+              AND event."payload_json"->>'impact_receipt_id' =
+                  adoption."impact_receipt_id"
+              AND event."payload_json"->>'impact_digest' =
+                  adoption."impact_digest"
+              AND event."payload_json"->>'binding_digest_before' =
+                  receipt."binding_digest"
+              AND event."payload_json"->>'binding_head_digest_before' =
+                  receipt."binding_head_digest_before"
+              AND event."payload_json"->>'binding_head_digest_after' =
+                  receipt."binding_head_digest_after"
+              AND event."payload_json"->>'policy_set_digest_before' =
+                  receipt."policy_set_digest_before"
+              AND event."payload_json"->>'policy_set_digest_after' =
+                  receipt."policy_set_digest_after"
+              AND event."payload_json"->>'policy_set_digest' =
+                  receipt."policy_set_digest_after"
+              AND event."payload_json"->'added_rule_ids' =
+                  receipt."added_rule_ids"::jsonb
+              AND event."payload_json"->'changed_rule_ids' =
+                  receipt."changed_rule_ids"::jsonb
+              AND event."payload_json"->'removed_rule_ids' =
+                  receipt."removed_rule_ids"::jsonb
+              AND event."payload_json"->>'actor_id' =
+                  adoption."adopted_by"
+              AND event."payload_json"->>'actor_type' =
+                  event."actor_type"
+              AND (
+                  event."payload_json"->>'occurred_at'
+              )::timestamptz = adoption."adopted_at"
+              AND event."payload_json"::jsonb = jsonb_build_object(
+                  'event_schema_version', 'guideline-impact/v1',
+                  'event_id', adoption."event_id",
+                  'operation', 'adopt',
+                  'board_id', adoption."board_id",
+                  'guideline_id', adoption."guideline_id",
+                  'binding_id', adoption."binding_id",
+                  'previous_binding_revision',
+                      receipt."expected_binding_revision",
+                  'binding_revision', adoption."binding_revision",
+                  'from_revision_id', receipt."from_revision_id",
+                  'from_semantic_version',
+                      receipt."from_semantic_version",
+                  'from_revision_digest',
+                      receipt."from_revision_digest",
+                  'to_revision_id', receipt."to_revision_id",
+                  'to_semantic_version',
+                      receipt."to_semantic_version",
+                  'to_revision_digest', receipt."to_revision_digest",
+                  'impact_receipt_id', adoption."impact_receipt_id",
+                  'impact_digest', adoption."impact_digest",
+                  'binding_digest_before', receipt."binding_digest",
+                  'binding_head_digest_before',
+                      receipt."binding_head_digest_before",
+                  'binding_head_digest_after',
+                      receipt."binding_head_digest_after",
+                  'policy_set_digest_before',
+                      receipt."policy_set_digest_before",
+                  'policy_set_digest_after',
+                      receipt."policy_set_digest_after",
+                  'policy_set_digest',
+                      receipt."policy_set_digest_after",
+                  'added_rule_ids', receipt."added_rule_ids"::jsonb,
+                  'changed_rule_ids',
+                      receipt."changed_rule_ids"::jsonb,
+                  'removed_rule_ids',
+                      receipt."removed_rule_ids"::jsonb,
+                  'actor_id', adoption."adopted_by",
+                  'actor_type', event."actor_type",
+                  'occurred_at',
+                      event."payload_json"->'occurred_at'
+              )"""
+
+        adoption_lineage_audit = f'''
+SELECT COUNT(*)
+FROM "{adoption_table}" AS adoption
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM "{receipt_table}" AS receipt
+    JOIN "{binding_table}" AS binding
+      ON binding."binding_id" = adoption."binding_id"
+     AND binding."binding_revision" = adoption."binding_revision"
+     AND binding."board_id" = adoption."board_id"
+     AND binding."guideline_id" = adoption."guideline_id"
+     AND binding."impact_receipt_id" = adoption."impact_receipt_id"
+     AND binding."impact_adoption_id" = adoption."adoption_id"
+     AND binding."impact_unlink_id" IS NULL
+     AND binding."state" = 'active'
+     AND binding."revision_id" = receipt."to_revision_id"
+     AND binding."semantic_version" = receipt."to_semantic_version"
+     AND binding."revision_digest" = receipt."to_revision_digest"
+     AND binding."priority" = receipt."proposed_priority"
+     AND binding."default_enforcement" =
+         receipt."proposed_default_enforcement"
+     AND binding."binding_revision" =
+         COALESCE(receipt."expected_binding_revision", 0) + 1
+     AND binding."adopted_by" = adoption."adopted_by"
+     AND binding."adopted_at" = adoption."adopted_at"
+     AND binding."idempotency_key" = adoption."idempotency_key"
+     AND binding."request_digest" = adoption."request_digest"
+    JOIN "domain_events" AS event
+      ON event."id" = adoption."event_id"
+     AND event."event_type" = 'board.policy_adoption_changed.v1'
+     AND event."board_id" = adoption."board_id"
+     AND event."actor_id" = adoption."adopted_by"
+     AND event."occurred_at" = adoption."adopted_at"
+    JOIN "activity_logs" AS activity
+      ON activity."id" = adoption."activity_id"
+     AND activity."board_id" = adoption."board_id"
+     AND activity."card_id" IS NULL
+     AND activity."action" = 'guideline_revision_adopted'
+     AND activity."actor_id" = adoption."adopted_by"
+     AND activity."actor_type" = event."actor_type"
+     AND activity."actor_name" = adoption."adopted_by"
+     AND activity."created_at" = adoption."adopted_at"
+    WHERE receipt."impact_receipt_id" = adoption."impact_receipt_id"
+      AND receipt."board_id" = adoption."board_id"
+      AND receipt."guideline_id" = adoption."guideline_id"
+      AND receipt."binding_id" = adoption."binding_id"
+      AND receipt."expected_binding_revision"
+          IS NOT DISTINCT FROM adoption."expected_binding_revision"
+      AND receipt."impact_digest" = adoption."impact_digest"
+      AND receipt."binding_digest" = adoption."binding_digest"
+      AND receipt."sealed" = true
+      AND receipt."requires_explicit_adoption" = true
+      AND length(adoption."adoption_digest") = 64
+      AND event."actor_type" = activity."actor_type"
+      AND event."actor_type" IN ('agent', 'user', 'system')
+      AND (
+          (
+              receipt."expected_binding_revision" IS NULL
+              AND receipt."expected_binding_state" IS NULL
+              AND receipt."from_revision_id" IS NULL
+              AND receipt."from_semantic_version" IS NULL
+              AND receipt."from_revision_digest" IS NULL
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM "{binding_table}" AS previous
+              WHERE previous."binding_id" = adoption."binding_id"
+                AND previous."binding_revision" =
+                    receipt."expected_binding_revision"
+                AND previous."board_id" = adoption."board_id"
+                AND previous."guideline_id" = adoption."guideline_id"
+                AND previous."revision_id" =
+                    receipt."from_revision_id"
+                AND previous."semantic_version" =
+                    receipt."from_semantic_version"
+                AND previous."revision_digest" =
+                    receipt."from_revision_digest"
+                AND previous."state" =
+                    receipt."expected_binding_state"
+          )
+      ){adoption_payload_audit}
+)
+'''
+
+        row_audits = {
+            "unsealed_receipts": (
+                f'SELECT COUNT(*) FROM "{receipt_table}" WHERE "sealed" = false'
+            ),
+            "receipt_item_count": (
+                f'SELECT COUNT(*) FROM "{receipt_table}" AS receipt '
+                'WHERE receipt."item_count" < 1 OR receipt."item_count" <> ('
+                f'SELECT COUNT(*) FROM "{item_table}" AS item '
+                'WHERE item."impact_receipt_id" = '
+                'receipt."impact_receipt_id")'
+            ),
+            "item_scope": (
+                f'SELECT COUNT(*) FROM "{item_table}" AS item '
+                f'LEFT JOIN "{receipt_table}" AS receipt '
+                'ON receipt."impact_receipt_id" = item."impact_receipt_id" '
+                'AND receipt."board_id" = item."board_id" '
+                'AND receipt."guideline_id" = item."guideline_id" '
+                'WHERE receipt."impact_receipt_id" IS NULL'
+            ),
+            "adoption_lineage": adoption_lineage_audit,
+            "unlink_lineage": (
+                f'SELECT COUNT(*) FROM "{unlink_table}" AS unlink '
+                f'LEFT JOIN "{binding_table}" AS binding '
+                'ON binding."binding_id" = unlink."binding_id" '
+                'AND binding."binding_revision" = '
+                'unlink."binding_revision" '
+                'AND binding."board_id" = unlink."board_id" '
+                'AND binding."guideline_id" = unlink."guideline_id" '
+                "AND binding.\"state\" = 'unlinked' "
+                'AND binding."impact_receipt_id" IS NULL '
+                'AND binding."impact_adoption_id" IS NULL '
+                'AND binding."impact_unlink_id" = unlink."unlink_id" '
+                f'LEFT JOIN "{binding_table}" AS previous '
+                'ON previous."binding_id" = unlink."binding_id" '
+                'AND previous."binding_revision" = '
+                'unlink."previous_binding_revision" '
+                'AND previous."board_id" = unlink."board_id" '
+                'AND previous."guideline_id" = unlink."guideline_id" '
+                "AND previous.\"state\" = 'active' "
+                'LEFT JOIN "domain_events" AS event '
+                'ON event."id" = unlink."event_id" '
+                'AND event."event_type" = '
+                "'board.policy_adoption_changed.v1' "
+                'AND event."board_id" = unlink."board_id" '
+                'AND event."actor_id" = unlink."unlinked_by" '
+                'AND event."actor_type" = unlink."actor_type" '
+                'LEFT JOIN "activity_logs" AS activity '
+                'ON activity."id" = unlink."activity_id" '
+                'AND activity."board_id" = unlink."board_id" '
+                'AND activity."card_id" IS NULL '
+                "AND activity.\"action\" = 'guideline_unlinked' "
+                'AND activity."actor_id" = unlink."unlinked_by" '
+                'AND activity."actor_type" = unlink."actor_type" '
+                'WHERE binding."binding_id" IS NULL '
+                'OR previous."binding_id" IS NULL '
+                'OR unlink."binding_revision" <> '
+                'unlink."previous_binding_revision" + 1 '
+                'OR binding."revision_id" <> previous."revision_id" '
+                'OR binding."semantic_version" <> '
+                'previous."semantic_version" '
+                'OR binding."revision_digest" <> '
+                'previous."revision_digest" '
+                'OR binding."priority" <> previous."priority" '
+                'OR binding."default_enforcement" <> '
+                'previous."default_enforcement" '
+                'OR binding."source_kind" <> previous."source_kind" '
+                'OR binding."binding_origin" <> '
+                'previous."binding_origin" '
+                'OR event."id" IS NULL OR activity."id" IS NULL'
+            ),
+            "retirement_lineage": (
+                f'SELECT COUNT(*) FROM "{retirement_impact_table}" AS impact '
+                'LEFT JOIN "guideline_retirements" AS retirement '
+                'ON retirement."retirement_id" = impact."retirement_id" '
+                'AND retirement."guideline_id" = impact."guideline_id" '
+                'AND retirement."status" = impact."retirement_status" '
+                'AND retirement."retired_by" = impact."retired_by" '
+                'AND retirement."retired_at" = impact."retired_at" '
+                f'LEFT JOIN "{binding_table}" AS binding '
+                'ON binding."binding_id" = impact."binding_id" '
+                'AND binding."binding_revision" = '
+                'impact."binding_revision" '
+                'AND binding."board_id" = impact."board_id" '
+                'AND binding."guideline_id" = impact."guideline_id" '
+                "AND binding.\"state\" = 'active' "
+                'AND binding."revision_id" = impact."revision_id" '
+                'AND binding."semantic_version" = '
+                'impact."semantic_version" '
+                'AND binding."revision_digest" = '
+                'impact."revision_digest" '
+                'LEFT JOIN "domain_events" AS event '
+                'ON event."id" = impact."event_id" '
+                'AND event."event_type" = '
+                "'board.policy_retirement_changed.v1' "
+                'AND event."board_id" = impact."board_id" '
+                'AND event."actor_id" = impact."retired_by" '
+                'AND event."actor_type" = impact."actor_type" '
+                'AND event."occurred_at" = impact."retired_at" '
+                'LEFT JOIN "activity_logs" AS activity '
+                'ON activity."id" = impact."activity_id" '
+                'AND activity."board_id" = impact."board_id" '
+                'AND activity."card_id" IS NULL '
+                "AND activity.\"action\" = 'guideline_retired' "
+                'AND activity."actor_id" = impact."retired_by" '
+                'AND activity."actor_type" = impact."actor_type" '
+                'AND activity."created_at" = impact."retired_at" '
+                'WHERE retirement."retirement_id" IS NULL '
+                'OR binding."binding_id" IS NULL '
+                'OR event."id" IS NULL OR activity."id" IS NULL'
+            ),
+        }
+        for audit_name, statement in row_audits.items():
+            invalid = int((await conn.execute(sa_text(statement))).scalar_one())
+            if invalid:
+                raise RuntimeError(
+                    f"guideline impact {audit_name} audit failed: {invalid}"
+                )
+
+        adoption_digest_rows = (
+            (
+                await conn.execute(
+                    select(
+                        GuidelineImpactAdoptionRow.adoption_id,
+                        GuidelineImpactAdoptionRow.impact_receipt_id,
+                        GuidelineImpactAdoptionRow.impact_digest,
+                        GuidelineImpactAdoptionRow.binding_id,
+                        GuidelineImpactAdoptionRow.binding_revision,
+                        GuidelineImpactAdoptionRow.event_id,
+                        GuidelineImpactAdoptionRow.activity_id,
+                        GuidelineImpactAdoptionRow.adopted_by,
+                        GuidelineImpactAdoptionRow.adopted_at,
+                        GuidelineImpactAdoptionRow.request_digest,
+                        GuidelineImpactAdoptionRow.adoption_digest,
+                        DomainEventRow.actor_type,
+                    ).join(
+                        DomainEventRow,
+                        DomainEventRow.id == GuidelineImpactAdoptionRow.event_id,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        invalid_adoption_digests = 0
+        for row in adoption_digest_rows:
+            adopted_at = row["adopted_at"]
+            if adopted_at.tzinfo is None or adopted_at.utcoffset() is None:
+                adopted_at = adopted_at.replace(tzinfo=timezone.utc)
+            else:
+                adopted_at = adopted_at.astimezone(timezone.utc)
+            expected_request_digest = canonical_sha256(
+                {
+                    "contract": "guideline-impact/v1",
+                    "operation": "adopt",
+                    "receipt_id": row["impact_receipt_id"],
+                    "impact_digest": row["impact_digest"],
+                    "binding_id": row["binding_id"],
+                    "binding_revision": row["binding_revision"],
+                    "actor_id": row["adopted_by"],
+                    "actor_type": row["actor_type"],
+                }
+            )
+            expected_adoption_digest = canonical_sha256(
+                {
+                    "contract": "guideline-impact-adoption/v1",
+                    "adoption_id": row["adoption_id"],
+                    "receipt_id": row["impact_receipt_id"],
+                    "impact_digest": row["impact_digest"],
+                    "binding_id": row["binding_id"],
+                    "binding_revision": row["binding_revision"],
+                    "event_id": row["event_id"],
+                    "activity_id": row["activity_id"],
+                    "actor_id": row["adopted_by"],
+                    "adopted_at": adopted_at.isoformat(),
+                }
+            )
+            if (
+                row["request_digest"] != expected_request_digest
+                or row["adoption_digest"] != expected_adoption_digest
+            ):
+                invalid_adoption_digests += 1
+        if invalid_adoption_digests:
+            raise RuntimeError(
+                "guideline impact adoption digest audit failed: "
+                f"{invalid_adoption_digests}"
+            )
+
+        def _utc_datetime(value: object) -> object:
+            if value.tzinfo is None or value.utcoffset() is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+
+        def _canonical_rule_ids(value: object) -> list[str] | None:
+            if not isinstance(value, list | tuple) or any(
+                not isinstance(item, str) or not item.strip() for item in value
+            ):
+                return None
+            normalized = sorted(item.strip() for item in value)
+            if len(set(normalized)) != len(normalized):
+                return None
+            return normalized
+
+        def _same_canonical_payload(
+            actual: object,
+            expected: object,
+        ) -> bool:
+            try:
+                return canonical_sha256(actual) == canonical_sha256(expected)
+            except (TypeError, ValueError):
+                return False
+
+        unlink_current = aliased(GuidelineBoardBindingRow)
+        unlink_previous = aliased(GuidelineBoardBindingRow)
+        unlink_digest_rows = (
+            (
+                await conn.execute(
+                    select(
+                        GuidelineImpactUnlinkRow.unlink_id,
+                        GuidelineImpactUnlinkRow.board_id,
+                        GuidelineImpactUnlinkRow.guideline_id,
+                        GuidelineImpactUnlinkRow.binding_id,
+                        GuidelineImpactUnlinkRow.binding_revision,
+                        GuidelineImpactUnlinkRow.previous_binding_revision,
+                        GuidelineImpactUnlinkRow.binding_digest_before,
+                        GuidelineImpactUnlinkRow.binding_head_digest_before,
+                        GuidelineImpactUnlinkRow.binding_head_digest_after,
+                        GuidelineImpactUnlinkRow.policy_set_digest_before,
+                        GuidelineImpactUnlinkRow.policy_set_digest_after,
+                        GuidelineImpactUnlinkRow.removed_rule_ids,
+                        GuidelineImpactUnlinkRow.unlinked_by,
+                        GuidelineImpactUnlinkRow.actor_type,
+                        GuidelineImpactUnlinkRow.unlinked_at,
+                        GuidelineImpactUnlinkRow.event_id,
+                        GuidelineImpactUnlinkRow.activity_id,
+                        GuidelineImpactUnlinkRow.idempotency_key,
+                        GuidelineImpactUnlinkRow.request_digest,
+                        GuidelineImpactUnlinkRow.unlink_digest,
+                        unlink_previous.revision_id.label("previous_revision_id"),
+                        unlink_previous.semantic_version.label(
+                            "previous_semantic_version"
+                        ),
+                        unlink_previous.revision_digest.label(
+                            "previous_revision_digest"
+                        ),
+                        unlink_previous.priority.label("previous_priority"),
+                        unlink_previous.default_enforcement.label(
+                            "previous_default_enforcement"
+                        ),
+                        unlink_previous.state.label("previous_state"),
+                        unlink_previous.source_kind.label("previous_source_kind"),
+                        unlink_current.idempotency_key.label("binding_idempotency_key"),
+                        unlink_current.request_digest.label("binding_request_digest"),
+                        unlink_current.adopted_by.label("binding_actor_id"),
+                        unlink_current.adopted_at.label("binding_occurred_at"),
+                        DomainEventRow.event_type,
+                        DomainEventRow.board_id.label("event_board_id"),
+                        DomainEventRow.actor_id.label("event_actor_id"),
+                        DomainEventRow.actor_type.label("event_actor_type"),
+                        DomainEventRow.payload_json,
+                        DomainEventRow.occurred_at.label("event_occurred_at"),
+                        ActivityLog.board_id.label("activity_board_id"),
+                        ActivityLog.card_id,
+                        ActivityLog.action,
+                        ActivityLog.actor_id.label("activity_actor_id"),
+                        ActivityLog.actor_type.label("activity_actor_type"),
+                        ActivityLog.actor_name,
+                        ActivityLog.details,
+                        ActivityLog.created_at.label("activity_created_at"),
+                    )
+                    .join(
+                        unlink_current,
+                        (
+                            unlink_current.binding_id
+                            == GuidelineImpactUnlinkRow.binding_id
+                        )
+                        & (
+                            unlink_current.binding_revision
+                            == GuidelineImpactUnlinkRow.binding_revision
+                        ),
+                    )
+                    .join(
+                        unlink_previous,
+                        (
+                            unlink_previous.binding_id
+                            == GuidelineImpactUnlinkRow.binding_id
+                        )
+                        & (
+                            unlink_previous.binding_revision
+                            == GuidelineImpactUnlinkRow.previous_binding_revision
+                        ),
+                    )
+                    .join(
+                        DomainEventRow,
+                        DomainEventRow.id == GuidelineImpactUnlinkRow.event_id,
+                    )
+                    .join(
+                        ActivityLog,
+                        ActivityLog.id == GuidelineImpactUnlinkRow.activity_id,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        invalid_unlink_digests = 0
+        for row in unlink_digest_rows:
+            removed_rule_ids = _canonical_rule_ids(row["removed_rule_ids"])
+            if removed_rule_ids is None:
+                invalid_unlink_digests += 1
+                continue
+            unlinked_at = _utc_datetime(row["unlinked_at"])
+            expected_binding_digest = canonical_sha256(
+                {
+                    "contract": "guideline-impact/v1",
+                    "kind": "binding_fence",
+                    "board_id": row["board_id"],
+                    "guideline_id": row["guideline_id"],
+                    "binding_id": row["binding_id"],
+                    "binding_revision": row["previous_binding_revision"],
+                    "revision_id": row["previous_revision_id"],
+                    "semantic_version": row["previous_semantic_version"],
+                    "revision_digest": row["previous_revision_digest"],
+                    "priority": row["previous_priority"],
+                    "default_enforcement": row["previous_default_enforcement"],
+                    "state": row["previous_state"],
+                    "source_kind": row["previous_source_kind"],
+                }
+            )
+            expected_payload = {
+                "event_schema_version": "guideline-impact/v1",
+                "event_id": row["event_id"],
+                "operation": "unlink",
+                "board_id": row["board_id"],
+                "guideline_id": row["guideline_id"],
+                "binding_id": row["binding_id"],
+                "previous_binding_revision": row["previous_binding_revision"],
+                "binding_revision": row["binding_revision"],
+                "from_revision_id": row["previous_revision_id"],
+                "from_semantic_version": row["previous_semantic_version"],
+                "from_revision_digest": row["previous_revision_digest"],
+                "to_revision_id": None,
+                "to_semantic_version": None,
+                "to_revision_digest": None,
+                "impact_receipt_id": None,
+                "impact_digest": None,
+                "binding_digest_before": expected_binding_digest,
+                "binding_head_digest_before": row["binding_head_digest_before"],
+                "binding_head_digest_after": row["binding_head_digest_after"],
+                "policy_set_digest_before": row["policy_set_digest_before"],
+                "policy_set_digest_after": row["policy_set_digest_after"],
+                "policy_set_digest": row["policy_set_digest_after"],
+                "added_rule_ids": [],
+                "changed_rule_ids": [],
+                "removed_rule_ids": removed_rule_ids,
+                "actor_id": row["unlinked_by"],
+                "actor_type": row["actor_type"],
+                "occurred_at": unlinked_at.isoformat(),
+            }
+            expected_request_digest = canonical_sha256(
+                {
+                    "contract": "guideline-impact/v1",
+                    "operation": "unlink",
+                    "binding_digest_before": expected_binding_digest,
+                    "binding_id": row["binding_id"],
+                    "binding_revision": row["binding_revision"],
+                    "binding_head_digest_before": row["binding_head_digest_before"],
+                    "binding_head_digest_after": row["binding_head_digest_after"],
+                    "policy_set_digest_before": row["policy_set_digest_before"],
+                    "policy_set_digest_after": row["policy_set_digest_after"],
+                    "removed_rule_ids": removed_rule_ids,
+                    "actor_id": row["unlinked_by"],
+                    "actor_type": row["actor_type"],
+                }
+            )
+            expected_unlink_digest = canonical_sha256(
+                {
+                    "contract": "guideline-impact-unlink/v1",
+                    "unlink_id": row["unlink_id"],
+                    "binding_id": row["binding_id"],
+                    "binding_revision": row["binding_revision"],
+                    "previous_binding_revision": row["previous_binding_revision"],
+                    "binding_digest_before": expected_binding_digest,
+                    "event_id": row["event_id"],
+                    "activity_id": row["activity_id"],
+                    "actor_id": row["unlinked_by"],
+                    "actor_type": row["actor_type"],
+                    "unlinked_at": unlinked_at.isoformat(),
+                }
+            )
+            if (
+                row["binding_digest_before"] != expected_binding_digest
+                or row["request_digest"] != expected_request_digest
+                or row["unlink_digest"] != expected_unlink_digest
+                or row["binding_idempotency_key"] != row["idempotency_key"]
+                or row["binding_request_digest"] != row["request_digest"]
+                or row["binding_actor_id"] != row["unlinked_by"]
+                or _utc_datetime(row["binding_occurred_at"]) != unlinked_at
+                or row["event_type"] != "board.policy_adoption_changed.v1"
+                or row["event_board_id"] != row["board_id"]
+                or row["event_actor_id"] != row["unlinked_by"]
+                or row["event_actor_type"] != row["actor_type"]
+                or _utc_datetime(row["event_occurred_at"]) != unlinked_at
+                or row["activity_board_id"] != row["board_id"]
+                or row["card_id"] is not None
+                or row["action"] != "guideline_unlinked"
+                or row["activity_actor_id"] != row["unlinked_by"]
+                or row["activity_actor_type"] != row["actor_type"]
+                or row["actor_name"] != row["unlinked_by"]
+                or _utc_datetime(row["activity_created_at"]) != unlinked_at
+                or not _same_canonical_payload(
+                    row["payload_json"],
+                    expected_payload,
+                )
+                or not _same_canonical_payload(
+                    row["details"],
+                    expected_payload,
+                )
+            ):
+                invalid_unlink_digests += 1
+        if invalid_unlink_digests:
+            raise RuntimeError(
+                f"guideline impact unlink digest audit failed: {invalid_unlink_digests}"
+            )
+
+        retirement_binding = aliased(GuidelineBoardBindingRow)
+        retirement_digest_rows = (
+            (
+                await conn.execute(
+                    select(
+                        GuidelineRetirementImpactRow.impact_id,
+                        GuidelineRetirementImpactRow.retirement_id,
+                        GuidelineRetirementImpactRow.board_id,
+                        GuidelineRetirementImpactRow.guideline_id,
+                        GuidelineRetirementImpactRow.retirement_status,
+                        GuidelineRetirementImpactRow.superseded_by_guideline_id,
+                        GuidelineRetirementImpactRow.binding_id,
+                        GuidelineRetirementImpactRow.binding_revision,
+                        GuidelineRetirementImpactRow.revision_id,
+                        GuidelineRetirementImpactRow.revision_number,
+                        GuidelineRetirementImpactRow.semantic_version,
+                        GuidelineRetirementImpactRow.revision_digest,
+                        GuidelineRetirementImpactRow.binding_digest_before,
+                        GuidelineRetirementImpactRow.binding_head_digest_before,
+                        GuidelineRetirementImpactRow.binding_head_digest_after,
+                        GuidelineRetirementImpactRow.policy_set_digest_before,
+                        GuidelineRetirementImpactRow.policy_set_digest_after,
+                        GuidelineRetirementImpactRow.removed_rule_ids,
+                        GuidelineRetirementImpactRow.retired_by,
+                        GuidelineRetirementImpactRow.actor_type,
+                        GuidelineRetirementImpactRow.retired_at,
+                        GuidelineRetirementImpactRow.event_id,
+                        GuidelineRetirementImpactRow.activity_id,
+                        GuidelineRetirementImpactRow.request_digest,
+                        GuidelineRetirementImpactRow.impact_digest,
+                        retirement_binding.priority.label("binding_priority"),
+                        retirement_binding.default_enforcement.label(
+                            "binding_default_enforcement"
+                        ),
+                        retirement_binding.state.label("binding_state"),
+                        retirement_binding.source_kind.label("binding_source_kind"),
+                        GuidelineRetirementRow.retired_revision_id.label(
+                            "terminal_revision_id"
+                        ),
+                        GuidelineRetirementRow.retired_revision_number.label(
+                            "terminal_revision_number"
+                        ),
+                        GuidelineRetirementRow.retired_semantic_version.label(
+                            "terminal_semantic_version"
+                        ),
+                        GuidelineRetirementRow.retired_revision_digest.label(
+                            "terminal_revision_digest"
+                        ),
+                        GuidelineRetirementRow.retired_head_revision.label(
+                            "terminal_head_revision"
+                        ),
+                        GuidelineRetirementRow.reason.label("terminal_reason"),
+                        GuidelineRetirementRow.request_digest.label(
+                            "terminal_request_digest"
+                        ),
+                        DomainEventRow.event_type,
+                        DomainEventRow.board_id.label("event_board_id"),
+                        DomainEventRow.actor_id.label("event_actor_id"),
+                        DomainEventRow.actor_type.label("event_actor_type"),
+                        DomainEventRow.payload_json,
+                        DomainEventRow.occurred_at.label("event_occurred_at"),
+                        ActivityLog.board_id.label("activity_board_id"),
+                        ActivityLog.card_id,
+                        ActivityLog.action,
+                        ActivityLog.actor_id.label("activity_actor_id"),
+                        ActivityLog.actor_type.label("activity_actor_type"),
+                        ActivityLog.actor_name,
+                        ActivityLog.details,
+                        ActivityLog.created_at.label("activity_created_at"),
+                    )
+                    .join(
+                        retirement_binding,
+                        (
+                            retirement_binding.binding_id
+                            == GuidelineRetirementImpactRow.binding_id
+                        )
+                        & (
+                            retirement_binding.binding_revision
+                            == GuidelineRetirementImpactRow.binding_revision
+                        ),
+                    )
+                    .join(
+                        GuidelineRetirementRow,
+                        GuidelineRetirementRow.retirement_id
+                        == GuidelineRetirementImpactRow.retirement_id,
+                    )
+                    .join(
+                        DomainEventRow,
+                        DomainEventRow.id == GuidelineRetirementImpactRow.event_id,
+                    )
+                    .join(
+                        ActivityLog,
+                        ActivityLog.id == GuidelineRetirementImpactRow.activity_id,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        invalid_retirement_digests = 0
+        for row in retirement_digest_rows:
+            removed_rule_ids = _canonical_rule_ids(row["removed_rule_ids"])
+            if removed_rule_ids is None:
+                invalid_retirement_digests += 1
+                continue
+            retired_at = _utc_datetime(row["retired_at"])
+            expected_binding_digest = canonical_sha256(
+                {
+                    "contract": "guideline-impact/v1",
+                    "kind": "binding_fence",
+                    "board_id": row["board_id"],
+                    "guideline_id": row["guideline_id"],
+                    "binding_id": row["binding_id"],
+                    "binding_revision": row["binding_revision"],
+                    "revision_id": row["revision_id"],
+                    "semantic_version": row["semantic_version"],
+                    "revision_digest": row["revision_digest"],
+                    "priority": row["binding_priority"],
+                    "default_enforcement": row["binding_default_enforcement"],
+                    "state": row["binding_state"],
+                    "source_kind": row["binding_source_kind"],
+                }
+            )
+            expected_payload = {
+                "event_schema_version": "guideline-impact/v1",
+                "event_id": row["event_id"],
+                "operation": "retire",
+                "board_id": row["board_id"],
+                "guideline_id": row["guideline_id"],
+                "retirement_id": row["retirement_id"],
+                "retirement_status": row["retirement_status"],
+                "superseded_by_guideline_id": row["superseded_by_guideline_id"],
+                "binding_id": row["binding_id"],
+                "binding_revision": row["binding_revision"],
+                "revision_id": row["revision_id"],
+                "revision_number": row["revision_number"],
+                "semantic_version": row["semantic_version"],
+                "revision_digest": row["revision_digest"],
+                "binding_digest_before": expected_binding_digest,
+                "binding_head_digest_before": row["binding_head_digest_before"],
+                "binding_head_digest_after": row["binding_head_digest_after"],
+                "policy_set_digest_before": row["policy_set_digest_before"],
+                "policy_set_digest_after": row["policy_set_digest_after"],
+                "policy_set_digest": row["policy_set_digest_after"],
+                "removed_rule_ids": removed_rule_ids,
+                "actor_id": row["retired_by"],
+                "actor_type": row["actor_type"],
+                "occurred_at": retired_at.isoformat(),
+                "request_digest": row["request_digest"],
+            }
+            expected_request_digest = canonical_sha256(
+                {
+                    "contract": "guideline-request-digest/v1",
+                    "operation": "retire",
+                    "scope_id": row["guideline_id"],
+                    "payload": {
+                        "guideline_id": row["guideline_id"],
+                        "expected_head_revision": row["terminal_head_revision"],
+                        "retired_revision_id": row["terminal_revision_id"],
+                        "retired_revision_number": row["terminal_revision_number"],
+                        "retired_semantic_version": row["terminal_semantic_version"],
+                        "retired_revision_digest": row["terminal_revision_digest"],
+                        "status": row["retirement_status"],
+                        "reason": row["terminal_reason"],
+                        "superseded_by_guideline_id": row["superseded_by_guideline_id"],
+                        "actor_id": row["retired_by"],
+                    },
+                }
+            )
+            expected_impact_digest = canonical_sha256(
+                {
+                    "contract": "guideline-impact/v1",
+                    "operation": "retire",
+                    "event": expected_payload,
+                }
+            )
+            if (
+                row["binding_digest_before"] != expected_binding_digest
+                or row["request_digest"] != expected_request_digest
+                or row["terminal_request_digest"] != expected_request_digest
+                or row["impact_digest"] != expected_impact_digest
+                or row["event_type"] != "board.policy_retirement_changed.v1"
+                or row["event_board_id"] != row["board_id"]
+                or row["event_actor_id"] != row["retired_by"]
+                or row["event_actor_type"] != row["actor_type"]
+                or _utc_datetime(row["event_occurred_at"]) != retired_at
+                or row["activity_board_id"] != row["board_id"]
+                or row["card_id"] is not None
+                or row["action"] != "guideline_retired"
+                or row["activity_actor_id"] != row["retired_by"]
+                or row["activity_actor_type"] != row["actor_type"]
+                or row["actor_name"] != row["retired_by"]
+                or _utc_datetime(row["activity_created_at"]) != retired_at
+                or not _same_canonical_payload(
+                    row["payload_json"],
+                    expected_payload,
+                )
+                or not _same_canonical_payload(
+                    row["details"],
+                    expected_payload,
+                )
+            ):
+                invalid_retirement_digests += 1
+        if invalid_retirement_digests:
+            raise RuntimeError(
+                "guideline impact retirement digest audit failed: "
+                f"{invalid_retirement_digests}"
+            )
+
+        if dialect == "sqlite":
+            changed = await _install_sqlite_triggers(conn) or changed
+            violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if violations:
+                raise RuntimeError(
+                    "guideline impact migration left foreign-key violations: "
+                    + repr(violations[:10])
+                )
+        else:
+            changed = await _install_postgresql_triggers(conn) or changed
+
+    return None if changed else "skipped"
+
+
+async def _migrate_policy_compliance_v1_schema() -> str | None:
+    """Converge B07 subject tokens and immutable compliance evidence."""
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Card,
+        PolicyComplianceAdoptedRevisionRow,
+        PolicyComplianceFindingRow,
+        PolicyComplianceReceiptRow,
+        Spec,
+    )
+
+    engine = get_engine()
+    changed = False
+    tables = (
+        PolicyComplianceReceiptRow.__table__,
+        PolicyComplianceAdoptedRevisionRow.__table__,
+        PolicyComplianceFindingRow.__table__,
+    )
+
+    def _table_names(sync_conn: object) -> set[str]:
+        return set(sa_inspect(sync_conn).get_table_names())
+
+    def _columns(sync_conn: object, table_name: str) -> set[str]:
+        return {
+            str(column["name"])
+            for column in sa_inspect(sync_conn).get_columns(table_name)
+        }
+
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "policy compliance migration supports only SQLite and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        table_names = await conn.run_sync(_table_names)
+        for model, column_name in (
+            (Spec, "test_scenario_policy_epoch"),
+            (Card, "policy_version"),
+        ):
+            if model.__tablename__ not in table_names:
+                raise RuntimeError(
+                    "policy compliance migration missing subject table: "
+                    + model.__tablename__
+                )
+            columns = await conn.run_sync(
+                lambda sync_conn, name=model.__tablename__: _columns(
+                    sync_conn,
+                    name,
+                )
+            )
+            if column_name not in columns:
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{model.__tablename__}" '
+                        f'ADD COLUMN "{column_name}" '
+                        "INTEGER NOT NULL DEFAULT 1"
+                    )
+                )
+                changed = True
+            invalid = int(
+                (
+                    await conn.execute(
+                        sa_text(
+                            f'SELECT COUNT(*) FROM "{model.__tablename__}" '
+                            f'WHERE "{column_name}" IS NULL '
+                            f'OR "{column_name}" < 1'
+                        )
+                    )
+                ).scalar_one()
+            )
+            if invalid:
+                raise RuntimeError(
+                    f"policy compliance invalid {column_name}: {invalid}"
+                )
+
+        table_names = await conn.run_sync(_table_names)
+        receipt_table_name = PolicyComplianceReceiptRow.__tablename__
+        if receipt_table_name in table_names:
+            receipt_columns = await conn.run_sync(
+                lambda sync_conn: _columns(sync_conn, receipt_table_name)
+            )
+            if "sealed" not in receipt_columns:
+                sealed_type = (
+                    "BOOLEAN NOT NULL DEFAULT FALSE"
+                    if dialect == "postgresql"
+                    else "BOOLEAN NOT NULL DEFAULT false"
+                )
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{receipt_table_name}" '
+                        f'ADD COLUMN "sealed" {sealed_type}'
+                    )
+                )
+                changed = True
+
+        for table in tables:
+            if table.name not in table_names:
+                await conn.run_sync(
+                    lambda sync_conn, owned=table: owned.create(
+                        sync_conn,
+                        checkfirst=True,
+                    )
+                )
+                table_names.add(table.name)
+                changed = True
+            if dialect == "sqlite":
+                contract = await conn.run_sync(
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn,
+                        owned,
+                    )
+                )
+                if contract["observed"] != contract["expected"]:
+                    raise RuntimeError(
+                        "policy compliance table has a non-canonical contract: "
+                        + table.name
+                    )
+
+        if dialect == "sqlite":
+            expected = policy_compliance_immutability_trigger_manifest()
+            predecessors = (
+                policy_compliance_immutability_trigger_manifest(
+                    allow_board_erasure=False,
+                ),
+                policy_compliance_immutability_trigger_manifest(
+                    allow_aggregate_sealing=False,
+                ),
+                policy_compliance_immutability_trigger_manifest(
+                    allow_board_erasure=False,
+                    allow_aggregate_sealing=False,
+                ),
+            )
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {
+                            "prefix": (
+                                f"{POLICY_COMPLIANCE_IMMUTABILITY_TRIGGER_PREFIX}%"
+                            )
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["name"]): row for row in rows}
+            unexpected = set(existing) - set(expected)
+            if unexpected:
+                raise RuntimeError(
+                    "policy compliance has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in expected.items():
+                row = existing.get(trigger_name)
+                if row is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                observed = normalize_global_discovery_source_revision_trigger_sql(
+                    row["sql"]
+                )
+                canonical = normalize_global_discovery_source_revision_trigger_sql(
+                    trigger_sql
+                )
+                if str(row["tbl_name"]) == table_name and observed == canonical:
+                    continue
+                recognized_predecessor = any(
+                    trigger_name in predecessor
+                    and str(row["tbl_name"]) == predecessor[trigger_name][0]
+                    and observed
+                    == normalize_global_discovery_source_revision_trigger_sql(
+                        predecessor[trigger_name][1]
+                    )
+                    for predecessor in predecessors
+                )
+                if recognized_predecessor:
+                    await conn.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                raise RuntimeError(
+                    "policy compliance immutable trigger is corrupt: " + trigger_name
+                )
+            final_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {
+                            "prefix": (
+                                f"{POLICY_COMPLIANCE_IMMUTABILITY_TRIGGER_PREFIX}%"
+                            )
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            final = {str(row["name"]): row for row in final_rows}
+            if set(final) != set(expected):
+                raise RuntimeError(
+                    "policy compliance trigger installation is incomplete"
+                )
+            incomplete_receipts = int(
+                (
+                    await conn.execute(
+                        sa_text(
+                            f'SELECT COUNT(*) FROM "{receipt_table_name}" AS receipt '
+                            "WHERE receipt.finding_count <> ("
+                            "SELECT COUNT(*) "
+                            'FROM "policy_compliance_findings" AS finding '
+                            "WHERE finding.receipt_id = receipt.receipt_id"
+                            ")"
+                        )
+                    )
+                ).scalar_one()
+            )
+            if incomplete_receipts:
+                raise RuntimeError(
+                    "policy compliance migration found incomplete receipt "
+                    f"aggregates: {incomplete_receipts}"
+                )
+            sealed_rows = await conn.execute(
+                sa_text(
+                    f'UPDATE "{receipt_table_name}" SET "sealed" = 1 WHERE "sealed" = 0'
+                )
+            )
+            if int(sealed_rows.rowcount or 0):
+                changed = True
+            violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if violations:
+                raise RuntimeError(
+                    "policy compliance migration left foreign-key violations: "
+                    + repr(violations[:10])
+                )
+        else:
+            # Community is SQLite-first, but keep the append-only authority
+            # correct for PostgreSQL deployments using the same metadata.
+            function_name = "policy_compliance_immutable_guard_v1"
+            await conn.execute(
+                sa_text(
+                    f"""
+CREATE OR REPLACE FUNCTION {function_name}() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'UPDATE'
+       AND TG_TABLE_NAME = 'policy_compliance_receipts'
+       AND OLD.sealed = FALSE
+       AND NEW.sealed = TRUE
+       AND (to_jsonb(NEW) - 'sealed')
+           IS NOT DISTINCT FROM (to_jsonb(OLD) - 'sealed')
+    THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT'
+       AND TG_TABLE_NAME IN (
+           'policy_compliance_adopted_revisions',
+           'policy_compliance_findings'
+       )
+    THEN
+        IF EXISTS (
+            SELECT 1 FROM policy_compliance_receipts AS receipt
+            WHERE receipt.receipt_id = NEW.receipt_id
+              AND receipt.sealed = TRUE
+        ) THEN
+            RAISE EXCEPTION 'policy_compliance_evidence_sealed';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        IF TG_TABLE_NAME = 'policy_compliance_adopted_revisions' THEN
+            IF EXISTS (
+                SELECT 1 FROM kg_board_erasure_permits AS permit
+                JOIN policy_compliance_receipts AS receipt
+                  ON receipt.board_id = permit.board_id
+                WHERE receipt.receipt_id = OLD.receipt_id
+            ) THEN RETURN OLD; END IF;
+        ELSIF EXISTS (
+            SELECT 1 FROM kg_board_erasure_permits AS permit
+            WHERE permit.board_id = OLD.board_id
+        ) THEN RETURN OLD;
+        END IF;
+    END IF;
+    RAISE EXCEPTION 'policy_compliance_evidence_immutable';
+END;
+$$ LANGUAGE plpgsql
+"""
+                )
+            )
+            postgres_trigger_prefix = "trg_pc_immutable_"
+            trigger_names = {
+                PolicyComplianceReceiptRow.__tablename__: (
+                    f"{postgres_trigger_prefix}receipt"
+                ),
+                PolicyComplianceAdoptedRevisionRow.__tablename__: (
+                    f"{postgres_trigger_prefix}adopted"
+                ),
+                PolicyComplianceFindingRow.__tablename__: (
+                    f"{postgres_trigger_prefix}finding"
+                ),
+            }
+            if any(len(name) > 63 for name in trigger_names.values()):
+                raise RuntimeError(
+                    "policy compliance PostgreSQL trigger name exceeds 63 bytes"
+                )
+            trigger_rows = {
+                str(row["trigger_name"]): row
+                for row in (
+                    (
+                        await conn.execute(
+                            sa_text(
+                                """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       function.proname AS function_name,
+       trigger.tgtype AS trigger_type
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+WHERE NOT trigger.tgisinternal
+  AND trigger.tgname LIKE :prefix
+"""
+                            ),
+                            {"prefix": f"{postgres_trigger_prefix}%"},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            }
+            expected_names = set(trigger_names.values())
+            unexpected = set(trigger_rows) - expected_names
+            if unexpected:
+                raise RuntimeError(
+                    "policy compliance has unexpected PostgreSQL triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for table in tables:
+                trigger_name = trigger_names[table.name]
+                trigger_row = trigger_rows.get(trigger_name)
+                includes_insert = table.name != PolicyComplianceReceiptRow.__tablename__
+                operation_clause = (
+                    "INSERT OR UPDATE OR DELETE"
+                    if includes_insert
+                    else "UPDATE OR DELETE"
+                )
+                expected_trigger_type = 31 if includes_insert else 27
+                if trigger_row is None:
+                    await conn.execute(
+                        sa_text(
+                            f'CREATE TRIGGER "{trigger_name}" '
+                            f'BEFORE {operation_clause} ON "{table.name}" '
+                            f"FOR EACH ROW EXECUTE FUNCTION {function_name}()"
+                        )
+                    )
+                    changed = True
+                    continue
+                if (
+                    str(trigger_row["table_name"]) != table.name
+                    or str(trigger_row["function_name"]) != function_name
+                ):
+                    raise RuntimeError(
+                        "policy compliance PostgreSQL trigger is corrupt: "
+                        + trigger_name
+                    )
+                observed_trigger_type = int(trigger_row["trigger_type"])
+                if observed_trigger_type != expected_trigger_type:
+                    if includes_insert and observed_trigger_type == 27:
+                        await conn.execute(
+                            sa_text(f'DROP TRIGGER "{trigger_name}" ON "{table.name}"')
+                        )
+                        await conn.execute(
+                            sa_text(
+                                f'CREATE TRIGGER "{trigger_name}" '
+                                f'BEFORE {operation_clause} ON "{table.name}" '
+                                f"FOR EACH ROW EXECUTE FUNCTION {function_name}()"
+                            )
+                        )
+                        changed = True
+                        continue
+                    raise RuntimeError(
+                        "policy compliance PostgreSQL trigger is corrupt: "
+                        + trigger_name
+                    )
+
+            incomplete_receipts = int(
+                (
+                    await conn.execute(
+                        sa_text(
+                            f'SELECT COUNT(*) FROM "{receipt_table_name}" AS receipt '
+                            "WHERE receipt.finding_count <> ("
+                            "SELECT COUNT(*) "
+                            'FROM "policy_compliance_findings" AS finding '
+                            "WHERE finding.receipt_id = receipt.receipt_id"
+                            ")"
+                        )
+                    )
+                ).scalar_one()
+            )
+            if incomplete_receipts:
+                raise RuntimeError(
+                    "policy compliance migration found incomplete receipt "
+                    f"aggregates: {incomplete_receipts}"
+                )
+            sealed_rows = await conn.execute(
+                sa_text(
+                    f'UPDATE "{receipt_table_name}" '
+                    'SET "sealed" = TRUE WHERE "sealed" = FALSE'
+                )
+            )
+            if int(sealed_rows.rowcount or 0):
+                changed = True
+
+    return None if changed else "skipped"
+
+
+async def _migrate_policy_waiver_v1_schema() -> str | None:
+    """Converge append-only B09 waiver heads, events, and DB guards."""
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select as sa_select
+    from sqlalchemy import text as sa_text
+    from types import SimpleNamespace
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        PolicyComplianceFindingRow,
+        PolicyComplianceReceiptRow,
+        PolicyWaiverEventRow,
+        PolicyWaiverRow,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
+        _validate_waiver_pair,
+        _verified_waiver_head,
+        _waiver_event_from_row,
+        _waiver_from_rows,
+    )
+    from okto_pulse.core.domain.guideline_policy import (
+        GuidelinePolicyContractError,
+        PolicyWaiverEventType,
+        PolicyWaiverExpireReasonCode,
+        PolicyWaiverStatus,
+    )
+    from okto_pulse.core.ports.guideline_policy import (
+        GuidelinePolicyDigestConflict,
+    )
+
+    engine = get_engine()
+    changed = False
+    tables = (
+        PolicyWaiverRow.__table__,
+        PolicyWaiverEventRow.__table__,
+    )
+
+    def _table_names(sync_conn: object) -> set[str]:
+        return set(sa_inspect(sync_conn).get_table_names())
+
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "policy waiver migration supports only SQLite and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        table_names = await conn.run_sync(_table_names)
+        for required in (
+            PolicyComplianceReceiptRow.__tablename__,
+            PolicyComplianceFindingRow.__tablename__,
+        ):
+            if required not in table_names:
+                raise RuntimeError(
+                    "policy waiver migration missing B07 authority: " + required
+                )
+        for table in tables:
+            if table.name not in table_names:
+                await conn.run_sync(
+                    lambda sync_conn, owned=table: owned.create(
+                        sync_conn,
+                        checkfirst=True,
+                    )
+                )
+                table_names.add(table.name)
+                changed = True
+            if dialect == "sqlite":
+                contract = await conn.run_sync(
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn,
+                        owned,
+                    )
+                )
+                if contract["observed"] != contract["expected"]:
+                    raise RuntimeError(
+                        "policy waiver table has a non-canonical contract: "
+                        + table.name
+                    )
+
+        inconsistent_heads = int(
+            (
+                await conn.execute(
+                    sa_text(
+                        """
+SELECT COUNT(*)
+FROM policy_waivers AS head
+LEFT JOIN policy_waiver_events AS event
+  ON event.event_id = head.last_event_id
+ AND event.waiver_id = head.waiver_id
+ AND event.board_id = head.board_id
+WHERE event.event_id IS NULL
+   OR event.waiver_revision <> head.waiver_revision
+   OR event.event_type <> head.last_event_type
+   OR event.to_status <> head.status
+   OR event.occurred_at <> head.last_event_at
+   OR event.expires_at <> head.expires_at
+   OR event.scope_digest <> head.scope_digest
+   OR event.waiver_digest <> head.head_digest
+   OR head.waiver_revision <> (
+       SELECT COUNT(*)
+       FROM policy_waiver_events AS lineage
+       WHERE lineage.waiver_id = head.waiver_id
+         AND lineage.board_id = head.board_id
+   )
+"""
+                    )
+                )
+            ).scalar_one()
+        )
+        if inconsistent_heads:
+            raise RuntimeError(
+                "policy waiver migration found inconsistent head/event "
+                f"lineages: {inconsistent_heads}"
+            )
+
+        head_snapshots = tuple(
+            SimpleNamespace(**dict(row))
+            for row in (
+                (await conn.execute(sa_select(PolicyWaiverRow.__table__)))
+                .mappings()
+                .all()
+            )
+        )
+        event_snapshots = tuple(
+            SimpleNamespace(**dict(row))
+            for row in (
+                (await conn.execute(sa_select(PolicyWaiverEventRow.__table__)))
+                .mappings()
+                .all()
+            )
+        )
+        events_by_waiver: dict[str, list[SimpleNamespace]] = {}
+        for event in event_snapshots:
+            events_by_waiver.setdefault(event.waiver_id, []).append(event)
+        try:
+            for head in head_snapshots:
+                lineage = sorted(
+                    events_by_waiver.get(head.waiver_id, ()),
+                    key=lambda event: event.waiver_revision,
+                )
+                if len(lineage) != head.waiver_revision:
+                    raise GuidelinePolicyDigestConflict(
+                        "policy_waiver_event_chain_invalid"
+                    )
+                previous_head = None
+                for index, event_row in enumerate(lineage, start=1):
+                    event = _waiver_event_from_row(event_row)
+                    event_head = _waiver_from_rows(head, event_row)
+                    _validate_waiver_pair(
+                        waiver=event_head,
+                        event=event,
+                    )
+                    if (
+                        event.waiver_revision != index
+                        or index == 1
+                        and (
+                            event.event_type is not PolicyWaiverEventType.REQUEST
+                            or event_row.predecessor_event_id is not None
+                            or event.actor_id != head.requested_by
+                            or event.occurred_at != head.requested_at
+                            or event.reason != head.justification
+                            or tuple(event.evidence_refs) != tuple(head.evidence_refs)
+                            or event.expires_at != head.original_expires_at
+                            or event_row.idempotency_key != head.idempotency_key
+                            or event_row.request_digest != head.request_digest
+                        )
+                        or index > 1
+                        and (
+                            previous_head is None
+                            or event_row.predecessor_event_id
+                            != lineage[index - 2].event_id
+                            or event.from_status is not previous_head.status
+                            or (
+                                event.event_type is PolicyWaiverEventType.REVALIDATE
+                                and event.expires_at <= previous_head.expires_at
+                            )
+                            or (
+                                event.event_type is PolicyWaiverEventType.REVALIDATE
+                                and previous_head.status is PolicyWaiverStatus.APPROVED
+                                and event.occurred_at >= previous_head.expires_at
+                            )
+                            or (
+                                event.event_type is PolicyWaiverEventType.REVALIDATE
+                                and previous_head.status is PolicyWaiverStatus.EXPIRED
+                                and previous_head.expire_reason_code
+                                is not (PolicyWaiverExpireReasonCode.SCHEDULED_EXPIRY)
+                            )
+                            or (
+                                event.event_type is not PolicyWaiverEventType.REVALIDATE
+                                and event.expires_at != previous_head.expires_at
+                            )
+                        )
+                    ):
+                        raise GuidelinePolicyDigestConflict(
+                            "policy_waiver_event_chain_invalid"
+                        )
+                    if event.event_type in {
+                        PolicyWaiverEventType.APPROVE,
+                        PolicyWaiverEventType.REJECT,
+                        PolicyWaiverEventType.REVALIDATE,
+                    } and (
+                        event.actor_id != event_row.reviewed_by
+                        or event.occurred_at != event_row.reviewed_at
+                        or event.reason != event_row.review_reason
+                    ):
+                        raise GuidelinePolicyDigestConflict(
+                            "policy_waiver_event_review_mismatch"
+                        )
+                    if event.event_type is PolicyWaiverEventType.REVOKE and (
+                        event.actor_id != event_row.revoked_by
+                        or event.occurred_at != event_row.revoked_at
+                    ):
+                        raise GuidelinePolicyDigestConflict(
+                            "policy_waiver_event_revocation_mismatch"
+                        )
+                    if (
+                        previous_head is not None
+                        and event.event_type
+                        not in {
+                            PolicyWaiverEventType.APPROVE,
+                            PolicyWaiverEventType.REJECT,
+                            PolicyWaiverEventType.REVALIDATE,
+                        }
+                        and (
+                            event_head.reviewed_by != previous_head.reviewed_by
+                            or event_head.reviewed_at != previous_head.reviewed_at
+                            or event_head.review_reason != previous_head.review_reason
+                        )
+                    ):
+                        raise GuidelinePolicyDigestConflict(
+                            "policy_waiver_event_review_changed"
+                        )
+                    if (
+                        previous_head is not None
+                        and event.event_type is PolicyWaiverEventType.REVALIDATE
+                        and previous_head.expire_reason_code
+                        not in {
+                            None,
+                            PolicyWaiverExpireReasonCode.SCHEDULED_EXPIRY,
+                        }
+                    ):
+                        raise GuidelinePolicyDigestConflict(
+                            "policy_waiver_structural_invalidation_terminal"
+                        )
+                    previous_head = event_head
+                _verified_waiver_head(head, lineage[-1])
+        except (
+            GuidelinePolicyContractError,
+            GuidelinePolicyDigestConflict,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise RuntimeError(
+                "policy waiver migration found corrupt event history"
+            ) from exc
+
+        if dialect == "sqlite":
+            predecessor_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {"prefix": (f"{POLICY_WAIVER_PREDECESSOR_TRIGGER_PREFIX}%")},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            allowed_predecessors = {
+                (f"{POLICY_WAIVER_PREDECESSOR_TRIGGER_PREFIX}_{suffix}")
+                for suffix in (
+                    "head_insert",
+                    "head_update",
+                    "head_delete",
+                    "event_insert",
+                    "event_update",
+                    "event_delete",
+                )
+            }
+            unexpected_predecessors = {
+                str(row["name"]) for row in predecessor_rows
+            } - allowed_predecessors
+            if unexpected_predecessors:
+                raise RuntimeError(
+                    "policy waiver has unexpected predecessor triggers: "
+                    + ", ".join(sorted(unexpected_predecessors))
+                )
+            for row in predecessor_rows:
+                trigger_name = str(row["name"])
+                await conn.execute(sa_text(f'DROP TRIGGER "{trigger_name}"'))
+                changed = True
+            expected = policy_waiver_immutability_trigger_manifest()
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {"prefix": f"{POLICY_WAIVER_TRIGGER_PREFIX}%"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["name"]): row for row in rows}
+            unexpected = set(existing) - set(expected)
+            if unexpected:
+                raise RuntimeError(
+                    "policy waiver has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in expected.items():
+                row = existing.get(trigger_name)
+                if row is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                if (
+                    str(row["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        row["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "policy waiver immutable trigger is corrupt: " + trigger_name
+                    )
+            violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if violations:
+                raise RuntimeError(
+                    "policy waiver migration left foreign-key violations: "
+                    + repr(violations[:10])
+                )
+        else:
+            ddl = policy_waiver_postgresql_immutability_ddl()
+            predecessor_names = (
+                f"{POLICY_WAIVER_PREDECESSOR_TRIGGER_PREFIX}_head",
+                f"{POLICY_WAIVER_PREDECESSOR_TRIGGER_PREFIX}_event",
+            )
+            predecessor_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+WHERE NOT trigger.tgisinternal
+  AND trigger.tgname LIKE :prefix
+"""
+                        ),
+                        {"prefix": (f"{POLICY_WAIVER_PREDECESSOR_TRIGGER_PREFIX}%")},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            allowed_predecessors = {
+                predecessor_names[0]: PolicyWaiverRow.__tablename__,
+                predecessor_names[1]: PolicyWaiverEventRow.__tablename__,
+            }
+            for row in predecessor_rows:
+                trigger_name = str(row["trigger_name"])
+                table_name = str(row["table_name"])
+                if allowed_predecessors.get(trigger_name) != table_name:
+                    raise RuntimeError(
+                        "policy waiver PostgreSQL predecessor trigger is "
+                        "corrupt: " + trigger_name
+                    )
+                await conn.execute(
+                    sa_text(f'DROP TRIGGER "{trigger_name}" ON "{table_name}"')
+                )
+                changed = True
+            if predecessor_rows:
+                await conn.execute(
+                    sa_text("DROP FUNCTION IF EXISTS policy_waiver_guard_v1()")
+                )
+            await conn.execute(sa_text(ddl[0]))
+            expected = {
+                f"{POLICY_WAIVER_TRIGGER_PREFIX}_head": (
+                    PolicyWaiverRow.__tablename__,
+                    31,
+                ),
+                f"{POLICY_WAIVER_TRIGGER_PREFIX}_event": (
+                    PolicyWaiverEventRow.__tablename__,
+                    31,
+                ),
+            }
+            if any(len(name) > 63 for name in expected):
+                raise RuntimeError(
+                    "policy waiver PostgreSQL trigger name exceeds 63 bytes"
+                )
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       function.proname AS function_name,
+       trigger.tgtype AS trigger_type
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+WHERE NOT trigger.tgisinternal
+  AND trigger.tgname LIKE :prefix
+"""
+                        ),
+                        {"prefix": f"{POLICY_WAIVER_TRIGGER_PREFIX}%"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["trigger_name"]): row for row in rows}
+            unexpected = set(existing) - set(expected)
+            if unexpected:
+                raise RuntimeError(
+                    "policy waiver has unexpected PostgreSQL triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for index, (trigger_name, (table_name, trigger_type)) in enumerate(
+                expected.items(),
+                start=1,
+            ):
+                row = existing.get(trigger_name)
+                if row is None:
+                    await conn.execute(sa_text(ddl[index]))
+                    changed = True
+                    continue
+                if (
+                    str(row["table_name"]) != table_name
+                    or str(row["function_name"]) != "policy_waiver_guard_v2"
+                    or int(row["trigger_type"]) != trigger_type
+                ):
+                    raise RuntimeError(
+                        "policy waiver PostgreSQL trigger is corrupt: " + trigger_name
+                    )
+
+    return None if changed else "skipped"
+
+
 async def _migrate_add_cancellation_columns() -> None:
     """Add cancellation-justification columns to the 5 lifecycle tables (ITEM 17).
 
@@ -4994,9 +12662,7 @@ async def _migrate_quality_assessment_c7_schema() -> None:
 
         manifest = _quality_c7_sqlite_trigger_manifest()
         for trigger_name, (_table_name, trigger_sql) in manifest.items():
-            await conn.exec_driver_sql(
-                f'DROP TRIGGER IF EXISTS "{trigger_name}"'
-            )
+            await conn.exec_driver_sql(f'DROP TRIGGER IF EXISTS "{trigger_name}"')
             await conn.exec_driver_sql(trigger_sql)
 
         installed = {
@@ -5009,9 +12675,7 @@ async def _migrate_quality_assessment_c7_schema() -> None:
         }
         missing = sorted(set(manifest) - installed)
         if missing:
-            raise RuntimeError(
-                f"quality C7 trigger convergence incomplete: {missing}"
-            )
+            raise RuntimeError(f"quality C7 trigger convergence incomplete: {missing}")
 
 
 SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
@@ -5069,6 +12733,14 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_cancellation_columns": _migrate_add_cancellation_columns,
     "_migrate_pagination_indices_and_positions": _migrate_pagination_indices_and_positions,
     "_migrate_repair_known_fixture_fk_orphans": _migrate_repair_known_fixture_fk_orphans,
+    "_migrate_guideline_policy_lifecycle_substrate": (
+        _migrate_guideline_policy_lifecycle_substrate
+    ),
+    "_migrate_guideline_impact_substrate": (_migrate_guideline_impact_substrate),
+    "_migrate_guideline_policy_v1_schema": _migrate_guideline_policy_v1_schema,
+    "_migrate_guideline_impact_v1_schema": (_migrate_guideline_impact_v1_schema),
+    "_migrate_policy_compliance_v1_schema": (_migrate_policy_compliance_v1_schema),
+    "_migrate_policy_waiver_v1_schema": _migrate_policy_waiver_v1_schema,
     "_migrate_quality_assessment_c7_schema": _migrate_quality_assessment_c7_schema,
     "_migrate_agent_permissions": _migrate_agent_permissions,
 }
