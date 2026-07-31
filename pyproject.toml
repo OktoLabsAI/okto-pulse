@@ -29,7 +29,7 @@ dependencies = [
     "okto-pulse-core>=0.3.0,<1.0.0",
     # 0.137.0 regressed include_router for empty collection paths; 0.137.1 fixed it.
     "fastapi>=0.109.0,!=0.137.0,<1.0.0",
-    "starlette>=0.35.0,<1.0.0",
+    "starlette>=0.35.0,<2.0.0",
     "pydantic>=2.5.0,<2.14",
     "pydantic-settings>=2.1.0,<3.0.0",
     "python-multipart>=0.0.6,<1.0.0",
