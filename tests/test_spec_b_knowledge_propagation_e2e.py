@@ -25,6 +25,9 @@ from sqlalchemy.ext.asyncio import (
 from okto_pulse.community.adapters.knowledge_propagation_backfill import (
     backfill_knowledge_propagation_v2,
 )
+from okto_pulse.community.adapters.relational_application import (
+    CommunityRelationalApplicationAdapter,
+)
 from okto_pulse.community.adapters.sqlalchemy_base import Base
 from okto_pulse.community.adapters.sqlalchemy_architecture_persistence import (
     CommunitySqlAlchemyArchitecturePersistence,
@@ -60,6 +63,7 @@ from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
 )
 from okto_pulse.community.api import cards as cards_api
 from okto_pulse.community.api import refinements as refinements_api
+from okto_pulse.core.application.use_cases import ActorContext
 from okto_pulse.core.domain.enums import (
     IdeationStatus,
     RefinementStatus,
@@ -86,6 +90,10 @@ from okto_pulse.core.ports.knowledge_propagation import (
     register_knowledge_mutation_audit_sink,
     register_knowledge_propagation_port,
 )
+from okto_pulse.core.ports.relational_application import (
+    register_relational_application_adapter,
+    reset_relational_application_adapter_for_tests,
+)
 from okto_pulse.core.ports.architecture_persistence import (
     register_architecture_persistence_port,
 )
@@ -108,6 +116,21 @@ from okto_pulse.core.services.spec_resource_propagation import (
 BOARD_ID = "spec-b-e2e-board"
 ACTOR_ID = "spec-b-e2e-agent"
 NOW = datetime(2026, 7, 23, 18, 0, tzinfo=timezone.utc)
+
+# The production REST path always creates the unit of work with the
+# authenticated principal bound (R01B FR3). Creating actor-less UoWs here only
+# passed while the process-wide semantic subject versioning listeners were not
+# installed; any earlier test that builds the real session factory installs
+# them and the semantic bridge then (correctly) fails closed at commit with
+# semantic_subject_mutation_actor_required. Bind the same actor the endpoints
+# receive as ``user_id`` so the test matches the production wiring in both
+# worlds.
+REST_ACTOR = ActorContext(
+    ACTOR_ID,
+    "rest",
+    actor_kind="human",
+    board_id=BOARD_ID,
+)
 
 
 @dataclass(frozen=True)
@@ -136,6 +159,9 @@ async def spec_b_runtime(tmp_path) -> _Runtime:
     register_knowledge_propagation_port(store)
     register_knowledge_mutation_audit_sink(store)
     register_unit_of_work_factory(uow_factory)
+    register_relational_application_adapter(
+        CommunityRelationalApplicationAdapter()
+    )
     register_architecture_persistence_port(CommunitySqlAlchemyArchitecturePersistence())
     register_domain_event_publisher(CommunitySqlAlchemyDomainEventPublisher())
     register_spec_resource_propagation_store(
@@ -144,6 +170,7 @@ async def spec_b_runtime(tmp_path) -> _Runtime:
     try:
         yield _Runtime(sessions=sessions, store=store, uow_factory=uow_factory)
     finally:
+        reset_relational_application_adapter_for_tests()
         await engine.dispose()
 
 
@@ -372,7 +399,7 @@ async def test_ts_9e54d02f_tri_state_v2_end_to_end(
     assert omitted_payload["selection_state"] == "omitted"
 
     request = SimpleNamespace()
-    async with runtime.uow_factory() as rest_uow:
+    async with runtime.uow_factory(actor=REST_ACTOR) as rest_uow:
         explicit_empty = await refinements_api.derive_spec(
             refinement_id,
             request=request,  # type: ignore[arg-type]
@@ -389,7 +416,7 @@ async def test_ts_9e54d02f_tri_state_v2_end_to_end(
         )
     assert explicit_empty.selection_state is KnowledgeSelectionState.EXPLICIT_EMPTY
 
-    async with runtime.uow_factory() as rest_uow:
+    async with runtime.uow_factory(actor=REST_ACTOR) as rest_uow:
         explicit_ids = await refinements_api.derive_spec(
             refinement_id,
             request=request,  # type: ignore[arg-type]
@@ -504,7 +531,7 @@ async def test_ts_1e0f5761_reference_snapshot_temporal_semantics(
         item["root_knowledge_id"] for item in reference_payload["assignments"]
     } == set(reference_roots)
 
-    async with runtime.uow_factory() as rest_uow:
+    async with runtime.uow_factory(actor=REST_ACTOR) as rest_uow:
         snapshot_response = await cards_api.replace_card_knowledge_assignments(
             snapshot_card,
             KnowledgeAssignmentReplaceRequest(
@@ -704,7 +731,7 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
     )
     assert selected["success"] is True
 
-    async with runtime.uow_factory() as rest_uow:
+    async with runtime.uow_factory(actor=REST_ACTOR) as rest_uow:
         dropped = await cards_api.drop_card_knowledge_assignments(
             card_id,
             KnowledgeAssignmentDropRequest(

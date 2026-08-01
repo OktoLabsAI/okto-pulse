@@ -46,30 +46,30 @@ describe('HelpPanel Policy Governance guide', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'Help Guide' });
     const heading = screen.getByRole('heading', {
-      name: 'Policy Governance — Versioned rules with auditable enforcement',
+      name: 'Policy Governance — Semantic guidelines with auditable board behavior',
     });
 
     expect(heading).toBeInTheDocument();
     expect(dialog).toHaveTextContent(
-      /Only a structured policy\/v1 rule with explicit target entity types is executable/i,
+      /custom metrics that evaluators score from 0 to 100/i,
     );
     expect(dialog).toHaveTextContent(
       /This context-only form is valid/i,
     );
     expect(dialog).toHaveTextContent(
-      /Enforcement belongs to each rule/i,
+      /Choose Advisory or Blocking/i,
     );
     expect(dialog).toHaveTextContent(
-      /Is present and Is not present do not need a Value/i,
+      /does not expose policy classes, codes, Facts, predicates, or operators/i,
     );
     expect(dialog).toHaveTextContent(
-      /Policy class records governance intent/i,
+      /stable metric identity is managed as read-only technical metadata/i,
     );
     expect(dialog).toHaveTextContent(
-      /They do not invoke a specialized coverage calculator, permission check, reviewer-identity check, or KG lineage check/i,
+      /current head is fenced against concurrent edits/i,
     );
     expect(dialog).toHaveTextContent(
-      /An under-bump is rejected before a revision is created/i,
+      /server rejects a selected bump below the minimum required/i,
     );
     expect(dialog).toHaveTextContent(/Ready with waivers/i);
     expect(dialog).toHaveTextContent(
@@ -79,36 +79,45 @@ describe('HelpPanel Policy Governance guide', () => {
     expect(dialog).toHaveTextContent(
       /Full Control receives all introduced leaves/i,
     );
+    expect(dialog).toHaveTextContent(/guidelines\.metrics\.author/i);
+    expect(dialog).toHaveTextContent(/guidelines\.assessments\.read/i);
+    expect(dialog).toHaveTextContent(
+      /Agents cannot create it through MCP/i,
+    );
     expect(
       screen.getByText('okto-pulse://reference/policy-compliance'),
     ).toBeInTheDocument();
   });
 
-  it('opens the dedicated Fact catalog with configuration guidance and edge cases', () => {
+  it('opens semantic metric authoring and board-configuration guidance', () => {
     render(
       <HelpPanel
-        initialSectionId="policy-facts"
+        initialSectionId="semantic-guideline-metrics"
         onClose={vi.fn()}
       />,
     );
 
     const dialog = screen.getByRole('dialog', { name: 'Help Guide' });
     expect(screen.getByRole('heading', {
-      name: 'Policy Facts — Configure deterministic conditions',
+      name: 'Semantic guideline metrics — Authoring and board configuration',
     })).toBeInTheDocument();
     expect(dialog).toHaveTextContent(
-      /A Fact is a typed, server-owned field from the entity snapshot/i,
+      /Confidence is fixed and system-owned/i,
     );
     expect(dialog).toHaveTextContent(
-      /Conditions decide what those entities must satisfy for the rule to pass/i,
+      /cannot be renamed, removed, targeted, or added to the metric override map/i,
     );
     expect(dialog).toHaveTextContent(
-      /Is present only tests whether the field exists; it does not mean true/i,
+      /Evaluation rubric/i,
     );
-    expect(dialog).toHaveTextContent(/Acceptance criteria coverage/i);
-    expect(dialog).toHaveTextContent(/validation_unavailable/i);
     expect(dialog).toHaveTextContent(
-      /Evidence count means current, authenticated scenario evidence, not a count of attachments/i,
+      /Context-only revisions/i,
+    );
+    expect(dialog).toHaveTextContent(
+      /Overrides use the stable metric key and never include confidence/i,
+    );
+    expect(dialog).toHaveTextContent(
+      /stale preview or binding-head conflict requires a new preview/i,
     );
   });
 

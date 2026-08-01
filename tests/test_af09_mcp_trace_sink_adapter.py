@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -98,9 +99,16 @@ def test_jsonl_sink_serializes_concurrent_appends(tmp_path: Path) -> None:
 
 
 def test_community_main_injects_env_built_trace_sink() -> None:
-    import okto_pulse.community.main as community_main
+    # Resolve the module path WITHOUT importing it: importing
+    # okto_pulse.community.main runs `app = _build_module_app()` at module
+    # level, which executes the whole composition root and registers runtime
+    # values (including the relational application adapter). That leaks into
+    # later tests and makes them fail out of order. This assertion only needs
+    # the source text, so locate the file via the spec instead.
+    spec = importlib.util.find_spec("okto_pulse.community.main")
+    assert spec is not None and spec.origin is not None
 
-    source = Path(community_main.__file__).read_text(encoding="utf-8")
+    source = Path(spec.origin).read_text(encoding="utf-8")
     assert "build_mcp_trace_sink_from_env" in source
     assert "build_community_mcp_asgi_app(" in source
     assert "trace_sink=build_mcp_trace_sink_from_env()" in source

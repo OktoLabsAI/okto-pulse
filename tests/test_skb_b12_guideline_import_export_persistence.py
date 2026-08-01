@@ -1,4 +1,4 @@
-"""SK-B/B12 atomic persistence for ``guideline-export/v2``."""
+"""SK-B3/B12 atomic persistence for ``guideline-export/v3``."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 )
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
-    guideline_revision_content_digest,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
@@ -38,6 +37,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     GuidelineRevisionRow,
     KGCognitiveSource,
     KnowledgeMutationLedgerRecord,
+    SemanticGuidelineBindingConfigurationRow,
+    SemanticGuidelineRevisionRow,
 )
 from okto_pulse.core.domain.guideline_import_export import (
     GuidelineBindingMaterialization,
@@ -46,7 +47,7 @@ from okto_pulse.core.domain.guideline_import_export import (
     GuidelineExportRevision,
     GuidelineExportSnapshot,
     GuidelineHistoryStatus,
-    build_guideline_export_v2,
+    build_guideline_export_v3,
     parse_guideline_export,
     plan_guideline_import,
 )
@@ -57,8 +58,11 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineBindingState,
     GuidelineEnforcement,
     GuidelineHead,
+    GuidelineMetric,
+    GuidelineMetricDirection,
     GuidelineRevision,
     GuidelineScope,
+    PolicyEntityType,
 )
 from okto_pulse.core.ports.guideline_policy import (
     GuidelinePolicyCasConflict,
@@ -77,6 +81,7 @@ OTHER_BOARD_ID = "board-b12-other"
 SOURCE_BOARD_ID = "board-b12-source"
 TARGET_OWNER_ID = "actor-b12-target"
 BOARD_OWNER_ID = "actor-b12-board-owner"
+METRIC_CODE = "architecture.segregation"
 
 
 async def _fresh_database(path: Path) -> None:
@@ -92,14 +97,23 @@ def _revision_row(
     revision_number: int,
     semantic_version: str,
     parent_revision_id: str | None,
+    content_override: str | None = None,
 ) -> GuidelineRevisionRow:
     title = f"Guideline B12 v{revision_number}"
-    content = f"Content B12 v{revision_number}"
-    digest = guideline_revision_content_digest(
+    content = content_override or f"Content B12 v{revision_number}"
+    revision = GuidelineRevision(
+        revision_id=revision_id,
+        guideline_id=guideline_id,
+        revision_number=revision_number,
+        semantic_version=semantic_version,
         title=title,
         content=content,
+        metrics=(_metric(),),
+        tags=(),
+        created_by="actor-b12",
+        created_at=NOW + timedelta(minutes=revision_number),
+        parent_revision_id=parent_revision_id,
     )
-    created_at = NOW + timedelta(minutes=revision_number)
     return GuidelineRevisionRow(
         revision_id=revision_id,
         guideline_id=guideline_id,
@@ -107,19 +121,48 @@ def _revision_row(
         semantic_version=semantic_version,
         title=title,
         content=content,
-        content_digest=digest,
+        content_digest=revision.revision_digest,
         tags=[],
         rules=[],
         created_by="actor-b12",
-        created_at=created_at,
+        created_at=revision.created_at,
         published_head_revision=revision_number,
-        published_head_updated_at=created_at,
+        published_head_updated_at=revision.created_at,
         parent_revision_id=parent_revision_id,
         legacy_version=None,
         legacy_version_unresolvable=False,
         legacy_tags=None,
         idempotency_key=None,
         request_digest=None,
+    )
+
+
+def _metric() -> GuidelineMetric:
+    return GuidelineMetric(
+        metric_id="metric-b12-segregation",
+        code=METRIC_CODE,
+        title="Architecture segregation",
+        description="Assess separation between domain and infrastructure.",
+        evaluation_rubric="Score separation from 0 to 100.",
+        target_entity_types=(PolicyEntityType.SPEC,),
+        direction=GuidelineMetricDirection.MINIMUM,
+        default_threshold=75,
+    )
+
+
+def _semantic_revision_row(
+    revision: GuidelineRevisionRow,
+) -> SemanticGuidelineRevisionRow:
+    return SemanticGuidelineRevisionRow(
+        revision_id=revision.revision_id,
+        guideline_id=revision.guideline_id,
+        metrics=[_metric().digest_payload()],
+        revision_digest=revision.content_digest,
+        source_revision_digest=revision.content_digest,
+        authority_state="native",
+        legacy_rules_digest=None,
+        created_by=revision.created_by,
+        created_at=revision.created_at,
     )
 
 
@@ -141,7 +184,7 @@ def _binding_row(
         priority=binding_revision,
         adopted_by="actor-b12",
         adopted_at=NOW + timedelta(minutes=10 + binding_revision),
-        default_enforcement="advisory",
+        enforcement="advisory",
         source_kind="native",
         legacy_source_id=None,
         legacy_guideline_version=None,
@@ -155,6 +198,42 @@ def _binding_row(
         binding_origin="native",
         impact_adoption_id=None,
         impact_unlink_id=None,
+    )
+
+
+def _semantic_binding_row(
+    binding: GuidelineBoardBindingRow,
+) -> SemanticGuidelineBindingConfigurationRow:
+    authority = BoardGuidelineBinding(
+        binding_id=binding.binding_id,
+        board_id=binding.board_id,
+        guideline_id=binding.guideline_id,
+        revision_id=binding.revision_id,
+        semantic_version=binding.semantic_version,
+        revision_digest=binding.revision_digest,
+        priority=binding.priority,
+        binding_revision=binding.binding_revision,
+        adopted_by=binding.adopted_by,
+        adopted_at=binding.adopted_at,
+        enforcement=GuidelineEnforcement.ADVISORY,
+        minimum_confidence=70,
+        metric_threshold_overrides={METRIC_CODE: 80},
+        state=GuidelineBindingState.ACTIVE,
+        source_kind=GuidelineBindingProvenance.NATIVE,
+    )
+    return SemanticGuidelineBindingConfigurationRow(
+        binding_id=authority.binding_id,
+        binding_revision=authority.binding_revision,
+        board_id=authority.board_id,
+        guideline_id=authority.guideline_id,
+        revision_id=authority.revision_id,
+        revision_digest=authority.revision_digest,
+        enforcement=authority.enforcement.value,
+        minimum_confidence=authority.minimum_confidence,
+        metric_threshold_overrides=dict(authority.metric_threshold_overrides),
+        configuration_digest=authority.configuration_digest,
+        configured_by=authority.adopted_by,
+        configured_at=authority.adopted_at,
     )
 
 
@@ -184,6 +263,24 @@ async def _seed_complete_history() -> None:
         revision_number=1,
         semantic_version="1.0.0",
         parent_revision_id=None,
+    )
+    binding_1 = _binding_row(
+        board_id=BOARD_ID,
+        binding_id="binding-b12",
+        binding_revision=1,
+        revision=revision_1,
+    )
+    binding_2 = _binding_row(
+        board_id=BOARD_ID,
+        binding_id="binding-b12",
+        binding_revision=2,
+        revision=revision_2,
+    )
+    other_binding = _binding_row(
+        board_id=OTHER_BOARD_ID,
+        binding_id="binding-b12-other",
+        binding_revision=1,
+        revision=revision_2,
     )
     async with get_session_factory()() as session:
         session.add_all(
@@ -234,6 +331,10 @@ async def _seed_complete_history() -> None:
                 revision_2,
                 foreign_revision,
                 inline_revision,
+                _semantic_revision_row(revision_1),
+                _semantic_revision_row(revision_2),
+                _semantic_revision_row(foreign_revision),
+                _semantic_revision_row(inline_revision),
                 GuidelineHeadRow(
                     guideline_id=GUIDELINE_ID,
                     revision_id=revision_2.revision_id,
@@ -258,24 +359,12 @@ async def _seed_complete_history() -> None:
                     head_revision=1,
                     updated_at=inline_revision.published_head_updated_at,
                 ),
-                _binding_row(
-                    board_id=BOARD_ID,
-                    binding_id="binding-b12",
-                    binding_revision=1,
-                    revision=revision_1,
-                ),
-                _binding_row(
-                    board_id=BOARD_ID,
-                    binding_id="binding-b12",
-                    binding_revision=2,
-                    revision=revision_2,
-                ),
-                _binding_row(
-                    board_id=OTHER_BOARD_ID,
-                    binding_id="binding-b12-other",
-                    binding_revision=1,
-                    revision=revision_2,
-                ),
+                binding_1,
+                binding_2,
+                other_binding,
+                _semantic_binding_row(binding_1),
+                _semantic_binding_row(binding_2),
+                _semantic_binding_row(other_binding),
                 GuidelineRetirementRow(
                     retirement_id="retirement-b12",
                     guideline_id=GUIDELINE_ID,
@@ -314,12 +403,8 @@ def _source_revision(
         semantic_version=semantic_version,
         title=title,
         content=content,
-        content_digest=guideline_revision_content_digest(
-            title=title,
-            content=content,
-        ),
+        metrics=(_metric(),),
         tags=(),
-        rules=(),
         created_by="actor-b12-source",
         created_at=NOW + timedelta(minutes=revision_number),
         parent_revision_id=parent_revision_id,
@@ -339,12 +424,14 @@ def _source_binding(
             guideline_id=revision.guideline_id,
             revision_id=revision.revision_id,
             semantic_version=revision.semantic_version,
-            revision_digest=revision.content_digest,
+            revision_digest=revision.revision_digest,
             priority=10,
             binding_revision=binding_revision,
             adopted_by="actor-b12-source",
             adopted_at=NOW + timedelta(minutes=10 + binding_revision),
-            default_enforcement=GuidelineEnforcement.ADVISORY,
+            enforcement=GuidelineEnforcement.ADVISORY,
+            minimum_confidence=70,
+            metric_threshold_overrides={METRIC_CODE: 80},
             state=GuidelineBindingState.ACTIVE,
             source_kind=GuidelineBindingProvenance.NATIVE,
         ),
@@ -458,7 +545,7 @@ def _import_plan_many(
     existing: tuple[GuidelineExportAggregate, ...] = (),
     target_board_id: str = BOARD_ID,
 ):
-    envelope = build_guideline_export_v2(
+    envelope = build_guideline_export_v3(
         GuidelineExportSnapshot(
             aggregates=aggregates,
             source_board_id=SOURCE_BOARD_ID,
@@ -637,6 +724,20 @@ async def test_apply_is_atomic_replay_safe_and_keeps_bindings_inert(
             .scalars()
             .all()
         )
+        semantic_revisions = tuple(
+            (
+                await session.execute(
+                    select(SemanticGuidelineRevisionRow)
+                    .where(
+                        SemanticGuidelineRevisionRow.guideline_id
+                        == GUIDELINE_ID
+                    )
+                    .order_by(SemanticGuidelineRevisionRow.revision_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
         candidates = tuple(
             (
                 await session.execute(
@@ -655,6 +756,14 @@ async def test_apply_is_atomic_replay_safe_and_keeps_bindings_inert(
             REVISION_1_ID,
             REVISION_2_ID,
         ]
+        assert [row.revision_id for row in semantic_revisions] == [
+            REVISION_1_ID,
+            REVISION_2_ID,
+        ]
+        assert all(
+            row.metrics == [_metric().digest_payload()]
+            for row in semantic_revisions
+        )
         assert [row.source_binding_revision for row in candidates] == [1, 2]
         assert len({row.candidate_id for row in candidates}) == 2
         assert all(len(row.candidate_id) == 64 for row in candidates)
@@ -682,7 +791,20 @@ async def test_apply_is_atomic_replay_safe_and_keeps_bindings_inert(
             include_binding_history=False,
         )
         exported_bindings = snapshot.aggregates[0].bindings
+        assert all(
+            exported.revision.metrics == (_metric(),)
+            for exported in snapshot.aggregates[0].revisions
+        )
         assert [item.binding.binding_revision for item in exported_bindings] == [1, 2]
+        assert all(item.binding.minimum_confidence == 70 for item in exported_bindings)
+        assert all(
+            item.binding.metric_threshold_overrides == {METRIC_CODE: 80}
+            for item in exported_bindings
+        )
+        assert all(
+            len(item.binding.configuration_digest or "") == 64
+            for item in exported_bindings
+        )
         assert all(
             item.materialization is GuidelineBindingMaterialization.CANDIDATE
             for item in exported_bindings
@@ -736,6 +858,7 @@ async def test_partial_append_rewrites_parent_to_local_revision_alias(
                     updated_at=NOW,
                 ),
                 local_revision,
+                _semantic_revision_row(local_revision),
                 GuidelineHeadRow(
                     guideline_id=GUIDELINE_ID,
                     revision_id=local_revision.revision_id,
@@ -836,11 +959,7 @@ async def test_stale_plan_conflict_reloads_under_lock_and_writes_nothing(
         revision_number=1,
         semantic_version="1.0.0",
         parent_revision_id=None,
-    )
-    conflicting.content = "Foreign owner content"
-    conflicting.content_digest = guideline_revision_content_digest(
-        title=conflicting.title,
-        content=conflicting.content,
+        content_override="Foreign owner content",
     )
     async with get_session_factory()() as session:
         session.add_all(
@@ -858,6 +977,7 @@ async def test_stale_plan_conflict_reloads_under_lock_and_writes_nothing(
                     updated_at=NOW,
                 ),
                 conflicting,
+                _semantic_revision_row(conflicting),
                 GuidelineHeadRow(
                     guideline_id=GUIDELINE_ID,
                     revision_id=conflicting.revision_id,
@@ -940,6 +1060,7 @@ async def test_late_second_aggregate_conflict_stages_zero_import_rows(
                     updated_at=NOW,
                 ),
                 conflicting,
+                _semantic_revision_row(conflicting),
                 GuidelineHeadRow(
                     guideline_id=second_id,
                     revision_id=conflicting.revision_id,

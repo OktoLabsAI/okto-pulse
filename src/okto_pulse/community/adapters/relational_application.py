@@ -670,16 +670,25 @@ class CommunityRelationalApplicationAdapter:
         from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
             CommunitySqlAlchemyGuidelinePolicy,
         )
-        from okto_pulse.community.adapters.sqlalchemy_policy_subject_snapshot import (
-            CommunitySqlAlchemyPolicySubjectSnapshotResolver,
+        from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import (
+            CommunitySqlAlchemySemanticGuidelineAssessment,
         )
 
         return CommunitySqlAlchemyGuidelinePolicy(
             session,
-            current_snapshot_resolver=(
-                CommunitySqlAlchemyPolicySubjectSnapshotResolver(session)
+            transition_snapshot_resolver=(
+                CommunitySqlAlchemySemanticGuidelineAssessment(session)
             ),
         )
+
+    def semantic_guideline_assessments(self, session: AsyncSession):
+        """Bind SK-B3 semantic evidence to the caller-owned transaction."""
+
+        from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import (
+            CommunitySqlAlchemySemanticGuidelineAssessment,
+        )
+
+        return CommunitySqlAlchemySemanticGuidelineAssessment(session)
 
     def amendment_revision_backend(
         self, session: AsyncSession

@@ -20,13 +20,13 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
     _impact_receipt_row,
-    guideline_revision_content_digest,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     Board,
     GuidelineImpactAdoptionRow,
     GuidelineImpactItemRow,
+    Spec,
 )
 from okto_pulse.core.domain.guideline_compliance import (
     PolicyEntityType,
@@ -44,10 +44,11 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineEnforcement,
     GuidelineHead,
     GuidelineImpactItemKind,
-    GuidelinePredicate,
+    GuidelineMetric,
+    GuidelineMetricDirection,
     GuidelineRevision,
-    GuidelineRule,
     GuidelineScope,
+    PolicySubjectRef,
 )
 from okto_pulse.core.ports.guideline_policy import (
     GuidelineImpactPreviewReplay,
@@ -72,52 +73,49 @@ async def _fresh_database(path: Path) -> None:
     assert await _migrate_guideline_impact_v1_schema() is None
 
 
-async def _seed_preview(*, persist: bool = True):
-    rule = GuidelineRule(
-        rule_id="rule-b08-impact-list",
+async def _seed_preview(
+    *,
+    persist: bool = True,
+    board_id: str = BOARD_ID,
+    guideline_id: str = GUIDELINE_ID,
+    receipt_id: str = RECEIPT_ID,
+    revision_id: str = "revision-b08-impact-list",
+    subjects: tuple[PolicySubjectRef, ...] = (),
+):
+    metric = GuidelineMetric(
+        metric_id="metric-b08-impact-list",
         code="policy.b08.impact_list",
         title="Impact list contract",
         description="A spec must expose deterministic evidence.",
-        target_entity_types=(PolicyEntityType.SPEC,),
-        predicates=(
-            GuidelinePredicate(
-                predicate_code="eq",
-                parameters=(
-                    ("fact", "resource_gate_ready"),
-                    ("value", True),
-                ),
-            ),
+        evaluation_rubric=(
+            "Score how completely the spec exposes reviewable impact evidence."
         ),
-        enforcement=GuidelineEnforcement.ADVISORY,
-        waivable=True,
+        target_entity_types=(PolicyEntityType.SPEC,),
+        direction=GuidelineMetricDirection.MINIMUM,
+        default_threshold=70,
     )
     title = "B08 impact listing"
     content = "Filter-bound keysets and stable projections."
     revision = GuidelineRevision(
-        revision_id="revision-b08-impact-list",
-        guideline_id=GUIDELINE_ID,
+        revision_id=revision_id,
+        guideline_id=guideline_id,
         revision_number=1,
         semantic_version="1.0.0",
         title=title,
         content=content,
-        content_digest=guideline_revision_content_digest(
-            title=title,
-            content=content,
-            rules=(rule,),
-        ),
-        rules=(rule,),
+        metrics=(metric,),
         created_by="author-b08",
         created_at=NOW,
         parent_revision_id=None,
     )
     guideline = Guideline(
-        guideline_id=GUIDELINE_ID,
+        guideline_id=guideline_id,
         owner_id="author-b08",
         scope=GuidelineScope.GLOBAL,
         created_at=NOW,
     )
     head = GuidelineHead(
-        guideline_id=GUIDELINE_ID,
+        guideline_id=guideline_id,
         revision_id=revision.revision_id,
         revision_number=revision.revision_number,
         semantic_version=revision.semantic_version,
@@ -127,7 +125,7 @@ async def _seed_preview(*, persist: bool = True):
     async with get_session_factory()() as session:
         session.add(
             Board(
-                id=BOARD_ID,
+                id=board_id,
                 name="B08 impact listing",
                 owner_id="author-b08",
             )
@@ -136,29 +134,47 @@ async def _seed_preview(*, persist: bool = True):
             guideline=guideline,
             initial_revision=revision,
             initial_head=head,
-            idempotency_key="create:b08:impact-list",
+            idempotency_key=f"create:b08:impact-list:{board_id}",
             request_digest="1" * 64,
+        )
+        assert all(
+            subject.entity_type is PolicyEntityType.SPEC
+            and subject.board_id == board_id
+            for subject in subjects
+        )
+        session.add_all(
+            Spec(
+                id=subject.subject_id,
+                board_id=board_id,
+                title=f"Impact subject {subject.subject_id}",
+                description="Semantic impact pagination fixture.",
+                version=subject.subject_version,
+                created_by="agent-b08",
+            )
+            for subject in subjects
         )
         await session.commit()
 
     preview = plan_guideline_impact_preview(
         GuidelineImpactPreviewCommand(
-            impact_receipt_id=RECEIPT_ID,
-            board_id=BOARD_ID,
-            guideline_id=GUIDELINE_ID,
+            impact_receipt_id=receipt_id,
+            board_id=board_id,
+            guideline_id=guideline_id,
             head=head,
             to_revision=revision,
             current_binding=None,
             from_revision=None,
             active_bindings=(),
             active_revisions=(),
-            subjects=(),
+            subjects=subjects,
             waivers=(),
             proposed_priority=10,
-            proposed_default_enforcement=GuidelineEnforcement.ADVISORY,
+            proposed_enforcement=GuidelineEnforcement.ADVISORY,
+            proposed_minimum_confidence=0,
+            proposed_metric_threshold_overrides={},
             requested_by="agent-b08",
             created_at=NOW,
-            idempotency_key="preview:b08:impact-list",
+            idempotency_key=f"preview:b08:impact-list:{board_id}",
         )
     )
     if persist:
@@ -287,6 +303,141 @@ async def test_b08_impact_listing_binds_anchor_to_filters_and_projection(
                 cursor=first_page.next_cursor,
                 projection=PolicyProjection.SUMMARY,
             )
+
+
+@pytest.mark.asyncio
+async def test_b08_large_impact_keysets_are_stable_and_board_scoped(
+    tmp_path: Path,
+) -> None:
+    await _fresh_database(tmp_path / "b08-impact-large-keysets.sqlite3")
+    board_two = "board-b08-impact-list-2"
+    receipt_two = "receipt-b08-impact-list-2"
+    await _seed_preview(
+        subjects=tuple(
+            PolicySubjectRef(
+                board_id=BOARD_ID,
+                entity_type=PolicyEntityType.SPEC,
+                subject_id=f"spec-b08-{index:03d}",
+                subject_version=1,
+            )
+            for index in range(205)
+        )
+    )
+    await _seed_preview(
+        board_id=board_two,
+        guideline_id="guideline-b08-impact-list-2",
+        receipt_id=receipt_two,
+        revision_id="revision-b08-impact-list-2",
+        subjects=tuple(
+            PolicySubjectRef(
+                board_id=board_two,
+                entity_type=PolicyEntityType.SPEC,
+                subject_id=f"spec-b08-other-{index:03d}",
+                subject_version=1,
+            )
+            for index in range(3)
+        ),
+    )
+
+    async with get_session_factory()() as session:
+        adapter = CommunitySqlAlchemyGuidelinePolicy(session)
+
+        async def collect(projection: PolicyProjection):
+            cursor = None
+            collected = []
+            seen_cursors = set()
+            while True:
+                page = await adapter.list_impact_items(
+                    GuidelineImpactListQuery(
+                        board_id=BOARD_ID,
+                        impact_receipt_id=RECEIPT_ID,
+                        limit=73,
+                        cursor=cursor,
+                        projection=projection,
+                    )
+                )
+                collected.extend(page.items)
+                if page.next_cursor is None:
+                    assert page.has_more is False
+                    break
+                assert page.has_more is True
+                cursor_identity = (
+                    page.next_cursor.entity_type,
+                    page.next_cursor.entity_id,
+                    page.next_cursor.item_id,
+                )
+                assert cursor_identity not in seen_cursors
+                seen_cursors.add(cursor_identity)
+                cursor = page.next_cursor
+            return tuple(collected)
+
+        detail = await collect(PolicyProjection.DETAIL)
+        summary = await collect(PolicyProjection.SUMMARY)
+        assert len(detail) == len(summary) == 207
+        assert len({item.impact_item_id for item in detail}) == 207
+        assert [item.impact_item_id for item in summary] == [
+            item.impact_item_id for item in detail
+        ]
+        assert all(item.related_id is None for item in summary)
+        assert all(item.entity_version is None for item in summary)
+
+        first_page = await adapter.list_impact_items(
+            GuidelineImpactListQuery(
+                board_id=BOARD_ID,
+                impact_receipt_id=RECEIPT_ID,
+                limit=73,
+                projection=PolicyProjection.DETAIL,
+            )
+        )
+        assert first_page.next_cursor is not None
+        with pytest.raises(
+            GuidelinePolicyInvalidCursor,
+            match="guideline_impact_cursor_context_mismatch",
+        ):
+            GuidelineImpactListQuery(
+                board_id=board_two,
+                impact_receipt_id=receipt_two,
+                cursor=first_page.next_cursor,
+                projection=PolicyProjection.DETAIL,
+            )
+        tampered = PolicyImpactPageCursor(
+            entity_type=first_page.next_cursor.entity_type,
+            entity_id=first_page.next_cursor.entity_id,
+            item_id="impact-item-does-not-exist",
+            filter_digest=first_page.next_cursor.filter_digest,
+            projection_digest=first_page.next_cursor.projection_digest,
+        )
+        with pytest.raises(
+            GuidelinePolicyInvalidCursor,
+            match="guideline_impact_cursor_anchor_invalid",
+        ):
+            await adapter.list_impact_items(
+                GuidelineImpactListQuery(
+                    board_id=BOARD_ID,
+                    impact_receipt_id=RECEIPT_ID,
+                    cursor=tampered,
+                    projection=PolicyProjection.DETAIL,
+                )
+            )
+
+        other = await adapter.list_impact_items(
+            GuidelineImpactListQuery(
+                board_id=board_two,
+                impact_receipt_id=receipt_two,
+                projection=PolicyProjection.DETAIL,
+            )
+        )
+        assert len(other.items) == 5
+        assert {
+            item.entity_id
+            for item in other.items
+            if item.item_kind is GuidelineImpactItemKind.ARTIFACT
+        } == {f"spec-b08-other-{index:03d}" for index in range(3)}
+        assert not {
+            item.entity_id
+            for item in other.items
+            if item.item_kind is GuidelineImpactItemKind.ARTIFACT
+        }.intersection({f"spec-b08-{index:03d}" for index in range(205)})
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@
  * identity, evidence, currentness, and waiver semantics.
  */
 
-export type PolicyProjection = 'summary' | 'detail';
+export type PolicyProjection = 'summary' | 'detail' | 'full';
 
 export type PolicyEntityType =
   | 'ideation'
@@ -19,14 +19,12 @@ export type PolicyEntityType =
 export type PolicyGuidelineScope = 'global' | 'inline';
 export type GuidelineContextScope = 'all';
 export type GuidelineEnforcement = 'advisory' | 'blocking';
-export type GuidelineRuleOperator = 'all' | 'any';
 export type GuidelineBindingState = 'active' | 'unlinked';
 export type GuidelineBindingProvenance =
   | 'native'
   | 'default_materialization';
 export type GuidelineBindingMaterialization = 'live' | 'candidate';
 export type GuidelineLifecycleStatus = 'retired' | 'superseded';
-export type GuidelineRevisionMutationStatus = 'applied' | 'noop';
 export type GuidelineVersionBump = 'patch' | 'minor' | 'major';
 export type GuidelineImpactItemKind =
   | 'binding'
@@ -34,43 +32,49 @@ export type GuidelineImpactItemKind =
   | 'artifact'
   | 'waiver';
 
-export type PolicyEvaluationOutcome =
-  | 'pass'
-  | 'fail'
-  | 'not_applicable'
-  | 'error';
-export type PolicyComplianceState =
-  | 'ready'
-  | 'blocked'
-  | 'ready_with_waivers'
-  | 'not_applicable';
 export type PolicyCurrentness = 'current' | 'stale';
-export type PolicyCurrentnessReason =
-  | 'current_snapshot_missing'
-  | 'subject_version_changed'
-  | 'subject_content_changed'
-  | 'input_digest_changed'
-  | 'policy_set_changed'
-  | 'catalog_version_changed'
-  | 'ruleset_version_changed'
-  | 'binding_head_changed';
-export type PolicyComplianceReasonCode =
-  | 'no_applicable_rules'
-  | 'policy_evaluation_unavailable'
-  | 'policy_evaluation_degraded';
 export type PolicyTransitionReasonCode =
   | 'transition_not_allowed'
   | 'policy_compliance_not_required'
   | 'policy_compliance_receipt_missing'
   | 'policy_compliance_receipt_stale'
   | 'policy_compliance_blocked'
-  | 'policy_evaluation_unavailable'
-  | 'policy_evaluation_degraded'
+  | 'policy_assessment_unavailable'
   | 'policy_compliance_ready'
   | 'policy_compliance_ready_with_waivers'
   | 'policy_compliance_not_applicable'
   | 'policy_compliance_advisory_only'
   | 'policy_subject_required';
+
+export type PolicyTransitionDiagnosticCode =
+  | 'policy_compliance_receipt_missing'
+  | 'policy_compliance_receipt_stale'
+  | 'policy_assessment_unavailable'
+  | 'policy_assessment_inadmissible'
+  | 'policy_metric_threshold_failed';
+
+export type SemanticAssessmentInadmissibilityCause =
+  | 'confidence_below_minimum'
+  | 'assessor_separation_required';
+
+export interface PolicyComplianceBindingDecision {
+  binding_id: string;
+  guideline_id: string;
+  enforcement: GuidelineEnforcement;
+  applicable_metric_count: number;
+  allowed: boolean;
+  assessment_available: boolean;
+  receipt_id: string | null;
+  currentness: PolicyCurrentness | null;
+  currentness_reasons: SemanticAssessmentCurrentnessReason[];
+  inadmissibility_cause: SemanticAssessmentInadmissibilityCause | null;
+  failed_metric_count: number;
+  waived_metric_count: number;
+  blocking_metric_count: number;
+  advisory_issue_count: number;
+  skipped: boolean;
+  diagnostic_codes: PolicyTransitionDiagnosticCode[];
+}
 
 export interface PolicyComplianceTransitionDecision {
   state: PolicyTransitionReasonCode;
@@ -79,14 +83,18 @@ export interface PolicyComplianceTransitionDecision {
   reason_codes: PolicyTransitionReasonCode[];
   decision_digest: string | null;
   fence_digest: string | null;
-  receipt_id: string | null;
+  receipt_ids: string[];
   currentness: PolicyCurrentness | null;
-  currentness_reasons: PolicyCurrentnessReason[];
-  applicable_rule_count: number | null;
-  applicable_blocking_rule_count: number | null;
-  blocking_rule_count: number | null;
-  waived_rule_count: number | null;
+  currentness_reasons: SemanticAssessmentCurrentnessReason[];
+  applicable_metric_count: number | null;
+  applicable_blocking_metric_count: number | null;
+  failed_metric_count: number | null;
+  blocking_metric_count: number | null;
+  waived_metric_count: number | null;
   advisory_issue_count: number | null;
+  skipped_binding_count: number | null;
+  diagnostic_codes: PolicyTransitionDiagnosticCode[];
+  binding_decisions: PolicyComplianceBindingDecision[];
 }
 
 export type PolicyWaiverStatus =
@@ -103,56 +111,362 @@ export type PolicyWaiverEventType =
   | 'revoke'
   | 'expire'
   | 'revalidate';
-export type PolicyWaiverExpireReasonCode =
+export type NonEmptyArray<T> = [T, ...T[]];
+
+export type GuidelineMetricDirection = 'minimum' | 'maximum';
+
+export interface GuidelineMetricInput {
+  metric_id: string;
+  code: string;
+  title: string;
+  description: string;
+  evaluation_rubric: string;
+  target_entity_types: NonEmptyArray<PolicyEntityType>;
+  direction: GuidelineMetricDirection;
+  default_threshold: number;
+}
+
+export type GuidelineMetric = GuidelineMetricInput;
+
+export type GuidelineMetricThresholdOverrides = Record<string, number>;
+
+export interface GuidelineMetricAssessmentResult {
+  metric_id: string;
+  score: number;
+  rationale: string;
+  evidence_refs: string[];
+  pinpoints: string[];
+}
+
+export interface GuidelineSemanticAssessment {
+  confidence: number;
+  metric_results: GuidelineMetricAssessmentResult[];
+}
+
+export type SemanticAssessmentOutcome =
+  | 'passed'
+  | 'metric_threshold_failed';
+export type SemanticMetricOutcome = 'pass' | 'fail';
+export type SemanticThresholdSource = 'default' | 'override';
+export type SemanticAssessmentCurrentnessReason =
+  | 'current_snapshot_missing'
+  | 'subject_version_changed'
+  | 'subject_content_changed'
+  | 'guideline_revision_changed'
+  | 'guideline_revision_digest_changed'
+  | 'binding_revision_changed'
+  | 'binding_configuration_changed'
+  | 'policy_set_changed'
+  | 'binding_head_changed'
+  | 'input_digest_changed';
+
+export interface SemanticEvidenceRef {
+  source_type: string;
+  source_id: string;
+  source_version: number;
+  content_hash: string;
+}
+
+export type SemanticPinpointAnchorType =
+  | 'whole_artifact'
+  | 'field'
+  | 'structured_child'
+  | 'qa';
+
+export interface SemanticPinpoint {
+  anchor_type: SemanticPinpointAnchorType;
+  anchor_ref: string | null;
+  excerpt_hash: string | null;
+  input_digest: string;
+}
+
+export interface SemanticMetricResultDetail {
+  metric_result_id: string;
+  metric_id: string;
+  metric_code: string;
+  score: number;
+  direction: GuidelineMetricDirection;
+  default_threshold: number;
+  effective_threshold: number;
+  threshold_source: SemanticThresholdSource;
+  outcome: SemanticMetricOutcome;
+  rationale: string;
+  evidence_refs: SemanticEvidenceRef[];
+  pinpoints: SemanticPinpoint[];
+}
+
+export interface SemanticMetricResultFull
+  extends SemanticMetricResultDetail {
+  metric_definition_digest: string;
+}
+
+interface SemanticAssessmentBase {
+  receipt_id: string;
+  board_id: string;
+  entity_type: PolicyEntityType;
+  subject_id: string;
+  subject_version: number;
+  binding_id: string;
+  guideline_id: string;
+  guideline_revision_id: string;
+  enforcement: GuidelineEnforcement;
+  state: SemanticAssessmentOutcome;
+  currentness: PolicyCurrentness;
+  currentness_reasons: SemanticAssessmentCurrentnessReason[];
+  confidence: number;
+  minimum_confidence: number;
+  metric_count: number;
+  failed_metric_count: number;
+  recorded_at: string;
+}
+
+export interface SemanticAssessmentSummary
+  extends SemanticAssessmentBase {
+  projection: 'summary';
+}
+
+export interface SemanticAssessmentDetail
+  extends SemanticAssessmentBase {
+  projection: 'detail';
+  binding_revision: number;
+  assessor_agent_id: string;
+  assessor_model_id: string | null;
+  assessor_independent: boolean;
+  confidence_admissible: boolean;
+  metric_results: SemanticMetricResultDetail[];
+}
+
+export interface SemanticAssessmentFull
+  extends Omit<SemanticAssessmentDetail, 'projection' | 'metric_results'> {
+  projection: 'full';
+  metric_results: SemanticMetricResultFull[];
+  subject_content_digest: string;
+  last_semantic_editor_id: string;
+  guideline_revision_digest: string;
+  binding_configuration_digest: string;
+  policy_set_digest: string;
+  binding_head_digest: string;
+  input_digest: string;
+  request_digest: string;
+  idempotency_key: string;
+  receipt_digest: string;
+}
+
+export type SemanticAssessmentListItem =
+  | SemanticAssessmentSummary
+  | SemanticAssessmentDetail
+  | SemanticAssessmentFull;
+
+interface SemanticFindingBase {
+  finding_id: string;
+  receipt_id: string;
+  board_id: string;
+  entity_type: PolicyEntityType;
+  subject_id: string;
+  subject_version: number;
+  guideline_id: string;
+  guideline_revision_id: string;
+  binding_id: string;
+  metric_id: string;
+  metric_code: string;
+  currentness: PolicyCurrentness;
+  currentness_reasons: SemanticAssessmentCurrentnessReason[];
+  created_at: string;
+}
+
+export interface SemanticFindingSummary extends SemanticFindingBase {
+  projection: 'summary';
+}
+
+export interface SemanticFindingDetail extends SemanticFindingBase {
+  projection: 'detail';
+  metric_result_id: string;
+  binding_revision: number;
+  rationale: string;
+  evidence_refs: SemanticEvidenceRef[];
+  pinpoints: SemanticPinpoint[];
+}
+
+export interface SemanticFindingFull
+  extends Omit<SemanticFindingDetail, 'projection'> {
+  projection: 'full';
+  metric_result_digest: string;
+  receipt_digest: string;
+  subject_content_digest: string;
+  guideline_revision_digest: string;
+  binding_configuration_digest: string;
+  finding_digest: string;
+}
+
+export type SemanticFindingListItem =
+  | SemanticFindingSummary
+  | SemanticFindingDetail
+  | SemanticFindingFull;
+
+export type SemanticMetricWaiverExpireReason =
   | 'scheduled_expiry'
   | 'subject_scope_changed'
   | 'guideline_revision_changed'
-  | 'guideline_rule_changed';
+  | 'binding_configuration_changed'
+  | 'metric_result_changed';
+export type SemanticMetricWaiverRevalidationStatus =
+  | 'approved'
+  | 'expired'
+  | 'anchor_stale'
+  | 'revoked';
+export type SemanticMetricWaiverRevalidationReason =
+  | 'current'
+  | 'scheduled_expiry'
+  | 'anchor_missing'
+  | 'subject_scope_changed'
+  | 'guideline_revision_changed'
+  | 'binding_configuration_changed'
+  | 'metric_result_changed'
+  | 'revoked';
 
-export type PolicyScalar = string | number | boolean | null;
-export type PolicyParameterValue = PolicyScalar | PolicyScalar[];
-export type NonEmptyArray<T> = [T, ...T[]];
-export type AtLeastOne<T> = {
-  [K in keyof T]-?: Required<Pick<T, K>> & Partial<Omit<T, K>>;
-}[keyof T];
-export type PolicyPredicateParameterEntries = Array<
-  [name: string, value: PolicyParameterValue]
->;
-
-export interface GuidelinePredicateInput {
-  predicate_code: string;
-  parameters?: Record<string, PolicyParameterValue>;
+interface SemanticWaiverBase {
+  waiver_id: string;
+  board_id: string;
+  entity_type: PolicyEntityType;
+  subject_id: string;
+  subject_version: number;
+  finding_id: string;
+  receipt_id: string;
+  guideline_id: string;
+  guideline_revision_id: string;
+  binding_id: string;
+  metric_id: string;
+  metric_code: string;
+  status: PolicyWaiverStatus;
+  waiver_revision: number;
+  currentness: PolicyCurrentness;
+  currentness_reasons: SemanticAssessmentCurrentnessReason[];
+  requested_at: string;
+  expires_at: string | null;
+  last_event_type: PolicyWaiverEventType;
+  last_event_at: string;
 }
 
-export interface GuidelinePredicate {
-  predicate_code: string;
-  parameters: PolicyPredicateParameterEntries;
+export interface SemanticWaiverSummary extends SemanticWaiverBase {
+  projection: 'summary';
 }
 
-export interface GuidelineRuleInput {
-  rule_id: string;
-  code: string;
-  title: string;
-  description: string;
-  target_entity_types: NonEmptyArray<PolicyEntityType>;
-  predicates: NonEmptyArray<GuidelinePredicateInput>;
-  enforcement?: GuidelineEnforcement;
-  operator?: GuidelineRuleOperator;
-  waivable?: boolean;
-  policy_class?: string;
+export interface SemanticWaiverDetail extends SemanticWaiverBase {
+  projection: 'detail';
+  justification: string;
+  requested_by: string;
+  original_expires_at: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_reason: string | null;
+  revoked_by: string | null;
+  revoked_at: string | null;
+  expire_reason: SemanticMetricWaiverExpireReason | null;
+  evidence_refs: SemanticEvidenceRef[];
 }
 
-export interface GuidelineRule {
-  rule_id: string;
-  code: string;
-  title: string;
-  description: string;
-  target_entity_types: NonEmptyArray<PolicyEntityType>;
-  predicates: NonEmptyArray<GuidelinePredicate>;
-  enforcement: GuidelineEnforcement;
-  operator: GuidelineRuleOperator;
-  waivable: boolean;
-  policy_class: string;
+export interface SemanticWaiverFull
+  extends Omit<SemanticWaiverDetail, 'projection'> {
+  projection: 'full';
+  metric_result_id: string;
+  metric_result_digest: string;
+  finding_digest: string;
+  receipt_digest: string;
+  subject_content_digest: string;
+  guideline_revision_digest: string;
+  binding_revision: number;
+  binding_configuration_digest: string;
+  scope_digest: string;
+  head_digest: string;
+  last_event_id: string;
+  last_event_idempotency_key: string;
+  assessment_assessor_id: string;
+  last_revalidation_status: SemanticMetricWaiverRevalidationStatus | null;
+  last_revalidation_current: boolean | null;
+  last_revalidation_reason_code:
+    | SemanticMetricWaiverRevalidationReason
+    | null;
+  last_revalidation_evaluated_at: string | null;
+  last_revalidation_currentness_reasons:
+    SemanticAssessmentCurrentnessReason[];
+  last_revalidation_scheduled_expiry_observed: boolean;
+}
+
+export type SemanticWaiverListItem =
+  | SemanticWaiverSummary
+  | SemanticWaiverDetail
+  | SemanticWaiverFull;
+
+export type SemanticSkipStatus = 'active' | 'revoked';
+export type SemanticSkipEventType = 'create' | 'revoke';
+
+interface SemanticSkipBase {
+  skip_id: string;
+  board_id: string;
+  entity_type: PolicyEntityType;
+  subject_id: string;
+  subject_version: number;
+  guideline_id: string;
+  guideline_revision_id: string;
+  binding_id: string;
+  status: SemanticSkipStatus;
+  skip_revision: number;
+  currentness: PolicyCurrentness;
+  currentness_reasons: SemanticAssessmentCurrentnessReason[];
+  created_at: string;
+  last_event_type: SemanticSkipEventType;
+  last_event_at: string;
+}
+
+export interface SemanticSkipSummary extends SemanticSkipBase {
+  projection: 'summary';
+}
+
+export interface SemanticSkipDetail extends SemanticSkipBase {
+  projection: 'detail';
+  binding_revision: number;
+  reason: string;
+  created_by: string;
+  revoked_by: string | null;
+  revoked_at: string | null;
+  revocation_reason: string | null;
+}
+
+export interface SemanticSkipFull
+  extends Omit<SemanticSkipDetail, 'projection'> {
+  projection: 'full';
+  subject_content_digest: string;
+  guideline_revision_digest: string;
+  binding_configuration_digest: string;
+  scope_digest: string;
+  last_event_id: string;
+  idempotency_key: string;
+  request_digest: string;
+  skip_digest: string;
+}
+
+export type SemanticSkipListItem =
+  | SemanticSkipSummary
+  | SemanticSkipDetail
+  | SemanticSkipFull;
+
+export interface SemanticCursorPage<T> {
+  items: T[];
+  projection: PolicyProjection;
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+export interface SemanticAssessmentResponse {
+  assessment: SemanticAssessmentListItem;
+}
+
+export interface SemanticWaiverResponse {
+  waiver: SemanticWaiverListItem;
+}
+
+export interface SemanticSkipResponse {
+  skip: SemanticSkipListItem;
 }
 
 export interface PolicyGuidelineRoot {
@@ -171,8 +485,8 @@ export interface GuidelineRevision {
   semantic_version: string;
   title: string;
   content: string;
-  content_digest: string;
-  rules: GuidelineRule[];
+  revision_digest: string;
+  metrics: GuidelineMetric[];
   created_by: string;
   created_at: string;
   parent_revision_id: string | null;
@@ -214,7 +528,9 @@ export interface BoardGuidelineBinding {
   binding_revision: number;
   adopted_by: string;
   adopted_at: string;
-  default_enforcement: GuidelineEnforcement;
+  enforcement: GuidelineEnforcement;
+  minimum_confidence: number;
+  metric_threshold_overrides: GuidelineMetricThresholdOverrides;
   state: GuidelineBindingState;
   source_kind: GuidelineBindingProvenance;
 }
@@ -234,18 +550,18 @@ export interface GuidelineRevisionSummary
   extends GuidelineRevisionListItemBase {
   projection: 'summary';
   content?: never;
-  content_digest?: never;
+  revision_digest?: never;
   tags?: never;
-  rules?: never;
+  metrics?: never;
 }
 
 export interface GuidelineRevisionDetail
   extends GuidelineRevisionListItemBase {
   projection: 'detail';
   content: string;
-  content_digest: string;
+  revision_digest: string;
   tags: string[];
-  rules: GuidelineRule[];
+  metrics: GuidelineMetric[];
 }
 
 export type GuidelineRevisionListItem =
@@ -283,40 +599,24 @@ export interface GuidelineRevisionAuthorityResponse {
   >;
 }
 
-interface GuidelineRevisionPatchFields {
+export interface GuidelineRevisionContentInput {
   title: string;
-  content: string;
-  tags: string[];
-  rules: GuidelineRuleInput[];
+  body: string;
 }
-
-export type GuidelineRevisionPatchRequest =
-  AtLeastOne<GuidelineRevisionPatchFields>;
 
 export interface CreateGuidelineRevisionRequest {
-  next_revision_id?: string | null;
-  idempotency_key: string;
-  patch: GuidelineRevisionPatchRequest;
-  declared_semantic_version?: string | null;
-  occurred_at?: string | null;
+  expected_head_revision: number;
+  version_bump: GuidelineVersionBump;
+  content: GuidelineRevisionContentInput;
+  metrics: GuidelineMetricInput[];
 }
 
-export type CreateGuidelineRevisionResponse =
-  | {
-      status: Extract<GuidelineRevisionMutationStatus, 'applied'>;
-      revision: OmitNullAsOptional<
-        GuidelineRevision,
-        'parent_revision_id'
-      >;
-      head: GuidelineHead;
-      minimum_bump: GuidelineVersionBump;
-    }
-  | {
-      status: Extract<GuidelineRevisionMutationStatus, 'noop'>;
-      revision?: never;
-      head?: never;
-      minimum_bump?: never;
-    };
+export interface CreateGuidelineRevisionResponse {
+  revision_id: string;
+  revision: string;
+  revision_digest: string;
+  metrics: GuidelineMetric[];
+}
 
 interface RetireGuidelineRequestBase {
   retirement_id: string;
@@ -340,11 +640,11 @@ export interface RetirementResponse {
 }
 
 export interface PreviewGuidelineImpactRequest {
-  proposed_priority: number;
-  proposed_default_enforcement: GuidelineEnforcement;
-  idempotency_key: string;
-  to_revision_id?: string | null;
-  requested_at?: string | null;
+  target_revision_id: string;
+  expected_binding_head_revision: number | null;
+  enforcement: GuidelineEnforcement;
+  minimum_confidence: number;
+  metric_threshold_overrides: GuidelineMetricThresholdOverrides;
 }
 
 interface GuidelineImpactItemBase {
@@ -387,355 +687,29 @@ export type GuidelineImpactPageItem =
       entity_type: PolicyEntityType;
     });
 
-export interface GuidelineImpactReceipt {
-  impact_receipt_id: string;
-  board_id: string;
-  guideline_id: string;
-  binding_id: string;
-  to_revision_id: string;
-  to_revision_number: number;
-  to_semantic_version: string;
-  to_revision_digest: string;
-  expected_head_revision: number;
-  expected_binding_revision: number | null;
-  expected_binding_state: GuidelineBindingState | null;
-  binding_digest: string;
-  binding_head_digest_before: string;
-  binding_head_digest_after: string;
-  policy_set_digest_before: string;
-  policy_set_digest_after: string;
-  artifact_snapshot_digest: string;
-  waiver_snapshot_digest: string;
-  proposed_priority: number;
-  proposed_default_enforcement: GuidelineEnforcement;
-  affected_entity_types: PolicyEntityType[];
-  items: GuidelineImpactItem[];
-  added_rule_ids: string[];
-  changed_rule_ids: string[];
-  removed_rule_ids: string[];
-  requested_by: string;
-  created_at: string;
-  impact_digest: string;
-  from_revision_id: string | null;
-  from_semantic_version: string | null;
-  from_revision_digest: string | null;
-  requires_explicit_adoption: boolean;
+export interface GuidelineImpactPreviewItemsPage {
+  items: GuidelineImpactPageItem[];
+  next_cursor: string | null;
 }
 
-export interface GuidelineImpactReceiptResponse {
-  receipt: GuidelineImpactReceipt;
+export interface GuidelineImpactPreviewResponse {
+  preview_id: string;
+  preview_digest: string;
+  items_page: GuidelineImpactPreviewItemsPage;
 }
 
 export interface AdoptGuidelineRevisionRequest {
-  impact_receipt_id: string;
-  impact_digest: string;
+  preview_id: string;
+  preview_digest: string;
+  expected_binding_head_revision: number | null;
   idempotency_key: string;
-  occurred_at?: string | null;
 }
 
 export interface GuidelineAdoptionResponse {
-  binding: BoardGuidelineBinding;
-  receipt: GuidelineImpactReceipt;
-}
-
-export interface PolicySubjectRef {
-  board_id: string;
-  entity_type: PolicyEntityType;
-  subject_id: string;
-  subject_version: number;
-}
-
-export interface AdoptedGuidelineRevisionRef {
   binding_id: string;
   binding_revision: number;
-  guideline_id: string;
-  revision_id: string;
-  semantic_version: string;
-  revision_digest: string;
-}
-
-export interface PolicyComplianceFinding {
-  finding_id: string;
-  receipt_id: string;
-  subject: PolicySubjectRef;
-  guideline_id: string;
-  revision_id: string;
-  rule_id: string;
-  outcome: PolicyEvaluationOutcome;
-  enforcement: GuidelineEnforcement;
-  message: string;
-  created_at: string;
-  evidence_refs: string[];
-  waiver_id: string | null;
-}
-
-export interface PolicyComplianceRuleResult {
-  guideline_id: string;
-  revision_id: string;
-  rule_id: string;
-  outcome: PolicyEvaluationOutcome;
-  enforcement: GuidelineEnforcement;
-  waiver_id: string | null;
-}
-
-export interface PolicyComplianceReceipt {
-  receipt_id: string;
-  subject: PolicySubjectRef;
-  subject_content_digest: string;
-  input_digest: string;
-  policy_set_digest: string;
-  binding_head_digest: string;
-  catalog_version: string;
-  ruleset_version: string;
-  adopted_revisions: AdoptedGuidelineRevisionRef[];
-  outcome: PolicyEvaluationOutcome;
-  state: PolicyComplianceState;
-  currentness: PolicyCurrentness;
-  findings: PolicyComplianceFinding[];
-  evaluator_version: string;
-  evaluated_by: string;
-  evaluated_at: string;
-  rule_results: PolicyComplianceRuleResult[];
-  reason_codes: PolicyComplianceReasonCode[];
-}
-
-export interface PolicyEvaluationResult {
-  evaluation_id: string;
-  input_digest: string;
-  receipt: PolicyComplianceReceipt;
-}
-
-export interface EvaluatePolicyComplianceRequest {
-  entity_type: PolicyEntityType;
-  subject_id: string;
-  idempotency_key: string;
-  evaluation_id?: string | null;
-  requested_at?: string | null;
-  evaluated_at?: string | null;
-}
-
-export interface PolicyEvaluationResponse {
-  evaluation: PolicyEvaluationResult;
-}
-
-export interface PolicyComplianceReceiptResponse {
-  receipt: PolicyComplianceReceipt;
-}
-
-interface PolicyComplianceReceiptListItemBase {
-  receipt_id: string;
-  subject: PolicySubjectRef;
-  outcome: PolicyEvaluationOutcome;
-  state: PolicyComplianceState;
-  currentness: PolicyCurrentness;
-  currentness_reasons: PolicyCurrentnessReason[];
-  evaluator_version: string;
-  evaluated_by: string;
-  evaluated_at: string;
-  finding_count: number;
-  rule_count: number;
-  failed_rule_count: number;
-  error_rule_count: number;
-  blocking_finding_count: number;
-  waived_finding_count: number;
-  reason_codes: PolicyComplianceReasonCode[];
-}
-
-export interface PolicyComplianceReceiptSummary
-  extends PolicyComplianceReceiptListItemBase {
-  projection: 'summary';
-  subject_content_digest?: never;
-  input_digest?: never;
-  policy_set_digest?: never;
-  binding_head_digest?: never;
-  catalog_version?: never;
-  ruleset_version?: never;
-  adopted_revisions?: never;
-}
-
-export interface PolicyComplianceReceiptDetail
-  extends PolicyComplianceReceiptListItemBase {
-  projection: 'detail';
-  subject_content_digest: string;
-  input_digest: string;
-  policy_set_digest: string;
-  binding_head_digest: string;
-  catalog_version: string;
-  ruleset_version: string;
-  adopted_revisions: AdoptedGuidelineRevisionRef[];
-}
-
-export type PolicyComplianceReceiptListItem =
-  | PolicyComplianceReceiptSummary
-  | PolicyComplianceReceiptDetail;
-
-interface PolicyComplianceFindingListItemBase {
-  finding_id: string;
-  receipt_id: string;
-  subject: PolicySubjectRef;
-  guideline_id: string;
-  revision_id: string;
-  rule_id: string;
-  outcome: PolicyEvaluationOutcome;
-  enforcement: GuidelineEnforcement;
-  severity_rank: number;
-  blocking: boolean;
-  created_at: string;
-  waiver_id?: string;
-}
-
-export interface PolicyComplianceFindingSummary
-  extends PolicyComplianceFindingListItemBase {
-  projection: 'summary';
-  message?: never;
-  evidence_refs?: never;
-}
-
-export interface PolicyComplianceFindingDetail
-  extends PolicyComplianceFindingListItemBase {
-  projection: 'detail';
-  message: string;
-  evidence_refs: string[];
-}
-
-export type PolicyComplianceFindingListItem =
-  | PolicyComplianceFindingSummary
-  | PolicyComplianceFindingDetail;
-
-export interface PolicyWaiver {
-  waiver_id: string;
-  board_id: string;
-  finding_id: string;
-  receipt_id: string;
-  guideline_id: string;
-  revision_id: string;
-  rule_id: string;
-  subject: PolicySubjectRef;
-  status: PolicyWaiverStatus;
-  justification: string;
-  evidence_refs: string[];
-  requested_by: string;
-  requested_at: string;
-  waiver_revision: number;
-  expires_at: string;
-  last_event_id: string;
-  last_event_type: PolicyWaiverEventType;
-  last_event_at: string;
-  reviewed_by: string | null;
-  reviewed_at: string | null;
-  review_reason: string | null;
-  revoked_by: string | null;
-  revoked_at: string | null;
-  expire_reason_code: PolicyWaiverExpireReasonCode | null;
-}
-
-export interface PolicyWaiverEvent {
-  event_id: string;
-  waiver_id: string;
-  board_id: string;
-  waiver_revision: number;
-  event_type: PolicyWaiverEventType;
-  from_status: PolicyWaiverStatus | null;
-  to_status: PolicyWaiverStatus;
-  actor_id: string;
-  occurred_at: string;
-  reason: string;
-  evidence_refs: string[];
-  expires_at: string;
-  scope_digest: string;
-  expire_reason_code: PolicyWaiverExpireReasonCode | null;
-}
-
-interface PolicyWaiverListItemBase {
-  waiver_id: string;
-  board_id: string;
-  finding_id: string;
-  receipt_id: string;
-  guideline_id: string;
-  revision_id: string;
-  rule_id: string;
-  subject: PolicySubjectRef;
-  status: PolicyWaiverStatus;
-  source_current: boolean;
-  effective: boolean;
-  requested_by: string;
-  requested_at: string;
-  expires_at: string;
-  waiver_revision: number;
-  last_event_at: string;
-  expire_reason_code?: PolicyWaiverExpireReasonCode;
-}
-
-export interface PolicyWaiverSummary extends PolicyWaiverListItemBase {
-  projection: 'summary';
-  justification?: never;
-  evidence_refs?: never;
-  reviewed_by?: never;
-  reviewed_at?: never;
-  review_reason?: never;
-  revoked_by?: never;
-  revoked_at?: never;
-}
-
-export interface PolicyWaiverDetail extends PolicyWaiverListItemBase {
-  projection: 'detail';
-  justification: string;
-  evidence_refs: string[];
-  reviewed_by?: string;
-  reviewed_at?: string;
-  review_reason?: string;
-  revoked_by?: string;
-  revoked_at?: string;
-}
-
-export type PolicyWaiverListItem = PolicyWaiverSummary | PolicyWaiverDetail;
-
-export interface RequestPolicyWaiverRequest {
-  waiver_id?: string | null;
-  event_id?: string | null;
-  finding_id: string;
-  justification: string;
-  evidence_refs: NonEmptyArray<string>;
-  expires_at: string;
-  idempotency_key: string;
-  occurred_at?: string | null;
-}
-
-export interface ReviewPolicyWaiverRequest {
-  decision: PolicyWaiverReviewDecision;
-  reason: string;
-  evidence_refs: NonEmptyArray<string>;
-  expected_waiver_revision: number;
-  idempotency_key: string;
-  event_id?: string | null;
-  occurred_at?: string | null;
-}
-
-export interface RevokePolicyWaiverRequest {
-  reason: string;
-  evidence_refs: NonEmptyArray<string>;
-  expected_waiver_revision: number;
-  idempotency_key: string;
-  event_id?: string | null;
-  occurred_at?: string | null;
-}
-
-export interface RevalidatePolicyWaiverRequest
-  extends RevokePolicyWaiverRequest {
-  new_expires_at: string;
-}
-
-export interface PolicyWaiverResponse {
-  waiver: PolicyWaiver;
-}
-
-export interface PolicyWaiverEventsResponse {
-  events: PolicyWaiverEvent[];
-}
-
-export interface PolicyWaiverMutationResponse {
-  waiver: PolicyWaiver;
-  event: PolicyWaiverEvent;
+  configuration_digest: string;
+  replayed: boolean;
 }
 
 export type GuidelineHistoryStatus = 'complete' | 'baseline_only';
@@ -745,7 +719,7 @@ export type GuidelineImportTransactionStatus =
   | 'committed'
   | 'rolled_back';
 
-export interface GuidelineExportIdentityV2 {
+export interface GuidelineExportIdentityV3 {
   guideline_id: string;
   owner_id: string;
   scope: PolicyGuidelineScope;
@@ -754,26 +728,26 @@ export interface GuidelineExportIdentityV2 {
   created_at: string;
 }
 
-export interface GuidelineExportPredicateV2 {
-  predicate_code: string;
-  parameters: PolicyPredicateParameterEntries;
+export interface GuidelineExportHeadV3 {
+  guideline_id: string;
+  revision_id: string;
+  revision_number: number;
+  semantic_version: string;
+  head_revision: number;
+  updated_at: string;
 }
 
-export interface GuidelineExportRuleV2
-  extends Omit<GuidelineRule, 'predicates' | 'policy_class'> {
-  predicates: GuidelineExportPredicateV2[];
-  policy_class: string | null;
-}
+export type GuidelineExportMetricV3 = GuidelineMetric;
 
-export interface GuidelineExportRevisionV2 {
+export interface GuidelineExportRevisionV3 {
   revision_id: string;
   guideline_id: string;
   revision_number: number;
   semantic_version: string;
   title: string;
   content: string;
-  content_digest: string;
-  rules: GuidelineExportRuleV2[];
+  revision_digest: string;
+  metrics: GuidelineExportMetricV3[];
   created_by: string;
   created_at: string;
   parent_revision_id: string | null;
@@ -785,21 +759,15 @@ export interface GuidelineExportRevisionV2 {
   legacy_tags: string[] | null;
 }
 
-export interface GuidelineExportHeadV2 {
-  guideline_id: string;
-  revision_id: string;
-  revision_number: number;
-  semantic_version: string;
-  head_revision: number;
-  updated_at: string;
+export type GuidelineExportRetirementV3 = GuidelineRetirement;
+
+export interface GuidelineExportLogicalBindingV3
+  extends BoardGuidelineBinding {
+  configuration_digest: string;
 }
 
-export type GuidelineExportRetirementV2 = GuidelineRetirement;
-
-export type GuidelineExportLogicalBindingV2 = BoardGuidelineBinding;
-
-export interface GuidelineExportBindingV2 {
-  binding: GuidelineExportLogicalBindingV2;
+export interface GuidelineExportBindingV3 {
+  binding: GuidelineExportLogicalBindingV3;
   physical_source_kind: string;
   binding_origin: string;
   materialization: GuidelineBindingMaterialization;
@@ -812,24 +780,24 @@ export interface GuidelineExportBindingV2 {
   binding_digest: string;
 }
 
-export interface GuidelineExportAggregateV2 {
-  identity: GuidelineExportIdentityV2;
-  revisions: GuidelineExportRevisionV2[];
-  head: GuidelineExportHeadV2;
-  retirement: GuidelineExportRetirementV2 | null;
-  bindings: GuidelineExportBindingV2[];
+export interface GuidelineExportAggregateV3 {
+  identity: GuidelineExportIdentityV3;
+  revisions: GuidelineExportRevisionV3[];
+  head: GuidelineExportHeadV3;
+  retirement: GuidelineExportRetirementV3 | null;
+  bindings: GuidelineExportBindingV3[];
   history_status: GuidelineHistoryStatus;
   migration_notes: string[];
 }
 
-export interface GuidelineExportEnvelopeV2 {
-  contract_version: 'guideline-export/v2';
-  schema_version: '2';
+export interface GuidelineExportEnvelopeV3 {
+  contract_version: 'guideline-export/v3';
+  schema_version: '3';
   kind: 'guidelines';
   exported_at: string;
   source_board_id: string | null;
   content_digest: string;
-  guidelines: GuidelineExportAggregateV2[];
+  guidelines: GuidelineExportAggregateV3[];
 }
 
 export interface GuidelineImportResult {
@@ -940,35 +908,168 @@ export interface PolicyPageOptions {
   signal?: AbortSignal;
 }
 
-export interface GuidelineImpactItemPageOptions extends PolicyPageOptions {
-  entityType?: PolicyEntityType;
-  itemKind?: GuidelineImpactItemKind;
-}
-
-export interface PolicyComplianceReceiptPageOptions extends PolicyPageOptions {
-  entityType?: PolicyEntityType;
+export interface SemanticAssessmentPageOptions extends PolicyPageOptions {
+  subjectType?: PolicyEntityType;
   subjectId?: string;
-  outcome?: PolicyEvaluationOutcome;
+  guidelineId?: string;
+  bindingId?: string;
+  outcome?: SemanticAssessmentOutcome;
   currentness?: PolicyCurrentness;
 }
 
-export interface PolicyComplianceFindingPageOptions extends PolicyPageOptions {
+export interface SemanticFindingPageOptions extends PolicyPageOptions {
   receiptId?: string;
   guidelineId?: string;
-  ruleId?: string;
+  bindingId?: string;
+  metricId?: string;
+  subjectType?: PolicyEntityType;
   subjectId?: string;
-  outcome?: PolicyEvaluationOutcome;
+  outcome?: SemanticMetricOutcome;
 }
 
-export interface PolicyWaiverPageOptions extends PolicyPageOptions {
+export interface SemanticWaiverPageOptions extends PolicyPageOptions {
   evaluatedAt: string;
   findingId?: string;
+  metricResultId?: string;
   receiptId?: string;
   guidelineId?: string;
-  revisionId?: string;
-  ruleId?: string;
-  entityType?: PolicyEntityType;
+  bindingId?: string;
+  metricId?: string;
+  subjectType?: PolicyEntityType;
   subjectId?: string;
-  subjectVersion?: number;
   status?: PolicyWaiverStatus;
+}
+
+export interface SemanticSkipPageOptions extends PolicyPageOptions {
+  subjectType?: PolicyEntityType;
+  subjectId?: string;
+  bindingId?: string;
+  status?: SemanticSkipStatus;
+  currentness?: PolicyCurrentness;
+}
+
+export interface RequestSemanticMetricWaiverRequest {
+  metric_result_id: string;
+  finding_id: string;
+  receipt_id: string;
+  justification: string;
+  evidence_refs: NonEmptyArray<SemanticEvidenceRef>;
+  expires_at: string | null;
+  idempotency_key: string;
+}
+
+export interface RequestedSemanticWaiverResponse {
+  waiver_id: string;
+  status: 'requested';
+  scope_digest: string;
+}
+
+export interface SemanticWaiverEvent {
+  event_id: string;
+  predecessor_event_id: string | null;
+  waiver_id: string;
+  waiver_revision: number;
+  event_type: PolicyWaiverEventType;
+  from_status: PolicyWaiverStatus | null;
+  to_status: PolicyWaiverStatus;
+  actor_id: string;
+  occurred_at: string;
+  reason: string;
+  evidence_refs: SemanticEvidenceRef[];
+  expires_at: string | null;
+  scope_digest: string;
+  waiver_digest: string;
+  idempotency_key: string;
+  request_digest: string;
+  expire_reason: SemanticMetricWaiverExpireReason | null;
+  evaluated_at: string | null;
+  revalidation_status: SemanticMetricWaiverRevalidationStatus | null;
+  revalidation_current: boolean | null;
+  revalidation_reason_code:
+    | SemanticMetricWaiverRevalidationReason
+    | null;
+  currentness_reasons: SemanticAssessmentCurrentnessReason[];
+  scheduled_expiry_observed: boolean;
+}
+
+export interface SemanticWaiverEventsResponse {
+  events: SemanticWaiverEvent[];
+}
+
+export interface ReviewSemanticMetricWaiverRequest {
+  decision: PolicyWaiverReviewDecision;
+  reason: string;
+  evidence_refs: NonEmptyArray<SemanticEvidenceRef>;
+  expected_waiver_revision: number;
+  idempotency_key: string;
+}
+
+export interface RevokeSemanticMetricWaiverRequest {
+  reason: string;
+  evidence_refs: NonEmptyArray<SemanticEvidenceRef>;
+  expected_waiver_revision: number;
+  idempotency_key: string;
+}
+
+export interface RevalidateSemanticMetricWaiverRequest {
+  expected_waiver_revision: number;
+  evaluated_at: string;
+  idempotency_key: string;
+}
+
+export interface ReviewedSemanticWaiverResponse {
+  waiver_id: string;
+  waiver_revision: number;
+  status: 'approved' | 'rejected';
+  reviewer_id: string;
+  replayed: boolean;
+}
+
+export interface RevokedSemanticWaiverResponse {
+  waiver_id: string;
+  waiver_revision: number;
+  status: 'revoked';
+  replayed: boolean;
+}
+
+export interface RevalidatedSemanticWaiverResponse {
+  waiver_id: string;
+  waiver_revision: number;
+  status: SemanticMetricWaiverRevalidationStatus;
+  current: boolean;
+  reason_code: SemanticMetricWaiverRevalidationReason;
+  replayed: boolean;
+}
+
+export interface CreateSemanticSkipRequest {
+  subject_type: PolicyEntityType;
+  subject_id: string;
+  expected_subject_version: number;
+  binding_id: string;
+  reason: string;
+}
+
+export interface CreatedSemanticSkipResponse {
+  skip_id: string;
+  scope_digest: string;
+  created_by: string;
+}
+
+export interface RevokeSemanticSkipRequest {
+  expected_skip_revision: number;
+  reason: string;
+  idempotency_key: string;
+}
+
+export interface RevokedSemanticSkipResponse {
+  skip_id: string;
+  skip_revision: number;
+  status: 'revoked';
+  revoked_by: string;
+  replayed: boolean;
+}
+
+export interface GuidelineImpactItemPageOptions extends PolicyPageOptions {
+  entityType?: PolicyEntityType;
+  itemKind?: GuidelineImpactItemKind;
 }

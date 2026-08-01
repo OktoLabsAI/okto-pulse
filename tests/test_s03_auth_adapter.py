@@ -20,6 +20,7 @@ def test_local_auth_adapter_satisfies_pure_core_contract() -> None:
     assert isinstance(principal, Principal)
     assert principal.subject == "local-user"
     assert principal.realm_id == "local"
+    assert principal.actor_kind == "human"
     assert principal.legacy_user() == LOCAL_USER
 
 
@@ -49,6 +50,7 @@ def test_mcp_session_projects_to_the_same_principal_dto() -> None:
     assert principal == Principal(
         subject="agent-01",
         realm_id="local",
+        actor_kind="agent",
         claims={"agent_name": "Automation", "auth_channel": "mcp"},
     )
     assert principal_from_auth_session(None) is None

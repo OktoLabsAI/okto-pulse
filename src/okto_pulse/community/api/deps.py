@@ -11,8 +11,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
+from okto_pulse.community.api.auth_deps import require_principal
+from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.scheduler import SchedulerControl
 from okto_pulse.core.repositories import PulseUnitOfWork, UnitOfWorkFactory
 from okto_pulse.core.runtime_registry import resolve_unit_of_work_factory
@@ -30,13 +33,17 @@ def scheduler_control_from_request(request: Request) -> SchedulerControl | None:
 
 async def get_unit_of_work(
     request: Request,
+    principal: Principal = Depends(require_principal),
 ) -> AsyncIterator[PulseUnitOfWork]:
     """Yield one edition-owned UoW for the complete HTTP request."""
     factory = get_unit_of_work_factory(request)
+    actor = RESTAdapterContract.actor_from_principal(principal)
     async with AsyncExitStack() as stack:
         try:
             realm_scope = factory.resolve_realm_scope()
-            uow = await stack.enter_async_context(factory(realm_scope=realm_scope))
+            uow = await stack.enter_async_context(
+                factory(realm_scope=realm_scope, actor=actor)
+            )
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=503,

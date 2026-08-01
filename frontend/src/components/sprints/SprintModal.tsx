@@ -186,7 +186,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
   const [policyRefreshGeneration, setPolicyRefreshGeneration] = useState(0);
   const permissions = usePermissions(sprint?.board_id);
   const canReadPolicyCompliance = permissions.has(
-    'guidelines.compliance.read',
+    'guidelines.assessments.read',
   );
   const transitionAuthority = usePolicyTransitionAuthority({
     boardId: sprint?.board_id,
@@ -920,6 +920,8 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                     boardId={sprint.board_id}
                     entityType="sprint"
                     subjectId={sprint.id}
+                    subjectVersion={sprint.version}
+                    transitionPreview={transitionAuthority.preview}
                     refreshKey={policyRefreshGeneration}
                     onEvaluated={() => {
                       transitionAuthority.clearRejection();

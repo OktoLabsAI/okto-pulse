@@ -55,11 +55,11 @@ function TransitionRejectionAlert({
       <p className="mt-1 text-xs">
         <span className="font-mono">{rejection.code}</span>
         {' · '}
-        Receipt {rejection.decision.receipt_id ?? 'none'}
+        Receipts {rejection.decision.receipt_ids.join(', ') || 'none'}
         {' · '}
         {rejection.decision.currentness ?? 'currentness not recorded'}
         {' · '}
-        {rejection.decision.blocking_rule_count ?? 0} blocking
+        {rejection.decision.blocking_metric_count ?? 0} blocking metrics
       </p>
       <p className="mt-1 break-all text-[11px]">
         Decision {rejection.decision.decision_digest}
@@ -184,9 +184,9 @@ export function PolicyComplianceTransitionPreview({
                     <dd className="inline font-mono">{transition.gate}</dd>
                   </div>
                   <div>
-                    <dt className="inline font-semibold">Receipt: </dt>
+                    <dt className="inline font-semibold">Receipts: </dt>
                     <dd className="inline font-mono">
-                      {counts.receipt_id ?? 'none'}
+                      {counts.receipt_ids.join(', ') || 'none'}
                     </dd>
                   </div>
                   <div>
@@ -194,21 +194,29 @@ export function PolicyComplianceTransitionPreview({
                     <dd className="inline">{counts.currentness ?? 'not recorded'}</dd>
                   </div>
                   <div>
-                    <dt className="inline font-semibold">Blocking: </dt>
-                    <dd className="inline">{counts.blocking_rule_count ?? 'n/a'}</dd>
+                    <dt className="inline font-semibold">Failed metrics: </dt>
+                    <dd className="inline">{counts.failed_metric_count ?? 'n/a'}</dd>
                   </div>
                   <div>
-                    <dt className="inline font-semibold">Waived: </dt>
-                    <dd className="inline">{counts.waived_rule_count ?? 'n/a'}</dd>
+                    <dt className="inline font-semibold">Blocking metrics: </dt>
+                    <dd className="inline">{counts.blocking_metric_count ?? 'n/a'}</dd>
+                  </div>
+                  <div>
+                    <dt className="inline font-semibold">Waived metrics: </dt>
+                    <dd className="inline">{counts.waived_metric_count ?? 'n/a'}</dd>
+                  </div>
+                  <div>
+                    <dt className="inline font-semibold">Skipped bindings: </dt>
+                    <dd className="inline">{counts.skipped_binding_count ?? 'n/a'}</dd>
                   </div>
                   <div>
                     <dt className="inline font-semibold">Advisory issues: </dt>
                     <dd className="inline">{counts.advisory_issue_count ?? 'n/a'}</dd>
                   </div>
                   <div>
-                    <dt className="inline font-semibold">Applicable blocking: </dt>
+                    <dt className="inline font-semibold">Applicable blocking metrics: </dt>
                     <dd className="inline">
-                      {counts.applicable_blocking_rule_count ?? 'n/a'}
+                      {counts.applicable_blocking_metric_count ?? 'n/a'}
                     </dd>
                   </div>
                 </dl>
@@ -223,6 +231,28 @@ export function PolicyComplianceTransitionPreview({
                     <span className="font-semibold">Stale because: </span>
                     {counts.currentness_reasons.join(', ')}
                   </p>
+                )}
+                {counts.binding_decisions.length > 0 && (
+                  <div className="mt-3 space-y-1 border-t border-current/15 pt-2 text-xs">
+                    {counts.binding_decisions.map((binding) => (
+                      <p key={binding.binding_id}>
+                        <span className="font-semibold">
+                          {binding.guideline_id}
+                        </span>
+                        {' · '}
+                        {binding.failed_metric_count}/{binding.applicable_metric_count}
+                        {' failed · '}
+                        {binding.skipped
+                          ? 'human skip active'
+                          : binding.inadmissibility_cause
+                            ? binding.inadmissibility_cause
+                            : binding.currentness ?? 'no assessment'}
+                        {binding.diagnostic_codes.length > 0
+                          ? ` · ${binding.diagnostic_codes.join(', ')}`
+                          : ''}
+                      </p>
+                    ))}
+                  </div>
                 )}
               </article>
             );

@@ -41,6 +41,7 @@ from okto_pulse.core.domain.enums import (
     RefinementStatus,
     SpecStatus,
 )
+from okto_pulse.core.application.use_cases import ActorContext
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.events import EventBus
 from okto_pulse.core.events.handlers.consolidation_enqueuer import (
@@ -146,6 +147,16 @@ async def _rig(tmp_path: Path):
     return engine, factory
 
 
+# Production UoWs are always created with the authenticated principal bound
+# (R01B FR3); the semantic subject bridge fails closed at commit without it
+# now that the process-wide versioning listeners are installed by conftest.
+_TEST_ACTOR = ActorContext(
+    "qa-consolidation-test",
+    "rest",
+    actor_kind="human",
+)
+
+
 def _create_payload() -> SimpleNamespace:
     return SimpleNamespace(
         question="Which behavior is required?",
@@ -204,6 +215,7 @@ async def test_qa_create_answer_delete_stage_parent_consolidation_in_same_uow(
             uow = CommunityUnitOfWork(
                 session,
                 realm_scope=RealmScope.local(),
+                actor=_TEST_ACTOR,
             )
             service = getattr(uow.services, service_name)
             qa = await service.create_question(
@@ -219,6 +231,7 @@ async def test_qa_create_answer_delete_stage_parent_consolidation_in_same_uow(
             uow = CommunityUnitOfWork(
                 session,
                 realm_scope=RealmScope.local(),
+                actor=_TEST_ACTOR,
             )
             service = getattr(uow.services, service_name)
             answered = await service.answer_question(
@@ -233,6 +246,7 @@ async def test_qa_create_answer_delete_stage_parent_consolidation_in_same_uow(
             uow = CommunityUnitOfWork(
                 session,
                 realm_scope=RealmScope.local(),
+                actor=_TEST_ACTOR,
             )
             service = getattr(uow.services, service_name)
             assert await service.delete_question(qa_id)
@@ -298,6 +312,7 @@ async def test_qa_event_and_mutation_roll_back_together(tmp_path: Path) -> None:
             uow = CommunityUnitOfWork(
                 session,
                 realm_scope=RealmScope.local(),
+                actor=_TEST_ACTOR,
             )
             qa = await uow.services.spec_qa.create_question(
                 SPEC_ID,

@@ -345,7 +345,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const canReadComments = perms.has('card.comments.read');
   const canReadConclusion = perms.has('card.conclusion.read');
   const canReadValidation = perms.has('card.validation.read');
-  const canReadPolicyCompliance = perms.has('guidelines.compliance.read');
+  const canReadPolicyCompliance = perms.has('guidelines.assessments.read');
   const canReadActivity = perms.has('card.activity_read');
   const canEditCardFields = perms.has('card.entity.edit_fields');
   const canAskQA = perms.has('card.qa.ask');
@@ -1969,6 +1969,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                           boardId={card.board_id}
                           entityType="card"
                           subjectId={card.id}
+                          transitionPreview={policyTransitionAuthority.preview}
                           refreshKey={policyAuthorityRefreshKey}
                           onEvaluated={() => {
                             policyTransitionAuthority.clearRejection();

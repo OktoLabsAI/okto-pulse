@@ -941,7 +941,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
   const canAssessQuality = perms.has('ideation.quality.assess');
   const canProposeQualityQuestions = perms.has('ideation.qa.ask');
   const canReadPolicyCompliance = perms.has(
-    'guidelines.compliance.read',
+    'guidelines.assessments.read',
   );
   const ambiguityGateRequired = Boolean(
     currentBoard?.settings?.require_ideation_ambiguity_gate,
@@ -1710,6 +1710,8 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                     boardId={ideation.board_id || _boardId}
                     entityType="ideation"
                     subjectId={ideation.id}
+                    subjectVersion={ideation.version}
+                    transitionPreview={policyTransitionPreview}
                     refreshKey={ideation.version}
                     onEvaluated={() => {
                       void loadAllowedTransitions(ideation);

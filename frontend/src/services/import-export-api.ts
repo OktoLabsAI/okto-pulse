@@ -1,7 +1,8 @@
 /**
- * Import/Export API — schema_version-1 JSON envelopes for the four admin
- * catalog families: Guidelines, Design Systems, Permission Presets and the
- * Default Board Configuration versions (ITEM 19).
+ * Import/Export API — schema_version-1 JSON envelopes for the three generic
+ * catalog families: Design Systems, Permission Presets and Default Board
+ * Configuration versions (ITEM 19). Guidelines use the governed lossless
+ * guideline-export/v3 service instead of this generic schema-v1 surface.
  *
  * Envelope: { schema_version: "1", kind, exported_at, items: [...] }
  * Import response: { created, skipped: [...], errors: [...], dry_run } —
@@ -12,7 +13,6 @@
 import { useApiClient } from '@/contexts/ApiContext';
 
 export type ImportExportKind =
-  | 'guidelines'
   | 'design_systems'
   | 'presets'
   | 'board_config';
@@ -70,27 +70,6 @@ export function useImportExportApi() {
   };
 
   return {
-    // ==================== GUIDELINES ====================
-
-    async exportGuidelines(boardId?: string): Promise<ImportExportEnvelope> {
-      const params = new URLSearchParams();
-      if (boardId) params.set('board_id', boardId);
-      const qs = params.toString();
-      return apiClient.fetchJson<ImportExportEnvelope>(
-        `/guidelines/export${qs ? `?${qs}` : ''}`,
-      );
-    },
-
-    async importGuidelines(
-      envelope: ImportExportEnvelope,
-      options: ImportOptions & { boardId?: string } = {},
-    ): Promise<ImportSummary> {
-      const params = new URLSearchParams();
-      if (options.boardId) params.set('board_id', options.boardId);
-      if (options.dryRun) params.set('dry_run', 'true');
-      return post('/guidelines/import', envelope, params);
-    },
-
     // ==================== DESIGN SYSTEMS ====================
 
     async exportDesignSystems(): Promise<ImportExportEnvelope> {

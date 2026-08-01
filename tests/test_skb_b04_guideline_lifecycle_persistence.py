@@ -36,7 +36,6 @@ from okto_pulse.community.adapters.sqlalchemy_default_board_configuration import
 )
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
-    guideline_revision_content_digest,
 )
 from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
     CommunitySqlAlchemyKGGovernanceStore,
@@ -59,9 +58,12 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineEnforcement,
     GuidelineHead,
     GuidelineLifecycleStatus,
+    GuidelineMetric,
+    GuidelineMetricDirection,
     GuidelineRetirement,
     GuidelineRevision,
     GuidelineScope,
+    PolicyEntityType,
 )
 from okto_pulse.core.ports.guideline_policy import (
     GuidelinePolicyBindingConflict,
@@ -188,11 +190,24 @@ def _revision(
         semantic_version=semantic_version,
         title=title,
         content=content,
-        content_digest=guideline_revision_content_digest(
-            title=title,
-            content=content,
+        metrics=(
+            GuidelineMetric(
+                metric_id="metric-b04-segregation",
+                code="segregation",
+                title="Business boundary segregation",
+                description=(
+                    "Measures separation between technical capabilities "
+                    "and business rules."
+                ),
+                evaluation_rubric=(
+                    "Score 0 when coupled and 100 when the business boundary "
+                    "is independently evidenced."
+                ),
+                target_entity_types=(PolicyEntityType.SPEC,),
+                direction=GuidelineMetricDirection.MINIMUM,
+                default_threshold=70,
+            ),
         ),
-        rules=(),
         created_by="actor-b04",
         created_at=at,
         parent_revision_id=parent_revision_id,
@@ -222,7 +237,7 @@ def _retirement(
         retired_revision_id=revision.revision_id,
         retired_revision_number=revision.revision_number,
         retired_semantic_version=revision.semantic_version,
-        retired_revision_digest=revision.content_digest,
+        retired_revision_digest=revision.revision_digest,
         retired_head_revision=revision.revision_number,
         reason="Policy is no longer applicable.",
         retired_by="actor-b04",
@@ -253,7 +268,7 @@ async def test_b04_retirement_is_terminal_but_allows_safe_unlink(
         guideline_id=guideline_id,
         revision_id=revision_1.revision_id,
         semantic_version=revision_1.semantic_version,
-        revision_digest=revision_1.content_digest,
+        revision_digest=revision_1.revision_digest,
         priority=2,
         binding_revision=1,
         adopted_by="actor-b04",
@@ -908,7 +923,7 @@ async def test_b04_native_restart_reuses_revision_and_inline_binding(
         guideline_id=guideline_id,
         revision_id=revision.revision_id,
         semantic_version=revision.semantic_version,
-        revision_digest=revision.content_digest,
+        revision_digest=revision.revision_digest,
         priority=0,
         binding_revision=1,
         adopted_by="actor-b04",
@@ -1145,7 +1160,7 @@ async def test_b04_default_guideline_fact_tracks_head_and_retirement_without_tem
         "priority": 4,
         "revision_id": revision_1.revision_id,
         "semantic_version": revision_1.semantic_version,
-        "revision_digest": revision_1.content_digest,
+        "revision_digest": revision_1.revision_digest,
         "revision_number": revision_1.revision_number,
     }
 
@@ -1210,7 +1225,7 @@ async def test_b04_default_guideline_fact_tracks_head_and_retirement_without_tem
         assert fact.version == revision_2.revision_number
         assert fact.revision_id == revision_2.revision_id
         assert fact.semantic_version == revision_2.semantic_version
-        assert fact.revision_digest == revision_2.content_digest
+        assert fact.revision_digest == revision_2.revision_digest
         assert fact.revision_number == revision_2.revision_number
         assert fact.retired is True
         assert await store.list_global_guidelines(
@@ -1243,18 +1258,18 @@ async def test_b04_default_guideline_fact_tracks_head_and_retirement_without_tem
                 "revision_id": revision_2.revision_id,
                 "revision_number": revision_2.revision_number,
                 "semantic_version": revision_2.semantic_version,
-                "revision_digest": revision_2.content_digest,
+                "revision_digest": revision_2.revision_digest,
                 "head_revision": {
                     "revision_id": revision_2.revision_id,
                     "revision_number": revision_2.revision_number,
                     "semantic_version": revision_2.semantic_version,
-                    "revision_digest": revision_2.content_digest,
+                    "revision_digest": revision_2.revision_digest,
                 },
                 "default_revision": {
                     "revision_id": revision_1.revision_id,
                     "revision_number": revision_1.revision_number,
                     "semantic_version": revision_1.semantic_version,
-                    "revision_digest": revision_1.content_digest,
+                    "revision_digest": revision_1.revision_digest,
                 },
                 "retired": True,
                 "eligible": False,
@@ -1327,7 +1342,9 @@ async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_en
                     board_id=board_id,
                     guideline_id=global_v1.id,
                     proposed_priority=priority,
-                    proposed_default_enforcement=(GuidelineEnforcement.ADVISORY),
+                    proposed_enforcement=GuidelineEnforcement.ADVISORY,
+                    proposed_minimum_confidence=70,
+                    proposed_metric_threshold_overrides={},
                     requested_by=owner_id,
                     idempotency_key=preview_key,
                     owner_id=owner_id,
@@ -1529,7 +1546,7 @@ async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_en
                 if item["id"] == global_v1.id
             )
             assert projected_global["binding_revision"] == 4
-            assert projected_global["default_enforcement"] == "advisory"
+            assert projected_global["enforcement"] == "advisory"
             assert projected_global["binding_state"] == "active"
             assert projected_global["source_kind"] == "native"
 

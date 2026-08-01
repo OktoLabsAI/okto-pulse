@@ -9,13 +9,19 @@ import pytest
 
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.domain.guideline_policy import (
+    GuidelineEnforcement,
     PolicyCurrentness,
     PolicyEntityType,
 )
 from okto_pulse.core.domain.guideline_policy_transition import (
     PolicyTransitionDecision,
+    PolicyTransitionDiagnosticCode,
     PolicyTransitionReasonCode,
     PolicyTransitionRejected,
+    SemanticBindingComplianceDecision,
+)
+from okto_pulse.core.domain.guideline_semantic_currentness import (
+    SemanticAssessmentCurrentnessReason,
 )
 from okto_pulse.core.inbound.policy_transition_error import (
     project_policy_transition_rejection,
@@ -38,6 +44,28 @@ REST_MUTATION_HANDLERS = (
 
 
 def _rejection() -> PolicyTransitionRejected:
+    binding = SemanticBindingComplianceDecision(
+        binding_id="binding-1",
+        guideline_id="guideline-1",
+        enforcement=GuidelineEnforcement.BLOCKING,
+        applicable_metric_count=4,
+        allowed=False,
+        assessment_available=True,
+        receipt_id="receipt-1",
+        currentness=PolicyCurrentness.STALE,
+        currentness_reasons=(
+            SemanticAssessmentCurrentnessReason.POLICY_SET_CHANGED,
+        ),
+        inadmissibility_cause=None,
+        failed_metric_count=0,
+        waived_metric_count=0,
+        blocking_metric_count=0,
+        advisory_issue_count=0,
+        skipped=False,
+        diagnostic_codes=(
+            PolicyTransitionDiagnosticCode.POLICY_COMPLIANCE_RECEIPT_STALE,
+        ),
+    )
     return PolicyTransitionRejected(
         PolicyTransitionDecision(
             entity_type=PolicyEntityType.CARD,
@@ -47,15 +75,19 @@ def _rejection() -> PolicyTransitionRejected:
             transition_allowed=True,
             policy_compliance_required=True,
             allowed=False,
-            reason_codes=(PolicyTransitionReasonCode.POLICY_COMPLIANCE_BLOCKED,),
-            receipt_id="receipt-1",
-            currentness=PolicyCurrentness.CURRENT,
-            currentness_reasons=(),
-            applicable_rule_count=4,
-            applicable_blocking_rule_count=2,
-            blocking_rule_count=1,
-            waived_rule_count=1,
-            advisory_issue_count=1,
+            reason_codes=(
+                PolicyTransitionReasonCode.POLICY_COMPLIANCE_RECEIPT_STALE,
+            ),
+            diagnostic_codes=binding.diagnostic_codes,
+            binding_decisions=(binding,),
+            receipt_ids=("receipt-1",),
+            applicable_metric_count=4,
+            applicable_blocking_metric_count=4,
+            failed_metric_count=0,
+            blocking_metric_count=0,
+            waived_metric_count=0,
+            advisory_issue_count=0,
+            skipped_binding_count=0,
             fence_digest="f" * 64,
         )
     )

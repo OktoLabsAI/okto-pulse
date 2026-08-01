@@ -12,6 +12,7 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 )
 from okto_pulse.community.adapters.sqlalchemy_spec_materialization import (
     CommunitySqlAlchemySpecMaterializationStore,
+    legacy_spec_materializer_actor,
 )
 from okto_pulse.core.application.spec_materialization import (
     materialize_legacy_fr_ac_board,
@@ -25,7 +26,10 @@ async def _run(board_id: str, *, dry_run: bool) -> dict[str, object]:
     try:
         async with session_factory() as session:
             return await materialize_legacy_fr_ac_board(
-                CommunitySqlAlchemySpecMaterializationStore(session),
+                CommunitySqlAlchemySpecMaterializationStore(
+                    session,
+                    actor=legacy_spec_materializer_actor(board_id=board_id),
+                ),
                 board_id,
                 dry_run=dry_run,
             )

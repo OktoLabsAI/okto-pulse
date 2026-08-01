@@ -1,14 +1,13 @@
-"""Community ``policy-constraint/v1`` relational-to-KG projection.
+"""Community relational-to-KG projection for semantic guideline evidence.
 
-Core owns the closed event contract and the meaning of adopt/unlink/retire.
-This adapter owns only the Community mechanisms: resolve the current exact
-binding/revision/rule rows and reconcile their graph derivative.
+Core owns the closed event envelopes.  Community resolves the exact
+relational revision, metric, binding, assessment and exception authority and
+reconciles stable physical ``Entity`` subtypes into the graph.  At-least-once
+delivery is safe because every node uses a stable public identity and every
+replay derives the full board state again.
 
-The graph is an at-least-once target.  A handler may commit graph writes and
-crash before its relational execution ACK; consequently every write is keyed
-by the stable public identity
-``guideline-revision:{revision_id}:rule:{rule_id}`` and a replay reconciles the
-same node instead of minting a duplicate.
+The adapter never creates historical rule ``Constraint`` nodes and terminates
+any that are still active.
 """
 
 from __future__ import annotations
@@ -18,44 +17,31 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, select
 
 from okto_pulse.core.application.kg_runtime_access import (
     resolve_graph_transaction,
 )
 from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+from okto_pulse.core.events.types import SemanticGuidelineProjectionChanged
 from okto_pulse.core.ports.policy_constraint_projection import (
-    POLICY_CONSTRAINT_GUIDELINE_RETIRED_REASON,
-    POLICY_CONSTRAINT_GUIDELINE_SUPERSEDED_REASON,
-    POLICY_CONSTRAINT_REBUILD_NOT_ADOPTED_REASON,
-    POLICY_CONSTRAINT_RULE_REMOVED_REASON,
-    POLICY_CONSTRAINT_UNLINKED_REASON,
     PolicyConstraintProjectionResult,
-)
-
-from .sqlalchemy_guideline_policy import (
-    guideline_rule_from_payload,
-    guideline_rule_payload,
 )
 from .sqlalchemy_models import (
     GuidelineBoardBindingRow,
     GuidelineRetirementRow,
     GuidelineRevisionRow,
+    SemanticGuidelineAssessmentReceiptRow,
+    SemanticGuidelineBindingConfigurationRow,
+    SemanticGuidelineMetricResultRow,
+    SemanticGuidelineRevisionRow,
+    SemanticGuidelineSkipRow,
+    SemanticGuidelineWaiverEventRow,
+    SemanticGuidelineWaiverRow,
 )
 
 
-POLICY_CONSTRAINT_CONTRACT = "policy-constraint/v1"
 POLICY_CONSTRAINT_ACTOR = "policy-constraint-projector"
-POLICY_CONSTRAINT_NODE_TYPE = "Constraint"
-POLICY_CONSTRAINT_ROOT_RULE = (
-    "belongs_to/policy_constraint_to_board@policy-constraint/v1"
-)
-POLICY_CONSTRAINT_LINEAGE_RULE = (
-    "supersedes/policy_constraint_revision@policy-constraint/v1"
-)
-POLICY_CONSTRAINT_REVISION_SUPERSEDED_REASON = (
-    "policy_constraint_revision_superseded"
-)
 
 
 class PolicyConstraintProjectionConflict(RuntimeError):
@@ -64,37 +50,6 @@ class PolicyConstraintProjectionConflict(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
-
-
-@dataclass(frozen=True, slots=True)
-class _DesiredConstraint:
-    node_id: str
-    guideline_id: str
-    revision_id: str
-    rule_id: str
-    attrs: dict[str, Any]
-    content_digest: str
-
-
-@dataclass(frozen=True, slots=True)
-class _GraphConstraint:
-    node_id: str
-    guideline_id: str
-    revision_id: str
-    rule_id: str
-    source_artifact_ref: str
-    created_by_agent: str
-    revocation_reason: str
-    superseded_by: str
-    source_content_hash: str
-    title: str
-    content: str
-    context: str
-    justification: str
-
-    @property
-    def active(self) -> bool:
-        return not self.revocation_reason and not self.superseded_by
 
 
 def _required_text(value: object, code: str) -> str:
@@ -113,181 +68,9 @@ def _aware_utc(value: object, code: str) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _node_id(*, revision_id: str, rule_id: str) -> str:
-    return f"guideline-revision:{revision_id}:rule:{rule_id}"
-
-
-def _event_revision_id(event: object, *, operation: str) -> str:
-    del operation
+def _event_revision_id(event: object) -> str:
     value = getattr(event, "exact_revision_id", None)
-    return _required_text(value, "policy_constraint_event_revision_required")
-
-
-def _constraint_context(
-    *,
-    guideline_id: str,
-    revision_id: str,
-    semantic_version: str,
-    rule_payload: dict[str, object],
-) -> str:
-    return json.dumps(
-        {
-            "contract": POLICY_CONSTRAINT_CONTRACT,
-            "guideline_id": guideline_id,
-            "revision_id": revision_id,
-            "semantic_version": semantic_version,
-            "rule": rule_payload,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
-def _desired_constraint(
-    *,
-    binding: GuidelineBoardBindingRow,
-    revision: GuidelineRevisionRow,
-    rule_payload: object,
-    source_session_id: str,
-    projected_at: datetime,
-) -> _DesiredConstraint:
-    rule = guideline_rule_from_payload(rule_payload)
-    canonical_rule = guideline_rule_payload(rule)
-    node_id = _node_id(
-        revision_id=revision.revision_id,
-        rule_id=rule.rule_id,
-    )
-    content_digest = canonical_sha256(
-        {
-            "contract": POLICY_CONSTRAINT_CONTRACT,
-            "guideline_id": revision.guideline_id,
-            "revision_id": revision.revision_id,
-            "revision_digest": revision.content_digest,
-            "binding_id": binding.binding_id,
-            "binding_revision": binding.binding_revision,
-            "default_enforcement": binding.default_enforcement,
-            "rule": canonical_rule,
-        }
-    )
-    context = _constraint_context(
-        guideline_id=revision.guideline_id,
-        revision_id=revision.revision_id,
-        semantic_version=revision.semantic_version,
-        rule_payload=canonical_rule,
-    )
-    return _DesiredConstraint(
-        node_id=node_id,
-        guideline_id=revision.guideline_id,
-        revision_id=revision.revision_id,
-        rule_id=rule.rule_id,
-        attrs={
-            "title": rule.title,
-            "content": rule.description,
-            "context": context,
-            "justification": revision.content,
-            "source_artifact_ref": node_id,
-            "graph_layer": "canonical",
-            "maturity_status": "canonical_eligible",
-            "source_session_id": source_session_id,
-            "created_at": projected_at.isoformat(),
-            "created_by_agent": POLICY_CONSTRAINT_ACTOR,
-            "source_confidence": 1.0,
-            "relevance_score": 0.5,
-            "priority_boost": 0.0,
-            "superseded_by": None,
-            "superseded_at": None,
-            "revocation_reason": None,
-            "human_curated": False,
-            "generation": revision.revision_number,
-            "source_content_hash": content_digest,
-            "kind_of": None,
-        },
-        content_digest=content_digest,
-    )
-
-
-def _graph_constraints(scope: Any) -> tuple[_GraphConstraint, ...]:
-    result = scope.execute(
-        "MATCH (n:Constraint) "
-        "RETURN n.id, n.source_artifact_ref, n.created_by_agent, "
-        "n.revocation_reason, n.superseded_by, n.source_content_hash, "
-        "n.title, n.content, n.context, n.justification"
-    )
-    owned: list[_GraphConstraint] = []
-    seen_ids: set[str] = set()
-    seen_refs: set[str] = set()
-    for row in result.rows:
-        node_id = str(row[0] or "")
-        source_artifact_ref = str(row[1] or "")
-        created_by_agent = str(row[2] or "")
-        context = str(row[8] or "")
-        looks_owned = (
-            created_by_agent == POLICY_CONSTRAINT_ACTOR
-            or source_artifact_ref.startswith("guideline-revision:")
-            or node_id.startswith("guideline-revision:")
-        )
-        if not looks_owned:
-            continue
-        try:
-            identity = json.loads(context)
-            rule_identity = identity["rule"]
-            guideline_id = _required_text(
-                identity["guideline_id"],
-                "policy_constraint_graph_identity_invalid",
-            )
-            revision_id = _required_text(
-                identity["revision_id"],
-                "policy_constraint_graph_identity_invalid",
-            )
-            rule_id = _required_text(
-                rule_identity["rule_id"],
-                "policy_constraint_graph_identity_invalid",
-            )
-        except (
-            json.JSONDecodeError,
-            KeyError,
-            TypeError,
-            PolicyConstraintProjectionConflict,
-        ) as exc:
-            raise PolicyConstraintProjectionConflict(
-                "policy_constraint_graph_identity_invalid"
-            ) from exc
-        node = _GraphConstraint(
-            node_id=node_id,
-            guideline_id=guideline_id,
-            revision_id=revision_id,
-            rule_id=rule_id,
-            source_artifact_ref=source_artifact_ref,
-            created_by_agent=created_by_agent,
-            revocation_reason=str(row[3] or ""),
-            superseded_by=str(row[4] or ""),
-            source_content_hash=str(row[5] or ""),
-            title=str(row[6] or ""),
-            content=str(row[7] or ""),
-            context=context,
-            justification=str(row[9] or ""),
-        )
-        if (
-            node.created_by_agent != POLICY_CONSTRAINT_ACTOR
-            or node.node_id != node.source_artifact_ref
-            or node.node_id
-            != _node_id(
-                revision_id=node.revision_id,
-                rule_id=node.rule_id,
-            )
-        ):
-            raise PolicyConstraintProjectionConflict(
-                "policy_constraint_graph_identity_conflict"
-            )
-        if node.node_id in seen_ids or node.source_artifact_ref in seen_refs:
-            raise PolicyConstraintProjectionConflict(
-                "policy_constraint_graph_identity_duplicate"
-            )
-        seen_ids.add(node.node_id)
-        seen_refs.add(node.source_artifact_ref)
-        owned.append(node)
-    return tuple(sorted(owned, key=lambda item: item.node_id))
+    return _required_text(value, "semantic_guideline_event_revision_required")
 
 
 def _root_node_id(scope: Any, *, board_id: str, source_session_id: str) -> str:
@@ -327,48 +110,287 @@ def _root_node_id(scope: Any, *, board_id: str, source_session_id: str) -> str:
     return root_id
 
 
-def _constraint_semantics_match(
-    current: _GraphConstraint,
-    desired: _DesiredConstraint,
+SEMANTIC_GUIDELINE_KG_CONTRACT = "semantic-guideline-kg/v1"
+SEMANTIC_GUIDELINE_KG_ACTOR = "semantic-guideline-projector"
+SEMANTIC_GUIDELINE_KG_NODE_TYPE = "Entity"
+SEMANTIC_GUIDELINE_KG_ROOT_RULE = (
+    "belongs_to/semantic_guideline_to_board@semantic-guideline-kg/v1"
+)
+SEMANTIC_GUIDELINE_KG_LINEAGE_RULE = (
+    "supersedes/semantic_guideline_lineage@semantic-guideline-kg/v1"
+)
+SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON = (
+    "semantic_guideline_legacy_rule_projection_retired"
+)
+SEMANTIC_GUIDELINE_SOURCE_REMOVED_REASON = (
+    "semantic_guideline_relational_source_removed"
+)
+_SEMANTIC_SOURCE_PREFIX = "semantic-guideline:"
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticDesiredNode:
+    node_id: str
+    kind: str
+    digest: str
+    generation: int
+    active: bool
+    successor_id: str | None
+    reason: str | None
+    lineage_ids: tuple[str, ...]
+    attrs: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticGraphNode:
+    node_id: str
+    source_artifact_ref: str
+    created_by_agent: str
+    source_content_hash: str
+    title: str
+    content: str
+    context: str
+    justification: str
+    generation: int
+    kind_of: str
+    superseded_by: str
+    revocation_reason: str
+
+    @property
+    def active(self) -> bool:
+        return not self.superseded_by and not self.revocation_reason
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyRuleNode:
+    node_id: str
+    source_artifact_ref: str
+    created_by_agent: str
+    revocation_reason: str
+    superseded_by: str
+
+    @property
+    def active(self) -> bool:
+        return not self.revocation_reason and not self.superseded_by
+
+
+def _db_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _semantic_node_id(kind: str, identity: str) -> str:
+    return f"{_SEMANTIC_SOURCE_PREFIX}{kind}:{identity}"
+
+
+def _waiver_projection_state(
+    *,
+    status: str,
+    expires_at: datetime | None,
+    binding_id: str,
+    binding_revision: int,
+    active_binding_keys: set[tuple[str, int]],
+    projected_at: datetime,
+) -> tuple[bool, str | None]:
+    """Resolve active/tombstone state with explicit precedence."""
+
+    if status not in {"requested", "approved"}:
+        return False, f"semantic_guideline_waiver_{status}"
+    if expires_at is not None and _db_utc(expires_at) <= projected_at:
+        return False, "semantic_guideline_waiver_scheduled_expiry"
+    if (binding_id, binding_revision) not in active_binding_keys:
+        return False, "semantic_guideline_waiver_binding_inactive"
+    return True, None
+
+
+def _semantic_context(kind: str, payload: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "contract": SEMANTIC_GUIDELINE_KG_CONTRACT,
+            "kind": kind,
+            **payload,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _desired_semantic_node(
+    *,
+    kind: str,
+    identity: str,
+    digest: str,
+    generation: int,
+    active: bool,
+    reason: str | None,
+    successor_id: str | None,
+    lineage_ids: tuple[str, ...] = (),
+    title: str,
+    content: str,
+    payload: dict[str, Any],
+    created_at: datetime,
+    projected_at: datetime,
+) -> _SemanticDesiredNode:
+    node_id = _semantic_node_id(kind, identity)
+    context = _semantic_context(kind, payload)
+    terminal_reason = None if active else (reason or "semantic_guideline_ended")
+    attrs = {
+        "title": title,
+        "content": content,
+        "context": context,
+        "justification": (
+            "Relational semantic-guideline authority projected after commit."
+        ),
+        "source_artifact_ref": node_id,
+        "graph_layer": "canonical",
+        "maturity_status": "canonical_eligible",
+        "created_at": _db_utc(created_at).isoformat(),
+        "created_by_agent": SEMANTIC_GUIDELINE_KG_ACTOR,
+        "source_confidence": 1.0,
+        "relevance_score": 0.5,
+        "priority_boost": 0.0,
+        "superseded_by": successor_id,
+        "superseded_at": (
+            None if active else projected_at.isoformat()
+        ),
+        "revocation_reason": terminal_reason,
+        "human_curated": False,
+        "generation": generation,
+        "source_content_hash": digest,
+        "kind_of": f"SemanticGuideline{kind.title().replace('_', '')}",
+    }
+    return _SemanticDesiredNode(
+        node_id=node_id,
+        kind=kind,
+        digest=digest,
+        generation=generation,
+        active=active,
+        successor_id=successor_id,
+        reason=terminal_reason,
+        lineage_ids=tuple(sorted(set(lineage_ids))),
+        attrs=attrs,
+    )
+
+
+def _semantic_graph_nodes(scope: Any) -> tuple[_SemanticGraphNode, ...]:
+    result = scope.execute(
+        "MATCH (n:Entity) RETURN n.id, n.source_artifact_ref, "
+        "n.created_by_agent, n.source_content_hash, n.title, n.content, "
+        "n.context, n.justification, n.generation, n.superseded_by, "
+        "n.revocation_reason, n.kind_of"
+    )
+    nodes: list[_SemanticGraphNode] = []
+    seen: set[str] = set()
+    for row in result.rows:
+        node_id = str(row[0] or "")
+        source_ref = str(row[1] or "")
+        actor = str(row[2] or "")
+        if not (
+            actor == SEMANTIC_GUIDELINE_KG_ACTOR
+            or source_ref.startswith(_SEMANTIC_SOURCE_PREFIX)
+            or node_id.startswith(_SEMANTIC_SOURCE_PREFIX)
+        ):
+            continue
+        if (
+            not node_id
+            or node_id != source_ref
+            or not node_id.startswith(_SEMANTIC_SOURCE_PREFIX)
+            or node_id in seen
+        ):
+            raise PolicyConstraintProjectionConflict(
+                "semantic_guideline_graph_identity_invalid"
+            )
+        try:
+            context = json.loads(str(row[6] or ""))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise PolicyConstraintProjectionConflict(
+                "semantic_guideline_graph_context_invalid"
+            ) from exc
+        if (
+            not isinstance(context, dict)
+            or context.get("contract") != SEMANTIC_GUIDELINE_KG_CONTRACT
+            or not isinstance(context.get("kind"), str)
+        ):
+            raise PolicyConstraintProjectionConflict(
+                "semantic_guideline_graph_context_invalid"
+            )
+        seen.add(node_id)
+        nodes.append(
+            _SemanticGraphNode(
+                node_id=node_id,
+                source_artifact_ref=source_ref,
+                created_by_agent=actor,
+                source_content_hash=str(row[3] or ""),
+                title=str(row[4] or ""),
+                content=str(row[5] or ""),
+                context=str(row[6] or ""),
+                justification=str(row[7] or ""),
+                generation=int(row[8] or 0),
+                kind_of=str(row[11] or ""),
+                superseded_by=str(row[9] or ""),
+                revocation_reason=str(row[10] or ""),
+            )
+        )
+    return tuple(sorted(nodes, key=lambda item: item.node_id))
+
+
+def _legacy_rule_nodes(scope: Any) -> tuple[_LegacyRuleNode, ...]:
+    result = scope.execute(
+        "MATCH (n:Constraint) RETURN n.id, n.source_artifact_ref, "
+        "n.created_by_agent, n.revocation_reason, n.superseded_by"
+    )
+    nodes = []
+    for row in result.rows:
+        node_id = str(row[0] or "")
+        source_ref = str(row[1] or "")
+        actor = str(row[2] or "")
+        if not (
+            actor == POLICY_CONSTRAINT_ACTOR
+            or source_ref.startswith("guideline-revision:")
+            or node_id.startswith("guideline-revision:")
+        ):
+            continue
+        nodes.append(
+            _LegacyRuleNode(
+                node_id=node_id,
+                source_artifact_ref=source_ref,
+                created_by_agent=actor,
+                revocation_reason=str(row[3] or ""),
+                superseded_by=str(row[4] or ""),
+            )
+        )
+    return tuple(nodes)
+
+
+def _semantic_node_matches(
+    current: _SemanticGraphNode,
+    desired: _SemanticDesiredNode,
 ) -> bool:
     attrs = desired.attrs
     return (
-        current.source_content_hash == desired.content_digest
+        current.created_by_agent == SEMANTIC_GUIDELINE_KG_ACTOR
+        and current.source_content_hash == desired.digest
         and current.title == attrs["title"]
         and current.content == attrs["content"]
         and current.context == attrs["context"]
         and current.justification == attrs["justification"]
+        and current.generation == desired.generation
+        and current.kind_of == attrs["kind_of"]
+        and current.superseded_by == (desired.successor_id or "")
+        and current.revocation_reason == (desired.reason or "")
     )
-
-
-def _policy_lineage_edge_exists(
-    scope: Any,
-    *,
-    successor_id: str,
-    predecessor_id: str,
-) -> bool:
-    """Return only lineage owned by this deterministic projector.
-
-    ``supersedes`` is a shared KG relation.  Endpoint-only checks would let an
-    unrelated subsystem's edge suppress B14 lineage, and endpoint-only deletes
-    would erase that subsystem's evidence during historical re-adoption.
-    """
-
-    result = scope.execute(
-        "MATCH (new:Constraint {id: $successor_id})"
-        "-[r:supersedes]->(old:Constraint {id: $predecessor_id}) "
-        "WHERE r.rule_id = $rule_id RETURN count(r)",
-        {
-            "successor_id": successor_id,
-            "predecessor_id": predecessor_id,
-            "rule_id": POLICY_CONSTRAINT_LINEAGE_RULE,
-        },
-    )
-    return bool(result.rows and int(result.rows[0][0] or 0) > 0)
 
 
 class CommunitySqlAlchemyPolicyConstraintProjection:
-    """Resolve exact relational authority and reconcile its graph derivative."""
+    """Compatibility-named projector for semantic guideline KG lineage.
+
+    The former deterministic Rule -> Constraint materializer is deliberately
+    not invoked.  This adapter projects relational semantic evidence as
+    ``Entity`` subtypes, and only retains old ``Constraint`` nodes as terminal
+    audit history.
+    """
 
     def __init__(
         self,
@@ -379,215 +401,704 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
     ) -> None:
         self._graph_transaction_resolver = graph_transaction_resolver
 
-    async def _validate_event_revision(
+    async def _validate_generic_event(
+        self,
+        context: Any,
+        *,
+        event: SemanticGuidelineProjectionChanged,
+    ) -> None:
+        kind = event.entity_kind
+        row: Any = None
+        if kind == "revision":
+            row = await context.get(
+                SemanticGuidelineRevisionRow,
+                event.entity_id,
+            )
+            digest = None if row is None else row.revision_digest
+        elif kind == "metric_definition":
+            revision_id, separator, metric_id = event.entity_id.partition(":")
+            row = await context.get(SemanticGuidelineRevisionRow, revision_id)
+            metric = next(
+                (
+                    item
+                    for item in (row.metrics if row is not None else ())
+                    if isinstance(item, dict)
+                    and item.get("metric_id") == metric_id
+                ),
+                None,
+            )
+            digest = (
+                canonical_sha256(metric)
+                if separator and metric is not None
+                else None
+            )
+        elif kind == "binding_configuration":
+            binding_id, separator, revision_text = event.entity_id.rpartition(":")
+            parsed_revision = (
+                int(revision_text)
+                if separator and revision_text.isdigit()
+                else -1
+            )
+            row = (
+                await context.execute(
+                    select(SemanticGuidelineBindingConfigurationRow).where(
+                        SemanticGuidelineBindingConfigurationRow.board_id
+                        == event.board_id,
+                        SemanticGuidelineBindingConfigurationRow.binding_id
+                        == binding_id,
+                        SemanticGuidelineBindingConfigurationRow.binding_revision
+                        == parsed_revision,
+                    )
+                )
+            ).scalar_one_or_none()
+            digest = None if row is None else row.configuration_digest
+        elif kind == "assessment_receipt":
+            row = (
+                await context.execute(
+                    select(SemanticGuidelineAssessmentReceiptRow).where(
+                        SemanticGuidelineAssessmentReceiptRow.board_id
+                        == event.board_id,
+                        SemanticGuidelineAssessmentReceiptRow.receipt_id
+                        == event.entity_id,
+                        SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
+                    )
+                )
+            ).scalar_one_or_none()
+            digest = None if row is None else row.receipt_digest
+        elif kind == "metric_result":
+            row = (
+                await context.execute(
+                    select(SemanticGuidelineMetricResultRow).where(
+                        SemanticGuidelineMetricResultRow.board_id
+                        == event.board_id,
+                        SemanticGuidelineMetricResultRow.result_id
+                        == event.entity_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            digest = None if row is None else row.result_digest
+        elif kind == "waiver":
+            row = (
+                await context.execute(
+                    select(SemanticGuidelineWaiverEventRow).where(
+                        SemanticGuidelineWaiverEventRow.board_id
+                        == event.board_id,
+                        SemanticGuidelineWaiverEventRow.waiver_id
+                        == event.entity_id,
+                        SemanticGuidelineWaiverEventRow.waiver_digest
+                        == event.entity_digest,
+                    )
+                )
+            ).scalar_one_or_none()
+            digest = None if row is None else row.waiver_digest
+        else:
+            row = (
+                await context.execute(
+                    select(SemanticGuidelineSkipRow).where(
+                        SemanticGuidelineSkipRow.board_id == event.board_id,
+                        SemanticGuidelineSkipRow.skip_id == event.entity_id,
+                        SemanticGuidelineSkipRow.skip_digest
+                        == event.entity_digest,
+                    )
+                )
+            ).scalar_one_or_none()
+            digest = None if row is None else row.skip_digest
+        if row is None or digest != event.entity_digest:
+            raise PolicyConstraintProjectionConflict(
+                "semantic_guideline_projection_authority_mismatch"
+            )
+
+    async def _validate_binding_event(
         self,
         context: Any,
         *,
         event: object,
-        operation: str,
     ) -> None:
         guideline_id = _required_text(
             getattr(event, "guideline_id", None),
-            "policy_constraint_event_guideline_required",
+            "semantic_guideline_event_guideline_required",
         )
-        revision_id = _event_revision_id(event, operation=operation)
-        row = (
+        revision_id = _event_revision_id(event)
+        semantic = (
             await context.execute(
-                select(GuidelineRevisionRow).where(
-                    GuidelineRevisionRow.guideline_id == guideline_id,
-                    GuidelineRevisionRow.revision_id == revision_id,
+                select(SemanticGuidelineRevisionRow).where(
+                    SemanticGuidelineRevisionRow.guideline_id == guideline_id,
+                    SemanticGuidelineRevisionRow.revision_id == revision_id,
                 )
             )
         ).scalar_one_or_none()
-        if row is None:
+        if semantic is None:
             raise PolicyConstraintProjectionConflict(
-                "policy_constraint_event_revision_missing"
+                "semantic_guideline_event_revision_missing"
             )
-        if operation == "adopt" and hasattr(event, "to_revision_id"):
-            event_semantic_version = getattr(
-                event,
-                "to_semantic_version",
-                None,
+        binding_id = _required_text(
+            getattr(event, "binding_id", None),
+            "semantic_guideline_event_binding_required",
+        )
+        binding_revision = getattr(event, "binding_revision", None)
+        configuration = (
+            await context.execute(
+                select(SemanticGuidelineBindingConfigurationRow).where(
+                    SemanticGuidelineBindingConfigurationRow.board_id
+                    == getattr(event, "board_id", None),
+                    SemanticGuidelineBindingConfigurationRow.binding_id
+                    == binding_id,
+                    SemanticGuidelineBindingConfigurationRow.binding_revision
+                    == binding_revision,
+                )
             )
-            event_revision_digest = getattr(
-                event,
-                "to_revision_digest",
-                None,
-            )
-        elif operation == "unlink":
-            event_semantic_version = getattr(
-                event,
-                "from_semantic_version",
-                None,
-            )
-            event_revision_digest = getattr(
-                event,
-                "from_revision_digest",
-                None,
-            )
-        else:
-            event_semantic_version = getattr(
-                event,
-                "semantic_version",
-                None,
-            )
-            event_revision_digest = getattr(
-                event,
-                "revision_digest",
-                None,
-            )
+        ).scalar_one_or_none()
         if (
-            event_semantic_version != row.semantic_version
-            or event_revision_digest != row.content_digest
-            or (
-                operation == "retire"
-                and getattr(event, "revision_number", None)
-                != row.revision_number
-            )
+            configuration is None
+            or configuration.guideline_id != guideline_id
+            or configuration.revision_id != revision_id
+            or configuration.revision_digest != semantic.revision_digest
         ):
             raise PolicyConstraintProjectionConflict(
-                "policy_constraint_event_revision_evidence_mismatch"
+                "semantic_guideline_event_binding_mismatch"
             )
-        if not isinstance(row.rules, list):
-            raise PolicyConstraintProjectionConflict(
-                "policy_constraint_event_rules_invalid"
-            )
-        # Decode the complete exact revision even for unlink/retire.  Core
-        # validates event semantics; Community proves the referenced physical
-        # revision and every immutable rule are still resolvable.
-        tuple(guideline_rule_from_payload(rule) for rule in row.rules)
-
-        # Binding materialization has no B08 impact ledger; prove every
-        # immutable binding field against the exact historical row before the
-        # worker reconciles the latest board state.  Delayed events remain
-        # valid because this lookup is not restricted to the current head.
-        if hasattr(event, "source_kind"):
-            binding = (
-                await context.execute(
-                    select(GuidelineBoardBindingRow).where(
-                        GuidelineBoardBindingRow.board_id
-                        == getattr(event, "board_id", None),
-                        GuidelineBoardBindingRow.guideline_id
-                        == guideline_id,
-                        GuidelineBoardBindingRow.binding_id
-                        == getattr(event, "binding_id", None),
-                        GuidelineBoardBindingRow.binding_revision
-                        == getattr(event, "binding_revision", None),
-                    )
-                )
-            ).scalar_one_or_none()
-            if (
-                binding is None
-                or binding.state != "active"
-                or binding.revision_id != row.revision_id
-                or binding.semantic_version != row.semantic_version
-                or binding.revision_digest != row.content_digest
-                or binding.source_kind
-                != getattr(event, "source_kind", None)
-                or binding.default_enforcement
-                != getattr(event, "default_enforcement", None)
-                or binding.priority != getattr(event, "priority", None)
-                or binding.adopted_by != getattr(event, "actor_id", None)
-                or _aware_utc(
-                    binding.adopted_at,
-                    "policy_constraint_binding_time_invalid",
-                )
-                != _aware_utc(
-                    getattr(event, "occurred_at", None),
-                    "policy_constraint_event_time_invalid",
-                )
-            ):
-                raise PolicyConstraintProjectionConflict(
-                    "policy_constraint_event_binding_evidence_mismatch"
-                )
 
     async def _desired_for_board(
         self,
         context: Any,
         *,
         board_id: str,
-        source_session_id: str,
         projected_at: datetime,
-    ) -> tuple[_DesiredConstraint, ...]:
-        latest = (
-            select(
-                GuidelineBoardBindingRow.board_id.label("board_id"),
-                GuidelineBoardBindingRow.guideline_id.label("guideline_id"),
-                func.max(GuidelineBoardBindingRow.binding_revision).label(
-                    "binding_revision"
-                ),
-            )
-            .where(GuidelineBoardBindingRow.board_id == board_id)
-            .group_by(
-                GuidelineBoardBindingRow.board_id,
-                GuidelineBoardBindingRow.guideline_id,
-            )
-            .subquery()
-        )
-        rows = (
+    ) -> tuple[_SemanticDesiredNode, ...]:
+        binding_pairs = (
             await context.execute(
-                select(GuidelineBoardBindingRow, GuidelineRevisionRow)
+                select(
+                    SemanticGuidelineBindingConfigurationRow,
+                    GuidelineBoardBindingRow,
+                )
                 .join(
-                    latest,
+                    GuidelineBoardBindingRow,
                     and_(
-                        GuidelineBoardBindingRow.board_id == latest.c.board_id,
-                        GuidelineBoardBindingRow.guideline_id
-                        == latest.c.guideline_id,
+                        GuidelineBoardBindingRow.binding_id
+                        == SemanticGuidelineBindingConfigurationRow.binding_id,
                         GuidelineBoardBindingRow.binding_revision
-                        == latest.c.binding_revision,
+                        == SemanticGuidelineBindingConfigurationRow.binding_revision,
+                        GuidelineBoardBindingRow.board_id
+                        == SemanticGuidelineBindingConfigurationRow.board_id,
                     ),
-                )
-                .join(
-                    GuidelineRevisionRow,
-                    and_(
-                        GuidelineRevisionRow.guideline_id
-                        == GuidelineBoardBindingRow.guideline_id,
-                        GuidelineRevisionRow.revision_id
-                        == GuidelineBoardBindingRow.revision_id,
-                    ),
-                )
-                .outerjoin(
-                    GuidelineRetirementRow,
-                    GuidelineRetirementRow.guideline_id
-                    == GuidelineBoardBindingRow.guideline_id,
                 )
                 .where(
-                    GuidelineBoardBindingRow.state == "active",
-                    GuidelineRetirementRow.guideline_id.is_(None),
+                    SemanticGuidelineBindingConfigurationRow.board_id
+                    == board_id
                 )
                 .order_by(
                     GuidelineBoardBindingRow.guideline_id.asc(),
-                    GuidelineRevisionRow.revision_id.asc(),
+                    GuidelineBoardBindingRow.binding_revision.asc(),
                 )
             )
         ).all()
-
-        desired: list[_DesiredConstraint] = []
-        seen_ids: set[str] = set()
-        for binding, revision in rows:
-            if (
-                binding.revision_id != revision.revision_id
-                or binding.revision_digest != revision.content_digest
-                or binding.semantic_version != revision.semantic_version
-                or not isinstance(revision.rules, list)
-            ):
-                raise PolicyConstraintProjectionConflict(
-                    "policy_constraint_binding_revision_mismatch"
+        retired_guidelines = set(
+            (
+                await context.execute(
+                    select(GuidelineRetirementRow.guideline_id)
                 )
-            for rule_payload in revision.rules:
-                candidate = _desired_constraint(
-                    binding=binding,
-                    revision=revision,
-                    rule_payload=rule_payload,
-                    source_session_id=source_session_id,
+            ).scalars()
+        )
+        latest_binding: dict[str, GuidelineBoardBindingRow] = {}
+        for _, legacy in binding_pairs:
+            latest_binding[legacy.guideline_id] = legacy
+        active_binding_keys = {
+            (row.binding_id, row.binding_revision)
+            for row in latest_binding.values()
+            if row.state == "active" and row.guideline_id not in retired_guidelines
+        }
+        active_revision_ids = {
+            configuration.revision_id
+            for configuration, legacy in binding_pairs
+            if (legacy.binding_id, legacy.binding_revision) in active_binding_keys
+        }
+
+        referenced_revision_ids = {
+            configuration.revision_id for configuration, _ in binding_pairs
+        }
+        revision_pairs = []
+        if referenced_revision_ids:
+            revision_pairs = (
+                await context.execute(
+                    select(SemanticGuidelineRevisionRow, GuidelineRevisionRow)
+                    .join(
+                        GuidelineRevisionRow,
+                        GuidelineRevisionRow.revision_id
+                        == SemanticGuidelineRevisionRow.revision_id,
+                    )
+                    .where(
+                        SemanticGuidelineRevisionRow.revision_id.in_(
+                            referenced_revision_ids
+                        )
+                    )
+                    .order_by(
+                        GuidelineRevisionRow.guideline_id.asc(),
+                        GuidelineRevisionRow.revision_number.asc(),
+                    )
+                )
+            ).all()
+        if {semantic.revision_id for semantic, _ in revision_pairs} != (
+            referenced_revision_ids
+        ):
+            raise PolicyConstraintProjectionConflict(
+                "semantic_guideline_revision_authority_incomplete"
+            )
+
+        desired: list[_SemanticDesiredNode] = []
+        binding_successors: dict[tuple[str, int], str] = {}
+        by_guideline: dict[str, list[tuple[Any, Any]]] = {}
+        for pair in binding_pairs:
+            by_guideline.setdefault(pair[1].guideline_id, []).append(pair)
+        for pairs in by_guideline.values():
+            for index, (configuration, legacy) in enumerate(pairs[:-1]):
+                next_configuration, _ = pairs[index + 1]
+                binding_successors[(legacy.binding_id, legacy.binding_revision)] = (
+                    _semantic_node_id(
+                        "binding_configuration",
+                        f"{next_configuration.binding_id}:"
+                        f"{next_configuration.binding_revision}",
+                    )
+                )
+        for configuration, legacy in binding_pairs:
+            active = (
+                legacy.binding_id,
+                legacy.binding_revision,
+            ) in active_binding_keys
+            successor = binding_successors.get(
+                (legacy.binding_id, legacy.binding_revision)
+            )
+            reason = None
+            if not active:
+                reason = (
+                    "semantic_guideline_binding_unlinked"
+                    if legacy.state == "unlinked" and successor is None
+                    else "semantic_guideline_binding_superseded"
+                )
+            desired.append(
+                _desired_semantic_node(
+                    kind="binding_configuration",
+                    identity=f"{configuration.binding_id}:"
+                    f"{configuration.binding_revision}",
+                    digest=configuration.configuration_digest,
+                    generation=configuration.binding_revision,
+                    active=active,
+                    reason=reason,
+                    successor_id=successor,
+                    lineage_ids=(
+                        _semantic_node_id(
+                            "revision", configuration.revision_id
+                        ),
+                    ),
+                    title=f"Guideline binding {configuration.guideline_id}",
+                    content=(
+                        f"{configuration.enforcement}; minimum confidence "
+                        f"{configuration.minimum_confidence}"
+                    ),
+                    payload={
+                        "binding_id": configuration.binding_id,
+                        "binding_revision": configuration.binding_revision,
+                        "board_id": board_id,
+                        "guideline_id": configuration.guideline_id,
+                        "revision_id": configuration.revision_id,
+                        "revision_digest": configuration.revision_digest,
+                        "configuration_digest": configuration.configuration_digest,
+                        "enforcement": configuration.enforcement,
+                        "minimum_confidence": configuration.minimum_confidence,
+                        "metric_threshold_overrides": configuration.metric_threshold_overrides,
+                        "state": legacy.state,
+                    },
+                    created_at=configuration.configured_at,
                     projected_at=projected_at,
                 )
-                if candidate.node_id in seen_ids:
+            )
+
+        revision_successor: dict[str, str] = {}
+        revision_groups: dict[str, list[tuple[Any, Any]]] = {}
+        for pair in revision_pairs:
+            revision_groups.setdefault(pair[1].guideline_id, []).append(pair)
+        for pairs in revision_groups.values():
+            for index, (semantic, _) in enumerate(pairs[:-1]):
+                next_semantic, _ = pairs[index + 1]
+                revision_successor[semantic.revision_id] = _semantic_node_id(
+                    "revision", next_semantic.revision_id
+                )
+        for semantic, legacy in revision_pairs:
+            active = semantic.revision_id in active_revision_ids
+            if semantic.authority_state == "legacy_incompatible" and active:
+                raise PolicyConstraintProjectionConflict(
+                    "semantic_guideline_legacy_revision_active"
+                )
+            successor = revision_successor.get(semantic.revision_id)
+            desired.append(
+                _desired_semantic_node(
+                    kind="revision",
+                    identity=semantic.revision_id,
+                    digest=semantic.revision_digest,
+                    generation=legacy.revision_number,
+                    active=active,
+                    reason=(
+                        None
+                        if active
+                        else "semantic_guideline_revision_legacy_incompatible"
+                        if semantic.authority_state == "legacy_incompatible"
+                        else "semantic_guideline_revision_superseded"
+                        if successor
+                        else "semantic_guideline_revision_unbound"
+                    ),
+                    successor_id=successor,
+                    title=legacy.title,
+                    content=legacy.content,
+                    payload={
+                        "guideline_id": semantic.guideline_id,
+                        "revision_id": semantic.revision_id,
+                        "revision_number": legacy.revision_number,
+                        "semantic_version": legacy.semantic_version,
+                        "revision_digest": semantic.revision_digest,
+                        "authority_state": semantic.authority_state,
+                    },
+                    created_at=semantic.created_at,
+                    projected_at=projected_at,
+                )
+            )
+            if semantic.authority_state == "legacy_incompatible":
+                continue
+            if not isinstance(semantic.metrics, list):
+                raise PolicyConstraintProjectionConflict(
+                    "semantic_guideline_metrics_invalid"
+                )
+            for metric in semantic.metrics:
+                if not isinstance(metric, dict) or not isinstance(
+                    metric.get("metric_id"), str
+                ):
                     raise PolicyConstraintProjectionConflict(
-                        "policy_constraint_desired_identity_duplicate"
+                        "semantic_guideline_metric_invalid"
                     )
-                seen_ids.add(candidate.node_id)
-                desired.append(candidate)
+                metric_id = metric["metric_id"]
+                metric_successor = None
+                if successor is not None:
+                    successor_revision_id = successor.rsplit(":", 1)[-1]
+                    successor_pair = next(
+                        (
+                            item
+                            for item in revision_pairs
+                            if item[0].revision_id == successor_revision_id
+                        ),
+                        None,
+                    )
+                    if successor_pair is not None:
+                        successor_metric = next(
+                            (
+                                item
+                                for item in successor_pair[0].metrics
+                                if isinstance(item, dict)
+                                and item.get("code") == metric.get("code")
+                            ),
+                            None,
+                        )
+                        if successor_metric is not None:
+                            metric_successor = _semantic_node_id(
+                                "metric_definition",
+                                f"{successor_revision_id}:"
+                                f"{successor_metric['metric_id']}",
+                            )
+                desired.append(
+                    _desired_semantic_node(
+                        kind="metric_definition",
+                        identity=f"{semantic.revision_id}:{metric_id}",
+                        digest=canonical_sha256(metric),
+                        generation=legacy.revision_number,
+                        active=active,
+                        reason=(
+                            None
+                            if active
+                            else "semantic_guideline_metric_superseded"
+                            if metric_successor
+                            else "semantic_guideline_metric_unbound"
+                        ),
+                        successor_id=metric_successor,
+                        lineage_ids=(
+                            _semantic_node_id(
+                                "revision", semantic.revision_id
+                            ),
+                        ),
+                        title=str(metric.get("title") or metric.get("code")),
+                        content=str(metric.get("description") or ""),
+                        payload={
+                            "guideline_id": semantic.guideline_id,
+                            "revision_id": semantic.revision_id,
+                            "revision_digest": semantic.revision_digest,
+                            "metric": metric,
+                        },
+                        created_at=semantic.created_at,
+                        projected_at=projected_at,
+                    )
+                )
+
+        receipts = tuple(
+            (
+                await context.execute(
+                    select(SemanticGuidelineAssessmentReceiptRow)
+                    .where(
+                        SemanticGuidelineAssessmentReceiptRow.board_id
+                        == board_id,
+                        SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
+                    )
+                    .order_by(
+                        SemanticGuidelineAssessmentReceiptRow.assessed_at.asc(),
+                        SemanticGuidelineAssessmentReceiptRow.receipt_id.asc(),
+                    )
+                )
+            ).scalars()
+        )
+        latest_receipt: dict[tuple[str, str, str], Any] = {}
+        for receipt in receipts:
+            latest_receipt[
+                (receipt.subject_type, receipt.subject_id, receipt.binding_id)
+            ] = receipt
+        active_receipt_ids = {
+            receipt.receipt_id
+            for receipt in latest_receipt.values()
+            if (receipt.binding_id, receipt.binding_revision)
+            in active_binding_keys
+        }
+        receipt_successors: dict[str, str] = {}
+        receipt_groups: dict[tuple[str, str, str], list[Any]] = {}
+        for receipt in receipts:
+            receipt_groups.setdefault(
+                (receipt.subject_type, receipt.subject_id, receipt.binding_id), []
+            ).append(receipt)
+        for group in receipt_groups.values():
+            for index, receipt in enumerate(group[:-1]):
+                receipt_successors[receipt.receipt_id] = _semantic_node_id(
+                    "assessment_receipt", group[index + 1].receipt_id
+                )
+        for receipt in receipts:
+            active = receipt.receipt_id in active_receipt_ids
+            successor = receipt_successors.get(receipt.receipt_id)
+            desired.append(
+                _desired_semantic_node(
+                    kind="assessment_receipt",
+                    identity=receipt.receipt_id,
+                    digest=receipt.receipt_digest,
+                    generation=receipt.subject_version,
+                    active=active,
+                    reason=(
+                        None
+                        if active
+                        else "semantic_guideline_assessment_superseded"
+                        if successor
+                        else "semantic_guideline_assessment_binding_inactive"
+                    ),
+                    successor_id=successor,
+                    lineage_ids=(
+                        _semantic_node_id(
+                            "binding_configuration",
+                            f"{receipt.binding_id}:{receipt.binding_revision}",
+                        ),
+                        _semantic_node_id("revision", receipt.revision_id),
+                    ),
+                    title=f"{receipt.subject_type} guideline assessment",
+                    content=(
+                        f"{receipt.state}; confidence {receipt.confidence}; "
+                        f"failed metrics {receipt.failed_metric_count}"
+                    ),
+                    payload={
+                        "receipt_id": receipt.receipt_id,
+                        "receipt_digest": receipt.receipt_digest,
+                        "subject_type": receipt.subject_type,
+                        "subject_id": receipt.subject_id,
+                        "subject_version": receipt.subject_version,
+                        "guideline_id": receipt.guideline_id,
+                        "revision_id": receipt.revision_id,
+                        "binding_id": receipt.binding_id,
+                        "binding_revision": receipt.binding_revision,
+                        "configuration_digest": receipt.configuration_digest,
+                        "state": receipt.state,
+                        "confidence": receipt.confidence,
+                    },
+                    created_at=receipt.assessed_at,
+                    projected_at=projected_at,
+                )
+            )
+
+        metric_results = tuple(
+            (
+                await context.execute(
+                    select(SemanticGuidelineMetricResultRow)
+                    .where(
+                        SemanticGuidelineMetricResultRow.board_id == board_id
+                    )
+                    .order_by(
+                        SemanticGuidelineMetricResultRow.created_at.asc(),
+                        SemanticGuidelineMetricResultRow.result_id.asc(),
+                    )
+                )
+            ).scalars()
+        )
+        receipt_by_id = {receipt.receipt_id: receipt for receipt in receipts}
+        for result in metric_results:
+            receipt = receipt_by_id.get(result.receipt_id)
+            if receipt is None:
+                raise PolicyConstraintProjectionConflict(
+                    "semantic_guideline_metric_receipt_missing"
+                )
+            active = result.receipt_id in active_receipt_ids
+            desired.append(
+                _desired_semantic_node(
+                    kind="metric_result",
+                    identity=result.result_id,
+                    digest=result.result_digest,
+                    generation=result.subject_version,
+                    active=active,
+                    reason=(
+                        None
+                        if active
+                        else "semantic_guideline_metric_result_superseded"
+                    ),
+                    successor_id=None,
+                    lineage_ids=(
+                        _semantic_node_id(
+                            "assessment_receipt", result.receipt_id
+                        ),
+                        _semantic_node_id(
+                            "metric_definition",
+                            f"{result.revision_id}:{result.metric_id}",
+                        ),
+                    ),
+                    title=f"{result.metric_code} result",
+                    content=f"score {result.score}; outcome {result.outcome}",
+                    payload={
+                        "result_id": result.result_id,
+                        "receipt_id": result.receipt_id,
+                        "result_digest": result.result_digest,
+                        "metric_id": result.metric_id,
+                        "metric_code": result.metric_code,
+                        "metric_definition_digest": result.metric_definition_digest,
+                        "score": result.score,
+                        "outcome": result.outcome,
+                        "rationale": result.rationale,
+                    },
+                    created_at=result.created_at,
+                    projected_at=projected_at,
+                )
+            )
+
+        waivers = tuple(
+            (
+                await context.execute(
+                    select(SemanticGuidelineWaiverRow).where(
+                        SemanticGuidelineWaiverRow.board_id == board_id
+                    )
+                )
+            ).scalars()
+        )
+        for waiver in waivers:
+            active, reason = _waiver_projection_state(
+                status=waiver.status,
+                expires_at=waiver.expires_at,
+                binding_id=waiver.binding_id,
+                binding_revision=waiver.binding_revision,
+                active_binding_keys=active_binding_keys,
+                projected_at=projected_at,
+            )
+            desired.append(
+                _desired_semantic_node(
+                    kind="waiver",
+                    identity=waiver.waiver_id,
+                    digest=waiver.head_digest,
+                    generation=waiver.waiver_revision,
+                    active=active,
+                    reason=reason,
+                    successor_id=None,
+                    lineage_ids=(
+                        _semantic_node_id(
+                            "metric_result", waiver.metric_result_id
+                        ),
+                        _semantic_node_id(
+                            "assessment_receipt", waiver.receipt_id
+                        ),
+                    ),
+                    title=f"Waiver for {waiver.metric_code}",
+                    content=waiver.justification,
+                    payload={
+                        "waiver_id": waiver.waiver_id,
+                        "status": waiver.status,
+                        "waiver_revision": waiver.waiver_revision,
+                        "head_digest": waiver.head_digest,
+                        "receipt_id": waiver.receipt_id,
+                        "metric_result_id": waiver.metric_result_id,
+                        "finding_id": waiver.finding_id,
+                        "binding_id": waiver.binding_id,
+                    },
+                    created_at=waiver.requested_at,
+                    projected_at=projected_at,
+                )
+            )
+
+        skip_rows = tuple(
+            (
+                await context.execute(
+                    select(SemanticGuidelineSkipRow)
+                    .where(SemanticGuidelineSkipRow.board_id == board_id)
+                    .order_by(
+                        SemanticGuidelineSkipRow.skip_id.asc(),
+                        SemanticGuidelineSkipRow.skip_revision.asc(),
+                    )
+                )
+            ).scalars()
+        )
+        skip_heads: dict[str, Any] = {}
+        for row in skip_rows:
+            skip_heads[row.skip_id] = row
+        for skip in skip_heads.values():
+            active = (
+                skip.status == "active"
+                and (skip.binding_id, skip.binding_revision)
+                in active_binding_keys
+            )
+            desired.append(
+                _desired_semantic_node(
+                    kind="skip",
+                    identity=skip.skip_id,
+                    digest=skip.skip_digest,
+                    generation=skip.skip_revision,
+                    active=active,
+                    reason=(
+                        None
+                        if active
+                        else "semantic_guideline_skip_revoked"
+                        if skip.status == "revoked"
+                        else "semantic_guideline_skip_binding_inactive"
+                    ),
+                    successor_id=None,
+                    lineage_ids=(
+                        _semantic_node_id(
+                            "binding_configuration",
+                            f"{skip.binding_id}:{skip.binding_revision}",
+                        ),
+                    ),
+                    title="Human guideline gate skip",
+                    content=skip.reason,
+                    payload={
+                        "skip_id": skip.skip_id,
+                        "skip_revision": skip.skip_revision,
+                        "status": skip.status,
+                        "scope_digest": skip.scope_digest,
+                        "skip_digest": skip.skip_digest,
+                        "subject_type": skip.subject_type,
+                        "subject_id": skip.subject_id,
+                        "binding_id": skip.binding_id,
+                    },
+                    created_at=skip.created_at,
+                    projected_at=projected_at,
+                )
+            )
+
+        node_ids = [node.node_id for node in desired]
+        if len(node_ids) != len(set(node_ids)):
+            raise PolicyConstraintProjectionConflict(
+                "semantic_guideline_desired_identity_duplicate"
+            )
         return tuple(sorted(desired, key=lambda item: item.node_id))
 
     async def _reconcile(
@@ -596,100 +1107,104 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
         board_id: str,
         operation: str,
         event_id: str | None,
-        desired: tuple[_DesiredConstraint, ...],
+        desired: tuple[_SemanticDesiredNode, ...],
         projected_at: datetime,
-        no_successor_reason: str,
     ) -> PolicyConstraintProjectionResult:
         graph = self._graph_transaction_resolver()
         if graph is None:
             raise PolicyConstraintProjectionConflict(
-                "policy_constraint_graph_transaction_missing"
+                "semantic_guideline_graph_transaction_missing"
             )
         scope = await graph.begin(board_id)
-        desired_by_id = {item.node_id: item for item in desired}
-        desired_successors = {
-            (item.guideline_id, item.rule_id): item.node_id
-            for item in desired
-        }
+        desired_by_id = {node.node_id: node for node in desired}
         source_session_id = (
-            f"policy-constraint:{event_id}"
+            f"semantic-guideline:{event_id}"
             if event_id is not None
-            else f"policy-constraint:rebuild:{board_id}"
+            else f"semantic-guideline:rebuild:{board_id}"
         )
-        activated_count = 0
-        ended_count = 0
-
+        activated = 0
+        ended = 0
         async with scope:
             transaction_open = False
             try:
                 scope.execute("BEGIN TRANSACTION")
                 transaction_open = True
-                current = _graph_constraints(scope)
-                current_by_id = {item.node_id: item for item in current}
-                current_by_ref = {
-                    item.source_artifact_ref: item for item in current
-                }
-                for desired_node in desired:
-                    # A historical revision may be adopted again.  Active
-                    # nodes cannot remain the predecessor of a stale
-                    # supersedence edge or downgrade/re-adoption would create
-                    # a cycle.  Immutable relational events retain the full
-                    # transition history; graph lineage is the reconciled
-                    # current chain.
-                    scope.execute(
-                        "MATCH (:Constraint)-[r:supersedes]->"
-                        "(old:Constraint {id: $node_id}) "
-                        "WHERE r.rule_id = $rule_id DELETE r",
-                        {
-                            "node_id": desired_node.node_id,
-                            "rule_id": POLICY_CONSTRAINT_LINEAGE_RULE,
-                        },
-                    )
-                    conflicting = current_by_ref.get(desired_node.node_id)
-                    if (
-                        conflicting is not None
-                        and conflicting.node_id != desired_node.node_id
-                    ):
-                        raise PolicyConstraintProjectionConflict(
-                            "policy_constraint_source_ref_conflict"
-                        )
-                    existing = current_by_id.get(desired_node.node_id)
+                current = _semantic_graph_nodes(scope)
+                current_by_id = {node.node_id: node for node in current}
+                for node in desired:
+                    existing = current_by_id.get(node.node_id)
                     if existing is None:
                         scope.create_node(
-                            POLICY_CONSTRAINT_NODE_TYPE,
-                            desired_node.node_id,
-                            dict(desired_node.attrs),
+                            SEMANTIC_GUIDELINE_KG_NODE_TYPE,
+                            node.node_id,
+                            dict(node.attrs),
                             source_session_id=source_session_id,
                         )
-                        activated_count += 1
-                    elif not existing.active or not _constraint_semantics_match(
-                        existing,
-                        desired_node,
-                    ):
-                        # Preserve the node's original graph creation time and
-                        # bind temporal values explicitly.  The Kuzu
-                        # ``update_node`` helper intentionally treats values as
-                        # plain parameters, so assigning an ISO string directly
-                        # to a TIMESTAMP property is not portable.
-                        update_attrs = {
-                            key: value
-                            for key, value in desired_node.attrs.items()
-                            if key not in {"created_at", "superseded_at"}
-                        }
-                        if not existing.active:
-                            scope.execute(
-                                "MATCH (n:Constraint {id: $node_id}) "
-                                "SET n.superseded_by = NULL, "
-                                "n.superseded_at = NULL, "
-                                "n.revocation_reason = NULL",
-                                {"node_id": desired_node.node_id},
-                            )
+                        if node.active:
+                            activated += 1
+                    elif not _semantic_node_matches(existing, node):
+                        was_active = existing.active
                         scope.update_node(
-                            POLICY_CONSTRAINT_NODE_TYPE,
-                            desired_node.node_id,
-                            update_attrs,
+                            SEMANTIC_GUIDELINE_KG_NODE_TYPE,
+                            node.node_id,
+                            {
+                                key: value
+                                for key, value in node.attrs.items()
+                                if key not in {"created_at", "superseded_at"}
+                            },
                         )
-                        activated_count += 1
+                        if node.active:
+                            scope.execute(
+                                "MATCH (n:Entity {id: $node_id}) SET "
+                                "n.superseded_at = NULL",
+                                {"node_id": node.node_id},
+                            )
+                            if not was_active:
+                                activated += 1
+                        else:
+                            scope.execute(
+                                "MATCH (n:Entity {id: $node_id}) SET "
+                                "n.superseded_at = timestamp($ended_at)",
+                                {
+                                    "node_id": node.node_id,
+                                    "ended_at": projected_at.isoformat(),
+                                },
+                            )
+                            if was_active:
+                                ended += 1
+
+                for existing in current:
+                    if existing.node_id in desired_by_id or not existing.active:
+                        continue
+                    scope.execute(
+                        "MATCH (n:Entity {id: $node_id}) SET "
+                        "n.superseded_by = NULL, "
+                        "n.superseded_at = timestamp($ended_at), "
+                        "n.revocation_reason = $reason",
+                        {
+                            "node_id": existing.node_id,
+                            "ended_at": projected_at.isoformat(),
+                            "reason": SEMANTIC_GUIDELINE_SOURCE_REMOVED_REASON,
+                        },
+                    )
+                    ended += 1
+
+                legacy = _legacy_rule_nodes(scope)
+                for node in legacy:
+                    if not node.active:
+                        continue
+                    scope.execute(
+                        "MATCH (n:Constraint {id: $node_id}) SET "
+                        "n.superseded_by = NULL, "
+                        "n.superseded_at = timestamp($ended_at), "
+                        "n.revocation_reason = $reason",
+                        {
+                            "node_id": node.node_id,
+                            "ended_at": projected_at.isoformat(),
+                            "reason": SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON,
+                        },
+                    )
+                    ended += 1
 
                 root_id = (
                     _root_node_id(
@@ -701,81 +1216,94 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     else None
                 )
                 if root_id is not None:
-                    for desired_node in desired:
+                    for node in desired:
                         if not scope.edge_exists(
                             "belongs_to",
-                            POLICY_CONSTRAINT_NODE_TYPE,
                             "Entity",
-                            desired_node.node_id,
+                            "Entity",
+                            node.node_id,
                             root_id,
                         ):
                             scope.create_edge(
                                 "belongs_to",
-                                POLICY_CONSTRAINT_NODE_TYPE,
                                 "Entity",
-                                desired_node.node_id,
+                                "Entity",
+                                node.node_id,
                                 root_id,
                                 {
                                     "confidence": 1.0,
                                     "created_by_session_id": source_session_id,
                                     "created_at": projected_at.isoformat(),
-                                    "rule_id": POLICY_CONSTRAINT_ROOT_RULE,
+                                    "rule_id": SEMANTIC_GUIDELINE_KG_ROOT_RULE,
                                 },
                             )
-
-                for existing in current:
-                    if existing.node_id in desired_by_id or not existing.active:
-                        continue
-                    successor_id = desired_successors.get(
-                        (existing.guideline_id, existing.rule_id),
-                    )
-                    reason = (
-                        POLICY_CONSTRAINT_REVISION_SUPERSEDED_REASON
-                        if successor_id
-                        else no_successor_reason
-                    )
-                    scope.execute(
-                        "MATCH (n:Constraint {id: $node_id}) "
-                        "SET n.superseded_by = $superseded_by, "
-                        "n.superseded_at = timestamp($ended_at), "
-                        "n.revocation_reason = $reason",
-                        {
-                            "node_id": existing.node_id,
-                            "superseded_by": successor_id,
-                            "ended_at": projected_at.isoformat(),
-                            "reason": reason,
-                        },
-                    )
-                    if successor_id and not _policy_lineage_edge_exists(
-                        scope,
-                        successor_id=successor_id,
-                        predecessor_id=existing.node_id,
+                for node in desired:
+                    if node.successor_id is None:
+                        pass
+                    elif not scope.edge_exists(
+                        "supersedes",
+                        "Entity",
+                        "Entity",
+                        node.successor_id,
+                        node.node_id,
                     ):
                         scope.create_edge(
                             "supersedes",
-                            POLICY_CONSTRAINT_NODE_TYPE,
-                            POLICY_CONSTRAINT_NODE_TYPE,
-                            successor_id,
-                            existing.node_id,
+                            "Entity",
+                            "Entity",
+                            node.successor_id,
+                            node.node_id,
                             {
                                 "confidence": 1.0,
-                                "created_by_session_id": (
-                                    source_session_id
-                                ),
+                                "created_by_session_id": source_session_id,
                                 "created_at": projected_at.isoformat(),
-                                "rule_id": POLICY_CONSTRAINT_LINEAGE_RULE,
+                                "rule_id": SEMANTIC_GUIDELINE_KG_LINEAGE_RULE,
                             },
                         )
-                    ended_count += 1
+                    for target_id in node.lineage_ids:
+                        if target_id not in desired_by_id:
+                            raise PolicyConstraintProjectionConflict(
+                                "semantic_guideline_lineage_target_missing"
+                            )
+                        if scope.edge_exists(
+                            "belongs_to",
+                            "Entity",
+                            "Entity",
+                            node.node_id,
+                            target_id,
+                        ):
+                            continue
+                        scope.create_edge(
+                            "belongs_to",
+                            "Entity",
+                            "Entity",
+                            node.node_id,
+                            target_id,
+                            {
+                                "confidence": 1.0,
+                                "created_by_session_id": source_session_id,
+                                "created_at": projected_at.isoformat(),
+                                "rule_id": (
+                                    "belongs_to/semantic_guideline_lineage@"
+                                    "semantic-guideline-kg/v1"
+                                ),
+                            },
+                        )
 
-                verified = _graph_constraints(scope)
+                verified = _semantic_graph_nodes(scope)
                 active_ids = tuple(
-                    sorted(item.node_id for item in verified if item.active)
+                    sorted(node.node_id for node in verified if node.active)
                 )
-                desired_ids = tuple(sorted(desired_by_id))
-                if active_ids != desired_ids:
+                desired_active_ids = tuple(
+                    sorted(node.node_id for node in desired if node.active)
+                )
+                if active_ids != desired_active_ids:
                     raise PolicyConstraintProjectionConflict(
-                        "policy_constraint_reconciliation_unconfirmed"
+                        "semantic_guideline_reconciliation_unconfirmed"
+                    )
+                if any(node.active for node in _legacy_rule_nodes(scope)):
+                    raise PolicyConstraintProjectionConflict(
+                        "semantic_guideline_legacy_constraint_active"
                     )
                 scope.execute("COMMIT")
                 transaction_open = False
@@ -785,20 +1313,22 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                         scope.execute("ROLLBACK")
                     except BaseException as rollback_error:
                         raise PolicyConstraintProjectionConflict(
-                            "policy_constraint_transaction_cleanup_unconfirmed"
+                            "semantic_guideline_transaction_cleanup_unconfirmed"
                         ) from rollback_error
                 raise
-
+        active_node_ids = tuple(
+            sorted(node.node_id for node in desired if node.active)
+        )
         return PolicyConstraintProjectionResult(
             board_id=board_id,
             operation=operation,
             event_id=event_id,
-            activated_count=activated_count,
-            ended_count=ended_count,
-            active_count=len(desired),
+            activated_count=activated,
+            ended_count=ended,
+            active_count=len(active_node_ids),
             unadopted_active_count=0,
-            node_ids=tuple(sorted(desired_by_id)),
-            replayed=activated_count == 0 and ended_count == 0,
+            node_ids=active_node_ids,
+            replayed=activated == 0 and ended == 0,
         )
 
     async def apply(
@@ -807,53 +1337,38 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
         *,
         event: object,
     ) -> PolicyConstraintProjectionResult:
-        operation = _required_text(
-            getattr(event, "operation", None),
-            "policy_constraint_event_operation_required",
-        )
-        if operation not in {"adopt", "unlink", "retire"}:
-            raise PolicyConstraintProjectionConflict(
-                "policy_constraint_event_operation_invalid"
-            )
         board_id = _required_text(
             getattr(event, "board_id", None),
-            "policy_constraint_event_board_required",
+            "semantic_guideline_event_board_required",
         )
         event_id = _required_text(
             getattr(event, "event_id", None),
-            "policy_constraint_event_id_required",
+            "semantic_guideline_event_id_required",
         )
         projected_at = _aware_utc(
             getattr(event, "occurred_at", None),
-            "policy_constraint_event_time_invalid",
+            "semantic_guideline_event_time_invalid",
         )
-        await self._validate_event_revision(
-            context,
-            event=event,
-            operation=operation,
-        )
+        if isinstance(event, SemanticGuidelineProjectionChanged):
+            await self._validate_generic_event(context, event=event)
+            operation = "sync"
+        else:
+            await self._validate_binding_event(context, event=event)
+            operation = _required_text(
+                getattr(event, "operation", None),
+                "semantic_guideline_event_operation_required",
+            )
         desired = await self._desired_for_board(
             context,
             board_id=board_id,
-            source_session_id=f"policy-constraint:{event_id}",
             projected_at=projected_at,
         )
-        no_successor_reason = {
-            "adopt": POLICY_CONSTRAINT_RULE_REMOVED_REASON,
-            "unlink": POLICY_CONSTRAINT_UNLINKED_REASON,
-            "retire": (
-                POLICY_CONSTRAINT_GUIDELINE_SUPERSEDED_REASON
-                if getattr(event, "retirement_status", None) == "superseded"
-                else POLICY_CONSTRAINT_GUIDELINE_RETIRED_REASON
-            ),
-        }[operation]
         return await self._reconcile(
             board_id=board_id,
             operation=operation,
             event_id=event_id,
             desired=desired,
             projected_at=projected_at,
-            no_successor_reason=no_successor_reason,
         )
 
     async def rebuild_board(
@@ -864,15 +1379,12 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
     ) -> PolicyConstraintProjectionResult:
         normalized_board_id = _required_text(
             board_id,
-            "policy_constraint_rebuild_board_required",
+            "semantic_guideline_rebuild_board_required",
         )
         projected_at = datetime.now(timezone.utc)
         desired = await self._desired_for_board(
             context,
             board_id=normalized_board_id,
-            source_session_id=(
-                f"policy-constraint:rebuild:{normalized_board_id}"
-            ),
             projected_at=projected_at,
         )
         return await self._reconcile(
@@ -881,22 +1393,17 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
             event_id=None,
             desired=desired,
             projected_at=projected_at,
-            no_successor_reason=(
-                POLICY_CONSTRAINT_REBUILD_NOT_ADOPTED_REASON
-            ),
         )
 
 
 __all__ = [
     "CommunitySqlAlchemyPolicyConstraintProjection",
     "POLICY_CONSTRAINT_ACTOR",
-    "POLICY_CONSTRAINT_CONTRACT",
-    "POLICY_CONSTRAINT_GUIDELINE_SUPERSEDED_REASON",
-    "POLICY_CONSTRAINT_LINEAGE_RULE",
-    "POLICY_CONSTRAINT_NODE_TYPE",
-    "POLICY_CONSTRAINT_REBUILD_NOT_ADOPTED_REASON",
-    "POLICY_CONSTRAINT_REVISION_SUPERSEDED_REASON",
-    "POLICY_CONSTRAINT_RULE_REMOVED_REASON",
-    "POLICY_CONSTRAINT_UNLINKED_REASON",
     "PolicyConstraintProjectionConflict",
+    "SEMANTIC_GUIDELINE_KG_ACTOR",
+    "SEMANTIC_GUIDELINE_KG_CONTRACT",
+    "SEMANTIC_GUIDELINE_KG_LINEAGE_RULE",
+    "SEMANTIC_GUIDELINE_KG_NODE_TYPE",
+    "SEMANTIC_GUIDELINE_KG_ROOT_RULE",
+    "SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON",
 ]

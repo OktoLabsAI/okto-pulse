@@ -31,12 +31,6 @@ const WEB_URL = typeof window !== 'undefined' && (window as any).OKTO_PULSE_CONF
 import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Users, Bot, GitBranch, Settings, CheckCircle, ListChecks, Network, Play, RotateCcw, SkipForward, Undo2 } from 'lucide-react';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { useOptionalGuidedHelp, type GuidedHelpSurface, type GuidedHelpTourProgressStatus } from '@/components/guided-help';
-import {
-  POLICY_CLASS_BEHAVIOR_NOTE,
-  POLICY_CLASS_OPTIONS,
-  POLICY_FACT_CATALOG,
-  POLICY_FACT_KIND_LABELS,
-} from '@/components/guidelines/policyEditorModel';
 import pulseIcon from '@/assets/pulse-icon.svg';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import type { HelpSectionId } from './contextualHelp';
@@ -54,99 +48,6 @@ interface Section {
   icon: ReactNode;
   content: string;
 }
-
-const POLICY_TARGET_HELP_LABELS = {
-  ideation: 'Ideation',
-  refinement: 'Refinement',
-  spec: 'Spec',
-  sprint: 'Sprint',
-  card: 'Card',
-  test_scenario: 'Test scenario',
-} as const;
-
-function policyHelpCell(value: string): string {
-  return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
-}
-
-function policyClassHelpMarkdown(): string {
-  const rows = POLICY_CLASS_OPTIONS.map((option) => (
-    `| **${option.label}** | ${policyHelpCell(option.effect)} | ${policyHelpCell(option.whenToUse)} | ${policyHelpCell(option.waivability)} |`
-  )).join('\n');
-
-  return `
-#### Policy class reference
-
-${POLICY_CLASS_BEHAVIOR_NOTE}
-
-| Class | Actual impact | Use when | Waivers |
-|-------|---------------|----------|---------|
-${rows}
-
-The four protected classes have the same runtime modifier: their findings are
-non-waivable. Their names distinguish the governance intent in audit evidence.
-They do not invoke a specialized coverage calculator, permission check,
-reviewer-identity check, or KG lineage check. Configure the real check with
-**Targets** and **Conditions**, then choose **Enforcement** separately.
-`;
-}
-
-function policyFactHelpMarkdown(): string {
-  const rows = POLICY_FACT_CATALOG.map((fact) => {
-    const targets = fact.targets === 'all'
-      ? 'All entity types'
-      : fact.targets
-        .map((target) => POLICY_TARGET_HELP_LABELS[target])
-        .join(', ');
-    return `| **${fact.label}** (\`${fact.code}\`) | ${targets} · ${POLICY_FACT_KIND_LABELS[fact.kind]} | ${policyHelpCell(fact.description)} ${policyHelpCell(fact.valueGuidance)} | \`${policyHelpCell(fact.example)}\` |`;
-  }).join('\n');
-
-  return `
-### What a Fact is
-
-A **Fact** is a typed, server-owned field from the entity snapshot evaluated at
-that moment. You configure what must be true; neither the user nor the agent
-supplies the observed Fact value. **Targets** decide which entities are
-evaluated. **Conditions** decide what those entities must satisfy for the rule
-to pass.
-
-When several targets are selected, the editor only offers Facts supported by
-all of them. Status choices are also narrowed to values shared by every
-selected target.
-
-| Fact type | How to configure it |
-|-----------|---------------------|
-| **Boolean** | Use **Equals true/false** to test its meaning. **Is present** only tests whether the field exists; it does not mean true. |
-| **Choice** | Compare one exact value, or use a comma-separated list with **Is one of / Is none of**. |
-| **Whole number / Number** | Compare an exact value or use greater-than / at-least / less-than / at-most thresholds. |
-| **Set of text values** | Test whether it contains a value, or compare the number of values with a Count operator. |
-| **Any type** | **Is present / Is not present** takes no Value. A missing Fact fails every other operator. |
-
-### Available Facts
-
-| Fact | Available for · Type | Meaning and configuration | Example |
-|------|----------------------|---------------------------|---------|
-${rows}
-
-Important edge cases:
-
-- Empty **Labels**, an unset **Complexity**, and a missing or stale
-  **Ambiguity score** may make the Fact absent.
-- **Resource gate ready** is always present. Use **Equals true**, not **Is
-  present**. Sprint and Test scenario currently expose false because they do
-  not have that gate.
-- **Acceptance criteria coverage** is 100 when a spec has no acceptance
-  criteria. Combine it with **Acceptance criterion count > 0** when empty
-  coverage must not pass.
-- **Validation state** is an open, server-owned value. Current common values
-  are \`not_validated\`, \`validation_unavailable\`, \`success\`, and
-  \`failed\`.
-- **Evidence count** means current, authenticated scenario evidence, not a
-  count of attachments.
-`;
-}
-
-const POLICY_CLASS_HELP_MARKDOWN = policyClassHelpMarkdown();
-const POLICY_FACT_HELP_MARKDOWN = policyFactHelpMarkdown();
 
 const surfaceLabels: Record<GuidedHelpSurface, string> = {
   board: 'Board',
@@ -1063,7 +964,7 @@ revision never silently changes a board or a Global Default.
 - Onboarding documentation
 - Decision records
 
-For executable rules, revision adoption, compliance receipts, waivers and
+For semantic metrics, board adoption, compliance receipts, waivers and
 permissions, read **Policy Governance** in this Help guide.
 `,
     },
@@ -1072,51 +973,38 @@ permissions, read **Policy Governance** in this Help guide.
       title: 'Policy Governance',
       icon: <Shield size={16} />,
       content: `
-## Policy Governance — Versioned rules with auditable enforcement
+## Policy Governance — Semantic guidelines with auditable board behavior
 
-Policy Governance adds deterministic, executable rules to ordinary guideline
-context without turning every guideline into a gate. Prose remains useful
-assistant context. Only a structured \`policy/v1\` rule with explicit target
-entity types is executable.
+Policy Governance turns reusable guideline prose into optional, explainable
+semantic assessments. A guideline always provides context to people and
+agents. Authors may also define custom metrics that evaluators score from 0 to
+100 using a written rubric.
 
 ### Revisions and semantic versions
 
 Published guideline revisions are immutable. Editing creates a successor and
-the system calculates the minimum semantic-version bump:
+the author selects the semantic-version impact:
 
 - **Patch** — compatible wording or metadata correction
-- **Minor** — compatible advisory expansion
-- **Major** — a rule, target, predicate, blocking behavior, or waiver policy
-  changes incompatibly
+- **Minor** — a compatible semantic metric expansion
+- **Major** — metric meaning, target, direction, or another incompatible
+  assessment contract changes
 
-An under-bump is rejected before a revision is created. Use **Retire** or
+The current head is fenced against concurrent edits, and the server rejects a
+selected bump below the minimum required by the change. Use **Retire** or
 **Supersede** instead of deleting governed history.
 
-### Context and executable rules
+### Context and semantic metrics
 
 A guideline can contain prose only. This **context-only** form is valid and
-still helps people and agents without creating a policy gate. Select **Add
-executable rules** only when the guideline must be evaluated deterministically.
+still helps people and agents without creating a scored policy gate. Add
+semantic metrics only when the guideline defines a quality that can be judged
+consistently from evidence.
 
-Each executable rule defines:
-
-- **Policy class** — classifies the governance intent and controls whether a
-  finding may be waived; it does not make the rule blocking or perform a
-  specialized check
-- **Rule key** — a readable, stable audit key; the internal Rule ID remains
-  stable across revisions
-- **Targets** — the entity types where the rule applies
-- **Conditions** — target-aware Facts and operators that define what must be
-  true for the rule to pass; **Is present** and **Is not present** do not need
-  a Value
-- **Enforcement** — **Advisory** records findings without blocking, while
-  **Blocking** participates in supported transition gates
-
-${POLICY_CLASS_HELP_MARKDOWN}
-
-Changing the target can invalidate an existing condition. Resolve every
-highlighted invalid condition before publishing instead of allowing the editor
-to silently replace it.
+The active authoring interface intentionally does not expose policy classes,
+codes, Facts, predicates, or operators. Authors describe the quality in plain
+language and provide a concrete scoring rubric; stable metric identity is
+managed as read-only technical metadata.
 
 ### Add to board, review impact and adopt
 
@@ -1125,10 +1013,9 @@ update, but is never adopted automatically.
 
 1. Select **Add to board** (or **Configure for this board** for an existing
    binding).
-2. Review the human-readable summary of added, changed and removed rules,
-   affected targets and waivers.
-3. Confirm the exact revision and priority. Enforcement belongs to each rule;
-   there is no separate board-wide enforcement setting.
+2. Choose **Advisory** or **Blocking**, the minimum assessment confidence, and
+   optional board overrides for metric thresholds.
+3. Review the impact preview and its affected targets, artifacts, and waivers.
 4. If authority changed while the dialog was open, refresh and review a new
    preview before confirming.
 
@@ -1138,22 +1025,24 @@ overwrites a different revision with the same identity and version.
 
 ### Policy Compliance
 
-Evaluation is deterministic and records an immutable receipt plus pinpoint
-findings. The visible result is one of:
+Evaluation records confidence plus one result for every applicable custom
+metric. Each result includes a 0–100 score, rationale, evidence references, and
+pinpoint findings. Threshold comparison is deterministic after the semantic
+assessment has been recorded:
 
 | State | Meaning |
 |-------|---------|
-| **Ready** | Applicable rules passed, or only advisory findings remain |
+| **Ready** | Applicable metric thresholds passed, or only advisory findings remain |
 | **Blocked** | A current blocking finding prevents a supported transition |
 | **Ready with waivers** | Blocking findings are covered by effective waivers |
-| **Not applicable** | No adopted executable rule targets this subject |
+| **Not applicable** | No adopted semantic metric targets this subject |
 
 A receipt is current only while the subject version, adopted policy set,
-catalog/ruleset version and binding head still match. Stale history remains
-auditable but never authorizes a transition. Fix the subject or policy and
+metric contract and binding head still match. Stale history remains
+auditable but never authorizes a transition. Fix the subject or guideline and
 evaluate again.
 
-Advisory findings never block. Blocking rules compose with the existing
+Advisory findings never block. Blocking bindings compose with the existing
 entity gate at supported completion transitions; they do not create another
 state machine or replace ambiguity, Resources, checklist, validation,
 evaluation, test or cognitive gates. Policy Compliance is not a Quality score.
@@ -1166,25 +1055,25 @@ independent from the requester may approve or reject it; revalidation also
 requires that separation.
 
 **Approved** does not always mean **effective**. The waiver must still be
-unexpired and match current subject, guideline revision and rule evidence.
-Expiry, revocation or source drift removes its effect. Protected rule classes
-cannot be waived.
+unexpired and match current subject, guideline revision and metric evidence.
+Expiry, revocation or source drift removes its effect.
 
 ### Lists and evidence
 
 Policy lists use opaque keyset cursors. Keep filters and projection unchanged
 between pages, pass the cursor back without decoding it, and keep the same
-waiver snapshot time. **Summary** is for browsing; load **Detail** only for the
-bounded evidence you need. Receipt and waiver-event history is append-only.
+waiver snapshot time. **Summary** is for browsing; load **Full** for the
+bounded score, rationale, evidence and pinpoint set you need. Receipt and
+waiver-event history is append-only.
 
 ### Capabilities and fail-closed UI
 
 | Area | Capability group |
 |------|------------------|
 | Revisions | \`guidelines.revisions.*\` |
-| Blocking-rule authoring | \`guidelines.rules.author_blocking\` |
+| Metric authoring | \`guidelines.metrics.author\` |
 | Impact and adoption | \`guidelines.impact.preview\`, \`guidelines.adoption.manage\` |
-| Compliance | \`guidelines.compliance.read\`, \`guidelines.compliance.evaluate\` |
+| Assessments | \`guidelines.assessments.read\`, \`guidelines.assessments.record\` |
 | Waivers | \`guidelines.waiver.*\` |
 
 Menus, tabs and actions remain hidden or disabled until current board authority
@@ -1196,9 +1085,14 @@ presets receive only their explicit matrix.
 
 - **Permission denied** — request the exact capability; unchanged retry is not recovery.
 - **Invalid cursor** — restart from the first page with a new snapshot.
-- **Conflict** — refresh the exact revision, receipt or waiver head and review again; do not auto-replay.
+- **Conflict** — refresh the exact revision, preview or binding head and review again; do not auto-replay.
 - **Under-bump** — choose at least the minimum version returned by the server.
-- **Unavailable evaluation** — blocking policy fails closed; report or retry without changing the intent.
+- **Unavailable assessment** — blocking policy fails closed; report or retry without changing the intent.
+
+A human skip is an explicit board-owner exception for one binding and subject
+version. Agents cannot create it through MCP. It never changes the assessment
+evidence, remains visible in the transition decision, and becomes ineffective
+when its governed scope drifts or it is revoked.
 
 AI agents should read the single canonical MCP protocol
 \`okto-pulse://reference/policy-compliance\` before authoring, adoption,
@@ -1206,17 +1100,72 @@ evaluation, transition reliance or waiver operations.
 `,
     },
     {
-      id: 'policy-facts',
-      title: 'Policy Facts',
+      id: 'semantic-guideline-metrics',
+      title: 'Semantic guideline metrics',
       icon: <ListChecks size={16} />,
       content: `
-## Policy Facts — Configure deterministic conditions
+## Semantic guideline metrics — Authoring and board configuration
 
-Use this catalog while authoring executable guideline rules. It explains what
-each server-owned Fact measures, where it is available, which value shape to
-use, and a concrete condition example.
+Use semantic metrics when a guideline describes a quality that requires
+judgment, such as architectural fit, evidence strength, or user-value clarity.
+Keep the guideline context-only when prose is sufficient.
 
-${POLICY_FACT_HELP_MARKDOWN}
+### Confidence is fixed and system-owned
+
+Every assessment carries a **Confidence** score from 0 to 100. It communicates
+how strongly the available evidence supports the assessment. Confidence is
+not a custom metric: it cannot be renamed, removed, targeted, or added to the
+metric override map.
+
+The board's **minimum confidence** is a currentness safeguard. A blocking
+binding cannot pass from an assessment below that value, even when its metric
+scores pass.
+
+### What authors configure
+
+Each custom metric contains:
+
+| Field | Purpose |
+|-------|---------|
+| **Title** | Human-readable quality being assessed |
+| **Description** | What the score communicates |
+| **Evaluation rubric** | Concrete meaning of low, medium, and high scores, including expected evidence |
+| **Evaluated entities** | One or more target entity types |
+| **Passing direction** | **Higher is better** (minimum) or **Lower is better** (maximum) |
+| **Default threshold** | Guideline-wide passing value from 0 to 100 |
+
+Metric order is preserved in every revision. The technical Metric ID and
+stable key support history, findings, and board overrides; they are shown
+read-only under **Technical details**.
+
+Good rubrics identify observable evidence and anchor score ranges. For example:
+"0–39: no user outcome is stated; 40–69: outcome exists but is not measurable;
+70–89: measurable outcome and acceptance evidence are present; 90–100:
+evidence also covers trade-offs and failure cases."
+
+### Context-only revisions
+
+A revision with no custom metrics remains available as context to all entities.
+It produces no scored metric result and creates no blocking behavior. Add a
+metric in a later immutable revision when the team is ready to evaluate it.
+
+### Board-specific behavior
+
+When adding or updating a guideline on a board:
+
+1. Choose **Advisory** to record findings without blocking, or **Blocking** to
+   participate in supported transition gates.
+2. Set minimum assessment confidence from 0 to 100.
+3. Keep each metric's revision default or enable a board-specific threshold
+   override. Overrides use the stable metric key and never include
+   \`confidence\`.
+4. Generate a fresh impact preview.
+5. Confirm adoption only while the preview digest and binding head remain
+   current.
+
+Changing any setting invalidates the visible preview. A stale preview or
+binding-head conflict requires a new preview; the UI never silently replays a
+different configuration.
 `,
     },
     {

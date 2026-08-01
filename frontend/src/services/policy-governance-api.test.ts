@@ -61,30 +61,50 @@ describe('policy-governance-api', () => {
     );
   });
 
-  it('covers revision, retirement, impact, and adoption without client-owned fences', async () => {
+  it('covers semantic revision, preview, and adoption with exact binding fences', async () => {
     const { api, fetch } = setup();
+    const revisionResponse = {
+      revision_id: 'revision-2',
+      revision: '1.1.0',
+      revision_digest: 'f'.repeat(64),
+      metrics: [{
+        metric_id: 'metric-1',
+        code: 'Title.Clarity:v2',
+        title: 'Title clarity',
+        description: 'Scores how clearly the title communicates intent.',
+        evaluation_rubric:
+          '0 is unclear; 100 is independently understandable.',
+        target_entity_types: ['spec', 'test_scenario'],
+        direction: 'minimum',
+        default_threshold: 70,
+      }],
+    };
+    fetch.mockResolvedValueOnce(jsonResponse(revisionResponse));
 
-    await api.createGuidelineRevision('board-1', 'guide-1', {
-      idempotency_key: 'revision-2',
-      patch: {
+    const created = await api.createGuidelineRevision(
+      'board-1',
+      'guide-1',
+      {
+      expected_head_revision: 1,
+      version_bump: 'minor',
+      content: {
         title: 'Second revision',
-        rules: [
-          {
-            rule_id: 'rule-1',
-            code: 'require_title',
-            title: 'Require title',
-            description: 'Requires a title.',
-            target_entity_types: ['spec', 'test_scenario'],
-            predicates: [
-              {
-                predicate_code: 'field_present',
-                parameters: { field: 'title' },
-              },
-            ],
-          },
-        ],
+        body: 'Require independently understandable titles.',
       },
-    });
+      metrics: [
+        {
+          metric_id: 'metric-1',
+          code: 'Title.Clarity:v2',
+          title: 'Title clarity',
+          description: 'Scores how clearly the title communicates intent.',
+          evaluation_rubric: '0 is unclear; 100 is independently understandable.',
+          target_entity_types: ['spec', 'test_scenario'],
+          direction: 'minimum',
+          default_threshold: 70,
+        },
+      ],
+      },
+    );
     await api.getGuidelineRevision(
       'board-1',
       'guide-1',
@@ -98,20 +118,23 @@ describe('policy-governance-api', () => {
       idempotency_key: 'retire-1',
     });
     await api.previewGuidelineImpact('board-1', 'guide-1', {
-      proposed_priority: 7,
-      proposed_default_enforcement: 'blocking',
-      to_revision_id: 'revision-2',
-      idempotency_key: 'impact-1',
+      target_revision_id: 'revision-2',
+      expected_binding_head_revision: 4,
+      enforcement: 'blocking',
+      minimum_confidence: 80,
+      metric_threshold_overrides: {
+        title_clarity: 75,
+      },
     });
     await api.getGuidelineImpact(
       'board-1',
       'guide-1',
-      'receipt/1',
+      'preview/1',
     );
     await api.listGuidelineImpactItems(
       'board-1',
       'guide-1',
-      'receipt/1',
+      'preview/1',
       {
         limit: 50,
         projection: 'summary',
@@ -120,8 +143,9 @@ describe('policy-governance-api', () => {
       },
     );
     await api.adoptGuidelineRevision('board-1', 'guide-1', {
-      impact_receipt_id: 'receipt-1',
-      impact_digest: 'a'.repeat(64),
+      preview_id: 'preview-1',
+      preview_digest: 'a'.repeat(64),
+      expected_binding_head_revision: 4,
       idempotency_key: 'adopt-1',
     });
 
@@ -130,213 +154,62 @@ describe('policy-governance-api', () => {
       '/boards/board-1/guidelines/guide-1/revisions/revision%2F2',
       '/boards/board-1/guidelines/guide-1/retire',
       '/boards/board-1/guidelines/guide-1/impact-previews',
-      '/boards/board-1/guidelines/guide-1/impact-previews/receipt%2F1',
-      '/boards/board-1/guidelines/guide-1/impact-previews/receipt%2F1/items'
+      '/boards/board-1/guidelines/guide-1/impact-previews/preview%2F1',
+      '/boards/board-1/guidelines/guide-1/impact-previews/preview%2F1/items'
         + '?limit=50&projection=summary'
         + '&entity_type=test_scenario&item_kind=target',
       '/boards/board-1/guidelines/guide-1/adoptions',
     ]);
+    expect(created).toEqual(revisionResponse);
+    expect(requestBody(fetch, 0)).toEqual({
+      expected_head_revision: 1,
+      version_bump: 'minor',
+      content: {
+        title: 'Second revision',
+        body: 'Require independently understandable titles.',
+      },
+      metrics: [
+        {
+          metric_id: 'metric-1',
+          code: 'Title.Clarity:v2',
+          title: 'Title clarity',
+          description: 'Scores how clearly the title communicates intent.',
+          evaluation_rubric:
+            '0 is unclear; 100 is independently understandable.',
+          target_entity_types: ['spec', 'test_scenario'],
+          direction: 'minimum',
+          default_threshold: 70,
+        },
+      ],
+    });
+    expect(requestBody(fetch, 0)).not.toHaveProperty('board_id');
+    expect(requestBody(fetch, 0)).not.toHaveProperty('patch');
     expect(requestBody(fetch, 0)).not.toHaveProperty(
-      'expected_head_revision',
+      'declared_semantic_version',
     );
-    expect(requestBody(fetch, 3)).not.toHaveProperty(
-      'expected_binding_revision',
-    );
+    expect(requestBody(fetch, 0)).not.toHaveProperty('idempotency_key');
+    expect(requestBody(fetch, 3)).toEqual({
+      target_revision_id: 'revision-2',
+      expected_binding_head_revision: 4,
+      enforcement: 'blocking',
+      minimum_confidence: 80,
+      metric_threshold_overrides: {
+        title_clarity: 75,
+      },
+    });
     expect(requestBody(fetch, 6)).toEqual({
-      impact_receipt_id: 'receipt-1',
-      impact_digest: 'a'.repeat(64),
+      preview_id: 'preview-1',
+      preview_digest: 'a'.repeat(64),
+      expected_binding_head_revision: 4,
       idempotency_key: 'adopt-1',
     });
   });
 
-  it('uses the server-owned subject version and digest contract for test scenarios', async () => {
-    const { api, fetch } = setup();
-    fetch.mockResolvedValue(
-      jsonResponse({
-        evaluation: {
-          evaluation_id: 'evaluation-1',
-          input_digest: 'b'.repeat(64),
-          receipt: {
-            subject: {
-              board_id: 'board-1',
-              entity_type: 'test_scenario',
-              subject_id: 'scenario-1',
-              subject_version: 4,
-            },
-            subject_content_digest: 'c'.repeat(64),
-          },
-        },
-      }),
-    );
-
-    const response = await api.evaluatePolicyCompliance('board-1', {
-      entity_type: 'test_scenario',
-      subject_id: 'scenario-1',
-      idempotency_key: 'evaluate-1',
-    });
-
-    expect(requestBody(fetch, 0)).toEqual({
-      entity_type: 'test_scenario',
-      subject_id: 'scenario-1',
-      idempotency_key: 'evaluate-1',
-    });
-    expect(requestBody(fetch, 0)).not.toHaveProperty('subject_version');
-    expect(requestBody(fetch, 0)).not.toHaveProperty(
-      'subject_content_digest',
-    );
-    expect(response.evaluation.receipt.subject.subject_version).toBe(4);
-    expect(response.evaluation.receipt.subject_content_digest).toBe(
-      'c'.repeat(64),
-    );
-  });
-
-  it('encodes compliance receipt, currentness, and finding queries exactly', async () => {
-    const { api, fetch } = setup();
-
-    await api.listPolicyComplianceReceipts('board-1', {
-      cursor: 'receipt-cursor',
-      entityType: 'spec',
-      subjectId: 'spec/1',
-      outcome: 'fail',
-      currentness: 'stale',
-      projection: 'detail',
-    });
-    await api.getCurrentPolicyComplianceReceipt(
-      'board-1',
-      'spec',
-      'spec/1',
-    );
-    await api.getPolicyComplianceReceipt(
-      'board-1',
-      'receipt/1',
-    );
-    await api.listPolicyComplianceFindings('board-1', {
-      limit: 200,
-      receiptId: 'receipt/1',
-      guidelineId: 'guide/1',
-      ruleId: 'rule/1',
-      subjectId: 'spec/1',
-      outcome: 'error',
-      projection: 'summary',
-    });
-
-    expect(fetch.mock.calls.map((call) => call[0])).toEqual([
-      '/boards/board-1/policy-compliance/receipts'
-        + '?limit=50&projection=detail&cursor=receipt-cursor'
-        + '&entity_type=spec&subject_id=spec%2F1&outcome=fail'
-        + '&currentness=stale',
-      '/boards/board-1/policy-compliance/receipts/current'
-        + '?entity_type=spec&subject_id=spec%2F1',
-      '/boards/board-1/policy-compliance/receipts/receipt%2F1',
-      '/boards/board-1/policy-compliance/findings'
-        + '?limit=200&projection=summary&receipt_id=receipt%2F1'
-        + '&guideline_id=guide%2F1&rule_id=rule%2F1'
-        + '&subject_id=spec%2F1&outcome=error',
-    ]);
-  });
-
-  it('covers the complete governed waiver lifecycle and keyset filters', async () => {
-    const { api, fetch } = setup();
-    const evidence: [string, ...string[]] = ['card:proof'];
-
-    await api.listPolicyWaivers('board-1', {
-      evaluatedAt: '2026-07-30T00:00:00Z',
-      cursor: 'waiver-cursor',
-      limit: 25,
-      findingId: 'finding-1',
-      receiptId: 'receipt-1',
-      guidelineId: 'guideline-1',
-      revisionId: 'revision-1',
-      ruleId: 'rule-1',
-      entityType: 'card',
-      subjectId: 'card-1',
-      subjectVersion: 3,
-      status: 'approved',
-      projection: 'detail',
-    });
-    await api.requestPolicyWaiver('board-1', {
-      finding_id: 'finding-1',
-      justification: 'Temporary exception',
-      evidence_refs: evidence,
-      expires_at: '2026-08-30T00:00:00Z',
-      idempotency_key: 'request-1',
-    });
-    await api.listPolicyWaiverEvents('board-1', 'waiver/1');
-    await api.reviewPolicyWaiver('board-1', 'waiver/1', {
-      decision: 'approve',
-      reason: 'Approved temporarily',
-      evidence_refs: evidence,
-      expected_waiver_revision: 1,
-      idempotency_key: 'review-1',
-    });
-    await api.revokePolicyWaiver('board-1', 'waiver/1', {
-      reason: 'No longer needed',
-      evidence_refs: evidence,
-      expected_waiver_revision: 2,
-      idempotency_key: 'revoke-1',
-    });
-    await api.revalidatePolicyWaiver('board-1', 'waiver/1', {
-      reason: 'Scope is current',
-      evidence_refs: evidence,
-      expected_waiver_revision: 3,
-      new_expires_at: '2026-09-30T00:00:00Z',
-      idempotency_key: 'revalidate-1',
-    });
-    await api.getPolicyWaiver('board-1', 'waiver/1');
-
-    expect(fetch.mock.calls.map((call) => call[0])).toEqual([
-      '/boards/board-1/policy-waivers'
-        + '?limit=25&projection=detail&cursor=waiver-cursor'
-        + '&evaluated_at=2026-07-30T00%3A00%3A00Z'
-        + '&finding_id=finding-1&receipt_id=receipt-1'
-        + '&guideline_id=guideline-1&revision_id=revision-1&rule_id=rule-1'
-        + '&entity_type=card&subject_id=card-1&subject_version=3'
-        + '&status=approved',
-      '/boards/board-1/policy-waivers',
-      '/boards/board-1/policy-waivers/waiver%2F1/events',
-      '/boards/board-1/policy-waivers/waiver%2F1/review',
-      '/boards/board-1/policy-waivers/waiver%2F1/revoke',
-      '/boards/board-1/policy-waivers/waiver%2F1/revalidate',
-      '/boards/board-1/policy-waivers/waiver%2F1',
-    ]);
-    expect(requestBody(fetch, 1)).toEqual({
-      finding_id: 'finding-1',
-      justification: 'Temporary exception',
-      evidence_refs: evidence,
-      expires_at: '2026-08-30T00:00:00Z',
-      idempotency_key: 'request-1',
-    });
-    expect(requestBody(fetch, 3)).toEqual({
-      decision: 'approve',
-      reason: 'Approved temporarily',
-      evidence_refs: evidence,
-      expected_waiver_revision: 1,
-      idempotency_key: 'review-1',
-    });
-    expect(requestBody(fetch, 4)).toEqual({
-      reason: 'No longer needed',
-      evidence_refs: evidence,
-      expected_waiver_revision: 2,
-      idempotency_key: 'revoke-1',
-    });
-    expect(requestBody(fetch, 5)).toEqual({
-      reason: 'Scope is current',
-      evidence_refs: evidence,
-      expected_waiver_revision: 3,
-      new_expires_at: '2026-09-30T00:00:00Z',
-      idempotency_key: 'revalidate-1',
-    });
-    for (const mutationIndex of [1, 3, 4, 5]) {
-      expect(requestBody(fetch, mutationIndex)).not.toHaveProperty('waiver_id');
-      expect(requestBody(fetch, mutationIndex)).not.toHaveProperty('event_id');
-    }
-  });
-
-  it('round-trips the v2 export/import envelope without stripping null authority', async () => {
+  it('round-trips the v3 semantic export/import envelope without stripping null authority', async () => {
     const { api, fetch } = setup();
     const envelope = {
-      contract_version: 'guideline-export/v2',
-      schema_version: '2',
+      contract_version: 'guideline-export/v3',
+      schema_version: '3',
       kind: 'guidelines',
       exported_at: '2026-07-30T00:00:00Z',
       source_board_id: null,
@@ -379,6 +252,195 @@ describe('policy-governance-api', () => {
     );
   });
 
+  it('uses the semantic assessment, finding, waiver, and human skip routes exactly', async () => {
+    const { api, fetch } = setup();
+    const controller = new AbortController();
+    const evidence = [{
+      source_type: 'spec',
+      source_id: 'spec-1',
+      source_version: 7,
+      content_hash: 'a'.repeat(64),
+    }] as const;
+
+    await api.listSemanticGuidelineAssessments('board/1', {
+      limit: 25,
+      cursor: 'opaque/+==',
+      projection: 'detail',
+      subjectType: 'spec',
+      subjectId: 'spec/1',
+      guidelineId: 'guide/1',
+      bindingId: 'binding/1',
+      outcome: 'metric_threshold_failed',
+      currentness: 'stale',
+      signal: controller.signal,
+    });
+    await api.getCurrentSemanticGuidelineAssessment(
+      'board/1',
+      'spec',
+      'spec/1',
+      'binding/1',
+      'detail',
+    );
+    await api.getSemanticGuidelineAssessment(
+      'board/1',
+      'receipt/1',
+      'full',
+    );
+    await api.listSemanticGuidelineFindings('board/1', {
+      limit: 10,
+      projection: 'detail',
+      receiptId: 'receipt/1',
+      guidelineId: 'guide/1',
+      bindingId: 'binding/1',
+      metricId: 'metric/1',
+      subjectType: 'spec',
+      subjectId: 'spec/1',
+      outcome: 'fail',
+    });
+    await api.listSemanticMetricWaivers('board/1', {
+      limit: 10,
+      projection: 'detail',
+      evaluatedAt: '2026-07-30T12:00:00Z',
+      findingId: 'finding/1',
+      metricResultId: 'result/1',
+      subjectType: 'spec',
+      subjectId: 'spec/1',
+      status: 'requested',
+    });
+    await api.requestSemanticMetricWaiver('board/1', {
+      metric_result_id: 'result/1',
+      finding_id: 'finding/1',
+      receipt_id: 'receipt/1',
+      justification: 'Temporary migration.',
+      evidence_refs: [...evidence],
+      expires_at: null,
+      idempotency_key: 'waiver-request-1',
+    });
+    await api.getSemanticMetricWaiver(
+      'board/1',
+      'waiver/1',
+      {
+        evaluatedAt: '2026-07-30T12:00:00Z',
+        projection: 'detail',
+      },
+    );
+    await api.listSemanticMetricWaiverEvents('board/1', 'waiver/1');
+    await api.reviewSemanticMetricWaiver('board/1', 'waiver/1', {
+      decision: 'approve',
+      reason: 'Evidence is sufficient.',
+      evidence_refs: [...evidence],
+      expected_waiver_revision: 1,
+      idempotency_key: 'waiver-review-1',
+    });
+    await api.revokeSemanticMetricWaiver('board/1', 'waiver/1', {
+      reason: 'Exception no longer applies.',
+      evidence_refs: [...evidence],
+      expected_waiver_revision: 2,
+      idempotency_key: 'waiver-revoke-1',
+    });
+    await api.revalidateSemanticMetricWaiver('board/1', 'waiver/1', {
+      expected_waiver_revision: 3,
+      evaluated_at: '2026-07-30T13:00:00Z',
+      idempotency_key: 'waiver-revalidate-1',
+    });
+    await api.listSemanticPolicySkips('board/1', {
+      limit: 10,
+      projection: 'detail',
+      subjectType: 'spec',
+      subjectId: 'spec/1',
+      bindingId: 'binding/1',
+      status: 'active',
+      currentness: 'current',
+    });
+    await api.createSemanticPolicySkip(
+      'board/1',
+      {
+        subject_type: 'spec',
+        subject_id: 'spec/1',
+        expected_subject_version: 7,
+        binding_id: 'binding/1',
+        reason: 'Human-owned temporary exception.',
+      },
+      'skip-create-1',
+    );
+    await api.revokeSemanticPolicySkip(
+      'board/1',
+      'skip/1',
+      {
+        expected_skip_revision: 1,
+        reason: 'Exception no longer needed.',
+        idempotency_key: 'skip-revoke-1',
+      },
+    );
+
+    expect(fetch.mock.calls.map((call) => call[0])).toEqual([
+      '/boards/board%2F1/semantic-guideline-assessments'
+        + '?limit=25&projection=detail&cursor=opaque%2F%2B%3D%3D'
+        + '&subject_type=spec&subject_id=spec%2F1'
+        + '&guideline_id=guide%2F1&binding_id=binding%2F1'
+        + '&outcome=metric_threshold_failed&currentness=stale',
+      '/boards/board%2F1/semantic-guideline-assessments/current'
+        + '?subject_type=spec&subject_id=spec%2F1'
+        + '&binding_id=binding%2F1&projection=detail',
+      '/boards/board%2F1/semantic-guideline-assessments/receipt%2F1'
+        + '?projection=full',
+      '/boards/board%2F1/semantic-guideline-findings'
+        + '?limit=10&projection=detail&receipt_id=receipt%2F1'
+        + '&guideline_id=guide%2F1&binding_id=binding%2F1'
+        + '&metric_id=metric%2F1&subject_type=spec'
+        + '&subject_id=spec%2F1&outcome=fail',
+      '/boards/board%2F1/policy-waivers'
+        + '?limit=10&projection=detail'
+        + '&evaluated_at=2026-07-30T12%3A00%3A00Z'
+        + '&finding_id=finding%2F1&metric_result_id=result%2F1'
+        + '&subject_type=spec&subject_id=spec%2F1&status=requested',
+      '/boards/board%2F1/policy-waivers',
+      '/boards/board%2F1/policy-waivers/waiver%2F1'
+        + '?evaluated_at=2026-07-30T12%3A00%3A00Z&projection=detail',
+      '/boards/board%2F1/policy-waivers/waiver%2F1/events',
+      '/boards/board%2F1/policy-waivers/waiver%2F1/review',
+      '/boards/board%2F1/policy-waivers/waiver%2F1/revoke',
+      '/boards/board%2F1/policy-waivers/waiver%2F1/revalidate',
+      '/boards/board%2F1/semantic-guideline-skips'
+        + '?limit=10&projection=detail&subject_type=spec'
+        + '&subject_id=spec%2F1&binding_id=binding%2F1'
+        + '&status=active&currentness=current',
+      '/boards/board%2F1/semantic-guideline-skips',
+      '/boards/board%2F1/semantic-guideline-skips/skip%2F1/revoke',
+    ]);
+    expect((fetch.mock.calls[0][1] as RequestInit).signal)
+      .toBe(controller.signal);
+    expect(requestBody(fetch, 5)).toMatchObject({
+      metric_result_id: 'result/1',
+      finding_id: 'finding/1',
+      evidence_refs: evidence,
+    });
+    expect(
+      new Headers((fetch.mock.calls[12][1] as RequestInit).headers)
+        .get('Idempotency-Key'),
+    ).toBe('skip-create-1');
+    expect(requestBody(fetch, 8)).toMatchObject({
+      decision: 'approve',
+      expected_waiver_revision: 1,
+      evidence_refs: evidence,
+    });
+    expect(requestBody(fetch, 9)).toMatchObject({
+      expected_waiver_revision: 2,
+      evidence_refs: evidence,
+    });
+    expect(requestBody(fetch, 10)).toEqual({
+      expected_waiver_revision: 3,
+      evaluated_at: '2026-07-30T13:00:00Z',
+      idempotency_key: 'waiver-revalidate-1',
+    });
+    expect(requestBody(fetch, 12)).not.toHaveProperty('idempotency_key');
+    expect(requestBody(fetch, 13)).toEqual({
+      expected_skip_revision: 1,
+      reason: 'Exception no longer needed.',
+      idempotency_key: 'skip-revoke-1',
+    });
+  });
+
   it('preserves the canonical structured error and remediation fields', async () => {
     const { api, fetch } = setup();
     const detail: PolicyErrorDetail = {
@@ -401,9 +463,13 @@ describe('policy-governance-api', () => {
 
     const error = await api
       .createGuidelineRevision('board-1', 'guide-1', {
-        idempotency_key: 'revision-2',
-        declared_semantic_version: '1.1.0',
-        patch: { title: 'Breaking' },
+        expected_head_revision: 1,
+        version_bump: 'minor',
+        content: {
+          title: 'Breaking',
+          body: 'Changes established meaning.',
+        },
+        metrics: [],
       })
       .catch((caught: unknown) => caught);
 
@@ -450,7 +516,7 @@ describe('policy-governance-api', () => {
     );
 
     const error = await api
-      .listPolicyComplianceReceipts('board-1', {
+      .listSemanticGuidelineAssessments('board-1', {
         cursor: 'stale-cursor',
       })
       .catch((caught: unknown) => caught);
@@ -467,7 +533,7 @@ describe('policy-governance-api', () => {
     const { api, fetch } = setup();
 
     expect(() =>
-      api.listPolicyComplianceReceipts('board-1', {
+      api.listSemanticGuidelineAssessments('board-1', {
         limit: 201,
         cursor: 'opaque',
       }),

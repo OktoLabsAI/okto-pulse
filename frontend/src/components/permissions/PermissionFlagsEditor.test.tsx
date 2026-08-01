@@ -36,10 +36,10 @@ const guidelinePolicyFlags: FlagsMap = {
       create: true,
       retire: false,
     },
-    rules: { author_blocking: true },
+    metrics: { author: true },
     impact: { preview: true },
     adoption: { manage: true },
-    compliance: { read: true, evaluate: true },
+    assessments: { read: true, record: true },
     waiver: {
       read: true,
       request: true,
@@ -54,11 +54,11 @@ const skbGuidelineLeaves = [
   ['guidelines.revisions.read', true],
   ['guidelines.revisions.create', true],
   ['guidelines.revisions.retire', false],
-  ['guidelines.rules.author_blocking', true],
+  ['guidelines.metrics.author', true],
   ['guidelines.impact.preview', true],
   ['guidelines.adoption.manage', true],
-  ['guidelines.compliance.read', true],
-  ['guidelines.compliance.evaluate', true],
+  ['guidelines.assessments.read', true],
+  ['guidelines.assessments.record', true],
   ['guidelines.waiver.read', true],
   ['guidelines.waiver.request', true],
   ['guidelines.waiver.review', false],
@@ -128,7 +128,7 @@ describe('PermissionFlagsEditor', () => {
     expect(countAllFlags(storyTopicFlags)).toEqual({ enabled: 6, total: 9 });
   });
 
-  it('renders and edits every SK-B guideline permission leaf generically', () => {
+  it('renders and edits every SK-B3 guideline permission leaf generically', () => {
     const onChange = vi.fn();
     render(
       <PermissionFlagsEditor
@@ -144,10 +144,10 @@ describe('PermissionFlagsEditor', () => {
 
     for (const level of [
       'revisions',
-      'rules',
+      'metrics',
       'impact',
       'adoption',
-      'compliance',
+      'assessments',
       'waiver',
     ]) {
       expect(screen.getByText(level)).toBeInTheDocument();

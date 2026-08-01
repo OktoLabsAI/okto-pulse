@@ -16,6 +16,8 @@ from sqlalchemy.exc import IntegrityError
 import okto_pulse.core.infra.database as database_module
 from okto_pulse.community.adapters.relational_schema_steps import (
     GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX,
+    _guideline_binding_fence_digest_v2,
+    _guideline_binding_fence_payload_v2,
     _migrate_guideline_impact_substrate,
     _migrate_guideline_impact_v1_schema,
     _postgresql_owned_table_contract,
@@ -32,10 +34,13 @@ from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     _guideline_retirement_impact_id,
     _guideline_unlink_digest,
     _retirement_row,
-    guideline_revision_content_digest,
+    _semantic_binding_row,
 )
 from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
     CommunitySqlAlchemyKGGovernanceStore,
+)
+from okto_pulse.community.adapters.semantic_guideline_kg_events import (
+    SEMANTIC_GUIDELINE_PROJECTION_HANDLER,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
@@ -73,6 +78,11 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineRetirement,
     GuidelineRevision,
     GuidelineScope,
+    guideline_binding_snapshot_digest,
+)
+from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+from okto_pulse.core.events.types import (
+    SEMANTIC_GUIDELINE_PROJECTION_EVENT_TYPE,
 )
 from okto_pulse.core.ports.guideline_policy import (
     GuidelineImpactPreviewReplay,
@@ -126,12 +136,7 @@ def _authority() -> tuple[Guideline, GuidelineRevision, GuidelineHead]:
         semantic_version="1.0.0",
         title=title,
         content=content,
-        content_digest=guideline_revision_content_digest(
-            title=title,
-            content=content,
-            tags=(),
-        ),
-        rules=(),
+        metrics=(),
         created_by="author-b08",
         created_at=NOW,
         parent_revision_id=None,
@@ -153,6 +158,61 @@ def _authority() -> tuple[Guideline, GuidelineRevision, GuidelineHead]:
             updated_at=NOW,
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "omitted_field",
+    (
+        "minimum_confidence",
+        "metric_threshold_overrides",
+        "configuration_digest",
+    ),
+)
+def test_b08_relational_binding_fence_digest_covers_v2_configuration(
+    omitted_field: str,
+) -> None:
+    _, revision, _ = _authority()
+    binding = BoardGuidelineBinding(
+        binding_id="binding-b08-fence",
+        board_id=BOARD_ID,
+        guideline_id=GUIDELINE_ID,
+        revision_id=revision.revision_id,
+        semantic_version=revision.semantic_version,
+        revision_digest=revision.revision_digest,
+        priority=9,
+        binding_revision=3,
+        adopted_by="agent-b08",
+        adopted_at=NOW,
+        enforcement=GuidelineEnforcement.BLOCKING,
+        minimum_confidence=83,
+        metric_threshold_overrides={"policy.b08.impact_list": 75},
+    )
+    arguments = {
+        "board_id": binding.board_id,
+        "guideline_id": binding.guideline_id,
+        "binding_id": binding.binding_id,
+        "binding_revision": binding.binding_revision,
+        "revision_id": binding.revision_id,
+        "semantic_version": binding.semantic_version,
+        "revision_digest": binding.revision_digest,
+        "priority": binding.priority,
+        "enforcement": binding.enforcement.value,
+        "minimum_confidence": binding.minimum_confidence,
+        "metric_threshold_overrides": binding.metric_threshold_overrides,
+        "configuration_digest": binding.configuration_digest,
+        "state": binding.state.value,
+        "source_kind": binding.source_kind.value,
+    }
+    expected = guideline_binding_snapshot_digest(
+        binding,
+        board_id=BOARD_ID,
+        guideline_id=GUIDELINE_ID,
+    )
+
+    assert _guideline_binding_fence_digest_v2(**arguments) == expected
+    incomplete = _guideline_binding_fence_payload_v2(**arguments)
+    incomplete.pop(omitted_field)
+    assert canonical_sha256(incomplete) != expected
 
 
 async def _count(session, model) -> int:
@@ -198,7 +258,9 @@ async def _seed_active_binding() -> tuple[
             subjects=(),
             waivers=(),
             proposed_priority=5,
-            proposed_default_enforcement=GuidelineEnforcement.ADVISORY,
+            proposed_enforcement=GuidelineEnforcement.ADVISORY,
+            proposed_minimum_confidence=0,
+            proposed_metric_threshold_overrides={},
             requested_by="agent-b08",
             created_at=NOW + timedelta(minutes=1),
             idempotency_key="preview:b08",
@@ -248,12 +310,7 @@ async def test_b13_explicit_historical_impact_target_preserves_request_digest(
         semantic_version="1.1.0",
         title=title,
         content=content,
-        content_digest=guideline_revision_content_digest(
-            title=title,
-            content=content,
-            tags=(),
-        ),
-        rules=(),
+        metrics=(),
         created_by="author-b08",
         created_at=NOW + timedelta(seconds=1),
         parent_revision_id=revision_1.revision_id,
@@ -305,7 +362,9 @@ async def test_b13_explicit_historical_impact_target_preserves_request_digest(
             subjects=(),
             waivers=(),
             proposed_priority=1,
-            proposed_default_enforcement=GuidelineEnforcement.ADVISORY,
+            proposed_enforcement=GuidelineEnforcement.ADVISORY,
+            proposed_minimum_confidence=0,
+            proposed_metric_threshold_overrides={},
             requested_by="agent-b13",
             created_at=NOW + timedelta(minutes=1),
             idempotency_key="preview:b13:explicit-target",
@@ -357,7 +416,11 @@ async def _plan_followup_adoption(
             subjects=(),
             waivers=(),
             proposed_priority=binding.priority + 1,
-            proposed_default_enforcement=(binding.default_enforcement),
+            proposed_enforcement=binding.enforcement,
+            proposed_minimum_confidence=binding.minimum_confidence,
+            proposed_metric_threshold_overrides=(
+                binding.metric_threshold_overrides
+            ),
             requested_by="agent-b08",
             created_at=NOW + timedelta(minutes=6),
             idempotency_key="preview:tamper:b08",
@@ -403,6 +466,7 @@ def _adoption_evidence_rows(
             impact_receipt_id=mutation.receipt.impact_receipt_id,
             impact_adoption_id=adoption_id,
         ),
+        _semantic_binding_row(mutation.binding),
         DomainEventRow(
             id=mutation.event.event_id,
             event_type=mutation.event.event_type,
@@ -477,6 +541,7 @@ def _unlink_evidence_rows(
             request_digest=resolved_request_digest,
             impact_unlink_id=unlink_id,
         ),
+        _semantic_binding_row(mutation.binding),
         DomainEventRow(
             id=mutation.event.event_id,
             event_type=mutation.event.event_type,
@@ -511,7 +576,7 @@ def _unlink_evidence_rows(
         binding_head_digest_after=event.binding_head_digest_after,
         policy_set_digest_before=event.policy_set_digest_before,
         policy_set_digest_after=event.policy_set_digest_after,
-        removed_rule_ids=list(event.removed_rule_ids),
+        removed_metric_ids=list(event.removed_metric_ids),
         unlinked_by=event.actor_id,
         actor_type=event.actor_type,
         unlinked_at=event.occurred_at,
@@ -564,7 +629,7 @@ def _retirement_mutation(
         retired_revision_id=revision.revision_id,
         retired_revision_number=revision.revision_number,
         retired_semantic_version=revision.semantic_version,
-        retired_revision_digest=revision.content_digest,
+        retired_revision_digest=revision.revision_digest,
         retired_head_revision=revision.revision_number,
         reason="Retirement evidence test.",
         retired_by="agent-b08",
@@ -637,7 +702,7 @@ def _retirement_evidence_rows(
         binding_head_digest_after=event.binding_head_digest_after,
         policy_set_digest_before=event.policy_set_digest_before,
         policy_set_digest_after=event.policy_set_digest_after,
-        removed_rule_ids=list(event.removed_rule_ids),
+        removed_metric_ids=list(event.removed_metric_ids),
         retired_by=event.actor_id,
         actor_type=event.actor_type,
         retired_at=event.occurred_at,
@@ -673,7 +738,7 @@ async def test_b08_preview_adopt_unlink_replay_tamper_and_erasure(
                 binding_head_digest_after="4" * 64,
                 policy_set_digest_before="5" * 64,
                 policy_set_digest_after="6" * 64,
-                removed_rule_ids=[],
+                removed_metric_ids=[],
                 unlinked_by="agent-b08",
                 actor_type="agent",
                 unlinked_at=NOW + timedelta(minutes=3),
@@ -724,7 +789,7 @@ async def test_b08_preview_adopt_unlink_replay_tamper_and_erasure(
         ),
         (
             GuidelineImpactUnlinkRow,
-            {"removed_rule_ids": ["tampered"]},
+            {"removed_metric_ids": ["tampered"]},
             "guideline_impact_evidence_immutable",
         ),
     ):
@@ -754,24 +819,40 @@ async def test_b08_preview_adopt_unlink_replay_tamper_and_erasure(
                 )
             ).scalars()
         )
-        assert len(executions) == 2
-        assert {
-            (row.event_id, row.handler_name, row.status, row.attempts)
-            for row in executions
-        } == {
-            (
-                "event-adopt-b08",
-                "PolicyConstraintProjectionHandler",
-                "pending",
-                0,
-            ),
-            (
-                "event-unlink-b08",
-                "PolicyConstraintProjectionHandler",
-                "pending",
-                0,
-            ),
+        events = {
+            row.id: row
+            for row in (
+                await session.execute(select(DomainEventRow))
+            ).scalars()
         }
+        direct_causations = {"event-adopt-b08", "event-unlink-b08"}
+        assert direct_causations.issubset(
+            {row.event_id for row in executions}
+        )
+        assert all(
+            row.handler_name == SEMANTIC_GUIDELINE_PROJECTION_HANDLER
+            and row.status == "pending"
+            and row.attempts == 0
+            and row.event_id in events
+            for row in executions
+        )
+        semantic_events = tuple(
+            events[row.event_id]
+            for row in executions
+            if events[row.event_id].event_type
+            == SEMANTIC_GUIDELINE_PROJECTION_EVENT_TYPE
+        )
+        assert semantic_events
+        assert {
+            event.payload_json["causation_id"]
+            for event in semantic_events
+        } == direct_causations
+        assert all(
+            event.payload_json["entity_kind"]
+            in {"revision", "metric_definition", "binding_configuration"}
+            and event.payload_json["operation"] in {"upsert", "terminate"}
+            for event in semantic_events
+        )
         for model in (
             GuidelineImpactReceiptRow,
             GuidelineImpactItemRow,
@@ -814,7 +895,7 @@ async def test_b08_adoption_guard_rejects_payload_tamper_at_insert(
         ("binding_digest", {"binding_digest_before": "c" * 64}),
         ("head_digest", {"binding_head_digest_after": "d" * 64}),
         ("policy_alias", {"policy_set_digest": "e" * 64}),
-        ("rules", {"added_rule_ids": ["rogue-rule"]}),
+        ("metrics", {"added_metric_ids": ["rogue-metric"]}),
         ("actor", {"actor_type": "user"}),
         (
             "time",
@@ -1072,12 +1153,7 @@ async def test_b08_adapter_retirement_replay_tamper_and_erasure(
         semantic_version="1.1.0",
         title=head_title,
         content=head_content,
-        content_digest=guideline_revision_content_digest(
-            title=head_title,
-            content=head_content,
-            tags=(),
-        ),
-        rules=(),
+        metrics=(),
         created_by="author-b08",
         created_at=NOW + timedelta(minutes=3),
         parent_revision_id=pinned_revision.revision_id,
@@ -1108,7 +1184,7 @@ async def test_b08_adapter_retirement_replay_tamper_and_erasure(
         retired_revision_id=retired_head_revision.revision_id,
         retired_revision_number=retired_head_revision.revision_number,
         retired_semantic_version=retired_head_revision.semantic_version,
-        retired_revision_digest=retired_head_revision.content_digest,
+        retired_revision_digest=retired_head_revision.revision_digest,
         retired_head_revision=2,
         reason="No longer applicable.",
         retired_by="agent-b08",
@@ -1174,7 +1250,10 @@ async def test_b08_adapter_retirement_replay_tamper_and_erasure(
         assert impact.retired_by == retirement.retired_by
         assert impact.actor_type == "agent"
         assert event is not None
-        assert event.event_type == "board.policy_retirement_changed.v1"
+        assert (
+            event.event_type
+            == "board.semantic_guideline_retirement_changed.v2"
+        )
         assert event.payload_json["operation"] == "retire"
         assert event.payload_json["retirement_id"] == retirement.retirement_id
         assert activity is not None
@@ -1217,7 +1296,7 @@ async def test_b08_adapter_retirement_replay_tamper_and_erasure(
     for model, values in (
         (DomainEventRow, {"payload_json": {"operation": "tampered"}}),
         (ActivityLog, {"details": {"operation": "tampered"}}),
-        (GuidelineRetirementImpactRow, {"removed_rule_ids": ["tampered"]}),
+        (GuidelineRetirementImpactRow, {"removed_metric_ids": ["tampered"]}),
     ):
         async with get_session_factory()() as session:
             predicate = (
@@ -1442,6 +1521,39 @@ def test_b08_postgresql_contract_normalizes_boolean_defaults(
     assert contract["observed"] == contract["expected"]
 
 
+def test_b08_postgresql_contract_normalizes_json_catalog_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SemanticGuidelineWaiverEventRow,
+        SemanticGuidelineWaiverRow,
+    )
+
+    with monkeypatch.context() as waiver_context:
+        waiver_contract = _postgresql_contract(
+            waiver_context,
+            SemanticGuidelineWaiverRow.__table__,
+            default_overrides={
+                "evidence_refs": "'[]'::json",
+                "last_revalidation_currentness_reasons": (
+                    "('[]'::json)"
+                ),
+            },
+        )
+    assert waiver_contract["observed"] == waiver_contract["expected"]
+
+    with monkeypatch.context() as event_context:
+        event_contract = _postgresql_contract(
+            event_context,
+            SemanticGuidelineWaiverEventRow.__table__,
+            default_overrides={
+                "evidence_refs": "'[]'::json",
+                "currentness_reasons": "('[]'::json)",
+            },
+        )
+    assert event_contract["observed"] == event_contract["expected"]
+
+
 def test_b08_postgresql_contract_normalizes_catalog_check_rewrites(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1464,6 +1576,115 @@ def test_b08_postgresql_contract_normalizes_catalog_check_rewrites(
     assert contract["observed"] == contract["expected"]
 
 
+def test_b08_postgresql_contract_normalizes_real_semantic_catalog_rewrites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SemanticGuidelineMetricResultRow,
+        SemanticGuidelineSkipRow,
+        SemanticGuidelineWaiverEventRow,
+    )
+
+    with monkeypatch.context() as metric_context:
+        metric_contract = _postgresql_contract(
+            metric_context,
+            SemanticGuidelineMetricResultRow.__table__,
+            check_overrides={
+                "ck_sg_metric_result_enums": (
+                    "direction::text = ANY "
+                    "(ARRAY['minimum'::character varying, "
+                    "'maximum'::character varying]::text[])) AND "
+                    "(threshold_source::text = ANY "
+                    "(ARRAY['default'::character varying, "
+                    "'override'::character varying]::text[])) AND "
+                    "(outcome::text = ANY "
+                    "(ARRAY['pass'::character varying, "
+                    "'fail'::character varying]::text[])"
+                ),
+            },
+        )
+    assert metric_contract["observed"] == metric_contract["expected"]
+
+    with monkeypatch.context() as event_context:
+        event_contract = _postgresql_contract(
+            event_context,
+            SemanticGuidelineWaiverEventRow.__table__,
+            check_overrides={
+                "ck_sg_waiver_event_enums": (
+                    "event_type::text = ANY "
+                    "(ARRAY['request'::character varying, "
+                    "'approve'::character varying, "
+                    "'reject'::character varying, "
+                    "'revoke'::character varying, "
+                    "'expire'::character varying, "
+                    "'revalidate'::character varying]::text[])) AND "
+                    "(to_status::text = ANY "
+                    "(ARRAY['requested'::character varying, "
+                    "'approved'::character varying, "
+                    "'rejected'::character varying, "
+                    "'revoked'::character varying, "
+                    "'expired'::character varying]::text[])) AND "
+                    "(from_status IS NULL OR "
+                    "(from_status::text = ANY "
+                    "(ARRAY['requested'::character varying, "
+                    "'approved'::character varying, "
+                    "'rejected'::character varying, "
+                    "'revoked'::character varying, "
+                    "'expired'::character varying]::text[]))"
+                ),
+            },
+        )
+    assert event_contract["observed"] == event_contract["expected"]
+
+    with monkeypatch.context() as skip_context:
+        skip_contract = _postgresql_contract(
+            skip_context,
+            SemanticGuidelineSkipRow.__table__,
+            check_overrides={
+                "ck_sg_skip_digests": (
+                    "length(subject_content_digest::text) = 64 AND "
+                    "length(revision_digest::text) = 64 AND "
+                    "length(configuration_digest::text) = 64 AND "
+                    "length(scope_digest::text) = 64 AND "
+                    "length(event_id::text) = 64 AND "
+                    "length(skip_digest::text) = 64 AND "
+                    "length(request_digest::text) = 64 AND "
+                    "length(TRIM(BOTH FROM reason)) > 0 AND "
+                    "length(TRIM(BOTH FROM actor_id)) > 0"
+                ),
+            },
+        )
+    assert skip_contract["observed"] == skip_contract["expected"]
+
+
+def test_b08_postgresql_contract_normalizes_driver_generated_fk_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SemanticGuidelineBindingConfigurationRow,
+    )
+
+    table = SemanticGuidelineBindingConfigurationRow.__table__
+    inspector = _PostgresqlMetadataInspector(table)
+    original_get_foreign_keys = inspector.get_foreign_keys
+
+    def generated_foreign_keys(table_name: str) -> list[dict[str, object]]:
+        rows = original_get_foreign_keys(table_name)
+        for row in rows:
+            if row["name"] is None:
+                columns = "_".join(row["constrained_columns"])
+                row["name"] = f"{table_name}_{columns}_fkey"
+        return rows
+
+    monkeypatch.setattr(inspector, "get_foreign_keys", generated_foreign_keys)
+    monkeypatch.setattr(sqlalchemy, "inspect", lambda _connection: inspector)
+    contract = _postgresql_owned_table_contract(
+        _PostgresqlContractConnection(),
+        table,
+    )
+    assert contract["observed"] == contract["expected"]
+
+
 def test_b08_postgresql_contract_normalizes_compound_check_rewrites(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1472,7 +1693,10 @@ def test_b08_postgresql_contract_normalizes_compound_check_rewrites(
         GuidelineImpactReceiptRow.__table__,
         check_overrides={
             "ck_guideline_impact_non_negative_counts": (
-                "((proposed_priority >= 0) AND (item_count >= 0))"
+                "((proposed_priority >= 0) "
+                "AND (proposed_minimum_confidence >= 0) "
+                "AND (proposed_minimum_confidence <= 100) "
+                "AND (item_count >= 0))"
             ),
         },
     )

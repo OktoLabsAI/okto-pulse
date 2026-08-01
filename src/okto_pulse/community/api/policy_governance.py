@@ -34,7 +34,15 @@ from typing import (
     get_type_hints,
 )
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -59,15 +67,31 @@ from okto_pulse.community.inbound.physical_identity import (
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.domain.guideline_compliance import (
     GuidelineRevisionListItem as CoreGuidelineRevisionListItem,
-    PolicyComplianceFindingListItem as CorePolicyComplianceFindingListItem,
-    PolicyComplianceReceiptListItem as CorePolicyComplianceReceiptListItem,
     PolicyCursorCodec,
-    PolicyWaiverListItem as CorePolicyWaiverListItem,
 )
 from okto_pulse.core.domain.guideline_import_export import (
     guideline_export_payload,
 )
 from okto_pulse.core.domain.guideline_lifecycle import GuidelineVersionBump
+from okto_pulse.core.domain.guideline_semantic_projection import (
+    SemanticAssessmentDetail as CoreSemanticAssessmentDetail,
+    SemanticAssessmentFull as CoreSemanticAssessmentFull,
+    SemanticAssessmentSummary as CoreSemanticAssessmentSummary,
+    SemanticFindingDetail as CoreSemanticFindingDetail,
+    SemanticFindingFull as CoreSemanticFindingFull,
+    SemanticFindingSummary as CoreSemanticFindingSummary,
+    SemanticMetricResultDetail as CoreSemanticMetricResultDetail,
+    SemanticMetricResultFull as CoreSemanticMetricResultFull,
+    SemanticSkipDetail as CoreSemanticSkipDetail,
+    SemanticSkipFull as CoreSemanticSkipFull,
+    SemanticSkipSummary as CoreSemanticSkipSummary,
+    SemanticWaiverDetail as CoreSemanticWaiverDetail,
+    SemanticWaiverFull as CoreSemanticWaiverFull,
+    SemanticWaiverSummary as CoreSemanticWaiverSummary,
+)
+from okto_pulse.core.domain.guideline_semantic_exceptions import (
+    SemanticMetricWaiverEvent as CoreSemanticMetricWaiverEvent,
+)
 from okto_pulse.core.domain.guideline_policy import (
     GUIDELINE_BINDING_ID_MAX_LENGTH,
     GUIDELINE_ID_MAX_LENGTH,
@@ -76,15 +100,14 @@ from okto_pulse.core.domain.guideline_policy import (
     GUIDELINE_SEMANTIC_VERSION_MAX_LENGTH,
     GUIDELINE_TITLE_MAX_LENGTH,
     POLICY_ACTOR_ID_MAX_LENGTH,
-    POLICY_EVALUATION_ID_MAX_LENGTH,
     POLICY_FINDING_ID_MAX_LENGTH,
     POLICY_IDEMPOTENCY_KEY_MAX_LENGTH,
     POLICY_IMPACT_RECEIPT_ID_MAX_LENGTH,
+    POLICY_METRIC_CODE_MAX_LENGTH,
+    POLICY_METRIC_ID_MAX_LENGTH,
     POLICY_RECEIPT_ID_MAX_LENGTH,
-    POLICY_RULE_ID_MAX_LENGTH,
     POLICY_SQL_INTEGER_MAX,
     POLICY_SUBJECT_ID_MAX_LENGTH,
-    POLICY_WAIVER_EVENT_ID_MAX_LENGTH,
     POLICY_WAIVER_ID_MAX_LENGTH,
     BoardGuidelineBinding as CoreBoardGuidelineBinding,
     Guideline as CoreGuideline,
@@ -93,10 +116,6 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineImpactReceipt as CoreGuidelineImpactReceipt,
     GuidelineRetirement as CoreGuidelineRetirement,
     GuidelineRevision as CoreGuidelineRevision,
-    PolicyComplianceReceipt as CorePolicyComplianceReceipt,
-    PolicyEvaluationResult as CorePolicyEvaluationResult,
-    PolicyWaiver as CorePolicyWaiver,
-    PolicyWaiverEvent as CorePolicyWaiverEvent,
 )
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.repositories import PulseUnitOfWork
@@ -117,7 +136,7 @@ class PolicyGovernanceRoute(APIRoute):
                 if board_id is not None:
                     validate_community_board_id(board_id)
                 if preflight_import_envelope:
-                    GuidelineExportV2Request.model_validate_json(
+                    GuidelineExportV3Request.model_validate_json(
                         await request.body()
                     )
                 return await original(request)
@@ -338,10 +357,40 @@ def _closed_dataclass_response_model(domain_type: type) -> type[_ClosedModel]:
         return cached
     definitions: dict[str, tuple[object, object]] = {}
     annotations = get_type_hints(domain_type)
+    semantic_profile = {
+        "Summary": "summary",
+        "Detail": "detail",
+        "Full": "full",
+    }
     for dataclass_field in fields(domain_type):
         annotation = _closed_response_annotation(
             annotations.get(dataclass_field.name, dataclass_field.type)
         )
+        if (
+            dataclass_field.name == "projection"
+            and domain_type.__module__.endswith(
+                "guideline_semantic_projection"
+            )
+        ):
+            for suffix, profile in semantic_profile.items():
+                if domain_type.__name__.endswith(suffix):
+                    annotation = Literal[profile]
+                    break
+        if dataclass_field.name == "metric_results":
+            if domain_type is CoreSemanticAssessmentDetail:
+                annotation = tuple[
+                    _closed_dataclass_response_model(
+                        CoreSemanticMetricResultDetail
+                    ),
+                    ...,
+                ]
+            elif domain_type is CoreSemanticAssessmentFull:
+                annotation = tuple[
+                    _closed_dataclass_response_model(
+                        CoreSemanticMetricResultFull
+                    ),
+                    ...,
+                ]
         if dataclass_field.default is not MISSING:
             default: object = dataclass_field.default
         elif dataclass_field.default_factory is not MISSING:
@@ -361,6 +410,12 @@ def _closed_dataclass_response_model(domain_type: type) -> type[_ClosedModel]:
 class PolicyProjection(str, Enum):
     SUMMARY = "summary"
     DETAIL = "detail"
+
+
+class SemanticPolicyProjection(str, Enum):
+    SUMMARY = "summary"
+    DETAIL = "detail"
+    FULL = "full"
 
 
 class PolicyEntityType(str, Enum):
@@ -423,11 +478,6 @@ class GuidelineLifecycleStatus(str, Enum):
     SUPERSEDED = "superseded"
 
 
-class GuidelineRuleOperator(str, Enum):
-    ALL = "all"
-    ANY = "any"
-
-
 class GuidelineImpactItemKind(str, Enum):
     BINDING = "binding"
     TARGET = "target"
@@ -435,19 +485,27 @@ class GuidelineImpactItemKind(str, Enum):
     WAIVER = "waiver"
 
 
-class PolicyEvaluationOutcome(str, Enum):
-    PASS = "pass"
-    FAIL = "fail"
-    NOT_APPLICABLE = "not_applicable"
-    ERROR = "error"
-
-
 class PolicyCurrentness(str, Enum):
     CURRENT = "current"
     STALE = "stale"
 
 
-class PolicyWaiverStatus(str, Enum):
+class SemanticAssessmentOutcome(str, Enum):
+    PASSED = "passed"
+    METRIC_THRESHOLD_FAILED = "metric_threshold_failed"
+
+
+class SemanticMetricOutcome(str, Enum):
+    PASS = "pass"
+    FAIL = "fail"
+
+
+class SemanticThresholdSource(str, Enum):
+    DEFAULT = "default"
+    OVERRIDE = "override"
+
+
+class SemanticWaiverStatus(str, Enum):
     REQUESTED = "requested"
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -455,32 +513,47 @@ class PolicyWaiverStatus(str, Enum):
     EXPIRED = "expired"
 
 
-class PolicyWaiverReviewDecision(str, Enum):
+class SemanticWaiverReviewDecision(str, Enum):
     APPROVE = "approve"
     REJECT = "reject"
 
 
+class SemanticWaiverRevalidationReasonCode(str, Enum):
+    CURRENT = "current"
+    SCHEDULED_EXPIRY = "scheduled_expiry"
+    ANCHOR_MISSING = "anchor_missing"
+    SUBJECT_SCOPE_CHANGED = "subject_scope_changed"
+    GUIDELINE_REVISION_CHANGED = "guideline_revision_changed"
+    BINDING_CONFIGURATION_CHANGED = "binding_configuration_changed"
+    METRIC_RESULT_CHANGED = "metric_result_changed"
+    REVOKED = "revoked"
+
+
 PolicyScalar = str | int | float | bool | None
+_METRIC_CODE_PATTERN = r"^[A-Za-z][A-Za-z0-9_.:-]*$"
 
 
-class GuidelinePredicateRequest(_ClosedModel):
-    predicate_code: str = Field(min_length=1, max_length=200)
-    parameters: dict[str, PolicyScalar | list[PolicyScalar]] = Field(
-        default_factory=dict
+class GuidelineMetricDirection(str, Enum):
+    MINIMUM = "minimum"
+    MAXIMUM = "maximum"
+
+
+class GuidelineMetricRequest(_ClosedModel):
+    metric_id: str = Field(
+        min_length=1,
+        max_length=POLICY_METRIC_ID_MAX_LENGTH,
     )
-
-
-class GuidelineRuleRequest(_ClosedModel):
-    rule_id: str = Field(min_length=1, max_length=POLICY_RULE_ID_MAX_LENGTH)
-    code: str = Field(min_length=1, max_length=200)
+    code: str = Field(
+        min_length=1,
+        max_length=POLICY_METRIC_CODE_MAX_LENGTH,
+        pattern=_METRIC_CODE_PATTERN,
+    )
     title: str = Field(min_length=1, max_length=500)
     description: str = Field(min_length=1)
+    evaluation_rubric: str = Field(min_length=1)
     target_entity_types: list[PolicyEntityType] = Field(min_length=1)
-    predicates: list[GuidelinePredicateRequest] = Field(min_length=1)
-    enforcement: GuidelineEnforcement = GuidelineEnforcement.ADVISORY
-    operator: GuidelineRuleOperator = GuidelineRuleOperator.ALL
-    waivable: bool = False
-    policy_class: str = Field(default="standard", min_length=1, max_length=200)
+    direction: GuidelineMetricDirection
+    default_threshold: int = Field(ge=0, le=100)
 
 
 class GuidelineRevisionPatchRequest(_ClosedModel):
@@ -491,13 +564,13 @@ class GuidelineRevisionPatchRequest(_ClosedModel):
     )
     content: str | None = Field(default=None, min_length=1)
     tags: list[str] | None = None
-    rules: list[GuidelineRuleRequest] | None = None
+    metrics: list[GuidelineMetricRequest] | None = None
 
     @model_validator(mode="after")
     def require_change(self) -> GuidelineRevisionPatchRequest:
         if all(
             value is None
-            for value in (self.title, self.content, self.tags, self.rules)
+            for value in (self.title, self.content, self.tags, self.metrics)
         ):
             raise ValueError("guideline_revision_patch_empty")
         return self
@@ -557,7 +630,19 @@ class RetireGuidelineRequest(_ClosedModel):
 
 class PreviewGuidelineImpactRequest(_ClosedModel):
     proposed_priority: int = Field(ge=0, le=POLICY_SQL_INTEGER_MAX)
-    proposed_default_enforcement: GuidelineEnforcement
+    proposed_enforcement: GuidelineEnforcement
+    proposed_minimum_confidence: int = Field(ge=0, le=100)
+    proposed_metric_threshold_overrides: dict[
+        Annotated[
+            str,
+            StringConstraints(
+                min_length=1,
+                max_length=POLICY_METRIC_CODE_MAX_LENGTH,
+                pattern=_METRIC_CODE_PATTERN,
+            ),
+        ],
+        Annotated[int, Field(ge=0, le=100)],
+    ] = Field(default_factory=dict)
     idempotency_key: str = Field(
         min_length=1,
         max_length=POLICY_IDEMPOTENCY_KEY_MAX_LENGTH,
@@ -583,119 +668,176 @@ class AdoptGuidelineRevisionRequest(_ClosedModel):
     occurred_at: datetime | None = None
 
 
-class EvaluatePolicyComplianceRequest(_ClosedModel):
-    entity_type: PolicyEntityType
+class SemanticEvidenceRefRequest(_ClosedModel):
+    source_type: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    source_version: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class SemanticPinpointRequest(_ClosedModel):
+    anchor_type: Literal[
+        "whole_artifact",
+        "field",
+        "structured_child",
+        "qa",
+    ]
+    anchor_ref: str | None = None
+    excerpt_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+class SemanticMetricAssessmentRequest(_ClosedModel):
+    metric_id: str = Field(
+        min_length=1,
+        max_length=POLICY_METRIC_ID_MAX_LENGTH,
+    )
+    score: int = Field(ge=0, le=100)
+    rationale: str = Field(min_length=1)
+    evidence_refs: list[SemanticEvidenceRefRequest] = Field(min_length=1)
+    pinpoints: list[SemanticPinpointRequest] = Field(min_length=1)
+
+
+class SemanticAssessmentAssessorRequest(_ClosedModel):
+    agent_id: str = Field(
+        min_length=1,
+        max_length=POLICY_ACTOR_ID_MAX_LENGTH,
+    )
+    model_id: str | None = Field(min_length=1)
+
+
+class RecordSemanticGuidelineAssessmentRequest(_ClosedModel):
+    subject_type: PolicyEntityType
     subject_id: str = Field(
         min_length=1,
         max_length=POLICY_SUBJECT_ID_MAX_LENGTH,
+    )
+    expected_subject_version: int = Field(
+        ge=1,
+        le=POLICY_SQL_INTEGER_MAX,
+    )
+    binding_id: str = Field(
+        min_length=1,
+        max_length=GUIDELINE_BINDING_ID_MAX_LENGTH,
+    )
+    expected_binding_revision: int = Field(
+        ge=1,
+        le=POLICY_SQL_INTEGER_MAX,
+    )
+    guideline_revision_id: str = Field(
+        min_length=1,
+        max_length=GUIDELINE_REVISION_ID_MAX_LENGTH,
     )
     idempotency_key: str = Field(
         min_length=1,
         max_length=POLICY_IDEMPOTENCY_KEY_MAX_LENGTH,
     )
-    evaluation_id: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=POLICY_EVALUATION_ID_MAX_LENGTH,
+    confidence: int = Field(ge=0, le=100)
+    assessor: SemanticAssessmentAssessorRequest
+    metric_results: list[SemanticMetricAssessmentRequest] = Field(
+        min_length=1
     )
-    requested_at: datetime | None = None
-    evaluated_at: datetime | None = None
 
 
-class RequestPolicyWaiverRequest(_ClosedModel):
-    waiver_id: str | None = Field(
-        default=None,
+class RequestSemanticWaiverRequest(_ClosedModel):
+    metric_result_id: str = Field(
         min_length=1,
-        max_length=POLICY_WAIVER_ID_MAX_LENGTH,
-    )
-    event_id: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=POLICY_WAIVER_EVENT_ID_MAX_LENGTH,
+        max_length=POLICY_RECEIPT_ID_MAX_LENGTH,
     )
     finding_id: str = Field(
         min_length=1,
         max_length=POLICY_FINDING_ID_MAX_LENGTH,
     )
+    receipt_id: str = Field(
+        min_length=1,
+        max_length=POLICY_RECEIPT_ID_MAX_LENGTH,
+    )
     justification: str = Field(min_length=1)
-    evidence_refs: list[str] = Field(min_length=1)
-    expires_at: datetime
+    evidence_refs: list[SemanticEvidenceRefRequest] = Field(min_length=1)
+    expires_at: datetime | None
     idempotency_key: str = Field(
         min_length=1,
         max_length=POLICY_IDEMPOTENCY_KEY_MAX_LENGTH,
     )
-    occurred_at: datetime | None = None
 
 
-class ReviewPolicyWaiverRequest(_ClosedModel):
-    decision: PolicyWaiverReviewDecision
+class ReviewSemanticWaiverRequest(_ClosedModel):
+    decision: SemanticWaiverReviewDecision
     reason: str = Field(min_length=1)
-    evidence_refs: list[str] = Field(min_length=1)
+    evidence_refs: list[SemanticEvidenceRefRequest] = Field(min_length=1)
     expected_waiver_revision: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
     idempotency_key: str = Field(
         min_length=1,
         max_length=POLICY_IDEMPOTENCY_KEY_MAX_LENGTH,
     )
-    event_id: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=POLICY_WAIVER_EVENT_ID_MAX_LENGTH,
-    )
-    occurred_at: datetime | None = None
 
 
-class RevokePolicyWaiverRequest(_ClosedModel):
+class RevokeSemanticWaiverRequest(_ClosedModel):
     reason: str = Field(min_length=1)
-    evidence_refs: list[str] = Field(min_length=1)
+    evidence_refs: list[SemanticEvidenceRefRequest] = Field(min_length=1)
     expected_waiver_revision: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
     idempotency_key: str = Field(
         min_length=1,
         max_length=POLICY_IDEMPOTENCY_KEY_MAX_LENGTH,
     )
-    event_id: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=POLICY_WAIVER_EVENT_ID_MAX_LENGTH,
-    )
-    occurred_at: datetime | None = None
 
 
-class RevalidatePolicyWaiverRequest(_ClosedModel):
-    reason: str = Field(min_length=1)
-    evidence_refs: list[str] = Field(min_length=1)
+class RevalidateSemanticWaiverRequest(_ClosedModel):
     expected_waiver_revision: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
-    new_expires_at: datetime
+    evaluated_at: datetime
     idempotency_key: str = Field(
         min_length=1,
         max_length=POLICY_IDEMPOTENCY_KEY_MAX_LENGTH,
     )
-    event_id: str | None = Field(
-        default=None,
+
+
+class CreateSemanticPolicySkipRequest(_ClosedModel):
+    subject_type: PolicyEntityType
+    subject_id: str = Field(
         min_length=1,
-        max_length=POLICY_WAIVER_EVENT_ID_MAX_LENGTH,
+        max_length=POLICY_SUBJECT_ID_MAX_LENGTH,
     )
-    occurred_at: datetime | None = None
+    expected_subject_version: int = Field(
+        ge=1,
+        le=POLICY_SQL_INTEGER_MAX,
+    )
+    binding_id: str = Field(
+        min_length=1,
+        max_length=GUIDELINE_BINDING_ID_MAX_LENGTH,
+    )
+    reason: str = Field(min_length=1)
 
 
-class GuidelineExportPredicateV2(_ClosedModel):
-    predicate_code: str
-    parameters: list[tuple[str, PolicyScalar | list[PolicyScalar]]]
+class RevokeSemanticPolicySkipRequest(_ClosedModel):
+    expected_skip_revision: int = Field(
+        ge=1,
+        le=POLICY_SQL_INTEGER_MAX,
+    )
+    reason: str = Field(min_length=1)
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=POLICY_IDEMPOTENCY_KEY_MAX_LENGTH,
+    )
 
 
-class GuidelineExportRuleV2(_ClosedModel):
-    rule_id: str = Field(max_length=POLICY_RULE_ID_MAX_LENGTH)
-    code: str
+class GuidelineExportMetricV3(_ClosedModel):
+    metric_id: str = Field(max_length=POLICY_METRIC_ID_MAX_LENGTH)
+    code: str = Field(
+        min_length=1,
+        max_length=POLICY_METRIC_CODE_MAX_LENGTH,
+        pattern=_METRIC_CODE_PATTERN,
+    )
     title: str
     description: str
+    evaluation_rubric: str
     target_entity_types: list[PolicyEntityType]
-    predicates: list[GuidelineExportPredicateV2]
-    enforcement: GuidelineEnforcement
-    operator: GuidelineRuleOperator
-    waivable: bool
-    policy_class: str | None
+    direction: GuidelineMetricDirection
+    default_threshold: int = Field(ge=0, le=100)
 
 
-class GuidelineExportRevisionV2(_ClosedModel):
+class GuidelineExportRevisionV3(_ClosedModel):
     revision_id: RevisionId
     guideline_id: GuidelineId
     revision_number: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
@@ -705,8 +847,8 @@ class GuidelineExportRevisionV2(_ClosedModel):
     )
     title: str = Field(min_length=1, max_length=GUIDELINE_TITLE_MAX_LENGTH)
     content: str
-    content_digest: str
-    rules: list[GuidelineExportRuleV2]
+    revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    metrics: list[GuidelineExportMetricV3]
     created_by: str = Field(min_length=1, max_length=POLICY_ACTOR_ID_MAX_LENGTH)
     created_at: datetime
     parent_revision_id: RevisionId | None
@@ -720,7 +862,7 @@ class GuidelineExportRevisionV2(_ClosedModel):
     legacy_tags: list[str] | None
 
 
-class GuidelineExportIdentityV2(_ClosedModel):
+class GuidelineExportIdentityV3(_ClosedModel):
     guideline_id: GuidelineId
     owner_id: str = Field(min_length=1, max_length=POLICY_ACTOR_ID_MAX_LENGTH)
     scope: GuidelineScope
@@ -729,7 +871,7 @@ class GuidelineExportIdentityV2(_ClosedModel):
     created_at: datetime
 
 
-class GuidelineExportHeadV2(_ClosedModel):
+class GuidelineExportHeadV3(_ClosedModel):
     guideline_id: GuidelineId
     revision_id: RevisionId
     revision_number: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
@@ -741,7 +883,7 @@ class GuidelineExportHeadV2(_ClosedModel):
     updated_at: datetime
 
 
-class GuidelineExportRetirementV2(_ClosedModel):
+class GuidelineExportRetirementV3(_ClosedModel):
     retirement_id: str = Field(
         min_length=1,
         max_length=GUIDELINE_RETIREMENT_ID_MAX_LENGTH,
@@ -762,7 +904,7 @@ class GuidelineExportRetirementV2(_ClosedModel):
     superseded_by_guideline_id: GuidelineId | None
 
 
-class GuidelineExportLogicalBindingV2(_ClosedModel):
+class GuidelineExportLogicalBindingV3(_ClosedModel):
     binding_id: str = Field(
         min_length=1,
         max_length=GUIDELINE_BINDING_ID_MAX_LENGTH,
@@ -779,13 +921,16 @@ class GuidelineExportLogicalBindingV2(_ClosedModel):
     binding_revision: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
     adopted_by: str = Field(min_length=1, max_length=POLICY_ACTOR_ID_MAX_LENGTH)
     adopted_at: datetime
-    default_enforcement: GuidelineEnforcement
+    enforcement: GuidelineEnforcement
+    minimum_confidence: int = Field(ge=0, le=100)
+    metric_threshold_overrides: dict[str, int]
+    configuration_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     state: GuidelineBindingState
     source_kind: GuidelineBindingProvenance
 
 
-class GuidelineExportBindingV2(_ClosedModel):
-    binding: GuidelineExportLogicalBindingV2
+class GuidelineExportBindingV3(_ClosedModel):
+    binding: GuidelineExportLogicalBindingV3
     physical_source_kind: str = Field(min_length=1, max_length=40)
     binding_origin: str = Field(min_length=1, max_length=32)
     materialization: GuidelineBindingMaterialization
@@ -804,24 +949,24 @@ class GuidelineExportBindingV2(_ClosedModel):
     binding_digest: str
 
 
-class GuidelineExportAggregateV2(_ClosedModel):
-    identity: GuidelineExportIdentityV2
-    revisions: list[GuidelineExportRevisionV2]
-    head: GuidelineExportHeadV2
-    retirement: GuidelineExportRetirementV2 | None
-    bindings: list[GuidelineExportBindingV2]
+class GuidelineExportAggregateV3(_ClosedModel):
+    identity: GuidelineExportIdentityV3
+    revisions: list[GuidelineExportRevisionV3]
+    head: GuidelineExportHeadV3
+    retirement: GuidelineExportRetirementV3 | None
+    bindings: list[GuidelineExportBindingV3]
     history_status: GuidelineHistoryStatus
     migration_notes: list[str]
 
 
-class GuidelineExportV2Request(_ClosedModel):
-    contract_version: Literal["guideline-export/v2"]
-    schema_version: Literal["2"]
+class GuidelineExportV3Request(_ClosedModel):
+    contract_version: Literal["guideline-export/v3"]
+    schema_version: Literal["3"]
     kind: Literal["guidelines"]
     exported_at: datetime
     source_board_id: BoardId | None
     content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    guidelines: list[GuidelineExportAggregateV2]
+    guidelines: list[GuidelineExportAggregateV3]
 
 
 class GuidelineImportResultResponse(_ClosedModel):
@@ -840,15 +985,6 @@ ClosedGuidelineRevisionListItem = _closed_dataclass_response_model(
 ClosedGuidelineImpactItem = _closed_dataclass_response_model(
     CoreGuidelineImpactItem
 )
-ClosedPolicyComplianceReceiptListItem = _closed_dataclass_response_model(
-    CorePolicyComplianceReceiptListItem
-)
-ClosedPolicyComplianceFindingListItem = _closed_dataclass_response_model(
-    CorePolicyComplianceFindingListItem
-)
-ClosedPolicyWaiverListItem = _closed_dataclass_response_model(
-    CorePolicyWaiverListItem
-)
 ClosedGuideline = _closed_dataclass_response_model(CoreGuideline)
 ClosedGuidelineRevision = _closed_dataclass_response_model(CoreGuidelineRevision)
 ClosedGuidelineHead = _closed_dataclass_response_model(CoreGuidelineHead)
@@ -858,17 +994,69 @@ ClosedGuidelineRetirement = _closed_dataclass_response_model(
 ClosedGuidelineImpactReceipt = _closed_dataclass_response_model(
     CoreGuidelineImpactReceipt
 )
-ClosedPolicyComplianceReceipt = _closed_dataclass_response_model(
-    CorePolicyComplianceReceipt
-)
 ClosedBoardGuidelineBinding = _closed_dataclass_response_model(
     CoreBoardGuidelineBinding
 )
-ClosedPolicyEvaluationResult = _closed_dataclass_response_model(
-    CorePolicyEvaluationResult
+ClosedSemanticAssessmentSummary = _closed_dataclass_response_model(
+    CoreSemanticAssessmentSummary
 )
-ClosedPolicyWaiver = _closed_dataclass_response_model(CorePolicyWaiver)
-ClosedPolicyWaiverEvent = _closed_dataclass_response_model(CorePolicyWaiverEvent)
+ClosedSemanticAssessmentDetail = _closed_dataclass_response_model(
+    CoreSemanticAssessmentDetail
+)
+ClosedSemanticAssessmentFull = _closed_dataclass_response_model(
+    CoreSemanticAssessmentFull
+)
+ClosedSemanticFindingSummary = _closed_dataclass_response_model(
+    CoreSemanticFindingSummary
+)
+ClosedSemanticFindingDetail = _closed_dataclass_response_model(
+    CoreSemanticFindingDetail
+)
+ClosedSemanticFindingFull = _closed_dataclass_response_model(
+    CoreSemanticFindingFull
+)
+ClosedSemanticWaiverSummary = _closed_dataclass_response_model(
+    CoreSemanticWaiverSummary
+)
+ClosedSemanticWaiverDetail = _closed_dataclass_response_model(
+    CoreSemanticWaiverDetail
+)
+ClosedSemanticWaiverFull = _closed_dataclass_response_model(
+    CoreSemanticWaiverFull
+)
+ClosedSemanticSkipSummary = _closed_dataclass_response_model(
+    CoreSemanticSkipSummary
+)
+ClosedSemanticSkipDetail = _closed_dataclass_response_model(
+    CoreSemanticSkipDetail
+)
+ClosedSemanticSkipFull = _closed_dataclass_response_model(
+    CoreSemanticSkipFull
+)
+ClosedSemanticMetricWaiverEvent = _closed_dataclass_response_model(
+    CoreSemanticMetricWaiverEvent
+)
+
+SemanticAssessmentProjectionResponse = (
+    ClosedSemanticAssessmentSummary
+    | ClosedSemanticAssessmentDetail
+    | ClosedSemanticAssessmentFull
+)
+SemanticFindingProjectionResponse = (
+    ClosedSemanticFindingSummary
+    | ClosedSemanticFindingDetail
+    | ClosedSemanticFindingFull
+)
+SemanticWaiverProjectionResponse = (
+    ClosedSemanticWaiverSummary
+    | ClosedSemanticWaiverDetail
+    | ClosedSemanticWaiverFull
+)
+SemanticSkipProjectionResponse = (
+    ClosedSemanticSkipSummary
+    | ClosedSemanticSkipDetail
+    | ClosedSemanticSkipFull
+)
 
 
 class _PolicyPageResponse(_ClosedModel):
@@ -885,16 +1073,116 @@ class GuidelineImpactItemPageResponse(_PolicyPageResponse):
     items: list[ClosedGuidelineImpactItem]
 
 
-class PolicyComplianceReceiptPageResponse(_PolicyPageResponse):
-    items: list[ClosedPolicyComplianceReceiptListItem]
+class _SemanticPageResponse(_ClosedModel):
+    projection: SemanticPolicyProjection
+    next_cursor: str | None
+    has_more: bool
+
+    @model_validator(mode="after")
+    def require_exact_item_projection(self) -> _SemanticPageResponse:
+        expected = self.projection.value
+        if any(
+            getattr(item, "projection", None) != expected
+            for item in getattr(self, "items", ())
+        ):
+            raise ValueError("semantic_page_projection_mismatch")
+        return self
 
 
-class PolicyComplianceFindingPageResponse(_PolicyPageResponse):
-    items: list[ClosedPolicyComplianceFindingListItem]
+class SemanticAssessmentPageResponse(_SemanticPageResponse):
+    items: list[SemanticAssessmentProjectionResponse]
 
 
-class PolicyWaiverPageResponse(_PolicyPageResponse):
-    items: list[ClosedPolicyWaiverListItem]
+class SemanticFindingPageResponse(_SemanticPageResponse):
+    items: list[SemanticFindingProjectionResponse]
+
+
+class SemanticWaiverPageResponse(_SemanticPageResponse):
+    items: list[SemanticWaiverProjectionResponse]
+
+
+class SemanticSkipPageResponse(_SemanticPageResponse):
+    items: list[SemanticSkipProjectionResponse]
+
+
+class SemanticAssessmentResponse(_ClosedModel):
+    assessment: SemanticAssessmentProjectionResponse
+
+
+class RecordedSemanticMetricResultResponse(_ClosedModel):
+    metric_result_id: str
+    metric_id: str
+    metric_code: str
+    score: int = Field(ge=0, le=100)
+    direction: GuidelineMetricDirection
+    default_threshold: int = Field(ge=0, le=100)
+    effective_threshold: int = Field(ge=0, le=100)
+    threshold_source: SemanticThresholdSource
+    outcome: SemanticMetricOutcome
+
+
+class RecordedSemanticAssessmentResponse(_ClosedModel):
+    receipt_id: str
+    state: SemanticAssessmentOutcome
+    confidence_admissible: bool
+    metric_results: list[RecordedSemanticMetricResultResponse]
+    replayed: bool
+
+
+class SemanticWaiverResponse(_ClosedModel):
+    waiver: SemanticWaiverProjectionResponse
+
+
+class SemanticWaiverEventsResponse(_ClosedModel):
+    events: list[ClosedSemanticMetricWaiverEvent]
+
+
+class RequestedSemanticWaiverResponse(_ClosedModel):
+    waiver_id: str
+    status: Literal["requested"]
+    scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ReviewedSemanticWaiverResponse(_ClosedModel):
+    waiver_id: str
+    waiver_revision: int = Field(ge=1)
+    status: Literal["approved", "rejected"]
+    reviewer_id: str
+    replayed: bool
+
+
+class RevokedSemanticWaiverResponse(_ClosedModel):
+    waiver_id: str
+    waiver_revision: int = Field(ge=1)
+    status: Literal["revoked"]
+    replayed: bool
+
+
+class RevalidatedSemanticWaiverResponse(_ClosedModel):
+    waiver_id: str
+    waiver_revision: int = Field(ge=1)
+    status: Literal["approved", "expired", "anchor_stale", "revoked"]
+    current: bool
+    reason_code: SemanticWaiverRevalidationReasonCode
+    replayed: bool
+
+
+class SemanticSkipResponse(_ClosedModel):
+    skip: SemanticSkipProjectionResponse
+
+
+class CreatedSemanticSkipResponse(_ClosedModel):
+    skip_id: str
+    scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_by: str
+
+
+class RevokedSemanticSkipResponse(_ClosedModel):
+    skip_id: str
+    skip_revision: int = Field(ge=1)
+    status: Literal["revoked"]
+    revoked_by: str
+    replayed: bool
 
 
 class GuidelineRevisionAuthorityResponse(_ClosedModel):
@@ -935,30 +1223,9 @@ class GuidelineImpactReceiptResponse(_ClosedModel):
     receipt: ClosedGuidelineImpactReceipt
 
 
-class PolicyComplianceReceiptResponse(_ClosedModel):
-    receipt: ClosedPolicyComplianceReceipt
-
-
 class AdoptionResponse(_ClosedModel):
     binding: ClosedBoardGuidelineBinding
     receipt: ClosedGuidelineImpactReceipt
-
-
-class EvaluationResponse(_ClosedModel):
-    evaluation: ClosedPolicyEvaluationResult
-
-
-class WaiverResponse(_ClosedModel):
-    waiver: ClosedPolicyWaiver
-
-
-class WaiverEventsResponse(_ClosedModel):
-    events: list[ClosedPolicyWaiverEvent]
-
-
-class WaiverMutationResponse(_ClosedModel):
-    waiver: ClosedPolicyWaiver
-    event: ClosedPolicyWaiverEvent
 
 
 class PolicyGovernanceFacade(Protocol):
@@ -999,74 +1266,267 @@ _OPERATION_TYPES: dict[str, tuple[str, str]] = {
         "AdoptGuidelineRevisionCommand",
         "AdoptGuidelineRevisionUseCase",
     ),
-    "evaluate_compliance": (
-        "EvaluatePolicyComplianceCommand",
-        "EvaluatePolicyComplianceUseCase",
+}
+
+_SEMANTIC_OPERATION_TYPES: dict[str, tuple[str, str, str]] = {
+    "record_semantic_assessment": (
+        "okto_pulse.core.application.use_cases.policy_governance",
+        "RecordSemanticGuidelineAssessmentCommand",
+        "RecordSemanticGuidelineAssessmentUseCase",
     ),
-    "list_compliance_receipts": (
-        "ListPolicyComplianceReceiptsCommand",
-        "ListPolicyComplianceReceiptsUseCase",
+    "list_semantic_assessments": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "ListSemanticGuidelineAssessmentsCommand",
+        "ListSemanticGuidelineAssessmentsUseCase",
     ),
-    "get_compliance_receipt": (
-        "GetPolicyComplianceReceiptCommand",
-        "GetPolicyComplianceReceiptUseCase",
+    "get_semantic_assessment": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "GetSemanticGuidelineAssessmentCommand",
+        "GetSemanticGuidelineAssessmentUseCase",
     ),
-    "get_current_compliance": (
-        "GetCurrentPolicyComplianceReceiptCommand",
-        "GetCurrentPolicyComplianceReceiptUseCase",
+    "get_current_semantic_assessment": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "GetCurrentSemanticGuidelineAssessmentCommand",
+        "GetCurrentSemanticGuidelineAssessmentUseCase",
     ),
-    "list_compliance_findings": (
-        "ListPolicyComplianceFindingsCommand",
-        "ListPolicyComplianceFindingsUseCase",
+    "list_semantic_findings": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "ListSemanticGuidelineFindingsCommand",
+        "ListSemanticGuidelineFindingsUseCase",
     ),
-    "list_waivers": ("ListPolicyWaiversCommand", "ListPolicyWaiversUseCase"),
-    "get_waiver": ("GetPolicyWaiverCommand", "GetPolicyWaiverUseCase"),
-    "list_waiver_events": (
-        "ListPolicyWaiverEventsCommand",
-        "ListPolicyWaiverEventsUseCase",
+    "list_semantic_waivers": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "ListSemanticMetricWaiversCommand",
+        "ListSemanticMetricWaiversUseCase",
     ),
-    "request_waiver": (
-        "RequestPolicyWaiverCommand",
-        "RequestPolicyWaiverUseCase",
+    "get_semantic_waiver": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "GetSemanticMetricWaiverCommand",
+        "GetSemanticMetricWaiverUseCase",
     ),
-    "review_waiver": (
-        "ReviewPolicyWaiverCommand",
-        "ReviewPolicyWaiverUseCase",
+    "list_semantic_waiver_events": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "ListSemanticMetricWaiverEventsCommand",
+        "ListSemanticMetricWaiverEventsUseCase",
     ),
-    "revoke_waiver": (
-        "RevokePolicyWaiverCommand",
-        "RevokePolicyWaiverUseCase",
+    "request_semantic_waiver": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "RequestSemanticMetricWaiverCommand",
+        "RequestSemanticMetricWaiverUseCase",
     ),
-    "revalidate_waiver": (
-        "RevalidatePolicyWaiverCommand",
-        "RevalidatePolicyWaiverUseCase",
+    "review_semantic_waiver": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "ReviewSemanticMetricWaiverCommand",
+        "ReviewSemanticMetricWaiverUseCase",
+    ),
+    "revoke_semantic_waiver": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "RevokeSemanticMetricWaiverCommand",
+        "RevokeSemanticMetricWaiverUseCase",
+    ),
+    "revalidate_semantic_waiver": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "RevalidateSemanticMetricWaiverCommand",
+        "RevalidateSemanticMetricWaiverUseCase",
+    ),
+    "list_semantic_skips": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "ListSemanticPolicySkipsCommand",
+        "ListSemanticPolicySkipsUseCase",
+    ),
+    "get_semantic_skip": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "GetSemanticPolicySkipCommand",
+        "GetSemanticPolicySkipUseCase",
+    ),
+    "create_semantic_skip": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "CreateSemanticPolicySkipCommand",
+        "CreateSemanticPolicySkipUseCase",
+    ),
+    "revoke_semantic_skip": (
+        "okto_pulse.core.application.use_cases.semantic_guideline_governance",
+        "RevokeSemanticPolicySkipCommand",
+        "RevokeSemanticPolicySkipUseCase",
     ),
 }
 
 
-def _domain_rule(payload: dict[str, Any]) -> object:
+def _domain_metric(payload: dict[str, Any]) -> object:
     policy = import_module("okto_pulse.core.domain.guideline_policy")
-    predicates = tuple(
-        policy.GuidelinePredicate(
-            item["predicate_code"],
-            tuple(sorted(item["parameters"].items())),
-        )
-        for item in payload["predicates"]
-    )
-    return policy.GuidelineRule(
-        rule_id=payload["rule_id"],
+    return policy.GuidelineMetric(
+        metric_id=payload["metric_id"],
         code=payload["code"],
         title=payload["title"],
         description=payload["description"],
+        evaluation_rubric=payload["evaluation_rubric"],
         target_entity_types=tuple(
             policy.PolicyEntityType(item) for item in payload["target_entity_types"]
         ),
-        predicates=predicates,
-        enforcement=policy.GuidelineEnforcement(payload["enforcement"]),
-        operator=policy.GuidelineRuleOperator(payload["operator"]),
-        waivable=payload["waivable"],
-        policy_class=payload["policy_class"],
+        direction=policy.GuidelineMetricDirection(payload["direction"]),
+        default_threshold=payload["default_threshold"],
     )
+
+
+def _semantic_evidence(payload: dict[str, Any]) -> object:
+    quality = import_module("okto_pulse.core.domain.quality_assessment")
+    return quality.EvidenceRef(**payload)
+
+
+def _semantic_projection(value: object) -> object:
+    projection = import_module(
+        "okto_pulse.core.domain.guideline_semantic_projection"
+    )
+    return projection.SemanticGuidelineProjection(value)
+
+
+def _adapt_semantic_values(
+    operation: str,
+    values: dict[str, Any],
+    *,
+    codec: PolicyCursorCodec | None,
+    actor: Any,
+) -> dict[str, Any]:
+    policy = import_module("okto_pulse.core.domain.guideline_policy")
+    ports = import_module("okto_pulse.core.ports.guideline_policy")
+    exceptions = import_module(
+        "okto_pulse.core.domain.guideline_semantic_exceptions"
+    )
+    adapted = dict(values)
+    projection_value = adapted.get("projection")
+    if projection_value is not None:
+        adapted["projection"] = _semantic_projection(projection_value)
+    subject_type = adapted.pop("subject_type", None)
+    if subject_type is not None:
+        adapted["entity_type"] = subject_type
+    entity_type = adapted.get("entity_type")
+    if entity_type is not None:
+        adapted["entity_type"] = policy.PolicyEntityType(entity_type)
+    currentness = adapted.get("currentness")
+    if currentness is not None:
+        adapted["currentness"] = policy.PolicyCurrentness(currentness)
+
+    query_type_and_kind = {
+        "list_semantic_assessments": (
+            ports.SemanticAssessmentListQuery,
+            "semantic_assessment",
+        ),
+        "list_semantic_findings": (
+            ports.SemanticFindingListQuery,
+            "semantic_finding",
+        ),
+        "list_semantic_waivers": (
+            ports.SemanticWaiverListQuery,
+            "semantic_waiver",
+        ),
+        "list_semantic_skips": (
+            ports.SemanticSkipListQuery,
+            "semantic_skip",
+        ),
+    }
+    query_contract = query_type_and_kind.get(operation)
+    if query_contract is not None:
+        if codec is None:  # pragma: no cover - facade invariant
+            raise RuntimeError("guideline_policy_cursor_codec_missing")
+        query_type, cursor_kind = query_contract
+        token = adapted.pop("cursor", None)
+        adapted["cursor"] = (
+            None
+            if token is None
+            else codec.decode(token, expected_kind=cursor_kind)
+        )
+        status_value = adapted.get("status")
+        if status_value is not None:
+            status_type = (
+                exceptions.SemanticMetricWaiverStatus
+                if operation == "list_semantic_waivers"
+                else exceptions.SemanticPolicySkipStatus
+            )
+            adapted["status"] = status_type(status_value)
+        outcome_value = adapted.get("outcome")
+        if outcome_value is not None:
+            assessment = import_module(
+                "okto_pulse.core.domain.guideline_semantic_assessment"
+            )
+            outcome_type = (
+                assessment.SemanticAssessmentState
+                if operation == "list_semantic_assessments"
+                else assessment.SemanticMetricOutcome
+            )
+            adapted["outcome"] = outcome_type(outcome_value)
+        return {"query": query_type(**adapted)}
+
+    if operation == "record_semantic_assessment":
+        assessment = import_module(
+            "okto_pulse.core.domain.guideline_semantic_assessment"
+        )
+        quality = import_module(
+            "okto_pulse.core.domain.quality_assessment"
+        )
+        metric_results = tuple(
+            assessment.SemanticMetricAssessment(
+                metric_id=item["metric_id"],
+                score=item["score"],
+                rationale=item["rationale"],
+                evidence_refs=tuple(
+                    _semantic_evidence(evidence)
+                    for evidence in item["evidence_refs"]
+                ),
+                pinpoints=tuple(
+                    quality.UnboundFindingAnchor(
+                        anchor_type=quality.FindingAnchorType(
+                            pinpoint["anchor_type"]
+                        ),
+                        anchor_ref=pinpoint.get("anchor_ref"),
+                        excerpt_hash=pinpoint.get("excerpt_hash"),
+                    )
+                    for pinpoint in item["pinpoints"]
+                ),
+            )
+            for item in adapted.pop("metric_results")
+        )
+        subject = policy.PolicySubjectRef(
+            board_id=adapted["board_id"],
+            entity_type=adapted.pop("entity_type"),
+            subject_id=adapted.pop("subject_id"),
+            subject_version=adapted.pop("expected_subject_version"),
+        )
+        assessor_payload = adapted.pop("assessor")
+        submission = assessment.SemanticGuidelineAssessmentSubmission(
+            subject=subject,
+            binding_id=adapted.pop("binding_id"),
+            expected_binding_revision=adapted.pop(
+                "expected_binding_revision"
+            ),
+            guideline_revision_id=adapted.pop(
+                "guideline_revision_id"
+            ),
+            idempotency_key=adapted.pop("idempotency_key"),
+            confidence=adapted.pop("confidence"),
+            assessor=assessment.SemanticAssessmentAssessor(
+                agent_id=assessor_payload["agent_id"],
+                model_id=assessor_payload.get("model_id"),
+            ),
+            metric_results=metric_results,
+        )
+        adapted["submission"] = submission
+        return adapted
+
+    if operation in {
+        "request_semantic_waiver",
+        "review_semantic_waiver",
+        "revoke_semantic_waiver",
+        "revalidate_semantic_waiver",
+    }:
+        adapted["evidence_refs"] = tuple(
+            _semantic_evidence(item)
+            for item in adapted.get("evidence_refs", ())
+        )
+    if operation == "review_semantic_waiver":
+        adapted["decision"] = exceptions.SemanticMetricWaiverEventType(
+            adapted["decision"]
+        )
+    return adapted
 
 
 def _adapt_values(
@@ -1074,9 +1534,17 @@ def _adapt_values(
     values: dict[str, Any],
     *,
     codec: PolicyCursorCodec | None,
+    actor: Any,
 ) -> dict[str, Any]:
     """Convert REST enums/nested models to Core-owned immutable values."""
 
+    if operation in _SEMANTIC_OPERATION_TYPES:
+        return _adapt_semantic_values(
+            operation,
+            values,
+            codec=codec,
+            actor=actor,
+        )
     adapted = dict(values)
     policy = import_module("okto_pulse.core.domain.guideline_policy")
     compliance = import_module("okto_pulse.core.domain.guideline_compliance")
@@ -1084,9 +1552,6 @@ def _adapt_values(
     cursor_kind = {
         "list_revisions": "revision",
         "list_impact_items": "impact",
-        "list_compliance_receipts": "receipt",
-        "list_compliance_findings": "finding",
-        "list_waivers": "waiver",
     }.get(operation)
     if cursor_kind is not None:
         if codec is None:  # pragma: no cover - facade invariant
@@ -1099,18 +1564,12 @@ def _adapt_values(
         )
     if "entity_type" in adapted and isinstance(adapted["entity_type"], str):
         adapted["entity_type"] = policy.PolicyEntityType(adapted["entity_type"])
-    if "outcome" in adapted and isinstance(adapted["outcome"], str):
-        adapted["outcome"] = policy.PolicyEvaluationOutcome(adapted["outcome"])
-    if "currentness" in adapted and isinstance(adapted["currentness"], str):
-        adapted["currentness"] = policy.PolicyCurrentness(adapted["currentness"])
     if "status" in adapted and isinstance(adapted["status"], str):
-        if operation == "list_waivers":
-            adapted["status"] = policy.PolicyWaiverStatus(adapted["status"])
-        elif operation == "retire_guideline":
+        if operation == "retire_guideline":
             adapted["status"] = policy.GuidelineLifecycleStatus(adapted["status"])
-    if "proposed_default_enforcement" in adapted:
-        adapted["proposed_default_enforcement"] = policy.GuidelineEnforcement(
-            adapted["proposed_default_enforcement"]
+    if "proposed_enforcement" in adapted:
+        adapted["proposed_enforcement"] = policy.GuidelineEnforcement(
+            adapted["proposed_enforcement"]
         )
     if "projection" in adapted:
         adapted["projection"] = compliance.PolicyProjection(adapted["projection"])
@@ -1121,23 +1580,12 @@ def _adapt_values(
             title=patch.get("title"),
             content=patch.get("content"),
             tags=(tuple(patch["tags"]) if patch.get("tags") is not None else None),
-            rules=(
-                tuple(_domain_rule(item) for item in patch["rules"])
-                if patch.get("rules") is not None
+            metrics=(
+                tuple(_domain_metric(item) for item in patch["metrics"])
+                if patch.get("metrics") is not None
                 else None
             ),
         )
-    if operation in {
-        "request_waiver",
-        "review_waiver",
-        "revoke_waiver",
-        "revalidate_waiver",
-    }:
-        adapted["evidence_refs"] = tuple(adapted.get("evidence_refs") or ())
-    if operation == "review_waiver":
-        adapted["approve"] = adapted.pop("decision") == "approve"
-    if operation == "request_waiver":
-        adapted["reason"] = adapted.pop("justification")
     if operation == "list_impact_items":
         guideline_id = adapted.pop("guideline_id")
         item_kind = adapted.pop("item_kind", None)
@@ -1153,12 +1601,6 @@ def _adapt_values(
                 ),
             )
         }
-    elif operation == "list_compliance_receipts":
-        adapted = {"query": ports.PolicyComplianceReceiptListQuery(**adapted)}
-    elif operation == "list_compliance_findings":
-        adapted = {"query": ports.PolicyComplianceFindingListQuery(**adapted)}
-    elif operation == "list_waivers":
-        adapted = {"query": ports.PolicyWaiverListQuery(**adapted)}
     return adapted
 
 
@@ -1176,9 +1618,10 @@ class CorePolicyGovernanceFacade:
         paginated = operation in {
             "list_revisions",
             "list_impact_items",
-            "list_compliance_receipts",
-            "list_compliance_findings",
-            "list_waivers",
+            "list_semantic_assessments",
+            "list_semantic_findings",
+            "list_semantic_waivers",
+            "list_semantic_skips",
         }
         codec = None
         if paginated:
@@ -1188,15 +1631,31 @@ class CorePolicyGovernanceFacade:
             )
 
             codec = policy_cursor_codec_from_settings(get_settings())
-        command_name, use_case_name = _OPERATION_TYPES[operation]
-        module = import_module(
-            "okto_pulse.core.application.use_cases.policy_governance"
-        )
+        semantic_contract = _SEMANTIC_OPERATION_TYPES.get(operation)
+        if semantic_contract is None:
+            command_name, use_case_name = _OPERATION_TYPES[operation]
+            module_name = (
+                "okto_pulse.core.application.use_cases.policy_governance"
+            )
+        else:
+            module_name, command_name, use_case_name = semantic_contract
+        module = import_module(module_name)
         command_type = getattr(module, command_name)
         use_case_type = getattr(module, use_case_name)
-        command = command_type(**_adapt_values(operation, values, codec=codec))
+        command = command_type(
+            **_adapt_values(
+                operation,
+                values,
+                codec=codec,
+                actor=actor,
+            )
+        )
         result = await use_case_type().execute(command, actor=actor, uow=uow)
-        return _project_core_result(result, codec=codec)
+        return _project_core_result(
+            result,
+            codec=codec,
+            operation=operation,
+        )
 
 
 _DEFAULT_FACADE = CorePolicyGovernanceFacade()
@@ -1243,6 +1702,36 @@ def _wire_result(result: object) -> object:
     return jsonable_encoder(result)
 
 
+def _restore_required_nones(item: object, payload: object) -> None:
+    """Recursively re-add required-but-null dataclass fields after encoding.
+
+    ``exclude_none`` drops nulls at EVERY depth, but the closed response
+    models require explicit nulls for no-default nullable fields at every
+    depth too (e.g. ``metric_results[].pinpoints[].excerpt_hash``). The
+    top-level-only restore missed nested projections and turned the first
+    real detail/full page into a 500.
+    """
+
+    if is_dataclass(item) and not isinstance(item, type):
+        if not isinstance(payload, dict):
+            return
+        for dataclass_field in fields(item):
+            value = getattr(item, dataclass_field.name)
+            required = (
+                dataclass_field.default is MISSING
+                and dataclass_field.default_factory is MISSING
+            )
+            if value is None:
+                if required:
+                    payload[dataclass_field.name] = None
+                continue
+            _restore_required_nones(value, payload.get(dataclass_field.name))
+        return
+    if isinstance(item, tuple | list) and isinstance(payload, list):
+        for child, child_payload in zip(item, payload, strict=False):
+            _restore_required_nones(child, child_payload)
+
+
 def _jsonable_page_items(items: object) -> object:
     """Keep projections slim without deleting required nullable fields.
 
@@ -1250,21 +1739,14 @@ def _jsonable_page_items(items: object) -> object:
     permits ``None``. Preserve those explicit nulls so validation and the
     route's ``response_model_exclude_unset`` serialization retain them, while
     optional projection-only fields stay absent from the Pydantic field set.
+    The restore is recursive: nested projections (metric results, pinpoints,
+    evidence refs) carry required nullable fields as well.
     """
 
     encoded = jsonable_encoder(items, exclude_none=True)
     if not isinstance(items, tuple | list) or not isinstance(encoded, list):
         return encoded
-    for item, payload in zip(items, encoded, strict=True):
-        if not is_dataclass(item) or not isinstance(payload, dict):
-            continue
-        for dataclass_field in fields(item):
-            required = (
-                dataclass_field.default is MISSING
-                and dataclass_field.default_factory is MISSING
-            )
-            if required and getattr(item, dataclass_field.name) is None:
-                payload[dataclass_field.name] = None
+    _restore_required_nones(list(items), encoded)
     return encoded
 
 
@@ -1272,21 +1754,109 @@ def _project_core_result(
     result: object,
     *,
     codec: PolicyCursorCodec | None,
+    operation: str = "",
 ) -> object:
     """Keep Core cursors opaque while preserving its immutable projections."""
 
     page = getattr(result, "page", None)
-    if page is None:
-        return result
-    if codec is None:  # pragma: no cover - facade invariant
-        raise RuntimeError("guideline_policy_cursor_codec_missing")
-    next_cursor = getattr(page, "next_cursor", None)
-    return {
-        "items": _jsonable_page_items(page.items),
-        "limit": page.limit,
-        "has_more": page.has_more,
-        "next_cursor": codec.encode(next_cursor) if next_cursor is not None else None,
-    }
+    if page is not None:
+        if codec is None:  # pragma: no cover - facade invariant
+            raise RuntimeError("guideline_policy_cursor_codec_missing")
+        next_cursor = getattr(page, "next_cursor", None)
+        projected = {
+            "items": _jsonable_page_items(page.items),
+            "has_more": page.has_more,
+            "next_cursor": (
+                codec.encode(next_cursor)
+                if next_cursor is not None
+                else None
+            ),
+        }
+        if operation.startswith("list_semantic_"):
+            projected["projection"] = page.projection
+        else:
+            projected["limit"] = page.limit
+        return projected
+
+    if operation == "record_semantic_assessment":
+        assessment = result.assessment
+        receipt = assessment.receipt
+        return {
+            "receipt_id": receipt.receipt_id,
+            "state": receipt.state,
+            "confidence_admissible": receipt.confidence_admissible,
+            "metric_results": [
+                {
+                    "metric_result_id": metric.metric_result_id,
+                    "metric_id": metric.metric_id,
+                    "metric_code": metric.metric_code,
+                    "score": metric.score,
+                    "direction": metric.direction,
+                    "default_threshold": metric.default_threshold,
+                    "effective_threshold": metric.effective_threshold,
+                    "threshold_source": metric.threshold_source,
+                    "outcome": metric.outcome,
+                }
+                for metric in receipt.metric_results
+            ],
+            "replayed": assessment.replayed,
+        }
+
+    if operation in {
+        "request_semantic_waiver",
+        "review_semantic_waiver",
+        "revoke_semantic_waiver",
+    }:
+        mutation = result.mutation
+        waiver = mutation.waiver
+        if operation == "request_semantic_waiver":
+            return {
+                "waiver_id": waiver.waiver_id,
+                "status": waiver.status,
+                "scope_digest": waiver.scope_digest,
+            }
+        if operation == "review_semantic_waiver":
+            return {
+                "waiver_id": waiver.waiver_id,
+                "waiver_revision": waiver.waiver_revision,
+                "status": waiver.status,
+                "reviewer_id": mutation.event.actor_id,
+                "replayed": result.replayed,
+            }
+        return {
+            "waiver_id": waiver.waiver_id,
+            "waiver_revision": waiver.waiver_revision,
+            "status": waiver.status,
+            "replayed": result.replayed,
+        }
+
+    if operation == "revalidate_semantic_waiver":
+        return {
+            "waiver_id": result.waiver_id,
+            "waiver_revision": result.waiver_revision,
+            "status": result.status,
+            "current": result.current,
+            "reason_code": result.reason_code,
+            "replayed": result.replayed,
+        }
+
+    if operation in {"create_semantic_skip", "revoke_semantic_skip"}:
+        skip = result.mutation.skip
+        if operation == "create_semantic_skip":
+            return {
+                "skip_id": skip.skip_id,
+                "scope_digest": skip.scope_digest,
+                "created_by": skip.created_by,
+            }
+        return {
+            "skip_id": skip.skip_id,
+            "skip_revision": skip.skip_revision,
+            "status": skip.status,
+            "revoked_by": skip.revoked_by,
+            "replayed": result.replayed,
+        }
+
+    return result
 
 
 async def _execute(
@@ -1315,9 +1885,9 @@ async def _execute(
 
 @router.get(
     "/boards/{board_id}/guidelines/export",
-    response_model=GuidelineExportV2Request,
+    response_model=GuidelineExportV3Request,
 )
-async def export_guideline_policy_v2(
+async def export_guideline_policy_v3(
     board_id: BoardId,
     guideline_ids: list[GuidelineId] | None = Query(default=None),
     include_binding_history: bool = Query(default=True),
@@ -1326,11 +1896,11 @@ async def export_guideline_policy_v2(
 ):
     from okto_pulse.core.application.use_cases.guideline_import_export import (
         ExportGuidelinePolicyCommand,
-        ExportGuidelinePolicyV2UseCase,
+        ExportGuidelinePolicyV3UseCase,
     )
 
     try:
-        result = await ExportGuidelinePolicyV2UseCase().execute(
+        result = await ExportGuidelinePolicyV3UseCase().execute(
             ExportGuidelinePolicyCommand(
                 board_id=board_id,
                 guideline_ids=tuple(guideline_ids or ()),
@@ -1349,9 +1919,9 @@ async def export_guideline_policy_v2(
     response_model=GuidelineImportResultResponse,
     response_model_exclude_none=True,
 )
-async def import_guideline_policy_v2(
+async def import_guideline_policy_v3(
     board_id: BoardId,
-    envelope: GuidelineExportV2Request,
+    envelope: GuidelineExportV3Request,
     dry_run: bool = Query(default=False),
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
@@ -1632,20 +2202,20 @@ async def adopt_guideline_revision(
 
 
 @router.post(
-    "/boards/{board_id}/policy-compliance/evaluations",
+    "/boards/{board_id}/semantic-guideline-assessments",
     status_code=status.HTTP_201_CREATED,
-    response_model=EvaluationResponse,
+    response_model=RecordedSemanticAssessmentResponse,
 )
-async def evaluate_policy_compliance(
+async def record_semantic_guideline_assessment(
     board_id: BoardId,
-    data: EvaluatePolicyComplianceRequest,
+    data: RecordSemanticGuidelineAssessmentRequest,
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     return await _execute(
         facade,
-        "evaluate_compliance",
+        "record_semantic_assessment",
         {"board_id": board_id, **data.model_dump(mode="python")},
         principal=principal,
         board_id=board_id,
@@ -1654,38 +2224,60 @@ async def evaluate_policy_compliance(
 
 
 @router.get(
-    "/boards/{board_id}/policy-compliance/receipts",
-    response_model=PolicyComplianceReceiptPageResponse,
+    "/boards/{board_id}/semantic-guideline-assessments",
+    response_model=SemanticAssessmentPageResponse,
     response_model_exclude_unset=True,
 )
-async def list_policy_compliance_receipts(
+async def list_semantic_guideline_assessments(
     board_id: BoardId,
-    limit: int = Query(POLICY_PAGE_LIMIT_DEFAULT, ge=1, le=POLICY_PAGE_LIMIT_MAX),
-    cursor: str | None = Query(default=None),
-    entity_type: PolicyEntityType | None = Query(default=None),
+    subject_type: PolicyEntityType | None = Query(default=None),
     subject_id: str | None = Query(
         default=None,
         min_length=1,
         max_length=POLICY_SUBJECT_ID_MAX_LENGTH,
     ),
-    outcome: PolicyEvaluationOutcome | None = Query(default=None),
+    guideline_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=GUIDELINE_ID_MAX_LENGTH,
+    ),
+    binding_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=GUIDELINE_BINDING_ID_MAX_LENGTH,
+    ),
+    outcome: SemanticAssessmentOutcome | None = Query(default=None),
     currentness: PolicyCurrentness | None = Query(default=None),
-    projection: PolicyProjection = Query(PolicyProjection.SUMMARY),
+    projection: SemanticPolicyProjection = Query(
+        SemanticPolicyProjection.SUMMARY
+    ),
+    limit: int = Query(
+        POLICY_PAGE_LIMIT_DEFAULT,
+        ge=1,
+        le=POLICY_PAGE_LIMIT_MAX,
+    ),
+    cursor: str | None = Query(default=None),
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     return await _execute(
         facade,
-        "list_compliance_receipts",
+        "list_semantic_assessments",
         {
             "board_id": board_id,
             "limit": limit,
             "cursor": cursor,
-            "entity_type": entity_type.value if entity_type else None,
+            "subject_type": (
+                subject_type.value if subject_type else None
+            ),
             "subject_id": subject_id,
+            "guideline_id": guideline_id,
+            "binding_id": binding_id,
             "outcome": outcome.value if outcome else None,
-            "currentness": currentness.value if currentness else None,
+            "currentness": (
+                currentness.value if currentness else None
+            ),
             "projection": projection.value,
         },
         principal=principal,
@@ -1695,16 +2287,25 @@ async def list_policy_compliance_receipts(
 
 
 @router.get(
-    "/boards/{board_id}/policy-compliance/receipts/current",
-    response_model=PolicyComplianceReceiptResponse,
+    "/boards/{board_id}/semantic-guideline-assessments/current",
+    response_model=SemanticAssessmentResponse,
+    response_model_exclude_unset=True,
 )
-async def get_current_policy_compliance_receipt(
+async def get_current_semantic_guideline_assessment(
     board_id: BoardId,
-    entity_type: PolicyEntityType = Query(...),
+    subject_type: PolicyEntityType = Query(...),
     subject_id: str = Query(
         ...,
         min_length=1,
         max_length=POLICY_SUBJECT_ID_MAX_LENGTH,
+    ),
+    binding_id: str = Query(
+        ...,
+        min_length=1,
+        max_length=GUIDELINE_BINDING_ID_MAX_LENGTH,
+    ),
+    projection: SemanticPolicyProjection = Query(
+        SemanticPolicyProjection.FULL
     ),
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
@@ -1712,11 +2313,13 @@ async def get_current_policy_compliance_receipt(
 ):
     return await _execute(
         facade,
-        "get_current_compliance",
+        "get_current_semantic_assessment",
         {
             "board_id": board_id,
-            "entity_type": entity_type.value,
+            "subject_type": subject_type.value,
             "subject_id": subject_id,
+            "binding_id": binding_id,
+            "projection": projection.value,
         },
         principal=principal,
         board_id=board_id,
@@ -1725,20 +2328,28 @@ async def get_current_policy_compliance_receipt(
 
 
 @router.get(
-    "/boards/{board_id}/policy-compliance/receipts/{receipt_id}",
-    response_model=PolicyComplianceReceiptResponse,
+    "/boards/{board_id}/semantic-guideline-assessments/{receipt_id}",
+    response_model=SemanticAssessmentResponse,
+    response_model_exclude_unset=True,
 )
-async def get_policy_compliance_receipt(
+async def get_semantic_guideline_assessment(
     board_id: BoardId,
     receipt_id: ComplianceReceiptId,
+    projection: SemanticPolicyProjection = Query(
+        SemanticPolicyProjection.FULL
+    ),
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     return await _execute(
         facade,
-        "get_compliance_receipt",
-        {"board_id": board_id, "receipt_id": receipt_id},
+        "get_semantic_assessment",
+        {
+            "board_id": board_id,
+            "receipt_id": receipt_id,
+            "projection": projection.value,
+        },
         principal=principal,
         board_id=board_id,
         uow=uow,
@@ -1746,14 +2357,12 @@ async def get_policy_compliance_receipt(
 
 
 @router.get(
-    "/boards/{board_id}/policy-compliance/findings",
-    response_model=PolicyComplianceFindingPageResponse,
+    "/boards/{board_id}/semantic-guideline-findings",
+    response_model=SemanticFindingPageResponse,
     response_model_exclude_unset=True,
 )
-async def list_policy_compliance_findings(
+async def list_semantic_guideline_findings(
     board_id: BoardId,
-    limit: int = Query(POLICY_PAGE_LIMIT_DEFAULT, ge=1, le=POLICY_PAGE_LIMIT_MAX),
-    cursor: str | None = Query(default=None),
     receipt_id: str | None = Query(
         default=None,
         min_length=1,
@@ -1764,33 +2373,51 @@ async def list_policy_compliance_findings(
         min_length=1,
         max_length=GUIDELINE_ID_MAX_LENGTH,
     ),
-    rule_id: str | None = Query(
+    binding_id: str | None = Query(
         default=None,
         min_length=1,
-        max_length=POLICY_RULE_ID_MAX_LENGTH,
+        max_length=GUIDELINE_BINDING_ID_MAX_LENGTH,
     ),
+    metric_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=POLICY_METRIC_ID_MAX_LENGTH,
+    ),
+    subject_type: PolicyEntityType | None = Query(default=None),
     subject_id: str | None = Query(
         default=None,
         min_length=1,
         max_length=POLICY_SUBJECT_ID_MAX_LENGTH,
     ),
-    outcome: PolicyEvaluationOutcome | None = Query(default=None),
-    projection: PolicyProjection = Query(PolicyProjection.SUMMARY),
+    outcome: SemanticMetricOutcome | None = Query(default=None),
+    projection: SemanticPolicyProjection = Query(
+        SemanticPolicyProjection.SUMMARY
+    ),
+    limit: int = Query(
+        POLICY_PAGE_LIMIT_DEFAULT,
+        ge=1,
+        le=POLICY_PAGE_LIMIT_MAX,
+    ),
+    cursor: str | None = Query(default=None),
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     return await _execute(
         facade,
-        "list_compliance_findings",
+        "list_semantic_findings",
         {
             "board_id": board_id,
             "limit": limit,
             "cursor": cursor,
             "receipt_id": receipt_id,
             "guideline_id": guideline_id,
-            "rule_id": rule_id,
             "subject_id": subject_id,
+            "subject_type": (
+                subject_type.value if subject_type else None
+            ),
+            "binding_id": binding_id,
+            "metric_id": metric_id,
             "outcome": outcome.value if outcome else None,
             "projection": projection.value,
         },
@@ -1802,18 +2429,21 @@ async def list_policy_compliance_findings(
 
 @router.get(
     "/boards/{board_id}/policy-waivers",
-    response_model=PolicyWaiverPageResponse,
+    response_model=SemanticWaiverPageResponse,
     response_model_exclude_unset=True,
 )
-async def list_policy_waivers(
+async def list_semantic_metric_waivers(
     board_id: BoardId,
     evaluated_at: datetime = Query(...),
-    limit: int = Query(POLICY_PAGE_LIMIT_DEFAULT, ge=1, le=POLICY_PAGE_LIMIT_MAX),
-    cursor: str | None = Query(default=None),
     finding_id: str | None = Query(
         default=None,
         min_length=1,
         max_length=POLICY_FINDING_ID_MAX_LENGTH,
+    ),
+    metric_result_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=POLICY_RECEIPT_ID_MAX_LENGTH,
     ),
     receipt_id: str | None = Query(
         default=None,
@@ -1825,49 +2455,57 @@ async def list_policy_waivers(
         min_length=1,
         max_length=GUIDELINE_ID_MAX_LENGTH,
     ),
-    revision_id: str | None = Query(
+    binding_id: str | None = Query(
         default=None,
         min_length=1,
-        max_length=GUIDELINE_REVISION_ID_MAX_LENGTH,
+        max_length=GUIDELINE_BINDING_ID_MAX_LENGTH,
     ),
-    rule_id: str | None = Query(
+    metric_id: str | None = Query(
         default=None,
         min_length=1,
-        max_length=POLICY_RULE_ID_MAX_LENGTH,
+        max_length=POLICY_METRIC_ID_MAX_LENGTH,
     ),
-    entity_type: PolicyEntityType | None = Query(default=None),
+    subject_type: PolicyEntityType | None = Query(default=None),
     subject_id: str | None = Query(
         default=None,
         min_length=1,
         max_length=POLICY_SUBJECT_ID_MAX_LENGTH,
     ),
-    subject_version: int | None = Query(
+    waiver_status: SemanticWaiverStatus | None = Query(
         default=None,
-        ge=1,
-        le=POLICY_SQL_INTEGER_MAX,
+        alias="status",
     ),
-    waiver_status: PolicyWaiverStatus | None = Query(default=None, alias="status"),
-    projection: PolicyProjection = Query(PolicyProjection.SUMMARY),
+    projection: SemanticPolicyProjection = Query(
+        SemanticPolicyProjection.SUMMARY
+    ),
+    limit: int = Query(
+        POLICY_PAGE_LIMIT_DEFAULT,
+        ge=1,
+        le=POLICY_PAGE_LIMIT_MAX,
+    ),
+    cursor: str | None = Query(default=None),
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     return await _execute(
         facade,
-        "list_waivers",
+        "list_semantic_waivers",
         {
             "board_id": board_id,
             "evaluated_at": evaluated_at,
             "limit": limit,
             "cursor": cursor,
             "finding_id": finding_id,
+            "metric_result_id": metric_result_id,
             "receipt_id": receipt_id,
             "guideline_id": guideline_id,
-            "revision_id": revision_id,
-            "rule_id": rule_id,
-            "entity_type": entity_type.value if entity_type else None,
+            "binding_id": binding_id,
+            "metric_id": metric_id,
+            "subject_type": (
+                subject_type.value if subject_type else None
+            ),
             "subject_id": subject_id,
-            "subject_version": subject_version,
             "status": waiver_status.value if waiver_status else None,
             "projection": projection.value,
         },
@@ -1880,18 +2518,18 @@ async def list_policy_waivers(
 @router.post(
     "/boards/{board_id}/policy-waivers",
     status_code=status.HTTP_201_CREATED,
-    response_model=WaiverMutationResponse,
+    response_model=RequestedSemanticWaiverResponse,
 )
-async def request_policy_waiver(
+async def request_semantic_metric_waiver(
     board_id: BoardId,
-    data: RequestPolicyWaiverRequest,
+    data: RequestSemanticWaiverRequest,
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     return await _execute(
         facade,
-        "request_waiver",
+        "request_semantic_waiver",
         {"board_id": board_id, **data.model_dump(mode="python")},
         principal=principal,
         board_id=board_id,
@@ -1901,9 +2539,9 @@ async def request_policy_waiver(
 
 @router.get(
     "/boards/{board_id}/policy-waivers/{waiver_id}/events",
-    response_model=WaiverEventsResponse,
+    response_model=SemanticWaiverEventsResponse,
 )
-async def list_policy_waiver_events(
+async def list_semantic_metric_waiver_events(
     board_id: BoardId,
     waiver_id: WaiverId,
     principal: Principal = Depends(require_principal),
@@ -1912,7 +2550,7 @@ async def list_policy_waiver_events(
 ):
     return await _execute(
         facade,
-        "list_waiver_events",
+        "list_semantic_waiver_events",
         {"board_id": board_id, "waiver_id": waiver_id},
         principal=principal,
         board_id=board_id,
@@ -1922,19 +2560,19 @@ async def list_policy_waiver_events(
 
 @router.post(
     "/boards/{board_id}/policy-waivers/{waiver_id}/review",
-    response_model=WaiverMutationResponse,
+    response_model=ReviewedSemanticWaiverResponse,
 )
-async def review_policy_waiver(
+async def review_semantic_metric_waiver(
     board_id: BoardId,
     waiver_id: WaiverId,
-    data: ReviewPolicyWaiverRequest,
+    data: ReviewSemanticWaiverRequest,
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     return await _execute(
         facade,
-        "review_waiver",
+        "review_semantic_waiver",
         {
             "board_id": board_id,
             "waiver_id": waiver_id,
@@ -1948,19 +2586,19 @@ async def review_policy_waiver(
 
 @router.post(
     "/boards/{board_id}/policy-waivers/{waiver_id}/revoke",
-    response_model=WaiverMutationResponse,
+    response_model=RevokedSemanticWaiverResponse,
 )
-async def revoke_policy_waiver(
+async def revoke_semantic_metric_waiver(
     board_id: BoardId,
     waiver_id: WaiverId,
-    data: RevokePolicyWaiverRequest,
+    data: RevokeSemanticWaiverRequest,
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     return await _execute(
         facade,
-        "revoke_waiver",
+        "revoke_semantic_waiver",
         {
             "board_id": board_id,
             "waiver_id": waiver_id,
@@ -1974,19 +2612,19 @@ async def revoke_policy_waiver(
 
 @router.post(
     "/boards/{board_id}/policy-waivers/{waiver_id}/revalidate",
-    response_model=WaiverMutationResponse,
+    response_model=RevalidatedSemanticWaiverResponse,
 )
-async def revalidate_policy_waiver(
+async def revalidate_semantic_metric_waiver(
     board_id: BoardId,
     waiver_id: WaiverId,
-    data: RevalidatePolicyWaiverRequest,
+    data: RevalidateSemanticWaiverRequest,
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     return await _execute(
         facade,
-        "revalidate_waiver",
+        "revalidate_semantic_waiver",
         {
             "board_id": board_id,
             "waiver_id": waiver_id,
@@ -2000,19 +2638,176 @@ async def revalidate_policy_waiver(
 
 @router.get(
     "/boards/{board_id}/policy-waivers/{waiver_id}",
-    response_model=WaiverResponse,
+    response_model=SemanticWaiverResponse,
+    response_model_exclude_unset=True,
 )
-async def get_policy_waiver(
+async def get_semantic_metric_waiver(
     board_id: BoardId,
     waiver_id: WaiverId,
+    evaluated_at: datetime = Query(...),
+    projection: SemanticPolicyProjection = Query(
+        SemanticPolicyProjection.FULL
+    ),
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     return await _execute(
         facade,
-        "get_waiver",
-        {"board_id": board_id, "waiver_id": waiver_id},
+        "get_semantic_waiver",
+        {
+            "board_id": board_id,
+            "waiver_id": waiver_id,
+            "evaluated_at": evaluated_at,
+            "projection": projection.value,
+        },
+        principal=principal,
+        board_id=board_id,
+        uow=uow,
+    )
+
+
+@router.get(
+    "/boards/{board_id}/semantic-guideline-skips",
+    response_model=SemanticSkipPageResponse,
+    response_model_exclude_unset=True,
+)
+async def list_semantic_policy_skips(
+    board_id: BoardId,
+    subject_type: PolicyEntityType | None = Query(default=None),
+    subject_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=POLICY_SUBJECT_ID_MAX_LENGTH,
+    ),
+    binding_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=GUIDELINE_BINDING_ID_MAX_LENGTH,
+    ),
+    skip_status: Literal["active", "revoked"] | None = Query(
+        default=None,
+        alias="status",
+    ),
+    currentness: PolicyCurrentness | None = Query(default=None),
+    projection: SemanticPolicyProjection = Query(
+        SemanticPolicyProjection.SUMMARY
+    ),
+    limit: int = Query(
+        POLICY_PAGE_LIMIT_DEFAULT,
+        ge=1,
+        le=POLICY_PAGE_LIMIT_MAX,
+    ),
+    cursor: str | None = Query(default=None),
+    principal: Principal = Depends(require_principal),
+    facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    return await _execute(
+        facade,
+        "list_semantic_skips",
+        {
+            "board_id": board_id,
+            "limit": limit,
+            "cursor": cursor,
+            "subject_type": (
+                subject_type.value if subject_type else None
+            ),
+            "subject_id": subject_id,
+            "binding_id": binding_id,
+            "status": skip_status,
+            "currentness": (
+                currentness.value if currentness else None
+            ),
+            "projection": projection.value,
+        },
+        principal=principal,
+        board_id=board_id,
+        uow=uow,
+    )
+
+
+@router.post(
+    "/boards/{board_id}/semantic-guideline-skips",
+    status_code=status.HTTP_201_CREATED,
+    response_model=CreatedSemanticSkipResponse,
+)
+async def create_semantic_policy_skip(
+    board_id: BoardId,
+    data: CreateSemanticPolicySkipRequest,
+    idempotency_key: str = Header(
+        ...,
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=POLICY_IDEMPOTENCY_KEY_MAX_LENGTH,
+    ),
+    principal: Principal = Depends(require_principal),
+    facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    return await _execute(
+        facade,
+        "create_semantic_skip",
+        {
+            "board_id": board_id,
+            **data.model_dump(mode="python"),
+            "idempotency_key": idempotency_key,
+        },
+        principal=principal,
+        board_id=board_id,
+        uow=uow,
+    )
+
+
+@router.post(
+    "/boards/{board_id}/semantic-guideline-skips/{skip_id}/revoke",
+    response_model=RevokedSemanticSkipResponse,
+)
+async def revoke_semantic_policy_skip(
+    board_id: BoardId,
+    skip_id: ComplianceReceiptId,
+    data: RevokeSemanticPolicySkipRequest,
+    principal: Principal = Depends(require_principal),
+    facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    return await _execute(
+        facade,
+        "revoke_semantic_skip",
+        {
+            "board_id": board_id,
+            "skip_id": skip_id,
+            **data.model_dump(mode="python"),
+        },
+        principal=principal,
+        board_id=board_id,
+        uow=uow,
+    )
+
+
+@router.get(
+    "/boards/{board_id}/semantic-guideline-skips/{skip_id}",
+    response_model=SemanticSkipResponse,
+    response_model_exclude_unset=True,
+)
+async def get_semantic_policy_skip(
+    board_id: BoardId,
+    skip_id: ComplianceReceiptId,
+    projection: SemanticPolicyProjection = Query(
+        SemanticPolicyProjection.FULL
+    ),
+    principal: Principal = Depends(require_principal),
+    facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    return await _execute(
+        facade,
+        "get_semantic_skip",
+        {
+            "board_id": board_id,
+            "skip_id": skip_id,
+            "projection": projection.value,
+        },
         principal=principal,
         board_id=board_id,
         uow=uow,

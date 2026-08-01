@@ -367,6 +367,12 @@ async def test_failed_community_cold_start_publishes_nothing_atomically(
         main_module = importlib.import_module(_MAIN_MODULE)
         assert isinstance(main_module, ModuleType)
 
+        if stage == "serve_configuration":
+            # Build the app under the REAL settings; the CommunitySettings
+            # patch below must only hit the _serve_dual serve-config read,
+            # not the lazy get_module_app() composition build.
+            main_module.get_module_app()
+
         original_create_task = main_module.asyncio.create_task
         launch_failure_by_stage = {
             "heartbeat_task_launch": "serve_lock_heartbeat",

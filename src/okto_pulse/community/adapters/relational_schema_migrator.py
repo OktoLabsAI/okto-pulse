@@ -338,6 +338,44 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "(actives 0..n-1, archived n..m; idempotent — spec 8b33f9a8).",
     ),
     (
+        "_migrate_ensure_guideline_binding_exact_authority_index",
+        "post_create_all",
+        False,
+        "Backfill the unique 5-column authority index on guideline_board_bindings "
+        "so the SK-B3 binding-configuration composite FK is structurally valid on "
+        "migrated databases (fresh create_all already declares it; without it "
+        "PRAGMA foreign_key_check fails with 'foreign key mismatch').",
+    ),
+    (
+        "_migrate_rebuild_guideline_import_candidates_semantic_shape",
+        "post_create_all",
+        False,
+        "Rebuild the legacy guideline_import_binding_candidates table into the "
+        "SK-B3 semantic shape (source_enforcement rename + FK repoint to "
+        "semantic_guideline_revisions) so the strict B03 substrate audit passes "
+        "on migrated databases; deferred FK enforcement validates copied rows.",
+    ),
+    (
+        "_migrate_rebuild_guideline_policy_v1_semantic_alignment",
+        "post_create_all",
+        False,
+        "Rebuild the legacy guideline v1 family (bindings, impact receipts/"
+        "unlinks, retirements, retirement impacts) into the SK-B3 semantic "
+        "shape on migrated databases: enforcement/metric column renames, "
+        "semantic proposal backfills, and impact FK repoint with "
+        "legacy-context-only semantic revision seeding (same construction as "
+        "the semantic governance step, so its fences pass).",
+    ),
+    (
+        "_migrate_drop_retired_guideline_impact_v1_triggers",
+        "post_create_all",
+        False,
+        "Drop the retired trg_guideline_impact_v1_* guard family on migrated "
+        "databases: the v2 semantic manifest re-guards every v1 surface, and "
+        "the stale v1 policy-constraint execution guard rejects every v2 "
+        "semantic adoption/retirement event at runtime.",
+    ),
+    (
         "_migrate_repair_known_fixture_fk_orphans",
         "post_create_all",
         True,
@@ -386,6 +424,23 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         False,
         "Persist governed waiver heads and append-only lifecycle events; "
         "install CAS, immutability, and board-erasure guards.",
+    ),
+    (
+        "_migrate_semantic_guideline_governance_schema",
+        "post_create_all",
+        False,
+        "Install semantic metric/configuration authority, sealed cognitive "
+        "assessment evidence, exact waivers/skips and explicit inert policy/v1 "
+        "migration audit.",
+    ),
+    (
+        "_migrate_seed_semantic_configurations_for_legacy_bindings",
+        "post_create_all",
+        False,
+        "Seed the semantically inert default configuration (advisory, "
+        "minimum confidence 70, no overrides, context-only revision pin) for "
+        "migrated legacy bindings so the fail-closed SK-B3 binding hydration "
+        "inventory is satisfiable on upgraded databases.",
     ),
     (
         "_migrate_quality_assessment_c7_schema",

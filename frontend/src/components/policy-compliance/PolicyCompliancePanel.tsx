@@ -1,509 +1,1079 @@
 import {
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
 } from 'react';
 import {
   AlertTriangle,
+  Ban,
   CheckCircle2,
-  CircleOff,
-  Clock3,
-  FileWarning,
-  ListChecks,
   RefreshCw,
-  ShieldAlert,
   ShieldCheck,
+  ShieldX,
 } from 'lucide-react';
 
+import { ContextualHelpLink } from '@/components/help';
 import { CollapsibleEvidenceSection } from '@/components/shared/CollapsibleEvidenceSection';
 import { CursorCollectionControls } from '@/components/shared/CursorCollectionControls';
-import { ContextualHelpLink } from '@/components/help';
+import { MetricScoreRing } from '@/components/shared/MetricScoreRing';
 import { useOpaqueCursorCollection } from '@/hooks/useOpaqueCursorCollection';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { usePermissions } from '@/hooks/usePermissions';
 import {
   PolicyGovernanceApiError,
   usePolicyGovernanceApi,
 } from '@/services/policy-governance-api';
+import { useDashboardApi } from '@/services/api';
 import type {
-  PolicyComplianceFindingDetail,
-  PolicyComplianceFindingListItem,
-  PolicyComplianceReceiptSummary,
-  PolicyComplianceState,
+  GuidelineMetricDirection,
+  NonEmptyArray,
   PolicyEntityType,
+  SemanticAssessmentDetail,
+  SemanticEvidenceRef,
+  SemanticFindingDetail,
+  SemanticSkipDetail,
+  SemanticWaiverDetail,
 } from '@/types/policy-governance';
 
 import {
-  POLICY_COMPLIANCE_STATE_PRESENTATION,
-  classifyPolicyCursorError,
-  createPolicyUiId,
-  formatPolicyTimestamp,
-  formatPolicyToken,
-  isPolicyComplianceFindingDetailForReceipt,
-  isPolicyComplianceReceiptSummaryForSubject,
-  policyUiErrorMessage,
-} from './policyComplianceModel';
+  parseSemanticAssessmentDetail,
+  parseCreatedSemanticSkipResponse,
+  parseSemanticDetailPage,
+  parseSemanticFindingDetail,
+  parseSemanticSkipDetail,
+  parseSemanticWaiverDetail,
+  parseRequestedSemanticWaiverResponse,
+  parseRevokedSemanticSkipResponse,
+  semanticMetricDirection,
+  type SemanticSubjectExpectation,
+} from './semanticPolicyModel';
 import {
-  PolicyWaiverRequestDialog,
-  type PolicyWaiverMutationResult,
-} from './PolicyWaiverDialogs';
+  projectPolicyTransitions,
+  type PolicyTransitionPreviewLoadState,
+} from './policyTransitionPreviewModel';
 
-const POLICY_COLLECTION_PAGE_SIZE = 25;
-
-type OverviewState = {
-  scope: string;
-} & (
-  | {
-      status: 'idle' | 'loading';
-      receipt: null;
-      error: null;
-    }
-  | {
-      status: 'ready';
-      receipt: PolicyComplianceReceiptSummary | null;
-      error: null;
-    }
-  | {
-      status: 'error';
-      receipt: null;
-      error: string;
-    }
-);
+const PAGE_SIZE = 25;
 
 export interface PolicyCompliancePanelProps {
   boardId: string;
   entityType: PolicyEntityType;
   subjectId: string;
+  /**
+   * Authoritative lifecycle revision currently rendered by the host modal.
+   * Required for transition-decision skip creation when no receipt exists.
+   */
+  subjectVersion?: number;
+  /**
+   * Exact, already envelope-validated lifecycle authority for this subject.
+   * Binding decisions allow a human skip before an admissible receipt exists.
+   */
+  transitionPreview?: PolicyTransitionPreviewLoadState;
+  /**
+   * Kept for host compatibility. Assessments are authored by agents through
+   * the governed MCP/REST contract; this panel never invokes cognition.
+   */
   evaluationEnabled?: boolean;
   evaluationUnavailableReason?: string;
-  onRequestWaiver?: (
-    finding: PolicyComplianceFindingDetail,
-  ) => void;
-  onEvaluated?: (
-    receipt: PolicyComplianceReceiptSummary | null,
-  ) => void;
-  onRefreshed?: (
-    receipt: PolicyComplianceReceiptSummary | null,
-  ) => void;
+  onRequestWaiver?: (finding: SemanticFindingDetail) => void;
+  onEvaluated?: () => void;
+  onRefreshed?: () => void;
   refreshKey?: number;
 }
 
-const STATE_CARD_TONES: Record<
-  'success' | 'danger' | 'warning' | 'neutral',
-  string
-> = {
-  success:
-    'border-emerald-200 bg-emerald-50/60 dark:border-emerald-800/60 dark:bg-emerald-950/20',
-  danger:
-    'border-red-200 bg-red-50/60 dark:border-red-800/60 dark:bg-red-950/20',
-  warning:
-    'border-amber-200 bg-amber-50/70 dark:border-amber-800/60 dark:bg-amber-950/20',
-  neutral:
-    'border-surface-200 bg-surface-50/70 dark:border-surface-700 dark:bg-surface-900/40',
-};
+function formatTimestamp(value: string): string {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : parsed.toLocaleString();
+}
 
-const STATE_BADGE_TONES: Record<
-  'success' | 'danger' | 'warning' | 'neutral',
-  string
-> = {
-  success:
-    'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200',
-  danger:
-    'bg-red-100 text-red-700 dark:bg-red-400/15 dark:text-red-200',
-  warning:
-    'bg-amber-100 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200',
-  neutral:
-    'bg-surface-200 text-surface-700 dark:bg-surface-700 dark:text-surface-200',
-};
+function shortIdentity(value: string): string {
+  return value.length <= 18
+    ? value
+    : `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
 
-function assertCursorPageShape(
-  page: unknown,
-  contractName: string,
-): asserts page is {
-  items: unknown[];
-  limit: number;
-  has_more: boolean;
-  next_cursor?: string;
+interface TransitionSkipAuthority {
+  bindingId: string;
+  guidelineId: string;
+  enforcement: 'advisory' | 'blocking';
+  assessmentAvailable: boolean;
+  inadmissibilityCause: string | null;
+  skipped: boolean;
+}
+
+interface SkipCreateAuthority {
+  bindingId: string;
+  guidelineId: string;
+  subjectVersion: number;
+  source: 'assessment' | 'transition_decision';
+}
+
+function transitionSkipAuthorities(
+  preview: PolicyTransitionPreviewLoadState | undefined,
+): {
+  items: TransitionSkipAuthority[];
+  error: string | null;
 } {
+  if (!preview || preview.status !== 'ready') {
+    return { items: [], error: null };
+  }
+  try {
+    const projected = projectPolicyTransitions(preview.transitions);
+    const byBinding = new Map<string, TransitionSkipAuthority>();
+    for (const transition of projected.governed) {
+      for (const decision of transition.decision.binding_decisions) {
+        const candidate: TransitionSkipAuthority = {
+          bindingId: decision.binding_id,
+          guidelineId: decision.guideline_id,
+          enforcement: decision.enforcement,
+          assessmentAvailable: decision.assessment_available,
+          inadmissibilityCause: decision.inadmissibility_cause,
+          skipped: decision.skipped,
+        };
+        const existing = byBinding.get(candidate.bindingId);
+        if (
+          existing
+          && (
+            existing.guidelineId !== candidate.guidelineId
+            || existing.enforcement !== candidate.enforcement
+            || existing.assessmentAvailable
+              !== candidate.assessmentAvailable
+            || existing.inadmissibilityCause
+              !== candidate.inadmissibilityCause
+            || existing.skipped !== candidate.skipped
+          )
+        ) {
+          throw new Error(
+            'Lifecycle authority returned conflicting snapshots for one guideline binding.',
+          );
+        }
+        if (!existing) byBinding.set(candidate.bindingId, candidate);
+      }
+    }
+    return {
+      items: [...byBinding.values()].sort((left, right) =>
+        left.bindingId.localeCompare(right.bindingId)
+      ),
+      error: null,
+    };
+  } catch (caught) {
+    return {
+      items: [],
+      error: caught instanceof Error
+        ? caught.message
+        : 'Lifecycle binding authority is malformed.',
+    };
+  }
+}
+
+function semanticError(error: unknown): {
+  message: string;
+  restartRequired: boolean;
+} {
+  if (error instanceof PolicyGovernanceApiError) {
+    const action = error.nextAction
+      ? ` Next: ${error.nextAction}.`
+      : '';
+    return {
+      message: `${error.message}${action}`,
+      restartRequired: error.kind === 'invalid_cursor',
+    };
+  }
+  return {
+    message:
+      error instanceof Error
+        ? error.message
+        : 'Semantic guideline evidence could not be verified.',
+    restartRequired: false,
+  };
+}
+
+function toneForAssessment(
+  assessment: SemanticAssessmentDetail,
+): string {
   if (
-    typeof page !== 'object'
-    || page === null
-    || !Array.isArray((page as { items?: unknown }).items)
-    || typeof (page as { limit?: unknown }).limit !== 'number'
-    || !Number.isInteger((page as { limit: number }).limit)
-    || (page as { limit: number }).limit < 1
-    || (page as { limit: number }).limit > 200
-    || (page as { items: unknown[] }).items.length
-      > (page as { limit: number }).limit
-    || typeof (page as { has_more?: unknown }).has_more !== 'boolean'
-    || (
-      (page as { has_more: boolean }).has_more
-      && (
-        (page as { items: unknown[] }).items.length === 0
-        ||
-        typeof (page as { next_cursor?: unknown }).next_cursor !== 'string'
-        || !(page as { next_cursor: string }).next_cursor
-      )
-    )
-    || (
-      !(page as { has_more: boolean }).has_more
-      && 'next_cursor' in page
-    )
+    assessment.currentness === 'stale'
+    || !assessment.confidence_admissible
+    || !assessment.assessor_independent
   ) {
-    throw new Error(`${contractName} returned a malformed cursor page.`);
+    return 'border-amber-300 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20';
   }
+  return assessment.state === 'passed'
+    ? 'border-emerald-300 bg-emerald-50/40 dark:border-emerald-800 dark:bg-emerald-950/20'
+    : 'border-red-300 bg-red-50/40 dark:border-red-800 dark:bg-red-950/20';
 }
 
-function StateIcon({
-  state,
-}: {
-  state: PolicyComplianceState;
-}) {
-  switch (state) {
-    case 'ready':
-      return (
-        <CheckCircle2
-          size={20}
-          className="text-emerald-600 dark:text-emerald-300"
-          aria-hidden="true"
-        />
-      );
-    case 'blocked':
-      return (
-        <ShieldAlert
-          size={20}
-          className="text-red-600 dark:text-red-300"
-          aria-hidden="true"
-        />
-      );
-    case 'ready_with_waivers':
-      return (
-        <ShieldCheck
-          size={20}
-          className="text-amber-600 dark:text-amber-300"
-          aria-hidden="true"
-        />
-      );
-    case 'not_applicable':
-      return (
-        <CircleOff
-          size={20}
-          className="text-surface-500 dark:text-surface-300"
-          aria-hidden="true"
-        />
-      );
-  }
+interface ComplianceMetricAuthority {
+  metricId: string;
+  code: string;
+  title: string;
+  description: string;
+  direction: GuidelineMetricDirection;
+  effectiveThreshold: number;
+  overridden: boolean;
 }
 
-function CurrentPolicyReceipt({
-  receipt,
-}: {
-  receipt: PolicyComplianceReceiptSummary;
-}) {
-  const presentation =
-    POLICY_COMPLIANCE_STATE_PRESENTATION[receipt.state];
-  const stale = receipt.currentness === 'stale';
-  const tone = stale ? 'warning' : presentation.tone;
+interface BindingComplianceAuthority {
+  bindingId: string;
+  guidelineId: string;
+  guidelineTitle: string;
+  enforcement: 'advisory' | 'blocking';
+  minimumConfidence: number | null;
+  metrics: ComplianceMetricAuthority[];
+}
 
+type ComplianceAuthorityState =
+  | { status: 'loading'; items: BindingComplianceAuthority[] }
+  | { status: 'ready'; items: BindingComplianceAuthority[] }
+  | {
+      status: 'error';
+      items: BindingComplianceAuthority[];
+      message: string;
+    };
+
+function EnforcementBadge({
+  enforcement,
+}: {
+  enforcement: 'advisory' | 'blocking';
+}) {
+  return (
+    <span
+      data-testid={`compliance-enforcement-${enforcement}`}
+      className={
+        enforcement === 'blocking'
+          ? 'rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-700 dark:bg-red-400/15 dark:text-red-200'
+          : 'rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-400/15 dark:text-amber-200'
+      }
+    >
+      {enforcement}
+    </span>
+  );
+}
+
+function ComplianceStateChip({
+  assessment,
+}: {
+  assessment: SemanticAssessmentDetail | null;
+}) {
+  if (!assessment) {
+    return (
+      <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-surface-600 dark:bg-surface-700/60 dark:text-surface-300">
+        Not assessed
+      </span>
+    );
+  }
+  if (assessment.currentness === 'stale') {
+    return (
+      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-400/15 dark:text-amber-200">
+        Stale
+      </span>
+    );
+  }
+  return assessment.state === 'passed' ? (
+    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200">
+      Passed
+    </span>
+  ) : (
+    <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-700 dark:bg-red-400/15 dark:text-red-200">
+      Failed
+    </span>
+  );
+}
+
+function CurrentnessBadge({
+  currentness,
+}: {
+  currentness: 'current' | 'stale';
+}) {
+  return (
+    <span
+      className={
+        currentness === 'current'
+          ? 'rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200'
+          : 'rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-400/15 dark:text-amber-200'
+      }
+    >
+      {currentness}
+    </span>
+  );
+}
+
+function EvidenceRefs({
+  evidence,
+}: {
+  evidence: SemanticEvidenceRef[];
+}) {
+  return (
+    <ul className="space-y-2">
+      {evidence.map((item) => (
+        <li
+          key={`${item.source_type}:${item.source_id}:${item.source_version}:${item.content_hash}`}
+          className="rounded-lg border border-surface-200 bg-surface-50 p-2 text-[11px] text-surface-600 dark:border-surface-700 dark:bg-surface-900/60 dark:text-surface-300"
+        >
+          <p className="font-semibold text-surface-800 dark:text-surface-100">
+            {item.source_type} · {item.source_id} · v{item.source_version}
+          </p>
+          <code className="mt-1 block break-all text-[10px] text-surface-500 dark:text-surface-400">
+            sha256:{item.content_hash}
+          </code>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function AssessmentCard({
+  assessment,
+  activeSkip,
+  canManageSkips,
+  onCreateSkip,
+  onRevokeSkip,
+}: {
+  assessment: SemanticAssessmentDetail;
+  activeSkip: SemanticSkipDetail | null;
+  canManageSkips: boolean;
+  onCreateSkip: (assessment: SemanticAssessmentDetail) => void;
+  onRevokeSkip: (skip: SemanticSkipDetail) => void;
+}) {
   return (
     <article
-      className={`rounded-xl border p-4 ${STATE_CARD_TONES[tone]}`}
-      data-testid="policy-compliance-current-receipt"
+      className={`rounded-2xl border p-4 ${toneForAssessment(assessment)}`}
+      data-testid="semantic-assessment-card"
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
-          {stale ? (
-            <Clock3
-              size={20}
-              className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-300"
-              aria-hidden="true"
-            />
-          ) : (
-            <StateIcon state={receipt.state} />
-          )}
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <strong className="text-sm text-surface-900 dark:text-white">
-                {stale
-                  ? 'Policy receipt is stale'
-                  : presentation.headline}
-              </strong>
-              <span
-                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${STATE_BADGE_TONES[stale ? 'neutral' : presentation.tone]}`}
-              >
-                {stale
-                  ? `Recorded state: ${presentation.label}`
-                  : presentation.label}
-              </span>
-              <span
-                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                  stale
-                    ? STATE_BADGE_TONES.warning
-                    : STATE_BADGE_TONES.success
-                }`}
-              >
-                {stale ? 'Stale evidence' : 'Current evidence'}
-              </span>
-            </div>
-            <p className="mt-1 text-xs text-surface-600 dark:text-surface-300">
-              {stale
-                ? 'The recorded state is historical. Re-evaluate before relying on it for a governed transition.'
-                : presentation.description}
-            </p>
-          </div>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h5 className="text-sm font-semibold text-surface-900 dark:text-white">
+            Guideline {shortIdentity(assessment.guideline_id)}
+          </h5>
+          <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
+            Binding {shortIdentity(assessment.binding_id)} · revision{' '}
+            {assessment.binding_revision} · {assessment.enforcement}
+          </p>
+          <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
+            Assessed by {assessment.assessor_agent_id}
+            {assessment.assessor_model_id
+              ? ` (${assessment.assessor_model_id})`
+              : ''}
+            {' '}at {formatTimestamp(assessment.recorded_at)}
+          </p>
         </div>
-        <time
-          dateTime={receipt.evaluated_at}
-          className="text-[11px] text-surface-500 dark:text-surface-400"
-        >
-          {formatPolicyTimestamp(receipt.evaluated_at)}
-        </time>
-      </div>
-
-      <dl
-        className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4"
-        aria-label="Policy Compliance counts"
-      >
-        {[
-          ['Evaluated rules', receipt.rule_count],
-          ['Policy findings', receipt.finding_count],
-          ['Open blocking', receipt.blocking_finding_count],
-          ['Waived', receipt.waived_finding_count],
-        ].map(([label, value]) => (
-          <div
-            key={label}
-            className="rounded-lg border border-current/10 bg-white/60 px-3 py-2 dark:bg-surface-950/20"
+        <div className="flex flex-wrap items-center gap-2">
+          <CurrentnessBadge currentness={assessment.currentness} />
+          <span
+            className={
+              assessment.state === 'passed'
+                ? 'rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-semibold uppercase text-white'
+                : 'rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-semibold uppercase text-white'
+            }
           >
-            <dt className="text-[10px] font-medium uppercase tracking-wide text-surface-500 dark:text-surface-400">
-              {label}
-            </dt>
-            <dd className="mt-0.5 text-base font-semibold text-surface-900 dark:text-white">
-              {value}
-            </dd>
-          </div>
-        ))}
-      </dl>
+            {assessment.state === 'passed' ? 'Passed' : 'Threshold failed'}
+          </span>
+          {activeSkip && (
+            <span className="rounded-full bg-violet-600 px-2 py-0.5 text-[10px] font-semibold uppercase text-white">
+              Human skip active
+            </span>
+          )}
+        </div>
+      </header>
 
-      {(receipt.currentness_reasons.length > 0
-        || receipt.reason_codes.length > 0) && (
-        <div className="mt-3 space-y-1 border-t border-current/10 pt-3 text-xs">
-          {receipt.currentness_reasons.length > 0 && (
-            <p className="text-amber-800 dark:text-amber-200">
-              Currentness: {receipt.currentness_reasons
-                .map(formatPolicyToken)
-                .join(', ')}
+      {(assessment.currentness === 'stale'
+        || !assessment.confidence_admissible
+        || !assessment.assessor_independent) && (
+        <div
+          role="alert"
+          className="mt-3 rounded-lg border border-amber-300 bg-white/70 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-surface-950/30 dark:text-amber-200"
+        >
+          {assessment.currentness === 'stale' && (
+            <p>
+              Stale: {assessment.currentness_reasons.join(', ')}.
             </p>
           )}
-          {receipt.reason_codes.length > 0 && (
-            <p className="text-surface-600 dark:text-surface-300">
-              Evaluation: {receipt.reason_codes
-                .map(formatPolicyToken)
-                .join(', ')}
+          {!assessment.confidence_admissible && (
+            <p>
+              Confidence is below the binding minimum; this receipt is
+              inadmissible for a gate.
+            </p>
+          )}
+          {!assessment.assessor_independent && (
+            <p>
+              Assessor separation was not satisfied; this receipt is
+              inadmissible for a gate.
             </p>
           )}
         </div>
       )}
 
-      <p className="mt-3 break-all border-t border-current/10 pt-3 text-[11px] text-surface-500 dark:text-surface-400">
-        Receipt {receipt.receipt_id} · subject v{receipt.subject.subject_version}
-        {' '}· evaluator {receipt.evaluator_version}
-      </p>
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <MetricScoreRing
+          label="Confidence"
+          value={assessment.confidence}
+          direction="higher-is-better"
+          threshold={assessment.minimum_confidence}
+          testId="semantic-confidence-ring"
+        />
+        {assessment.metric_results.map((metric) => (
+          <MetricScoreRing
+            key={metric.metric_result_id}
+            label={metric.metric_code}
+            value={metric.score}
+            direction={semanticMetricDirection(metric.direction)}
+            threshold={metric.effective_threshold}
+            testId={`semantic-metric-ring-${metric.metric_id}`}
+          />
+        ))}
+      </div>
+
+      <div className="mt-4 space-y-3">
+        {assessment.metric_results.map((metric) => (
+          <details
+            key={metric.metric_result_id}
+            className="rounded-xl border border-surface-200 bg-white/80 p-3 dark:border-surface-700 dark:bg-surface-900/50"
+          >
+            <summary className="cursor-pointer text-xs font-semibold text-surface-800 dark:text-surface-100">
+              {metric.metric_code}: rationale, evidence and pinpoints
+            </summary>
+            <div className="mt-3 space-y-3 text-xs">
+              <dl className="grid gap-2 sm:grid-cols-2">
+                <div>
+                  <dt className="text-surface-500 dark:text-surface-400">
+                    Effective threshold
+                  </dt>
+                  <dd className="font-medium text-surface-800 dark:text-surface-100">
+                    {metric.direction === 'minimum' ? 'Minimum' : 'Maximum'}{' '}
+                    {metric.effective_threshold} ({metric.threshold_source})
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-surface-500 dark:text-surface-400">
+                    Authoritative outcome
+                  </dt>
+                  <dd className="font-medium text-surface-800 dark:text-surface-100">
+                    {metric.outcome}
+                  </dd>
+                </div>
+              </dl>
+              <div>
+                <p className="font-semibold text-surface-700 dark:text-surface-200">
+                  Rationale
+                </p>
+                <p className="mt-1 whitespace-pre-wrap text-surface-600 dark:text-surface-300">
+                  {metric.rationale}
+                </p>
+              </div>
+              <div>
+                <p className="mb-2 font-semibold text-surface-700 dark:text-surface-200">
+                  Evidence references
+                </p>
+                <EvidenceRefs evidence={metric.evidence_refs} />
+              </div>
+              <div>
+                <p className="mb-2 font-semibold text-surface-700 dark:text-surface-200">
+                  Pinpoints
+                </p>
+                <ul className="space-y-2">
+                  {metric.pinpoints.map((pinpoint) => (
+                    <li
+                      key={`${pinpoint.anchor_type}:${pinpoint.anchor_ref ?? ''}:${pinpoint.input_digest}`}
+                      className="rounded-lg border border-surface-200 bg-surface-50 p-2 text-surface-600 dark:border-surface-700 dark:bg-surface-900/60 dark:text-surface-300"
+                    >
+                      <span className="font-semibold">
+                        {pinpoint.anchor_type}
+                      </span>
+                      {pinpoint.anchor_ref ? ` · ${pinpoint.anchor_ref}` : ''}
+                      <code className="mt-1 block break-all text-[10px] text-surface-500 dark:text-surface-400">
+                        input sha256:{pinpoint.input_digest}
+                      </code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </details>
+        ))}
+      </div>
+
+      {canManageSkips && assessment.currentness === 'current' && (
+        <div className="mt-4 flex justify-end">
+          {activeSkip ? (
+            <button
+              type="button"
+              onClick={() => onRevokeSkip(activeSkip)}
+              className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-violet-300 bg-white px-3 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:bg-surface-900 dark:text-violet-200"
+            >
+              <ShieldX size={14} aria-hidden="true" />
+              Revoke human skip
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onCreateSkip(assessment)}
+              className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-violet-300 bg-white px-3 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:bg-surface-900 dark:text-violet-200"
+            >
+              <Ban size={14} aria-hidden="true" />
+              Skip this binding
+            </button>
+          )}
+        </div>
+      )}
     </article>
   );
 }
 
-function PolicyReceiptHistory({
-  receipts,
-}: {
-  receipts: PolicyComplianceReceiptSummary[];
-}) {
-  if (receipts.length === 0) {
-    return (
-      <p className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400">
-        No Policy Compliance receipt has been recorded for this subject.
-      </p>
-    );
-  }
-
-  return (
-    <ol
-      className="space-y-2"
-      data-testid="policy-compliance-receipt-history"
-    >
-      {receipts.map((receipt) => {
-        const presentation =
-          POLICY_COMPLIANCE_STATE_PRESENTATION[receipt.state];
-        return (
-          <li
-            key={receipt.receipt_id}
-            className="rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900/50"
-          >
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${STATE_BADGE_TONES[presentation.tone]}`}
-                  >
-                    {presentation.label}
-                  </span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                      receipt.currentness === 'current'
-                        ? STATE_BADGE_TONES.success
-                        : STATE_BADGE_TONES.warning
-                    }`}
-                  >
-                    {formatPolicyToken(receipt.currentness)}
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-surface-600 dark:text-surface-300">
-                  {receipt.rule_count} rules · {receipt.finding_count} findings
-                  {' '}· {receipt.blocking_finding_count} open blocking
-                  {' '}· {receipt.waived_finding_count} waived
-                </p>
-              </div>
-              <time
-                dateTime={receipt.evaluated_at}
-                className="text-[11px] text-surface-500 dark:text-surface-400"
-              >
-                {formatPolicyTimestamp(receipt.evaluated_at)}
-              </time>
-            </div>
-            {receipt.currentness_reasons.length > 0 && (
-              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-                {receipt.currentness_reasons
-                  .map(formatPolicyToken)
-                  .join(', ')}
-              </p>
-            )}
-            <p className="mt-2 break-all text-[11px] text-surface-500 dark:text-surface-400">
-              Receipt {receipt.receipt_id} · subject v{receipt.subject.subject_version}
-              {' '}· outcome {formatPolicyToken(receipt.outcome)}
-            </p>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-function findingTone(
-  finding: PolicyComplianceFindingDetail,
-): string {
-  if (finding.blocking) {
-    return 'bg-red-100 text-red-700 dark:bg-red-400/15 dark:text-red-200';
-  }
-  if (finding.waiver_id) {
-    return 'bg-amber-100 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200';
-  }
-  return 'bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-200';
-}
-
-function PolicyFindingItems({
-  findings,
+function Findings({
+  items,
   canRequestWaiver,
   onRequestWaiver,
 }: {
-  findings: PolicyComplianceFindingDetail[];
+  items: SemanticFindingDetail[];
   canRequestWaiver: boolean;
-  onRequestWaiver?: (
-    finding: PolicyComplianceFindingDetail,
-  ) => void;
+  onRequestWaiver: (finding: SemanticFindingDetail) => void;
 }) {
-  if (findings.length === 0) {
+  if (items.length === 0) {
     return (
       <p className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400">
-        The latest receipt has no policy finding.
+        No failed semantic metric findings were recorded.
       </p>
     );
   }
-
   return (
-    <ol
-      className="space-y-2"
-      data-testid="policy-compliance-findings"
-    >
-      {findings.map((finding) => (
+    <ul className="space-y-3">
+      {items.map((finding) => (
         <li
           key={finding.finding_id}
-          className="rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900/50"
+          className="rounded-xl border border-red-200 bg-red-50/40 p-3 dark:border-red-800 dark:bg-red-950/20"
         >
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${findingTone(finding)}`}
-                >
-                  {finding.blocking
-                    ? 'Open blocking'
-                    : finding.waiver_id
-                      ? 'Waived'
-                      : formatPolicyToken(finding.enforcement)}
-                </span>
-                <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-medium text-surface-600 dark:bg-surface-800 dark:text-surface-300">
-                  {formatPolicyToken(finding.outcome)}
-                </span>
-              </div>
-              <p className="mt-2 whitespace-pre-wrap text-sm text-surface-800 dark:text-surface-100">
-                {finding.message}
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-red-800 dark:text-red-200">
+                {finding.metric_code}
+              </p>
+              <p className="mt-1 text-xs text-red-700 dark:text-red-300">
+                {finding.rationale}
               </p>
             </div>
-            <time
-              dateTime={finding.created_at}
-              className="text-[11px] text-surface-500 dark:text-surface-400"
-            >
-              {formatPolicyTimestamp(finding.created_at)}
-            </time>
+            <CurrentnessBadge currentness={finding.currentness} />
           </div>
-
-          <p className="mt-2 break-all text-[11px] text-surface-500 dark:text-surface-400">
-            Receipt {finding.receipt_id} · Rule {finding.rule_id}
-            {' '}· Finding {finding.finding_id}
-          </p>
-
-          {finding.evidence_refs.length > 0 && (
-            <div className="mt-2">
-              <h5 className="text-[11px] font-semibold uppercase tracking-wide text-surface-500 dark:text-surface-400">
-                Evidence references
-              </h5>
-              <ul className="mt-1 space-y-0.5">
-                {finding.evidence_refs.map((reference) => (
+          <details className="mt-3 text-xs">
+            <summary className="cursor-pointer font-semibold text-surface-700 dark:text-surface-200">
+              Evidence and pinpoints
+            </summary>
+            <div className="mt-2 space-y-3">
+              <EvidenceRefs evidence={finding.evidence_refs} />
+              <ul className="space-y-1 text-surface-600 dark:text-surface-300">
+                {finding.pinpoints.map((pinpoint) => (
                   <li
-                    key={reference}
-                    className="break-all text-xs text-surface-600 dark:text-surface-300"
+                    key={`${pinpoint.anchor_type}:${pinpoint.anchor_ref ?? ''}:${pinpoint.input_digest}`}
                   >
-                    {reference}
+                    {pinpoint.anchor_type}
+                    {pinpoint.anchor_ref ? ` · ${pinpoint.anchor_ref}` : ''}
                   </li>
                 ))}
               </ul>
             </div>
-          )}
-
-          {finding.waiver_id ? (
-            <p className="mt-2 break-all text-xs font-medium text-amber-700 dark:text-amber-300">
-              Governed waiver {finding.waiver_id}
-            </p>
-          ) : (
-            finding.outcome === 'fail'
-            && canRequestWaiver
-            && onRequestWaiver && (
-              <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => onRequestWaiver(finding)}
-                  className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200 dark:focus-visible:ring-offset-surface-900"
-                >
-                  <FileWarning size={14} aria-hidden="true" />
-                  Request waiver
-                </button>
-              </div>
-            )
+          </details>
+          {canRequestWaiver && finding.currentness === 'current' && (
+            <div className="mt-3 flex justify-end">
+              <button
+                type="button"
+                onClick={() => onRequestWaiver(finding)}
+                className="min-h-8 rounded-lg border border-red-300 bg-white px-3 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-700 dark:bg-surface-900 dark:text-red-200"
+              >
+                Request metric waiver
+              </button>
+            </div>
           )}
         </li>
       ))}
-    </ol>
+    </ul>
+  );
+}
+
+function Waivers({ items }: { items: SemanticWaiverDetail[] }) {
+  if (items.length === 0) {
+    return (
+      <p className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400">
+        No metric waivers exist for this subject.
+      </p>
+    );
+  }
+  return (
+    <ul className="space-y-2">
+      {items.map((waiver) => (
+        <li
+          key={waiver.waiver_id}
+          className="rounded-xl border border-surface-200 bg-white p-3 text-xs dark:border-surface-700 dark:bg-surface-900/40"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-semibold text-surface-800 dark:text-surface-100">
+              {waiver.metric_code} · {waiver.status}
+            </p>
+            <CurrentnessBadge currentness={waiver.currentness} />
+          </div>
+          <p className="mt-2 text-surface-600 dark:text-surface-300">
+            {waiver.justification}
+          </p>
+          <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
+            Requested by {waiver.requested_by} at{' '}
+            {formatTimestamp(waiver.requested_at)}
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Skips({
+  items,
+  canManage,
+  onRevoke,
+}: {
+  items: SemanticSkipDetail[];
+  canManage: boolean;
+  onRevoke: (skip: SemanticSkipDetail) => void;
+}) {
+  if (items.length === 0) {
+    return (
+      <p className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400">
+        No human-owned binding skips exist for this subject.
+      </p>
+    );
+  }
+  return (
+    <ul className="space-y-2">
+      {items.map((skip) => (
+        <li
+          key={skip.skip_id}
+          className="rounded-xl border border-violet-200 bg-violet-50/40 p-3 text-xs dark:border-violet-800 dark:bg-violet-950/20"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <p className="font-semibold text-violet-800 dark:text-violet-200">
+              Binding {shortIdentity(skip.binding_id)} · {skip.status}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <CurrentnessBadge currentness={skip.currentness} />
+              {canManage && skip.status === 'active' && (
+                <button
+                  type="button"
+                  onClick={() => onRevoke(skip)}
+                  className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-violet-300 bg-white px-3 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:bg-surface-900 dark:text-violet-200"
+                >
+                  <ShieldX size={14} aria-hidden="true" />
+                  Revoke human skip
+                </button>
+              )}
+            </div>
+          </div>
+          <p className="mt-2 text-violet-700 dark:text-violet-300">
+            {skip.reason}
+          </p>
+          <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
+            Created by {skip.created_by} at {formatTimestamp(skip.created_at)}
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function TransitionBindingSkips({
+  items,
+  error,
+  subjectVersion,
+  skipsReady,
+  activeSkipByBinding,
+  canManage,
+  onCreate,
+  onRevoke,
+}: {
+  items: TransitionSkipAuthority[];
+  error: string | null;
+  subjectVersion: number | null;
+  skipsReady: boolean;
+  activeSkipByBinding: ReadonlyMap<string, SemanticSkipDetail>;
+  canManage: boolean;
+  onCreate: (authority: SkipCreateAuthority) => void;
+  onRevoke: (skip: SemanticSkipDetail) => void;
+}) {
+  if (!canManage || (items.length === 0 && error === null)) return null;
+  return (
+    <section
+      className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/30 p-4 dark:border-violet-800 dark:bg-violet-950/20"
+      data-testid="transition-binding-skips"
+    >
+      <div>
+        <h4 className="text-sm font-semibold text-violet-900 dark:text-violet-100">
+          Human exceptions for lifecycle bindings
+        </h4>
+        <p className="mt-1 text-xs text-violet-700 dark:text-violet-300">
+          These bindings come from the authoritative transition decision.
+          A skip may be created even when its assessment is unavailable or
+          inadmissible. The server resolves and seals the exact current
+          binding revision and configuration.
+        </p>
+      </div>
+      {error ? (
+        <p
+          role="alert"
+          className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
+        >
+          {error} Human skip creation is disabled.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {items.map((binding) => {
+            const activeSkip = activeSkipByBinding.get(binding.bindingId);
+            const blockedByUnknownSkip =
+              binding.skipped && activeSkip === undefined;
+            const creationReady =
+              subjectVersion !== null
+              && skipsReady
+              && !blockedByUnknownSkip;
+            return (
+              <li
+                key={binding.bindingId}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-violet-200 bg-white p-3 text-xs dark:border-violet-800 dark:bg-surface-900/50"
+              >
+                <div>
+                  <p className="font-semibold text-surface-800 dark:text-surface-100">
+                    Guideline {shortIdentity(binding.guidelineId)}
+                  </p>
+                  <p className="mt-1 text-surface-500 dark:text-surface-400">
+                    Binding {shortIdentity(binding.bindingId)} ·{' '}
+                    {binding.enforcement}
+                    {' · '}
+                    {binding.assessmentAvailable
+                      ? binding.inadmissibilityCause
+                        ? `inadmissible: ${binding.inadmissibilityCause}`
+                        : 'assessment evidence available'
+                      : 'assessment unavailable'}
+                  </p>
+                  {!creationReady && !activeSkip && (
+                    <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                      {subjectVersion === null
+                        ? 'Creation is unavailable because this UI surface does not expose the authoritative subject revision.'
+                        : !skipsReady
+                          ? 'Load the complete human skip list before creating another exception.'
+                          : 'The transition decision reports an active skip that is not present in the loaded list.'}
+                    </p>
+                  )}
+                </div>
+                {activeSkip ? (
+                  <button
+                    type="button"
+                    onClick={() => onRevoke(activeSkip)}
+                    className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-violet-300 bg-white px-3 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:bg-surface-900 dark:text-violet-200"
+                  >
+                    <ShieldX size={14} aria-hidden="true" />
+                    Revoke human skip
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!creationReady}
+                    onClick={() => {
+                      if (subjectVersion === null) return;
+                      onCreate({
+                        bindingId: binding.bindingId,
+                        guidelineId: binding.guidelineId,
+                        subjectVersion,
+                        source: 'transition_decision',
+                      });
+                    }}
+                    className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-violet-300 bg-white px-3 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-700 dark:bg-surface-900 dark:text-violet-200"
+                  >
+                    <Ban size={14} aria-hidden="true" />
+                    Skip this binding
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function WaiverRequestDialog({
+  boardId,
+  finding,
+  onClose,
+  onCompleted,
+}: {
+  boardId: string;
+  finding: SemanticFindingDetail;
+  onClose: () => void;
+  onCompleted: () => void;
+}) {
+  const api = usePolicyGovernanceApi();
+  const [justification, setJustification] = useState('');
+  const [expiresAt, setExpiresAt] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const intentRef = useRef({
+    signature: '',
+    idempotencyKey: crypto.randomUUID(),
+  });
+  const focusTrap = useDialogFocusTrap(true, 'textarea');
+  useEscapeToClose(onClose, {
+    canClose: !submitting,
+    priority: 30,
+  });
+
+  const submit = async () => {
+    if (!justification.trim() || submitting) return;
+    const signature = JSON.stringify([
+      finding.finding_id,
+      finding.metric_result_id,
+      justification.trim(),
+      expiresAt,
+    ]);
+    if (intentRef.current.signature !== signature) {
+      intentRef.current = {
+        signature,
+        idempotencyKey: crypto.randomUUID(),
+      };
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      parseRequestedSemanticWaiverResponse(
+        await api.requestSemanticMetricWaiver(boardId, {
+        metric_result_id: finding.metric_result_id,
+        finding_id: finding.finding_id,
+        receipt_id: finding.receipt_id,
+        justification: justification.trim(),
+        evidence_refs:
+          finding.evidence_refs as NonEmptyArray<SemanticEvidenceRef>,
+        expires_at: expiresAt
+          ? new Date(`${expiresAt}T23:59:59.999Z`).toISOString()
+          : null,
+        idempotency_key: intentRef.current.idempotencyKey,
+        }),
+      );
+      onCompleted();
+    } catch (caught) {
+      setError(semanticError(caught).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4">
+      <div
+        ref={focusTrap.dialogRef}
+        onKeyDown={focusTrap.onKeyDown}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Request semantic metric waiver"
+        tabIndex={-1}
+        className="w-full max-w-lg rounded-2xl border border-surface-200 bg-white p-5 shadow-2xl dark:border-surface-700 dark:bg-surface-900"
+      >
+        <h4 className="text-base font-semibold text-surface-900 dark:text-white">
+          Request waiver for {finding.metric_code}
+        </h4>
+        <p className="mt-1 text-xs text-surface-500 dark:text-surface-400">
+          The immutable finding evidence is attached automatically. Independent
+          review is required before a waiver can affect a gate.
+        </p>
+        <label className="mt-4 block text-xs font-semibold text-surface-700 dark:text-surface-200">
+          Justification
+          <textarea
+            value={justification}
+            onChange={(event) => setJustification(event.target.value)}
+            rows={4}
+            className="mt-1 w-full rounded-lg border border-surface-300 bg-white p-2 text-sm text-surface-900 dark:border-surface-600 dark:bg-surface-800 dark:text-white"
+          />
+        </label>
+        <label className="mt-3 block text-xs font-semibold text-surface-700 dark:text-surface-200">
+          Optional expiry date
+          <input
+            type="date"
+            value={expiresAt}
+            onChange={(event) => setExpiresAt(event.target.value)}
+            className="mt-1 block rounded-lg border border-surface-300 bg-white px-2 py-1.5 text-sm text-surface-900 dark:border-surface-600 dark:bg-surface-800 dark:text-white"
+          />
+        </label>
+        {error && (
+          <p role="alert" className="mt-3 text-xs text-red-700 dark:text-red-300">
+            {error}
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="min-h-9 rounded-lg border border-surface-300 px-3 text-xs font-semibold text-surface-700 dark:border-surface-600 dark:text-surface-200"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={!justification.trim() || submitting}
+            className="min-h-9 rounded-lg bg-violet-600 px-3 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting ? 'Requesting…' : 'Request waiver'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type SkipDialogState =
+  | { mode: 'create'; authority: SkipCreateAuthority }
+  | { mode: 'revoke'; skip: SemanticSkipDetail };
+
+function SkipDialog({
+  boardId,
+  entityType,
+  subjectId,
+  state,
+  onClose,
+  onCompleted,
+}: {
+  boardId: string;
+  entityType: PolicyEntityType;
+  subjectId: string;
+  state: SkipDialogState;
+  onClose: () => void;
+  onCompleted: () => void;
+}) {
+  const api = usePolicyGovernanceApi();
+  const [reason, setReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const intentRef = useRef({
+    signature: '',
+    idempotencyKey: crypto.randomUUID(),
+  });
+  const focusTrap = useDialogFocusTrap(true, 'textarea');
+  useEscapeToClose(onClose, {
+    canClose: !submitting,
+    priority: 30,
+  });
+
+  const submit = async () => {
+    if (!reason.trim() || submitting) return;
+    const signature = JSON.stringify([
+      state.mode,
+      state.mode === 'create'
+        ? [
+            state.authority.bindingId,
+            state.authority.subjectVersion,
+            state.authority.source,
+          ]
+        : state.skip.skip_id,
+      reason.trim(),
+    ]);
+    if (intentRef.current.signature !== signature) {
+      intentRef.current = {
+        signature,
+        idempotencyKey: crypto.randomUUID(),
+      };
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      if (state.mode === 'create') {
+        parseCreatedSemanticSkipResponse(
+          await api.createSemanticPolicySkip(
+            boardId,
+            {
+              subject_type: entityType,
+              subject_id: subjectId,
+              expected_subject_version: state.authority.subjectVersion,
+              binding_id: state.authority.bindingId,
+              reason: reason.trim(),
+            },
+            intentRef.current.idempotencyKey,
+          ),
+        );
+      } else {
+        parseRevokedSemanticSkipResponse(
+          await api.revokeSemanticPolicySkip(
+            boardId,
+            state.skip.skip_id,
+            {
+              expected_skip_revision: state.skip.skip_revision,
+              reason: reason.trim(),
+              idempotency_key: intentRef.current.idempotencyKey,
+            },
+          ),
+        );
+      }
+      onCompleted();
+    } catch (caught) {
+      setError(semanticError(caught).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const creating = state.mode === 'create';
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4">
+      <div
+        ref={focusTrap.dialogRef}
+        onKeyDown={focusTrap.onKeyDown}
+        role="dialog"
+        aria-modal="true"
+        aria-label={
+          creating ? 'Skip guideline binding' : 'Revoke guideline skip'
+        }
+        tabIndex={-1}
+        className="w-full max-w-lg rounded-2xl border border-surface-200 bg-white p-5 shadow-2xl dark:border-surface-700 dark:bg-surface-900"
+      >
+        <h4 className="text-base font-semibold text-surface-900 dark:text-white">
+          {creating ? 'Skip this guideline binding' : 'Revoke human skip'}
+        </h4>
+        <p className="mt-1 text-xs text-surface-500 dark:text-surface-400">
+          This is a human-owned, audited exception. Agents cannot create or
+          revoke it, and subject or binding drift makes it stale.
+        </p>
+        <label className="mt-4 block text-xs font-semibold text-surface-700 dark:text-surface-200">
+          Reason
+          <textarea
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            rows={4}
+            className="mt-1 w-full rounded-lg border border-surface-300 bg-white p-2 text-sm text-surface-900 dark:border-surface-600 dark:bg-surface-800 dark:text-white"
+          />
+        </label>
+        {error && (
+          <p role="alert" className="mt-3 text-xs text-red-700 dark:text-red-300">
+            {error}
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="min-h-9 rounded-lg border border-surface-300 px-3 text-xs font-semibold text-surface-700 dark:border-surface-600 dark:text-surface-200"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={!reason.trim() || submitting}
+            className="min-h-9 rounded-lg bg-violet-600 px-3 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting
+              ? 'Saving…'
+              : creating ? 'Create skip' : 'Revoke skip'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -511,426 +1081,330 @@ export function PolicyCompliancePanel({
   boardId,
   entityType,
   subjectId,
+  subjectVersion,
+  transitionPreview,
   evaluationEnabled = true,
   evaluationUnavailableReason,
   onRequestWaiver,
-  onEvaluated,
   onRefreshed,
   refreshKey = 0,
 }: PolicyCompliancePanelProps) {
-  const subjectIdentitySignature = JSON.stringify([
-    boardId,
-    entityType,
-    subjectId,
-  ]);
-  const subjectSignature = JSON.stringify([
-    boardId,
-    entityType,
-    subjectId,
-    refreshKey,
-  ]);
-  const overviewScope = subjectSignature;
   const api = usePolicyGovernanceApi();
   const permissions = usePermissions(boardId);
-  const [overview, setOverview] = useState<OverviewState>({
-    scope: overviewScope,
-    status: 'idle',
-    receipt: null,
-    error: null,
-  });
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [findingsExpanded, setFindingsExpanded] = useState(false);
-  const [collectionVersion, setCollectionVersion] = useState(0);
-  const [evaluating, setEvaluating] = useState(false);
-  const [evaluationError, setEvaluationError] = useState<string | null>(null);
-  const [evaluationMessage, setEvaluationMessage] =
-    useState<string | null>(null);
+  const [waiversExpanded, setWaiversExpanded] = useState(false);
+  const [skipsExpanded, setSkipsExpanded] = useState(false);
+  const [localRefresh, setLocalRefresh] = useState(0);
   const [waiverFinding, setWaiverFinding] =
-    useState<PolicyComplianceFindingDetail | null>(null);
-  const overviewRequestRef = useRef(0);
-  const overviewControllerRef = useRef<AbortController | null>(null);
-  const evaluationRequestRef = useRef(0);
-  const evaluationControllerRef = useRef<AbortController | null>(null);
-  const evaluationIntentRef = useRef({
-    signature: '',
-    idempotencyKey: createPolicyUiId('policy-evaluation'),
-  });
-  const evaluationHeadingId = useId();
-  const evaluationReasonId = useId();
+    useState<SemanticFindingDetail | null>(null);
+  const [skipDialog, setSkipDialog] = useState<SkipDialogState | null>(null);
 
   const authorityReady =
     !permissions.isLoading
     && !permissions.error
     && !permissions.ownerReviewRequired;
   const canRead =
-    authorityReady && permissions.has('guidelines.compliance.read');
-  const canEvaluate =
-    authorityReady && permissions.has('guidelines.compliance.evaluate');
+    authorityReady && permissions.has('guidelines.assessments.read');
+  const canReadWaivers =
+    authorityReady && permissions.has('guidelines.waiver.read');
   const canRequestWaiver =
     authorityReady && permissions.has('guidelines.waiver.request');
-  const subjectScope = useMemo(
+  const canReadSkips =
+    authorityReady && permissions.has('guidelines.adoption.manage');
+  const canManageSkips = canReadSkips;
+  const currentSubjectVersion =
+    typeof subjectVersion === 'number'
+    && Number.isInteger(subjectVersion)
+    && subjectVersion > 0
+      ? subjectVersion
+      : null;
+  const transitionBindings = useMemo(
+    () => transitionSkipAuthorities(transitionPreview),
+    [transitionPreview],
+  );
+  const transitionBindingIds = useMemo(
+    () => new Set(
+      transitionBindings.items.map((item) => item.bindingId),
+    ),
+    [transitionBindings.items],
+  );
+
+  const expectation = useMemo<SemanticSubjectExpectation>(
     () => ({ boardId, entityType, subjectId }),
     [boardId, entityType, subjectId],
   );
-  const subjectSignatureRef = useRef(subjectSignature);
-  subjectSignatureRef.current = subjectSignature;
-
-  const loadOverview = useCallback(async () => {
-    if (!canRead) {
-      overviewControllerRef.current?.abort();
-      setOverview({
-        scope: overviewScope,
-        status: 'idle',
-        receipt: null,
-        error: null,
-      });
-      return null;
-    }
-
-    const requestId = overviewRequestRef.current + 1;
-    overviewRequestRef.current = requestId;
-    overviewControllerRef.current?.abort();
-    const controller = new AbortController();
-    overviewControllerRef.current = controller;
-    setOverview({
-      scope: overviewScope,
-      status: 'loading',
-      receipt: null,
-      error: null,
-    });
-
-    try {
-      const page = await api.listPolicyComplianceReceipts(boardId, {
-        limit: 1,
-        projection: 'summary',
-        entityType,
-        subjectId,
-        signal: controller.signal,
-      });
-      if (
-        controller.signal.aborted
-        || requestId !== overviewRequestRef.current
-      ) {
-        return null;
-      }
-      assertCursorPageShape(page, 'Policy Compliance overview');
-      if (page.items.length > 1) {
-        throw new Error(
-          'Policy Compliance overview returned more than one latest receipt.',
-        );
-      }
-      const receipt = page.items[0] ?? null;
-      if (
-        receipt !== null
-        && !isPolicyComplianceReceiptSummaryForSubject(
-          receipt,
-          subjectScope,
-        )
-      ) {
-        throw new Error(
-          'Policy Compliance overview returned a malformed or mismatched receipt.',
-        );
-      }
-      setOverview({
-        scope: overviewScope,
-        status: 'ready',
-        receipt,
-        error: null,
-      });
-      return receipt;
-    } catch (caught) {
-      if (
-        controller.signal.aborted
-        || requestId !== overviewRequestRef.current
-      ) {
-        return null;
-      }
-      setOverview({
-        scope: overviewScope,
-        status: 'error',
-        receipt: null,
-        error: policyUiErrorMessage(caught),
-      });
-      return null;
-    }
-  }, [
-    api,
+  const resetScope = JSON.stringify([
     boardId,
-    canRead,
     entityType,
-    overviewScope,
     subjectId,
-    subjectScope,
+    refreshKey,
+    localRefresh,
   ]);
+  const evaluatedAt = useMemo(
+    () => new Date().toISOString(),
+    [resetScope],
+  );
+
+  const dashboardApi = useDashboardApi();
+  const [complianceAuthority, setComplianceAuthority] =
+    useState<ComplianceAuthorityState>({ status: 'loading', items: [] });
 
   useEffect(() => {
-    void loadOverview();
-    return () => overviewControllerRef.current?.abort();
-  }, [loadOverview, refreshKey]);
-
-  useEffect(() => {
-    evaluationRequestRef.current += 1;
-    evaluationControllerRef.current?.abort();
-    evaluationIntentRef.current = {
-      signature: subjectSignature,
-      idempotencyKey: createPolicyUiId('policy-evaluation'),
+    if (!canRead) return undefined;
+    const controller = new AbortController();
+    let cancelled = false;
+    setComplianceAuthority({ status: 'loading', items: [] });
+    (async () => {
+      try {
+        const entries = await dashboardApi.getBoardGuidelines(boardId);
+        const items: BindingComplianceAuthority[] = [];
+        for (const entry of entries) {
+          if (
+            !entry.binding_id
+            || entry.binding_state === 'unlinked'
+            || (
+              entry.enforcement !== 'advisory'
+              && entry.enforcement !== 'blocking'
+            )
+          ) {
+            continue;
+          }
+          const revisionId = entry.guideline.revision_id;
+          if (!revisionId) continue;
+          const authority = await api.getGuidelineRevision(
+            boardId,
+            entry.guideline.id,
+            revisionId,
+            controller.signal,
+          );
+          const overrides = entry.metric_threshold_overrides ?? {};
+          const metrics = authority.revision.metrics
+            .filter((metric) =>
+              metric.target_entity_types.includes(entityType)
+            )
+            .map((metric) => ({
+              metricId: metric.metric_id,
+              code: metric.code,
+              title: metric.title,
+              description: metric.description,
+              direction: metric.direction,
+              effectiveThreshold:
+                overrides[metric.code] ?? metric.default_threshold,
+              overridden: overrides[metric.code] !== undefined,
+            }));
+          if (metrics.length > 0) {
+            items.push({
+              bindingId: entry.binding_id,
+              guidelineId: entry.guideline.id,
+              guidelineTitle: entry.guideline.title,
+              enforcement: entry.enforcement,
+              minimumConfidence: entry.minimum_confidence ?? null,
+              metrics,
+            });
+          }
+        }
+        if (!cancelled) {
+          setComplianceAuthority({ status: 'ready', items });
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setComplianceAuthority({
+            status: 'error',
+            items: [],
+            message:
+              caught instanceof Error
+                ? caught.message
+                : 'Guideline authority could not be loaded.',
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      controller.abort();
     };
-    setEvaluating(false);
-    setEvaluationError(null);
-    setEvaluationMessage(null);
-    setCollectionVersion((value) => value + 1);
-  }, [subjectSignature]);
+    // resetScope covers boardId/entityType/subjectId/refresh keys.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canRead, resetScope, dashboardApi, api]);
 
   useEffect(() => {
     setHistoryExpanded(false);
     setFindingsExpanded(false);
-  }, [subjectIdentitySignature]);
+    setWaiversExpanded(false);
+    setSkipsExpanded(false);
+    setWaiverFinding(null);
+    setSkipDialog(null);
+  }, [boardId, entityType, subjectId]);
 
-  useEffect(
-    () => () => evaluationControllerRef.current?.abort(),
-    [],
-  );
-
-  const activeOverview: OverviewState =
-    overview.scope === overviewScope
-      ? overview
-      : {
-          scope: overviewScope,
-          status: 'idle',
-          receipt: null,
-          error: null,
-        };
-
-  const loadHistoryPage = useCallback(async (
+  const loadAssessmentPage = useCallback(async (
     cursor: string | undefined,
     signal: AbortSignal,
-  ) => {
-    const page = await api.listPolicyComplianceReceipts(boardId, {
-      limit: POLICY_COLLECTION_PAGE_SIZE,
-      projection: 'summary',
-      entityType,
-      subjectId,
+  ) => parseSemanticDetailPage(
+    await api.listSemanticGuidelineAssessments(boardId, {
+      limit: PAGE_SIZE,
       cursor,
-      signal,
-    });
-    assertCursorPageShape(page, 'Policy Compliance receipt history');
-    if (
-      !page.items.every((item) =>
-        isPolicyComplianceReceiptSummaryForSubject(item, subjectScope),
-      )
-    ) {
-      throw new Error(
-        'Policy Compliance receipt history returned a malformed or mismatched row.',
-      );
-    }
-    return page as {
-      items: PolicyComplianceReceiptSummary[];
-      limit: number;
-      has_more: boolean;
-      next_cursor?: string;
-    };
-  }, [api, boardId, entityType, subjectId, subjectScope]);
-
-  const history = useOpaqueCursorCollection({
-    enabled: canRead && historyExpanded,
-    resetKey: JSON.stringify([
-      boardId,
-      entityType,
+      projection: 'detail',
+      subjectType: entityType,
       subjectId,
-      collectionVersion,
-      refreshKey,
-      'history',
-    ]),
-    loadPage: loadHistoryPage,
-    getItemKey: (item: PolicyComplianceReceiptSummary) => item.receipt_id,
-    classifyError: classifyPolicyCursorError,
+      signal,
+    }),
+    (item) => parseSemanticAssessmentDetail(item, expectation),
+    PAGE_SIZE,
+  ), [api, boardId, entityType, expectation, subjectId]);
+
+  const assessments = useOpaqueCursorCollection({
+    enabled: canRead,
+    resetKey: `${resetScope}:assessments`,
+    loadPage: loadAssessmentPage,
+    getItemKey: (item: SemanticAssessmentDetail) => item.receipt_id,
+    classifyError: semanticError,
     duplicateItemMessage:
-      'A receipt identity was repeated across cursor pages. Restart from the newest evidence.',
+      'A semantic assessment identity was repeated across cursor pages.',
     repeatedCursorMessage:
-      'The receipt cursor repeated. Restart from the newest evidence.',
+      'The semantic assessment cursor repeated. Restart from newest.',
   });
 
-  const latestReceiptId = activeOverview.status === 'ready'
-    ? activeOverview.receipt?.receipt_id ?? null
-    : null;
   const loadFindingPage = useCallback(async (
     cursor: string | undefined,
     signal: AbortSignal,
-  ) => {
-    if (!latestReceiptId) {
-      return {
-        items: [] as PolicyComplianceFindingDetail[],
-        limit: POLICY_COLLECTION_PAGE_SIZE,
-        has_more: false,
-      };
-    }
-    const expected = {
-      ...subjectScope,
-      receiptId: latestReceiptId,
-    };
-    const page = await api.listPolicyComplianceFindings(boardId, {
-      limit: POLICY_COLLECTION_PAGE_SIZE,
-      projection: 'detail',
-      receiptId: latestReceiptId,
-      subjectId,
+  ) => parseSemanticDetailPage(
+    await api.listSemanticGuidelineFindings(boardId, {
+      limit: PAGE_SIZE,
       cursor,
+      projection: 'detail',
+      subjectType: entityType,
+      subjectId,
       signal,
-    });
-    assertCursorPageShape(page, 'Policy Compliance findings');
-    if (
-      !page.items.every((item: PolicyComplianceFindingListItem) =>
-        isPolicyComplianceFindingDetailForReceipt(item, expected),
-      )
-    ) {
-      throw new Error(
-        'Policy Compliance findings returned a malformed or mismatched row.',
-      );
-    }
-    return page as {
-      items: PolicyComplianceFindingDetail[];
-      limit: number;
-      has_more: boolean;
-      next_cursor?: string;
-    };
-  }, [
-    api,
-    boardId,
-    latestReceiptId,
-    subjectId,
-    subjectScope,
-  ]);
+    }),
+    (item) => parseSemanticFindingDetail(item, expectation),
+    PAGE_SIZE,
+  ), [api, boardId, entityType, expectation, subjectId]);
 
   const findings = useOpaqueCursorCollection({
-    enabled:
-      canRead
-      && findingsExpanded
-      && latestReceiptId !== null,
-    resetKey: JSON.stringify([
-      boardId,
-      entityType,
-      subjectId,
-      latestReceiptId,
-      collectionVersion,
-      refreshKey,
-      'findings',
-    ]),
+    enabled: canRead && findingsExpanded,
+    resetKey: `${resetScope}:findings`,
     loadPage: loadFindingPage,
-    getItemKey: (item: PolicyComplianceFindingDetail) => item.finding_id,
-    classifyError: classifyPolicyCursorError,
-    duplicateItemMessage:
-      'A finding identity was repeated across cursor pages. Restart the findings list.',
-    repeatedCursorMessage:
-      'The findings cursor repeated. Restart the findings list.',
+    getItemKey: (item: SemanticFindingDetail) => item.finding_id,
+    classifyError: semanticError,
   });
 
-  const refreshEvidence = useCallback(async () => {
-    setEvaluationError(null);
-    setEvaluationMessage(null);
-    const receipt = await loadOverview();
-    setCollectionVersion((value) => value + 1);
-    onRefreshed?.(receipt);
-    return receipt;
-  }, [loadOverview, onRefreshed]);
+  const loadWaiverPage = useCallback(async (
+    cursor: string | undefined,
+    signal: AbortSignal,
+  ) => parseSemanticDetailPage(
+    await api.listSemanticMetricWaivers(boardId, {
+      limit: PAGE_SIZE,
+      cursor,
+      projection: 'detail',
+      evaluatedAt,
+      subjectType: entityType,
+      subjectId,
+      signal,
+    }),
+    (item) => parseSemanticWaiverDetail(item, expectation),
+    PAGE_SIZE,
+  ), [
+    api,
+    boardId,
+    entityType,
+    evaluatedAt,
+    expectation,
+    subjectId,
+  ]);
 
-  const handleWaiverRequested = useCallback(async (
-    result: PolicyWaiverMutationResult,
-  ) => {
-    setWaiverFinding(null);
-    await refreshEvidence();
-    setEvaluationMessage(
-      `Waiver ${result.waiver.waiver_id} was requested at revision `
-      + `${result.waiver.waiver_revision}; independent review is still `
-      + 'required before it can become effective.',
-    );
-  }, [refreshEvidence]);
+  const waivers = useOpaqueCursorCollection({
+    enabled: canReadWaivers && waiversExpanded,
+    resetKey: `${resetScope}:waivers:${evaluatedAt}`,
+    loadPage: loadWaiverPage,
+    getItemKey: (item: SemanticWaiverDetail) => item.waiver_id,
+    classifyError: semanticError,
+  });
 
-  const evaluate = async () => {
-    if (
-      !canEvaluate
-      || !evaluationEnabled
-      || evaluating
-      || activeOverview.status !== 'ready'
-    ) {
-      return;
-    }
+  const loadSkipPage = useCallback(async (
+    cursor: string | undefined,
+    signal: AbortSignal,
+  ) => parseSemanticDetailPage(
+    await api.listSemanticPolicySkips(boardId, {
+      limit: PAGE_SIZE,
+      cursor,
+      projection: 'detail',
+      subjectType: entityType,
+      subjectId,
+      signal,
+    }),
+    (item) => parseSemanticSkipDetail(item, expectation),
+    PAGE_SIZE,
+  ), [api, boardId, entityType, expectation, subjectId]);
 
-    if (evaluationIntentRef.current.signature !== subjectSignature) {
-      evaluationIntentRef.current = {
-        signature: subjectSignature,
-        idempotencyKey: createPolicyUiId('policy-evaluation'),
-      };
-    }
+  const skips = useOpaqueCursorCollection({
+    enabled: canReadSkips,
+    resetKey: `${resetScope}:skips`,
+    loadPage: loadSkipPage,
+    getItemKey: (item: SemanticSkipDetail) => item.skip_id,
+    classifyError: semanticError,
+  });
 
-    const requestId = evaluationRequestRef.current + 1;
-    evaluationRequestRef.current = requestId;
-    evaluationControllerRef.current?.abort();
-    const controller = new AbortController();
-    evaluationControllerRef.current = controller;
-    const evaluatedSubjectSignature = subjectSignature;
-    setEvaluating(true);
-    setEvaluationError(null);
-    setEvaluationMessage(null);
-    try {
-      await api.evaluatePolicyCompliance(boardId, {
-        entity_type: entityType,
-        subject_id: subjectId,
-        idempotency_key:
-          evaluationIntentRef.current.idempotencyKey,
-      }, controller.signal);
+  const currentResolution = useMemo(() => {
+    const byBinding = new Map<string, SemanticAssessmentDetail>();
+    let error: string | null = null;
+    for (const assessment of assessments.items) {
+      const existing = byBinding.get(assessment.binding_id);
       if (
-        controller.signal.aborted
-        || requestId !== evaluationRequestRef.current
-        || subjectSignatureRef.current !== evaluatedSubjectSignature
+        assessment.currentness === 'current'
+        && existing?.currentness === 'current'
       ) {
-        return;
+        error =
+          'More than one current assessment was returned for the same binding.';
+        break;
       }
-      evaluationIntentRef.current = {
-        signature: subjectSignature,
-        idempotencyKey: createPolicyUiId('policy-evaluation'),
-      };
-      const receipt = await loadOverview();
       if (
-        controller.signal.aborted
-        || requestId !== evaluationRequestRef.current
-        || subjectSignatureRef.current !== evaluatedSubjectSignature
+        existing === undefined
+        || (
+          assessment.currentness === 'current'
+          && existing.currentness === 'stale'
+        )
       ) {
-        return;
-      }
-      setCollectionVersion((value) => value + 1);
-      setEvaluationMessage(
-        receipt
-          ? 'Evaluation recorded and authoritative currentness refreshed.'
-          : 'Evaluation recorded; no current receipt is available after refresh.',
-      );
-      onEvaluated?.(receipt);
-    } catch (caught) {
-      if (
-        controller.signal.aborted
-        || requestId !== evaluationRequestRef.current
-        || subjectSignatureRef.current !== evaluatedSubjectSignature
-      ) {
-        return;
-      }
-      setEvaluationError(policyUiErrorMessage(caught));
-      if (
-        caught instanceof PolicyGovernanceApiError
-        && caught.kind === 'conflict'
-      ) {
-        evaluationIntentRef.current = {
-          signature: subjectSignature,
-          idempotencyKey: createPolicyUiId('policy-evaluation'),
-        };
-        void loadOverview();
-      }
-    } finally {
-      if (
-        requestId === evaluationRequestRef.current
-        && subjectSignatureRef.current === evaluatedSubjectSignature
-      ) {
-        setEvaluating(false);
+        byBinding.set(assessment.binding_id, assessment);
       }
     }
-  };
+    return {
+      items: [...byBinding.values()],
+      error,
+    };
+  }, [assessments.items]);
+
+  const currentAssessmentByBinding = useMemo(() => {
+    const byBinding = new Map<string, SemanticAssessmentDetail>();
+    for (const assessment of currentResolution.items) {
+      byBinding.set(assessment.binding_id, assessment);
+    }
+    return byBinding;
+  }, [currentResolution.items]);
+
+  const activeSkipResolution = useMemo(() => {
+    const result = new Map<string, SemanticSkipDetail>();
+    let error: string | null = null;
+    for (const skip of skips.items) {
+      if (
+        skip.status === 'active'
+        && skip.currentness === 'current'
+      ) {
+        if (result.has(skip.binding_id)) {
+          error =
+            'More than one current active human skip was returned for the same binding.';
+          break;
+        }
+        result.set(skip.binding_id, skip);
+      }
+    }
+    return { items: result, error };
+  }, [skips.items]);
+
+  const refreshAll = useCallback(() => {
+    setLocalRefresh((value) => value + 1);
+    onRefreshed?.();
+  }, [onRefreshed]);
 
   if (permissions.isLoading) {
     return (
@@ -939,19 +1413,8 @@ export function PolicyCompliancePanel({
         data-testid="policy-compliance-panel"
         aria-busy="true"
       >
-        <div className="mb-2 flex justify-end">
-          <ContextualHelpLink
-            sectionId="policy-governance"
-            testId="policy-compliance-help"
-          >
-            How policy works
-          </ContextualHelpLink>
-        </div>
-        <p
-          role="status"
-          className="text-sm text-surface-500 dark:text-surface-400"
-        >
-          Checking Policy Compliance access…
+        <p role="status" className="text-sm text-surface-500 dark:text-surface-400">
+          Checking semantic guideline assessment access…
         </p>
       </section>
     );
@@ -963,17 +1426,9 @@ export function PolicyCompliancePanel({
         className="rounded-xl border border-red-200 bg-red-50 p-4 dark:border-red-800 dark:bg-red-950/30"
         data-testid="policy-compliance-panel"
       >
-        <div className="mb-2 flex justify-end">
-          <ContextualHelpLink
-            sectionId="policy-governance"
-            testId="policy-compliance-help"
-          >
-            How policy works
-          </ContextualHelpLink>
-        </div>
         <p role="alert" className="text-sm text-red-700 dark:text-red-300">
-          Policy Compliance is unavailable because effective authority could
-          not be verified. No evidence was loaded and no action is enabled.
+          Semantic guideline evidence is unavailable because effective
+          authority could not be verified. The panel is fail-closed.
         </p>
       </section>
     );
@@ -985,267 +1440,505 @@ export function PolicyCompliancePanel({
         className="rounded-xl border border-surface-200 bg-surface-50 p-4 dark:border-surface-700 dark:bg-surface-900/40"
         data-testid="policy-compliance-panel"
       >
-        <div className="mb-2 flex justify-end">
-          <ContextualHelpLink
-            sectionId="policy-governance"
-            testId="policy-compliance-help"
-          >
-            How policy works
-          </ContextualHelpLink>
-        </div>
         <p className="text-sm text-surface-600 dark:text-surface-300">
-          Policy Compliance is hidden because
-          {' '}<code>guidelines.compliance.read</code> is not granted.
+          Semantic guideline assessments are hidden because{' '}
+          <code>guidelines.assessments.read</code> is not granted.
         </p>
       </section>
     );
   }
 
-  const evaluateDisabled =
-    !canEvaluate
-    || !evaluationEnabled
-    || evaluating
-    || activeOverview.status !== 'ready';
-  const visibleEvaluationReason = !evaluationEnabled
-    ? evaluationUnavailableReason
-      ?? 'Evaluation is unavailable for the current lifecycle state.'
-    : !canEvaluate
-      ? 'Read-only: guidelines.compliance.evaluate is not granted.'
-      : activeOverview.status === 'error'
-        ? 'Evaluation is disabled until current evidence can be loaded.'
-        : activeOverview.status !== 'ready'
-          ? 'Evaluation is disabled while current evidence is loading.'
-        : null;
-
   const requestWaiver = onRequestWaiver ?? setWaiverFinding;
+  const completeCurrentSet =
+    assessments.loaded
+    && !assessments.loading
+    && !assessments.error
+    && !assessments.hasMore
+    && currentResolution.error === null;
+  const gateEvidenceReady =
+    completeCurrentSet
+    && currentResolution.items.length > 0
+    && currentResolution.items.every(
+      (assessment) =>
+        assessment.currentness === 'current'
+        && assessment.confidence_admissible
+        && assessment.assessor_independent,
+    );
 
   return (
     <>
-      <div
-        className="space-y-5"
-        data-testid="policy-compliance-panel"
-      >
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="flex items-center gap-2 text-base font-semibold text-surface-900 dark:text-white">
-            <ShieldCheck
-              size={18}
-              className="text-violet-600 dark:text-violet-300"
-              aria-hidden="true"
-            />
-            Policy Compliance
-          </h3>
-          <p className="mt-1 text-xs text-surface-500 dark:text-surface-400">
-            Deterministic evidence from the exact guideline revisions adopted
-            by this board. This is separate from Quality Assessment.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <ContextualHelpLink
-            sectionId="policy-governance"
-            testId="policy-compliance-help"
-          >
-            How policy works
-          </ContextualHelpLink>
-          <button
-            type="button"
-            onClick={() => void refreshEvidence()}
-            disabled={activeOverview.status === 'loading' || evaluating}
-            className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-surface-300 bg-white px-2.5 py-1 text-xs text-surface-700 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-200"
-          >
-            <RefreshCw
-              size={13}
-              className={
-                activeOverview.status === 'loading' ? 'animate-spin' : ''
-              }
-              aria-hidden="true"
-            />
-            Refresh
-          </button>
-        </div>
-      </header>
-
-      <section
-        className="space-y-2"
-        aria-busy={activeOverview.status === 'loading'}
-      >
-        <h4 className="text-sm font-semibold text-surface-800 dark:text-surface-100">
-          Latest receipt
-        </h4>
-        {activeOverview.status === 'loading'
-          || activeOverview.status === 'idle' ? (
-          <p
-            role="status"
-            className="rounded-lg border border-surface-200 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400"
-          >
-            Loading authoritative Policy Compliance evidence…
-          </p>
-        ) : activeOverview.status === 'error' ? (
-          <div
-            role="alert"
-            className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
-          >
-            Could not load Policy Compliance evidence. {activeOverview.error}
-          </div>
-        ) : activeOverview.receipt ? (
-          <CurrentPolicyReceipt receipt={activeOverview.receipt} />
-        ) : (
-          <p
-            className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400"
-            data-testid="policy-compliance-empty"
-          >
-            This subject has not been evaluated against the adopted policy set.
-          </p>
-        )}
-      </section>
-
-      <section
-        className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-800/60 dark:bg-violet-950/20"
-        aria-labelledby={evaluationHeadingId}
-      >
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="space-y-5" data-testid="policy-compliance-panel">
+        <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h4
-              id={evaluationHeadingId}
-              className="text-sm font-semibold text-violet-900 dark:text-violet-100"
-            >
-              Deterministic evaluation
-            </h4>
-            <p className="mt-0.5 text-xs text-violet-700 dark:text-violet-300">
-              The server owns subject versions, digests, currentness and the
-              final compliance state.
+            <h3 className="flex items-center gap-2 text-base font-semibold text-surface-900 dark:text-white">
+              <ShieldCheck
+                size={18}
+                className="text-violet-600 dark:text-violet-300"
+                aria-hidden="true"
+              />
+              Semantic guideline assessments
+            </h3>
+            <p className="mt-1 max-w-3xl text-xs text-surface-500 dark:text-surface-400">
+              Metric scores are recorded by agents against the adopted
+              guideline revisions; Pulse verifies and seals them.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => void evaluate()}
-            disabled={evaluateDisabled}
-            aria-describedby={
-              visibleEvaluationReason ? evaluationReasonId : undefined
-            }
-            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <ListChecks size={15} aria-hidden="true" />
-            {evaluating ? 'Evaluating…' : 'Evaluate policies'}
-          </button>
-        </div>
-        {visibleEvaluationReason && (
-          <p
-            id={evaluationReasonId}
-            className="mt-2 text-xs text-violet-700 dark:text-violet-300"
-          >
-            {visibleEvaluationReason}
-          </p>
-        )}
-        {evaluationError && (
-          <p
-            role="alert"
-            className="mt-2 text-xs text-red-700 dark:text-red-300"
-          >
-            Evaluation failed. {evaluationError}
-          </p>
-        )}
-        {evaluationMessage && (
-          <p
-            role="status"
-            className="mt-2 text-xs text-emerald-700 dark:text-emerald-300"
-          >
-            {evaluationMessage}
-          </p>
-        )}
-      </section>
-
-      <CollapsibleEvidenceSection
-        title="Receipt history"
-        description="Append-only evidence ordered newest first with live currentness."
-        expanded={historyExpanded}
-        onToggle={() => setHistoryExpanded((value) => !value)}
-        testId="policy-compliance-history"
-      >
-        {history.loading && !history.loaded ? (
-          <p
-            role="status"
-            className="rounded-lg border border-surface-200 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400"
-          >
-            Loading receipt history…
-          </p>
-        ) : history.error && history.items.length === 0 ? null : (
-          <PolicyReceiptHistory receipts={history.items} />
-        )}
-        <CursorCollectionControls
-          collectionLabel="receipt history"
-          itemCount={history.items.length}
-          hasMore={history.hasMore}
-          loading={history.loading}
-          error={history.error}
-          restartRequired={history.restartRequired}
-          onLoadMore={history.loadMore}
-          onRetry={history.retry}
-          onRestart={history.restart}
-          testId="policy-compliance-history-cursor"
-        />
-      </CollapsibleEvidenceSection>
-
-      <CollapsibleEvidenceSection
-        title="Pinpoint policy findings"
-        description="Stable receipt and rule identities with governed evidence; no Quality score is inferred."
-        expanded={findingsExpanded}
-        onToggle={() => setFindingsExpanded((value) => !value)}
-        testId="policy-compliance-findings"
-      >
-        {!latestReceiptId ? (
-          <p className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400">
-            Evaluate this subject before inspecting policy findings.
-          </p>
-        ) : (
-          <>
-            {findings.loading && !findings.loaded ? (
-              <p
-                role="status"
-                className="rounded-lg border border-surface-200 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400"
-              >
-                Loading policy findings…
-              </p>
-            ) : findings.error && findings.items.length === 0 ? null : (
-              <PolicyFindingItems
-                findings={findings.items}
-                canRequestWaiver={canRequestWaiver}
-                onRequestWaiver={requestWaiver}
+          <div className="flex items-center gap-2">
+            <ContextualHelpLink
+              sectionId="policy-governance"
+              testId="policy-compliance-help"
+            >
+              How semantic gates work
+            </ContextualHelpLink>
+            <button
+              type="button"
+              onClick={refreshAll}
+              disabled={assessments.loading}
+              className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-surface-300 bg-white px-2.5 py-1 text-xs text-surface-700 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-200"
+            >
+              <RefreshCw
+                size={13}
+                className={assessments.loading ? 'animate-spin' : ''}
+                aria-hidden="true"
               />
-            )}
-            <CursorCollectionControls
-              collectionLabel="policy findings"
-              itemCount={findings.items.length}
-              hasMore={findings.hasMore}
-              loading={findings.loading}
-              error={findings.error}
-              restartRequired={findings.restartRequired}
-              onLoadMore={findings.loadMore}
-              onRetry={findings.retry}
-              onRestart={findings.restart}
-              testId="policy-compliance-findings-cursor"
-            />
-          </>
-        )}
-      </CollapsibleEvidenceSection>
+              Refresh
+            </button>
+          </div>
+        </header>
 
-      <p className="flex items-start gap-1.5 rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs text-surface-600 dark:border-surface-700 dark:bg-surface-900/40 dark:text-surface-300">
-        <AlertTriangle
-          size={14}
-          className="mt-0.5 shrink-0"
-          aria-hidden="true"
+        <section
+          className="space-y-3"
+          data-testid="guideline-compliance-summary"
+        >
+          {complianceAuthority.status === 'loading' ? (
+            <p
+              role="status"
+              className="rounded-lg border border-surface-200 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400"
+            >
+              Loading guideline compliance…
+            </p>
+          ) : complianceAuthority.status === 'error' ? (
+            <p
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
+            >
+              Guideline authority could not be loaded:{' '}
+              {complianceAuthority.message}
+            </p>
+          ) : complianceAuthority.items.length === 0 ? (
+            <p
+              data-testid="guideline-compliance-none"
+              className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-600 dark:border-surface-700 dark:text-surface-300"
+            >
+              No guideline metric applies to this {entityType}. Adopted
+              guidelines remain context-only here.
+            </p>
+          ) : (
+            complianceAuthority.items.map((binding) => {
+              const assessment =
+                currentAssessmentByBinding.get(binding.bindingId) ?? null;
+              const resultByMetric = new Map(
+                (assessment?.metric_results ?? []).map((result) => [
+                  result.metric_id,
+                  result,
+                ]),
+              );
+              return (
+                <article
+                  key={binding.bindingId}
+                  data-testid={`guideline-compliance-${binding.bindingId}`}
+                  className="space-y-2 rounded-xl border border-surface-200 p-3 dark:border-surface-700"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold text-surface-900 dark:text-white">
+                      {binding.guidelineTitle}
+                    </span>
+                    <EnforcementBadge enforcement={binding.enforcement} />
+                    <ComplianceStateChip assessment={assessment} />
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[28rem] text-left text-xs">
+                      <thead>
+                        <tr className="text-[10px] uppercase tracking-wide text-surface-400 dark:text-surface-500">
+                          <th className="py-1 pr-2 font-medium">Metric</th>
+                          <th className="py-1 pr-2 font-medium">Score</th>
+                          <th className="py-1 pr-2 font-medium">Threshold</th>
+                          <th className="py-1 font-medium">Result</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {binding.metrics.map((metric) => {
+                          const result = resultByMetric.get(metric.metricId);
+                          return (
+                            <tr
+                              key={metric.metricId}
+                              className="border-t border-surface-100 dark:border-surface-800"
+                            >
+                              <td className="py-1.5 pr-2">
+                                <span
+                                  title={metric.description}
+                                  className="cursor-help text-surface-800 underline decoration-dotted underline-offset-2 dark:text-surface-100"
+                                >
+                                  {metric.title}
+                                </span>{' '}
+                                <code className="text-[10px] text-surface-400 dark:text-surface-500">
+                                  {metric.code}
+                                </code>
+                              </td>
+                              <td className="py-1.5 pr-2 font-semibold text-surface-800 dark:text-surface-100">
+                                {result ? result.score : '—'}
+                              </td>
+                              <td className="py-1.5 pr-2 text-surface-600 dark:text-surface-300">
+                                {metric.direction === 'minimum' ? '≥' : '≤'}{' '}
+                                {metric.effectiveThreshold}
+                                {metric.overridden ? ' (board override)' : ''}
+                              </td>
+                              <td className="py-1.5">
+                                {result ? (
+                                  result.outcome === 'pass' ? (
+                                    <span className="inline-flex items-center gap-1 font-medium text-emerald-700 dark:text-emerald-300">
+                                      <CheckCircle2
+                                        size={13}
+                                        aria-hidden="true"
+                                      />
+                                      Pass
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 font-medium text-red-700 dark:text-red-300">
+                                      <ShieldX size={13} aria-hidden="true" />
+                                      Fail
+                                    </span>
+                                  )
+                                ) : (
+                                  <span className="text-surface-400 dark:text-surface-500">
+                                    Not assessed
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {assessment && (
+                    <p className="flex flex-wrap items-center gap-2 text-[11px] text-surface-500 dark:text-surface-400">
+                      <CurrentnessBadge
+                        currentness={assessment.currentness}
+                      />
+                      <span>
+                        Confidence {assessment.confidence}
+                        {binding.minimumConfidence !== null
+                          ? ` (min ${binding.minimumConfidence})`
+                          : ''}
+                      </span>
+                      <span>{formatTimestamp(assessment.recorded_at)}</span>
+                    </p>
+                  )}
+                </article>
+              );
+            })
+          )}
+        </section>
+
+        <details
+          className="rounded-xl border border-surface-200 dark:border-surface-700"
+          data-testid="policy-compliance-advanced"
+        >
+          <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-surface-600 hover:text-surface-900 dark:text-surface-300 dark:hover:text-white">
+            Governance details — receipts, waivers, skips and history
+          </summary>
+          <div className="space-y-5 border-t border-surface-200 p-3 dark:border-surface-700">
+
+        {!evaluationEnabled && (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-200">
+            {evaluationUnavailableReason
+              ?? 'New assessments are unavailable for this lifecycle state.'}
+            {' '}Existing immutable evidence remains visible.
+          </p>
+        )}
+
+        <TransitionBindingSkips
+          items={transitionBindings.items}
+          error={transitionBindings.error ?? activeSkipResolution.error}
+          subjectVersion={currentSubjectVersion}
+          skipsReady={
+            skips.loaded
+            && !skips.loading
+            && !skips.error
+            && !skips.hasMore
+            && activeSkipResolution.error === null
+          }
+          activeSkipByBinding={activeSkipResolution.items}
+          canManage={canManageSkips}
+          onCreate={(authority) => setSkipDialog({
+            mode: 'create',
+            authority,
+          })}
+          onRevoke={(skip) => setSkipDialog({
+            mode: 'revoke',
+            skip,
+          })}
         />
-        Policy Compliance uses its authoritative state in supported lifecycle
-        gates. It does not create a second workflow and does not reuse Quality
-        Assessment scores.
-      </p>
+
+        <section className="space-y-3" aria-busy={assessments.loading}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold text-surface-800 dark:text-surface-100">
+              Latest assessment state by binding
+            </h4>
+            {gateEvidenceReady && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                <CheckCircle2 size={13} aria-hidden="true" />
+                All assessment receipt pages loaded; displayed receipts are
+                admissible
+              </span>
+            )}
+            {completeCurrentSet && !gateEvidenceReady && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                <AlertTriangle size={13} aria-hidden="true" />
+                All assessment receipt pages loaded; displayed receipts are
+                not gate-ready
+              </span>
+            )}
+          </div>
+
+          {assessments.loading && !assessments.loaded ? (
+            <p
+              role="status"
+              className="rounded-lg border border-surface-200 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400"
+            >
+              Loading semantic guideline assessments…
+            </p>
+          ) : assessments.error && assessments.items.length === 0 ? (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
+            >
+              <p>
+                Assessment evidence could not be verified. No gate state is
+                inferred.
+              </p>
+              <p className="mt-1">{assessments.error}</p>
+            </div>
+          ) : currentResolution.error ? (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
+            >
+              {currentResolution.error} The panel is fail-closed.
+            </div>
+          ) : currentResolution.items.length === 0 ? (
+            <p
+              className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400"
+              data-testid="policy-compliance-empty"
+            >
+              No semantic assessment is available for a loaded guideline
+              binding. An authorized agent must assess every applicable
+              binding before a governed transition can proceed.
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {currentResolution.items.map((assessment) => (
+                <AssessmentCard
+                  key={assessment.receipt_id}
+                  assessment={assessment}
+                  activeSkip={
+                    activeSkipResolution.items.get(assessment.binding_id)
+                    ?? null
+                  }
+                  canManageSkips={
+                    canManageSkips
+                    && skips.loaded
+                    && !skips.error
+                    && !skips.hasMore
+                    && activeSkipResolution.error === null
+                    && !transitionBindingIds.has(assessment.binding_id)
+                  }
+                  onCreateSkip={(item) => setSkipDialog({
+                    mode: 'create',
+                    authority: {
+                      bindingId: item.binding_id,
+                      guidelineId: item.guideline_id,
+                      subjectVersion: item.subject_version,
+                      source: 'assessment',
+                    },
+                  })}
+                  onRevokeSkip={(item) => setSkipDialog({
+                    mode: 'revoke',
+                    skip: item,
+                  })}
+                />
+              ))}
+            </div>
+          )}
+
+          <CursorCollectionControls
+            collectionLabel="semantic assessments"
+            itemCount={assessments.items.length}
+            hasMore={assessments.hasMore}
+            loading={assessments.loading}
+            error={assessments.error}
+            restartRequired={assessments.restartRequired}
+            onLoadMore={assessments.loadMore}
+            onRetry={assessments.retry}
+            onRestart={assessments.restart}
+            testId="semantic-assessments-cursor"
+          />
+        </section>
+
+        <CollapsibleEvidenceSection
+          title="Assessment history"
+          description="Append-only receipts across every loaded subject × binding evaluation."
+          expanded={historyExpanded}
+          onToggle={() => setHistoryExpanded((value) => !value)}
+          testId="policy-compliance-history"
+        >
+          {assessments.items.length === 0 ? (
+            <p className="text-xs text-surface-500 dark:text-surface-400">
+              No assessment receipts have been loaded.
+            </p>
+          ) : (
+            <ol className="space-y-2">
+              {assessments.items.map((assessment) => (
+                <li
+                  key={assessment.receipt_id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-200 p-3 text-xs dark:border-surface-700"
+                >
+                  <span className="text-surface-700 dark:text-surface-200">
+                    {assessment.metric_count} metrics ·{' '}
+                    {assessment.failed_metric_count} failed ·{' '}
+                    {formatTimestamp(assessment.recorded_at)}
+                  </span>
+                  <span className="flex items-center gap-2">
+                    <CurrentnessBadge currentness={assessment.currentness} />
+                    <code className="text-[10px] text-surface-500">
+                      {shortIdentity(assessment.receipt_id)}
+                    </code>
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </CollapsibleEvidenceSection>
+
+        <CollapsibleEvidenceSection
+          title="Pinpoint metric findings"
+          description="Failed metric evidence anchored to an immutable assessment receipt."
+          expanded={findingsExpanded}
+          onToggle={() => setFindingsExpanded((value) => !value)}
+          testId="policy-compliance-findings"
+        >
+          <Findings
+            items={findings.items}
+            canRequestWaiver={canRequestWaiver}
+            onRequestWaiver={requestWaiver}
+          />
+          <CursorCollectionControls
+            collectionLabel="semantic findings"
+            itemCount={findings.items.length}
+            hasMore={findings.hasMore}
+            loading={findings.loading}
+            error={findings.error}
+            restartRequired={findings.restartRequired}
+            onLoadMore={findings.loadMore}
+            onRetry={findings.retry}
+            onRestart={findings.restart}
+            testId="semantic-findings-cursor"
+          />
+        </CollapsibleEvidenceSection>
+
+        {canReadWaivers && (
+          <CollapsibleEvidenceSection
+            title="Metric waivers"
+            description="Independently reviewed exceptions with live currentness."
+            expanded={waiversExpanded}
+            onToggle={() => setWaiversExpanded((value) => !value)}
+            testId="semantic-waivers"
+          >
+            <Waivers items={waivers.items} />
+            <CursorCollectionControls
+              collectionLabel="metric waivers"
+              itemCount={waivers.items.length}
+              hasMore={waivers.hasMore}
+              loading={waivers.loading}
+              error={waivers.error}
+              restartRequired={waivers.restartRequired}
+              onLoadMore={waivers.loadMore}
+              onRetry={waivers.retry}
+              onRestart={waivers.restart}
+              testId="semantic-waivers-cursor"
+            />
+          </CollapsibleEvidenceSection>
+        )}
+
+        {canReadSkips && (
+          <CollapsibleEvidenceSection
+            title="Human binding skips"
+            description="Audited REST-only exceptions that agents cannot create or revoke."
+            expanded={skipsExpanded}
+            onToggle={() => setSkipsExpanded((value) => !value)}
+            testId="semantic-skips"
+          >
+            <Skips
+              items={skips.items}
+              canManage={canManageSkips}
+              onRevoke={(skip) => setSkipDialog({
+                mode: 'revoke',
+                skip,
+              })}
+            />
+            <CursorCollectionControls
+              collectionLabel="human binding skips"
+              itemCount={skips.items.length}
+              hasMore={skips.hasMore}
+              loading={skips.loading}
+              error={skips.error}
+              restartRequired={skips.restartRequired}
+              onLoadMore={skips.loadMore}
+              onRetry={skips.retry}
+              onRestart={skips.restart}
+              testId="semantic-skips-cursor"
+            />
+          </CollapsibleEvidenceSection>
+        )}
+
+        <p className="flex items-start gap-1.5 rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs text-surface-600 dark:border-surface-700 dark:bg-surface-900/40 dark:text-surface-300">
+          <AlertTriangle
+            size={14}
+            className="mt-0.5 shrink-0"
+            aria-hidden="true"
+          />
+          Native workflow gates remain separate. Semantic guideline gates use
+          only current, admissible receipts plus authoritative waivers or
+          human-owned binding skips; unknown or partial evidence never enables
+          a transition.
+        </p>
+          </div>
+        </details>
       </div>
+
       {waiverFinding && !onRequestWaiver && (
-        <PolicyWaiverRequestDialog
+        <WaiverRequestDialog
           boardId={boardId}
           finding={waiverFinding}
           onClose={() => setWaiverFinding(null)}
-          onCompleted={handleWaiverRequested}
+          onCompleted={() => {
+            setWaiverFinding(null);
+            refreshAll();
+          }}
+        />
+      )}
+      {skipDialog && (
+        <SkipDialog
+          boardId={boardId}
+          entityType={entityType}
+          subjectId={subjectId}
+          state={skipDialog}
+          onClose={() => setSkipDialog(null)}
+          onCompleted={() => {
+            setSkipDialog(null);
+            refreshAll();
+          }}
         />
       )}
     </>

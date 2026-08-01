@@ -653,9 +653,8 @@ def test_worker_runner_boundary_has_no_core_implementation_reach_in() -> None:
     forbidden = [
         item
         for item in report["full_inventory"]
-        if item["module"].startswith(
-            ("okto_pulse.core.kg.workers", "okto_pulse.core.events")
-        )
+        if item["module"].startswith("okto_pulse.core.kg.workers")
+        or item["classification"] != "public_contract"
     ]
 
     assert report["ok"] is True

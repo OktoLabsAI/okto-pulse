@@ -64,7 +64,7 @@ const GLOBAL_PAGE_SIZE = 50;
 interface RevisionEditorSelection {
   guideline: Guideline;
   adoptedRevision?: AdoptedGuidelineRevision;
-  initialSection?: 'rules';
+  initialSection?: 'metrics';
 }
 
 interface ImpactDialogSelection {
@@ -73,8 +73,9 @@ interface ImpactDialogSelection {
   targetRevisionId: string;
   targetSemanticVersion: string;
   adoptedBinding?: AdoptedGuidelineBindingAuthority;
-  initialPriority: number;
   initialEnforcement: GuidelineEnforcement;
+  initialMinimumConfidence: number;
+  initialMetricThresholdOverrides: Record<string, number>;
 }
 
 export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
@@ -430,7 +431,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
   const openRevisionEditor = (
     guideline: Guideline,
     entry?: BoardGuidelineEntry,
-    initialSection?: 'rules',
+    initialSection?: 'metrics',
   ) => {
     if (!canReadRevisions) {
       toast.error('Guideline revision read permission is required');
@@ -535,10 +536,6 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
           'The latest guideline revision cannot be added to this board.',
         );
       }
-      const nextPriority = entries.reduce(
-        (maximum, current) => Math.max(maximum, current.priority),
-        -1,
-      ) + 1;
       setImpactDialog({
         guidelineId: guideline.id,
         guidelineTitle: guideline.title,
@@ -556,8 +553,10 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
               },
             }
           : {}),
-        initialPriority: entry?.priority ?? nextPriority,
-        initialEnforcement: entry?.default_enforcement ?? 'advisory',
+        initialEnforcement: entry?.enforcement ?? 'advisory',
+        initialMinimumConfidence: entry?.minimum_confidence ?? 70,
+        initialMetricThresholdOverrides:
+          entry?.metric_threshold_overrides ?? {},
       });
     } catch (error: unknown) {
       toast.error(guidelineImpactErrorMessage(error));
@@ -598,7 +597,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     await refreshPolicyUi();
   };
 
-  const openExecutableRulesEditor = () => {
+  const openSemanticMetricsEditor = () => {
     if (!impactDialog) return;
     const entry = entries.find(
       (item) => item.guideline.id === impactDialog.guidelineId,
@@ -613,7 +612,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
       return;
     }
     setImpactDialog(null);
-    openRevisionEditor(guideline, entry, 'rules');
+    openRevisionEditor(guideline, entry, 'metrics');
   };
 
   const filteredGlobals = globals.filter(g =>
@@ -1300,10 +1299,15 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
           targetRevisionId={impactDialog.targetRevisionId}
           targetSemanticVersion={impactDialog.targetSemanticVersion}
           adoptedBinding={impactDialog.adoptedBinding}
-          initialPriority={impactDialog.initialPriority}
           initialEnforcement={impactDialog.initialEnforcement}
+          initialMinimumConfidence={
+            impactDialog.initialMinimumConfidence
+          }
+          initialMetricThresholdOverrides={
+            impactDialog.initialMetricThresholdOverrides
+          }
           autoPreview
-          onAddExecutableRules={openExecutableRulesEditor}
+          onAddSemanticMetrics={openSemanticMetricsEditor}
           onClose={() => setImpactDialog(null)}
           onAdopted={handleAdopted}
         />

@@ -3,12 +3,14 @@ import {
   render,
   screen,
   waitFor,
-  within,
 } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CONTEXTUAL_HELP_EVENT } from '@/components/help';
-import type { GuidelineRevisionDetail } from '@/types/policy-governance';
+import type {
+  GuidelineMetric,
+  GuidelineRevisionDetail,
+} from '@/types/policy-governance';
 
 const policyApiMock = vi.hoisted(() => ({
   listGuidelineRevisions: vi.fn(),
@@ -42,15 +44,16 @@ vi.mock('@/hooks/usePermissions', () => ({
   }),
 }));
 
+import { GuidelineRevisionEditor } from '../GuidelineRevisionEditor';
 import {
-  GuidelineRevisionEditor,
-  type GuidelineSuccessorOption,
-} from '../GuidelineRevisionEditor';
-import { PolicyGovernanceApiError } from '@/services/policy-governance-api';
+  newSemanticMetricDraft,
+  validateSemanticMetricDraft,
+  validateSemanticMetricDrafts,
+} from '../semanticMetricEditorModel';
 
 const guideline = {
   id: 'guideline-1',
-  title: 'Delivery policy',
+  title: 'Delivery quality',
   content: 'Legacy projection',
   tags: ['delivery'],
   scope: 'global' as const,
@@ -61,61 +64,38 @@ const guideline = {
   updated_at: '2026-07-29T01:00:00Z',
 };
 
-function revision({
-  id = 'revision-2',
-  number = 2,
-  semanticVersion = '1.1.0',
-  title = 'Delivery policy',
-  rules = [],
-  tags = ['delivery'],
-}: Partial<{
-  id: string;
-  number: number;
-  semanticVersion: string;
-  title: string;
-  rules: GuidelineRevisionDetail['rules'];
-  tags: string[];
-}> = {}): GuidelineRevisionDetail {
+const metric: GuidelineMetric = {
+  metric_id: 'metric-1',
+  code: 'evidence_strength',
+  title: 'Evidence strength',
+  description: 'How strongly evidence supports the proposal.',
+  evaluation_rubric: '0 has no evidence; 100 has independently traceable evidence.',
+  target_entity_types: ['spec'],
+  direction: 'minimum',
+  default_threshold: 70,
+};
+
+function revision(
+  metrics: GuidelineMetric[] = [],
+): GuidelineRevisionDetail {
   return {
     projection: 'detail',
-    revision_id: id,
+    revision_id: 'revision-2',
     guideline_id: guideline.id,
-    revision_number: number,
-    semantic_version: semanticVersion,
-    title,
+    revision_number: 2,
+    semantic_version: '1.1.0',
+    title: guideline.title,
     content: 'Ship only after evidence is attached.',
-    content_digest: 'a'.repeat(64),
-    rules,
+    revision_digest: 'a'.repeat(64),
+    metrics,
     created_by: 'author-1',
     created_at: '2026-07-29T01:00:00Z',
-    parent_revision_id: number > 1 ? 'revision-1' : undefined,
-    tags,
+    parent_revision_id: 'revision-1',
+    tags: ['delivery'],
   };
 }
 
-const blockingRule: GuidelineRevisionDetail['rules'][number] = {
-  rule_id: 'rule-1',
-  code: 'require_evidence',
-  title: 'Require evidence',
-  description: 'A card needs evidence.',
-  target_entity_types: ['card'],
-  predicates: [{
-    predicate_code: 'count_gte',
-    parameters: [
-      ['fact', 'labels'],
-      ['value', 1],
-    ],
-  }],
-  enforcement: 'blocking',
-  operator: 'all',
-  waivable: false,
-  policy_class: 'standard',
-};
-
-function authority(
-  latest: GuidelineRevisionDetail,
-  retirement?: 'retired' | 'superseded',
-) {
+function authority(latest: GuidelineRevisionDetail) {
   return {
     guideline: {
       guideline_id: guideline.id,
@@ -125,9 +105,18 @@ function authority(
       context_scope: 'all',
     },
     revision: {
-      ...latest,
-      projection: undefined,
+      revision_id: latest.revision_id,
+      guideline_id: latest.guideline_id,
+      revision_number: latest.revision_number,
+      semantic_version: latest.semantic_version,
+      title: latest.title,
+      content: latest.content,
+      revision_digest: latest.revision_digest,
+      metrics: latest.metrics,
+      created_by: latest.created_by,
+      created_at: latest.created_at,
       parent_revision_id: latest.parent_revision_id,
+      tags: latest.tags,
     },
     head: {
       guideline_id: guideline.id,
@@ -137,93 +126,40 @@ function authority(
       head_revision: latest.revision_number,
       updated_at: latest.created_at,
     },
-    ...(retirement
-      ? {
-          retirement: {
-            retirement_id: 'retirement-1',
-            guideline_id: guideline.id,
-            status: retirement,
-            retired_revision_id: latest.revision_id,
-            retired_revision_number: latest.revision_number,
-            retired_semantic_version: latest.semantic_version,
-            retired_revision_digest: latest.content_digest,
-            retired_head_revision: latest.revision_number,
-            reason: 'No longer current.',
-            retired_by: 'owner-1',
-            retired_at: latest.created_at,
-          },
-        }
-      : {}),
   };
 }
-
-function page(
-  items: GuidelineRevisionDetail[],
-  nextCursor?: string,
-) {
-  return nextCursor
-    ? {
-        items,
-        limit: 10,
-        has_more: true as const,
-        next_cursor: nextCursor,
-      }
-    : {
-        items,
-        limit: 10,
-        has_more: false as const,
-      };
-}
-
-const successors: GuidelineSuccessorOption[] = [{
-  guidelineId: 'guideline-2',
-  title: 'Replacement policy',
-  semanticVersion: '2.0.0',
-}];
 
 function grant(...permissions: string[]) {
   permissionState.allowed = new Set(permissions);
 }
 
-function renderEditor({
+function renderEditor(
   latest = revision(),
-  onClose = vi.fn(),
-  onChanged = vi.fn(),
-  retirement,
-  initialSection,
-}: {
-  latest?: GuidelineRevisionDetail;
-  onClose?: () => void;
-  onChanged?: () => void | Promise<void>;
-  retirement?: 'retired' | 'superseded';
-  initialSection?: 'rules';
-} = {}) {
-  policyApiMock.listGuidelineRevisions.mockResolvedValue(page([latest]));
-  policyApiMock.getGuidelineRevision.mockResolvedValue(
-    authority(latest, retirement),
+  initialSection?: 'metrics',
+) {
+  policyApiMock.listGuidelineRevisions.mockResolvedValue({
+    items: [latest],
+    limit: 10,
+    has_more: false,
+  });
+  policyApiMock.getGuidelineRevision.mockResolvedValue(authority(latest));
+  return render(
+    <GuidelineRevisionEditor
+      boardId="board-1"
+      guideline={guideline}
+      adoptedRevision={{
+        semanticVersion: '1.0.0',
+        revisionId: 'revision-1',
+        bindingRevision: 4,
+      }}
+      initialSection={initialSection}
+      onClose={vi.fn()}
+      onChanged={vi.fn()}
+    />,
   );
-  return {
-    ...render(
-      <GuidelineRevisionEditor
-        boardId="board-1"
-        guideline={guideline}
-        adoptedRevision={{
-          semanticVersion: '1.0.0',
-          revisionId: 'revision-1',
-          bindingRevision: 4,
-        }}
-        successorOptions={successors}
-        initialSection={initialSection}
-        onClose={onClose}
-        onChanged={onChanged}
-      />,
-    ),
-    onClose,
-    onChanged,
-  };
 }
 
-describe('GuidelineRevisionEditor', () => {
+describe('GuidelineRevisionEditor semantic authoring', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     permissionState.isLoading = false;
@@ -232,419 +168,270 @@ describe('GuidelineRevisionEditor', () => {
     grant(
       'guidelines.revisions.read',
       'guidelines.revisions.create',
-      'guidelines.rules.author_blocking',
       'guidelines.revisions.retire',
+      'guidelines.metrics.author',
     );
-  });
-
-  it('separates all-context from executable targets and shows adopted/latest plus blocking state', async () => {
-    const latest = revision({ rules: [blockingRule] });
-    renderEditor({ latest });
-
-    expect(await screen.findByRole('heading', {
-      name: 'Edit guideline',
-    })).toBeInTheDocument();
-    expect(await screen.findByText('All entities')).toBeInTheDocument();
-    expect(screen.getByText('v1.0.0')).toBeInTheDocument();
-    expect(screen.getAllByText('v1.1.0')).not.toHaveLength(0);
-    expect(screen.getByText('Update available')).toBeInTheDocument();
-    expect(screen.getAllByText('card')).not.toHaveLength(0);
-    expect(screen.getByText('Contains blocking rules')).toBeInTheDocument();
-    expect(screen.getByText(/policy\/v1 operators/)).toBeInTheDocument();
-    expect(screen.getByTestId('guideline-revision-help'))
-      .toHaveTextContent('Revision guide');
-  });
-
-  it('opens canonical policy Help from the revision editor', () => {
-    const helpListener = vi.fn();
-    window.addEventListener(CONTEXTUAL_HELP_EVENT, helpListener, {
-      once: true,
-    });
-    renderEditor();
-
-    fireEvent.click(screen.getByTestId('guideline-revision-help'));
-
-    expect(helpListener).toHaveBeenCalledWith(
-      expect.objectContaining({
-        detail: { sectionId: 'policy-governance' },
-      }),
-    );
-  });
-
-  it('uses exact revision identity for update availability even when SemVer is unchanged', async () => {
-    renderEditor({
-      latest: revision({
-        id: 'revision-2',
-        semanticVersion: '1.0.0',
-      }),
-    });
-
-    expect(await screen.findByText('All entities')).toBeInTheDocument();
-    expect(screen.getByText('Update available')).toBeInTheDocument();
-  });
-
-  it('fails closed while permission authority is unavailable and never reads history', async () => {
-    permissionState.error = new Error('permission service down');
-    grant();
-    renderEditor();
-
-    expect(
-      await screen.findByText(/Permission status is unavailable/),
-    ).toBeInTheDocument();
-    expect(policyApiMock.listGuidelineRevisions).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', {
-      name: 'Create immutable revision',
-    })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', {
-      name: 'Retire guideline',
-    })).toBeDisabled();
-    expect(screen.getByTestId('guideline-revision-help'))
-      .toHaveTextContent('Revision guide');
-  });
-
-  it('allows a text-only revision without rule-authoring authority and omits rules from the patch', async () => {
-    grant('guidelines.revisions.read', 'guidelines.revisions.create');
     policyApiMock.createGuidelineRevision.mockResolvedValue({
-      status: 'noop',
+      revision_id: 'revision-3',
+      revision: '1.2.0',
+      revision_digest: 'b'.repeat(64),
+      metrics: [],
     });
-    renderEditor();
+  });
 
-    const title = await screen.findByLabelText('Title');
-    fireEvent.change(title, { target: { value: 'Updated delivery policy' } });
-    fireEvent.click(screen.getByTestId('create-guideline-revision'));
+  it('shows fixed Confidence and removes deterministic authoring controls', async () => {
+    renderEditor(revision([metric]));
+
+    expect(await screen.findByText('Semantic metrics')).toBeInTheDocument();
+    expect(screen.getByTestId('system-confidence-metric')).toHaveTextContent(
+      'Confidence',
+    );
+    expect(screen.getByTestId('system-confidence-metric')).toHaveTextContent(
+      'System-owned',
+    );
+    expect(screen.getByText('metric-1')).toBeInTheDocument();
+    expect(screen.queryByText('Policy class')).not.toBeInTheDocument();
+    expect(screen.queryByText('Deterministic predicates')).not.toBeInTheDocument();
+    expect(screen.queryByText('Operator')).not.toBeInTheDocument();
+    expect(screen.queryByText('Code')).not.toBeInTheDocument();
+  });
+
+  it('creates an ordered semantic revision with the current head fence', async () => {
+    renderEditor();
+    await screen.findByText('Context-only guideline');
+
+    fireEvent.click(screen.getByTestId('add-semantic-metric'));
+    fireEvent.change(screen.getByLabelText('Metric title'), {
+      target: { value: 'User value clarity' },
+    });
+    fireEvent.change(screen.getByLabelText('Description'), {
+      target: { value: 'How clearly the user outcome is defined.' },
+    });
+    fireEvent.change(screen.getByLabelText('Evaluation rubric'), {
+      target: {
+        value: '0 has no outcome; 70 has a measurable outcome; 100 has traceable evidence.',
+      },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Add Spec metric target' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: /Lower is better/i }),
+    );
+    fireEvent.change(
+      screen.getByLabelText('Custom metric 1 default threshold value'),
+      { target: { value: '30' } },
+    );
+    fireEvent.change(screen.getByLabelText('Version bump'), {
+      target: { value: 'minor' },
+    });
+
+    const create = screen.getByTestId('create-guideline-revision');
+    expect(create).toBeEnabled();
+    fireEvent.click(create);
 
     await waitFor(() => {
       expect(policyApiMock.createGuidelineRevision).toHaveBeenCalledTimes(1);
     });
+    expect(policyApiMock.createGuidelineRevision.mock.calls[0][0])
+      .toBe('board-1');
+    expect(policyApiMock.createGuidelineRevision.mock.calls[0][1])
+      .toBe(guideline.id);
     const request = policyApiMock.createGuidelineRevision.mock.calls[0][2];
-    expect(request.patch).toEqual({ title: 'Updated delivery policy' });
-    expect(request.patch).not.toHaveProperty('rules');
-    expect(screen.getByTestId('add-policy-rule')).toBeDisabled();
-  });
-
-  it('keeps boolean and enum predicate values explicit instead of displaying phantom defaults', async () => {
-    renderEditor();
-    fireEvent.click(await screen.findByTestId('add-policy-rule'));
-    fireEvent.click(screen.getByRole('button', {
-      name: 'Add Card executable target',
-    }));
-
-    const operator = screen.getByLabelText(
-      'Rule 1 condition 1 operator',
-    );
-    fireEvent.change(operator, { target: { value: 'eq' } });
-    expect(
-      screen.getByLabelText('Rule 1 condition 1 value'),
-    ).toHaveValue('');
-
-    fireEvent.change(
-      screen.getByLabelText('Rule 1 condition 1 fact'),
-      { target: { value: 'resource_gate_ready' } },
-    );
-    fireEvent.change(operator, { target: { value: 'eq' } });
-    const booleanValue = screen.getByLabelText(
-      'Rule 1 condition 1 value',
-    );
-    expect(booleanValue).toHaveValue('');
-    fireEvent.change(booleanValue, { target: { value: 'true' } });
-    expect(booleanValue).toHaveValue('true');
-  });
-
-  it('suggests a rule key, keeps Rule ID read-only in technical details, and omits value for presence conditions', async () => {
-    renderEditor();
-    fireEvent.click(await screen.findByTestId('add-policy-rule'));
-    const card = screen.getByTestId('policy-rule-editor-0');
-
-    fireEvent.change(within(card).getByLabelText('Title'), {
-      target: { value: 'Require acceptance evidence' },
+    expect(request).toEqual({
+      expected_head_revision: 2,
+      version_bump: 'minor',
+      content: {
+        title: 'Delivery quality',
+        body: 'Ship only after evidence is attached.',
+      },
+      metrics: [
+        expect.objectContaining({
+          code: 'user_value_clarity',
+          title: 'User value clarity',
+          description: 'How clearly the user outcome is defined.',
+          evaluation_rubric:
+            '0 has no outcome; 70 has a measurable outcome; 100 has traceable evidence.',
+          target_entity_types: ['spec'],
+          direction: 'maximum',
+          default_threshold: 30,
+        }),
+      ],
     });
-    expect(within(card).getByLabelText('Rule key')).toHaveValue(
-      'require_acceptance_evidence',
-    );
-
-    fireEvent.click(within(card).getByRole('button', {
-      name: 'Add Spec executable target',
-    }));
-    expect(within(card).getByText(
-      'This condition does not require a value.',
-    )).toBeInTheDocument();
-    expect(within(card).queryByLabelText(
-      'Rule 1 condition 1 value',
-    )).not.toBeInTheDocument();
-
-    const technicalDetails = within(card).getByText('Technical details')
-      .closest('details');
-    expect(technicalDetails).not.toHaveAttribute('open');
-    fireEvent.click(within(card).getByText('Technical details'));
-    const ruleId = within(card).getByLabelText('Rule ID');
-    expect(ruleId).toHaveAttribute('readonly');
-    expect((ruleId as HTMLInputElement).value).toMatch(/^rule-/);
-    expect(within(card).getByRole('button', {
-      name: 'Copy rule 1 ID',
-    })).toBeInTheDocument();
-  });
-
-  it('uses closed policy classes, disables waivers for protected classes, and round-trips legacy values', async () => {
-    const legacyRule = {
-      ...blockingRule,
-      enforcement: 'advisory' as const,
-      waivable: true,
-      policy_class: 'legacy_quality',
-    };
-    renderEditor({ latest: revision({ rules: [legacyRule] }) });
-    const card = await screen.findByTestId('policy-rule-editor-0');
-    const policyClass = within(card).getByLabelText('Policy class');
-
-    expect(policyClass).toHaveValue('legacy_quality');
-    expect(within(policyClass).getByRole('option', {
-      name: 'Legacy/custom — legacy_quality',
-    })).toBeInTheDocument();
-
-    fireEvent.change(policyClass, { target: { value: 'coverage' } });
-    expect(within(card).getByLabelText('Waivable')).not.toBeChecked();
-    expect(within(card).getByLabelText('Waivable')).toBeDisabled();
-    expect(within(card).getByText(
-      'Protected policy classes cannot be waived.',
-    )).toBeInTheDocument();
-    expect(within(card).getByText(/policy class requires a major version bump/i))
-      .toBeInTheDocument();
-  });
-
-  it('compares policy-class effects and explains the selected Fact dynamically', async () => {
-    const helpListener = vi.fn();
-    window.addEventListener(CONTEXTUAL_HELP_EVENT, helpListener, {
-      once: true,
-    });
-    renderEditor();
-    fireEvent.click(await screen.findByTestId('add-policy-rule'));
-    const card = screen.getByTestId('policy-rule-editor-0');
-
-    fireEvent.click(within(card).getByText('Compare policy classes'));
-    const classHelp = within(card).getByTestId('policy-class-help-0');
-    expect(classHelp).toHaveTextContent(
-      'Policy class never makes a rule blocking (Enforcement controls that)',
-    );
-    expect(within(classHelp).getByText('Standard')).toBeInTheDocument();
-    expect(within(classHelp).getByText('Coverage')).toBeInTheDocument();
-    expect(within(classHelp).getByText('Permissions')).toBeInTheDocument();
-    expect(within(classHelp).getByText('Reviewer separation'))
-      .toBeInTheDocument();
-    expect(within(classHelp).getByText('Lineage')).toBeInTheDocument();
-    expect(within(classHelp).getAllByText('Never waivable.')).toHaveLength(4);
-
-    fireEvent.click(within(card).getByRole('button', {
-      name: 'Add Card executable target',
-    }));
-    expect(within(card).getByText(
-      'Conditions — what must be true for this rule to pass',
-    )).toBeInTheDocument();
-    const factHelp = within(card).getByTestId('policy-fact-help-0-0');
-    expect(factHelp).toHaveTextContent('Status');
-    expect(factHelp).toHaveTextContent('Data type: Named value');
-    expect(factHelp).toHaveTextContent('Configure:');
-    expect(factHelp).toHaveTextContent('Example:');
-
-    fireEvent.change(
-      within(card).getByLabelText('Rule 1 condition 1 fact'),
-      { target: { value: 'dependency_open_count' } },
-    );
-    expect(factHelp).toHaveTextContent('Open dependency count');
-    expect(factHelp).toHaveTextContent(
-      'number of upstream card dependencies',
-    );
-    expect(factHelp).toHaveTextContent(
-      'Open dependency count — Equals — 0',
-    );
-
-    fireEvent.click(within(factHelp).getByRole('button', {
-      name: 'See all Policy facts',
-    }));
-    expect(helpListener).toHaveBeenCalledWith(
+    expect(request.metrics).toEqual([
       expect.objectContaining({
-        detail: { sectionId: 'policy-facts' },
+        code: 'user_value_clarity',
+        title: 'User value clarity',
+        description: 'How clearly the user outcome is defined.',
+        evaluation_rubric:
+          '0 has no outcome; 70 has a measurable outcome; 100 has traceable evidence.',
+        target_entity_types: ['spec'],
+        direction: 'maximum',
+        default_threshold: 30,
+      }),
+    ]);
+    expect(request.metrics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'confidence' }),
+      ]),
+    );
+    expect(request).not.toHaveProperty('patch');
+    expect(request).not.toHaveProperty('tags');
+    expect(request).not.toHaveProperty('declared_semantic_version');
+    expect(request).not.toHaveProperty('idempotency_key');
+  });
+
+  it('publishes an empty metrics array when returning to context-only', async () => {
+    renderEditor(revision([metric]));
+    await screen.findByTestId('semantic-metric-editor-0');
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Remove custom metric 1' }),
+    );
+    fireEvent.click(screen.getByTestId('create-guideline-revision'));
+
+    await waitFor(() => {
+      expect(policyApiMock.createGuidelineRevision).toHaveBeenCalledWith(
+        'board-1',
+        guideline.id,
+        {
+          expected_head_revision: 2,
+          version_bump: 'patch',
+          content: {
+            title: 'Delivery quality',
+            body: 'Ship only after evidence is attached.',
+          },
+          metrics: [],
+        },
+      );
+    });
+  });
+
+  it('matches Core metric-code syntax and case-insensitive reservations', () => {
+    const draft = {
+      ...newSemanticMetricDraft(),
+      metricId: 'metric-1',
+      title: 'Traceability',
+      code: 'Traceability.v2:API-check',
+      description: 'Rates traceability.',
+      evaluationRubric: '0 is absent; 100 is complete.',
+      targetEntityTypes: ['spec' as const],
+    };
+    expect(validateSemanticMetricDraft(draft)).toBeNull();
+
+    const reserved = { ...draft, metricId: 'metric-2', code: 'Confidence' };
+    expect(validateSemanticMetricDraft(reserved)).toMatch(/system-owned/i);
+
+    const duplicate = {
+      ...draft,
+      metricId: 'metric-2',
+      code: 'traceability.V2:api-CHECK',
+    };
+    expect(validateSemanticMetricDrafts([draft, duplicate]))
+      .toMatch(/keys must be unique/i);
+  });
+
+  it('rejects a threshold outside 0..100', async () => {
+    renderEditor(revision([metric]));
+    await screen.findByTestId('semantic-metric-editor-0');
+
+    fireEvent.change(
+      screen.getByLabelText('Custom metric 1 default threshold value'),
+      { target: { value: '101' } },
+    );
+
+    expect(
+      screen.getAllByText(/whole number from 0 to 100/i).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByTestId('create-guideline-revision')).toBeDisabled();
+  });
+
+  it('opens the dedicated semantic help from the editor', async () => {
+    const listener = vi.fn();
+    window.addEventListener(CONTEXTUAL_HELP_EVENT, listener);
+    renderEditor(revision(), 'metrics');
+    await screen.findByText('Semantic metrics');
+
+    fireEvent.click(screen.getByTestId('semantic-metrics-help'));
+
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: { sectionId: 'semantic-guideline-metrics' },
       }),
     );
+    window.removeEventListener(CONTEXTUAL_HELP_EVENT, listener);
   });
 
-  it('keeps an incompatible condition visible and invalid after targets change', async () => {
-    const ambiguityRule: GuidelineRevisionDetail['rules'][number] = {
-      ...blockingRule,
-      rule_id: 'ambiguity-rule',
-      code: 'limit_ambiguity',
-      target_entity_types: ['ideation'],
-      predicates: [{
-        predicate_code: 'lte',
-        parameters: [
-          ['fact', 'ambiguity_score'],
-          ['value', 3],
-        ],
-      }],
-    };
-    renderEditor({ latest: revision({ rules: [ambiguityRule] }) });
-    const card = await screen.findByTestId('policy-rule-editor-0');
-
-    fireEvent.click(within(card).getByRole('button', {
-      name: 'Add Spec executable target',
-    }));
-
-    const fact = within(card).getByLabelText('Rule 1 condition 1 fact');
-    expect(fact).toHaveValue('ambiguity_score');
-    expect(fact).toHaveAttribute('aria-invalid', 'true');
-    expect(within(card).getByRole('alert')).toHaveTextContent(
-      /does not support one or more conditions/i,
-    );
-  });
-
-  it('warns that changing an existing rule key requires a major bump', async () => {
-    renderEditor({ latest: revision({ rules: [blockingRule] }) });
-    const card = await screen.findByTestId('policy-rule-editor-0');
-
-    fireEvent.change(within(card).getByLabelText('Rule key'), {
-      target: { value: 'require_stronger_evidence' },
-    });
-
-    expect(within(card).getByText(/rule key requires a major version bump/i))
-      .toBeInTheDocument();
-  });
-
-  it('focuses executable rules when opened from a rules CTA', async () => {
-    renderEditor({ initialSection: 'rules' });
-    const heading = await screen.findByRole('heading', {
-      name: 'Executable rules',
-    });
-    const section = heading.closest('section');
-
-    await waitFor(() => {
-      expect(document.activeElement).toBe(section);
-    });
-  });
-
-  it('reuses the idempotency key for an unchanged under-bump retry and keeps the draft editable', async () => {
-    const underBump = new PolicyGovernanceApiError({
-      status: 400,
-      kind: 'under_bump',
-      code: 'under_bump',
-      message: 'Declared version is too low.',
-      details: { minimum_bump: 'major' },
-    });
-    policyApiMock.createGuidelineRevision.mockRejectedValue(underBump);
+  it('fails closed when revision-create authority is absent', async () => {
+    grant('guidelines.revisions.read');
     renderEditor();
 
-    fireEvent.change(await screen.findByLabelText('Title'), {
-      target: { value: 'Breaking delivery policy' },
-    });
-    fireEvent.change(screen.getByLabelText('Declared semantic version'), {
-      target: { value: '1.1.1' },
-    });
-    const save = screen.getByTestId('create-guideline-revision');
-    fireEvent.click(save);
-    await screen.findByText(/Minimum required: major/);
-    fireEvent.click(save);
-
-    await waitFor(() => {
-      expect(policyApiMock.createGuidelineRevision).toHaveBeenCalledTimes(2);
-    });
-    const first = policyApiMock.createGuidelineRevision.mock.calls[0][2];
-    const second = policyApiMock.createGuidelineRevision.mock.calls[1][2];
-    expect(second.idempotency_key).toBe(first.idempotency_key);
-    expect(screen.getByLabelText('Title')).toHaveValue(
-      'Breaking delivery policy',
-    );
+    expect(await screen.findByText(/Revision history is read-only/i))
+      .toBeInTheDocument();
+    expect(screen.getByTestId('add-semantic-metric')).toBeDisabled();
+    expect(screen.getByTestId('create-guideline-revision')).toBeDisabled();
   });
 
-  it('deduplicates paged history and keeps the editor usable when a cursor repeats', async () => {
-    const latest = revision();
-    const older = revision({
-      id: 'revision-1',
-      number: 1,
-      semanticVersion: '1.0.0',
-      title: 'Original policy',
-    });
-    policyApiMock.listGuidelineRevisions
-      .mockResolvedValueOnce(page([latest], 'opaque-cursor'))
-      .mockResolvedValueOnce(page([latest, older], 'opaque-cursor'));
-    policyApiMock.getGuidelineRevision.mockResolvedValue(authority(latest));
-
-    renderEditor({ latest });
-    fireEvent.click(await screen.findByText('Load older revisions'));
+  it('preserves current metrics in a text-only revision without metric-author authority', async () => {
+    grant(
+      'guidelines.revisions.read',
+      'guidelines.revisions.create',
+    );
+    renderEditor(revision([metric]));
 
     expect(
-      await screen.findByText(/server returned a repeated cursor/i),
+      await screen.findByTestId('semantic-metrics-readonly'),
+    ).toHaveTextContent(
+      /guidelines\.metrics\.author.*spec\.entity\.edit_fields/s,
+    );
+    expect(screen.getByTestId('add-semantic-metric')).toBeDisabled();
+    expect(screen.getByLabelText('Metric title')).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Remove custom metric 1' }),
+    ).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Guideline body'), {
+      target: {
+        value: 'Ship only after evidence is independently attached.',
+      },
+    });
+    const create = screen.getByTestId('create-guideline-revision');
+    expect(create).toBeEnabled();
+    fireEvent.click(create);
+
+    await waitFor(() => {
+      expect(policyApiMock.createGuidelineRevision).toHaveBeenCalledWith(
+        'board-1',
+        guideline.id,
+        {
+          expected_head_revision: 2,
+          version_bump: 'patch',
+          content: {
+            title: 'Delivery quality',
+            body: 'Ship only after evidence is independently attached.',
+          },
+          metrics: [metric],
+        },
+      );
+    });
+  });
+
+  it('fails closed when metric-author authority is lost after editing metrics', async () => {
+    renderEditor(revision([metric]));
+    await screen.findByTestId('semantic-metric-editor-0');
+
+    fireEvent.change(screen.getByLabelText('Metric title'), {
+      target: { value: 'Changed evidence strength' },
+    });
+    permissionState.allowed.delete('guidelines.metrics.author');
+    fireEvent.change(screen.getByLabelText('Guideline body'), {
+      target: { value: 'Trigger an authority-aware rerender.' },
+    });
+
+    expect(
+      await screen.findByTestId('semantic-metrics-readonly'),
     ).toBeInTheDocument();
-    expect(screen.getAllByText('Delivery policy')).toHaveLength(2);
-    expect(screen.getByText('Original policy')).toBeInTheDocument();
-    expect(screen.getByText('New revision')).toBeInTheDocument();
-  });
-
-  it('restarts history after an invalid cursor without hiding the loaded draft', async () => {
-    const latest = revision();
-    const invalidCursor = new PolicyGovernanceApiError({
-      status: 400,
-      kind: 'invalid_cursor',
-      code: 'invalid_cursor',
-      message: 'Cursor invalid.',
-    });
-    policyApiMock.listGuidelineRevisions
-      .mockResolvedValueOnce(page([latest], 'opaque-cursor'))
-      .mockRejectedValueOnce(invalidCursor)
-      .mockResolvedValueOnce(page([latest]));
-    policyApiMock.getGuidelineRevision.mockResolvedValue(authority(latest));
-
-    renderEditor({ latest });
-    fireEvent.click(await screen.findByText('Load older revisions'));
-    expect(await screen.findByText(/cursor expired/i)).toBeInTheDocument();
-    expect(screen.getByText('New revision')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('Restart history'));
-
-    await waitFor(() => {
-      expect(policyApiMock.listGuidelineRevisions).toHaveBeenCalledTimes(3);
-    });
-  });
-
-  it('uses a catalog successor and stable retirement identifiers across retries', async () => {
-    policyApiMock.retireGuideline
-      .mockRejectedValueOnce(new Error('temporary failure'))
-      .mockResolvedValueOnce({});
-    const { onClose } = renderEditor();
-
-    fireEvent.click(await screen.findByRole('button', {
-      name: 'Retire guideline',
-    }));
-    fireEvent.click(screen.getByLabelText('Superseded'));
-    fireEvent.change(screen.getByLabelText('Successor guideline'), {
-      target: { value: 'guideline-2' },
-    });
-    fireEvent.change(screen.getByLabelText('Reason'), {
-      target: { value: 'Replacement is authoritative.' },
-    });
-    const confirm = screen.getByRole('button', {
-      name: 'Confirm retirement',
-    });
-    fireEvent.click(confirm);
-    expect(await screen.findAllByText('temporary failure')).not.toHaveLength(0);
-    fireEvent.click(confirm);
-
-    await waitFor(() => {
-      expect(policyApiMock.retireGuideline).toHaveBeenCalledTimes(2);
-      expect(onClose).toHaveBeenCalledTimes(1);
-    });
-    const first = policyApiMock.retireGuideline.mock.calls[0][2];
-    const second = policyApiMock.retireGuideline.mock.calls[1][2];
-    expect(second).toEqual(first);
-    expect(first).toMatchObject({
-      status: 'superseded',
-      superseded_by_guideline_id: 'guideline-2',
-      reason: 'Replacement is authoritative.',
-    });
-  });
-
-  it('does not offer a second retirement for an already retired guideline', async () => {
-    const latest = revision();
-    renderEditor({ latest, retirement: 'retired' });
-
-    const retired = await screen.findByRole('button', {
-      name: 'Guideline retired',
-    });
-    expect(retired).toBeDisabled();
+    expect(screen.getByTestId('create-guideline-revision')).toBeDisabled();
+    expect(policyApiMock.createGuidelineRevision).not.toHaveBeenCalled();
   });
 });

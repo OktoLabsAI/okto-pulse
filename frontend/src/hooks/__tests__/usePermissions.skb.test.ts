@@ -13,11 +13,11 @@ const LEAVES = [
   'guidelines.revisions.read',
   'guidelines.revisions.create',
   'guidelines.revisions.retire',
-  'guidelines.rules.author_blocking',
+  'guidelines.metrics.author',
   'guidelines.impact.preview',
   'guidelines.adoption.manage',
-  'guidelines.compliance.read',
-  'guidelines.compliance.evaluate',
+  'guidelines.assessments.read',
+  'guidelines.assessments.record',
   'guidelines.waiver.read',
   'guidelines.waiver.request',
   'guidelines.waiver.review',
@@ -29,11 +29,11 @@ const AUTHORITIES = {
   'guidelines.revisions.read': 'guidelines.read',
   'guidelines.revisions.create': 'spec.entity.edit_fields',
   'guidelines.revisions.retire': 'guidelines.delete',
-  'guidelines.rules.author_blocking': 'spec.entity.edit_fields',
+  'guidelines.metrics.author': 'spec.entity.edit_fields',
   'guidelines.impact.preview': 'guidelines.read',
   'guidelines.adoption.manage': 'spec.entity.edit_fields',
-  'guidelines.compliance.read': 'guidelines.read',
-  'guidelines.compliance.evaluate': 'guidelines.read',
+  'guidelines.assessments.read': 'guidelines.read',
+  'guidelines.assessments.record': 'guidelines.read',
   'guidelines.waiver.read': 'guidelines.read',
   'guidelines.waiver.request': 'guidelines.read',
   'guidelines.waiver.review': 'spec.validation.submit',
@@ -74,11 +74,11 @@ function nestedFlags(paths: readonly string[]): Record<string, unknown> {
   return document;
 }
 
-describe('usePermissions SK-B/v1 fail-closed introduction', () => {
+describe('usePermissions SK-B3/v1 fail-closed introduction', () => {
   it('shares the exact ordered manifest and historical-authority lineage', () => {
     expect(PERMISSION_INTRODUCTION_MANIFESTS.map(({ version }) => version))
-      .toEqual(['SK-A/v1', 'SK-B/v1']);
-    expect(SKB_PERMISSION_INTRODUCTION_V1.version).toBe('SK-B/v1');
+      .toEqual(['SK-A/v1', 'SK-B3/v1']);
+    expect(SKB_PERMISSION_INTRODUCTION_V1.version).toBe('SK-B3/v1');
     expect(SKB_PERMISSION_INTRODUCTION_V1_LEAVES).toEqual(LEAVES);
     expect(SKB_PERMISSION_INTRODUCTION_V1_LEAVES).toHaveLength(13);
     expect(SKB_PERMISSION_INTRODUCTION_V1.historicalAuthorities)
@@ -111,17 +111,17 @@ describe('usePermissions SK-B/v1 fail-closed introduction', () => {
 
   it('preserves explicit custom denies and owner-review fail-closed state', () => {
     const granted = nestedFlags([
-      'guidelines.compliance.evaluate',
+      'guidelines.assessments.record',
       'guidelines.read',
     ]);
     (
       (granted.guidelines as Record<string, unknown>)
-        .compliance as Record<string, unknown>
-    ).evaluate = false;
+        .assessments as Record<string, unknown>
+    ).record = false;
     expect(
       hasEffectivePermission(
         response(granted),
-        'guidelines.compliance.evaluate',
+        'guidelines.assessments.record',
       ),
     ).toBe(false);
 
@@ -129,12 +129,12 @@ describe('usePermissions SK-B/v1 fail-closed introduction', () => {
       hasEffectivePermission(
         response(
           nestedFlags([
-            'guidelines.compliance.evaluate',
+            'guidelines.assessments.record',
             'guidelines.read',
           ]),
           true,
         ),
-        'guidelines.compliance.evaluate',
+        'guidelines.assessments.record',
       ),
     ).toBe(false);
   });

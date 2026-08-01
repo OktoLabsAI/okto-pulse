@@ -7,16 +7,17 @@ import {
 } from 'react';
 import {
   Archive,
+  ArrowDown,
+  ArrowUp,
   CalendarDays,
   Check,
-  Copy,
+  CircleGauge,
   FileText,
   FlaskConical,
   History,
   Lightbulb,
   Plus,
   Search,
-  ShieldAlert,
   SquareKanban,
   Trash2,
   X,
@@ -32,11 +33,7 @@ import {
 } from '@/services/policy-governance-api';
 import type { Guideline } from '@/types';
 import type {
-  CreateGuidelineRevisionResponse,
   GuidelineRevisionDetail,
-  GuidelineRevisionPatchRequest,
-  GuidelineRule,
-  GuidelineRuleInput,
   GuidelineLifecycleStatus,
   GuidelineVersionBump,
   PolicyEntityType,
@@ -44,31 +41,21 @@ import type {
 } from '@/types/policy-governance';
 
 import {
-  POLICY_ENTITY_TYPES,
-  POLICY_CLASS_BEHAVIOR_NOTE,
-  POLICY_CLASS_OPTIONS,
-  POLICY_FACT_KIND_LABELS,
-  POLICY_OPERATOR_LABELS,
-  POLICY_PREDICATE_CATALOG_VERSION,
-  canonicalRuleSet,
-  canonicalTags,
-  createPolicyClientId,
-  factOptionsForTargets,
-  guidelineRuleToDraft,
-  isKnownPolicyClass,
-  isProtectedPolicyClass,
-  newRuleDraft,
-  operatorNeedsValue,
-  operatorsForFact,
-  policyClassDescription,
-  ruleDraftToInput,
-  suggestRuleKey,
-  validateRuleDraft,
-  validateRuleDrafts,
-  type GuidelineRuleDraft,
-  type PolicyPredicateDraft,
-  type PolicyPredicateOperator,
-} from './policyEditorModel';
+  SYSTEM_CONFIDENCE_METRIC,
+  canonicalSemanticMetrics,
+  newSemanticMetricDraft,
+  semanticMetricDraftToInput,
+  semanticMetricToDraft,
+  suggestMetricCode,
+  validateSemanticMetricDraft,
+  validateSemanticMetricDrafts,
+  type SemanticMetricDraft,
+} from './semanticMetricEditorModel';
+
+import {
+  GUIDELINE_ENTITY_TYPES,
+  createGuidelineClientId,
+} from './guidelineEditorShared';
 
 const REVISION_PAGE_SIZE = 10;
 
@@ -89,39 +76,16 @@ export interface GuidelineRevisionEditorProps {
   guideline: Guideline;
   adoptedRevision?: AdoptedGuidelineRevision;
   successorOptions?: GuidelineSuccessorOption[];
-  initialSection?: 'rules';
+  initialSection?: 'metrics';
   onClose: () => void;
   onChanged: () => void | Promise<void>;
 }
 
-function authoritativeRuleInput(rule: GuidelineRule): GuidelineRuleInput {
-  const [firstPredicate, ...remainingPredicates] = rule.predicates.map(
-    (predicate) => ({
-      predicate_code: predicate.predicate_code,
-      parameters: Object.fromEntries(predicate.parameters),
-    }),
-  );
-  return {
-    rule_id: rule.rule_id,
-    code: rule.code,
-    title: rule.title,
-    description: rule.description,
-    target_entity_types: [...rule.target_entity_types],
-    predicates: [firstPredicate, ...remainingPredicates],
-    enforcement: rule.enforcement,
-    operator: rule.operator,
-    waivable: rule.waivable,
-    policy_class: rule.policy_class,
-  };
-}
-
 function errorMessage(error: unknown): string {
   if (error instanceof PolicyGovernanceApiError) {
-    const minimum =
-      error.details.minimum_semantic_version
-      ?? error.details.minimum_bump;
+    const minimum = error.details.minimum_bump;
     if (error.kind === 'under_bump' && minimum) {
-      return `Declared version is too low. Minimum required: ${minimum}.`;
+      return `The selected version bump is too low. Minimum required: ${minimum}.`;
     }
     if (error.nextAction) return `${error.message} Next: ${error.nextAction}.`;
     return error.message;
@@ -157,301 +121,187 @@ function PolicyTargetIcon({
   return <SquareKanban size={size} />;
 }
 
-function RuleEditorCard({
-  rule,
+function SystemConfidenceCard() {
+  return (
+    <article
+      className="rounded-xl border border-violet-300 bg-gradient-to-br from-violet-50 to-white p-4 dark:border-violet-500/40 dark:from-violet-500/15 dark:to-gray-900"
+      data-testid="system-confidence-metric"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-600 text-white shadow-sm">
+            <CircleGauge size={22} aria-hidden="true" />
+          </span>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="text-base font-semibold text-gray-900 dark:text-white">
+                {SYSTEM_CONFIDENCE_METRIC.title}
+              </h4>
+              <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:bg-violet-400/15 dark:text-violet-200">
+                System-owned
+              </span>
+            </div>
+            <p className="mt-1 max-w-3xl text-xs leading-relaxed text-gray-600 dark:text-gray-300">
+              {SYSTEM_CONFIDENCE_METRIC.description}
+            </p>
+          </div>
+        </div>
+        <span className="rounded-lg border border-violet-200 bg-white px-3 py-2 text-center dark:border-violet-500/30 dark:bg-gray-900">
+          <span className="block text-[10px] font-semibold uppercase text-gray-500">
+            Score
+          </span>
+          <span className="text-sm font-semibold text-gray-900 dark:text-white">
+            0–100
+          </span>
+        </span>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+        <div className="rounded-lg border border-violet-200/80 bg-white/80 p-3 dark:border-violet-500/25 dark:bg-gray-900/70">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-200">
+            Evaluation rubric
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-300">
+            {SYSTEM_CONFIDENCE_METRIC.evaluationRubric}
+          </p>
+        </div>
+        <div className="rounded-lg border border-violet-200/80 bg-white/80 p-3 dark:border-violet-500/25 dark:bg-gray-900/70">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-200">
+            Board threshold
+          </div>
+          <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+            Configured when this guideline is added to a board. It is not part
+            of the editable custom metric list.
+          </p>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function SemanticMetricCard({
+  metric,
   index,
   disabled,
   onChange,
   onRemove,
 }: {
-  rule: GuidelineRuleDraft;
+  metric: SemanticMetricDraft;
   index: number;
   disabled: boolean;
-  onChange: (next: GuidelineRuleDraft) => void;
+  onChange: (next: SemanticMetricDraft) => void;
   onRemove: () => void;
 }) {
-  const factOptions = factOptionsForTargets(rule.targetEntityTypes);
-  const validationError = validateRuleDraft(rule);
-  const protectedPolicyClass = isProtectedPolicyClass(rule.policyClass);
-  const ruleKeyChanged = Boolean(
-    rule.originalCode
-    && rule.code.trim() !== rule.originalCode,
-  );
-  const policyClassChanged = Boolean(
-    rule.originalPolicyClass
-    && rule.policyClass.trim() !== rule.originalPolicyClass,
-  );
-
-  const updatePredicate = (
-    predicateIndex: number,
-    patch: Partial<PolicyPredicateDraft>,
-  ) => {
-    onChange({
-      ...rule,
-      predicates: rule.predicates.map((predicate, currentIndex) =>
-        currentIndex === predicateIndex
-          ? { ...predicate, ...patch }
-          : predicate,
-      ),
-    });
-  };
-
+  const validationError = validateSemanticMetricDraft(metric);
   const toggleTarget = (target: PolicyEntityType) => {
     onChange({
-      ...rule,
-      targetEntityTypes: rule.targetEntityTypes.includes(target)
-        ? rule.targetEntityTypes.filter((item) => item !== target)
-        : [...rule.targetEntityTypes, target],
-    });
-  };
-
-  const addPredicate = () => {
-    if (rule.targetEntityTypes.length === 0) return;
-    onChange({
-      ...rule,
-      predicates: [
-        ...rule.predicates,
-        {
-          localId: createPolicyClientId('predicate-draft'),
-          fact: 'status',
-          operator: 'exists',
-          rawValue: '',
-        },
-      ],
+      ...metric,
+      targetEntityTypes: metric.targetEntityTypes.includes(target)
+        ? metric.targetEntityTypes.filter((item) => item !== target)
+        : [...metric.targetEntityTypes, target],
     });
   };
 
   return (
     <article
-      className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900"
-      data-testid={`policy-rule-editor-${index}`}
+      className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900"
+      data-testid={`semantic-metric-editor-${index}`}
     >
-      <div className="mb-3 flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-gray-900 dark:text-white">
-            Rule {index + 1}
+            Custom metric {index + 1}
           </div>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            <span className="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-500/15 dark:text-blue-200">
-              {rule.enforcement}
-            </span>
-            {rule.enforcement === 'blocking' && (
-              <span className="rounded bg-red-50 px-2 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-500/15 dark:text-red-200">
-                Can block supported gates
-              </span>
-            )}
-          </div>
+          <p className="mt-0.5 text-[11px] text-gray-500">
+            Describe one semantic quality that an evaluator can score from 0
+            to 100.
+          </p>
         </div>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            aria-label={`Remove rule ${index + 1}`}
-            disabled={disabled}
-            onClick={onRemove}
-            className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 dark:hover:bg-red-500/10"
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
+        <button
+          type="button"
+          aria-label={`Remove custom metric ${index + 1}`}
+          disabled={disabled}
+          onClick={onRemove}
+          className="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 dark:hover:bg-red-500/10"
+        >
+          <Trash2 size={15} aria-hidden="true" />
+        </button>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
-          Title
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <label className="text-xs font-medium text-gray-700 dark:text-gray-200">
+          Metric title
           <input
-            value={rule.title}
+            value={metric.title}
             disabled={disabled}
             onChange={(event) => {
-              const nextTitle = event.target.value;
-              const previousSuggestion = suggestRuleKey(rule.title);
-              const shouldSuggestRuleKey =
-                rule.originalCode === null
-                && (
-                  rule.code.trim() === ''
-                  || rule.code === previousSuggestion
-                );
+              const title = event.target.value;
               onChange({
-                ...rule,
-                title: nextTitle,
-                code: shouldSuggestRuleKey
-                  ? suggestRuleKey(nextTitle)
-                  : rule.code,
+                ...metric,
+                title,
+                code: metric.originalCode === null
+                  ? suggestMetricCode(title)
+                  : metric.code,
               });
             }}
-            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+            placeholder="e.g. User value clarity"
+            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
           />
         </label>
-        <div className="text-xs font-medium text-gray-600 dark:text-gray-300">
-          <label htmlFor={`policy-rule-key-${rule.localId}`}>
-            Rule key
-          </label>
+        <label className="text-xs font-medium text-gray-700 dark:text-gray-200">
+          Description
           <input
-            id={`policy-rule-key-${rule.localId}`}
-            value={rule.code}
+            value={metric.description}
             disabled={disabled}
-            onChange={(event) => onChange({ ...rule, code: event.target.value })}
-            placeholder="require_acceptance_criteria"
-            aria-describedby={`policy-rule-key-help-${rule.localId}`}
-            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 font-mono text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+            onChange={(event) =>
+              onChange({ ...metric, description: event.target.value })
+            }
+            placeholder="What this score communicates"
+            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
           />
-          <span
-            id={`policy-rule-key-help-${rule.localId}`}
-            className="mt-1 block text-[11px] font-normal text-gray-500"
-          >
-            Stable audit key suggested from the title.
-          </span>
-          {ruleKeyChanged && (
-            <span className="mt-1 block text-[11px] font-semibold text-amber-700 dark:text-amber-300">
-              Changing an existing rule key requires a major version bump.
-            </span>
-          )}
-        </div>
-        <div className="text-xs font-medium text-gray-600 dark:text-gray-300">
-          <label htmlFor={`policy-class-${rule.localId}`}>
-            Policy class
-          </label>
-          <select
-            id={`policy-class-${rule.localId}`}
-            value={rule.policyClass}
-            disabled={disabled}
-            onChange={(event) => {
-              const policyClass = event.target.value;
-              onChange({
-                ...rule,
-                policyClass,
-                waivable: isProtectedPolicyClass(policyClass)
-                  ? false
-                  : rule.waivable,
-              });
-            }}
-            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
-          >
-            {!isKnownPolicyClass(rule.policyClass) && (
-              <option value={rule.policyClass}>
-                Legacy/custom — {rule.policyClass}
-              </option>
-            )}
-            {POLICY_CLASS_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-                {option.protected ? ' (protected)' : ''}
-              </option>
-            ))}
-          </select>
-          <span className="mt-1 block text-[11px] font-normal text-gray-500">
-            {policyClassDescription(rule.policyClass)}
-          </span>
-          {policyClassChanged && (
-            <span className="mt-1 block text-[11px] font-semibold text-amber-700 dark:text-amber-300">
-              Changing an existing policy class requires a major version bump.
-            </span>
-          )}
-        </div>
+        </label>
       </div>
 
-      <label className="mt-3 block text-xs font-medium text-gray-600 dark:text-gray-300">
-        Description
+      <label className="mt-4 block text-xs font-medium text-gray-700 dark:text-gray-200">
+        Evaluation rubric
         <textarea
-          value={rule.description}
+          aria-label="Evaluation rubric"
+          value={metric.evaluationRubric}
           disabled={disabled}
           onChange={(event) =>
-            onChange({ ...rule, description: event.target.value })
+            onChange({ ...metric, evaluationRubric: event.target.value })
           }
-          rows={2}
-          className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+          rows={4}
+          placeholder="Explain what low, medium, and high scores mean. Include the evidence an evaluator should consider."
+          className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm leading-relaxed text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
         />
+        <span className="mt-1 block text-[11px] font-normal text-gray-500">
+          A concrete rubric makes human and AI evaluations more consistent and
+          traceable.
+        </span>
       </label>
 
-      <details
-        className="mt-3 rounded-md border border-violet-200 bg-violet-50/60 px-3 py-2 dark:border-violet-500/30 dark:bg-violet-500/10"
-        data-testid={`policy-class-help-${index}`}
-      >
-        <summary className="cursor-pointer text-xs font-semibold text-violet-800 dark:text-violet-200">
-          Compare policy classes
-        </summary>
-        <p className="mt-2 text-[11px] leading-relaxed text-gray-600 dark:text-gray-300">
-          {POLICY_CLASS_BEHAVIOR_NOTE}
-        </p>
-        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-          {POLICY_CLASS_OPTIONS.map((option) => {
-            const selected = option.value === rule.policyClass;
-            return (
-              <section
-                key={option.value}
-                aria-current={selected ? 'true' : undefined}
-                className={`rounded-md border p-2.5 ${
-                  selected
-                    ? 'border-violet-500 bg-white ring-1 ring-violet-500 dark:border-violet-400 dark:bg-gray-900'
-                    : 'border-gray-200 bg-white/70 dark:border-gray-700 dark:bg-gray-900/70'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <h4 className="text-xs font-semibold text-gray-900 dark:text-white">
-                    {option.label}
-                  </h4>
-                  <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
-                    option.protected
-                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200'
-                      : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'
-                  }`}>
-                    {option.protected ? 'Protected' : 'General'}
-                  </span>
-                </div>
-                <dl className="mt-2 space-y-1 text-[10px] leading-relaxed text-gray-600 dark:text-gray-300">
-                  <div>
-                    <dt className="inline font-semibold text-gray-700 dark:text-gray-200">
-                      Effect:{' '}
-                    </dt>
-                    <dd className="inline">{option.effect}</dd>
-                  </div>
-                  <div>
-                    <dt className="inline font-semibold text-gray-700 dark:text-gray-200">
-                      Use when:{' '}
-                    </dt>
-                    <dd className="inline">{option.whenToUse}</dd>
-                  </div>
-                  <div>
-                    <dt className="inline font-semibold text-gray-700 dark:text-gray-200">
-                      Waivers:{' '}
-                    </dt>
-                    <dd className="inline">{option.waivability}</dd>
-                  </div>
-                </dl>
-              </section>
-            );
-          })}
-        </div>
-        <ContextualHelpLink
-          sectionId="policy-governance"
-          className="mt-3 text-[11px]"
-        >
-          Read the Policy class guide
-        </ContextualHelpLink>
-      </details>
-
-      <fieldset className="mt-3">
+      <fieldset className="mt-4">
         <legend className="text-xs font-semibold text-gray-700 dark:text-gray-200">
-          Executable targets
+          Evaluated entities
         </legend>
         <p className="mb-2 mt-0.5 text-[11px] text-gray-500">
-          Targets control evaluation. They do not change the guideline context,
-          which remains available to all entities.
+          Select every entity type for which this metric is meaningful.
         </p>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {POLICY_ENTITY_TYPES.map((target) => {
-            const selected = rule.targetEntityTypes.includes(target);
+          {GUIDELINE_ENTITY_TYPES.map((target) => {
+            const selected = metric.targetEntityTypes.includes(target);
             return (
               <button
                 key={target}
                 type="button"
                 aria-pressed={selected}
-                aria-label={`${selected ? 'Remove' : 'Add'} ${POLICY_TARGET_LABELS[target]} executable target`}
+                aria-label={`${selected ? 'Remove' : 'Add'} ${POLICY_TARGET_LABELS[target]} metric target`}
                 disabled={disabled}
                 onClick={() => toggleTarget(target)}
                 className={`group flex min-h-20 items-center gap-3 rounded-lg border p-3 text-left transition ${
                   selected
                     ? 'border-blue-500 bg-blue-50 text-blue-900 ring-1 ring-blue-500 dark:border-blue-400 dark:bg-blue-500/15 dark:text-blue-100'
-                    : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50/50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500/60 dark:hover:bg-blue-500/10'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50/50 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200 dark:hover:border-blue-500/60 dark:hover:bg-blue-500/10'
                 } disabled:cursor-not-allowed disabled:opacity-40`}
               >
                 <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
@@ -466,390 +316,144 @@ function RuleEditorCard({
                     {POLICY_TARGET_LABELS[target]}
                   </span>
                   <span className="mt-0.5 block text-[11px] opacity-70">
-                    Evaluate this entity type
+                    Score this entity
                   </span>
                 </span>
-                {selected && (
-                  <Check size={16} aria-hidden="true" className="shrink-0" />
-                )}
+                {selected && <Check size={16} aria-hidden="true" />}
               </button>
             );
           })}
         </div>
       </fieldset>
 
-      <div className="mt-3 grid gap-3 md:grid-cols-4">
-        <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
-          Enforcement
-          <select
-            value={rule.enforcement}
-            disabled={disabled}
-            onChange={(event) =>
-              onChange({
-                ...rule,
-                enforcement: event.target.value as 'advisory' | 'blocking',
-              })
-            }
-            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-2 text-xs dark:border-gray-700 dark:bg-gray-950"
-          >
-            <option value="advisory">Advisory (default)</option>
-            <option value="blocking">Blocking</option>
-          </select>
-        </label>
-        <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
-          Condition matching
-          <select
-            value={rule.operator}
-            disabled={disabled}
-            onChange={(event) =>
-              onChange({
-                ...rule,
-                operator: event.target.value as 'all' | 'any',
-              })
-            }
-            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-2 text-xs dark:border-gray-700 dark:bg-gray-950"
-          >
-            <option value="all">All conditions</option>
-            <option value="any">Any condition</option>
-          </select>
-        </label>
-        <div className="mt-5">
-          <label className="inline-flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
-            <input
-              type="checkbox"
-              checked={rule.waivable}
-              disabled={disabled || protectedPolicyClass}
-              onChange={(event) =>
-                onChange({ ...rule, waivable: event.target.checked })
-              }
-            />
-            Waivable
-          </label>
-          {protectedPolicyClass && (
-            <p className="mt-1 text-[11px] text-gray-500">
-              Protected policy classes cannot be waived.
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div className="mt-4 rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-950/50">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-xs font-semibold text-gray-700 dark:text-gray-200">
-              Conditions — what must be true for this rule to pass
-            </div>
-            <p className="text-[11px] text-gray-500">
-              Only server-owned facts and compatible{' '}
-              {POLICY_PREDICATE_CATALOG_VERSION} operators are offered. Targets
-              decide which entities are evaluated; these conditions decide
-              whether the rule passes.
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={disabled || rule.targetEntityTypes.length === 0}
-            onClick={addPredicate}
-            className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-white disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-900"
-          >
-            <Plus size={12} />
-            Add condition
-          </button>
-        </div>
-
-        {rule.targetEntityTypes.length === 0 && (
-          <div className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200">
-            Select at least one executable target before configuring conditions.
-          </div>
-        )}
-
-        <div className="mt-3 space-y-2">
-          {rule.predicates.map((predicate, predicateIndex) => {
-            const selectedFact =
-              factOptions.find((fact) => fact.code === predicate.fact);
-            const factUnavailable =
-              rule.targetEntityTypes.length > 0 && !selectedFact;
-            const operators = selectedFact
-              ? operatorsForFact(selectedFact)
-              : [];
-            return (
-              <div
-                key={predicate.localId}
-                className="grid items-end gap-2 md:grid-cols-[minmax(0,1fr)_150px_minmax(0,1fr)_32px]"
-              >
-                <label className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                  Fact
-                  <select
-                    aria-label={`Rule ${index + 1} condition ${predicateIndex + 1} fact`}
-                    aria-invalid={factUnavailable}
-                    value={predicate.fact}
-                    disabled={disabled || rule.targetEntityTypes.length === 0}
-                    onChange={(event) => {
-                      const fact = factOptions.find(
-                        (item) => item.code === event.target.value,
-                      );
-                      updatePredicate(predicateIndex, {
-                        fact: event.target.value,
-                        operator: fact
-                          ? operatorsForFact(fact)[0]
-                          : 'exists',
-                        rawValue: '',
-                      });
-                    }}
-                    className={`mt-1 w-full rounded-md border bg-white px-2 py-2 text-xs dark:bg-gray-900 ${
-                      factUnavailable
-                        ? 'border-red-400 text-red-700 dark:border-red-500 dark:text-red-200'
-                        : 'border-gray-300 dark:border-gray-700'
-                    }`}
-                  >
-                    {factUnavailable && (
-                      <option value={predicate.fact}>
-                        Unavailable: {predicate.fact}
-                      </option>
-                    )}
-                    {factOptions.map((fact) => (
-                      <option key={fact.code} value={fact.code}>
-                        {fact.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                  Operator
-                  <select
-                    aria-label={`Rule ${index + 1} condition ${predicateIndex + 1} operator`}
-                    value={predicate.operator}
-                    disabled={disabled || !selectedFact}
-                    onChange={(event) => {
-                      const operator =
-                        event.target.value as PolicyPredicateOperator;
-                      updatePredicate(predicateIndex, {
-                        operator,
-                        rawValue: operatorNeedsValue(operator)
-                          ? predicate.rawValue
-                          : '',
-                      });
-                    }}
-                    className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-2 text-xs dark:border-gray-700 dark:bg-gray-900"
-                  >
-                    {!selectedFact && (
-                      <option value={predicate.operator}>
-                        {POLICY_OPERATOR_LABELS[predicate.operator]}
-                      </option>
-                    )}
-                    {operators.map((operator) => (
-                      <option key={operator} value={operator}>
-                        {POLICY_OPERATOR_LABELS[operator]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {operatorNeedsValue(predicate.operator) ? (
-                  <label className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                    Value
-                    {selectedFact?.kind === 'boolean'
-                    && operatorNeedsValue(predicate.operator) ? (
-                       <select
-                         aria-label={`Rule ${index + 1} condition ${predicateIndex + 1} value`}
-                         value={predicate.rawValue}
-                         disabled={disabled}
-                        onChange={(event) =>
-                          updatePredicate(predicateIndex, {
-                            rawValue: event.target.value,
-                          })
-                        }
-                         className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-2 text-xs dark:border-gray-700 dark:bg-gray-900"
-                       >
-                         <option value="">Select a value</option>
-                         <option value="true">true</option>
-                         <option value="false">false</option>
-                      </select>
-                    ) : selectedFact?.allowedValues
-                      && selectedFact.allowedValues.length > 0
-                      && operatorNeedsValue(predicate.operator)
-                      && predicate.operator !== 'in'
-                      && predicate.operator !== 'not_in' ? (
-                        <select
-                          aria-label={`Rule ${index + 1} condition ${predicateIndex + 1} value`}
-                          value={predicate.rawValue}
-                          disabled={disabled}
-                          onChange={(event) =>
-                            updatePredicate(predicateIndex, {
-                              rawValue: event.target.value,
-                            })
-                          }
-                          className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-2 text-xs dark:border-gray-700 dark:bg-gray-900"
-                        >
-                          <option value="">Select a value</option>
-                          {selectedFact.allowedValues.map((value) => (
-                            <option key={value} value={value}>
-                              {value}
-                            </option>
-                          ))}
-                        </select>
-                    ) : (
-                      <input
-                        aria-label={`Rule ${index + 1} condition ${predicateIndex + 1} value`}
-                        value={predicate.rawValue}
-                        disabled={disabled || !selectedFact}
-                        type={
-                          selectedFact?.kind === 'integer'
-                          || selectedFact?.kind === 'number'
-                          || predicate.operator.startsWith('count_')
-                            ? 'number'
-                            : 'text'
-                        }
-                        min={
-                          predicate.operator.startsWith('count_')
-                            ? 0
-                            : selectedFact?.minimum
-                        }
-                        max={selectedFact?.maximum}
-                        step={
-                          selectedFact?.kind === 'integer'
-                          || predicate.operator.startsWith('count_')
-                            ? 1
-                            : selectedFact?.kind === 'number'
-                              ? 'any'
-                              : undefined
-                        }
-                        onChange={(event) =>
-                          updatePredicate(predicateIndex, {
-                            rawValue: event.target.value,
-                          })
-                        }
-                        placeholder={
-                          predicate.operator === 'in'
-                            || predicate.operator === 'not_in'
-                            ? 'comma-separated values'
-                            : 'value'
-                        }
-                        className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-2 text-xs disabled:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:disabled:bg-gray-800"
-                      />
-                    )}
-                  </label>
-                ) : (
-                  <div
-                    role="note"
-                    className="rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
-                  >
-                    This condition does not require a value.
-                  </div>
-                )}
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+        <fieldset>
+          <legend className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+            Passing direction
+          </legend>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {([
+              {
+                value: 'minimum' as const,
+                label: 'Higher is better',
+                description: 'Pass at or above the threshold',
+                icon: ArrowUp,
+              },
+              {
+                value: 'maximum' as const,
+                label: 'Lower is better',
+                description: 'Pass at or below the threshold',
+                icon: ArrowDown,
+              },
+            ]).map((option) => {
+              const selected = metric.direction === option.value;
+              const Icon = option.icon;
+              return (
                 <button
+                  key={option.value}
                   type="button"
-                  aria-label={`Remove condition ${predicateIndex + 1}`}
-                  disabled={disabled || rule.predicates.length === 1}
-                  onClick={() =>
-                    onChange({
-                      ...rule,
-                      predicates: rule.predicates.filter(
-                        (_, currentIndex) => currentIndex !== predicateIndex,
-                      ),
-                    })
-                  }
-                  className="mb-0.5 rounded p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 dark:hover:bg-red-500/10"
+                  aria-pressed={selected}
+                  disabled={disabled}
+                  onClick={() => onChange({
+                    ...metric,
+                    direction: option.value,
+                  })}
+                  className={`flex items-center gap-3 rounded-lg border p-3 text-left ${
+                    selected
+                      ? 'border-violet-500 bg-violet-50 ring-1 ring-violet-500 dark:border-violet-400 dark:bg-violet-500/15'
+                      : 'border-gray-200 hover:border-violet-300 dark:border-gray-700 dark:hover:border-violet-500/60'
+                  } disabled:opacity-40`}
                 >
-                  <Trash2 size={13} />
+                  <Icon
+                    size={18}
+                    className={selected
+                      ? 'text-violet-700 dark:text-violet-200'
+                      : 'text-gray-400'}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    <span className="block text-xs font-semibold text-gray-900 dark:text-white">
+                      {option.label}
+                    </span>
+                    <span className="mt-0.5 block text-[10px] text-gray-500">
+                      {option.description}
+                    </span>
+                  </span>
                 </button>
-                {selectedFact && (
-                  <div
-                    className="rounded-md border border-violet-200 bg-violet-50/70 px-3 py-2 text-[11px] text-gray-600 md:col-span-4 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-gray-300"
-                    data-testid={`policy-fact-help-${index}-${predicateIndex}`}
-                  >
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <strong className="text-gray-800 dark:text-gray-100">
-                        {selectedFact.label}
-                      </strong>
-                      <span>
-                        Data type:{' '}
-                        <strong>
-                          {POLICY_FACT_KIND_LABELS[selectedFact.kind]}
-                        </strong>
-                      </span>
-                    </div>
-                    <p className="mt-1">{selectedFact.description}</p>
-                    <p className="mt-1">
-                      <strong className="text-gray-700 dark:text-gray-200">
-                        Configure:{' '}
-                      </strong>
-                      {selectedFact.valueGuidance}
-                    </p>
-                    <p className="mt-1">
-                      <strong className="text-gray-700 dark:text-gray-200">
-                        Example:{' '}
-                      </strong>
-                      <span className="font-mono">
-                        {selectedFact.example}
-                      </span>
-                    </p>
-                    <ContextualHelpLink
-                      sectionId="policy-facts"
-                      className="mt-2 text-[11px]"
-                    >
-                      See all Policy facts
-                    </ContextualHelpLink>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        {rule.predicates.some(
-          (predicate) =>
-            rule.targetEntityTypes.length > 0
-            && !factOptions.some((fact) => fact.code === predicate.fact),
-        ) && (
-          <div
-            role="alert"
-            className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200"
-          >
-            A selected target does not support one or more conditions. Choose
-            a compatible fact or restore the previous target selection.
+              );
+            })}
           </div>
-        )}
+        </fieldset>
+
+        <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+          Default passing threshold
+          <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-950/60">
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={metric.defaultThreshold}
+                disabled={disabled}
+                onChange={(event) => onChange({
+                  ...metric,
+                  defaultThreshold: event.target.value,
+                })}
+                aria-label={`Custom metric ${index + 1} default threshold`}
+                className="min-w-0 flex-1 accent-violet-600"
+              />
+              <input
+                type="number"
+                aria-label={`Custom metric ${index + 1} default threshold value`}
+                min={0}
+                max={100}
+                step={1}
+                value={metric.defaultThreshold}
+                disabled={disabled}
+                onChange={(event) => onChange({
+                  ...metric,
+                  defaultThreshold: event.target.value,
+                })}
+                className="w-20 rounded-md border border-gray-300 bg-white px-2 py-1.5 text-center text-sm font-semibold text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+              />
+            </div>
+            <p className="mt-2 text-[10px] font-normal text-gray-500">
+              Boards can override this value when adopting the guideline.
+            </p>
+          </div>
+        </label>
       </div>
 
-      <details className="mt-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950/50">
+      <details className="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950/50">
         <summary className="cursor-pointer text-xs font-semibold text-gray-700 dark:text-gray-200">
           Technical details
         </summary>
-        <div className="mt-3">
-          <label
-            htmlFor={`policy-rule-id-${rule.localId}`}
-            className="text-[11px] font-medium text-gray-600 dark:text-gray-300"
-          >
-            Rule ID
-          </label>
-          <div className="mt-1 flex gap-2">
-            <input
-              id={`policy-rule-id-${rule.localId}`}
-              value={rule.ruleId}
-              readOnly
-              aria-readonly="true"
-              className="min-w-0 flex-1 rounded-md border border-gray-300 bg-gray-100 px-2.5 py-2 font-mono text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
-            />
-            <button
-              type="button"
-              aria-label={`Copy rule ${index + 1} ID`}
-              onClick={() => {
-                void globalThis.navigator?.clipboard?.writeText(rule.ruleId);
-              }}
-              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2.5 py-2 text-xs font-medium text-gray-600 hover:bg-white dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-900"
-            >
-              <Copy size={13} />
-              Copy
-            </button>
+        <dl className="mt-3 grid gap-3 md:grid-cols-2">
+          <div>
+            <dt className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+              Metric ID
+            </dt>
+            <dd className="mt-1 break-all font-mono text-xs text-gray-700 dark:text-gray-200">
+              {metric.metricId}
+            </dd>
           </div>
-          <p className="mt-1 text-[11px] text-gray-500">
-            Stable identity used by findings, waivers, and revision history.
-            It cannot be edited.
-          </p>
-        </div>
+          <div>
+            <dt className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+              Stable metric key
+            </dt>
+            <dd className="mt-1 break-all font-mono text-xs text-gray-700 dark:text-gray-200">
+              {metric.code || 'Generated from the title'}
+            </dd>
+          </div>
+        </dl>
       </details>
 
       {validationError && (
-        <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+        <p
+          role="alert"
+          className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+        >
           {validationError}
         </p>
       )}
@@ -877,8 +481,8 @@ function RetirementDialog({
   const [successor, setSuccessor] = useState('');
   const commandIdentityRef = useRef({
     signature: '',
-    retirementId: createPolicyClientId('retirement'),
-    idempotencyKey: createPolicyClientId('retirement-command'),
+    retirementId: createGuidelineClientId('retirement'),
+    idempotencyKey: createGuidelineClientId('retirement-command'),
   });
   const focusTrap = useDialogFocusTrap(true, '[data-dialog-initial-focus]');
   useEscapeToClose(onCancel, {
@@ -901,8 +505,8 @@ function RetirementDialog({
     if (commandIdentityRef.current.signature !== signature) {
       commandIdentityRef.current = {
         signature,
-        retirementId: createPolicyClientId('retirement'),
-        idempotencyKey: createPolicyClientId('retirement-command'),
+        retirementId: createGuidelineClientId('retirement'),
+        idempotencyKey: createGuidelineClientId('retirement-command'),
       };
     }
     const identity = commandIdentityRef.current;
@@ -1056,10 +660,10 @@ export function GuidelineRevisionEditor({
     && !permissions.error
     && !permissions.ownerReviewRequired
     && permissions.has('guidelines.revisions.read');
-  const canCreate =
+  const canCreateRevision =
     canRead && permissions.has('guidelines.revisions.create');
-  const canAuthorRules =
-    canCreate && permissions.has('guidelines.rules.author_blocking');
+  const canAuthorMetrics =
+    canCreateRevision && permissions.has('guidelines.metrics.author');
   const canRetire =
     canRead && permissions.has('guidelines.revisions.retire');
   const authorityError = permissions.error
@@ -1087,16 +691,14 @@ export function GuidelineRevisionEditor({
   const [retirementOpen, setRetirementOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
-  const [tags, setTags] = useState('');
-  const [rules, setRules] = useState<GuidelineRuleDraft[]>([]);
-  const [declaredVersion, setDeclaredVersion] = useState('');
-  const rulesSectionRef = useRef<HTMLElement | null>(null);
+  const [metrics, setMetrics] = useState<SemanticMetricDraft[]>([]);
+  const [versionBump, setVersionBump] =
+    useState<GuidelineVersionBump>('patch');
+  const [currentHeadRevision, setCurrentHeadRevision] =
+    useState<number | null>(null);
+  const metricsSectionRef = useRef<HTMLElement | null>(null);
   const initialSectionAppliedRef = useRef(false);
   const seenHistoryCursorsRef = useRef(new Set<string>());
-  const revisionCommandRef = useRef({
-    signature: '',
-    idempotencyKey: createPolicyClientId('revision-command'),
-  });
 
   useEscapeToClose(onClose, {
     enabled: !retirementOpen,
@@ -1111,9 +713,8 @@ export function GuidelineRevisionEditor({
   const resetDraft = useCallback((revision: GuidelineRevisionDetail) => {
     setTitle(revision.title);
     setContent(revision.content);
-    setTags(revision.tags.join(', '));
-    setRules(revision.rules.map(guidelineRuleToDraft));
-    setDeclaredVersion('');
+    setMetrics(revision.metrics.map(semanticMetricToDraft));
+    setVersionBump('patch');
     setMutationError(null);
   }, []);
 
@@ -1123,6 +724,7 @@ export function GuidelineRevisionEditor({
       setInitialLoadError(authorityError);
       setRevisions([]);
       setRetirementStatus(null);
+      setCurrentHeadRevision(null);
       setNextCursor(null);
       return;
     }
@@ -1156,12 +758,14 @@ export function GuidelineRevisionEditor({
       }
       setRevisions(detailItems);
       setRetirementStatus(authority.retirement?.status ?? null);
+      setCurrentHeadRevision(authority.head.head_revision);
       setNextCursor(page.has_more ? page.next_cursor : null);
       resetDraft(detailItems[0]);
     } catch (error) {
       setInitialLoadError(errorMessage(error));
       setRevisions([]);
       setRetirementStatus(null);
+      setCurrentHeadRevision(null);
       setNextCursor(null);
     } finally {
       setLoading(false);
@@ -1182,87 +786,79 @@ export function GuidelineRevisionEditor({
 
   useEffect(() => {
     if (
-      initialSection !== 'rules'
+      initialSection !== 'metrics'
       || initialSectionAppliedRef.current
       || loading
       || !latest
-      || !rulesSectionRef.current
+      || !metricsSectionRef.current
     ) {
       return undefined;
     }
     initialSectionAppliedRef.current = true;
-    const focusRules = () => {
-      rulesSectionRef.current?.scrollIntoView?.({
+    const focusMetrics = () => {
+      metricsSectionRef.current?.scrollIntoView?.({
         behavior: 'smooth',
         block: 'start',
       });
-      rulesSectionRef.current?.focus({ preventScroll: true });
+      metricsSectionRef.current?.focus({ preventScroll: true });
     };
     if (typeof requestAnimationFrame === 'function') {
-      const frame = requestAnimationFrame(focusRules);
+      const frame = requestAnimationFrame(focusMetrics);
       return () => cancelAnimationFrame(frame);
     }
-    const timeout = window.setTimeout(focusRules, 0);
+    const timeout = window.setTimeout(focusMetrics, 0);
     return () => window.clearTimeout(timeout);
   }, [initialSection, latest, loading]);
 
-  const draftInputs = useMemo(() => {
+  const draftMetricInputs = useMemo(() => {
     try {
-      return rules.map(ruleDraftToInput);
+      return metrics.map(semanticMetricDraftToInput);
     } catch {
       return null;
     }
-  }, [rules]);
+  }, [metrics]);
 
-  const currentRuleInputs = useMemo(
-    () => latest?.rules.map(authoritativeRuleInput) ?? [],
+  const currentMetricInputs = useMemo(
+    () => latest?.metrics ?? [],
     [latest],
   );
 
-  const parsedTags = useMemo(
-    () => canonicalTags(tags.split(',')),
-    [tags],
+  const metricsChanged = useMemo(
+    () => Boolean(
+      draftMetricInputs
+      && JSON.stringify(canonicalSemanticMetrics(draftMetricInputs))
+        !== JSON.stringify(canonicalSemanticMetrics(currentMetricInputs)),
+    ),
+    [currentMetricInputs, draftMetricInputs],
   );
-  const tagError = useMemo(() => {
-    const rawTags = tags
-      .split(',')
-      .map((tag) => tag.trim())
-      .filter(Boolean);
-    return new Set(rawTags).size === rawTags.length
-      ? null
-      : 'Tags must be unique within a revision.';
-  }, [tags]);
 
   const changeSummary = useMemo(() => {
     if (!latest) return [];
     const changes: string[] = [];
     if (title.trim() !== latest.title) changes.push('title');
-    if (content.trim() !== latest.content) changes.push('content');
-    if (
-      JSON.stringify(parsedTags)
-      !== JSON.stringify(canonicalTags(latest.tags))
-    ) {
-      changes.push('tags');
-    }
-    if (
-      draftInputs
-      && JSON.stringify(canonicalRuleSet(draftInputs))
-        !== JSON.stringify(canonicalRuleSet(currentRuleInputs))
-    ) {
-      changes.push('executable rules');
-    }
+    if (content.trim() !== latest.content) changes.push('body');
+    if (metricsChanged) changes.push('semantic metrics');
     return changes;
-  }, [content, currentRuleInputs, draftInputs, latest, parsedTags, title]);
+  }, [
+    content,
+    latest,
+    metricsChanged,
+    title,
+  ]);
 
-  const ruleError = useMemo(() => validateRuleDrafts(rules), [rules]);
+  const metricError = useMemo(
+    () => validateSemanticMetricDrafts(metrics),
+    [metrics],
+  );
 
   const saveRevision = async () => {
     if (
       !latest
-      || !draftInputs
-      || ruleError
-      || tagError
-      || !canCreate
+      || currentHeadRevision === null
+      || !draftMetricInputs
+      || metricError
+      || !canCreateRevision
+      || (metricsChanged && !canAuthorMetrics)
       || !title.trim()
       || !content.trim()
       || changeSummary.length === 0
@@ -1270,65 +866,28 @@ export function GuidelineRevisionEditor({
       return;
     }
 
-    const patch: Partial<{
-      title: string;
-      content: string;
-      tags: string[];
-      rules: GuidelineRuleInput[];
-    }> = {};
-    if (title.trim() !== latest.title) patch.title = title.trim();
-    if (content.trim() !== latest.content) patch.content = content.trim();
-    if (
-      JSON.stringify(parsedTags)
-      !== JSON.stringify(canonicalTags(latest.tags))
-    ) {
-      patch.tags = parsedTags;
-    }
-    if (changeSummary.includes('executable rules')) {
-      if (!canAuthorRules) {
-        setMutationError(
-          'Changing executable rules requires guidelines.rules.author_blocking.',
-        );
-        return;
-      }
-      patch.rules = draftInputs;
-    }
-    const commandSignature = JSON.stringify({
-      patch,
-      declaredSemanticVersion: declaredVersion.trim() || null,
-    });
-    if (revisionCommandRef.current.signature !== commandSignature) {
-      revisionCommandRef.current = {
-        signature: commandSignature,
-        idempotencyKey: createPolicyClientId('revision-command'),
-      };
-    }
-
     setSaving(true);
     setMutationError(null);
     setMutationResult(null);
     try {
-      const response: CreateGuidelineRevisionResponse =
-        await api.createGuidelineRevision(
-          boardId,
-          guideline.id,
-          {
-            idempotency_key: revisionCommandRef.current.idempotencyKey,
-            patch: patch as GuidelineRevisionPatchRequest,
-            ...(declaredVersion.trim()
-              ? { declared_semantic_version: declaredVersion.trim() }
-              : {}),
+      const response = await api.createGuidelineRevision(
+        boardId,
+        guideline.id,
+        {
+          expected_head_revision: currentHeadRevision,
+          version_bump: versionBump,
+          content: {
+            title: title.trim(),
+            body: content.trim(),
           },
-        );
-      if (response.status === 'applied') {
-        setMutationResult(
-          `Created v${response.revision.semantic_version} · ${bumpLabel(response.minimum_bump)}.`,
-        );
-        await loadFirstPage();
-        await onChanged();
-      } else {
-        setMutationResult('No revision was created because the request was an idempotent no-op.');
-      }
+          metrics: draftMetricInputs,
+        },
+      );
+      setMutationResult(
+        `Created v${response.revision} · ${bumpLabel(versionBump)}.`,
+      );
+      await loadFirstPage();
+      await onChanged();
     } catch (error) {
       setMutationError(errorMessage(error));
     } finally {
@@ -1417,13 +976,11 @@ export function GuidelineRevisionEditor({
     }
   };
 
-  const executableTargets = latest
+  const metricTargets = latest
     ? Array.from(
-        new Set(latest.rules.flatMap((rule) => rule.target_entity_types)),
+        new Set(latest.metrics.flatMap((metric) => metric.target_entity_types)),
       )
     : [];
-  const containsBlockingRules =
-    latest?.rules.some((rule) => rule.enforcement === 'blocking') ?? false;
   const revisionUpdateAvailable = Boolean(
     latest
     && adoptedRevision
@@ -1434,10 +991,10 @@ export function GuidelineRevisionEditor({
     ),
   );
 
-  const updateRule = (index: number, next: GuidelineRuleDraft) => {
-    setRules((current) =>
-      current.map((rule, currentIndex) =>
-        currentIndex === index ? next : rule,
+  const updateMetric = (index: number, next: SemanticMetricDraft) => {
+    setMetrics((current) =>
+      current.map((metric, currentIndex) =>
+        currentIndex === index ? next : metric,
       ),
     );
   };
@@ -1540,11 +1097,11 @@ export function GuidelineRevisionEditor({
 
             <div className="mt-4">
               <div className="text-xs font-semibold text-gray-700 dark:text-gray-200">
-                Executable targets
+                Semantic metric targets
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {executableTargets.length > 0 ? (
-                  executableTargets.map((target) => (
+                {metricTargets.length > 0 ? (
+                  metricTargets.map((target) => (
                     <span
                       key={target}
                       className="rounded bg-gray-100 px-2 py-1 text-[10px] text-gray-700 dark:bg-gray-800 dark:text-gray-200"
@@ -1554,16 +1111,10 @@ export function GuidelineRevisionEditor({
                   ))
                 ) : (
                   <span className="text-xs text-gray-500">
-                    Context only · no executable rules
+                    Context only · no custom metrics
                   </span>
                 )}
               </div>
-              {containsBlockingRules && (
-                <div className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 dark:bg-red-500/15 dark:text-red-200">
-                  <ShieldAlert size={13} />
-                  Contains blocking rules
-                </div>
-              )}
             </div>
 
             <div className="mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
@@ -1593,8 +1144,8 @@ export function GuidelineRevisionEditor({
                       {revision.title}
                     </div>
                     <div className="mt-1 text-[10px] text-gray-500">
-                      {revision.rules.length} rule
-                      {revision.rules.length === 1 ? '' : 's'}
+                      {revision.metrics.length} custom metric
+                      {revision.metrics.length === 1 ? '' : 's'}
                     </div>
                   </div>
                 ))}
@@ -1684,22 +1235,13 @@ export function GuidelineRevisionEditor({
 
             {!loading && !initialLoadError && latest && (
               <div className="space-y-5">
-                {!canCreate && (
+                {!canCreateRevision && (
                   <div
                     role="status"
                     className="rounded-lg border border-gray-200 bg-white p-3 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
                   >
                     Revision history is read-only. Creating a revision requires
                     guidelines.revisions.create.
-                  </div>
-                )}
-                {canCreate && !canAuthorRules && (
-                  <div
-                    role="status"
-                    className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
-                  >
-                    Text and tags can be revised. Executable rules are read-only
-                    without guidelines.rules.author_blocking.
                   </div>
                 )}
                 <section>
@@ -1709,14 +1251,14 @@ export function GuidelineRevisionEditor({
                         New revision
                       </h3>
                       <p className="mt-1 text-sm text-gray-500">
-                        The server classifies the minimum SemVer bump and
-                        rejects an under-bump. Leave the version blank to use
-                        the server-selected minimum.
+                        Choose the SemVer impact of this immutable revision.
+                        The current head revision is fenced to prevent
+                        overwriting concurrent edits.
                       </p>
                     </div>
                     <button
                       type="button"
-                      disabled={busy || !canCreate}
+                      disabled={busy || !canCreateRevision}
                       onClick={() => resetDraft(latest)}
                       className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-white disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-900"
                     >
@@ -1729,91 +1271,129 @@ export function GuidelineRevisionEditor({
                       Title
                       <input
                         value={title}
-                        disabled={busy || !canCreate}
+                        disabled={busy || !canCreateRevision}
                         onChange={(event) => setTitle(event.target.value)}
                         className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
                       />
                     </label>
                     <label className="text-xs font-medium text-gray-700 dark:text-gray-200">
-                      Declared semantic version
-                      <input
-                        value={declaredVersion}
-                        disabled={busy || !canCreate}
-                        onChange={(event) => setDeclaredVersion(event.target.value)}
-                        placeholder="Server minimum"
-                        className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
-                      />
+                      Version bump
+                      <select
+                        aria-label="Version bump"
+                        value={versionBump}
+                        disabled={busy || !canCreateRevision}
+                        onChange={(event) =>
+                          setVersionBump(
+                            event.target.value as GuidelineVersionBump,
+                          )
+                        }
+                        className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                      >
+                        <option value="patch">Patch · clarification</option>
+                        <option value="minor">Minor · additive behavior</option>
+                        <option value="major">Major · breaking meaning</option>
+                      </select>
+                      <span className="mt-1 block text-[10px] font-normal leading-relaxed text-gray-500">
+                        Select minor for additive capabilities and major when
+                        existing consumers must change.
+                      </span>
                     </label>
                   </div>
                   <label className="mt-4 block text-xs font-medium text-gray-700 dark:text-gray-200">
-                    Context content
+                    Guideline body
                     <textarea
                       value={content}
-                      disabled={busy || !canCreate}
+                      disabled={busy || !canCreateRevision}
                       onChange={(event) => setContent(event.target.value)}
                       rows={8}
                       className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
                     />
                   </label>
-                  <label className="mt-4 block text-xs font-medium text-gray-700 dark:text-gray-200">
-                    Tags
-                    <input
-                      value={tags}
-                      disabled={busy || !canCreate}
-                      onChange={(event) => setTags(event.target.value)}
-                      placeholder="comma, separated"
-                      className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
-                    />
-                  </label>
                 </section>
 
                 <section
-                  ref={rulesSectionRef}
+                  ref={metricsSectionRef}
                   tabIndex={-1}
-                  aria-labelledby="guideline-executable-rules-title"
+                  aria-labelledby="guideline-semantic-metrics-title"
                   className="scroll-mt-6 focus:outline-none"
                 >
+                  {canCreateRevision && !canAuthorMetrics && (
+                    <div
+                      role="status"
+                      data-testid="semantic-metrics-readonly"
+                      className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+                    >
+                      Semantic metrics are read-only. You may still create a
+                      text-only revision that preserves the current metrics.
+                      Changing metrics requires{' '}
+                      <code>guidelines.metrics.author</code> and its historical
+                      authority <code>spec.entity.edit_fields</code>.
+                    </div>
+                  )}
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <h3
-                        id="guideline-executable-rules-title"
+                        id="guideline-semantic-metrics-title"
                         className="text-base font-semibold text-gray-900 dark:text-white"
                       >
-                        Executable rules
+                        Semantic metrics
                       </h3>
                       <p className="mt-1 text-xs text-gray-500">
-                        New rules start advisory. Blocking must be selected
-                        explicitly and unsupported combinations fail closed on
-                        the server.
+                        Define qualities that humans and agents score from 0 to
+                        100. Board-level enforcement is configured during
+                        adoption.
                       </p>
+                      <ContextualHelpLink
+                        sectionId="semantic-guideline-metrics"
+                        className="mt-2 text-[11px]"
+                        testId="semantic-metrics-help"
+                      >
+                        How semantic metrics work
+                      </ContextualHelpLink>
                     </div>
                     <button
                       type="button"
-                      data-testid="add-policy-rule"
-                      disabled={busy || !canAuthorRules}
-                      onClick={() => setRules((current) => [...current, newRuleDraft()])}
+                      data-testid="add-semantic-metric"
+                      disabled={busy || !canAuthorMetrics}
+                      title={
+                        canAuthorMetrics
+                          ? 'Add a custom semantic metric'
+                          : 'Requires guidelines.metrics.author and spec.entity.edit_fields'
+                      }
+                      onClick={() => setMetrics((current) => [
+                        ...current,
+                        newSemanticMetricDraft(),
+                      ])}
                       className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-40"
                     >
                       <Plus size={13} />
-                      Add rule
+                      Add custom metric
                     </button>
                   </div>
 
                   <div className="mt-3 space-y-3">
-                    {rules.length === 0 ? (
+                    <SystemConfidenceCard />
+                    {metrics.length === 0 ? (
                       <div className="rounded-lg border border-dashed border-gray-300 p-6 text-center text-sm text-gray-500 dark:border-gray-700">
-                        Context only. This revision has no executable rules.
+                        <strong className="block text-gray-700 dark:text-gray-200">
+                          Context-only guideline
+                        </strong>
+                        <span className="mt-1 block">
+                          This revision has no custom semantic metrics.
+                          Confidence remains system-owned assessment metadata
+                          and is configured at board adoption.
+                        </span>
                       </div>
                     ) : (
-                      rules.map((rule, index) => (
-                        <RuleEditorCard
-                          key={rule.localId}
-                          rule={rule}
+                      metrics.map((metric, index) => (
+                        <SemanticMetricCard
+                          key={metric.localId}
+                          metric={metric}
                           index={index}
-                          disabled={busy || !canAuthorRules}
-                          onChange={(next) => updateRule(index, next)}
+                          disabled={busy || !canAuthorMetrics}
+                          onChange={(next) => updateMetric(index, next)}
                           onRemove={() =>
-                            setRules((current) =>
+                            setMetrics((current) =>
                               current.filter(
                                 (_, currentIndex) => currentIndex !== index,
                               ),
@@ -1845,14 +1425,9 @@ export function GuidelineRevisionEditor({
                       No changes from v{latest.semantic_version}.
                     </p>
                   )}
-                  {ruleError && (
+                  {metricError && (
                     <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                      {ruleError}
-                    </p>
-                  )}
-                  {tagError && (
-                    <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                      {tagError}
+                      {metricError}
                     </p>
                   )}
                   {mutationError && (
@@ -1877,14 +1452,11 @@ export function GuidelineRevisionEditor({
                       data-testid="create-guideline-revision"
                       disabled={
                         busy
-                        || !canCreate
+                        || !canCreateRevision
+                        || (metricsChanged && !canAuthorMetrics)
+                        || currentHeadRevision === null
                         || changeSummary.length === 0
-                        || Boolean(ruleError)
-                        || Boolean(tagError)
-                        || (
-                          changeSummary.includes('executable rules')
-                          && !canAuthorRules
-                        )
+                        || Boolean(metricError)
                         || !title.trim()
                         || !content.trim()
                       }

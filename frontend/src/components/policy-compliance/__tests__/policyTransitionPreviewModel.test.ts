@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AllowedTransition } from '@/types';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
+import type {
+  AllowedTransition,
+  PolicyComplianceBindingDecision,
+  PolicyComplianceTransitionDecision,
+} from '@/types';
 
 import {
   isAllowedTransitionActionable,
@@ -12,9 +16,33 @@ import {
   requirePolicyTransitionEnvelope,
 } from '../policyTransitionPreviewModel';
 
+function binding(
+  overrides: Partial<PolicyComplianceBindingDecision> = {},
+): PolicyComplianceBindingDecision {
+  return {
+    binding_id: 'binding-hexagonal',
+    guideline_id: 'guideline-hexagonal',
+    enforcement: 'blocking',
+    applicable_metric_count: 3,
+    allowed: true,
+    assessment_available: true,
+    receipt_id: 'receipt-1',
+    currentness: 'current',
+    currentness_reasons: [],
+    inadmissibility_cause: null,
+    failed_metric_count: 0,
+    waived_metric_count: 0,
+    blocking_metric_count: 0,
+    advisory_issue_count: 0,
+    skipped: false,
+    diagnostic_codes: [],
+    ...overrides,
+  };
+}
+
 function decision(
-  overrides: Record<string, unknown> = {},
-): Record<string, unknown> {
+  overrides: Partial<PolicyComplianceTransitionDecision> = {},
+): PolicyComplianceTransitionDecision {
   return {
     state: 'policy_compliance_ready',
     allowed: true,
@@ -22,16 +50,37 @@ function decision(
     reason_codes: ['policy_compliance_ready'],
     decision_digest: 'a'.repeat(64),
     fence_digest: 'b'.repeat(64),
-    receipt_id: 'receipt-1',
+    receipt_ids: ['receipt-1'],
     currentness: 'current',
     currentness_reasons: [],
-    applicable_rule_count: 3,
-    applicable_blocking_rule_count: 2,
-    blocking_rule_count: 0,
-    waived_rule_count: 0,
+    applicable_metric_count: 3,
+    applicable_blocking_metric_count: 3,
+    failed_metric_count: 0,
+    blocking_metric_count: 0,
+    waived_metric_count: 0,
     advisory_issue_count: 0,
+    skipped_binding_count: 0,
+    diagnostic_codes: [],
+    binding_decisions: [binding()],
     ...overrides,
   };
+}
+
+function blockedDecision(): PolicyComplianceTransitionDecision {
+  return decision({
+    state: 'policy_compliance_blocked',
+    allowed: false,
+    reason_codes: ['policy_compliance_blocked'],
+    failed_metric_count: 1,
+    blocking_metric_count: 1,
+    diagnostic_codes: ['policy_metric_threshold_failed'],
+    binding_decisions: [binding({
+      allowed: false,
+      failed_metric_count: 1,
+      blocking_metric_count: 1,
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+    })],
+  });
 }
 
 function governed(
@@ -47,13 +96,13 @@ function governed(
     effects: [],
     reason_codes: [],
     policy_compliance: true,
-    policy_compliance_decision: decision() as never,
+    policy_compliance_decision: decision(),
     ...overrides,
-  } as AllowedTransition;
+  };
 }
 
 describe('policyTransitionPreviewModel', () => {
-  it('projects authoritative enforcement and recovery rows separately', () => {
+  it('projects semantic metric authority and recovery rows separately', () => {
     const projection = projectPolicyTransitions([
       governed(),
       {
@@ -74,7 +123,8 @@ describe('policyTransitionPreviewModel', () => {
     expect(projection.governed[0]).toMatchObject({
       toStatus: 'validated',
       decision: {
-        receipt_id: 'receipt-1',
+        receipt_ids: ['receipt-1'],
+        applicable_metric_count: 3,
         allowed: true,
       },
     });
@@ -94,7 +144,44 @@ describe('policyTransitionPreviewModel', () => {
         label: 'Validated',
         gate: 'approved_to_validated',
       } as unknown as AllowedTransition,
-    ])).toThrow(/metadata is unavailable/i);
+    ])).toThrow(/unknown or missing transition field/i);
+  });
+
+  it('fails closed on unknown decision, binding, transition, and envelope fields', () => {
+    expect(() => parsePolicyComplianceTransitionDecision({
+      ...decision(),
+      future_authority: true,
+    })).toThrow(/unknown or missing decision field/i);
+
+    expect(() => parsePolicyComplianceTransitionDecision(decision({
+      binding_decisions: [{
+        ...binding(),
+        future_binding_authority: true,
+      } as unknown as PolicyComplianceBindingDecision],
+    }))).toThrow(/unknown or missing binding decision field/i);
+
+    expect(() => projectPolicyTransitions([{
+      ...governed(),
+      future_transition_authority: true,
+    } as unknown as AllowedTransition])).toThrow(
+      /unknown or missing transition field/i,
+    );
+
+    const response = {
+      board_id: 'board-1',
+      entity_type: 'spec' as const,
+      entity_id: 'spec-1',
+      current_status: 'approved',
+      source: 'core_sdlc_registry_v1',
+      allowed_transitions: [governed()],
+      future_envelope_authority: true,
+    };
+    expect(() => requirePolicyTransitionEnvelope(response as never, {
+      boardId: 'board-1',
+      entityType: 'spec',
+      subjectId: 'spec-1',
+      currentStatus: 'approved',
+    })).toThrow(/unknown or missing authority envelope field/i);
   });
 
   it('rejects a decision whose state disagrees with its primary reason', () => {
@@ -103,125 +190,404 @@ describe('policyTransitionPreviewModel', () => {
     }))).toThrow(/primary reason/i);
   });
 
-  it('rejects admission and count contradictions', () => {
+  it('rejects metric contradictions and aggregate drift from bindings', () => {
     expect(() => parsePolicyComplianceTransitionDecision(decision({
-      allowed: false,
-    }))).toThrow(/contradicts its admitted state/i);
+      applicable_metric_count: 2,
+      applicable_blocking_metric_count: 2,
+    }))).toThrow(/do not match its binding decisions/i);
+
     expect(() => parsePolicyComplianceTransitionDecision(decision({
-      state: 'policy_compliance_blocked',
-      reason_codes: ['policy_compliance_blocked'],
-      allowed: true,
-    }))).toThrow(/contradicts its rejected state/i);
+      failed_metric_count: 1,
+      blocking_metric_count: 1,
+      waived_metric_count: 1,
+    }))).toThrow(/metric counts do not match its binding decisions/i);
+
     expect(() => parsePolicyComplianceTransitionDecision(decision({
-      applicable_rule_count: 1,
-      applicable_blocking_rule_count: 2,
-    }))).toThrow(/inconsistent applicable counts/i);
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
-      applicable_rule_count: 2,
-      applicable_blocking_rule_count: 1,
-      blocking_rule_count: 2,
-    }))).toThrow(/unresolved outcomes|inconsistent current counts/i);
+      applicable_metric_count: null,
+    }))).toThrow(/partial metric count envelope/i);
   });
 
-  it('requires a stale receipt to include closed currentness reasons', () => {
+  it('requires stale assessment receipts to use closed currentness reasons', () => {
     expect(() => parsePolicyComplianceTransitionDecision(decision({
       currentness: 'stale',
       currentness_reasons: [],
-    }))).toThrow(/stale reasons/i);
+      binding_decisions: [binding({
+        currentness: 'stale',
+        currentness_reasons: [],
+      })],
+    }))).toThrow(/stale reasons|inconsistent receipt currentness/i);
 
     expect(() => parsePolicyComplianceTransitionDecision(decision({
       currentness: 'stale',
-      currentness_reasons: ['unknown_reason'],
+      currentness_reasons: ['unknown_reason' as never],
+      binding_decisions: [binding({
+        currentness: 'stale',
+        currentness_reasons: ['unknown_reason' as never],
+      })],
     }))).toThrow(/currentness reasons/i);
   });
 
-  it('binds admission states to canonical receipt currentness', () => {
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
-      receipt_id: null,
-      currentness: null,
-    }))).toThrow(/requires a current receipt/i);
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
-      currentness: 'stale',
-      currentness_reasons: ['subject_version_changed'],
-    }))).toThrow(/requires a current receipt/i);
-
-    expect(parsePolicyComplianceTransitionDecision(decision({
+  it('accepts canonical stale and unavailable semantic-assessment states', () => {
+    const stale = decision({
       state: 'policy_compliance_receipt_stale',
       allowed: false,
       reason_codes: ['policy_compliance_receipt_stale'],
       currentness: 'stale',
       currentness_reasons: ['subject_version_changed'],
-    }))).toMatchObject({
+      diagnostic_codes: ['policy_compliance_receipt_stale'],
+      binding_decisions: [binding({
+        allowed: false,
+        currentness: 'stale',
+        currentness_reasons: ['subject_version_changed'],
+        diagnostic_codes: ['policy_compliance_receipt_stale'],
+      })],
+    });
+    expect(parsePolicyComplianceTransitionDecision(stale)).toMatchObject({
       state: 'policy_compliance_receipt_stale',
       currentness: 'stale',
+      receipt_ids: ['receipt-1'],
     });
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
-      state: 'policy_compliance_receipt_stale',
-      allowed: false,
-      reason_codes: ['policy_compliance_receipt_stale'],
-    }))).toThrow(/requires a stale receipt/i);
 
-    expect(parsePolicyComplianceTransitionDecision(decision({
-      state: 'policy_compliance_receipt_missing',
+    const unavailableBinding = binding({
       allowed: false,
-      reason_codes: ['policy_compliance_receipt_missing'],
+      assessment_available: false,
       receipt_id: null,
       currentness: null,
-    }))).toMatchObject({
-      state: 'policy_compliance_receipt_missing',
-      receipt_id: null,
+      diagnostic_codes: ['policy_assessment_unavailable'],
     });
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
-      state: 'policy_compliance_receipt_missing',
+    const unavailable = decision({
+      state: 'policy_assessment_unavailable',
       allowed: false,
-      reason_codes: ['policy_compliance_receipt_missing'],
-    }))).toThrow(/contains receipt evidence/i);
+      reason_codes: ['policy_assessment_unavailable'],
+      receipt_ids: [],
+      currentness: null,
+      diagnostic_codes: ['policy_assessment_unavailable'],
+      binding_decisions: [unavailableBinding],
+    });
+    expect(parsePolicyComplianceTransitionDecision(unavailable)).toMatchObject({
+      state: 'policy_assessment_unavailable',
+      allowed: false,
+      receipt_ids: [],
+      diagnostic_codes: ['policy_assessment_unavailable'],
+    });
   });
 
-  it('rejects impossible canonical state and outcome correlations', () => {
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
-      state: 'policy_compliance_ready_with_waivers',
-      reason_codes: ['policy_compliance_ready_with_waivers'],
-    }))).toThrow(/waiver count/i);
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
-      state: 'policy_compliance_advisory_only',
-      reason_codes: ['policy_compliance_advisory_only'],
-    }))).toThrow(/advisory issues/i);
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
+  it('accepts available bindings without receipts when evidence is missing or inadmissible', () => {
+    const missingBinding = binding({
+      allowed: false,
+      receipt_id: null,
+      currentness: null,
+      diagnostic_codes: ['policy_compliance_receipt_missing'],
+    });
+    const missing = decision({
+      state: 'policy_compliance_receipt_missing',
+      allowed: false,
+      reason_codes: ['policy_compliance_receipt_missing'],
+      receipt_ids: [],
+      currentness: null,
+      diagnostic_codes: ['policy_compliance_receipt_missing'],
+      binding_decisions: [missingBinding],
+    });
+    expect(parsePolicyComplianceTransitionDecision(missing)).toMatchObject({
+      state: 'policy_compliance_receipt_missing',
+      allowed: false,
+      receipt_ids: [],
+      binding_decisions: [{
+        assessment_available: true,
+        receipt_id: null,
+      }],
+    });
+
+    const inadmissibleBinding = binding({
+      allowed: false,
+      receipt_id: null,
+      currentness: null,
+      inadmissibility_cause: 'confidence_below_minimum',
+      diagnostic_codes: ['policy_assessment_inadmissible'],
+    });
+    const inadmissible = decision({
       state: 'policy_compliance_blocked',
       allowed: false,
       reason_codes: ['policy_compliance_blocked'],
-    }))).toThrow(/blocking rules/i);
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
-      advisory_issue_count: 1,
-    }))).toThrow(/unresolved outcomes/i);
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
-      state: 'policy_evaluation_degraded',
-      reason_codes: ['policy_evaluation_degraded'],
+      receipt_ids: [],
+      currentness: null,
+      diagnostic_codes: ['policy_assessment_inadmissible'],
+      binding_decisions: [inadmissibleBinding],
+    });
+    expect(parsePolicyComplianceTransitionDecision(inadmissible)).toMatchObject({
+      state: 'policy_compliance_blocked',
+      binding_decisions: [{
+        assessment_available: true,
+        inadmissibility_cause: 'confidence_below_minimum',
+        receipt_id: null,
+      }],
+    });
+
+    // Evidence presence is mandatory regardless of enforcement: an
+    // applicable advisory binding without a receipt rejects the transition.
+    const advisoryMissingBinding = binding({
+      enforcement: 'advisory',
+      allowed: false,
       receipt_id: null,
       currentness: null,
-      applicable_blocking_rule_count: 1,
-    }))).toThrow(/inconsistent applicability/i);
-    expect(() => parsePolicyComplianceTransitionDecision(decision({
-      state: 'policy_compliance_not_applicable',
-      reason_codes: ['policy_compliance_not_applicable'],
-    }))).toThrow(/contains applicable rules/i);
+      advisory_issue_count: 3,
+      diagnostic_codes: ['policy_compliance_receipt_missing'],
+    });
+    expect(parsePolicyComplianceTransitionDecision(decision({
+      state: 'policy_compliance_receipt_missing',
+      allowed: false,
+      reason_codes: ['policy_compliance_receipt_missing'],
+      receipt_ids: [],
+      currentness: null,
+      applicable_blocking_metric_count: 0,
+      advisory_issue_count: 3,
+      diagnostic_codes: ['policy_compliance_receipt_missing'],
+      binding_decisions: [advisoryMissingBinding],
+    }))).toMatchObject({
+      state: 'policy_compliance_receipt_missing',
+      allowed: false,
+      advisory_issue_count: 3,
+    });
   });
 
-  it('accepts subject-required only without fabricated evidence', () => {
+  it.each([
+    [
+      'an advisory binding that rejects',
+      binding({ enforcement: 'advisory', allowed: false }),
+    ],
+    [
+      'an invalid context-only binding',
+      binding({
+        applicable_metric_count: 0,
+        allowed: false,
+        receipt_id: null,
+        currentness: null,
+      }),
+    ],
+    [
+      'a skipped binding that also claims a waiver',
+      binding({
+        skipped: true,
+        failed_metric_count: 1,
+        waived_metric_count: 1,
+        diagnostic_codes: ['policy_metric_threshold_failed'],
+      }),
+    ],
+    [
+      'an unavailable assessment carrying a receipt',
+      binding({
+        assessment_available: false,
+        diagnostic_codes: ['policy_assessment_unavailable'],
+      }),
+    ],
+    [
+      'a missing receipt without its diagnostic',
+      binding({
+        receipt_id: null,
+        currentness: null,
+      }),
+    ],
+    [
+      'inadmissibility without its exact diagnostic',
+      binding({
+        receipt_id: null,
+        currentness: null,
+        inadmissibility_cause: 'assessor_separation_required',
+      }),
+    ],
+    [
+      'a stale receipt without its exact diagnostic',
+      binding({
+        currentness: 'stale',
+        currentness_reasons: ['subject_version_changed'],
+      }),
+    ],
+    [
+      'a forged current-receipt outcome',
+      binding({
+        failed_metric_count: 1,
+        diagnostic_codes: ['policy_metric_threshold_failed'],
+      }),
+    ],
+    [
+      'non-canonical diagnostic ordering',
+      binding({
+        receipt_id: null,
+        currentness: null,
+        inadmissibility_cause: 'confidence_below_minimum',
+        diagnostic_codes: [
+          'policy_assessment_inadmissible',
+          'policy_compliance_receipt_missing',
+        ],
+      }),
+    ],
+  ])('rejects %s', (_label, invalidBinding) => {
+    expect(() => parsePolicyComplianceTransitionDecision(decision({
+      binding_decisions: [invalidBinding],
+    }))).toThrow();
+  });
+
+  it('requires canonical aggregate bindings, counts, receipts, currentness, diagnostics, and reasons', () => {
+    const missingBinding = binding({
+      binding_id: 'binding-a',
+      guideline_id: 'guideline-a',
+      allowed: false,
+      receipt_id: null,
+      currentness: null,
+      diagnostic_codes: ['policy_compliance_receipt_missing'],
+    });
+    const failedBinding = binding({
+      binding_id: 'binding-b',
+      guideline_id: 'guideline-b',
+      receipt_id: 'receipt-2',
+      allowed: false,
+      failed_metric_count: 1,
+      blocking_metric_count: 1,
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+    });
+    const canonical = decision({
+      state: 'policy_compliance_receipt_missing',
+      allowed: false,
+      reason_codes: [
+        'policy_compliance_receipt_missing',
+        'policy_compliance_blocked',
+      ],
+      receipt_ids: ['receipt-2'],
+      applicable_metric_count: 6,
+      applicable_blocking_metric_count: 6,
+      failed_metric_count: 1,
+      blocking_metric_count: 1,
+      diagnostic_codes: [
+        'policy_compliance_receipt_missing',
+        'policy_metric_threshold_failed',
+      ],
+      binding_decisions: [missingBinding, failedBinding],
+    });
+
+    expect(parsePolicyComplianceTransitionDecision(canonical)).toMatchObject({
+      state: 'policy_compliance_receipt_missing',
+      reason_codes: [
+        'policy_compliance_receipt_missing',
+        'policy_compliance_blocked',
+      ],
+      receipt_ids: ['receipt-2'],
+      currentness: 'current',
+      applicable_metric_count: 6,
+    });
+    expect(() => parsePolicyComplianceTransitionDecision({
+      ...canonical,
+      binding_decisions: [failedBinding, missingBinding],
+    })).toThrow(/binding decisions are not canonical/i);
+    expect(() => parsePolicyComplianceTransitionDecision({
+      ...canonical,
+      diagnostic_codes: ['policy_compliance_receipt_missing'],
+    })).toThrow(/diagnostics do not match/i);
+    expect(() => parsePolicyComplianceTransitionDecision({
+      ...canonical,
+      receipt_ids: ['receipt-forged'],
+    })).toThrow(/receipts do not match/i);
+    expect(() => parsePolicyComplianceTransitionDecision({
+      ...canonical,
+      currentness: 'stale',
+      currentness_reasons: ['subject_version_changed'],
+    })).toThrow(/currentness does not match/i);
+    expect(() => parsePolicyComplianceTransitionDecision({
+      ...canonical,
+      allowed: true,
+    })).toThrow(/outcome does not match/i);
+    expect(() => parsePolicyComplianceTransitionDecision({
+      ...canonical,
+      state: 'policy_compliance_blocked',
+      reason_codes: [
+        'policy_compliance_blocked',
+        'policy_compliance_receipt_missing',
+      ],
+    })).toThrow(/non-canonical reason codes/i);
+  });
+
+  it('accepts canonical ready-with-waiver, skipped, and not-applicable outcomes', () => {
+    const waivedBinding = binding({
+      allowed: true,
+      failed_metric_count: 1,
+      waived_metric_count: 1,
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+    });
+    expect(parsePolicyComplianceTransitionDecision(decision({
+      state: 'policy_compliance_ready_with_waivers',
+      reason_codes: ['policy_compliance_ready_with_waivers'],
+      failed_metric_count: 1,
+      waived_metric_count: 1,
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+      binding_decisions: [waivedBinding],
+    }))).toMatchObject({
+      state: 'policy_compliance_ready_with_waivers',
+      waived_metric_count: 1,
+    });
+
+    const skippedBinding = binding({ skipped: true });
+    expect(parsePolicyComplianceTransitionDecision(decision({
+      state: 'policy_compliance_ready_with_waivers',
+      reason_codes: ['policy_compliance_ready_with_waivers'],
+      skipped_binding_count: 1,
+      binding_decisions: [skippedBinding],
+    }))).toMatchObject({
+      state: 'policy_compliance_ready_with_waivers',
+      skipped_binding_count: 1,
+    });
+
+    const contextBinding = binding({
+      applicable_metric_count: 0,
+    });
+    expect(parsePolicyComplianceTransitionDecision(decision({
+      state: 'policy_compliance_not_applicable',
+      reason_codes: ['policy_compliance_not_applicable'],
+      applicable_metric_count: 0,
+      applicable_blocking_metric_count: 0,
+      binding_decisions: [contextBinding],
+    }))).toMatchObject({
+      state: 'policy_compliance_not_applicable',
+      applicable_metric_count: 0,
+    });
+  });
+
+  it('requires complete digests and counts for every scoped decision', () => {
+    expect(() => parsePolicyComplianceTransitionDecision(decision({
+      decision_digest: null,
+    }))).toThrow(/incomplete governed decision envelope/i);
+    expect(() => parsePolicyComplianceTransitionDecision(decision({
+      fence_digest: null,
+    }))).toThrow(/incomplete governed decision envelope/i);
+    expect(() => parsePolicyComplianceTransitionDecision(decision({
+      applicable_metric_count: null,
+    }))).toThrow(/partial metric count envelope/i);
+    expect(() => parsePolicyComplianceTransitionDecision(decision({
+      applicable_metric_count: null,
+      applicable_blocking_metric_count: null,
+      failed_metric_count: null,
+      blocking_metric_count: null,
+      waived_metric_count: null,
+      advisory_issue_count: null,
+      skipped_binding_count: null,
+    }))).toThrow(/invalid unscoped subject-required decision/i);
+  });
+
+  it('accepts subject-required only without fabricated metric evidence', () => {
     const subjectRequired = decision({
       state: 'policy_subject_required',
       allowed: null,
       reason_codes: ['policy_subject_required'],
       decision_digest: null,
       fence_digest: null,
-      receipt_id: null,
+      receipt_ids: [],
       currentness: null,
-      applicable_rule_count: null,
-      applicable_blocking_rule_count: null,
-      blocking_rule_count: null,
-      waived_rule_count: null,
+      applicable_metric_count: null,
+      applicable_blocking_metric_count: null,
+      failed_metric_count: null,
+      blocking_metric_count: null,
+      waived_metric_count: null,
       advisory_issue_count: null,
+      skipped_binding_count: null,
+      binding_decisions: [],
     });
 
     expect(
@@ -229,13 +595,39 @@ describe('policyTransitionPreviewModel', () => {
     ).toMatchObject({
       state: 'policy_subject_required',
       allowed: null,
-      receipt_id: null,
+      receipt_ids: [],
     });
+
+    const scopedSubjectRequired = decision({
+      state: 'policy_subject_required',
+      allowed: false,
+      reason_codes: ['policy_subject_required'],
+      receipt_ids: [],
+      currentness: null,
+      applicable_metric_count: 0,
+      applicable_blocking_metric_count: 0,
+      failed_metric_count: 0,
+      blocking_metric_count: 0,
+      waived_metric_count: 0,
+      advisory_issue_count: 0,
+      skipped_binding_count: 0,
+      binding_decisions: [],
+    });
+    expect(
+      parsePolicyComplianceTransitionDecision(scopedSubjectRequired),
+    ).toMatchObject({
+      state: 'policy_subject_required',
+      allowed: false,
+      decision_digest: 'a'.repeat(64),
+      fence_digest: 'b'.repeat(64),
+      applicable_metric_count: 0,
+    });
+
     expect(() => parsePolicyComplianceTransitionDecision({
       ...subjectRequired,
-      receipt_id: 'fabricated',
+      receipt_ids: ['fabricated'],
       currentness: 'current',
-    })).toThrow(/fabricated evidence/i);
+    })).toThrow(/invalid unscoped subject-required decision/i);
   });
 
   it('rejects duplicate lifecycle targets and decisions on non-policy rows', () => {
@@ -255,7 +647,7 @@ describe('policyTransitionPreviewModel', () => {
         effects: [],
         reason_codes: [],
         policy_compliance: false,
-        policy_compliance_decision: decision() as never,
+        policy_compliance_decision: decision(),
       },
     ])).toThrow(/non-enforcement transition/i);
   });
@@ -263,11 +655,7 @@ describe('policyTransitionPreviewModel', () => {
   it('admits only an authoritative ready edge while preserving recovery', () => {
     expect(isAllowedTransitionActionable(governed())).toBe(true);
     expect(isAllowedTransitionActionable(governed({
-      policy_compliance_decision: decision({
-        state: 'policy_compliance_blocked',
-        allowed: false,
-        reason_codes: ['policy_compliance_blocked'],
-      }) as never,
+      policy_compliance_decision: blockedDecision(),
     }))).toBe(false);
     expect(isAllowedTransitionActionable({
       to_status: 'cancelled',
@@ -300,13 +688,13 @@ describe('policyTransitionPreviewModel', () => {
     } as unknown as AllowedTransition)).toBe(false);
   });
 
-  it('binds the transition envelope to the active subject and authority', () => {
+  it('binds the exact transition envelope to the active subject and authority', () => {
     const response = {
       board_id: 'board-1',
       entity_type: 'spec' as const,
       entity_id: 'spec-1',
       current_status: 'approved',
-      source: 'core_sdlc_registry_v1',
+      source: 'core_sdlc_registry_v1' as const,
       allowed_transitions: [governed()],
     };
     const expected = {
@@ -326,7 +714,7 @@ describe('policyTransitionPreviewModel', () => {
     expect(() => requirePolicyTransitionEnvelope({
       ...response,
       source: 'legacy_client_map',
-    }, expected)).toThrow(/does not match the active subject/i);
+    } as never, expected)).toThrow(/does not match the active subject/i);
     expect(() => requirePolicyTransitionEnvelope({
       ...response,
       allowed_transitions: [
@@ -336,7 +724,13 @@ describe('policyTransitionPreviewModel', () => {
     }, expected)).toThrow(/repeats a lifecycle target/i);
   });
 
-  it('preserves and scopes the exact structured mutation rejection', () => {
+  it('preserves and scopes the exact semantic mutation rejection', () => {
+    const rejectionBinding = binding({
+      allowed: false,
+      failed_metric_count: 1,
+      blocking_metric_count: 1,
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+    });
     const error = new AuthenticatedFetchError({
       status: 409,
       code: 'policy_compliance_blocked',
@@ -349,16 +743,20 @@ describe('policyTransitionPreviewModel', () => {
         reason_codes: ['policy_compliance_blocked'],
         decision_digest: 'a'.repeat(64),
         fence_digest: 'b'.repeat(64),
-        receipt_id: 'receipt-locked',
+        receipt_ids: ['receipt-1'],
         currentness: 'current',
         currentness_reasons: [],
         counts: {
-          applicable_rules: 3,
-          applicable_blocking_rules: 2,
-          blocking_rules: 1,
-          waived_rules: 0,
+          applicable_metrics: 3,
+          applicable_blocking_metrics: 3,
+          failed_metrics: 1,
+          blocking_metrics: 1,
+          waived_metrics: 0,
           advisory_issues: 0,
+          skipped_bindings: 0,
         },
+        diagnostic_codes: ['policy_metric_threshold_failed'],
+        binding_decisions: [rejectionBinding],
         transition: {
           entity_type: 'spec',
           subject_id: 'spec-1',
@@ -375,23 +773,50 @@ describe('policyTransitionPreviewModel', () => {
       currentStatus: 'approved',
       toStatus: 'validated',
     };
+    const errorDetails = error.details as Record<string, unknown>;
+    const errorCounts = errorDetails.counts as Record<string, unknown>;
 
     const rejection = parsePolicyTransitionRejection(error, expected);
 
     expect(rejection).toMatchObject({
       code: 'policy_compliance_blocked',
       decision: {
-        receipt_id: 'receipt-locked',
+        receipt_ids: ['receipt-1'],
         currentness: 'current',
-        blocking_rule_count: 1,
+        blocking_metric_count: 1,
+        diagnostic_codes: ['policy_metric_threshold_failed'],
       },
     });
     expect(policyTransitionRejectionMessage(rejection)).toContain(
-      'receipt receipt-locked (current)',
+      'receipts receipt-1 (current)',
     );
     expect(() => parsePolicyTransitionRejection(error, {
       ...expected,
       subjectId: 'spec-other',
     })).toThrow(/does not match the active action/i);
+    expect(() => parsePolicyTransitionRejection(
+      new AuthenticatedFetchError({
+        status: 409,
+        code: 'policy_compliance_blocked',
+        message: 'policy_compliance_blocked',
+        details: { ...errorDetails, unexpected: true },
+      }),
+      expected,
+    )).toThrow(/unknown or missing rejection field/i);
+    expect(() => parsePolicyTransitionRejection(
+      new AuthenticatedFetchError({
+        status: 409,
+        code: 'policy_compliance_blocked',
+        message: 'policy_compliance_blocked',
+        details: {
+          ...errorDetails,
+          counts: {
+            ...errorCounts,
+            unexpected: true,
+          },
+        },
+      }),
+      expected,
+    )).toThrow(/unknown or missing rejection count field/i);
   });
 });

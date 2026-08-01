@@ -241,10 +241,10 @@ export interface PolicyGovernanceApi {
       includeBindingHistory?: boolean;
       signal?: AbortSignal;
     },
-  ): Promise<Policy.GuidelineExportEnvelopeV2>;
+  ): Promise<Policy.GuidelineExportEnvelopeV3>;
   importGuidelinePolicy(
     boardId: string,
-    envelope: Policy.GuidelineExportEnvelopeV2,
+    envelope: Policy.GuidelineExportEnvelopeV3,
     options?: { dryRun?: boolean; signal?: AbortSignal },
   ): Promise<Policy.GuidelineImportResult>;
   listGuidelineRevisions(
@@ -275,17 +275,17 @@ export interface PolicyGovernanceApi {
     guidelineId: string,
     request: Policy.PreviewGuidelineImpactRequest,
     signal?: AbortSignal,
-  ): Promise<Policy.GuidelineImpactReceiptResponse>;
+  ): Promise<Policy.GuidelineImpactPreviewResponse>;
   getGuidelineImpact(
     boardId: string,
     guidelineId: string,
-    receiptId: string,
+    previewId: string,
     signal?: AbortSignal,
-  ): Promise<Policy.GuidelineImpactReceiptResponse>;
+  ): Promise<Policy.GuidelineImpactPreviewResponse>;
   listGuidelineImpactItems(
     boardId: string,
     guidelineId: string,
-    receiptId: string,
+    previewId: string,
     options?: Policy.GuidelineImpactItemPageOptions,
   ): Promise<Policy.PolicyCursorPage<Policy.GuidelineImpactPageItem>>;
   adoptGuidelineRevision(
@@ -294,71 +294,87 @@ export interface PolicyGovernanceApi {
     request: Policy.AdoptGuidelineRevisionRequest,
     signal?: AbortSignal,
   ): Promise<Policy.GuidelineAdoptionResponse>;
-  evaluatePolicyCompliance(
+  listSemanticGuidelineAssessments(
     boardId: string,
-    request: Policy.EvaluatePolicyComplianceRequest,
-    signal?: AbortSignal,
-  ): Promise<Policy.PolicyEvaluationResponse>;
-  listPolicyComplianceReceipts(
-    boardId: string,
-    options?: Policy.PolicyComplianceReceiptPageOptions,
+    options?: Policy.SemanticAssessmentPageOptions,
   ): Promise<
-    Policy.PolicyCursorPage<Policy.PolicyComplianceReceiptListItem>
+    Policy.SemanticCursorPage<Policy.SemanticAssessmentListItem>
   >;
-  getCurrentPolicyComplianceReceipt(
+  getCurrentSemanticGuidelineAssessment(
     boardId: string,
     entityType: Policy.PolicyEntityType,
     subjectId: string,
+    bindingId: string,
+    projection?: Policy.PolicyProjection,
     signal?: AbortSignal,
-  ): Promise<Policy.PolicyComplianceReceiptResponse>;
-  getPolicyComplianceReceipt(
+  ): Promise<Policy.SemanticAssessmentResponse>;
+  getSemanticGuidelineAssessment(
     boardId: string,
     receiptId: string,
+    projection?: Policy.PolicyProjection,
     signal?: AbortSignal,
-  ): Promise<Policy.PolicyComplianceReceiptResponse>;
-  listPolicyComplianceFindings(
+  ): Promise<Policy.SemanticAssessmentResponse>;
+  listSemanticGuidelineFindings(
     boardId: string,
-    options?: Policy.PolicyComplianceFindingPageOptions,
-  ): Promise<
-    Policy.PolicyCursorPage<Policy.PolicyComplianceFindingListItem>
-  >;
-  listPolicyWaivers(
+    options?: Policy.SemanticFindingPageOptions,
+  ): Promise<Policy.SemanticCursorPage<Policy.SemanticFindingListItem>>;
+  listSemanticMetricWaivers(
     boardId: string,
-    options: Policy.PolicyWaiverPageOptions,
-  ): Promise<Policy.PolicyCursorPage<Policy.PolicyWaiverListItem>>;
-  requestPolicyWaiver(
+    options: Policy.SemanticWaiverPageOptions,
+  ): Promise<Policy.SemanticCursorPage<Policy.SemanticWaiverListItem>>;
+  requestSemanticMetricWaiver(
     boardId: string,
-    request: Policy.RequestPolicyWaiverRequest,
+    request: Policy.RequestSemanticMetricWaiverRequest,
     signal?: AbortSignal,
-  ): Promise<Policy.PolicyWaiverMutationResponse>;
-  listPolicyWaiverEvents(
+  ): Promise<Policy.RequestedSemanticWaiverResponse>;
+  getSemanticMetricWaiver(
+    boardId: string,
+    waiverId: string,
+    options: {
+      evaluatedAt: string;
+      projection?: Policy.PolicyProjection;
+      signal?: AbortSignal;
+    },
+  ): Promise<Policy.SemanticWaiverResponse>;
+  listSemanticMetricWaiverEvents(
     boardId: string,
     waiverId: string,
     signal?: AbortSignal,
-  ): Promise<Policy.PolicyWaiverEventsResponse>;
-  reviewPolicyWaiver(
+  ): Promise<Policy.SemanticWaiverEventsResponse>;
+  reviewSemanticMetricWaiver(
     boardId: string,
     waiverId: string,
-    request: Policy.ReviewPolicyWaiverRequest,
+    request: Policy.ReviewSemanticMetricWaiverRequest,
     signal?: AbortSignal,
-  ): Promise<Policy.PolicyWaiverMutationResponse>;
-  revokePolicyWaiver(
+  ): Promise<Policy.ReviewedSemanticWaiverResponse>;
+  revokeSemanticMetricWaiver(
     boardId: string,
     waiverId: string,
-    request: Policy.RevokePolicyWaiverRequest,
+    request: Policy.RevokeSemanticMetricWaiverRequest,
     signal?: AbortSignal,
-  ): Promise<Policy.PolicyWaiverMutationResponse>;
-  revalidatePolicyWaiver(
+  ): Promise<Policy.RevokedSemanticWaiverResponse>;
+  revalidateSemanticMetricWaiver(
     boardId: string,
     waiverId: string,
-    request: Policy.RevalidatePolicyWaiverRequest,
+    request: Policy.RevalidateSemanticMetricWaiverRequest,
     signal?: AbortSignal,
-  ): Promise<Policy.PolicyWaiverMutationResponse>;
-  getPolicyWaiver(
+  ): Promise<Policy.RevalidatedSemanticWaiverResponse>;
+  listSemanticPolicySkips(
     boardId: string,
-    waiverId: string,
+    options?: Policy.SemanticSkipPageOptions,
+  ): Promise<Policy.SemanticCursorPage<Policy.SemanticSkipListItem>>;
+  createSemanticPolicySkip(
+    boardId: string,
+    request: Policy.CreateSemanticSkipRequest,
+    idempotencyKey: string,
     signal?: AbortSignal,
-  ): Promise<Policy.PolicyWaiverResponse>;
+  ): Promise<Policy.CreatedSemanticSkipResponse>;
+  revokeSemanticPolicySkip(
+    boardId: string,
+    skipId: string,
+    request: Policy.RevokeSemanticSkipRequest,
+    signal?: AbortSignal,
+  ): Promise<Policy.RevokedSemanticSkipResponse>;
 }
 
 export function createPolicyGovernanceApi(
@@ -374,7 +390,7 @@ export function createPolicyGovernanceApi(
         'include_binding_history',
         String(options.includeBindingHistory ?? true),
       );
-      return requestJson<Policy.GuidelineExportEnvelopeV2>(
+      return requestJson<Policy.GuidelineExportEnvelopeV3>(
         transport,
         `${boardRoot(boardId)}/guidelines/export?${params.toString()}`,
         { signal: options.signal },
@@ -439,7 +455,7 @@ export function createPolicyGovernanceApi(
     },
 
     previewGuidelineImpact(boardId, guidelineId, request, signal) {
-      return postJson<Policy.GuidelineImpactReceiptResponse>(
+      return postJson<Policy.GuidelineImpactPreviewResponse>(
         transport,
         `${guidelineRoot(boardId, guidelineId)}/impact-previews`,
         request,
@@ -450,13 +466,13 @@ export function createPolicyGovernanceApi(
     getGuidelineImpact(
       boardId,
       guidelineId,
-      receiptId,
+      previewId,
       signal,
     ) {
-      return requestJson<Policy.GuidelineImpactReceiptResponse>(
+      return requestJson<Policy.GuidelineImpactPreviewResponse>(
         transport,
         `${guidelineRoot(boardId, guidelineId)}/impact-previews/${encoded(
-          receiptId,
+          previewId,
         )}`,
         { signal },
       );
@@ -465,7 +481,7 @@ export function createPolicyGovernanceApi(
     listGuidelineImpactItems(
       boardId,
       guidelineId,
-      receiptId,
+      previewId,
       options = {},
     ) {
       const params = pageParams(options);
@@ -476,7 +492,7 @@ export function createPolicyGovernanceApi(
       >(
         transport,
         `${guidelineRoot(boardId, guidelineId)}/impact-previews/${encoded(
-          receiptId,
+          previewId,
         )}/items?${params.toString()}`,
         { signal: options.signal },
       );
@@ -491,100 +507,101 @@ export function createPolicyGovernanceApi(
       );
     },
 
-    evaluatePolicyCompliance(boardId, request, signal) {
-      return postJson<Policy.PolicyEvaluationResponse>(
-        transport,
-        `${boardRoot(boardId)}/policy-compliance/evaluations`,
-        request,
-        signal,
-      );
-    },
-
-    listPolicyComplianceReceipts(boardId, options = {}) {
+    listSemanticGuidelineAssessments(boardId, options = {}) {
       const params = pageParams(options);
-      setIfDefined(params, 'entity_type', options.entityType);
+      setIfDefined(params, 'subject_type', options.subjectType);
       setIfDefined(params, 'subject_id', options.subjectId);
+      setIfDefined(params, 'guideline_id', options.guidelineId);
+      setIfDefined(params, 'binding_id', options.bindingId);
       setIfDefined(params, 'outcome', options.outcome);
       setIfDefined(params, 'currentness', options.currentness);
       return requestJson<
-        Policy.PolicyCursorPage<Policy.PolicyComplianceReceiptListItem>
+        Policy.SemanticCursorPage<Policy.SemanticAssessmentListItem>
       >(
         transport,
-        `${boardRoot(
-          boardId,
-        )}/policy-compliance/receipts?${params.toString()}`,
+        `${boardRoot(boardId)}/semantic-guideline-assessments?${params.toString()}`,
         { signal: options.signal },
       );
     },
 
-    getCurrentPolicyComplianceReceipt(
+    getCurrentSemanticGuidelineAssessment(
       boardId,
       entityType,
       subjectId,
+      bindingId,
+      projection = 'full',
       signal,
     ) {
       const params = new URLSearchParams({
-        entity_type: entityType,
+        subject_type: entityType,
         subject_id: subjectId,
+        binding_id: bindingId,
+        projection,
       });
-      return requestJson<Policy.PolicyComplianceReceiptResponse>(
+      return requestJson<Policy.SemanticAssessmentResponse>(
         transport,
-        `${boardRoot(
-          boardId,
-        )}/policy-compliance/receipts/current?${params.toString()}`,
+        `${boardRoot(boardId)}/semantic-guideline-assessments/current?${params.toString()}`,
         { signal },
       );
     },
 
-    getPolicyComplianceReceipt(boardId, receiptId, signal) {
-      return requestJson<Policy.PolicyComplianceReceiptResponse>(
+    getSemanticGuidelineAssessment(
+      boardId,
+      receiptId,
+      projection = 'full',
+      signal,
+    ) {
+      const params = new URLSearchParams({ projection });
+      return requestJson<Policy.SemanticAssessmentResponse>(
         transport,
-        `${boardRoot(boardId)}/policy-compliance/receipts/${encoded(
+        `${boardRoot(boardId)}/semantic-guideline-assessments/${encoded(
           receiptId,
-        )}`,
+        )}?${params.toString()}`,
         { signal },
       );
     },
 
-    listPolicyComplianceFindings(boardId, options = {}) {
+    listSemanticGuidelineFindings(boardId, options = {}) {
       const params = pageParams(options);
       setIfDefined(params, 'receipt_id', options.receiptId);
       setIfDefined(params, 'guideline_id', options.guidelineId);
-      setIfDefined(params, 'rule_id', options.ruleId);
+      setIfDefined(params, 'binding_id', options.bindingId);
+      setIfDefined(params, 'metric_id', options.metricId);
+      setIfDefined(params, 'subject_type', options.subjectType);
       setIfDefined(params, 'subject_id', options.subjectId);
       setIfDefined(params, 'outcome', options.outcome);
       return requestJson<
-        Policy.PolicyCursorPage<Policy.PolicyComplianceFindingListItem>
+        Policy.SemanticCursorPage<Policy.SemanticFindingListItem>
       >(
         transport,
-        `${boardRoot(
-          boardId,
-        )}/policy-compliance/findings?${params.toString()}`,
+        `${boardRoot(boardId)}/semantic-guideline-findings?${params.toString()}`,
         { signal: options.signal },
       );
     },
 
-    listPolicyWaivers(boardId, options) {
+    listSemanticMetricWaivers(boardId, options) {
       const params = pageParams(options);
       params.set('evaluated_at', options.evaluatedAt);
       setIfDefined(params, 'finding_id', options.findingId);
+      setIfDefined(params, 'metric_result_id', options.metricResultId);
       setIfDefined(params, 'receipt_id', options.receiptId);
       setIfDefined(params, 'guideline_id', options.guidelineId);
-      setIfDefined(params, 'revision_id', options.revisionId);
-      setIfDefined(params, 'rule_id', options.ruleId);
-      setIfDefined(params, 'entity_type', options.entityType);
+      setIfDefined(params, 'binding_id', options.bindingId);
+      setIfDefined(params, 'metric_id', options.metricId);
+      setIfDefined(params, 'subject_type', options.subjectType);
       setIfDefined(params, 'subject_id', options.subjectId);
-      setIfDefined(params, 'subject_version', options.subjectVersion);
       setIfDefined(params, 'status', options.status);
-      return requestJson<Policy.PolicyCursorPage<Policy.PolicyWaiverListItem>>(
+      return requestJson<
+        Policy.SemanticCursorPage<Policy.SemanticWaiverListItem>
+      >(
         transport,
         `${boardRoot(boardId)}/policy-waivers?${params.toString()}`,
         { signal: options.signal },
       );
     },
 
-    requestPolicyWaiver(boardId, request, signal) {
-      return postJson<Policy.PolicyWaiverMutationResponse>(
+    requestSemanticMetricWaiver(boardId, request, signal) {
+      return postJson<Policy.RequestedSemanticWaiverResponse>(
         transport,
         `${boardRoot(boardId)}/policy-waivers`,
         request,
@@ -592,16 +609,37 @@ export function createPolicyGovernanceApi(
       );
     },
 
-    listPolicyWaiverEvents(boardId, waiverId, signal) {
-      return requestJson<Policy.PolicyWaiverEventsResponse>(
+    getSemanticMetricWaiver(
+      boardId,
+      waiverId,
+      options,
+    ) {
+      const params = new URLSearchParams({
+        evaluated_at: options.evaluatedAt,
+        projection: options.projection ?? 'full',
+      });
+      return requestJson<Policy.SemanticWaiverResponse>(
+        transport,
+        `${waiverRoot(boardId, waiverId)}?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    listSemanticMetricWaiverEvents(boardId, waiverId, signal) {
+      return requestJson<Policy.SemanticWaiverEventsResponse>(
         transport,
         `${waiverRoot(boardId, waiverId)}/events`,
         { signal },
       );
     },
 
-    reviewPolicyWaiver(boardId, waiverId, request, signal) {
-      return postJson<Policy.PolicyWaiverMutationResponse>(
+    reviewSemanticMetricWaiver(
+      boardId,
+      waiverId,
+      request,
+      signal,
+    ) {
+      return postJson<Policy.ReviewedSemanticWaiverResponse>(
         transport,
         `${waiverRoot(boardId, waiverId)}/review`,
         request,
@@ -609,8 +647,13 @@ export function createPolicyGovernanceApi(
       );
     },
 
-    revokePolicyWaiver(boardId, waiverId, request, signal) {
-      return postJson<Policy.PolicyWaiverMutationResponse>(
+    revokeSemanticMetricWaiver(
+      boardId,
+      waiverId,
+      request,
+      signal,
+    ) {
+      return postJson<Policy.RevokedSemanticWaiverResponse>(
         transport,
         `${waiverRoot(boardId, waiverId)}/revoke`,
         request,
@@ -618,8 +661,13 @@ export function createPolicyGovernanceApi(
       );
     },
 
-    revalidatePolicyWaiver(boardId, waiverId, request, signal) {
-      return postJson<Policy.PolicyWaiverMutationResponse>(
+    revalidateSemanticMetricWaiver(
+      boardId,
+      waiverId,
+      request,
+      signal,
+    ) {
+      return postJson<Policy.RevalidatedSemanticWaiverResponse>(
         transport,
         `${waiverRoot(boardId, waiverId)}/revalidate`,
         request,
@@ -627,11 +675,48 @@ export function createPolicyGovernanceApi(
       );
     },
 
-    getPolicyWaiver(boardId, waiverId, signal) {
-      return requestJson<Policy.PolicyWaiverResponse>(
+    listSemanticPolicySkips(boardId, options = {}) {
+      const params = pageParams(options);
+      setIfDefined(params, 'subject_type', options.subjectType);
+      setIfDefined(params, 'subject_id', options.subjectId);
+      setIfDefined(params, 'binding_id', options.bindingId);
+      setIfDefined(params, 'status', options.status);
+      setIfDefined(params, 'currentness', options.currentness);
+      return requestJson<
+        Policy.SemanticCursorPage<Policy.SemanticSkipListItem>
+      >(
         transport,
-        waiverRoot(boardId, waiverId),
-        { signal },
+        `${boardRoot(boardId)}/semantic-guideline-skips?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    createSemanticPolicySkip(
+      boardId,
+      request,
+      idempotencyKey,
+      signal,
+    ) {
+      return requestJson<Policy.CreatedSemanticSkipResponse>(
+        transport,
+        `${boardRoot(boardId)}/semantic-guideline-skips`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey },
+          body: JSON.stringify(request),
+          signal,
+        },
+      );
+    },
+
+    revokeSemanticPolicySkip(boardId, skipId, request, signal) {
+      return postJson<Policy.RevokedSemanticSkipResponse>(
+        transport,
+        `${boardRoot(boardId)}/semantic-guideline-skips/${encoded(
+          skipId,
+        )}/revoke`,
+        request,
+        signal,
       );
     },
   };

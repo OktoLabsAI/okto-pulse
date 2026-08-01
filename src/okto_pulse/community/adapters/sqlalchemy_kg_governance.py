@@ -51,6 +51,17 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     PolicyWaiverEventRow,
     PolicyWaiverRow,
     Refinement,
+    SemanticGuidelineAssessmentReceiptRow,
+    SemanticGuidelineBindingConfigurationRow,
+    SemanticGuidelineFindingRow,
+    SemanticGuidelineLegacyMigrationRow,
+    SemanticGuidelineMetricResultRow,
+    SemanticGuidelineRevisionRow,
+    SemanticGuidelineSkipRow,
+    SemanticGuidelineWaiverEventRow,
+    SemanticGuidelineWaiverRow,
+    SemanticSubjectVersionEventRow,
+    SemanticSubjectVersionRow,
     Spec,
     Sprint,
     Story,
@@ -443,6 +454,62 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 postcondition=quality_postcondition,
             )
 
+            # SK-B3 semantic governance is independently append-only and must
+            # participate in the same permit-scoped physical erasure. Delete
+            # lifecycle heads before exact receipt/binding authorities; their
+            # deferred/cascading lineage removes the corresponding events.
+            await context.execute(
+                delete(SemanticGuidelineWaiverRow).where(
+                    SemanticGuidelineWaiverRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(SemanticGuidelineWaiverEventRow).where(
+                    SemanticGuidelineWaiverEventRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(SemanticGuidelineSkipRow).where(
+                    SemanticGuidelineSkipRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(SemanticGuidelineFindingRow).where(
+                    SemanticGuidelineFindingRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(SemanticGuidelineMetricResultRow).where(
+                    SemanticGuidelineMetricResultRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(SemanticGuidelineAssessmentReceiptRow).where(
+                    SemanticGuidelineAssessmentReceiptRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(SemanticSubjectVersionRow).where(
+                    SemanticSubjectVersionRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(SemanticSubjectVersionEventRow).where(
+                    SemanticSubjectVersionEventRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(SemanticGuidelineLegacyMigrationRow).where(
+                    SemanticGuidelineLegacyMigrationRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(SemanticGuidelineBindingConfigurationRow).where(
+                    SemanticGuidelineBindingConfigurationRow.board_id
+                    == board_id
+                )
+            )
+
             # SK-B policy history is append-only during ordinary lifecycle
             # operations.  Right-to-erasure is the sole physical-delete path:
             # remove receipt children before their exact binding/revision pins,
@@ -568,6 +635,12 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 )
                 for revision_id in inline_revision_ids:
                     await context.execute(
+                        delete(SemanticGuidelineRevisionRow).where(
+                            SemanticGuidelineRevisionRow.revision_id
+                            == revision_id
+                        )
+                    )
+                    await context.execute(
                         delete(GuidelineRevisionRow).where(
                             GuidelineRevisionRow.revision_id == revision_id
                         )
@@ -634,6 +707,16 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 KGCurationProposal,
                 DesignSystemGateAudit,
                 ActivityLog,
+                SemanticGuidelineAssessmentReceiptRow,
+                SemanticGuidelineBindingConfigurationRow,
+                SemanticGuidelineFindingRow,
+                SemanticGuidelineLegacyMigrationRow,
+                SemanticGuidelineMetricResultRow,
+                SemanticGuidelineSkipRow,
+                SemanticGuidelineWaiverEventRow,
+                SemanticGuidelineWaiverRow,
+                SemanticSubjectVersionEventRow,
+                SemanticSubjectVersionRow,
             ):
                 await context.execute(delete(model).where(model.board_id == board_id))
 
@@ -675,6 +758,16 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 KGCurationProposal,
                 DesignSystemGateAudit,
                 ActivityLog,
+                SemanticGuidelineAssessmentReceiptRow,
+                SemanticGuidelineBindingConfigurationRow,
+                SemanticGuidelineFindingRow,
+                SemanticGuidelineLegacyMigrationRow,
+                SemanticGuidelineMetricResultRow,
+                SemanticGuidelineSkipRow,
+                SemanticGuidelineWaiverEventRow,
+                SemanticGuidelineWaiverRow,
+                SemanticSubjectVersionEventRow,
+                SemanticSubjectVersionRow,
             )
             residuals = {
                 model.__tablename__: await _count_where(
@@ -753,6 +846,15 @@ class CommunitySqlAlchemyKGGovernanceStore:
                     context,
                     GuidelineRevisionRow,
                     GuidelineRevisionRow.guideline_id.in_(inline_guideline_ids),
+                )
+                residuals[
+                    SemanticGuidelineRevisionRow.__tablename__
+                ] = await _count_where(
+                    context,
+                    SemanticGuidelineRevisionRow,
+                    SemanticGuidelineRevisionRow.guideline_id.in_(
+                        inline_guideline_ids
+                    ),
                 )
                 residuals[GuidelineRetirementRow.__tablename__] = await _count_where(
                     context,

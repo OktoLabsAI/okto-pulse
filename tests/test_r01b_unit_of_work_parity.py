@@ -35,6 +35,7 @@ from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     CommunityUnitOfWork,
     build_community_unit_of_work_factory,
 )
+from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.application.use_cases.knowledge_propagation import (
     KnowledgeCreationRaceError,
 )
@@ -287,15 +288,16 @@ def test_ac2_unit_of_work_satisfies_ports(_temp_session_factory):
 def test_ac2_factory_carries_realm_and_actor(_temp_session_factory):
     sf = _temp_session_factory
     factory = build_community_unit_of_work_factory(sf)
+    expected_actor = ActorContext("actor-x", "system", realm_id="realm-1")
 
     async def drive():
-        async with factory(realm_id="realm-1", actor="actor-x") as uow:
+        async with factory(realm_id="realm-1", actor=expected_actor) as uow:
             carried = (uow.realm_id, uow.actor)
             await uow.rollback()
         return carried
 
     realm, actor = asyncio.run(drive())
-    assert realm == "realm-1" and actor == "actor-x"
+    assert realm == "realm-1" and actor is expected_actor
 
 
 def test_f02_exactly_one_commit_on_success(_temp_session_factory):

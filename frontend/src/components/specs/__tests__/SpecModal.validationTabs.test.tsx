@@ -294,7 +294,7 @@ describe('SpecModal validation navigation', () => {
   it('keeps Validation reachable for a policy-only actor in Draft', async () => {
     permissionMock.allowAll = false;
     permissionMock.allowed = new Set([
-      'guidelines.compliance.read',
+      'guidelines.assessments.read',
     ]);
     renderSpec('draft');
 
@@ -336,7 +336,7 @@ describe('SpecModal validation navigation', () => {
   it('falls back from an active Policy tab when its permission is revoked', async () => {
     permissionMock.allowAll = false;
     permissionMock.allowed = new Set([
-      'guidelines.compliance.read',
+      'guidelines.assessments.read',
       'spec.quality.read',
     ]);
     const rendered = renderSpec('draft');

@@ -19,6 +19,9 @@ from okto_pulse.community.adapters.permission_policy import (
 from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
     is_knowledge_creation_race_error,
 )
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    materialize_pending_semantic_subject_mutations,
+)
 from okto_pulse.community.sql_like import SQL_LIKE_ESCAPE
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
@@ -1295,6 +1298,7 @@ class CommunitySqlAlchemyApplicationPersistence:
 
     async def commit(self, context: Any) -> None:
         await self.flush(context)
+        await materialize_pending_semantic_subject_mutations(context)
         await context.commit()
         self._clear_tracking(context)
 

@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import {
   fireEvent,
   render,
@@ -13,20 +12,17 @@ import {
   vi,
 } from 'vitest';
 
-import { PolicyGovernanceApiError } from '@/services/policy-governance-api';
 import type {
-  PolicyComplianceFindingDetail,
-  PolicyWaiver,
-  PolicyWaiverEvent,
-  PolicyWaiverSummary,
+  SemanticFindingDetail,
+  SemanticWaiverFull,
 } from '@/types/policy-governance';
 
 const policyApiMock = vi.hoisted(() => ({
-  requestPolicyWaiver: vi.fn(),
-  reviewPolicyWaiver: vi.fn(),
-  revokePolicyWaiver: vi.fn(),
-  revalidatePolicyWaiver: vi.fn(),
-  getPolicyWaiver: vi.fn(),
+  requestSemanticMetricWaiver: vi.fn(),
+  reviewSemanticMetricWaiver: vi.fn(),
+  revokeSemanticMetricWaiver: vi.fn(),
+  revalidateSemanticMetricWaiver: vi.fn(),
+  getSemanticMetricWaiver: vi.fn(),
 }));
 const permissionState = vi.hoisted(() => ({
   isLoading: false,
@@ -61,178 +57,116 @@ import {
 
 const digest = (character: string) => character.repeat(64);
 
-function finding(): PolicyComplianceFindingDetail {
+function finding(): SemanticFindingDetail {
   return {
     projection: 'detail',
     finding_id: 'finding-1',
     receipt_id: 'receipt-1',
+    board_id: 'board-1',
+    entity_type: 'spec',
+    subject_id: 'spec-1',
+    subject_version: 7,
     guideline_id: 'guideline-1',
-    revision_id: 'revision-1',
-    rule_id: 'rule-1',
-    subject: {
-      board_id: 'board-1',
-      entity_type: 'spec',
-      subject_id: 'spec-1',
-      subject_version: 7,
-    },
-    outcome: 'fail',
-    enforcement: 'blocking',
-    severity_rank: 50,
-    blocking: true,
+    guideline_revision_id: 'revision-1',
+    binding_id: 'binding-1',
+    metric_id: 'metric-1',
+    metric_code: 'Architecture.Segregation:v2',
+    currentness: 'current',
+    currentness_reasons: [],
     created_at: '2026-07-30T09:00:00Z',
-    message: 'A blocking policy finding.',
-    evidence_refs: ['ticket://finding'],
+    metric_result_id: 'metric-result-1',
+    binding_revision: 3,
+    rationale: 'Ports depend on infrastructure.',
+    evidence_refs: [{
+      source_type: 'spec',
+      source_id: 'spec-1',
+      source_version: 7,
+      content_hash: digest('a'),
+    }],
+    pinpoints: [{
+      anchor_type: 'field',
+      anchor_ref: 'architecture',
+      excerpt_hash: digest('b'),
+      input_digest: digest('c'),
+    }],
   };
 }
 
-function requestedHead(
-  overrides: Partial<PolicyWaiver> = {},
-): PolicyWaiver {
+function waiver(
+  overrides: Partial<SemanticWaiverFull> = {},
+): SemanticWaiverFull {
   return {
-    waiver_id: 'server-waiver-1',
+    projection: 'full',
+    waiver_id: 'waiver-1',
     board_id: 'board-1',
+    entity_type: 'spec',
+    subject_id: 'spec-1',
+    subject_version: 7,
     finding_id: 'finding-1',
     receipt_id: 'receipt-1',
     guideline_id: 'guideline-1',
-    revision_id: 'revision-1',
-    rule_id: 'rule-1',
-    subject: finding().subject,
+    guideline_revision_id: 'revision-1',
+    binding_id: 'binding-1',
+    metric_id: 'metric-1',
+    metric_code: 'Architecture.Segregation:v2',
     status: 'requested',
-    justification: 'Temporary exception.',
-    evidence_refs: ['ticket://finding'],
-    requested_by: 'requester-1',
-    requested_at: '2026-07-30T09:00:00Z',
     waiver_revision: 1,
-    expires_at: '2099-08-30T12:00:00.000Z',
-    last_event_id: 'server-event-1',
+    currentness: 'current',
+    currentness_reasons: [],
+    requested_at: '2026-07-30T09:00:00Z',
+    expires_at: null,
     last_event_type: 'request',
     last_event_at: '2026-07-30T09:00:00Z',
+    justification: 'Temporary semantic exception.',
+    requested_by: 'requester-1',
+    original_expires_at: null,
     reviewed_by: null,
     reviewed_at: null,
     review_reason: null,
     revoked_by: null,
     revoked_at: null,
-    expire_reason_code: null,
+    expire_reason: null,
+    evidence_refs: finding().evidence_refs,
+    metric_result_id: 'metric-result-1',
+    metric_result_digest: digest('d'),
+    finding_digest: digest('e'),
+    receipt_digest: digest('f'),
+    subject_content_digest: digest('1'),
+    guideline_revision_digest: digest('2'),
+    binding_revision: 3,
+    binding_configuration_digest: digest('3'),
+    scope_digest: digest('4'),
+    head_digest: digest('5'),
+    last_event_id: 'event-1',
+    last_event_idempotency_key: 'request-key-1',
+    assessment_assessor_id: 'assessment-agent-1',
+    last_revalidation_status: null,
+    last_revalidation_current: null,
+    last_revalidation_reason_code: null,
+    last_revalidation_evaluated_at: null,
+    last_revalidation_currentness_reasons: [],
+    last_revalidation_scheduled_expiry_observed: false,
     ...overrides,
   };
-}
-
-function requestedEvent(
-  overrides: Partial<PolicyWaiverEvent> = {},
-): PolicyWaiverEvent {
-  return {
-    event_id: 'server-event-1',
-    waiver_id: 'server-waiver-1',
-    board_id: 'board-1',
-    waiver_revision: 1,
-    event_type: 'request',
-    from_status: null,
-    to_status: 'requested',
-    actor_id: 'requester-1',
-    occurred_at: '2026-07-30T09:00:00Z',
-    reason: 'Temporary exception.',
-    evidence_refs: ['ticket://finding'],
-    expires_at: '2099-08-30T12:00:00.000Z',
-    scope_digest: digest('a'),
-    expire_reason_code: null,
-    ...overrides,
-  };
-}
-
-function waiverSummary(
-  overrides: Partial<PolicyWaiverSummary> = {},
-): PolicyWaiverSummary {
-  return {
-    projection: 'summary',
-    waiver_id: 'server-waiver-1',
-    board_id: 'board-1',
-    finding_id: 'finding-1',
-    receipt_id: 'receipt-1',
-    guideline_id: 'guideline-1',
-    revision_id: 'revision-1',
-    rule_id: 'rule-1',
-    subject: finding().subject,
-    status: 'requested',
-    source_current: true,
-    effective: false,
-    requested_by: 'requester-1',
-    requested_at: '2026-07-30T09:00:00Z',
-    expires_at: '2099-08-30T12:00:00.000Z',
-    waiver_revision: 1,
-    last_event_at: '2026-07-30T09:00:00Z',
-    ...overrides,
-  };
-}
-
-function approvedHead(
-  revision = 2,
-  eventType: 'approve' | 'revalidate' = 'approve',
-): PolicyWaiver {
-  return requestedHead({
-    status: 'approved',
-    waiver_revision: revision,
-    last_event_id: `server-event-${revision}`,
-    last_event_type: eventType,
-    last_event_at: `2026-07-30T1${revision}:00:00Z`,
-    reviewed_by: 'reviewer-1',
-    reviewed_at: `2026-07-30T1${revision}:00:00Z`,
-    review_reason: 'Independent approval.',
-    evidence_refs: ['ticket://finding', 'review://one'],
-  });
-}
-
-function transitionEvent({
-  revision,
-  eventType,
-  fromStatus,
-  expiresAt = '2099-08-30T12:00:00.000Z',
-}: {
-  revision: number;
-  eventType: 'approve' | 'revalidate';
-  fromStatus: 'requested' | 'approved';
-  expiresAt?: string;
-}): PolicyWaiverEvent {
-  return requestedEvent({
-    event_id: `server-event-${revision}`,
-    waiver_revision: revision,
-    event_type: eventType,
-    from_status: fromStatus,
-    to_status: 'approved',
-    actor_id: 'reviewer-1',
-    occurred_at: `2026-07-30T1${revision}:00:00Z`,
-    reason: 'Independent approval.',
-    evidence_refs: ['review://one'],
-    expires_at: expiresAt,
-  });
 }
 
 function grant(...permissions: string[]) {
   permissionState.allowed = new Set(permissions);
 }
 
-function fillRequiredRequestFields() {
-  fireEvent.change(screen.getByLabelText('Justification'), {
-    target: { value: ' Temporary exception. ' },
+function fillActionEvidence() {
+  fireEvent.change(screen.getByLabelText('Review reason'), {
+    target: { value: 'Approved by an independent reviewer.' },
   });
-  fireEvent.change(screen.getByLabelText('Requested expiry'), {
-    target: { value: '2099-08-30T09:00' },
+  fireEvent.change(screen.getByLabelText('Source type'), {
+    target: { value: 'review' },
   });
-}
-
-function fillActionFields(expiry?: string) {
-  fireEvent.change(screen.getByLabelText(/reason/i), {
-    target: { value: ' Independent decision. ' },
+  fireEvent.change(screen.getByLabelText('Source ID'), {
+    target: { value: 'review-1' },
   });
-  fireEvent.change(screen.getByRole('textbox', {
-    name: /Evidence references/i,
-  }), {
-    target: { value: ' review://one \nreview://one' },
+  fireEvent.change(screen.getByLabelText('SHA-256 content hash'), {
+    target: { value: digest('9') },
   });
-  if (expiry) {
-    fireEvent.change(screen.getByLabelText('New later expiry'), {
-      target: { value: expiry },
-    });
-  }
 }
 
 beforeEach(() => {
@@ -241,14 +175,30 @@ beforeEach(() => {
   permissionState.error = null;
   permissionState.ownerReviewRequired = false;
   grant();
-  policyApiMock.requestPolicyWaiver.mockResolvedValue({
-    waiver: requestedHead(),
-    event: requestedEvent(),
+  policyApiMock.requestSemanticMetricWaiver.mockResolvedValue({
+    waiver_id: 'waiver-1',
+    status: 'requested',
+    scope_digest: digest('4'),
+  });
+  policyApiMock.reviewSemanticMetricWaiver.mockResolvedValue({
+    waiver_id: 'waiver-1',
+    waiver_revision: 2,
+    status: 'approved',
+    reviewer_id: 'reviewer-1',
+    replayed: false,
+  });
+  policyApiMock.revalidateSemanticMetricWaiver.mockResolvedValue({
+    waiver_id: 'waiver-1',
+    waiver_revision: 3,
+    status: 'approved',
+    current: true,
+    reason_code: 'current',
+    replayed: false,
   });
 });
 
-describe('PolicyWaiverDialogs', () => {
-  it('submits a normalized request without fabricating server-owned IDs', async () => {
+describe('PolicyWaiverRequestDialog', () => {
+  it('submits the exact semantic anchor and structured evidence', async () => {
     grant('guidelines.waiver.request');
     const onCompleted = vi.fn();
     render(
@@ -259,48 +209,47 @@ describe('PolicyWaiverDialogs', () => {
         onCompleted={onCompleted}
       />,
     );
-
-    expect(screen.getByTestId('policy-waiver-exact-scope')).toHaveTextContent(
-      'spec-1 · v7',
-    );
-    expect(
-      screen.getByRole('button', { name: 'Request waiver' }),
-    ).toBeDisabled();
-    fillRequiredRequestFields();
-    fireEvent.click(screen.getByRole('button', { name: 'Request waiver' }));
-
-    await waitFor(() =>
-      expect(policyApiMock.requestPolicyWaiver).toHaveBeenCalledTimes(1),
-    );
-    const request = policyApiMock.requestPolicyWaiver.mock.calls[0][1];
-    expect(request).toEqual({
-      finding_id: 'finding-1',
-      justification: 'Temporary exception.',
-      evidence_refs: ['ticket://finding'],
-      expires_at: expect.any(String),
-      idempotency_key: expect.any(String),
+    fireEvent.change(screen.getByLabelText('Justification'), {
+      target: { value: 'Temporary exception while architecture migrates.' },
     });
-    expect(request).not.toHaveProperty('waiver_id');
-    expect(request).not.toHaveProperty('event_id');
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Request waiver',
+    }));
     await waitFor(() =>
-      expect(onCompleted).toHaveBeenCalledWith(
+      expect(policyApiMock.requestSemanticMetricWaiver).toHaveBeenCalledTimes(1),
+    );
+    expect(policyApiMock.requestSemanticMetricWaiver)
+      .toHaveBeenCalledWith(
+        'board-1',
         expect.objectContaining({
-          waiver: expect.objectContaining({
-            waiver_id: 'server-waiver-1',
-          }),
+          metric_result_id: 'metric-result-1',
+          finding_id: 'finding-1',
+          receipt_id: 'receipt-1',
+          justification:
+            'Temporary exception while architecture migrates.',
+          evidence_refs: [{
+            source_type: 'spec',
+            source_id: 'spec-1',
+            source_version: 7,
+            content_hash: digest('a'),
+          }],
+          expires_at: null,
+          idempotency_key: expect.any(String),
         }),
-      ),
-    );
+        expect.any(AbortSignal),
+      );
+    expect(onCompleted).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'request',
+      waiverId: 'waiver-1',
+      status: 'requested',
+    }));
+    expect(screen.getByTestId('policy-waiver-exact-scope'))
+      .toHaveTextContent('Architecture.Segregation:v2');
+    expect(screen.getByTestId('policy-waiver-exact-scope'))
+      .not.toHaveTextContent('Rule');
   });
 
-  it('keeps one idempotency key for an unchanged network retry', async () => {
-    grant('guidelines.waiver.request');
-    policyApiMock.requestPolicyWaiver
-      .mockRejectedValueOnce(new Error('network unavailable'))
-      .mockResolvedValueOnce({
-        waiver: requestedHead(),
-        event: requestedEvent(),
-      });
+  it('fails closed without the exact request capability', () => {
     render(
       <PolicyWaiverRequestDialog
         boardId="board-1"
@@ -309,225 +258,178 @@ describe('PolicyWaiverDialogs', () => {
         onCompleted={vi.fn()}
       />,
     );
-    fillRequiredRequestFields();
-    fireEvent.click(screen.getByRole('button', { name: 'Request waiver' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'network unavailable',
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Request waiver' }));
-    await waitFor(() =>
-      expect(policyApiMock.requestPolicyWaiver).toHaveBeenCalledTimes(2),
-    );
-    expect(
-      policyApiMock.requestPolicyWaiver.mock.calls[0][1].idempotency_key,
-    ).toBe(
-      policyApiMock.requestPolicyWaiver.mock.calls[1][1].idempotency_key,
-    );
-  });
-
-  it('fails closed when the exact request capability is unavailable', () => {
-    render(
-      <PolicyWaiverRequestDialog
-        boardId="board-1"
-        finding={finding()}
-        onClose={vi.fn()}
-        onCompleted={vi.fn()}
-      />,
-    );
-    fillRequiredRequestFields();
     expect(screen.getByRole('alert')).toHaveTextContent(
       'guidelines.waiver.request is not granted',
     );
-    expect(
-      screen.getByRole('button', { name: 'Request waiver' }),
-    ).toBeDisabled();
-    expect(policyApiMock.requestPolicyWaiver).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', {
+      name: 'Request waiver',
+    })).toBeDisabled();
   });
 
-  it('uses reviewer capability, CAS revision and no client event ID on approval', async () => {
-    grant('guidelines.waiver.review');
-    const approved = approvedHead();
-    policyApiMock.reviewPolicyWaiver.mockImplementation(
-      async (
-        _boardId: string,
-        _waiverId: string,
-        request: { reason: string; evidence_refs: string[] },
-      ) => ({
-        waiver: {
-          ...approved,
-          review_reason: request.reason,
-        },
-        event: {
-          ...transitionEvent({
-            revision: 2,
-            eventType: 'approve',
-            fromStatus: 'requested',
-          }),
-          reason: request.reason,
-          evidence_refs: request.evidence_refs,
-        },
-      }),
+  it('rejects a mutation response with an unknown legacy wrapper', async () => {
+    grant('guidelines.waiver.request');
+    policyApiMock.requestSemanticMetricWaiver.mockResolvedValue({
+      waiver_id: 'waiver-1',
+      status: 'requested',
+      scope_digest: digest('4'),
+      event: {},
+    });
+    render(
+      <PolicyWaiverRequestDialog
+        boardId="board-1"
+        finding={finding()}
+        onClose={vi.fn()}
+        onCompleted={vi.fn()}
+      />,
     );
+    fireEvent.change(screen.getByLabelText('Justification'), {
+      target: { value: 'Temporary exception.' },
+    });
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Request waiver',
+    }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /unknown or missing field/i,
+    );
+  });
+});
+
+describe('PolicyWaiverActionDialog', () => {
+  it('reviews by metric waiver revision with structured evidence', async () => {
+    grant('guidelines.waiver.review');
     const onCompleted = vi.fn();
     render(
       <PolicyWaiverActionDialog
         boardId="board-1"
-        waiver={waiverSummary()}
+        evaluatedAt="2026-07-30T12:00:00Z"
+        waiver={waiver()}
         action="approve"
         onClose={vi.fn()}
         onCompleted={onCompleted}
       />,
     );
-    expect(screen.getByText(/requester cannot perform this action/i))
-      .toBeInTheDocument();
-    fillActionFields();
-    fireEvent.click(screen.getByRole('button', { name: 'Approve waiver' }));
+    fillActionEvidence();
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Approve waiver',
+    }));
     await waitFor(() =>
-      expect(policyApiMock.reviewPolicyWaiver).toHaveBeenCalledTimes(1),
+      expect(policyApiMock.reviewSemanticMetricWaiver)
+        .toHaveBeenCalledTimes(1),
     );
-    const request = policyApiMock.reviewPolicyWaiver.mock.calls[0][2];
-    expect(request).toEqual({
-      decision: 'approve',
-      reason: 'Independent decision.',
-      evidence_refs: ['review://one'],
-      expected_waiver_revision: 1,
-      idempotency_key: expect.any(String),
-    });
-    expect(request).not.toHaveProperty('event_id');
-    await waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(1));
+    expect(policyApiMock.reviewSemanticMetricWaiver).toHaveBeenCalledWith(
+      'board-1',
+      'waiver-1',
+      expect.objectContaining({
+        decision: 'approve',
+        expected_waiver_revision: 1,
+        evidence_refs: [{
+          source_type: 'review',
+          source_id: 'review-1',
+          source_version: 1,
+          content_hash: digest('9'),
+        }],
+        idempotency_key: expect.any(String),
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(onCompleted).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'approve',
+      status: 'approved',
+      waiverRevision: 2,
+    }));
   });
 
-  it('refreshes authority after CAS conflict and never auto-replays stale input', async () => {
+  it('revalidates without inventing review reason or mutable expiry', async () => {
     grant('guidelines.waiver.revalidate');
-    const initial = waiverSummary({
-      status: 'approved',
-      effective: true,
-      waiver_revision: 2,
-      last_event_at: '2026-07-30T12:00:00Z',
+    const onCompleted = vi.fn();
+    render(
+      <PolicyWaiverActionDialog
+        boardId="board-1"
+        evaluatedAt="2026-07-30T12:00:00Z"
+        waiver={waiver({
+          status: 'approved',
+          waiver_revision: 2,
+          last_event_type: 'approve',
+          reviewed_by: 'reviewer-1',
+          reviewed_at: '2026-07-30T10:00:00Z',
+          review_reason: 'Approved.',
+        })}
+        action="revalidate"
+        onClose={vi.fn()}
+        onCompleted={onCompleted}
+      />,
+    );
+    expect(screen.queryByLabelText('Review reason')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('New later expiry')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Revalidate waiver',
+    }));
+    await waitFor(() =>
+      expect(policyApiMock.revalidateSemanticMetricWaiver)
+        .toHaveBeenCalledTimes(1),
+    );
+    const request =
+      policyApiMock.revalidateSemanticMetricWaiver.mock.calls[0][2];
+    expect(request).toEqual({
+      expected_waiver_revision: 2,
+      evaluated_at: expect.any(String),
+      idempotency_key: expect.any(String),
     });
-    const refreshed = approvedHead(3, 'revalidate');
-    policyApiMock.revalidatePolicyWaiver
-      .mockRejectedValueOnce(
-        new PolicyGovernanceApiError({
-          message: 'CAS conflict',
-          status: 409,
-          kind: 'conflict',
-          code: 'conflict',
-          nextAction: 'refresh_and_retry',
-        }),
-      )
-      .mockImplementationOnce(
-        async (
-          _boardId: string,
-          _waiverId: string,
-          request: {
-            reason: string;
-            evidence_refs: string[];
-            new_expires_at: string;
-          },
-        ) => ({
-          waiver: {
-            ...approvedHead(4, 'revalidate'),
-            review_reason: request.reason,
-            expires_at: request.new_expires_at,
-          },
-          event: {
-            ...transitionEvent({
-              revision: 4,
-              eventType: 'revalidate',
-              fromStatus: 'approved',
-              expiresAt: request.new_expires_at,
-            }),
-            reason: request.reason,
-            evidence_refs: request.evidence_refs,
-          },
-        }),
-      );
-    policyApiMock.getPolicyWaiver.mockResolvedValue({
+    expect(onCompleted).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'revalidate',
+      current: true,
+      reasonCode: 'current',
+    }));
+  });
+
+  it('refreshes the exact semantic head after a revision conflict', async () => {
+    grant('guidelines.waiver.review');
+    const { PolicyGovernanceApiError } = await import(
+      '@/services/policy-governance-api'
+    );
+    policyApiMock.reviewSemanticMetricWaiver.mockRejectedValue(
+      new PolicyGovernanceApiError({
+        message: 'conflict',
+        status: 409,
+        kind: 'conflict',
+        code: 'semantic_waiver_revision_conflict',
+        details: {},
+      }),
+    );
+    const refreshed = waiver({
+      waiver_revision: 2,
+      last_event_id: 'event-2',
+      last_event_at: '2026-07-30T10:00:00Z',
+      head_digest: digest('6'),
+    });
+    policyApiMock.getSemanticMetricWaiver.mockResolvedValue({
       waiver: refreshed,
     });
     render(
       <PolicyWaiverActionDialog
         boardId="board-1"
-        waiver={initial}
-        action="revalidate"
+        evaluatedAt="2026-07-30T12:00:00Z"
+        waiver={waiver()}
+        action="approve"
         onClose={vi.fn()}
         onCompleted={vi.fn()}
       />,
     );
-    fillActionFields('2100-08-30T09:00');
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Revalidate waiver' }),
+    fillActionEvidence();
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Approve waiver',
+    }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /refreshed to revision 2/i,
     );
-    expect(
-      await screen.findByText(/authority was refreshed to revision 3/i),
-    ).toBeInTheDocument();
-    expect(policyApiMock.getPolicyWaiver).toHaveBeenCalledWith(
+    expect(policyApiMock.getSemanticMetricWaiver).toHaveBeenCalledWith(
       'board-1',
-      'server-waiver-1',
-      expect.any(AbortSignal),
+      'waiver-1',
+      {
+        evaluatedAt: '2026-07-30T12:00:00Z',
+        projection: 'full',
+        signal: expect.any(AbortSignal),
+      },
     );
-    expect(policyApiMock.revalidatePolicyWaiver).toHaveBeenCalledTimes(1);
-
-    fireEvent.change(screen.getByLabelText('New later expiry'), {
-      target: { value: '2101-08-30T09:00' },
-    });
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Revalidate waiver' }),
-    );
-    await waitFor(() =>
-      expect(policyApiMock.revalidatePolicyWaiver).toHaveBeenCalledTimes(2),
-    );
-    const first = policyApiMock.revalidatePolicyWaiver.mock.calls[0][2];
-    const second = policyApiMock.revalidatePolicyWaiver.mock.calls[1][2];
-    expect(first.expected_waiver_revision).toBe(2);
-    expect(second.expected_waiver_revision).toBe(3);
-    expect(second.idempotency_key).not.toBe(first.idempotency_key);
-  });
-
-  it('masks and restores the parent dialog while Escape closes only the child', async () => {
-    grant('guidelines.waiver.request');
-    function Harness() {
-      const [open, setOpen] = useState(false);
-      return (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Parent policy modal"
-        >
-          <button type="button" onClick={() => setOpen(true)}>
-            Open waiver request
-          </button>
-          {open && (
-            <PolicyWaiverRequestDialog
-              boardId="board-1"
-              finding={finding()}
-              onClose={() => setOpen(false)}
-              onCompleted={vi.fn()}
-            />
-          )}
-        </div>
-      );
-    }
-    render(<Harness />);
-    const opener = screen.getByRole('button', {
-      name: 'Open waiver request',
-    });
-    opener.focus();
-    fireEvent.click(opener);
-    const parent = opener.closest('[role="dialog"]') as HTMLElement;
-    await waitFor(() => {
-      expect(parent).toHaveAttribute('aria-hidden', 'true');
-      expect(parent).not.toHaveAttribute('aria-modal');
-    });
-    fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() =>
-      expect(
-        screen.queryByRole('dialog', { name: 'Request governed waiver' }),
-      ).not.toBeInTheDocument(),
-    );
-    expect(parent).toHaveAttribute('aria-modal', 'true');
-    expect(parent).not.toHaveAttribute('aria-hidden');
-    expect(opener).toHaveFocus();
   });
 });

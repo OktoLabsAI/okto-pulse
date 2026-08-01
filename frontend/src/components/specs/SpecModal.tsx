@@ -1414,7 +1414,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const canExecuteChecklist = perms.has('spec.checklist.execute');
   const canReadSpecValidation = perms.has('spec.validation.read');
   const canReadPolicyCompliance = perms.has(
-    'guidelines.compliance.read',
+    'guidelines.assessments.read',
   );
   const [spec, setSpec] = useState<Spec | null>(null);
   const [loading, setLoading] = useState(true);

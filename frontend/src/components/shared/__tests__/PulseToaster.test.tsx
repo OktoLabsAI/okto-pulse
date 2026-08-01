@@ -41,8 +41,8 @@ describe('PulseToastCard', () => {
       'dark:bg-surface-900',
     );
     expect(screen.getByTestId('pulse-toast-status-icon')).toHaveClass(
-      'bg-emerald-600',
-      'text-white',
+      'bg-emerald-100',
+      'text-emerald-600',
     );
 
     fireEvent.click(
@@ -131,20 +131,18 @@ describe('PulseToastCard', () => {
       'false',
     );
     expect(screen.getByTestId('pulse-toast-status-icon')).toHaveClass(
-      'bg-red-600',
-      'text-white',
-      'left-2',
-      'top-2',
+      'bg-red-100',
+      'text-red-600',
     );
     expect(container.querySelector('.pulse-toast > div:last-child')).toHaveClass(
-      'rounded-l-[2.5rem]',
-      'rounded-r-none',
-      'border-r-0',
-      'pl-20',
+      'rounded-xl',
+      'border-surface-200',
+      'bg-white',
+      'shadow-lg',
     );
     expect(
       screen.getByRole('button', { name: 'Dismiss notification' }),
-    ).toHaveClass('-left-4');
+    ).toHaveClass('h-7', 'w-7', 'shrink-0');
   });
 
   it('renders structured error details supplied by the shared error helper', () => {

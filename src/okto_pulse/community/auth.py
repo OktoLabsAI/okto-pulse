@@ -33,6 +33,7 @@ class LocalAuthProvider(AuthenticationPort):
         return Principal(
             subject="local-user",
             realm_id=LOCAL_REALM_ID,
+            actor_kind="human",
             # A principal may be enriched by an inbound adapter.  Never expose
             # the process-global Full Control template by reference.
             claims=deepcopy(LOCAL_USER),

@@ -2811,7 +2811,7 @@ class GuidelineBoardBindingRow(Base):
                 "guideline_revisions.semantic_version",
                 "guideline_revisions.content_digest",
             ],
-            name="fk_guideline_binding_exact_revision",
+            name="fk_guideline_binding_exact_source_revision",
             ondelete="CASCADE",
             onupdate="RESTRICT",
             deferrable=True,
@@ -2822,6 +2822,15 @@ class GuidelineBoardBindingRow(Base):
             "guideline_id",
             "binding_revision",
             name="uq_guideline_board_binding_revision",
+        ),
+        Index(
+            "uq_guideline_binding_exact_authority",
+            "binding_id",
+            "binding_revision",
+            "board_id",
+            "guideline_id",
+            "revision_id",
+            unique=True,
         ),
         UniqueConstraint(
             "board_id",
@@ -2853,8 +2862,8 @@ class GuidelineBoardBindingRow(Base):
             name="ck_guideline_binding_idempotency_shape",
         ),
         CheckConstraint(
-            "default_enforcement IN ('advisory', 'blocking')",
-            name="ck_guideline_binding_default_enforcement",
+            "enforcement IN ('advisory', 'blocking')",
+            name="ck_guideline_binding_enforcement",
         ),
         CheckConstraint(
             "state IN ('active', 'unlinked')",
@@ -2899,7 +2908,7 @@ class GuidelineBoardBindingRow(Base):
         nullable=False,
         server_default=func.now(),
     )
-    default_enforcement: Mapped[str] = mapped_column(
+    enforcement: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
         default="advisory",
@@ -3001,16 +3010,14 @@ class GuidelineImportBindingCandidateRow(Base):
             [
                 "guideline_id",
                 "resolved_revision_id",
-                "semantic_version",
                 "revision_digest",
             ],
             [
-                "guideline_revisions.guideline_id",
-                "guideline_revisions.revision_id",
-                "guideline_revisions.semantic_version",
-                "guideline_revisions.content_digest",
+                "semantic_guideline_revisions.guideline_id",
+                "semantic_guideline_revisions.revision_id",
+                "semantic_guideline_revisions.revision_digest",
             ],
-            name="fk_guideline_import_candidate_exact_revision",
+            name="fk_guideline_import_candidate_exact_semantic_revision",
             ondelete="CASCADE",
             onupdate="RESTRICT",
             deferrable=True,
@@ -3032,7 +3039,7 @@ class GuidelineImportBindingCandidateRow(Base):
             name="ck_guideline_import_candidate_state",
         ),
         CheckConstraint(
-            "source_default_enforcement IN ('advisory', 'blocking')",
+            "source_enforcement IN ('advisory', 'blocking')",
             name="ck_guideline_import_candidate_enforcement",
         ),
         CheckConstraint(
@@ -3065,7 +3072,7 @@ class GuidelineImportBindingCandidateRow(Base):
     source_binding_id: Mapped[str] = mapped_column(String(36), nullable=False)
     source_binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     source_binding_state: Mapped[str] = mapped_column(String(20), nullable=False)
-    source_default_enforcement: Mapped[str] = mapped_column(
+    source_enforcement: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
     )
@@ -3096,16 +3103,14 @@ class GuidelineImpactReceiptRow(Base):
             [
                 "guideline_id",
                 "to_revision_id",
-                "to_semantic_version",
                 "to_revision_digest",
             ],
             [
-                "guideline_revisions.guideline_id",
-                "guideline_revisions.revision_id",
-                "guideline_revisions.semantic_version",
-                "guideline_revisions.content_digest",
+                "semantic_guideline_revisions.guideline_id",
+                "semantic_guideline_revisions.revision_id",
+                "semantic_guideline_revisions.revision_digest",
             ],
-            name="fk_guideline_impact_to_revision",
+            name="fk_guideline_impact_to_semantic_revision",
             ondelete="RESTRICT",
             onupdate="RESTRICT",
             deferrable=True,
@@ -3115,16 +3120,14 @@ class GuidelineImpactReceiptRow(Base):
             [
                 "guideline_id",
                 "from_revision_id",
-                "from_semantic_version",
                 "from_revision_digest",
             ],
             [
-                "guideline_revisions.guideline_id",
-                "guideline_revisions.revision_id",
-                "guideline_revisions.semantic_version",
-                "guideline_revisions.content_digest",
+                "semantic_guideline_revisions.guideline_id",
+                "semantic_guideline_revisions.revision_id",
+                "semantic_guideline_revisions.revision_digest",
             ],
-            name="fk_guideline_impact_from_revision",
+            name="fk_guideline_impact_from_semantic_revision",
             ondelete="RESTRICT",
             onupdate="RESTRICT",
             deferrable=True,
@@ -3151,11 +3154,14 @@ class GuidelineImpactReceiptRow(Base):
             name="ck_guideline_impact_positive_revisions",
         ),
         CheckConstraint(
-            "proposed_priority >= 0 AND item_count >= 0",
+            "proposed_priority >= 0 "
+            "AND proposed_minimum_confidence >= 0 "
+            "AND proposed_minimum_confidence <= 100 "
+            "AND item_count >= 0",
             name="ck_guideline_impact_non_negative_counts",
         ),
         CheckConstraint(
-            "proposed_default_enforcement IN ('advisory', 'blocking')",
+            "proposed_enforcement IN ('advisory', 'blocking')",
             name="ck_guideline_impact_enforcement",
         ),
         CheckConstraint(
@@ -3223,13 +3229,21 @@ class GuidelineImpactReceiptRow(Base):
     artifact_snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     waiver_snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     proposed_priority: Mapped[int] = mapped_column(Integer, nullable=False)
-    proposed_default_enforcement: Mapped[str] = mapped_column(
+    proposed_enforcement: Mapped[str] = mapped_column(
         String(20), nullable=False
     )
+    proposed_minimum_confidence: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    proposed_metric_threshold_overrides: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+    )
     affected_entity_types: Mapped[list] = mapped_column(JSON, nullable=False)
-    added_rule_ids: Mapped[list] = mapped_column(JSON, nullable=False)
-    changed_rule_ids: Mapped[list] = mapped_column(JSON, nullable=False)
-    removed_rule_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    added_metric_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    changed_metric_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    removed_metric_ids: Mapped[list] = mapped_column(JSON, nullable=False)
     item_count: Mapped[int] = mapped_column(Integer, nullable=False)
     requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
@@ -3463,7 +3477,7 @@ class GuidelineImpactUnlinkRow(Base):
         String(64),
         nullable=False,
     )
-    removed_rule_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    removed_metric_ids: Mapped[list] = mapped_column(JSON, nullable=False)
     unlinked_by: Mapped[str] = mapped_column(String(255), nullable=False)
     actor_type: Mapped[str] = mapped_column(String(20), nullable=False)
     unlinked_at: Mapped[datetime] = mapped_column(
@@ -3606,7 +3620,7 @@ class GuidelineRetirementImpactRow(Base):
         String(64),
         nullable=False,
     )
-    removed_rule_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    removed_metric_ids: Mapped[list] = mapped_column(JSON, nullable=False)
     retired_by: Mapped[str] = mapped_column(String(255), nullable=False)
     actor_type: Mapped[str] = mapped_column(String(20), nullable=False)
     retired_at: Mapped[datetime] = mapped_column(
@@ -3702,16 +3716,14 @@ class GuidelineRetirementRow(Base):
             [
                 "guideline_id",
                 "retired_revision_id",
-                "retired_semantic_version",
                 "retired_revision_digest",
             ],
             [
-                "guideline_revisions.guideline_id",
-                "guideline_revisions.revision_id",
-                "guideline_revisions.semantic_version",
-                "guideline_revisions.content_digest",
+                "semantic_guideline_revisions.guideline_id",
+                "semantic_guideline_revisions.revision_id",
+                "semantic_guideline_revisions.revision_digest",
             ],
-            name="fk_guideline_retirement_exact_revision_digest",
+            name="fk_guideline_retirement_exact_semantic_revision_digest",
             ondelete="CASCADE",
             onupdate="RESTRICT",
             deferrable=True,
@@ -4451,6 +4463,1673 @@ class PolicyWaiverEventRow(Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+# ============================================================================
+# SEMANTIC GUIDELINE GOVERNANCE (SK-B3)
+# ============================================================================
+
+
+class SemanticGuidelineRevisionRow(Base):
+    """Append-only semantic authority layered over one immutable revision.
+
+    The unreleased ``policy/v1`` payload remains on ``guideline_revisions`` as
+    inert audit evidence.  This row is the only executable semantic authority:
+    it stores the ordered metric definitions and their v3 digest without
+    pretending that legacy predicates were equivalent metrics.
+    """
+
+    __tablename__ = "semantic_guideline_revisions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["guideline_id", "revision_id"],
+            [
+                "guideline_revisions.guideline_id",
+                "guideline_revisions.revision_id",
+            ],
+            name="fk_sg_revision_legacy_revision",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        UniqueConstraint(
+            "guideline_id",
+            "revision_id",
+            "revision_digest",
+            name="uq_sg_revision_digest",
+        ),
+        CheckConstraint(
+            "length(revision_digest) = 64 "
+            "AND length(source_revision_digest) = 64",
+            name="ck_sg_revision_digests",
+        ),
+        CheckConstraint(
+            "contract_version = 'guideline-revision-digest/v2'",
+            name="ck_sg_revision_contract",
+        ),
+        CheckConstraint(
+            "authority_state IN "
+            "('native', 'legacy_context_only', 'legacy_incompatible')",
+            name="ck_sg_revision_authority_state",
+        ),
+        CheckConstraint(
+            "(authority_state = 'native' AND legacy_rules_digest IS NULL) "
+            "OR (authority_state <> 'native' "
+            "AND legacy_rules_digest IS NOT NULL "
+            "AND length(legacy_rules_digest) = 64)",
+            name="ck_sg_revision_legacy_digest",
+        ),
+        Index(
+            "ix_sg_revision_guideline_created",
+            "guideline_id",
+            "created_at",
+            "revision_id",
+        ),
+    )
+
+    revision_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    guideline_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    contract_version: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="guideline-revision-digest/v2",
+        server_default=text("'guideline-revision-digest/v2'"),
+    )
+    # Metric order is semantic and therefore preserved exactly.
+    metrics: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Digest of the historical GuidelineRevisionRow snapshot used as the
+    # migration source fence.  It is never reused as semantic authority.
+    source_revision_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    authority_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    legacy_rules_digest: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class SemanticGuidelineBindingConfigurationRow(Base):
+    """Append-only board configuration for one exact semantic revision."""
+
+    __tablename__ = "semantic_guideline_binding_configurations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                "binding_id",
+                "binding_revision",
+                "board_id",
+                "guideline_id",
+                "revision_id",
+            ],
+            [
+                "guideline_board_bindings.binding_id",
+                "guideline_board_bindings.binding_revision",
+                "guideline_board_bindings.board_id",
+                "guideline_board_bindings.guideline_id",
+                "guideline_board_bindings.revision_id",
+            ],
+            name="fk_sg_binding_exact_legacy_authority",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["guideline_id", "revision_id", "revision_digest"],
+            [
+                "semantic_guideline_revisions.guideline_id",
+                "semantic_guideline_revisions.revision_id",
+                "semantic_guideline_revisions.revision_digest",
+            ],
+            name="fk_sg_binding_revision",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        UniqueConstraint(
+            "board_id",
+            "guideline_id",
+            "binding_revision",
+            name="uq_sg_binding_board_revision",
+        ),
+        UniqueConstraint(
+            "binding_id",
+            "binding_revision",
+            "board_id",
+            "guideline_id",
+            "revision_id",
+            "revision_digest",
+            "configuration_digest",
+            name="uq_sg_binding_exact_configuration",
+        ),
+        CheckConstraint(
+            "binding_revision >= 1 "
+            "AND minimum_confidence >= 0 "
+            "AND minimum_confidence <= 100",
+            name="ck_sg_binding_ranges",
+        ),
+        CheckConstraint(
+            "enforcement IN ('advisory', 'blocking')",
+            name="ck_sg_binding_enforcement",
+        ),
+        CheckConstraint(
+            "length(revision_digest) = 64 "
+            "AND length(configuration_digest) = 64",
+            name="ck_sg_binding_digests",
+        ),
+        Index(
+            "ix_sg_binding_board_guideline",
+            "board_id",
+            "guideline_id",
+            "binding_revision",
+        ),
+    )
+
+    binding_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    binding_revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    guideline_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    enforcement: Mapped[str] = mapped_column(String(20), nullable=False)
+    minimum_confidence: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Canonical map keyed by stable metric.code, never metric_id.
+    metric_threshold_overrides: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+    )
+    configuration_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    configured_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    configured_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class SemanticSubjectVersionEventRow(Base):
+    """Append-only subject-version/editor evidence used for separation."""
+
+    __tablename__ = "semantic_subject_version_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "head_revision",
+            name="uq_sem_subject_event_revision",
+        ),
+        UniqueConstraint(
+            "event_id",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "head_revision",
+            name="uq_sem_subject_event_head",
+        ),
+        UniqueConstraint(
+            "board_id",
+            "idempotency_key",
+            name="uq_sem_subject_event_idempotency",
+        ),
+        UniqueConstraint(
+            "predecessor_event_id",
+            name="uq_sem_subject_event_predecessor",
+        ),
+        ForeignKeyConstraint(
+            ["predecessor_event_id"],
+            ["semantic_subject_version_events.event_id"],
+            name="fk_sem_subject_event_predecessor",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "subject_type IN "
+            "('ideation', 'refinement', 'spec', 'card', 'sprint', "
+            "'test_scenario')",
+            name="ck_sem_subject_event_type",
+        ),
+        CheckConstraint(
+            "subject_version >= 1 AND head_revision >= 1",
+            name="ck_sem_subject_event_versions",
+        ),
+        CheckConstraint(
+            "editor_source IN ('authoritative', 'legacy_unknown')",
+            name="ck_sem_subject_event_editor_source",
+        ),
+        CheckConstraint(
+            "(editor_source = 'legacy_unknown' "
+            "AND last_semantic_editor_id = 'legacy_unknown') "
+            "OR (editor_source = 'authoritative' "
+            "AND last_semantic_editor_id <> 'legacy_unknown')",
+            name="ck_sem_subject_event_editor",
+        ),
+        CheckConstraint(
+            "event_type IN ('semantic_mutation', 'legacy_bootstrap')",
+            name="ck_sem_subject_event_kind",
+        ),
+        CheckConstraint(
+            "length(content_digest) = 64 AND length(request_digest) = 64",
+            name="ck_sem_subject_event_digests",
+        ),
+        Index(
+            "ix_sem_subject_event_subject",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "head_revision",
+        ),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    predecessor_event_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_semantic_editor_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    editor_source: Mapped[str] = mapped_column(String(24), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    head_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class SemanticSubjectVersionRow(Base):
+    """CAS-protected current semantic subject/editor fence."""
+
+    __tablename__ = "semantic_subject_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "last_event_id",
+            name="uq_sem_subject_head_event",
+        ),
+        ForeignKeyConstraint(
+            [
+                "last_event_id",
+                "board_id",
+                "subject_type",
+                "subject_id",
+                "head_revision",
+            ],
+            [
+                "semantic_subject_version_events.event_id",
+                "semantic_subject_version_events.board_id",
+                "semantic_subject_version_events.subject_type",
+                "semantic_subject_version_events.subject_id",
+                "semantic_subject_version_events.head_revision",
+            ],
+            name="fk_sem_subject_head_event",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+        ),
+        CheckConstraint(
+            "subject_type IN "
+            "('ideation', 'refinement', 'spec', 'card', 'sprint', "
+            "'test_scenario')",
+            name="ck_sem_subject_head_type",
+        ),
+        CheckConstraint(
+            "subject_version >= 1 AND head_revision >= 1",
+            name="ck_sem_subject_head_versions",
+        ),
+        CheckConstraint(
+            "editor_source IN ('authoritative', 'legacy_unknown')",
+            name="ck_sem_subject_head_editor_source",
+        ),
+        CheckConstraint(
+            "(editor_source = 'legacy_unknown' "
+            "AND last_semantic_editor_id = 'legacy_unknown') "
+            "OR (editor_source = 'authoritative' "
+            "AND last_semantic_editor_id <> 'legacy_unknown')",
+            name="ck_sem_subject_head_editor",
+        ),
+        CheckConstraint(
+            "length(content_digest) = 64",
+            name="ck_sem_subject_head_digest",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        primary_key=True,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), primary_key=True)
+    subject_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_semantic_editor_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    editor_source: Mapped[str] = mapped_column(String(24), nullable=False)
+    head_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class SemanticGuidelineAssessmentReceiptRow(Base):
+    """Immutable aggregate assessment evidence, sealed only after all results."""
+
+    __tablename__ = "semantic_guideline_assessment_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "idempotency_key",
+            name="uq_sg_assessment_idempotency",
+        ),
+        UniqueConstraint(
+            "receipt_id",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "subject_version",
+            name="uq_sg_assessment_subject",
+        ),
+        UniqueConstraint(
+            "receipt_id",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "subject_version",
+            "subject_content_digest",
+            "receipt_digest",
+            "guideline_id",
+            "revision_id",
+            "revision_digest",
+            "binding_id",
+            "binding_revision",
+            "configuration_digest",
+            name="uq_sg_assessment_exact",
+        ),
+        UniqueConstraint(
+            "receipt_id",
+            "receipt_digest",
+            name="uq_sg_assessment_receipt_digest",
+        ),
+        ForeignKeyConstraint(
+            [
+                "binding_id",
+                "binding_revision",
+                "board_id",
+                "guideline_id",
+                "revision_id",
+                "revision_digest",
+                "configuration_digest",
+            ],
+            [
+                "semantic_guideline_binding_configurations.binding_id",
+                "semantic_guideline_binding_configurations.binding_revision",
+                "semantic_guideline_binding_configurations.board_id",
+                "semantic_guideline_binding_configurations.guideline_id",
+                "semantic_guideline_binding_configurations.revision_id",
+                "semantic_guideline_binding_configurations.revision_digest",
+                "semantic_guideline_binding_configurations.configuration_digest",
+            ],
+            name="fk_sg_assessment_binding",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["guideline_id", "revision_id", "revision_digest"],
+            [
+                "semantic_guideline_revisions.guideline_id",
+                "semantic_guideline_revisions.revision_id",
+                "semantic_guideline_revisions.revision_digest",
+            ],
+            name="fk_sg_assessment_revision",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "subject_type IN "
+            "('ideation', 'refinement', 'spec', 'card', 'sprint', "
+            "'test_scenario')",
+            name="ck_sg_assessment_subject_type",
+        ),
+        CheckConstraint(
+            "subject_version >= 1 "
+            "AND binding_revision >= 1 "
+            "AND confidence >= 0 AND confidence <= 100 "
+            "AND minimum_confidence >= 0 AND minimum_confidence <= 100",
+            name="ck_sg_assessment_ranges",
+        ),
+        CheckConstraint(
+            "enforcement IN ('advisory', 'blocking') "
+            "AND state IN ('passed', 'metric_threshold_failed') "
+            "AND recorded_currentness = 'current'",
+            name="ck_sg_assessment_enums",
+        ),
+        CheckConstraint(
+            "confidence >= minimum_confidence AND confidence_admissible",
+            name="ck_sg_assessment_confidence",
+        ),
+        CheckConstraint(
+            "metric_result_count >= 0 "
+            "AND failed_metric_count >= 0 "
+            "AND failed_metric_count <= metric_result_count",
+            name="ck_sg_assessment_counts",
+        ),
+        CheckConstraint(
+            "(state = 'passed' AND confidence_admissible "
+            "AND failed_metric_count = 0) "
+            "OR (state = 'metric_threshold_failed' "
+            "AND confidence_admissible AND failed_metric_count > 0)",
+            name="ck_sg_assessment_outcome",
+        ),
+        CheckConstraint(
+            "(enforcement = 'advisory') OR "
+            "(last_semantic_editor_id <> 'legacy_unknown' "
+            "AND assessor_independent)",
+            name="ck_sg_assessment_separation",
+        ),
+        CheckConstraint(
+            "(assessor_agent_id <> last_semantic_editor_id "
+            "AND assessor_independent) "
+            "OR (assessor_agent_id = last_semantic_editor_id "
+            "AND NOT assessor_independent)",
+            name="ck_sg_assessment_independence",
+        ),
+        CheckConstraint(
+            "length(subject_content_digest) = 64 "
+            "AND length(revision_digest) = 64 "
+            "AND length(configuration_digest) = 64 "
+            "AND length(policy_set_digest) = 64 "
+            "AND length(binding_head_digest) = 64 "
+            "AND length(input_digest) = 64 "
+            "AND length(receipt_digest) = 64 "
+            "AND length(request_digest) = 64",
+            name="ck_sg_assessment_digests",
+        ),
+        Index(
+            "ix_sg_assessment_subject_time",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "assessed_at",
+            "receipt_id",
+        ),
+        Index(
+            "ix_sg_assessment_binding_time",
+            "board_id",
+            "binding_id",
+            "assessed_at",
+            "receipt_id",
+        ),
+    )
+
+    receipt_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_content_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    last_semantic_editor_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    guideline_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    configuration_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_set_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_head_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    enforcement: Mapped[str] = mapped_column(String(20), nullable=False)
+    minimum_confidence: Mapped[int] = mapped_column(Integer, nullable=False)
+    confidence: Mapped[int] = mapped_column(Integer, nullable=False)
+    confidence_admissible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    assessor_agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    assessor_model_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    assessor_independent: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    recorded_currentness: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="current",
+        server_default=text("'current'"),
+    )
+    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_result_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    failed_metric_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    assessed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    sealed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+
+
+class SemanticGuidelineMetricResultRow(Base):
+    """One lossless, immutable result for every metric in an assessment."""
+
+    __tablename__ = "semantic_guideline_metric_results"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                "receipt_id",
+                "board_id",
+                "subject_type",
+                "subject_id",
+                "subject_version",
+                "subject_content_digest",
+                "receipt_digest",
+                "guideline_id",
+                "revision_id",
+                "revision_digest",
+                "binding_id",
+                "binding_revision",
+                "configuration_digest",
+            ],
+            [
+                "semantic_guideline_assessment_receipts.receipt_id",
+                "semantic_guideline_assessment_receipts.board_id",
+                "semantic_guideline_assessment_receipts.subject_type",
+                "semantic_guideline_assessment_receipts.subject_id",
+                "semantic_guideline_assessment_receipts.subject_version",
+                "semantic_guideline_assessment_receipts.subject_content_digest",
+                "semantic_guideline_assessment_receipts.receipt_digest",
+                "semantic_guideline_assessment_receipts.guideline_id",
+                "semantic_guideline_assessment_receipts.revision_id",
+                "semantic_guideline_assessment_receipts.revision_digest",
+                "semantic_guideline_assessment_receipts.binding_id",
+                "semantic_guideline_assessment_receipts.binding_revision",
+                "semantic_guideline_assessment_receipts.configuration_digest",
+            ],
+            name="fk_sg_metric_result_receipt",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        UniqueConstraint(
+            "receipt_id",
+            "metric_id",
+            name="uq_sg_metric_result_metric",
+        ),
+        UniqueConstraint(
+            "receipt_id",
+            "metric_code",
+            name="uq_sg_metric_result_code",
+        ),
+        UniqueConstraint(
+            "result_id",
+            "receipt_id",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "subject_version",
+            "subject_content_digest",
+            "receipt_digest",
+            "guideline_id",
+            "revision_id",
+            "revision_digest",
+            "binding_id",
+            "binding_revision",
+            "configuration_digest",
+            "metric_id",
+            "result_digest",
+            name="uq_sg_metric_result_exact",
+        ),
+        CheckConstraint(
+            "subject_version >= 1 "
+            "AND score >= 0 AND score <= 100 "
+            "AND default_threshold >= 0 AND default_threshold <= 100 "
+            "AND effective_threshold >= 0 "
+            "AND effective_threshold <= 100",
+            name="ck_sg_metric_result_ranges",
+        ),
+        CheckConstraint(
+            "direction IN ('minimum', 'maximum') "
+            "AND threshold_source IN ('default', 'override') "
+            "AND outcome IN ('pass', 'fail')",
+            name="ck_sg_metric_result_enums",
+        ),
+        CheckConstraint(
+            "(direction = 'minimum' "
+            "AND ((score >= effective_threshold AND outcome = 'pass') "
+            "OR (score < effective_threshold AND outcome = 'fail'))) "
+            "OR (direction = 'maximum' "
+            "AND ((score <= effective_threshold AND outcome = 'pass') "
+            "OR (score > effective_threshold AND outcome = 'fail')))",
+            name="ck_sg_metric_result_outcome",
+        ),
+        CheckConstraint(
+            "length(configuration_digest) = 64 "
+            "AND length(subject_content_digest) = 64 "
+            "AND length(receipt_digest) = 64 "
+            "AND length(revision_digest) = 64 "
+            "AND length(metric_definition_digest) = 64 "
+            "AND length(result_digest) = 64",
+            name="ck_sg_metric_result_digests",
+        ),
+        Index(
+            "ix_sg_metric_result_subject",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "outcome",
+            "metric_code",
+        ),
+    )
+
+    result_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    receipt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_content_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    receipt_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    guideline_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    configuration_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_definition_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    default_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+    threshold_source: Mapped[str] = mapped_column(String(16), nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_refs: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    pinpoints: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    result_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class SemanticGuidelineFindingRow(Base):
+    """One immutable, addressable finding for every failed metric result."""
+
+    __tablename__ = "semantic_guideline_findings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                "metric_result_id",
+                "receipt_id",
+                "board_id",
+                "subject_type",
+                "subject_id",
+                "subject_version",
+                "subject_content_digest",
+                "receipt_digest",
+                "guideline_id",
+                "revision_id",
+                "revision_digest",
+                "binding_id",
+                "binding_revision",
+                "configuration_digest",
+                "metric_id",
+                "metric_result_digest",
+            ],
+            [
+                "semantic_guideline_metric_results.result_id",
+                "semantic_guideline_metric_results.receipt_id",
+                "semantic_guideline_metric_results.board_id",
+                "semantic_guideline_metric_results.subject_type",
+                "semantic_guideline_metric_results.subject_id",
+                "semantic_guideline_metric_results.subject_version",
+                "semantic_guideline_metric_results.subject_content_digest",
+                "semantic_guideline_metric_results.receipt_digest",
+                "semantic_guideline_metric_results.guideline_id",
+                "semantic_guideline_metric_results.revision_id",
+                "semantic_guideline_metric_results.revision_digest",
+                "semantic_guideline_metric_results.binding_id",
+                "semantic_guideline_metric_results.binding_revision",
+                "semantic_guideline_metric_results.configuration_digest",
+                "semantic_guideline_metric_results.metric_id",
+                "semantic_guideline_metric_results.result_digest",
+            ],
+            name="fk_sg_finding_metric_result",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        UniqueConstraint(
+            "metric_result_id",
+            name="uq_sg_finding_metric_result",
+        ),
+        UniqueConstraint(
+            "finding_id",
+            "metric_result_id",
+            "receipt_id",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "subject_version",
+            "subject_content_digest",
+            "receipt_digest",
+            "guideline_id",
+            "revision_id",
+            "revision_digest",
+            "binding_id",
+            "binding_revision",
+            "configuration_digest",
+            "metric_id",
+            "metric_result_digest",
+            "finding_digest",
+            name="uq_sg_finding_exact",
+        ),
+        CheckConstraint(
+            "subject_version >= 1 AND binding_revision >= 1",
+            name="ck_sg_finding_versions",
+        ),
+        CheckConstraint(
+            "length(metric_result_digest) = 64 "
+            "AND length(finding_digest) = 64 "
+            "AND length(subject_content_digest) = 64 "
+            "AND length(receipt_digest) = 64 "
+            "AND length(revision_digest) = 64 "
+            "AND length(configuration_digest) = 64 "
+            "AND length(trim(rationale)) > 0",
+            name="ck_sg_finding_shape",
+        ),
+        Index(
+            "ix_sg_finding_queue",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "binding_id",
+            "metric_id",
+            "created_at",
+            "finding_id",
+        ),
+    )
+
+    finding_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    metric_result_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_content_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    receipt_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    guideline_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    configuration_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_result_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_refs: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    pinpoints: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    finding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class SemanticGuidelineWaiverRow(Base):
+    """Exact semantic metric-result exception with a CAS-derived head."""
+
+    __tablename__ = "semantic_guideline_waivers"
+    __table_args__ = (
+        UniqueConstraint(
+            "waiver_id",
+            "board_id",
+            name="uq_sg_waiver_board",
+        ),
+        UniqueConstraint("last_event_id", name="uq_sg_waiver_last_event"),
+        ForeignKeyConstraint(
+            [
+                "metric_result_id",
+                "receipt_id",
+                "board_id",
+                "subject_type",
+                "subject_id",
+                "subject_version",
+                "subject_content_digest",
+                "receipt_digest",
+                "guideline_id",
+                "revision_id",
+                "revision_digest",
+                "binding_id",
+                "binding_revision",
+                "configuration_digest",
+                "metric_id",
+                "metric_result_digest",
+            ],
+            [
+                "semantic_guideline_metric_results.result_id",
+                "semantic_guideline_metric_results.receipt_id",
+                "semantic_guideline_metric_results.board_id",
+                "semantic_guideline_metric_results.subject_type",
+                "semantic_guideline_metric_results.subject_id",
+                "semantic_guideline_metric_results.subject_version",
+                "semantic_guideline_metric_results.subject_content_digest",
+                "semantic_guideline_metric_results.receipt_digest",
+                "semantic_guideline_metric_results.guideline_id",
+                "semantic_guideline_metric_results.revision_id",
+                "semantic_guideline_metric_results.revision_digest",
+                "semantic_guideline_metric_results.binding_id",
+                "semantic_guideline_metric_results.binding_revision",
+                "semantic_guideline_metric_results.configuration_digest",
+                "semantic_guideline_metric_results.metric_id",
+                "semantic_guideline_metric_results.result_digest",
+            ],
+            name="fk_sg_waiver_metric_result",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            [
+                "finding_id",
+                "metric_result_id",
+                "receipt_id",
+                "board_id",
+                "subject_type",
+                "subject_id",
+                "subject_version",
+                "subject_content_digest",
+                "receipt_digest",
+                "guideline_id",
+                "revision_id",
+                "revision_digest",
+                "binding_id",
+                "binding_revision",
+                "configuration_digest",
+                "metric_id",
+                "metric_result_digest",
+                "finding_digest",
+            ],
+            [
+                "semantic_guideline_findings.finding_id",
+                "semantic_guideline_findings.metric_result_id",
+                "semantic_guideline_findings.receipt_id",
+                "semantic_guideline_findings.board_id",
+                "semantic_guideline_findings.subject_type",
+                "semantic_guideline_findings.subject_id",
+                "semantic_guideline_findings.subject_version",
+                "semantic_guideline_findings.subject_content_digest",
+                "semantic_guideline_findings.receipt_digest",
+                "semantic_guideline_findings.guideline_id",
+                "semantic_guideline_findings.revision_id",
+                "semantic_guideline_findings.revision_digest",
+                "semantic_guideline_findings.binding_id",
+                "semantic_guideline_findings.binding_revision",
+                "semantic_guideline_findings.configuration_digest",
+                "semantic_guideline_findings.metric_id",
+                "semantic_guideline_findings.metric_result_digest",
+                "semantic_guideline_findings.finding_digest",
+            ],
+            name="fk_sg_waiver_finding",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            [
+                "last_event_id",
+                "waiver_id",
+                "board_id",
+                "waiver_revision",
+            ],
+            [
+                "semantic_guideline_waiver_events.event_id",
+                "semantic_guideline_waiver_events.waiver_id",
+                "semantic_guideline_waiver_events.board_id",
+                "semantic_guideline_waiver_events.waiver_revision",
+            ],
+            name="fk_sg_waiver_last_event",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+        ),
+        CheckConstraint(
+            "subject_version >= 1 AND binding_revision >= 1 "
+            "AND waiver_revision >= 1",
+            name="ck_sg_waiver_versions",
+        ),
+        CheckConstraint(
+            "subject_type IN "
+            "('ideation', 'refinement', 'spec', 'card', 'sprint', "
+            "'test_scenario')",
+            name="ck_sg_waiver_subject_type",
+        ),
+        CheckConstraint(
+            "status IN "
+            "('requested', 'approved', 'rejected', 'revoked', 'expired') "
+            "AND last_event_type IN "
+            "('request', 'approve', 'reject', 'revoke', 'expire', "
+            "'revalidate')",
+            name="ck_sg_waiver_enums",
+        ),
+        CheckConstraint(
+            "(status = 'requested' AND reviewed_by IS NULL "
+            "AND reviewed_at IS NULL AND review_reason IS NULL) "
+            "OR (status <> 'requested' AND reviewed_by IS NOT NULL "
+            "AND reviewed_at IS NOT NULL AND review_reason IS NOT NULL "
+            "AND reviewed_by <> requested_by)",
+            name="ck_sg_waiver_review",
+        ),
+        CheckConstraint(
+            "(status = 'revoked' AND revoked_by IS NOT NULL "
+            "AND revoked_at IS NOT NULL) "
+            "OR (status <> 'revoked' AND revoked_by IS NULL "
+            "AND revoked_at IS NULL)",
+            name="ck_sg_waiver_revocation",
+        ),
+        CheckConstraint(
+            "(status = 'expired' AND expire_reason_code IN "
+            "('scheduled_expiry', 'subject_scope_changed', "
+            "'guideline_revision_changed', "
+            "'binding_configuration_changed', 'metric_result_changed')) "
+            "OR (status <> 'expired' AND expire_reason_code IS NULL)",
+            name="ck_sg_waiver_expire_reason",
+        ),
+        CheckConstraint(
+            "("
+            "last_revalidation_status IS NULL "
+            "AND last_revalidation_current IS NULL "
+            "AND last_revalidation_reason_code IS NULL "
+            "AND last_revalidation_evaluated_at IS NULL "
+            "AND last_revalidation_scheduled_expiry_observed = false"
+            ") OR ("
+            "last_revalidation_status IN "
+            "('approved', 'expired', 'anchor_stale', 'revoked') "
+            "AND last_revalidation_current IS NOT NULL "
+            "AND last_revalidation_reason_code IN "
+            "('current', 'scheduled_expiry', 'anchor_missing', "
+            "'subject_scope_changed', 'guideline_revision_changed', "
+            "'binding_configuration_changed', 'metric_result_changed', "
+            "'revoked') "
+            "AND last_revalidation_evaluated_at IS NOT NULL"
+            ")",
+            name="ck_sg_waiver_revalidation_shape",
+        ),
+        CheckConstraint(
+            "last_revalidation_status IS NULL "
+            "OR (last_revalidation_status = 'approved' "
+            "AND last_revalidation_current "
+            "AND last_revalidation_reason_code = 'current') "
+            "OR (last_revalidation_status = 'expired' "
+            "AND NOT last_revalidation_current "
+            "AND last_revalidation_reason_code IN "
+            "('scheduled_expiry', 'subject_scope_changed', "
+            "'guideline_revision_changed', "
+            "'binding_configuration_changed', 'metric_result_changed')) "
+            "OR (last_revalidation_status = 'anchor_stale' "
+            "AND NOT last_revalidation_current "
+            "AND last_revalidation_reason_code IN "
+            "('anchor_missing', 'subject_scope_changed', "
+            "'guideline_revision_changed', "
+            "'binding_configuration_changed', 'metric_result_changed')) "
+            "OR (last_revalidation_status = 'revoked' "
+            "AND NOT last_revalidation_current "
+            "AND last_revalidation_reason_code = 'revoked')",
+            name="ck_sg_waiver_revalidation_decision",
+        ),
+        CheckConstraint(
+            "length(subject_content_digest) = 64 "
+            "AND length(revision_digest) = 64 "
+            "AND length(configuration_digest) = 64 "
+            "AND length(metric_result_digest) = 64 "
+            "AND length(finding_digest) = 64 "
+            "AND length(receipt_digest) = 64 "
+            "AND length(scope_digest) = 64 "
+            "AND length(head_digest) = 64 "
+            "AND length(request_digest) = 64",
+            name="ck_sg_waiver_digests",
+        ),
+        Index(
+            "ix_sg_waiver_scope",
+            "board_id",
+            "binding_id",
+            "metric_id",
+            "subject_type",
+            "subject_id",
+            "subject_version",
+            "status",
+        ),
+    )
+
+    waiver_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    metric_result_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    finding_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "semantic_guideline_assessment_receipts.receipt_id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    guideline_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    configuration_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_result_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    finding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_refs: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    original_expires_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    waiver_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    last_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    last_event_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    reviewed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    expire_reason_code: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
+    head_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Append-only v3 additions.  Keep this physical order aligned with the
+    # predecessor migration's PostgreSQL ``ALTER TABLE ADD COLUMN`` sequence.
+    assessment_assessor_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    last_event_idempotency_key: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    last_revalidation_status: Mapped[str | None] = mapped_column(
+        String(24),
+        nullable=True,
+    )
+    last_revalidation_current: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True,
+    )
+    last_revalidation_reason_code: Mapped[str | None] = mapped_column(
+        String(48),
+        nullable=True,
+    )
+    last_revalidation_evaluated_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    last_revalidation_currentness_reasons: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    last_revalidation_scheduled_expiry_observed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+
+
+class SemanticGuidelineWaiverEventRow(Base):
+    """Append-only lifecycle event containing the complete semantic waiver head."""
+
+    __tablename__ = "semantic_guideline_waiver_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "waiver_id",
+            "waiver_revision",
+            name="uq_sg_waiver_event_revision",
+        ),
+        UniqueConstraint(
+            "event_id",
+            "waiver_id",
+            "board_id",
+            "waiver_revision",
+            name="uq_sg_waiver_event_head",
+        ),
+        UniqueConstraint(
+            "board_id",
+            "idempotency_key",
+            name="uq_sg_waiver_event_idempotency",
+        ),
+        UniqueConstraint(
+            "predecessor_event_id",
+            name="uq_sg_waiver_event_predecessor",
+        ),
+        ForeignKeyConstraint(
+            ["waiver_id", "board_id"],
+            [
+                "semantic_guideline_waivers.waiver_id",
+                "semantic_guideline_waivers.board_id",
+            ],
+            name="fk_sg_waiver_event_lineage",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["predecessor_event_id"],
+            ["semantic_guideline_waiver_events.event_id"],
+            name="fk_sg_waiver_event_predecessor",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "waiver_revision >= 1 "
+            "AND length(scope_digest) = 64 "
+            "AND length(waiver_digest) = 64 "
+            "AND length(request_digest) = 64",
+            name="ck_sg_waiver_event_shape",
+        ),
+        CheckConstraint(
+            "event_type IN "
+            "('request', 'approve', 'reject', 'revoke', 'expire', "
+            "'revalidate') "
+            "AND to_status IN "
+            "('requested', 'approved', 'rejected', 'revoked', 'expired') "
+            "AND (from_status IS NULL OR from_status IN "
+            "('requested', 'approved', 'rejected', 'revoked', 'expired'))",
+            name="ck_sg_waiver_event_enums",
+        ),
+        CheckConstraint(
+            "(event_type = 'request' AND from_status IS NULL "
+            "AND to_status = 'requested' AND waiver_revision = 1) "
+            "OR (event_type = 'approve' AND from_status = 'requested' "
+            "AND to_status = 'approved' AND waiver_revision > 1) "
+            "OR (event_type = 'reject' AND from_status = 'requested' "
+            "AND to_status = 'rejected' AND waiver_revision > 1) "
+            "OR (event_type = 'revoke' AND from_status = 'approved' "
+            "AND to_status = 'revoked' AND waiver_revision > 1) "
+            "OR (event_type = 'expire' AND from_status = 'approved' "
+            "AND to_status = 'expired' AND waiver_revision > 1) "
+            "OR (event_type = 'revalidate' "
+            "AND from_status IN ('approved', 'expired', 'revoked') "
+            "AND (to_status = from_status OR to_status = 'expired') "
+            "AND NOT (from_status = 'expired' AND to_status <> 'expired') "
+            "AND NOT (from_status = 'revoked' AND to_status <> 'revoked') "
+            "AND waiver_revision > 1)",
+            name="ck_sg_waiver_event_transition",
+        ),
+        CheckConstraint(
+            "((event_type = 'expire' OR "
+            "(event_type = 'revalidate' AND to_status = 'expired')) "
+            "AND expire_reason_code IN "
+            "('scheduled_expiry', 'subject_scope_changed', "
+            "'guideline_revision_changed', "
+            "'binding_configuration_changed', 'metric_result_changed')) "
+            "OR ((event_type <> 'expire' AND NOT "
+            "(event_type = 'revalidate' AND to_status = 'expired')) "
+            "AND expire_reason_code IS NULL)",
+            name="ck_sg_waiver_event_expire",
+        ),
+        CheckConstraint(
+            "(event_type <> 'revalidate' AND "
+            "revalidation_status IS NULL "
+            "AND revalidation_current IS NULL "
+            "AND revalidation_reason_code IS NULL "
+            "AND evaluated_at IS NULL "
+            "AND scheduled_expiry_observed = false"
+            ") OR (event_type = 'revalidate' AND "
+            "revalidation_status IN "
+            "('approved', 'expired', 'anchor_stale', 'revoked') "
+            "AND revalidation_current IS NOT NULL "
+            "AND revalidation_reason_code IN "
+            "('current', 'scheduled_expiry', 'anchor_missing', "
+            "'subject_scope_changed', 'guideline_revision_changed', "
+            "'binding_configuration_changed', 'metric_result_changed', "
+            "'revoked') "
+            "AND evaluated_at IS NOT NULL"
+            ")",
+            name="ck_sg_waiver_event_revalidation_shape",
+        ),
+        CheckConstraint(
+            "revalidation_status IS NULL "
+            "OR (revalidation_status = 'approved' "
+            "AND revalidation_current "
+            "AND revalidation_reason_code = 'current') "
+            "OR (revalidation_status = 'expired' "
+            "AND NOT revalidation_current "
+            "AND revalidation_reason_code IN "
+            "('scheduled_expiry', 'subject_scope_changed', "
+            "'guideline_revision_changed', "
+            "'binding_configuration_changed', 'metric_result_changed')) "
+            "OR (revalidation_status = 'anchor_stale' "
+            "AND NOT revalidation_current "
+            "AND revalidation_reason_code IN "
+            "('anchor_missing', 'subject_scope_changed', "
+            "'guideline_revision_changed', "
+            "'binding_configuration_changed', 'metric_result_changed')) "
+            "OR (revalidation_status = 'revoked' "
+            "AND NOT revalidation_current "
+            "AND revalidation_reason_code = 'revoked')",
+            name="ck_sg_waiver_event_revalidation_decision",
+        ),
+        Index(
+            "ix_sg_waiver_event_time",
+            "board_id",
+            "occurred_at",
+            "event_id",
+        ),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    predecessor_event_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    waiver_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    waiver_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_refs: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    waiver_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    reviewed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    expire_reason_code: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Append-only v3 additions.  Keep this physical order aligned with the
+    # predecessor migration's PostgreSQL ``ALTER TABLE ADD COLUMN`` sequence.
+    evaluated_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    revalidation_status: Mapped[str | None] = mapped_column(
+        String(24),
+        nullable=True,
+    )
+    revalidation_current: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True,
+    )
+    revalidation_reason_code: Mapped[str | None] = mapped_column(
+        String(48),
+        nullable=True,
+    )
+    currentness_reasons: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    scheduled_expiry_observed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+
+
+class SemanticGuidelineSkipRow(Base):
+    """Append-only human skip lifecycle bound to exact semantic fences."""
+
+    __tablename__ = "semantic_guideline_skips"
+    __table_args__ = (
+        UniqueConstraint(
+            "skip_id",
+            "skip_revision",
+            name="uq_sg_skip_revision",
+        ),
+        UniqueConstraint(
+            "board_id",
+            "idempotency_key",
+            name="uq_sg_skip_idempotency",
+        ),
+        UniqueConstraint(
+            "predecessor_event_id",
+            name="uq_sg_skip_predecessor",
+        ),
+        ForeignKeyConstraint(
+            ["predecessor_event_id"],
+            ["semantic_guideline_skips.event_id"],
+            name="fk_sg_skip_predecessor",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            [
+                "binding_id",
+                "binding_revision",
+                "board_id",
+                "guideline_id",
+                "revision_id",
+                "revision_digest",
+                "configuration_digest",
+            ],
+            [
+                "semantic_guideline_binding_configurations.binding_id",
+                "semantic_guideline_binding_configurations.binding_revision",
+                "semantic_guideline_binding_configurations.board_id",
+                "semantic_guideline_binding_configurations.guideline_id",
+                "semantic_guideline_binding_configurations.revision_id",
+                "semantic_guideline_binding_configurations.revision_digest",
+                "semantic_guideline_binding_configurations.configuration_digest",
+            ],
+            name="fk_sg_skip_binding",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["guideline_id", "revision_id", "revision_digest"],
+            [
+                "semantic_guideline_revisions.guideline_id",
+                "semantic_guideline_revisions.revision_id",
+                "semantic_guideline_revisions.revision_digest",
+            ],
+            name="fk_sg_skip_revision",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "subject_type IN "
+            "('ideation', 'refinement', 'spec', 'card', 'sprint', "
+            "'test_scenario')",
+            name="ck_sg_skip_subject_type",
+        ),
+        CheckConstraint(
+            "subject_version >= 1 AND binding_revision >= 1 "
+            "AND skip_revision >= 1",
+            name="ck_sg_skip_versions",
+        ),
+        CheckConstraint(
+            "event_type IN ('create', 'revoke') "
+            "AND status IN ('active', 'revoked') "
+            "AND actor_kind = 'human'",
+            name="ck_sg_skip_enums",
+        ),
+        CheckConstraint(
+            "(event_type = 'create' AND status = 'active' "
+            "AND from_status IS NULL AND skip_revision = 1 "
+            "AND predecessor_event_id IS NULL "
+            "AND revoked_by IS NULL AND revoked_at IS NULL "
+            "AND revocation_reason IS NULL) "
+            "OR (event_type = 'revoke' AND status = 'revoked' "
+            "AND from_status = 'active' AND skip_revision > 1 "
+            "AND predecessor_event_id IS NOT NULL "
+            "AND revoked_by IS NOT NULL AND revoked_at IS NOT NULL "
+            "AND revocation_reason IS NOT NULL)",
+            name="ck_sg_skip_transition",
+        ),
+        CheckConstraint(
+            "length(subject_content_digest) = 64 "
+            "AND length(revision_digest) = 64 "
+            "AND length(configuration_digest) = 64 "
+            "AND length(scope_digest) = 64 "
+            "AND length(event_id) = 64 "
+            "AND length(skip_digest) = 64 "
+            "AND length(request_digest) = 64 "
+            "AND length(trim(reason)) > 0 "
+            "AND length(trim(actor_id)) > 0",
+            name="ck_sg_skip_digests",
+        ),
+        Index(
+            "ix_sg_skip_scope",
+            "board_id",
+            "binding_id",
+            "subject_type",
+            "subject_id",
+            "subject_version",
+            "status",
+            "skip_revision",
+        ),
+        Index(
+            "ix_sg_skip_lifecycle",
+            "board_id",
+            "skip_id",
+            "skip_revision",
+            "event_id",
+        ),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    predecessor_event_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    skip_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    skip_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    guideline_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    configuration_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="human",
+        server_default=text("'human'"),
+    )
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    revoked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    revocation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    skip_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class SemanticGuidelineLegacyMigrationRow(Base):
+    """Append-only audit of the non-semantic policy/v1 retirement migration."""
+
+    __tablename__ = "semantic_guideline_legacy_migrations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_type",
+            "source_id",
+            name="uq_sg_legacy_migration_source",
+        ),
+        CheckConstraint(
+            "source_type IN ('revision', 'binding', 'receipt', 'waiver')",
+            name="ck_sg_legacy_migration_source_type",
+        ),
+        CheckConstraint(
+            "migration_state IN "
+            "('context_only', 'legacy_incompatible', 'inert_binding', "
+            "'stale_receipt', 'ineffective_waiver')",
+            name="ck_sg_legacy_migration_state",
+        ),
+        CheckConstraint(
+            "length(source_digest) = 64",
+            name="ck_sg_legacy_migration_digest",
+        ),
+        Index(
+            "ix_sg_legacy_migration_board",
+            "board_id",
+            "source_type",
+            "migrated_at",
+            "migration_id",
+        ),
+    )
+
+    migration_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    board_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    guideline_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    migration_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+    )
+    migrated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class DesignSystem(Base):

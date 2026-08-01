@@ -118,6 +118,28 @@ describe('ArchitectureTab', () => {
     expect(screen.queryByLabelText('Review')).not.toBeInTheDocument();
   });
 
+  it('does not notify onChanged for a pure read so the parent modal never remounts it', async () => {
+    // Regression: notifying onChanged on every read made the parent modal
+    // reload and flip its loading flag, remounting this tab and re-reading in
+    // an infinite loop across spec/refinement/ideation/task modals.
+    const onChanged = vi.fn();
+    render(
+      <ArchitectureTab
+        parentType="ideation"
+        parentId="ideation-1"
+        onChanged={onChanged}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Runtime Architecture')).toBeInTheDocument());
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+
+    expect(apiMock.listArchitectureDesigns).toHaveBeenCalledTimes(1);
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
   it('renders card architecture as a read-only snapshot with copy refresh', async () => {
     apiMock.listArchitectureDesigns.mockResolvedValue([
       { ...summary, parent_type: 'card', parent_id: 'card-1' },

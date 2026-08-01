@@ -292,9 +292,14 @@ def test_r5_schema_migration_is_in_the_canonical_lifecycle_ledger() -> None:
     ids = [step.step_id for step in sorted(ledger, key=lambda step: step.order)]
     assert migration_name in ids
     assert ids.index(migration_name) > ids.index(CREATE_ALL_BOUNDARY_STEP_ID)
-    # 54 = the historical 46-step SK-A ratchet plus the eight additive
-    # migrations registered while introducing SK-B policy governance.
-    assert len([step for step in ledger if step.step_id.startswith("_migrate_")]) == 54
+    # 60 = the historical 46-step SK-A ratchet plus the nine additive
+    # migrations registered while introducing SK-B policy governance, plus
+    # the five SK-B3 closure repairs for migrated databases (guideline-
+    # binding unique authority index backfill, the import-candidate
+    # semantic-shape rebuild, the guideline v1 family semantic alignment,
+    # the retired v1 trigger drop, and the legacy-binding semantic
+    # configuration seeding).
+    assert len([step for step in ledger if step.step_id.startswith("_migrate_")]) == 60
 
 
 def test_preparation_persists_not_null_sentinels_but_authorizes_by_state(

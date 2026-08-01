@@ -47,7 +47,7 @@ vi.mock('@/hooks/usePermissions', () => ({
     has: (flag: string) => {
       if (flag === 'ideation.quality.read') return permissionState.canReadQuality;
       if (flag === 'ideation.quality.assess') return permissionState.canAssessQuality;
-      if (flag === 'guidelines.compliance.read') {
+      if (flag === 'guidelines.assessments.read') {
         return permissionState.canReadPolicyCompliance;
       }
       return false;

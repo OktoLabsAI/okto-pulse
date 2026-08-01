@@ -780,7 +780,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const canProposeQualityQuestions = perms.has('refinement.qa.ask');
   const canReadResearchDecisions = perms.has('refinement.research_decisions.read');
   const canReadPolicyCompliance = perms.has(
-    'guidelines.compliance.read',
+    'guidelines.assessments.read',
   );
   const requiresAmbiguityGate =
     currentBoard?.settings?.require_refinement_ambiguity_gate ?? false;
@@ -1550,6 +1550,8 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                       boardId={refinement.board_id || _boardId}
                       entityType="refinement"
                       subjectId={refinement.id}
+                      subjectVersion={refinement.version}
+                      transitionPreview={policyTransitionPreview}
                       refreshKey={refinement.version}
                       onEvaluated={() => {
                         void loadAllowedTransitions(refinement);

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 from okto_pulse.community.adapters.sqlalchemy_models import Base
@@ -95,10 +95,91 @@ GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX = (
     "trg_guideline_import_binding_candidate"
 )
 GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX = "trg_guideline_revision_noop"
-GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX = "trg_guideline_impact_v1"
+GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX = "trg_guideline_impact_v2"
 POLICY_COMPLIANCE_IMMUTABILITY_TRIGGER_PREFIX = "trg_policy_compliance_immutable"
 POLICY_WAIVER_TRIGGER_PREFIX = "trg_policy_waiver_v2"
 POLICY_WAIVER_PREDECESSOR_TRIGGER_PREFIX = "trg_policy_waiver_v1"
+SEMANTIC_GUIDELINE_TRIGGER_PREFIX = "trg_semantic_guideline_v3"
+
+
+def _guideline_binding_fence_payload_v2(
+    *,
+    board_id: str,
+    guideline_id: str,
+    binding_id: str,
+    binding_revision: int,
+    revision_id: str,
+    semantic_version: str,
+    revision_digest: str,
+    priority: int,
+    enforcement: str,
+    minimum_confidence: int,
+    metric_threshold_overrides: Mapping[str, int],
+    configuration_digest: str,
+    state: str,
+    source_kind: str,
+) -> dict[str, object]:
+    """Rebuild the exact Core-owned semantic binding-fence payload."""
+
+    return {
+        "contract": "guideline-impact/v2",
+        "kind": "binding_fence",
+        "board_id": board_id,
+        "guideline_id": guideline_id,
+        "binding_id": binding_id,
+        "binding_revision": binding_revision,
+        "revision_id": revision_id,
+        "semantic_version": semantic_version,
+        "revision_digest": revision_digest,
+        "priority": priority,
+        "enforcement": enforcement,
+        "minimum_confidence": minimum_confidence,
+        "metric_threshold_overrides": dict(metric_threshold_overrides),
+        "configuration_digest": configuration_digest,
+        "state": state,
+        "source_kind": source_kind,
+    }
+
+
+def _guideline_binding_fence_digest_v2(
+    *,
+    board_id: str,
+    guideline_id: str,
+    binding_id: str,
+    binding_revision: int,
+    revision_id: str,
+    semantic_version: str,
+    revision_digest: str,
+    priority: int,
+    enforcement: str,
+    minimum_confidence: int,
+    metric_threshold_overrides: Mapping[str, int],
+    configuration_digest: str,
+    state: str,
+    source_kind: str,
+) -> str:
+    """Hash a complete v2 binding fence for relational integrity audits."""
+
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+
+    return canonical_sha256(
+        _guideline_binding_fence_payload_v2(
+            board_id=board_id,
+            guideline_id=guideline_id,
+            binding_id=binding_id,
+            binding_revision=binding_revision,
+            revision_id=revision_id,
+            semantic_version=semantic_version,
+            revision_digest=revision_digest,
+            priority=priority,
+            enforcement=enforcement,
+            minimum_confidence=minimum_confidence,
+            metric_threshold_overrides=metric_threshold_overrides,
+            configuration_digest=configuration_digest,
+            state=state,
+            source_kind=source_kind,
+        )
+    )
 
 
 def guideline_revision_noop_trigger_manifest(
@@ -324,6 +405,8 @@ def guideline_impact_immutability_trigger_manifest(
         PolicyAdoptionChanged,
         POLICY_BINDING_MATERIALIZED_EVENT_TYPE,
         PolicyRetirementChanged,
+        SEMANTIC_GUIDELINE_PROJECTION_EVENT_TYPE,
+        SEMANTIC_GUIDELINE_PROJECTION_SCHEMA_VERSION,
     )
 
     permit_table = BoardErasurePermit.__tablename__
@@ -368,7 +451,7 @@ def guideline_impact_immutability_trigger_manifest(
       ) = 28
       AND json_extract(
           event."payload_json", '$.event_schema_version'
-      ) = 'guideline-impact/v1'
+      ) = 'guideline-impact/v2'
       AND json_extract(event."payload_json", '$.event_id') =
           NEW."event_id"
       AND (
@@ -436,14 +519,14 @@ def guideline_impact_immutability_trigger_manifest(
           event."payload_json", '$.policy_set_digest'
       ) = receipt."policy_set_digest_after"
       AND json(json_extract(
-          event."payload_json", '$.added_rule_ids'
-      )) = json(receipt."added_rule_ids")
+          event."payload_json", '$.added_metric_ids'
+      )) = json(receipt."added_metric_ids")
       AND json(json_extract(
-          event."payload_json", '$.changed_rule_ids'
-      )) = json(receipt."changed_rule_ids")
+          event."payload_json", '$.changed_metric_ids'
+      )) = json(receipt."changed_metric_ids")
       AND json(json_extract(
-          event."payload_json", '$.removed_rule_ids'
-      )) = json(receipt."removed_rule_ids")
+          event."payload_json", '$.removed_metric_ids'
+      )) = json(receipt."removed_metric_ids")
       AND json_extract(event."payload_json", '$.actor_id') =
           NEW."adopted_by"
       AND json_extract(event."payload_json", '$.actor_type') =
@@ -467,7 +550,7 @@ def guideline_impact_immutability_trigger_manifest(
       ) = 28
       AND json_extract(
           event."payload_json", '$.event_schema_version'
-      ) = 'guideline-impact/v1'
+      ) = 'guideline-impact/v2'
       AND json_extract(event."payload_json", '$.event_id') =
           NEW."event_id"
       AND julianday(
@@ -499,6 +582,76 @@ def guideline_impact_immutability_trigger_manifest(
     unchanged_receipt = "\n    AND ".join(
         f'NEW."{column_name}" IS OLD."{column_name}"'
         for column_name in immutable_receipt_columns
+    )
+    receipt_insert_name = (
+        f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{receipt_table}_insert"
+    )
+    manifest[receipt_insert_name] = (
+        receipt_table,
+        f'''CREATE TRIGGER "{receipt_insert_name}"
+BEFORE INSERT ON "{receipt_table}"
+WHEN NEW."sealed" <> 0
+  OR json_type(NEW."proposed_metric_threshold_overrides") <> 'object'
+  OR json_type(NEW."added_metric_ids") <> 'array'
+  OR json_type(NEW."changed_metric_ids") <> 'array'
+  OR json_type(NEW."removed_metric_ids") <> 'array'
+  OR EXISTS (
+      SELECT 1
+      FROM json_each(
+          NEW."proposed_metric_threshold_overrides"
+      ) AS override
+      WHERE override.type <> 'integer'
+         OR override.value < 0
+         OR override.value > 100
+         OR NOT EXISTS (
+             SELECT 1
+             FROM "semantic_guideline_revisions" AS revision,
+                  json_each(revision.metrics) AS metric
+             WHERE revision.guideline_id = NEW.guideline_id
+               AND revision.revision_id = NEW.to_revision_id
+               AND revision.revision_digest =
+                   NEW.to_revision_digest
+               AND json_extract(metric.value, '$.code') =
+                   override.key
+         )
+  )
+  OR EXISTS (
+      SELECT 1
+      FROM (
+          SELECT value, type, 'added' AS bucket
+          FROM json_each(NEW."added_metric_ids")
+          UNION ALL
+          SELECT value, type, 'changed' AS bucket
+          FROM json_each(NEW."changed_metric_ids")
+          UNION ALL
+          SELECT value, type, 'removed' AS bucket
+          FROM json_each(NEW."removed_metric_ids")
+      ) AS metric
+      WHERE metric.type <> 'text'
+         OR length(trim(metric.value)) = 0
+  )
+  OR (
+      SELECT COUNT(*)
+      FROM (
+          SELECT value FROM json_each(NEW."added_metric_ids")
+          UNION ALL
+          SELECT value FROM json_each(NEW."changed_metric_ids")
+          UNION ALL
+          SELECT value FROM json_each(NEW."removed_metric_ids")
+      )
+  ) <> (
+      SELECT COUNT(DISTINCT value)
+      FROM (
+          SELECT value FROM json_each(NEW."added_metric_ids")
+          UNION ALL
+          SELECT value FROM json_each(NEW."changed_metric_ids")
+          UNION ALL
+          SELECT value FROM json_each(NEW."removed_metric_ids")
+      )
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'guideline_impact_receipt_v2_invalid');
+END''',
     )
     receipt_update_name = (
         f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{receipt_table}_update"
@@ -562,15 +715,29 @@ WHEN NOT EXISTS (
      AND binding."state" = 'active'
      AND binding."revision_id" = receipt."to_revision_id"
      AND binding."semantic_version" = receipt."to_semantic_version"
-     AND binding."revision_digest" = receipt."to_revision_digest"
      AND binding."priority" = receipt."proposed_priority"
-     AND binding."default_enforcement" =
-         receipt."proposed_default_enforcement"
+     AND binding."enforcement" =
+         receipt."proposed_enforcement"
      AND binding."adopted_by" = NEW."adopted_by"
      AND binding."adopted_at" = NEW."adopted_at"
+    JOIN "semantic_guideline_binding_configurations" AS configuration
+      ON configuration."binding_id" = binding."binding_id"
+     AND configuration."binding_revision" =
+         binding."binding_revision"
+     AND configuration."board_id" = binding."board_id"
+     AND configuration."guideline_id" = binding."guideline_id"
+     AND configuration."revision_id" = binding."revision_id"
+     AND configuration."revision_digest" =
+         receipt."to_revision_digest"
+     AND configuration."enforcement" =
+         receipt."proposed_enforcement"
+     AND configuration."minimum_confidence" =
+         receipt."proposed_minimum_confidence"
+     AND json(configuration."metric_threshold_overrides") =
+         json(receipt."proposed_metric_threshold_overrides")
     JOIN "domain_events" AS event
       ON event."id" = NEW."event_id"
-     AND event."event_type" = 'board.policy_adoption_changed.v1'
+     AND event."event_type" = 'board.semantic_guideline_adoption_changed.v2'
      AND event."board_id" = NEW."board_id"
      AND event."actor_id" = NEW."adopted_by"
      AND event."occurred_at" = NEW."adopted_at"
@@ -633,9 +800,28 @@ WHEN NOT EXISTS (
      AND previous."board_id" = NEW."board_id"
      AND previous."guideline_id" = NEW."guideline_id"
      AND previous."state" = 'active'
+    JOIN "semantic_guideline_binding_configurations" AS configuration
+      ON configuration."binding_id" = binding."binding_id"
+     AND configuration."binding_revision" =
+         binding."binding_revision"
+    JOIN "semantic_guideline_binding_configurations" AS previous_configuration
+      ON previous_configuration."binding_id" =
+         previous."binding_id"
+     AND previous_configuration."binding_revision" =
+         previous."binding_revision"
+     AND previous_configuration."revision_digest" =
+         configuration."revision_digest"
+     AND previous_configuration."enforcement" =
+         configuration."enforcement"
+     AND previous_configuration."minimum_confidence" =
+         configuration."minimum_confidence"
+     AND json(previous_configuration."metric_threshold_overrides") =
+         json(configuration."metric_threshold_overrides")
+     AND previous_configuration."configuration_digest" =
+         configuration."configuration_digest"
     JOIN "domain_events" AS event
       ON event."id" = NEW."event_id"
-     AND event."event_type" = 'board.policy_adoption_changed.v1'
+     AND event."event_type" = 'board.semantic_guideline_adoption_changed.v2'
      AND event."board_id" = NEW."board_id"
      AND event."actor_id" = NEW."unlinked_by"
      AND event."actor_type" = NEW."actor_type"
@@ -663,8 +849,8 @@ WHEN NOT EXISTS (
       AND binding."semantic_version" = previous."semantic_version"
       AND binding."revision_digest" = previous."revision_digest"
       AND binding."priority" = previous."priority"
-      AND binding."default_enforcement" =
-          previous."default_enforcement"
+      AND binding."enforcement" =
+          previous."enforcement"
       AND binding."source_kind" = previous."source_kind"
       AND binding."binding_origin" = previous."binding_origin"
       AND binding."legacy_source_id" IS previous."legacy_source_id"
@@ -697,7 +883,7 @@ WHEN NOT EXISTS (
           event."payload_json", '$.from_semantic_version'
       ) = previous."semantic_version"
       AND json_extract(event."payload_json", '$.from_revision_digest') =
-          previous."revision_digest"
+          previous_configuration."revision_digest"
       AND json_type(event."payload_json", '$.to_revision_id') = 'null'
       AND json_type(
           event."payload_json", '$.to_semantic_version'
@@ -728,17 +914,17 @@ WHEN NOT EXISTS (
           event."payload_json", '$.policy_set_digest'
       ) = NEW."policy_set_digest_after"
       AND json(json_extract(
-          event."payload_json", '$.added_rule_ids'
+          event."payload_json", '$.added_metric_ids'
       )) =
           json('[]')
       AND json(json_extract(
-          event."payload_json", '$.changed_rule_ids'
+          event."payload_json", '$.changed_metric_ids'
       )) =
           json('[]')
       AND json(json_extract(
-          event."payload_json", '$.removed_rule_ids'
+          event."payload_json", '$.removed_metric_ids'
       )) =
-          json(NEW."removed_rule_ids")
+          json(NEW."removed_metric_ids")
       AND json_extract(event."payload_json", '$.actor_id') =
           NEW."unlinked_by"
       AND json_extract(event."payload_json", '$.actor_type') =
@@ -769,10 +955,15 @@ WHEN NOT EXISTS (
      AND binding."state" = 'active'
      AND binding."revision_id" = NEW."revision_id"
      AND binding."semantic_version" = NEW."semantic_version"
-     AND binding."revision_digest" = NEW."revision_digest"
+    JOIN "semantic_guideline_binding_configurations" AS configuration
+      ON configuration."binding_id" = binding."binding_id"
+     AND configuration."binding_revision" =
+         binding."binding_revision"
+     AND configuration."revision_id" = NEW."revision_id"
+     AND configuration."revision_digest" = NEW."revision_digest"
     JOIN "domain_events" AS event
       ON event."id" = NEW."event_id"
-     AND event."event_type" = 'board.policy_retirement_changed.v1'
+     AND event."event_type" = 'board.semantic_guideline_retirement_changed.v2'
      AND event."board_id" = NEW."board_id"
      AND event."actor_id" = NEW."retired_by"
      AND event."actor_type" = NEW."actor_type"
@@ -802,7 +993,7 @@ WHEN NOT EXISTS (
       )
       AND json_extract(
           event."payload_json", '$.event_schema_version'
-      ) = 'guideline-impact/v1'
+      ) = 'guideline-impact/v2'
       AND json_extract(event."payload_json", '$.event_id') =
           NEW."event_id"
       AND json_extract(event."payload_json", '$.operation') = 'retire'
@@ -857,8 +1048,8 @@ WHEN NOT EXISTS (
           event."payload_json", '$.policy_set_digest'
       ) = NEW."policy_set_digest_after"
       AND json(json_extract(
-          event."payload_json", '$.removed_rule_ids'
-      )) = json(NEW."removed_rule_ids")
+          event."payload_json", '$.removed_metric_ids'
+      )) = json(NEW."removed_metric_ids")
       AND json_extract(event."payload_json", '$.actor_id') =
           NEW."retired_by"
       AND json_extract(event."payload_json", '$.actor_type') =
@@ -955,8 +1146,8 @@ END''',
                 AND previous."revision_digest" =
                     NEW."revision_digest"
                 AND previous."priority" = NEW."priority"
-                AND previous."default_enforcement" =
-                    NEW."default_enforcement"
+                AND previous."enforcement" =
+                    NEW."enforcement"
                 AND previous."source_kind" = NEW."source_kind"
                 AND previous."binding_origin" = NEW."binding_origin"
                 AND previous."legacy_source_id" IS
@@ -991,7 +1182,7 @@ WHEN ({binding_scope})
           AND NEW."impact_receipt_id" IS NULL
           AND NEW."impact_adoption_id" IS NULL
           {unlink_absent}
-          AND NEW."default_enforcement" = 'advisory'
+          AND NEW."enforcement" = 'advisory'
           AND NEW."legacy_version_unresolvable" = 0
           AND NOT EXISTS (
               SELECT 1
@@ -1016,11 +1207,9 @@ WHEN ({binding_scope})
                 AND receipt."to_revision_id" = NEW."revision_id"
                 AND receipt."to_semantic_version" =
                     NEW."semantic_version"
-                AND receipt."to_revision_digest" =
-                    NEW."revision_digest"
                 AND receipt."proposed_priority" = NEW."priority"
-                AND receipt."proposed_default_enforcement" =
-                    NEW."default_enforcement"
+                AND receipt."proposed_enforcement" =
+                    NEW."enforcement"
                 AND receipt."sealed" = 1
                 AND (
                     (
@@ -1045,8 +1234,17 @@ WHEN ({binding_scope})
                                   receipt."from_revision_id"
                               AND previous."semantic_version" =
                                   receipt."from_semantic_version"
-                              AND previous."revision_digest" =
-                                  receipt."from_revision_digest"
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM "semantic_guideline_binding_configurations"
+                                       AS previous_configuration
+                                  WHERE previous_configuration."binding_id" =
+                                            previous."binding_id"
+                                    AND previous_configuration."binding_revision" =
+                                            previous."binding_revision"
+                                    AND previous_configuration."revision_digest" =
+                                            receipt."from_revision_digest"
+                              )
                               AND previous."state" =
                                   receipt."expected_binding_state"
                        )
@@ -1138,7 +1336,9 @@ END''',
             if table_name == "domain_events" and protect_materialized_events:
                 referenced = (
                     f"({referenced} OR OLD.\"event_type\" = "
-                    f"'{POLICY_BINDING_MATERIALIZED_EVENT_TYPE}')"
+                    f"'{POLICY_BINDING_MATERIALIZED_EVENT_TYPE}' OR "
+                    f"OLD.\"event_type\" = "
+                    f"'{SEMANTIC_GUIDELINE_PROJECTION_EVENT_TYPE}')"
                 )
             if allow_board_erasure and operation == "delete":
                 referenced = (
@@ -1175,7 +1375,7 @@ WHEN NEW."handler_name" = 'PolicyConstraintProjectionHandler'
                 event."event_type" = '{PolicyAdoptionChanged.event_type}'
                 AND json_extract(
                     event."payload_json", '$.event_schema_version'
-                ) = 'guideline-impact/v1'
+                ) = 'guideline-impact/v2'
                 AND json_extract(event."payload_json", '$.operation')
                     IN ('adopt', 'unlink')
                 AND json_type(
@@ -1186,7 +1386,7 @@ WHEN NEW."handler_name" = 'PolicyConstraintProjectionHandler'
                 event."event_type" = '{PolicyRetirementChanged.event_type}'
                 AND json_extract(
                     event."payload_json", '$.event_schema_version'
-                ) = 'guideline-impact/v1'
+                ) = 'guideline-impact/v2'
                 AND json_extract(event."payload_json", '$.operation')
                     = 'retire'
                 AND json_type(
@@ -1199,10 +1399,10 @@ WHEN NEW."handler_name" = 'PolicyConstraintProjectionHandler'
                 AND (
                     SELECT COUNT(*)
                     FROM json_each(event."payload_json")
-                ) = 11
+                ) = 13
                 AND json_extract(
                     event."payload_json", '$.event_schema_version'
-                ) = 'policy-binding-materialized/v1'
+                ) = 'policy-binding-materialized/v2'
                 AND json_extract(event."payload_json", '$.operation')
                     = 'adopt'
                 AND json_type(
@@ -1210,6 +1410,51 @@ WHEN NEW."handler_name" = 'PolicyConstraintProjectionHandler'
                 ) = 'text'
                 AND json_extract(event."payload_json", '$.source_kind')
                     IN ('native', 'default_materialization')
+                AND json_extract(event."payload_json", '$.enforcement')
+                    IN ('advisory', 'blocking')
+                AND json_type(
+                    event."payload_json", '$.minimum_confidence'
+                ) = 'integer'
+                AND json_extract(
+                    event."payload_json", '$.minimum_confidence'
+                ) BETWEEN 0 AND 100
+                AND json_type(
+                    event."payload_json",
+                    '$.metric_threshold_overrides'
+                ) = 'object'
+            )
+            OR (
+                event."event_type" =
+                    '{SEMANTIC_GUIDELINE_PROJECTION_EVENT_TYPE}'
+                AND (
+                    SELECT COUNT(*)
+                    FROM json_each(event."payload_json")
+                ) = 6
+                AND json_extract(
+                    event."payload_json", '$.event_schema_version'
+                ) = '{SEMANTIC_GUIDELINE_PROJECTION_SCHEMA_VERSION}'
+                AND json_type(
+                    event."payload_json", '$.causation_id'
+                ) = 'text'
+                AND json_extract(
+                    event."payload_json", '$.entity_kind'
+                ) IN (
+                    'revision', 'metric_definition',
+                    'binding_configuration', 'assessment_receipt',
+                    'metric_result', 'waiver', 'skip'
+                )
+                AND json_type(
+                    event."payload_json", '$.entity_id'
+                ) = 'text'
+                AND json_type(
+                    event."payload_json", '$.entity_digest'
+                ) = 'text'
+                AND length(json_extract(
+                    event."payload_json", '$.entity_digest'
+                )) = 64
+                AND json_extract(
+                    event."payload_json", '$.operation'
+                ) IN ('upsert', 'terminate')
             )
         )
   )
@@ -1818,6 +2063,2403 @@ FOR EACH ROW EXECUTE FUNCTION {function_name}()''',
     )
 
 
+def semantic_guideline_sqlite_trigger_manifest(
+    *,
+    allow_board_erasure: bool = True,
+) -> dict[str, tuple[str, str]]:
+    """Return exact SQLite guards for ``semantic-guideline/v3`` authority."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        BoardErasurePermit,
+        Guideline,
+        GuidelineBoardBindingRow,
+        SemanticGuidelineAssessmentReceiptRow,
+        SemanticGuidelineBindingConfigurationRow,
+        SemanticGuidelineFindingRow,
+        SemanticGuidelineLegacyMigrationRow,
+        SemanticGuidelineMetricResultRow,
+        SemanticGuidelineRevisionRow,
+        SemanticGuidelineSkipRow,
+        SemanticGuidelineWaiverEventRow,
+        SemanticGuidelineWaiverRow,
+        SemanticSubjectVersionEventRow,
+        SemanticSubjectVersionRow,
+    )
+
+    permit_table = BoardErasurePermit.__tablename__
+    guideline_table = Guideline.__tablename__
+    legacy_binding_table = GuidelineBoardBindingRow.__tablename__
+    revision_table = SemanticGuidelineRevisionRow.__tablename__
+    binding_table = SemanticGuidelineBindingConfigurationRow.__tablename__
+    subject_event_table = SemanticSubjectVersionEventRow.__tablename__
+    subject_head_table = SemanticSubjectVersionRow.__tablename__
+    receipt_table = SemanticGuidelineAssessmentReceiptRow.__tablename__
+    result_table = SemanticGuidelineMetricResultRow.__tablename__
+    finding_table = SemanticGuidelineFindingRow.__tablename__
+    waiver_table = SemanticGuidelineWaiverRow.__tablename__
+    waiver_event_table = SemanticGuidelineWaiverEventRow.__tablename__
+    skip_table = SemanticGuidelineSkipRow.__tablename__
+    migration_table = SemanticGuidelineLegacyMigrationRow.__tablename__
+    manifest: dict[str, tuple[str, str]] = {}
+
+    def add_immutable(
+        *,
+        table_name: str,
+        board_expression: str | None,
+        message: str = "semantic_guideline_evidence_immutable",
+    ) -> None:
+        update_name = (
+            f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_{table_name}_update"
+        )
+        manifest[update_name] = (
+            table_name,
+            f'''CREATE TRIGGER "{update_name}"
+BEFORE UPDATE ON "{table_name}"
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END''',
+        )
+        delete_name = (
+            f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_{table_name}_delete"
+        )
+        delete_when = ""
+        if allow_board_erasure and board_expression is not None:
+            delete_when = f'''
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM "{permit_table}" AS permit
+    WHERE permit.board_id = {board_expression}
+)'''
+        manifest[delete_name] = (
+            table_name,
+            f'''CREATE TRIGGER "{delete_name}"
+BEFORE DELETE ON "{table_name}"{delete_when}
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END''',
+        )
+
+    revision_insert_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_revision_insert"
+    )
+    manifest[revision_insert_name] = (
+        revision_table,
+        f'''CREATE TRIGGER "{revision_insert_name}"
+BEFORE INSERT ON "{revision_table}"
+WHEN json_type(NEW."metrics") <> 'array'
+  OR (
+      NEW."authority_state" <> 'native'
+      AND json_array_length(NEW."metrics") <> 0
+  )
+  OR EXISTS (
+      SELECT 1
+      FROM json_each(NEW."metrics") AS metric
+      WHERE json_type(metric.value) <> 'object'
+         OR json_type(metric.value, '$.metric_id') <> 'text'
+         OR length(trim(json_extract(metric.value, '$.metric_id'))) = 0
+         OR json_extract(metric.value, '$.metric_id')
+                <> trim(json_extract(metric.value, '$.metric_id'))
+         OR length(json_extract(metric.value, '$.metric_id')) > 64
+         OR lower(trim(json_extract(metric.value, '$.metric_id')))
+                = 'confidence'
+         OR json_type(metric.value, '$.code') <> 'text'
+         OR length(trim(json_extract(metric.value, '$.code'))) = 0
+         OR json_extract(metric.value, '$.code')
+                <> trim(json_extract(metric.value, '$.code'))
+         OR length(json_extract(metric.value, '$.code')) > 128
+         OR lower(trim(json_extract(metric.value, '$.code')))
+                = 'confidence'
+         OR substr(json_extract(metric.value, '$.code'), 1, 1)
+                NOT GLOB '[A-Za-z]'
+         OR json_extract(metric.value, '$.code')
+                GLOB '*[^A-Za-z0-9_.:-]*'
+         OR json_type(metric.value, '$.title') <> 'text'
+         OR length(trim(json_extract(metric.value, '$.title'))) = 0
+         OR json_extract(metric.value, '$.title')
+                <> trim(json_extract(metric.value, '$.title'))
+         OR length(json_extract(metric.value, '$.title')) > 500
+         OR lower(trim(json_extract(metric.value, '$.title')))
+                = 'confidence'
+         OR json_type(metric.value, '$.description') <> 'text'
+         OR length(trim(json_extract(metric.value, '$.description'))) = 0
+         OR json_extract(metric.value, '$.description')
+                <> trim(json_extract(metric.value, '$.description'))
+         OR json_type(metric.value, '$.evaluation_rubric') <> 'text'
+         OR length(trim(json_extract(metric.value, '$.evaluation_rubric'))) = 0
+         OR json_extract(metric.value, '$.evaluation_rubric')
+                <> trim(json_extract(metric.value, '$.evaluation_rubric'))
+         OR json_type(metric.value, '$.target_entity_types') <> 'array'
+         OR json_array_length(
+                json_extract(metric.value, '$.target_entity_types')
+            ) = 0
+         OR json_extract(metric.value, '$.direction')
+                NOT IN ('minimum', 'maximum')
+         OR json_type(metric.value, '$.default_threshold') <> 'integer'
+         OR json_extract(metric.value, '$.default_threshold') < 0
+         OR json_extract(metric.value, '$.default_threshold') > 100
+         OR EXISTS (
+             SELECT 1
+             FROM json_each(
+                 json_extract(metric.value, '$.target_entity_types')
+             ) AS target
+             WHERE target.value NOT IN (
+                  'ideation', 'refinement', 'spec', 'card', 'sprint',
+                  'test_scenario'
+              )
+                OR target.type <> 'text'
+         )
+         OR (
+             SELECT COUNT(*)
+             FROM json_each(
+                 json_extract(metric.value, '$.target_entity_types')
+             )
+         ) <> (
+             SELECT COUNT(DISTINCT target.value)
+             FROM json_each(
+                 json_extract(metric.value, '$.target_entity_types')
+             ) AS target
+         )
+         OR EXISTS (
+             SELECT 1
+             FROM json_each(
+                 json_extract(metric.value, '$.target_entity_types')
+             ) AS left_target
+             JOIN json_each(
+                 json_extract(metric.value, '$.target_entity_types')
+             ) AS right_target
+               ON left_target.key < right_target.key
+              AND left_target.value > right_target.value
+         )
+  )
+  OR EXISTS (
+      SELECT 1
+      FROM json_each(NEW."metrics") AS left_metric
+      JOIN json_each(NEW."metrics") AS right_metric
+        ON left_metric.key < right_metric.key
+       AND (
+           json_extract(left_metric.value, '$.metric_id')
+               = json_extract(right_metric.value, '$.metric_id')
+           OR lower(json_extract(left_metric.value, '$.code'))
+               = lower(json_extract(right_metric.value, '$.code'))
+       )
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_metrics_invalid');
+END''',
+    )
+    add_immutable(
+        table_name=revision_table,
+        board_expression=None,
+        message="semantic_guideline_revision_immutable",
+    )
+    # Replace the unconditional revision DELETE guard with an inline-board
+    # erasure-aware variant. Global revisions remain immutable.
+    revision_delete_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_{revision_table}_delete"
+    )
+    revision_delete_when = ""
+    if allow_board_erasure:
+        revision_delete_when = f'''
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM "{permit_table}" AS permit
+    JOIN "{guideline_table}" AS guideline
+      ON guideline.board_id = permit.board_id
+    WHERE guideline.id = OLD.guideline_id
+      AND guideline.scope = 'inline'
+)'''
+    manifest[revision_delete_name] = (
+        revision_table,
+        f'''CREATE TRIGGER "{revision_delete_name}"
+BEFORE DELETE ON "{revision_table}"{revision_delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_revision_immutable');
+END''',
+    )
+
+    binding_insert_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_binding_insert"
+    )
+    manifest[binding_insert_name] = (
+        binding_table,
+        f'''CREATE TRIGGER "{binding_insert_name}"
+BEFORE INSERT ON "{binding_table}"
+WHEN json_type(NEW."metric_threshold_overrides") <> 'object'
+  OR NOT EXISTS (
+      SELECT 1
+      FROM "{legacy_binding_table}" AS legacy
+      WHERE legacy.binding_id = NEW.binding_id
+        AND legacy.binding_revision = NEW.binding_revision
+        AND legacy.board_id = NEW.board_id
+        AND legacy.guideline_id = NEW.guideline_id
+        AND legacy.revision_id = NEW.revision_id
+  )
+  OR EXISTS (
+      SELECT 1
+      FROM "{revision_table}" AS revision
+      WHERE revision.guideline_id = NEW.guideline_id
+        AND revision.revision_id = NEW.revision_id
+        AND revision.revision_digest = NEW.revision_digest
+        AND revision.authority_state = 'legacy_incompatible'
+  )
+  OR EXISTS (
+      SELECT 1
+      FROM json_each(NEW."metric_threshold_overrides") AS override
+      WHERE override.type <> 'integer'
+         OR override.value < 0
+         OR override.value > 100
+         OR NOT EXISTS (
+             SELECT 1
+             FROM "{revision_table}" AS revision,
+                  json_each(revision.metrics) AS metric
+             WHERE revision.guideline_id = NEW.guideline_id
+               AND revision.revision_id = NEW.revision_id
+               AND revision.revision_digest = NEW.revision_digest
+               AND json_extract(metric.value, '$.code') = override.key
+         )
+  )
+  OR EXISTS (
+      SELECT 1
+      FROM "{legacy_binding_table}" AS legacy
+      WHERE legacy.binding_id = NEW.binding_id
+        AND legacy.binding_revision = NEW.binding_revision
+        AND legacy.impact_adoption_id IS NOT NULL
+        AND NOT EXISTS (
+            SELECT 1
+            FROM "guideline_impact_receipts" AS receipt
+            WHERE receipt.impact_receipt_id =
+                    legacy.impact_receipt_id
+              AND receipt.board_id = NEW.board_id
+              AND receipt.guideline_id = NEW.guideline_id
+              AND receipt.to_revision_id = NEW.revision_id
+              AND receipt.to_revision_digest =
+                    NEW.revision_digest
+              AND receipt.proposed_enforcement =
+                    NEW.enforcement
+              AND receipt.proposed_minimum_confidence =
+                    NEW.minimum_confidence
+              AND json(
+                    receipt.proposed_metric_threshold_overrides
+                  ) = json(NEW.metric_threshold_overrides)
+              AND receipt.sealed = 1
+        )
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_binding_configuration_invalid');
+END''',
+    )
+    add_immutable(
+        table_name=binding_table,
+        board_expression='OLD."board_id"',
+        message="semantic_guideline_binding_configuration_immutable",
+    )
+
+    subject_head_insert_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_subject_head_insert"
+    )
+    manifest[subject_head_insert_name] = (
+        subject_head_table,
+        f'''CREATE TRIGGER "{subject_head_insert_name}"
+BEFORE INSERT ON "{subject_head_table}"
+WHEN NEW."head_revision" <> 1
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_subject_head_initial_revision_invalid');
+END''',
+    )
+    subject_head_immutable = (
+        "NEW.\"board_id\" IS OLD.\"board_id\"\n"
+        "    AND NEW.\"subject_type\" IS OLD.\"subject_type\"\n"
+        "    AND NEW.\"subject_id\" IS OLD.\"subject_id\""
+    )
+    subject_head_update_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_subject_head_update"
+    )
+    manifest[subject_head_update_name] = (
+        subject_head_table,
+        f'''CREATE TRIGGER "{subject_head_update_name}"
+BEFORE UPDATE ON "{subject_head_table}"
+WHEN NOT (
+    {subject_head_immutable}
+    AND NEW."head_revision" = OLD."head_revision" + 1
+    AND NEW."last_event_id" <> OLD."last_event_id"
+    AND NEW."subject_version" >= OLD."subject_version"
+    AND NEW."updated_at" >= OLD."updated_at"
+)
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_subject_head_cas_invalid');
+END''',
+    )
+    subject_head_delete_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_subject_head_delete"
+    )
+    subject_head_delete_when = ""
+    if allow_board_erasure:
+        subject_head_delete_when = f'''
+WHEN NOT EXISTS (
+    SELECT 1 FROM "{permit_table}" AS permit
+    WHERE permit.board_id = OLD.board_id
+)'''
+    manifest[subject_head_delete_name] = (
+        subject_head_table,
+        f'''CREATE TRIGGER "{subject_head_delete_name}"
+BEFORE DELETE ON "{subject_head_table}"{subject_head_delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_subject_head_immutable');
+END''',
+    )
+    subject_event_insert_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_subject_event_insert"
+    )
+    manifest[subject_event_insert_name] = (
+        subject_event_table,
+        f'''CREATE TRIGGER "{subject_event_insert_name}"
+BEFORE INSERT ON "{subject_event_table}"
+WHEN NOT EXISTS (
+      SELECT 1
+      FROM "{subject_head_table}" AS head
+      WHERE head.board_id = NEW.board_id
+        AND head.subject_type = NEW.subject_type
+        AND head.subject_id = NEW.subject_id
+        AND head.subject_version = NEW.subject_version
+        AND head.content_digest = NEW.content_digest
+        AND head.last_semantic_editor_id = NEW.last_semantic_editor_id
+        AND head.editor_source = NEW.editor_source
+        AND head.head_revision = NEW.head_revision
+        AND head.last_event_id = NEW.event_id
+        AND head.updated_at = NEW.changed_at
+  )
+  OR (
+      NEW."head_revision" = 1
+      AND (
+          NEW."predecessor_event_id" IS NOT NULL
+          OR (
+              NEW."editor_source" = 'legacy_unknown'
+              AND NEW."event_type" <> 'legacy_bootstrap'
+          )
+          OR (
+              NEW."editor_source" = 'authoritative'
+              AND NEW."event_type" <> 'semantic_mutation'
+          )
+      )
+  )
+  OR (
+      NEW."head_revision" > 1
+      AND (
+          NEW."event_type" <> 'semantic_mutation'
+          OR NOT EXISTS (
+              SELECT 1
+              FROM "{subject_event_table}" AS predecessor
+              WHERE predecessor.event_id = NEW.predecessor_event_id
+                AND predecessor.board_id = NEW.board_id
+                AND predecessor.subject_type = NEW.subject_type
+                AND predecessor.subject_id = NEW.subject_id
+                AND predecessor.head_revision = NEW.head_revision - 1
+                AND predecessor.subject_version <= NEW.subject_version
+                AND predecessor.changed_at <= NEW.changed_at
+          )
+      )
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_subject_event_append_invalid');
+END''',
+    )
+    add_immutable(
+        table_name=subject_event_table,
+        board_expression='OLD."board_id"',
+        message="semantic_subject_event_immutable",
+    )
+
+    receipt_insert_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_assessment_insert"
+    )
+    manifest[receipt_insert_name] = (
+        receipt_table,
+        f'''CREATE TRIGGER "{receipt_insert_name}"
+BEFORE INSERT ON "{receipt_table}"
+WHEN NEW."sealed" <> 0
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_assessment_initially_unsealed');
+END''',
+    )
+    receipt_columns = tuple(
+        column.name
+        for column in SemanticGuidelineAssessmentReceiptRow.__table__.columns
+        if column.name != "sealed"
+    )
+    receipt_unchanged = "\n    AND ".join(
+        f'NEW."{column}" IS OLD."{column}"' for column in receipt_columns
+    )
+    receipt_update_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_assessment_seal"
+    )
+    manifest[receipt_update_name] = (
+        receipt_table,
+        f'''CREATE TRIGGER "{receipt_update_name}"
+BEFORE UPDATE ON "{receipt_table}"
+WHEN NOT (
+    OLD."sealed" = 0
+    AND NEW."sealed" = 1
+    AND {receipt_unchanged}
+    AND NEW."metric_result_count" = (
+        SELECT COUNT(*)
+        FROM "{revision_table}" AS revision,
+             json_each(revision.metrics) AS metric,
+             json_each(
+                 json_extract(metric.value, '$.target_entity_types')
+             ) AS target
+        WHERE revision.guideline_id = NEW.guideline_id
+          AND revision.revision_id = NEW.revision_id
+          AND revision.revision_digest = NEW.revision_digest
+          AND target.value = NEW.subject_type
+    )
+    AND NEW."metric_result_count" = (
+        SELECT COUNT(*)
+        FROM "{result_table}" AS result
+        WHERE result.receipt_id = NEW.receipt_id
+    )
+    AND NEW."failed_metric_count" = (
+        SELECT COUNT(*)
+        FROM "{result_table}" AS result
+        WHERE result.receipt_id = NEW.receipt_id
+          AND result.outcome = 'fail'
+    )
+    AND NEW."failed_metric_count" = (
+        SELECT COUNT(*)
+        FROM "{finding_table}" AS finding
+        WHERE finding.receipt_id = NEW.receipt_id
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_assessment_seal_invalid');
+END''',
+    )
+    receipt_delete_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_{receipt_table}_delete"
+    )
+    receipt_delete_when = ""
+    if allow_board_erasure:
+        receipt_delete_when = f'''
+WHEN NOT EXISTS (
+    SELECT 1 FROM "{permit_table}" AS permit
+    WHERE permit.board_id = OLD.board_id
+)'''
+    manifest[receipt_delete_name] = (
+        receipt_table,
+        f'''CREATE TRIGGER "{receipt_delete_name}"
+BEFORE DELETE ON "{receipt_table}"{receipt_delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_assessment_immutable');
+END''',
+    )
+
+    result_insert_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_metric_result_insert"
+    )
+    manifest[result_insert_name] = (
+        result_table,
+        f'''CREATE TRIGGER "{result_insert_name}"
+BEFORE INSERT ON "{result_table}"
+WHEN NOT EXISTS (
+      SELECT 1
+      FROM "{receipt_table}" AS receipt
+      JOIN "{binding_table}" AS binding
+        ON binding.binding_id = receipt.binding_id
+       AND binding.binding_revision = receipt.binding_revision
+       AND binding.configuration_digest = receipt.configuration_digest
+      JOIN "{revision_table}" AS revision
+        ON revision.guideline_id = receipt.guideline_id
+       AND revision.revision_id = receipt.revision_id
+       AND revision.revision_digest = receipt.revision_digest,
+           json_each(revision.metrics) AS metric
+      WHERE receipt.receipt_id = NEW.receipt_id
+        AND receipt.sealed = 0
+        AND receipt.receipt_digest = NEW.receipt_digest
+        AND json_extract(metric.value, '$.metric_id') = NEW.metric_id
+        AND json_extract(metric.value, '$.code') = NEW.metric_code
+        AND json_extract(metric.value, '$.direction') = NEW.direction
+        AND json_extract(metric.value, '$.default_threshold')
+            = NEW.default_threshold
+        AND EXISTS (
+            SELECT 1
+            FROM json_each(
+                json_extract(metric.value, '$.target_entity_types')
+            ) AS target
+            WHERE target.value = receipt.subject_type
+        )
+        AND NEW.effective_threshold = COALESCE(
+            (
+                SELECT override.value
+                FROM json_each(
+                    binding.metric_threshold_overrides
+                ) AS override
+                WHERE override.key = NEW.metric_code
+            ),
+            json_extract(metric.value, '$.default_threshold')
+        )
+        AND NEW.threshold_source = CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM json_each(
+                    binding.metric_threshold_overrides
+                ) AS override
+                WHERE override.key = NEW.metric_code
+            ) THEN 'override'
+            ELSE 'default'
+        END
+  )
+  OR json_type(NEW."evidence_refs") <> 'array'
+  OR json_array_length(NEW."evidence_refs") = 0
+  OR json_type(NEW."pinpoints") <> 'array'
+  OR json_array_length(NEW."pinpoints") = 0
+  OR EXISTS (
+      SELECT 1
+      FROM json_each(NEW."evidence_refs") AS evidence
+      WHERE json_type(evidence.value) <> 'object'
+         OR json_type(evidence.value, '$.source_type') <> 'text'
+         OR length(trim(json_extract(
+                evidence.value, '$.source_type'
+            ))) = 0
+         OR json_type(evidence.value, '$.source_id') <> 'text'
+         OR length(trim(json_extract(
+                evidence.value, '$.source_id'
+            ))) = 0
+         OR json_type(evidence.value, '$.source_version') <> 'integer'
+         OR json_extract(evidence.value, '$.source_version') < 1
+         OR json_type(evidence.value, '$.content_hash') <> 'text'
+         OR length(json_extract(evidence.value, '$.content_hash')) <> 64
+         OR json_extract(evidence.value, '$.content_hash')
+                GLOB '*[^0-9a-f]*'
+  )
+  OR EXISTS (
+      SELECT 1
+      FROM json_each(NEW."pinpoints") AS pinpoint
+      WHERE json_type(pinpoint.value) <> 'object'
+         OR json_extract(pinpoint.value, '$.anchor_type') NOT IN (
+             'whole_artifact', 'field', 'structured_child', 'qa'
+         )
+         OR (
+             json_type(pinpoint.value, '$.anchor_ref')
+                 NOT IN ('text', 'null')
+         )
+         OR (
+              json_type(pinpoint.value, '$.excerpt_hash')
+                  NOT IN ('text', 'null')
+          )
+          OR json_type(pinpoint.value, '$.subject') <> 'object'
+          OR json_type(pinpoint.value, '$.subject.board_id') <> 'text'
+          OR json_extract(pinpoint.value, '$.subject.board_id')
+                 <> NEW.board_id
+          OR json_type(pinpoint.value, '$.subject.subject_type') <> 'text'
+          OR json_extract(pinpoint.value, '$.subject.subject_type')
+                 <> NEW.subject_type
+          OR json_type(pinpoint.value, '$.subject.subject_id') <> 'text'
+          OR json_extract(pinpoint.value, '$.subject.subject_id')
+                 <> NEW.subject_id
+          OR json_type(pinpoint.value, '$.subject.subject_version')
+                 <> 'integer'
+          OR json_extract(pinpoint.value, '$.subject.subject_version')
+                 <> NEW.subject_version
+         OR json_type(pinpoint.value, '$.input_digest') <> 'text'
+         OR json_extract(pinpoint.value, '$.input_digest') <> (
+             SELECT receipt.input_digest
+             FROM "{receipt_table}" AS receipt
+             WHERE receipt.receipt_id = NEW.receipt_id
+         )
+         OR (
+             json_extract(pinpoint.value, '$.anchor_type')
+                 = 'whole_artifact'
+             AND json_type(pinpoint.value, '$.anchor_ref') IS NOT 'null'
+         )
+         OR (
+             json_extract(pinpoint.value, '$.anchor_type')
+                 <> 'whole_artifact'
+             AND (
+                 json_type(pinpoint.value, '$.anchor_ref') <> 'text'
+                 OR length(trim(json_extract(
+                        pinpoint.value, '$.anchor_ref'
+                    ))) = 0
+             )
+         )
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_metric_result_invalid');
+END''',
+    )
+    add_immutable(
+        table_name=result_table,
+        board_expression='OLD."board_id"',
+        message="semantic_guideline_metric_result_immutable",
+    )
+
+    finding_insert_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_finding_insert"
+    )
+    manifest[finding_insert_name] = (
+        finding_table,
+        f'''CREATE TRIGGER "{finding_insert_name}"
+BEFORE INSERT ON "{finding_table}"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM "{result_table}" AS result
+    JOIN "{receipt_table}" AS receipt
+      ON receipt.receipt_id = result.receipt_id
+     AND receipt.sealed = 0
+     AND receipt.receipt_digest = NEW.receipt_digest
+    WHERE result.result_id = NEW.metric_result_id
+      AND result.receipt_id = NEW.receipt_id
+      AND result.board_id = NEW.board_id
+      AND result.subject_type = NEW.subject_type
+      AND result.subject_id = NEW.subject_id
+      AND result.subject_version = NEW.subject_version
+      AND result.subject_content_digest = NEW.subject_content_digest
+      AND result.receipt_digest = NEW.receipt_digest
+      AND result.guideline_id = NEW.guideline_id
+      AND result.revision_id = NEW.revision_id
+      AND result.revision_digest = NEW.revision_digest
+      AND result.binding_id = NEW.binding_id
+      AND result.binding_revision = NEW.binding_revision
+      AND result.configuration_digest = NEW.configuration_digest
+      AND result.metric_id = NEW.metric_id
+      AND result.metric_code = NEW.metric_code
+      AND result.result_digest = NEW.metric_result_digest
+      AND result.outcome = 'fail'
+      AND result.rationale = NEW.rationale
+      AND result.evidence_refs IS NEW.evidence_refs
+      AND result.pinpoints IS NEW.pinpoints
+      AND result.created_at = NEW.created_at
+)
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_finding_invalid');
+END''',
+    )
+    add_immutable(
+        table_name=finding_table,
+        board_expression='OLD."board_id"',
+        message="semantic_guideline_finding_immutable",
+    )
+
+    waiver_head_immutable_columns = (
+        "waiver_id",
+        "board_id",
+        "metric_result_id",
+        "finding_id",
+        "receipt_id",
+        "assessment_assessor_id",
+        "subject_type",
+        "subject_id",
+        "subject_version",
+        "subject_content_digest",
+        "receipt_digest",
+        "guideline_id",
+        "revision_id",
+        "revision_digest",
+        "binding_id",
+        "binding_revision",
+        "configuration_digest",
+        "metric_id",
+        "metric_code",
+        "metric_result_digest",
+        "finding_digest",
+        "scope_digest",
+        "justification",
+        "evidence_refs",
+        "requested_by",
+        "requested_at",
+        "original_expires_at",
+        "idempotency_key",
+        "request_digest",
+    )
+    waiver_unchanged = "\n    AND ".join(
+        f'NEW."{column}" IS OLD."{column}"'
+        for column in waiver_head_immutable_columns
+    )
+    waiver_insert_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_insert"
+    )
+    manifest[waiver_insert_name] = (
+        waiver_table,
+        f'''CREATE TRIGGER "{waiver_insert_name}"
+BEFORE INSERT ON "{waiver_table}"
+WHEN NEW."status" <> 'requested'
+  OR NEW."waiver_revision" <> 1
+  OR NEW."last_event_type" <> 'request'
+  OR length(trim(NEW."assessment_assessor_id")) = 0
+  OR (
+      NEW."expires_at" IS NOT NULL
+      AND NEW."requested_at" >= NEW."expires_at"
+  )
+  OR json_type(NEW."evidence_refs") <> 'array'
+  OR json_array_length(NEW."evidence_refs") = 0
+  OR json_type(
+      NEW."last_revalidation_currentness_reasons"
+  ) <> 'array'
+  OR json_array_length(
+      NEW."last_revalidation_currentness_reasons"
+  ) <> 0
+  OR NOT EXISTS (
+      SELECT 1
+      FROM "{result_table}" AS result
+      JOIN "{finding_table}" AS finding
+       ON finding.metric_result_id = result.result_id
+       AND finding.receipt_id = result.receipt_id
+       AND finding.receipt_digest = NEW.receipt_digest
+       AND finding.metric_result_digest = result.result_digest
+      JOIN "{receipt_table}" AS receipt
+        ON receipt.receipt_id = result.receipt_id
+       AND receipt.sealed = 1
+       AND receipt.receipt_digest = NEW.receipt_digest
+       AND receipt.assessor_agent_id = NEW.assessment_assessor_id
+      WHERE result.result_id = NEW.metric_result_id
+        AND result.receipt_id = NEW.receipt_id
+        AND result.receipt_digest = NEW.receipt_digest
+        AND result.board_id = NEW.board_id
+        AND result.subject_type = NEW.subject_type
+        AND result.subject_id = NEW.subject_id
+        AND result.subject_version = NEW.subject_version
+        AND result.subject_content_digest = NEW.subject_content_digest
+        AND result.guideline_id = NEW.guideline_id
+        AND result.revision_id = NEW.revision_id
+        AND result.revision_digest = NEW.revision_digest
+        AND result.binding_id = NEW.binding_id
+        AND result.binding_revision = NEW.binding_revision
+        AND result.configuration_digest = NEW.configuration_digest
+        AND result.metric_id = NEW.metric_id
+        AND result.metric_code = NEW.metric_code
+        AND result.result_digest = NEW.metric_result_digest
+        AND finding.finding_id = NEW.finding_id
+        AND finding.finding_digest = NEW.finding_digest
+        AND result.outcome = 'fail'
+        AND result.created_at <= NEW.requested_at
+  )
+  OR EXISTS (
+      SELECT 1
+      FROM "{waiver_table}" AS active
+      WHERE active.board_id = NEW.board_id
+        AND active.scope_digest = NEW.scope_digest
+        AND active.metric_result_id = NEW.metric_result_id
+        AND active.metric_result_digest = NEW.metric_result_digest
+        AND active.finding_id = NEW.finding_id
+        AND active.finding_digest = NEW.finding_digest
+        AND active.receipt_id = NEW.receipt_id
+        AND active.receipt_digest = NEW.receipt_digest
+        AND active.assessment_assessor_id =
+            NEW.assessment_assessor_id
+        AND active.binding_id = NEW.binding_id
+        AND active.binding_revision = NEW.binding_revision
+        AND active.configuration_digest = NEW.configuration_digest
+        AND active.metric_id = NEW.metric_id
+        AND active.subject_type = NEW.subject_type
+        AND active.subject_id = NEW.subject_id
+        AND active.subject_version = NEW.subject_version
+        AND active.subject_content_digest = NEW.subject_content_digest
+        AND active.guideline_id = NEW.guideline_id
+        AND active.revision_id = NEW.revision_id
+        AND active.revision_digest = NEW.revision_digest
+        AND active.status IN ('requested', 'approved')
+        AND (
+            active.expires_at IS NULL
+            OR active.expires_at > NEW.requested_at
+        )
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_waiver_request_invalid');
+END''',
+    )
+    waiver_scope_insert_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_scope_insert"
+    )
+    manifest[waiver_scope_insert_name] = (
+        waiver_table,
+        f'''CREATE TRIGGER "{waiver_scope_insert_name}"
+BEFORE INSERT ON "{waiver_table}"
+WHEN EXISTS (
+    SELECT 1
+    FROM "{waiver_table}" AS active
+    WHERE active.board_id = NEW.board_id
+      AND active.scope_digest = NEW.scope_digest
+      AND active.status IN ('requested', 'approved')
+      AND (
+          active.expires_at IS NULL
+          OR active.expires_at > NEW.requested_at
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_waiver_scope_conflict');
+END''',
+    )
+    waiver_update_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_update"
+    )
+    manifest[waiver_update_name] = (
+        waiver_table,
+        f'''CREATE TRIGGER "{waiver_update_name}"
+BEFORE UPDATE ON "{waiver_table}"
+WHEN NOT (
+    {waiver_unchanged}
+    AND NEW."waiver_revision" = OLD."waiver_revision" + 1
+    AND NEW."last_event_id" <> OLD."last_event_id"
+    AND NEW."last_event_at" >= OLD."last_event_at"
+    AND (
+        NEW."last_event_type" = 'revalidate'
+        OR (
+            NEW."last_revalidation_status"
+                IS OLD."last_revalidation_status"
+            AND NEW."last_revalidation_current"
+                IS OLD."last_revalidation_current"
+            AND NEW."last_revalidation_reason_code"
+                IS OLD."last_revalidation_reason_code"
+            AND NEW."last_revalidation_evaluated_at"
+                IS OLD."last_revalidation_evaluated_at"
+            AND json(NEW."last_revalidation_currentness_reasons") =
+                json(OLD."last_revalidation_currentness_reasons")
+            AND NEW."last_revalidation_scheduled_expiry_observed" =
+                OLD."last_revalidation_scheduled_expiry_observed"
+        )
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_waiver_head_cas_invalid');
+END''',
+    )
+    waiver_delete_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_delete"
+    )
+    waiver_delete_when = ""
+    if allow_board_erasure:
+        waiver_delete_when = f'''
+WHEN NOT EXISTS (
+    SELECT 1 FROM "{permit_table}" AS permit
+    WHERE permit.board_id = OLD.board_id
+)'''
+    manifest[waiver_delete_name] = (
+        waiver_table,
+        f'''CREATE TRIGGER "{waiver_delete_name}"
+BEFORE DELETE ON "{waiver_table}"{waiver_delete_when}
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_waiver_immutable');
+END''',
+    )
+    waiver_event_insert_name = (
+        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_event_insert"
+    )
+    manifest[waiver_event_insert_name] = (
+        waiver_event_table,
+        f'''CREATE TRIGGER "{waiver_event_insert_name}"
+BEFORE INSERT ON "{waiver_event_table}"
+WHEN length(trim(NEW."actor_id")) = 0
+  OR length(trim(NEW."reason")) = 0
+  OR json_type(NEW."evidence_refs") <> 'array'
+  OR json_array_length(NEW."evidence_refs") = 0
+  OR json_type(NEW."currentness_reasons") <> 'array'
+  OR (
+      NEW."event_type" <> 'revalidate'
+      AND json_array_length(NEW."currentness_reasons") <> 0
+  )
+  OR (
+      NEW."event_type" = 'revalidate'
+      AND (
+          NEW."scheduled_expiry_observed" <>
+              (
+                  NEW."expires_at" IS NOT NULL
+                  AND NEW."expires_at" <= NEW."evaluated_at"
+              )
+          OR (
+              NEW."revalidation_status" IN ('approved', 'expired')
+              AND json_array_length(NEW."currentness_reasons") <> 0
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM json_each(NEW."currentness_reasons") AS reason
+              WHERE reason.value NOT IN (
+                  'current_snapshot_missing',
+                  'subject_version_changed',
+                  'subject_content_changed',
+                  'guideline_revision_changed',
+                  'guideline_revision_digest_changed',
+                  'binding_revision_changed',
+                  'binding_configuration_changed',
+                  'policy_set_changed',
+                  'binding_head_changed',
+                  'input_digest_changed'
+              )
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM json_each(NEW."currentness_reasons") AS reason
+              GROUP BY reason.value
+              HAVING count(*) > 1
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM json_each(NEW."currentness_reasons") AS left_reason
+              JOIN json_each(NEW."currentness_reasons") AS right_reason
+                ON CAST(left_reason.key AS INTEGER) <
+                   CAST(right_reason.key AS INTEGER)
+              WHERE
+                CASE left_reason.value
+                  WHEN 'current_snapshot_missing' THEN 1
+                  WHEN 'subject_version_changed' THEN 2
+                  WHEN 'subject_content_changed' THEN 3
+                  WHEN 'guideline_revision_changed' THEN 4
+                  WHEN 'guideline_revision_digest_changed' THEN 5
+                  WHEN 'binding_revision_changed' THEN 6
+                  WHEN 'binding_configuration_changed' THEN 7
+                  WHEN 'policy_set_changed' THEN 8
+                  WHEN 'binding_head_changed' THEN 9
+                  WHEN 'input_digest_changed' THEN 10
+                END >
+                CASE right_reason.value
+                  WHEN 'current_snapshot_missing' THEN 1
+                  WHEN 'subject_version_changed' THEN 2
+                  WHEN 'subject_content_changed' THEN 3
+                  WHEN 'guideline_revision_changed' THEN 4
+                  WHEN 'guideline_revision_digest_changed' THEN 5
+                  WHEN 'binding_revision_changed' THEN 6
+                  WHEN 'binding_configuration_changed' THEN 7
+                  WHEN 'policy_set_changed' THEN 8
+                  WHEN 'binding_head_changed' THEN 9
+                  WHEN 'input_digest_changed' THEN 10
+                END
+          )
+      )
+  )
+  OR NOT EXISTS (
+      SELECT 1
+      FROM "{waiver_table}" AS head
+      WHERE head.waiver_id = NEW.waiver_id
+        AND head.board_id = NEW.board_id
+        AND head.waiver_revision = NEW.waiver_revision
+        AND head.last_event_id = NEW.event_id
+        AND head.last_event_type = NEW.event_type
+        AND head.last_event_at = NEW.occurred_at
+        AND head.last_event_idempotency_key = NEW.idempotency_key
+        AND head.status = NEW.to_status
+        AND head.expires_at IS NEW.expires_at
+        AND head.expire_reason_code IS NEW.expire_reason_code
+        AND head.scope_digest = NEW.scope_digest
+        AND head.head_digest = NEW.waiver_digest
+        AND head.reviewed_by IS NEW.reviewed_by
+        AND head.reviewed_at IS NEW.reviewed_at
+        AND head.review_reason IS NEW.review_reason
+        AND head.revoked_by IS NEW.revoked_by
+        AND head.revoked_at IS NEW.revoked_at
+        AND (
+            NEW.event_type <> 'revalidate'
+            OR (
+                head.last_revalidation_status IS
+                    NEW.revalidation_status
+                AND head.last_revalidation_current IS
+                    NEW.revalidation_current
+                AND head.last_revalidation_reason_code IS
+                    NEW.revalidation_reason_code
+                AND head.last_revalidation_evaluated_at IS
+                    NEW.evaluated_at
+                AND json(
+                    head.last_revalidation_currentness_reasons
+                ) = json(NEW.currentness_reasons)
+                AND
+                    head.last_revalidation_scheduled_expiry_observed =
+                    NEW.scheduled_expiry_observed
+            )
+        )
+        AND (
+            NEW.event_type <> 'request'
+            OR (
+                NEW.actor_id = head.requested_by
+                AND NEW.occurred_at = head.requested_at
+                AND NEW.reason = head.justification
+                AND json(NEW.evidence_refs) = json(head.evidence_refs)
+                AND NEW.expires_at IS head.original_expires_at
+                AND NEW.idempotency_key = head.idempotency_key
+                AND NEW.request_digest = head.request_digest
+            )
+        )
+        AND (
+            NEW.event_type NOT IN ('approve', 'reject')
+            OR (
+                NEW.actor_id = head.reviewed_by
+                AND NEW.actor_id <> head.requested_by
+                AND NEW.actor_id <> head.assessment_assessor_id
+                AND NEW.occurred_at = head.reviewed_at
+                AND NEW.reason = head.review_reason
+                AND (
+                    NEW.expires_at IS NULL
+                    OR NEW.expires_at > NEW.occurred_at
+                )
+            )
+        )
+        AND (
+            NEW.event_type <> 'revalidate'
+            OR (
+                NEW.actor_id <> head.requested_by
+                AND NEW.actor_id <> head.assessment_assessor_id
+                AND NEW.reason = NEW.revalidation_reason_code
+            )
+        )
+        AND (
+            NEW.event_type <> 'revoke'
+            OR (
+                NEW.actor_id = head.revoked_by
+                AND NEW.occurred_at = head.revoked_at
+            )
+        )
+  )
+  OR (
+      NEW."event_type" = 'request'
+      AND (
+          NEW."predecessor_event_id" IS NOT NULL
+          OR EXISTS (
+              SELECT 1 FROM "{waiver_event_table}" AS prior
+              WHERE prior.waiver_id = NEW.waiver_id
+          )
+      )
+  )
+  OR (
+      NEW."event_type" <> 'request'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM "{waiver_event_table}" AS predecessor
+          WHERE predecessor.event_id = NEW.predecessor_event_id
+            AND predecessor.waiver_id = NEW.waiver_id
+            AND predecessor.board_id = NEW.board_id
+            AND predecessor.waiver_revision = NEW.waiver_revision - 1
+            AND predecessor.to_status = NEW.from_status
+            AND (
+                NEW.event_type <> 'revalidate'
+                OR NEW.evaluated_at >= predecessor.occurred_at
+            )
+            AND (
+                (
+                    NEW.event_type <> 'approve'
+                    AND NEW.expires_at IS predecessor.expires_at
+                )
+                OR (
+                    NEW.event_type = 'approve'
+                    AND (
+                        NEW.expires_at IS NULL
+                        OR NEW.expires_at > NEW.occurred_at
+                    )
+                )
+            )
+      )
+  )
+  OR (
+      NEW."event_type" = 'expire'
+      AND NEW."expire_reason_code" = 'scheduled_expiry'
+      AND (
+          NEW."expires_at" IS NULL
+          OR NEW."occurred_at" < NEW."expires_at"
+      )
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_waiver_event_append_invalid');
+END''',
+    )
+    add_immutable(
+        table_name=waiver_event_table,
+        board_expression='OLD."board_id"',
+        message="semantic_guideline_waiver_event_immutable",
+    )
+
+    skip_insert_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_skip_insert"
+    manifest[skip_insert_name] = (
+        skip_table,
+        f'''CREATE TRIGGER "{skip_insert_name}"
+BEFORE INSERT ON "{skip_table}"
+WHEN length(trim(NEW."reason")) = 0
+  OR length(trim(NEW."actor_id")) = 0
+  OR NEW."actor_kind" <> 'human'
+  OR (
+      NEW."event_type" = 'create'
+      AND (
+          NEW."from_status" IS NOT NULL
+          OR NEW."created_by" <> NEW."actor_id"
+          OR NEW."created_at" <> NEW."occurred_at"
+          OR NEW."revoked_by" IS NOT NULL
+          OR NEW."revoked_at" IS NOT NULL
+          OR NEW."revocation_reason" IS NOT NULL
+          OR
+          EXISTS (
+              SELECT 1
+              FROM "{skip_table}" AS prior
+              WHERE prior.skip_id = NEW.skip_id
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM "{skip_table}" AS active
+              WHERE active.board_id = NEW.board_id
+                AND active.scope_digest = NEW.scope_digest
+                AND active.binding_id = NEW.binding_id
+                AND active.binding_revision = NEW.binding_revision
+                AND active.configuration_digest = NEW.configuration_digest
+                AND active.subject_type = NEW.subject_type
+                AND active.subject_id = NEW.subject_id
+                AND active.subject_version = NEW.subject_version
+                AND active.subject_content_digest
+                    = NEW.subject_content_digest
+                AND active.guideline_id = NEW.guideline_id
+                AND active.revision_id = NEW.revision_id
+                AND active.revision_digest = NEW.revision_digest
+                AND active.status = 'active'
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM "{skip_table}" AS successor
+                    WHERE successor.predecessor_event_id = active.event_id
+                )
+          )
+      )
+  )
+  OR (
+      NEW."event_type" = 'revoke'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM "{skip_table}" AS predecessor
+          WHERE predecessor.event_id = NEW.predecessor_event_id
+            AND predecessor.skip_id = NEW.skip_id
+            AND predecessor.skip_revision = NEW.skip_revision - 1
+            AND predecessor.status = 'active'
+            AND NEW.from_status = predecessor.status
+            AND predecessor.board_id = NEW.board_id
+            AND predecessor.binding_id = NEW.binding_id
+            AND predecessor.binding_revision = NEW.binding_revision
+            AND predecessor.configuration_digest
+                = NEW.configuration_digest
+            AND predecessor.subject_type = NEW.subject_type
+            AND predecessor.subject_id = NEW.subject_id
+            AND predecessor.subject_version = NEW.subject_version
+            AND predecessor.subject_content_digest
+                = NEW.subject_content_digest
+            AND predecessor.guideline_id = NEW.guideline_id
+            AND predecessor.revision_id = NEW.revision_id
+            AND predecessor.revision_digest = NEW.revision_digest
+            AND predecessor.scope_digest = NEW.scope_digest
+            AND NEW.reason IS predecessor.reason
+            AND NEW.created_by IS predecessor.created_by
+            AND NEW.created_at IS predecessor.created_at
+            AND NEW.revoked_by IS NEW.actor_id
+            AND NEW.revoked_at IS NEW.occurred_at
+            AND length(trim(NEW.revocation_reason)) > 0
+            AND predecessor.occurred_at <= NEW.occurred_at
+      )
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_guideline_skip_invalid');
+END''',
+    )
+    add_immutable(
+        table_name=skip_table,
+        board_expression='OLD."board_id"',
+        message="semantic_guideline_skip_immutable",
+    )
+    add_immutable(
+        table_name=migration_table,
+        board_expression='OLD."board_id"',
+        message="semantic_guideline_migration_audit_immutable",
+    )
+    return manifest
+
+
+def semantic_guideline_postgresql_ddl(
+) -> tuple[str, dict[str, tuple[str, str, int]]]:
+    """Return PostgreSQL guards equivalent to the SQLite SK-B3 authority.
+
+    The returned trigger map stores ``table, operation clause, tgtype``.  Names
+    are intentionally short because PostgreSQL truncates identifiers beyond
+    63 bytes, which would otherwise make convergence auditing ambiguous.
+    """
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SemanticGuidelineAssessmentReceiptRow,
+        SemanticGuidelineBindingConfigurationRow,
+        SemanticGuidelineFindingRow,
+        SemanticGuidelineLegacyMigrationRow,
+        SemanticGuidelineMetricResultRow,
+        SemanticGuidelineRevisionRow,
+        SemanticGuidelineSkipRow,
+        SemanticGuidelineWaiverEventRow,
+        SemanticGuidelineWaiverRow,
+        SemanticSubjectVersionEventRow,
+        SemanticSubjectVersionRow,
+    )
+
+    function_name = "semantic_guideline_guard_v3"
+    function_sql = f"""
+CREATE OR REPLACE FUNCTION {function_name}() RETURNS trigger AS $$
+DECLARE
+    metric jsonb;
+    target text;
+    override_entry record;
+BEGIN
+    IF TG_TABLE_NAME = 'semantic_guideline_revisions' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF jsonb_typeof(NEW.metrics::jsonb) <> 'array'
+               OR (
+                   NEW.authority_state <> 'native'
+                   AND jsonb_array_length(NEW.metrics::jsonb) <> 0
+               )
+               OR EXISTS (
+                   SELECT 1
+                   FROM jsonb_array_elements(NEW.metrics::jsonb) AS item(value)
+                   WHERE jsonb_typeof(item.value) IS DISTINCT FROM 'object'
+                       OR jsonb_typeof(item.value->'metric_id')
+                          IS DISTINCT FROM 'string'
+                       OR btrim(item.value->>'metric_id') = ''
+                       OR item.value->>'metric_id'
+                          <> btrim(item.value->>'metric_id')
+                       OR char_length(item.value->>'metric_id') > 64
+                       OR lower(btrim(item.value->>'metric_id'))
+                          = 'confidence'
+                       OR jsonb_typeof(item.value->'code')
+                          IS DISTINCT FROM 'string'
+                       OR btrim(item.value->>'code') = ''
+                       OR item.value->>'code' <> btrim(item.value->>'code')
+                       OR char_length(item.value->>'code') > 128
+                       OR lower(btrim(item.value->>'code')) = 'confidence'
+                       OR item.value->>'code'
+                          !~ '^[A-Za-z][A-Za-z0-9_.:-]*$'
+                       OR jsonb_typeof(item.value->'title')
+                          IS DISTINCT FROM 'string'
+                       OR btrim(item.value->>'title') = ''
+                       OR item.value->>'title' <> btrim(item.value->>'title')
+                       OR char_length(item.value->>'title') > 500
+                       OR lower(btrim(item.value->>'title')) = 'confidence'
+                      OR jsonb_typeof(item.value->'description')
+                         IS DISTINCT FROM 'string'
+                      OR btrim(item.value->>'description') = ''
+                      OR item.value->>'description'
+                         <> btrim(item.value->>'description')
+                      OR jsonb_typeof(item.value->'evaluation_rubric')
+                         IS DISTINCT FROM 'string'
+                      OR btrim(item.value->>'evaluation_rubric') = ''
+                      OR item.value->>'evaluation_rubric'
+                         <> btrim(item.value->>'evaluation_rubric')
+                      OR jsonb_typeof(item.value->'target_entity_types')
+                         IS DISTINCT FROM 'array'
+                      OR jsonb_array_length(
+                             item.value->'target_entity_types'
+                         ) = 0
+                      OR item.value->>'direction'
+                         NOT IN ('minimum', 'maximum')
+                      OR jsonb_typeof(item.value->'default_threshold')
+                         IS DISTINCT FROM 'number'
+                      OR (item.value->>'default_threshold') !~ '^[0-9]+$'
+                      OR (item.value->>'default_threshold')::integer
+                         NOT BETWEEN 0 AND 100
+                      OR EXISTS (
+                          SELECT 1
+                          FROM jsonb_array_elements_text(
+                              item.value->'target_entity_types'
+                          ) AS entity(value)
+                           WHERE entity.value NOT IN (
+                               'ideation', 'refinement', 'spec', 'card',
+                               'sprint', 'test_scenario'
+                           )
+                       )
+                       OR (
+                           SELECT count(*)
+                           FROM jsonb_array_elements_text(
+                               item.value->'target_entity_types'
+                           )
+                       ) <> (
+                           SELECT count(DISTINCT entity.value)
+                           FROM jsonb_array_elements_text(
+                               item.value->'target_entity_types'
+                           ) AS entity(value)
+                       )
+                       OR item.value->'target_entity_types' <> (
+                           SELECT jsonb_agg(entity.value ORDER BY entity.value)
+                           FROM jsonb_array_elements_text(
+                               item.value->'target_entity_types'
+                           ) AS entity(value)
+                       )
+               )
+               OR (
+                   SELECT count(*)
+                   FROM jsonb_array_elements(NEW.metrics::jsonb)
+               ) <> (
+                   SELECT count(DISTINCT item.value->>'metric_id')
+                   FROM jsonb_array_elements(NEW.metrics::jsonb) AS item(value)
+               )
+               OR (
+                   SELECT count(*)
+                   FROM jsonb_array_elements(NEW.metrics::jsonb)
+               ) <> (
+                   SELECT count(DISTINCT lower(item.value->>'code'))
+                   FROM jsonb_array_elements(NEW.metrics::jsonb) AS item(value)
+               )
+            THEN
+                RAISE EXCEPTION 'semantic_guideline_metrics_invalid';
+            END IF;
+            RETURN NEW;
+        ELSIF TG_OP = 'DELETE' THEN
+            IF EXISTS (
+                SELECT 1
+                FROM kg_board_erasure_permits AS permit
+                JOIN guidelines AS guideline
+                  ON guideline.board_id = permit.board_id
+                WHERE guideline.id = OLD.guideline_id
+                  AND guideline.scope = 'inline'
+            ) THEN
+                RETURN OLD;
+            END IF;
+            RAISE EXCEPTION 'semantic_guideline_revision_immutable';
+        END IF;
+        RAISE EXCEPTION 'semantic_guideline_revision_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = 'semantic_guideline_binding_configurations' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF jsonb_typeof(NEW.metric_threshold_overrides::jsonb) <> 'object'
+               OR NOT EXISTS (
+                   SELECT 1
+                   FROM guideline_board_bindings AS legacy
+                   WHERE legacy.binding_id = NEW.binding_id
+                     AND legacy.binding_revision = NEW.binding_revision
+                     AND legacy.board_id = NEW.board_id
+                     AND legacy.guideline_id = NEW.guideline_id
+                     AND legacy.revision_id = NEW.revision_id
+               )
+               OR EXISTS (
+                   SELECT 1
+                   FROM semantic_guideline_revisions AS revision
+                   WHERE revision.guideline_id = NEW.guideline_id
+                     AND revision.revision_id = NEW.revision_id
+                     AND revision.revision_digest = NEW.revision_digest
+                     AND revision.authority_state = 'legacy_incompatible'
+               )
+               OR EXISTS (
+                   SELECT 1
+                   FROM jsonb_each(
+                       NEW.metric_threshold_overrides::jsonb
+                   ) AS item(key, value)
+                   WHERE jsonb_typeof(item.value) IS DISTINCT FROM 'number'
+                      OR item.value::text !~ '^[0-9]+$'
+                      OR item.value::text::integer NOT BETWEEN 0 AND 100
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM semantic_guideline_revisions AS revision,
+                               jsonb_array_elements(
+                                   revision.metrics::jsonb
+                               ) AS metric(value)
+                          WHERE revision.guideline_id = NEW.guideline_id
+                            AND revision.revision_id = NEW.revision_id
+                            AND revision.revision_digest = NEW.revision_digest
+                            AND metric.value->>'code' = item.key
+                      )
+               )
+               OR EXISTS (
+                   SELECT 1
+                   FROM guideline_board_bindings AS legacy
+                   WHERE legacy.binding_id = NEW.binding_id
+                     AND legacy.binding_revision = NEW.binding_revision
+                     AND legacy.impact_adoption_id IS NOT NULL
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM guideline_impact_receipts AS receipt
+                         WHERE receipt.impact_receipt_id =
+                                 legacy.impact_receipt_id
+                           AND receipt.board_id = NEW.board_id
+                           AND receipt.guideline_id = NEW.guideline_id
+                           AND receipt.to_revision_id = NEW.revision_id
+                           AND receipt.to_revision_digest =
+                                 NEW.revision_digest
+                           AND receipt.proposed_enforcement =
+                                 NEW.enforcement
+                           AND receipt.proposed_minimum_confidence =
+                                 NEW.minimum_confidence
+                           AND receipt.proposed_metric_threshold_overrides::jsonb
+                               = NEW.metric_threshold_overrides::jsonb
+                           AND receipt.sealed = true
+                     )
+               )
+            THEN
+                RAISE EXCEPTION
+                    'semantic_guideline_binding_configuration_invalid';
+            END IF;
+            RETURN NEW;
+        ELSIF TG_OP = 'DELETE'
+              AND EXISTS (
+                  SELECT 1 FROM kg_board_erasure_permits AS permit
+                  WHERE permit.board_id = OLD.board_id
+              )
+        THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION
+            'semantic_guideline_binding_configuration_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = 'semantic_subject_versions' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.head_revision <> 1 THEN
+                RAISE EXCEPTION
+                    'semantic_subject_head_initial_revision_invalid';
+            END IF;
+            RETURN NEW;
+        ELSIF TG_OP = 'UPDATE' THEN
+            IF NEW.board_id IS NOT DISTINCT FROM OLD.board_id
+               AND NEW.subject_type IS NOT DISTINCT FROM OLD.subject_type
+               AND NEW.subject_id IS NOT DISTINCT FROM OLD.subject_id
+               AND NEW.head_revision = OLD.head_revision + 1
+               AND NEW.last_event_id <> OLD.last_event_id
+               AND NEW.subject_version >= OLD.subject_version
+               AND NEW.updated_at >= OLD.updated_at
+            THEN
+                RETURN NEW;
+            END IF;
+            RAISE EXCEPTION 'semantic_subject_head_cas_invalid';
+        ELSIF EXISTS (
+            SELECT 1 FROM kg_board_erasure_permits AS permit
+            WHERE permit.board_id = OLD.board_id
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_subject_head_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = 'semantic_subject_version_events' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NOT EXISTS (
+                   SELECT 1
+                   FROM semantic_subject_versions AS head
+                   WHERE head.board_id = NEW.board_id
+                     AND head.subject_type = NEW.subject_type
+                     AND head.subject_id = NEW.subject_id
+                     AND head.subject_version = NEW.subject_version
+                     AND head.content_digest = NEW.content_digest
+                     AND head.last_semantic_editor_id =
+                         NEW.last_semantic_editor_id
+                     AND head.editor_source = NEW.editor_source
+                     AND head.head_revision = NEW.head_revision
+                     AND head.last_event_id = NEW.event_id
+                     AND head.updated_at = NEW.changed_at
+               )
+               OR (
+                   NEW.head_revision = 1
+                   AND (
+                       NEW.predecessor_event_id IS NOT NULL
+                       OR (
+                           NEW.editor_source = 'legacy_unknown'
+                           AND NEW.event_type <> 'legacy_bootstrap'
+                       )
+                       OR (
+                           NEW.editor_source = 'authoritative'
+                           AND NEW.event_type <> 'semantic_mutation'
+                       )
+                   )
+               )
+               OR (
+                   NEW.head_revision > 1
+                   AND (
+                       NEW.event_type <> 'semantic_mutation'
+                       OR NOT EXISTS (
+                           SELECT 1
+                           FROM semantic_subject_version_events AS predecessor
+                           WHERE predecessor.event_id =
+                               NEW.predecessor_event_id
+                             AND predecessor.board_id = NEW.board_id
+                             AND predecessor.subject_type = NEW.subject_type
+                             AND predecessor.subject_id = NEW.subject_id
+                             AND predecessor.head_revision =
+                                 NEW.head_revision - 1
+                             AND predecessor.subject_version <=
+                                 NEW.subject_version
+                             AND predecessor.changed_at <= NEW.changed_at
+                       )
+                   )
+               )
+            THEN
+                RAISE EXCEPTION 'semantic_subject_event_append_invalid';
+            END IF;
+            RETURN NEW;
+        ELSIF TG_OP = 'DELETE'
+              AND EXISTS (
+                  SELECT 1 FROM kg_board_erasure_permits AS permit
+                  WHERE permit.board_id = OLD.board_id
+              )
+        THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_subject_event_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = 'semantic_guideline_assessment_receipts' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.sealed THEN
+                RAISE EXCEPTION
+                    'semantic_guideline_assessment_initially_unsealed';
+            END IF;
+            RETURN NEW;
+        ELSIF TG_OP = 'UPDATE'
+           AND OLD.sealed = FALSE
+           AND NEW.sealed = TRUE
+           AND (to_jsonb(NEW) - 'sealed')
+               IS NOT DISTINCT FROM (to_jsonb(OLD) - 'sealed')
+           AND NEW.metric_result_count = (
+               SELECT count(*)
+               FROM semantic_guideline_revisions AS revision,
+                    jsonb_array_elements(
+                        revision.metrics::jsonb
+                    ) AS item(value)
+               WHERE revision.guideline_id = NEW.guideline_id
+                 AND revision.revision_id = NEW.revision_id
+                 AND revision.revision_digest = NEW.revision_digest
+                 AND item.value->'target_entity_types' ? NEW.subject_type
+           )
+           AND NEW.metric_result_count = (
+               SELECT count(*)
+               FROM semantic_guideline_metric_results AS result
+               WHERE result.receipt_id = NEW.receipt_id
+           )
+           AND NEW.failed_metric_count = (
+               SELECT count(*)
+               FROM semantic_guideline_metric_results AS result
+               WHERE result.receipt_id = NEW.receipt_id
+                 AND result.outcome = 'fail'
+           )
+           AND NEW.failed_metric_count = (
+               SELECT count(*)
+               FROM semantic_guideline_findings AS finding
+               WHERE finding.receipt_id = NEW.receipt_id
+           )
+        THEN
+            RETURN NEW;
+        ELSIF TG_OP = 'DELETE'
+              AND EXISTS (
+                  SELECT 1 FROM kg_board_erasure_permits AS permit
+                  WHERE permit.board_id = OLD.board_id
+              )
+        THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_guideline_assessment_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = 'semantic_guideline_metric_results' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NOT EXISTS (
+                   SELECT 1
+                   FROM semantic_guideline_assessment_receipts AS receipt
+                   JOIN semantic_guideline_binding_configurations AS binding
+                     ON binding.binding_id = receipt.binding_id
+                    AND binding.binding_revision = receipt.binding_revision
+                    AND binding.configuration_digest =
+                        receipt.configuration_digest
+                   JOIN semantic_guideline_revisions AS revision
+                     ON revision.guideline_id = receipt.guideline_id
+                    AND revision.revision_id = receipt.revision_id
+                    AND revision.revision_digest = receipt.revision_digest,
+                        jsonb_array_elements(
+                            revision.metrics::jsonb
+                        ) AS item(value)
+                   WHERE receipt.receipt_id = NEW.receipt_id
+                     AND receipt.sealed = FALSE
+                     AND receipt.receipt_digest = NEW.receipt_digest
+                     AND item.value->>'metric_id' = NEW.metric_id
+                     AND item.value->>'code' = NEW.metric_code
+                     AND item.value->>'direction' = NEW.direction
+                     AND (item.value->>'default_threshold')::integer =
+                         NEW.default_threshold
+                     AND item.value->'target_entity_types' ?
+                         receipt.subject_type
+                     AND NEW.effective_threshold = COALESCE(
+                         (
+                             binding.metric_threshold_overrides::jsonb
+                                 ->> NEW.metric_code
+                         )::integer,
+                         (item.value->>'default_threshold')::integer
+                     )
+                     AND NEW.threshold_source = CASE
+                         WHEN binding.metric_threshold_overrides::jsonb
+                                  ? NEW.metric_code
+                         THEN 'override'
+                         ELSE 'default'
+                     END
+               )
+               OR jsonb_typeof(NEW.evidence_refs::jsonb) <> 'array'
+               OR jsonb_array_length(NEW.evidence_refs::jsonb) = 0
+               OR EXISTS (
+                   SELECT 1
+                   FROM jsonb_array_elements(
+                       NEW.evidence_refs::jsonb
+                   ) AS evidence(value)
+                   WHERE jsonb_typeof(evidence.value)
+                         IS DISTINCT FROM 'object'
+                      OR jsonb_typeof(evidence.value->'source_type')
+                         IS DISTINCT FROM 'string'
+                      OR btrim(evidence.value->>'source_type') = ''
+                      OR jsonb_typeof(evidence.value->'source_id')
+                         IS DISTINCT FROM 'string'
+                      OR btrim(evidence.value->>'source_id') = ''
+                      OR jsonb_typeof(evidence.value->'source_version')
+                         IS DISTINCT FROM 'number'
+                      OR evidence.value->>'source_version' !~ '^[1-9][0-9]*$'
+                      OR jsonb_typeof(evidence.value->'content_hash')
+                         IS DISTINCT FROM 'string'
+                      OR evidence.value->>'content_hash' !~ '^[0-9a-f]{{64}}$'
+               )
+               OR jsonb_typeof(NEW.pinpoints::jsonb) <> 'array'
+               OR jsonb_array_length(NEW.pinpoints::jsonb) = 0
+               OR EXISTS (
+                   SELECT 1
+                   FROM jsonb_array_elements(
+                       NEW.pinpoints::jsonb
+                   ) AS pinpoint(value)
+                   WHERE jsonb_typeof(pinpoint.value)
+                         IS DISTINCT FROM 'object'
+                      OR pinpoint.value->>'anchor_type' NOT IN (
+                          'whole_artifact', 'field', 'structured_child', 'qa'
+                      )
+                      OR jsonb_typeof(pinpoint.value->'subject')
+                         IS DISTINCT FROM 'object'
+                      OR jsonb_typeof(pinpoint.value->'subject'->'board_id')
+                         IS DISTINCT FROM 'string'
+                      OR pinpoint.value->'subject'->>'board_id'
+                         <> NEW.board_id
+                      OR jsonb_typeof(
+                          pinpoint.value->'subject'->'subject_type'
+                      )
+                         IS DISTINCT FROM 'string'
+                      OR pinpoint.value->'subject'->>'subject_type'
+                         <> NEW.subject_type
+                      OR jsonb_typeof(
+                          pinpoint.value->'subject'->'subject_id'
+                      )
+                         IS DISTINCT FROM 'string'
+                      OR pinpoint.value->'subject'->>'subject_id'
+                         <> NEW.subject_id
+                      OR jsonb_typeof(
+                          pinpoint.value->'subject'->'subject_version'
+                      )
+                         IS DISTINCT FROM 'number'
+                      OR (
+                          pinpoint.value->'subject'->>'subject_version'
+                      )::integer <>
+                         NEW.subject_version
+                      OR jsonb_typeof(pinpoint.value->'input_digest')
+                         IS DISTINCT FROM 'string'
+                      OR pinpoint.value->>'input_digest' <> (
+                          SELECT receipt.input_digest
+                          FROM semantic_guideline_assessment_receipts
+                              AS receipt
+                          WHERE receipt.receipt_id = NEW.receipt_id
+                      )
+                      OR (
+                          pinpoint.value->>'anchor_type' = 'whole_artifact'
+                          AND pinpoint.value ? 'anchor_ref'
+                          AND jsonb_typeof(pinpoint.value->'anchor_ref') <>
+                              'null'
+                      )
+                      OR (
+                          pinpoint.value->>'anchor_type' <> 'whole_artifact'
+                          AND (
+                              jsonb_typeof(pinpoint.value->'anchor_ref')
+                                  IS DISTINCT FROM 'string'
+                              OR btrim(pinpoint.value->>'anchor_ref') = ''
+                          )
+                      )
+               )
+            THEN
+                RAISE EXCEPTION
+                    'semantic_guideline_metric_result_invalid';
+            END IF;
+            RETURN NEW;
+        ELSIF TG_OP = 'DELETE'
+              AND EXISTS (
+                  SELECT 1 FROM kg_board_erasure_permits AS permit
+                  WHERE permit.board_id = OLD.board_id
+              )
+        THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_guideline_metric_result_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = 'semantic_guideline_findings' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM semantic_guideline_metric_results AS result
+                JOIN semantic_guideline_assessment_receipts AS receipt
+                  ON receipt.receipt_id = result.receipt_id
+                 AND receipt.sealed = FALSE
+                 AND receipt.receipt_digest = NEW.receipt_digest
+                WHERE result.result_id = NEW.metric_result_id
+                  AND result.receipt_id = NEW.receipt_id
+                  AND result.board_id = NEW.board_id
+                  AND result.subject_type = NEW.subject_type
+                  AND result.subject_id = NEW.subject_id
+                  AND result.subject_version = NEW.subject_version
+                  AND result.subject_content_digest =
+                      NEW.subject_content_digest
+                  AND result.receipt_digest = NEW.receipt_digest
+                  AND result.guideline_id = NEW.guideline_id
+                  AND result.revision_id = NEW.revision_id
+                  AND result.revision_digest = NEW.revision_digest
+                  AND result.binding_id = NEW.binding_id
+                  AND result.binding_revision = NEW.binding_revision
+                  AND result.configuration_digest =
+                      NEW.configuration_digest
+                  AND result.metric_id = NEW.metric_id
+                  AND result.metric_code = NEW.metric_code
+                  AND result.result_digest = NEW.metric_result_digest
+                  AND result.outcome = 'fail'
+                  AND result.rationale = NEW.rationale
+                  AND result.evidence_refs::jsonb =
+                      NEW.evidence_refs::jsonb
+                  AND result.pinpoints::jsonb = NEW.pinpoints::jsonb
+                  AND result.created_at = NEW.created_at
+            ) THEN
+                RAISE EXCEPTION 'semantic_guideline_finding_invalid';
+            END IF;
+            RETURN NEW;
+        ELSIF TG_OP = 'DELETE'
+              AND EXISTS (
+                  SELECT 1 FROM kg_board_erasure_permits AS permit
+                  WHERE permit.board_id = OLD.board_id
+              )
+        THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_guideline_finding_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = 'semantic_guideline_waivers' THEN
+        IF TG_OP = 'INSERT' THEN
+            PERFORM pg_advisory_xact_lock(
+                hashtextextended(
+                    'semantic-guideline-waiver:' || NEW.board_id || ':' ||
+                    NEW.scope_digest || ':' || NEW.metric_result_id || ':' ||
+                    NEW.metric_result_digest || ':' || NEW.finding_id || ':' ||
+                    NEW.finding_digest || ':' || NEW.receipt_id || ':' ||
+                    NEW.receipt_digest,
+                    0
+                )
+            );
+            IF EXISTS (
+                SELECT 1
+                FROM semantic_guideline_waivers AS active
+                WHERE active.board_id = NEW.board_id
+                  AND active.scope_digest = NEW.scope_digest
+                  AND active.status IN ('requested', 'approved')
+                  AND (
+                      active.expires_at IS NULL
+                      OR active.expires_at > NEW.requested_at
+                  )
+            ) THEN
+                RAISE EXCEPTION
+                    'semantic_guideline_waiver_scope_conflict';
+            END IF;
+            IF NEW.status <> 'requested'
+               OR NEW.waiver_revision <> 1
+               OR NEW.last_event_type <> 'request'
+               OR btrim(NEW.assessment_assessor_id) = ''
+               OR (
+                   NEW.expires_at IS NOT NULL
+                   AND NEW.requested_at >= NEW.expires_at
+               )
+               OR jsonb_typeof(NEW.evidence_refs::jsonb) <> 'array'
+               OR jsonb_array_length(NEW.evidence_refs::jsonb) = 0
+               OR jsonb_typeof(
+                   NEW.last_revalidation_currentness_reasons::jsonb
+               ) <> 'array'
+               OR jsonb_array_length(
+                   NEW.last_revalidation_currentness_reasons::jsonb
+               ) <> 0
+               OR NOT EXISTS (
+                   SELECT 1
+                   FROM semantic_guideline_metric_results AS result
+                   JOIN semantic_guideline_findings AS finding
+                     ON finding.metric_result_id = result.result_id
+                    AND finding.receipt_id = result.receipt_id
+                    AND finding.receipt_digest = NEW.receipt_digest
+                    AND finding.metric_result_digest = result.result_digest
+                   JOIN semantic_guideline_assessment_receipts AS receipt
+                     ON receipt.receipt_id = result.receipt_id
+                    AND receipt.sealed = TRUE
+                    AND receipt.receipt_digest = NEW.receipt_digest
+                    AND receipt.assessor_agent_id =
+                        NEW.assessment_assessor_id
+                   WHERE result.result_id = NEW.metric_result_id
+                     AND result.receipt_id = NEW.receipt_id
+                     AND result.receipt_digest = NEW.receipt_digest
+                     AND result.board_id = NEW.board_id
+                     AND result.subject_type = NEW.subject_type
+                     AND result.subject_id = NEW.subject_id
+                     AND result.subject_version = NEW.subject_version
+                     AND result.subject_content_digest =
+                         NEW.subject_content_digest
+                     AND result.guideline_id = NEW.guideline_id
+                     AND result.revision_id = NEW.revision_id
+                     AND result.revision_digest = NEW.revision_digest
+                     AND result.binding_id = NEW.binding_id
+                     AND result.binding_revision = NEW.binding_revision
+                     AND result.configuration_digest =
+                         NEW.configuration_digest
+                     AND result.metric_id = NEW.metric_id
+                     AND result.metric_code = NEW.metric_code
+                     AND result.result_digest = NEW.metric_result_digest
+                     AND finding.finding_id = NEW.finding_id
+                     AND finding.finding_digest = NEW.finding_digest
+                     AND result.outcome = 'fail'
+                     AND result.created_at <= NEW.requested_at
+               )
+               OR EXISTS (
+                   SELECT 1
+                   FROM semantic_guideline_waivers AS active
+                   WHERE active.board_id = NEW.board_id
+                     AND active.scope_digest = NEW.scope_digest
+                     AND active.metric_result_id = NEW.metric_result_id
+                     AND active.metric_result_digest =
+                         NEW.metric_result_digest
+                     AND active.finding_id = NEW.finding_id
+                     AND active.finding_digest = NEW.finding_digest
+                     AND active.receipt_id = NEW.receipt_id
+                     AND active.receipt_digest = NEW.receipt_digest
+                     AND active.assessment_assessor_id =
+                         NEW.assessment_assessor_id
+                     AND active.binding_id = NEW.binding_id
+                     AND active.binding_revision = NEW.binding_revision
+                     AND active.configuration_digest =
+                         NEW.configuration_digest
+                     AND active.metric_id = NEW.metric_id
+                     AND active.subject_type = NEW.subject_type
+                     AND active.subject_id = NEW.subject_id
+                     AND active.subject_version = NEW.subject_version
+                     AND active.subject_content_digest =
+                         NEW.subject_content_digest
+                     AND active.guideline_id = NEW.guideline_id
+                     AND active.revision_id = NEW.revision_id
+                     AND active.revision_digest = NEW.revision_digest
+                     AND active.status IN ('requested', 'approved')
+                     AND (
+                         active.expires_at IS NULL
+                         OR active.expires_at > NEW.requested_at
+                     )
+               )
+            THEN
+                RAISE EXCEPTION
+                    'semantic_guideline_waiver_request_invalid';
+            END IF;
+            RETURN NEW;
+        ELSIF TG_OP = 'UPDATE' THEN
+            PERFORM pg_advisory_xact_lock(
+                hashtextextended(
+                    'semantic-guideline-waiver:' || NEW.board_id || ':' ||
+                    NEW.scope_digest || ':' || NEW.metric_result_id || ':' ||
+                    NEW.metric_result_digest || ':' || NEW.finding_id || ':' ||
+                    NEW.finding_digest || ':' || NEW.receipt_id || ':' ||
+                    NEW.receipt_digest,
+                    0
+                )
+            );
+            IF (to_jsonb(NEW) - ARRAY[
+                    'status', 'waiver_revision', 'expires_at',
+                    'last_event_id', 'last_event_type', 'last_event_at',
+                    'last_event_idempotency_key',
+                    'reviewed_by', 'reviewed_at', 'review_reason',
+                    'revoked_by', 'revoked_at', 'expire_reason_code',
+                    'last_revalidation_status',
+                    'last_revalidation_current',
+                    'last_revalidation_reason_code',
+                    'last_revalidation_evaluated_at',
+                    'last_revalidation_currentness_reasons',
+                    'last_revalidation_scheduled_expiry_observed',
+                    'head_digest'
+                ])
+               IS NOT DISTINCT FROM
+               (to_jsonb(OLD) - ARRAY[
+                    'status', 'waiver_revision', 'expires_at',
+                    'last_event_id', 'last_event_type', 'last_event_at',
+                    'last_event_idempotency_key',
+                    'reviewed_by', 'reviewed_at', 'review_reason',
+                    'revoked_by', 'revoked_at', 'expire_reason_code',
+                    'last_revalidation_status',
+                    'last_revalidation_current',
+                    'last_revalidation_reason_code',
+                    'last_revalidation_evaluated_at',
+                    'last_revalidation_currentness_reasons',
+                    'last_revalidation_scheduled_expiry_observed',
+                    'head_digest'
+                ])
+               AND NEW.waiver_revision = OLD.waiver_revision + 1
+               AND NEW.last_event_id <> OLD.last_event_id
+               AND NEW.last_event_at >= OLD.last_event_at
+               AND (
+                   NEW.last_event_type = 'revalidate'
+                   OR (
+                       NEW.last_revalidation_status IS NOT DISTINCT FROM
+                           OLD.last_revalidation_status
+                       AND NEW.last_revalidation_current IS NOT DISTINCT FROM
+                           OLD.last_revalidation_current
+                       AND NEW.last_revalidation_reason_code
+                           IS NOT DISTINCT FROM
+                           OLD.last_revalidation_reason_code
+                       AND NEW.last_revalidation_evaluated_at
+                           IS NOT DISTINCT FROM
+                           OLD.last_revalidation_evaluated_at
+                       AND NEW.last_revalidation_currentness_reasons::jsonb =
+                           OLD.last_revalidation_currentness_reasons::jsonb
+                       AND
+                           NEW.last_revalidation_scheduled_expiry_observed =
+                           OLD.last_revalidation_scheduled_expiry_observed
+                   )
+               )
+            THEN
+                RETURN NEW;
+            END IF;
+            RAISE EXCEPTION
+                'semantic_guideline_waiver_head_cas_invalid';
+        ELSIF EXISTS (
+            SELECT 1 FROM kg_board_erasure_permits AS permit
+            WHERE permit.board_id = OLD.board_id
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_guideline_waiver_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = 'semantic_guideline_waiver_events' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF btrim(NEW.actor_id) = ''
+               OR btrim(NEW.reason) = ''
+               OR jsonb_typeof(NEW.evidence_refs::jsonb) <> 'array'
+               OR jsonb_array_length(NEW.evidence_refs::jsonb) = 0
+               OR jsonb_typeof(NEW.currentness_reasons::jsonb) <> 'array'
+               OR (
+                   NEW.event_type <> 'revalidate'
+                   AND jsonb_array_length(
+                       NEW.currentness_reasons::jsonb
+                   ) <> 0
+               )
+               OR (
+                   NEW.event_type = 'revalidate'
+                   AND (
+                       NEW.scheduled_expiry_observed <>
+                           (
+                               NEW.expires_at IS NOT NULL
+                               AND NEW.expires_at <= NEW.evaluated_at
+                           )
+                       OR (
+                           NEW.revalidation_status IN (
+                               'approved', 'expired'
+                           )
+                           AND jsonb_array_length(
+                               NEW.currentness_reasons::jsonb
+                           ) <> 0
+                       )
+                       OR EXISTS (
+                           SELECT 1
+                           FROM jsonb_array_elements_text(
+                               NEW.currentness_reasons::jsonb
+                           ) AS reason(value)
+                           WHERE reason.value NOT IN (
+                               'current_snapshot_missing',
+                               'subject_version_changed',
+                               'subject_content_changed',
+                               'guideline_revision_changed',
+                               'guideline_revision_digest_changed',
+                               'binding_revision_changed',
+                               'binding_configuration_changed',
+                               'policy_set_changed',
+                               'binding_head_changed',
+                               'input_digest_changed'
+                           )
+                       )
+                       OR jsonb_array_length(
+                           NEW.currentness_reasons::jsonb
+                       ) <> (
+                           SELECT count(DISTINCT reason.value)
+                           FROM jsonb_array_elements_text(
+                               NEW.currentness_reasons::jsonb
+                           ) AS reason(value)
+                       )
+                       OR NEW.currentness_reasons::jsonb <> (
+                           SELECT COALESCE(
+                               jsonb_agg(
+                                   reason.value
+                                   ORDER BY CASE reason.value
+                                     WHEN 'current_snapshot_missing' THEN 1
+                                     WHEN 'subject_version_changed' THEN 2
+                                     WHEN 'subject_content_changed' THEN 3
+                                     WHEN 'guideline_revision_changed' THEN 4
+                                     WHEN
+                                       'guideline_revision_digest_changed'
+                                       THEN 5
+                                     WHEN 'binding_revision_changed' THEN 6
+                                     WHEN
+                                       'binding_configuration_changed'
+                                       THEN 7
+                                     WHEN 'policy_set_changed' THEN 8
+                                     WHEN 'binding_head_changed' THEN 9
+                                     WHEN 'input_digest_changed' THEN 10
+                                   END
+                               ),
+                               '[]'::jsonb
+                           )
+                           FROM jsonb_array_elements_text(
+                               NEW.currentness_reasons::jsonb
+                           ) AS reason(value)
+                       )
+                   )
+               )
+               OR NOT EXISTS (
+                   SELECT 1
+                   FROM semantic_guideline_waivers AS head
+                   WHERE head.waiver_id = NEW.waiver_id
+                     AND head.board_id = NEW.board_id
+                     AND head.waiver_revision = NEW.waiver_revision
+                     AND head.last_event_id = NEW.event_id
+                     AND head.last_event_type = NEW.event_type
+                     AND head.last_event_at = NEW.occurred_at
+                     AND head.last_event_idempotency_key =
+                         NEW.idempotency_key
+                     AND head.status = NEW.to_status
+                     AND head.expires_at IS NOT DISTINCT FROM NEW.expires_at
+                     AND head.expire_reason_code IS NOT DISTINCT FROM
+                         NEW.expire_reason_code
+                     AND head.scope_digest = NEW.scope_digest
+                     AND head.head_digest = NEW.waiver_digest
+                     AND head.reviewed_by IS NOT DISTINCT FROM NEW.reviewed_by
+                     AND head.reviewed_at IS NOT DISTINCT FROM NEW.reviewed_at
+                     AND head.review_reason IS NOT DISTINCT FROM
+                         NEW.review_reason
+                     AND head.revoked_by IS NOT DISTINCT FROM NEW.revoked_by
+                     AND head.revoked_at IS NOT DISTINCT FROM NEW.revoked_at
+                     AND (
+                         NEW.event_type <> 'revalidate'
+                         OR (
+                             head.last_revalidation_status
+                                 IS NOT DISTINCT FROM
+                                 NEW.revalidation_status
+                             AND head.last_revalidation_current
+                                 IS NOT DISTINCT FROM
+                                 NEW.revalidation_current
+                             AND head.last_revalidation_reason_code
+                                 IS NOT DISTINCT FROM
+                                 NEW.revalidation_reason_code
+                             AND head.last_revalidation_evaluated_at
+                                 IS NOT DISTINCT FROM NEW.evaluated_at
+                             AND
+                                 head.last_revalidation_currentness_reasons
+                                 ::jsonb =
+                                 NEW.currentness_reasons::jsonb
+                             AND
+                                 head.last_revalidation_scheduled_expiry_observed =
+                                 NEW.scheduled_expiry_observed
+                         )
+                     )
+                     AND (
+                         NEW.event_type <> 'request'
+                         OR (
+                             NEW.actor_id = head.requested_by
+                             AND NEW.occurred_at = head.requested_at
+                             AND NEW.reason = head.justification
+                             AND NEW.evidence_refs::jsonb =
+                                 head.evidence_refs::jsonb
+                             AND NEW.expires_at IS NOT DISTINCT FROM
+                                 head.original_expires_at
+                             AND NEW.idempotency_key = head.idempotency_key
+                             AND NEW.request_digest = head.request_digest
+                         )
+                     )
+                     AND (
+                         NEW.event_type NOT IN ('approve', 'reject')
+                         OR (
+                             NEW.actor_id = head.reviewed_by
+                             AND NEW.actor_id <> head.requested_by
+                             AND NEW.actor_id <>
+                                 head.assessment_assessor_id
+                             AND NEW.occurred_at = head.reviewed_at
+                             AND NEW.reason = head.review_reason
+                             AND (
+                                 NEW.expires_at IS NULL
+                                 OR NEW.expires_at > NEW.occurred_at
+                             )
+                         )
+                     )
+                     AND (
+                         NEW.event_type <> 'revalidate'
+                         OR (
+                             NEW.actor_id <> head.requested_by
+                             AND NEW.actor_id <>
+                                 head.assessment_assessor_id
+                             AND NEW.reason =
+                                 NEW.revalidation_reason_code
+                         )
+                     )
+                     AND (
+                         NEW.event_type <> 'revoke'
+                         OR (
+                             NEW.actor_id = head.revoked_by
+                             AND NEW.occurred_at = head.revoked_at
+                         )
+                     )
+               )
+               OR (
+                   NEW.event_type = 'request'
+                   AND (
+                       NEW.predecessor_event_id IS NOT NULL
+                       OR EXISTS (
+                           SELECT 1
+                           FROM semantic_guideline_waiver_events AS prior
+                           WHERE prior.waiver_id = NEW.waiver_id
+                       )
+                   )
+               )
+               OR (
+                   NEW.event_type <> 'request'
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM semantic_guideline_waiver_events AS predecessor
+                       WHERE predecessor.event_id =
+                           NEW.predecessor_event_id
+                         AND predecessor.waiver_id = NEW.waiver_id
+                         AND predecessor.board_id = NEW.board_id
+                         AND predecessor.waiver_revision =
+                             NEW.waiver_revision - 1
+                         AND predecessor.to_status = NEW.from_status
+                         AND (
+                             NEW.event_type <> 'revalidate'
+                             OR NEW.evaluated_at >=
+                                 predecessor.occurred_at
+                         )
+                         AND (
+                             (
+                                 NEW.event_type <> 'approve'
+                                 AND NEW.expires_at IS NOT DISTINCT FROM
+                                     predecessor.expires_at
+                             )
+                             OR (
+                                 NEW.event_type = 'approve'
+                                 AND (
+                                     NEW.expires_at IS NULL
+                                     OR NEW.expires_at > NEW.occurred_at
+                                 )
+                             )
+                         )
+                   )
+               )
+               OR (
+                   NEW.event_type = 'expire'
+                   AND NEW.expire_reason_code = 'scheduled_expiry'
+                   AND (
+                       NEW.expires_at IS NULL
+                       OR NEW.occurred_at < NEW.expires_at
+                   )
+               )
+            THEN
+                RAISE EXCEPTION
+                    'semantic_guideline_waiver_event_append_invalid';
+            END IF;
+            RETURN NEW;
+        ELSIF TG_OP = 'DELETE'
+              AND EXISTS (
+                  SELECT 1 FROM kg_board_erasure_permits AS permit
+                  WHERE permit.board_id = OLD.board_id
+              )
+        THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_guideline_waiver_event_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = 'semantic_guideline_skips' THEN
+        IF TG_OP = 'INSERT' THEN
+            PERFORM pg_advisory_xact_lock(
+                hashtextextended(
+                    'semantic-guideline-skip:' || NEW.board_id || ':' ||
+                    NEW.scope_digest,
+                    0
+                )
+            );
+            IF btrim(NEW.reason) = ''
+               OR btrim(NEW.actor_id) = ''
+               OR NEW.actor_kind <> 'human'
+               OR (
+                   NEW.event_type = 'create'
+                   AND (
+                       NEW.from_status IS NOT NULL
+                       OR NEW.created_by <> NEW.actor_id
+                       OR NEW.created_at <> NEW.occurred_at
+                       OR NEW.revoked_by IS NOT NULL
+                       OR NEW.revoked_at IS NOT NULL
+                       OR NEW.revocation_reason IS NOT NULL
+                       OR EXISTS (
+                           SELECT 1
+                           FROM semantic_guideline_skips AS prior
+                           WHERE prior.skip_id = NEW.skip_id
+                       )
+                       OR EXISTS (
+                           SELECT 1
+                            FROM semantic_guideline_skips AS active
+                            WHERE active.board_id = NEW.board_id
+                              AND active.scope_digest = NEW.scope_digest
+                             AND active.binding_id = NEW.binding_id
+                             AND active.binding_revision =
+                                 NEW.binding_revision
+                             AND active.configuration_digest =
+                                 NEW.configuration_digest
+                             AND active.subject_type = NEW.subject_type
+                             AND active.subject_id = NEW.subject_id
+                             AND active.subject_version =
+                                 NEW.subject_version
+                             AND active.subject_content_digest =
+                                 NEW.subject_content_digest
+                             AND active.guideline_id = NEW.guideline_id
+                             AND active.revision_id = NEW.revision_id
+                             AND active.revision_digest =
+                                 NEW.revision_digest
+                             AND active.status = 'active'
+                             AND NOT EXISTS (
+                                 SELECT 1
+                                 FROM semantic_guideline_skips AS successor
+                                 WHERE successor.predecessor_event_id =
+                                     active.event_id
+                             )
+                       )
+                   )
+               )
+               OR (
+                   NEW.event_type = 'revoke'
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM semantic_guideline_skips AS predecessor
+                       WHERE predecessor.event_id =
+                           NEW.predecessor_event_id
+                         AND predecessor.skip_id = NEW.skip_id
+                         AND predecessor.skip_revision =
+                             NEW.skip_revision - 1
+                          AND predecessor.status = 'active'
+                          AND NEW.from_status = predecessor.status
+                         AND predecessor.board_id = NEW.board_id
+                         AND predecessor.binding_id = NEW.binding_id
+                         AND predecessor.binding_revision =
+                             NEW.binding_revision
+                         AND predecessor.configuration_digest =
+                             NEW.configuration_digest
+                         AND predecessor.subject_type = NEW.subject_type
+                         AND predecessor.subject_id = NEW.subject_id
+                         AND predecessor.subject_version =
+                             NEW.subject_version
+                         AND predecessor.subject_content_digest =
+                             NEW.subject_content_digest
+                         AND predecessor.guideline_id = NEW.guideline_id
+                         AND predecessor.revision_id = NEW.revision_id
+                          AND predecessor.revision_digest =
+                              NEW.revision_digest
+                          AND predecessor.scope_digest = NEW.scope_digest
+                          AND NEW.reason IS NOT DISTINCT FROM
+                              predecessor.reason
+                          AND NEW.created_by IS NOT DISTINCT FROM
+                              predecessor.created_by
+                          AND NEW.created_at IS NOT DISTINCT FROM
+                              predecessor.created_at
+                          AND NEW.revoked_by = NEW.actor_id
+                          AND NEW.revoked_at = NEW.occurred_at
+                          AND btrim(NEW.revocation_reason) <> ''
+                          AND predecessor.occurred_at <= NEW.occurred_at
+                   )
+               )
+            THEN
+                RAISE EXCEPTION 'semantic_guideline_skip_invalid';
+            END IF;
+            RETURN NEW;
+        ELSIF TG_OP = 'DELETE'
+              AND EXISTS (
+                  SELECT 1 FROM kg_board_erasure_permits AS permit
+                  WHERE permit.board_id = OLD.board_id
+              )
+        THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_guideline_skip_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = 'semantic_guideline_legacy_migrations' THEN
+        IF TG_OP = 'DELETE'
+           AND OLD.board_id IS NOT NULL
+           AND EXISTS (
+               SELECT 1 FROM kg_board_erasure_permits AS permit
+               WHERE permit.board_id = OLD.board_id
+           )
+        THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_guideline_migration_audit_immutable';
+    END IF;
+
+    RAISE EXCEPTION 'semantic_guideline_guard_unknown_table';
+END;
+$$ LANGUAGE plpgsql
+""".strip()
+
+    all_operations = "INSERT OR UPDATE OR DELETE"
+    mutation_operations = "UPDATE OR DELETE"
+    trigger_specs: dict[str, tuple[str, str, int]] = {
+        "trg_sgv3_revision": (
+            SemanticGuidelineRevisionRow.__tablename__,
+            all_operations,
+            31,
+        ),
+        "trg_sgv3_binding": (
+            SemanticGuidelineBindingConfigurationRow.__tablename__,
+            all_operations,
+            31,
+        ),
+        "trg_sgv3_subject_head": (
+            SemanticSubjectVersionRow.__tablename__,
+            all_operations,
+            31,
+        ),
+        "trg_sgv3_subject_event": (
+            SemanticSubjectVersionEventRow.__tablename__,
+            all_operations,
+            31,
+        ),
+        "trg_sgv3_receipt": (
+            SemanticGuidelineAssessmentReceiptRow.__tablename__,
+            all_operations,
+            31,
+        ),
+        "trg_sgv3_metric": (
+            SemanticGuidelineMetricResultRow.__tablename__,
+            all_operations,
+            31,
+        ),
+        "trg_sgv3_finding": (
+            SemanticGuidelineFindingRow.__tablename__,
+            all_operations,
+            31,
+        ),
+        "trg_sgv3_waiver": (
+            SemanticGuidelineWaiverRow.__tablename__,
+            all_operations,
+            31,
+        ),
+        "trg_sgv3_waiver_event": (
+            SemanticGuidelineWaiverEventRow.__tablename__,
+            all_operations,
+            31,
+        ),
+        "trg_sgv3_skip": (
+            SemanticGuidelineSkipRow.__tablename__,
+            all_operations,
+            31,
+        ),
+        "trg_sgv3_migration": (
+            SemanticGuidelineLegacyMigrationRow.__tablename__,
+            mutation_operations,
+            27,
+        ),
+    }
+    if any(len(name.encode("utf-8")) > 63 for name in trigger_specs):
+        raise RuntimeError(
+            "semantic guideline PostgreSQL trigger name exceeds 63 bytes"
+        )
+    return function_sql, trigger_specs
+
+
 def cognitive_source_immutability_trigger_manifest(
     *,
     allow_board_erasure: bool = True,
@@ -2082,8 +4724,8 @@ BEGIN
                         WHERE previous.binding_id = NEW.binding_id
                           AND previous.binding_revision = NEW.binding_revision - 1
                     )
-                    OR NEW.default_enforcement <> (
-                        SELECT previous.default_enforcement
+                    OR NEW.enforcement <> (
+                        SELECT previous.enforcement
                         FROM "{binding_table}" AS previous
                         WHERE previous.binding_id = NEW.binding_id
                           AND previous.binding_revision = NEW.binding_revision - 1
@@ -2459,8 +5101,8 @@ BEGIN
                   OR NEW.revision_digest
                      IS DISTINCT FROM previous.revision_digest
                   OR NEW.priority IS DISTINCT FROM previous.priority
-                  OR NEW.default_enforcement
-                     IS DISTINCT FROM previous.default_enforcement
+                  OR NEW.enforcement
+                     IS DISTINCT FROM previous.enforcement
               )
         ) THEN
             RAISE EXCEPTION 'guideline_binding_state_transition_invalid'
@@ -3324,33 +5966,133 @@ def _postgresql_owned_table_contract(
         normalized = re.sub(
             r"::\s*(?:character\s+varying(?:\(\d+\))?|"
             r"varchar(?:\(\d+\))?|text|smallint|integer|bigint|"
-            r"boolean|timestamp(?:\s+with(?:out)?\s+time\s+zone)?)"
+            r"boolean|"
+            r"timestamp(?:\s+with(?:out)?\s+time\s+zone)?)"
             r"(?:\[\])?",
             "",
             normalized,
             flags=re.IGNORECASE,
         )
-        simple_atom = (
-            r'(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$.]*|'
-            r"'(?:''|[^'])*')"
-        )
-        while True:
-            without_redundant_atom_parentheses = re.sub(
-                rf"\(\s*({simple_atom})\s*\)",
-                r"\1",
-                normalized,
-            )
-            if without_redundant_atom_parentheses == normalized:
-                break
-            normalized = without_redundant_atom_parentheses
         normalized = re.sub(
-            r"(?P<left>[A-Za-z0-9_\".]+)\s*=\s*ANY\s*"
-            r"\(\s*(?:\(\s*)?ARRAY\s*\[(?P<values>.*?)\]"
-            r"\s*(?:\)\s*)?\)",
-            lambda match: f"{match.group('left')} IN ({match.group('values')})",
+            r"\bTRIM\s*\(\s*BOTH\s+FROM\s+"
+            r"(?P<value>[A-Za-z_][A-Za-z0-9_$.]*)\s*\)",
+            lambda match: f"TRIM({match.group('value')})",
             normalized,
-            flags=re.IGNORECASE | re.DOTALL,
+            flags=re.IGNORECASE,
         )
+        normalized = re.sub(
+            r"\(\s*(?P<left>[A-Za-z_][A-Za-z0-9_$.]*)\s*\)"
+            r"(?=\s*=\s*ANY\b)",
+            lambda match: match.group("left"),
+            normalized,
+            flags=re.IGNORECASE,
+        )
+
+        # PostgreSQL rewrites ``x IN (...)`` as ``x = ANY (ARRAY[...])``.
+        # Balance the ANY call explicitly: the catalog may add one or more
+        # wrappers around ARRAY and a non-balancing regex can consume the
+        # predicate's closing parenthesis, corrupting the contract fingerprint.
+        def _matching_parenthesis(expression: str, opening: int) -> int | None:
+            depth = 0
+            quote: str | None = None
+            position = opening
+            while position < len(expression):
+                character = expression[position]
+                if quote is not None:
+                    if character == quote:
+                        if (
+                            quote == "'"
+                            and position + 1 < len(expression)
+                            and expression[position + 1] == quote
+                        ):
+                            position += 2
+                            continue
+                        quote = None
+                    position += 1
+                    continue
+                if character in {"'", '"'}:
+                    quote = character
+                elif character == "(":
+                    depth += 1
+                elif character == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return position
+                position += 1
+            return None
+
+        any_call = re.compile(
+            r"(?P<left>[A-Za-z0-9_\".]+)\s*=\s*ANY\s*\(",
+            flags=re.IGNORECASE,
+        )
+        search_from = 0
+        while match := any_call.search(normalized, search_from):
+            opening = match.end() - 1
+            closing = _matching_parenthesis(normalized, opening)
+            if closing is None:
+                break
+            body = _strip_outer_parentheses(
+                normalized[opening + 1 : closing]
+            )
+            array = re.fullmatch(
+                r"ARRAY\s*\[(?P<values>.*)\]",
+                body,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if array is None:
+                search_from = closing + 1
+                continue
+            replacement = (
+                f"{match.group('left')} IN ({array.group('values')})"
+            )
+            normalized = (
+                normalized[: match.start()]
+                + replacement
+                + normalized[closing + 1 :]
+            )
+            search_from = match.start() + len(replacement)
+
+        # SQLAlchemy's PostgreSQL inspector removes the outer ``CHECK (...)``
+        # wrapper.  When pg_get_constraintdef parenthesizes individual ANY
+        # predicates, that trimming can leave one orphan close at the start and
+        # one orphan open at the end.  Restore only those demonstrably missing
+        # endpoints; deleting an orphan open could erase an intentional final
+        # ``(a OR b)`` grouping.
+        unmatched_closes = 0
+        stack: list[int] = []
+        quote: str | None = None
+        position = 0
+        while position < len(normalized):
+            character = normalized[position]
+            if quote is not None:
+                if character == quote:
+                    if (
+                        quote == "'"
+                        and position + 1 < len(normalized)
+                        and normalized[position + 1] == quote
+                    ):
+                        position += 2
+                        continue
+                    quote = None
+                position += 1
+                continue
+            if character in {"'", '"'}:
+                quote = character
+            elif character == "(":
+                stack.append(position)
+            elif character == ")":
+                if stack:
+                    stack.pop()
+                else:
+                    unmatched_closes += 1
+            position += 1
+        if unmatched_closes or stack:
+            normalized = (
+                "(" * unmatched_closes
+                + normalized
+                + ")" * len(stack)
+            )
+
         comparison = re.compile(
             r"(?:<>|<=|>=|=|<|>|\bIS\b|\bIN\b)",
             flags=re.IGNORECASE,
@@ -3426,52 +6168,142 @@ def _postgresql_owned_table_contract(
                 position += 1
             return "".join(top_level)
 
-        def _without_one_atomic_predicate_wrapper(
+        def _split_boolean(
             expression: str,
-        ) -> str:
-            for start, end in _parenthesis_pairs(expression):
-                body = expression[start + 1 : end].strip()
-                top_level = _top_level_sql(body)
-                if comparison.search(top_level) and not (
-                    boolean_operator.search(top_level)
+            keyword: str,
+        ) -> tuple[str, ...]:
+            parts: list[str] = []
+            depth = 0
+            quote: str | None = None
+            start = 0
+            position = 0
+            upper = expression.upper()
+            while position < len(expression):
+                character = expression[position]
+                if quote is not None:
+                    if character == quote:
+                        if (
+                            quote == "'"
+                            and position + 1 < len(expression)
+                            and expression[position + 1] == quote
+                        ):
+                            position += 2
+                            continue
+                        quote = None
+                    position += 1
+                    continue
+                if character in {"'", '"'}:
+                    quote = character
+                    position += 1
+                    continue
+                if character == "(":
+                    depth += 1
+                    position += 1
+                    continue
+                if character == ")":
+                    depth = max(0, depth - 1)
+                    position += 1
+                    continue
+                end = position + len(keyword)
+                if (
+                    depth == 0
+                    and upper[position:end] == keyword
+                    and (
+                        position == 0
+                        or not (
+                            expression[position - 1].isalnum()
+                            or expression[position - 1] == "_"
+                        )
+                    )
+                    and (
+                        end == len(expression)
+                        or not (
+                            expression[end].isalnum()
+                            or expression[end] == "_"
+                        )
+                    )
                 ):
-                    return expression[:start] + body + expression[end + 1 :]
-            return expression
+                    parts.append(expression[start:position].strip())
+                    start = end
+                    position = end
+                    continue
+                position += 1
+            if not parts:
+                return (expression,)
+            parts.append(expression[start:].strip())
+            return tuple(parts)
 
-        def _without_one_redundant_rhs_wrapper(
-            expression: str,
-        ) -> str:
-            for start, end in _parenthesis_pairs(expression):
-                body = expression[start + 1 : end].strip()
+        simple_atom = (
+            r'(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$.]*|'
+            r"'(?:''|[^'])*')"
+        )
+
+        def _normalized_atom(expression: str) -> str:
+            atom = _strip_outer_parentheses(expression)
+            while True:
+                without_redundant_atom_parentheses = re.sub(
+                    rf"\(\s*({simple_atom})\s*\)",
+                    r"\1",
+                    atom,
+                )
+                if without_redundant_atom_parentheses == atom:
+                    break
+                atom = without_redundant_atom_parentheses
+            for start, end in _parenthesis_pairs(atom):
+                body = atom[start + 1 : end].strip()
                 top_level = _top_level_sql(body)
                 if (
-                    comparison_suffix.search(expression[:start])
+                    comparison_suffix.search(atom[:start])
                     and arithmetic_operator.search(top_level)
                     and not comparison.search(top_level)
                     and not boolean_operator.search(top_level)
                 ):
-                    return expression[:start] + body + expression[end + 1 :]
-            return expression
+                    atom = atom[:start] + body + atom[end + 1 :]
+                    break
+            return _normalize_sqlite_contract_ddl(atom)
 
-        while True:
-            without_atomic_predicate_parentheses = (
-                _without_one_atomic_predicate_wrapper(
-                    normalized,
+        def _boolean_tree(expression: str) -> tuple[object, ...]:
+            expression = _strip_outer_parentheses(expression)
+            disjunction = _split_boolean(expression, "OR")
+            if len(disjunction) > 1:
+                children: list[tuple[object, ...]] = []
+                for part in disjunction:
+                    child = _boolean_tree(part)
+                    if child[0] == "or":
+                        children.extend(child[1:])  # type: ignore[arg-type]
+                    else:
+                        children.append(child)
+                return ("or", *children)
+            conjunction = _split_boolean(expression, "AND")
+            if len(conjunction) > 1:
+                children = []
+                for part in conjunction:
+                    child = _boolean_tree(part)
+                    if child[0] == "and":
+                        children.extend(child[1:])  # type: ignore[arg-type]
+                    else:
+                        children.append(child)
+                return ("and", *children)
+            negation = re.match(r"^\s*NOT\b", expression, re.IGNORECASE)
+            if negation is not None:
+                return (
+                    "not",
+                    _boolean_tree(expression[negation.end() :]),
                 )
-            )
-            without_redundant_rhs_parentheses = _without_one_redundant_rhs_wrapper(
-                without_atomic_predicate_parentheses,
-            )
-            without_duplicate_parentheses = re.sub(
-                r"\(\s*\(([^()]*)\)\s*\)",
-                r"(\1)",
-                without_redundant_rhs_parentheses,
-            )
-            if without_duplicate_parentheses == normalized:
-                break
-            normalized = without_duplicate_parentheses
-        normalized = _strip_outer_parentheses(normalized)
-        return _normalize_sqlite_contract_ddl(normalized)
+            return ("atom", _normalized_atom(expression))
+
+        def _render_boolean(tree: tuple[object, ...]) -> str:
+            operator = tree[0]
+            if operator == "atom":
+                return str(tree[1])
+            if operator == "not":
+                return "not(" + _render_boolean(tree[1]) + ")"  # type: ignore[arg-type]
+            return "(" + str(operator).join(
+                _render_boolean(child)  # type: ignore[arg-type]
+                for child in tree[1:]
+            ) + ")"
+
+        return _render_boolean(_boolean_tree(normalized))
 
     def _server_default(value: object) -> str | None:
         if value is None:
@@ -3488,7 +6320,18 @@ def _postgresql_owned_table_contract(
             if callable(compile_value)
             else str(argument)
         )
-        normalized = _normalized_expression(raw)
+        # PostgreSQL catalogs materialize JSON defaults with an explicit
+        # ``::json``/``::jsonb`` cast even when the ORM default is the same
+        # uncast literal. Column type is audited separately, so normalize
+        # that catalog-only representation without weakening CHECK auditing.
+        normalized = _normalized_expression(
+            re.sub(
+                r"::\s*jsonb?(?:\[\])?",
+                "",
+                raw,
+                flags=re.IGNORECASE,
+            )
+        )
         if normalized in {"'true'", "true"}:
             return "true"
         if normalized in {"'false'", "false"}:
@@ -3524,17 +6367,50 @@ def _postgresql_owned_table_contract(
             ),
         )
 
+    unnamed_foreign_keys = {
+        (
+            tuple(str(element.parent.name) for element in constraint.elements),
+            getattr(
+                constraint.elements[0].column.table,
+                "schema",
+                None,
+            )
+            if constraint.elements
+            else None,
+            getattr(
+                constraint.elements[0].column.table,
+                "name",
+                None,
+            )
+            if constraint.elements
+            else None,
+            tuple(str(element.column.name) for element in constraint.elements),
+        )
+        for constraint in table.foreign_key_constraints
+        if constraint.name is None
+    }
+
     def _observed_fk_contract(constraint: dict[str, object]) -> tuple[object, ...]:
         options = constraint.get("options") or {}
         deferrable = options.get("deferrable")
-        return (
-            constraint.get("name"),
-            tuple(
-                str(column) for column in constraint.get("constrained_columns") or ()
-            ),
+        constrained_columns = tuple(
+            str(column) for column in constraint.get("constrained_columns") or ()
+        )
+        referred_columns = tuple(
+            str(column) for column in constraint.get("referred_columns") or ()
+        )
+        identity = (
+            constrained_columns,
             constraint.get("referred_schema"),
             constraint.get("referred_table"),
-            tuple(str(column) for column in constraint.get("referred_columns") or ()),
+            referred_columns,
+        )
+        return (
+            None if identity in unnamed_foreign_keys else constraint.get("name"),
+            constrained_columns,
+            constraint.get("referred_schema"),
+            constraint.get("referred_table"),
+            referred_columns,
             _action(options.get("ondelete")),
             _action(options.get("onupdate")),
             bool(deferrable) if deferrable is not None else None,
@@ -7927,8 +10803,9 @@ async def _migrate_guideline_policy_v1_schema() -> str | None:
             content_digest = guideline_revision_content_digest(
                 title=canonical_title,
                 content=canonical_content,
-                rules=(),
+                metrics=(),
                 tags=canonical_tags,
+                semantic_version="1.0.0",
             )
             revision_key = f"migration:guideline:{legacy.id}:baseline:1.0.0"
             revision_request_digest = _request_digest(
@@ -8118,7 +10995,7 @@ async def _migrate_guideline_policy_v1_schema() -> str | None:
                 "priority": link.priority,
                 "adopted_by": legacy.owner_id,
                 "adopted_at": link.added_at,
-                "default_enforcement": "advisory",
+                "enforcement": "advisory",
                 "source_kind": "legacy_board_guideline",
                 "legacy_source_id": link.id,
                 "legacy_guideline_version": link.guideline_version,
@@ -8197,7 +11074,7 @@ async def _migrate_guideline_policy_v1_schema() -> str | None:
                 "priority": 0,
                 "adopted_by": legacy.owner_id,
                 "adopted_at": legacy.created_at,
-                "default_enforcement": "advisory",
+                "enforcement": "advisory",
                 "source_kind": "legacy_inline_guideline",
                 "legacy_source_id": None,
                 "legacy_guideline_version": legacy.version,
@@ -8903,14 +11780,20 @@ async def _migrate_guideline_impact_v1_schema() -> str | None:
         GuidelineImpactUnlinkRow,
         GuidelineRetirementImpactRow,
         GuidelineRetirementRow,
+        SemanticGuidelineBindingConfigurationRow,
     )
     from okto_pulse.core.domain.quality_canonicalization import (
         canonical_sha256,
+    )
+    from okto_pulse.core.domain.guideline_lifecycle import (
+        guideline_request_digest_v1,
     )
     from okto_pulse.core.events.types import (
         POLICY_BINDING_MATERIALIZED_EVENT_TYPE,
         PolicyAdoptionChanged,
         PolicyRetirementChanged,
+        SEMANTIC_GUIDELINE_PROJECTION_EVENT_TYPE,
+        SEMANTIC_GUIDELINE_PROJECTION_SCHEMA_VERSION,
     )
 
     receipt_table = GuidelineImpactReceiptRow.__tablename__
@@ -9044,7 +11927,7 @@ async def _migrate_guideline_impact_v1_schema() -> str | None:
         return changed
 
     async def _install_postgresql_triggers(conn: object) -> bool:
-        function_name = "guideline_impact_v1_guard"
+        function_name = "guideline_impact_v2_guard"
         function_ddl = f'''
 CREATE OR REPLACE FUNCTION "{function_name}"()
 RETURNS trigger
@@ -9066,7 +11949,7 @@ BEGIN
                   (
                       event.event_type = '{PolicyAdoptionChanged.event_type}'
                       AND event.payload_json->>'event_schema_version' =
-                          'guideline-impact/v1'
+                          'guideline-impact/v2'
                       AND event.payload_json->>'operation'
                           IN ('adopt', 'unlink')
                       AND json_typeof(
@@ -9077,7 +11960,7 @@ BEGIN
                       event.event_type =
                           '{PolicyRetirementChanged.event_type}'
                       AND event.payload_json->>'event_schema_version' =
-                          'guideline-impact/v1'
+                          'guideline-impact/v2'
                       AND event.payload_json->>'operation' = 'retire'
                       AND json_typeof(
                           event.payload_json->'revision_id'
@@ -9089,15 +11972,53 @@ BEGIN
                       AND (
                           SELECT COUNT(*)
                           FROM json_object_keys(event.payload_json)
-                      ) = 11
+                      ) = 13
                       AND event.payload_json->>'event_schema_version' =
-                          'policy-binding-materialized/v1'
+                          'policy-binding-materialized/v2'
                       AND event.payload_json->>'operation' = 'adopt'
                       AND json_typeof(
                           event.payload_json->'revision_id'
                       ) = 'string'
                       AND event.payload_json->>'source_kind'
                           IN ('native', 'default_materialization')
+                      AND event.payload_json->>'enforcement'
+                          IN ('advisory', 'blocking')
+                      AND (
+                          event.payload_json->>'minimum_confidence'
+                      ) ~ '^[0-9]+$'
+                      AND (
+                          event.payload_json->>'minimum_confidence'
+                      )::integer BETWEEN 0 AND 100
+                      AND jsonb_typeof(
+                          event.payload_json
+                          ->'metric_threshold_overrides'
+                      ) = 'object'
+                  )
+                  OR (
+                      event.event_type =
+                          '{SEMANTIC_GUIDELINE_PROJECTION_EVENT_TYPE}'
+                      AND (
+                          SELECT COUNT(*)
+                          FROM json_object_keys(event.payload_json)
+                      ) = 6
+                      AND event.payload_json->>'event_schema_version' =
+                          '{SEMANTIC_GUIDELINE_PROJECTION_SCHEMA_VERSION}'
+                      AND json_typeof(
+                          event.payload_json->'causation_id'
+                      ) = 'string'
+                      AND event.payload_json->>'entity_kind' IN (
+                          'revision', 'metric_definition',
+                          'binding_configuration', 'assessment_receipt',
+                          'metric_result', 'waiver', 'skip'
+                      )
+                      AND json_typeof(
+                          event.payload_json->'entity_id'
+                      ) = 'string'
+                      AND (
+                          event.payload_json->>'entity_digest'
+                      ) ~ '^[0-9a-f]{64}$'
+                      AND event.payload_json->>'operation'
+                          IN ('upsert', 'terminate')
                   )
               )
         ) THEN
@@ -9117,7 +12038,9 @@ BEGIN
             UNION ALL
             SELECT 1 FROM "{retirement_impact_table}" AS retirement
             WHERE retirement.event_id = evidence_id
-        ) AND OLD.event_type <> 'board.policy_binding_materialized.v1' THEN
+        ) AND OLD.event_type <> 'board.semantic_policy_binding_materialized.v2'
+          AND OLD.event_type <>
+              '{SEMANTIC_GUIDELINE_PROJECTION_EVENT_TYPE}' THEN
             IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
             RETURN NEW;
         END IF;
@@ -9148,6 +12071,99 @@ BEGIN
             RETURN OLD;
         END IF;
         RAISE EXCEPTION 'guideline_impact_evidence_immutable';
+    END IF;
+
+    IF TG_TABLE_NAME = '{receipt_table}' AND TG_OP = 'INSERT' THEN
+        IF NEW.sealed = false
+           AND jsonb_typeof(
+               NEW.proposed_metric_threshold_overrides::jsonb
+           ) = 'object'
+           AND jsonb_typeof(NEW.added_metric_ids::jsonb) = 'array'
+           AND jsonb_typeof(NEW.changed_metric_ids::jsonb) = 'array'
+           AND jsonb_typeof(NEW.removed_metric_ids::jsonb) = 'array'
+           AND NOT EXISTS (
+               SELECT 1
+               FROM jsonb_each(
+                   NEW.proposed_metric_threshold_overrides::jsonb
+               ) AS override(key, value)
+               WHERE jsonb_typeof(override.value) <> 'number'
+                  OR override.value::text !~ '^[0-9]+$'
+                  OR override.value::text::integer NOT BETWEEN 0 AND 100
+                  OR NOT EXISTS (
+                      SELECT 1
+                      FROM semantic_guideline_revisions AS revision,
+                           jsonb_array_elements(
+                               revision.metrics::jsonb
+                           ) AS metric(value)
+                      WHERE revision.guideline_id = NEW.guideline_id
+                        AND revision.revision_id = NEW.to_revision_id
+                        AND revision.revision_digest =
+                            NEW.to_revision_digest
+                        AND metric.value->>'code' = override.key
+                  )
+           )
+           AND NOT EXISTS (
+               SELECT 1
+               FROM (
+                   SELECT value
+                   FROM jsonb_array_elements(
+                       NEW.added_metric_ids::jsonb
+                   )
+                   UNION ALL
+                   SELECT value
+                   FROM jsonb_array_elements(
+                       NEW.changed_metric_ids::jsonb
+                   )
+                   UNION ALL
+                   SELECT value
+                   FROM jsonb_array_elements(
+                       NEW.removed_metric_ids::jsonb
+                   )
+               ) AS metric(value)
+               WHERE jsonb_typeof(metric.value) <> 'string'
+                  OR btrim(metric.value #>> '{{}}') = ''
+           )
+           AND (
+               SELECT COUNT(*)
+               FROM (
+                   SELECT value
+                   FROM jsonb_array_elements_text(
+                       NEW.added_metric_ids::jsonb
+                   )
+                   UNION ALL
+                   SELECT value
+                   FROM jsonb_array_elements_text(
+                       NEW.changed_metric_ids::jsonb
+                   )
+                   UNION ALL
+                   SELECT value
+                   FROM jsonb_array_elements_text(
+                       NEW.removed_metric_ids::jsonb
+                   )
+               ) AS metric(value)
+           ) = (
+               SELECT COUNT(DISTINCT value)
+               FROM (
+                   SELECT value
+                   FROM jsonb_array_elements_text(
+                       NEW.added_metric_ids::jsonb
+                   )
+                   UNION ALL
+                   SELECT value
+                   FROM jsonb_array_elements_text(
+                       NEW.changed_metric_ids::jsonb
+                   )
+                   UNION ALL
+                   SELECT value
+                   FROM jsonb_array_elements_text(
+                       NEW.removed_metric_ids::jsonb
+                   )
+               ) AS metric(value)
+           )
+        THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION 'guideline_impact_receipt_v2_invalid';
     END IF;
 
     IF TG_TABLE_NAME = '{receipt_table}' AND TG_OP = 'UPDATE' THEN
@@ -9199,7 +12215,7 @@ BEGIN
            AND NEW.impact_receipt_id IS NULL
            AND NEW.impact_adoption_id IS NULL
            AND NEW.impact_unlink_id IS NULL
-           AND NEW.default_enforcement = 'advisory'
+           AND NEW.enforcement = 'advisory'
            AND NEW.legacy_version_unresolvable = false
            AND NOT EXISTS (
                SELECT 1 FROM "{binding_table}" AS previous
@@ -9255,10 +12271,9 @@ BEGIN
                  AND receipt.binding_id = NEW.binding_id
                  AND receipt.to_revision_id = NEW.revision_id
                  AND receipt.to_semantic_version = NEW.semantic_version
-                 AND receipt.to_revision_digest = NEW.revision_digest
                  AND receipt.proposed_priority = NEW.priority
-                 AND receipt.proposed_default_enforcement =
-                     NEW.default_enforcement
+                 AND receipt.proposed_enforcement =
+                     NEW.enforcement
                  AND receipt.sealed = true
                  AND (
                      (
@@ -9282,8 +12297,17 @@ BEGIN
                                    receipt.from_revision_id
                                AND previous.semantic_version =
                                    receipt.from_semantic_version
-                               AND previous.revision_digest =
-                                   receipt.from_revision_digest
+                               AND EXISTS (
+                                   SELECT 1
+                                   FROM semantic_guideline_binding_configurations
+                                        AS previous_configuration
+                                   WHERE previous_configuration.binding_id =
+                                             previous.binding_id
+                                     AND previous_configuration.binding_revision =
+                                             previous.binding_revision
+                                     AND previous_configuration.revision_digest =
+                                             receipt.from_revision_digest
+                               )
                                AND previous.state =
                                    receipt.expected_binding_state
                          )
@@ -9311,8 +12335,8 @@ BEGIN
                  AND previous.semantic_version = NEW.semantic_version
                  AND previous.revision_digest = NEW.revision_digest
                  AND previous.priority = NEW.priority
-                 AND previous.default_enforcement =
-                     NEW.default_enforcement
+                 AND previous.enforcement =
+                     NEW.enforcement
                  AND previous.source_kind = NEW.source_kind
                  AND previous.binding_origin = NEW.binding_origin
                  AND previous.legacy_source_id
@@ -9347,15 +12371,29 @@ BEGIN
              AND binding.state = 'active'
              AND binding.revision_id = receipt.to_revision_id
              AND binding.semantic_version = receipt.to_semantic_version
-             AND binding.revision_digest = receipt.to_revision_digest
              AND binding.priority = receipt.proposed_priority
-             AND binding.default_enforcement =
-                 receipt.proposed_default_enforcement
+             AND binding.enforcement =
+                 receipt.proposed_enforcement
              AND binding.adopted_by = NEW.adopted_by
              AND binding.adopted_at = NEW.adopted_at
+            JOIN semantic_guideline_binding_configurations AS configuration
+              ON configuration.binding_id = binding.binding_id
+             AND configuration.binding_revision =
+                 binding.binding_revision
+             AND configuration.board_id = binding.board_id
+             AND configuration.guideline_id = binding.guideline_id
+             AND configuration.revision_id = binding.revision_id
+             AND configuration.revision_digest =
+                 receipt.to_revision_digest
+             AND configuration.enforcement =
+                 receipt.proposed_enforcement
+             AND configuration.minimum_confidence =
+                 receipt.proposed_minimum_confidence
+             AND configuration.metric_threshold_overrides::jsonb =
+                 receipt.proposed_metric_threshold_overrides::jsonb
             JOIN domain_events AS event
               ON event.id = NEW.event_id
-             AND event.event_type = 'board.policy_adoption_changed.v1'
+             AND event.event_type = 'board.semantic_guideline_adoption_changed.v2'
              AND event.board_id = NEW.board_id
              AND event.actor_id = NEW.adopted_by
              AND event.occurred_at = NEW.adopted_at
@@ -9400,7 +12438,7 @@ BEGIN
               AND event.actor_type IN ('agent', 'user', 'system')
               AND activity.actor_name = NEW.adopted_by
               AND event.payload_json->>'event_schema_version' =
-                  'guideline-impact/v1'
+                  'guideline-impact/v2'
               AND event.payload_json->>'event_id' = NEW.event_id
               AND (
                   (
@@ -9460,19 +12498,19 @@ BEGIN
                   receipt.binding_head_digest_after
               AND event.payload_json->>'policy_set_digest' =
                   receipt.policy_set_digest_after
-              AND event.payload_json->'added_rule_ids' =
-                  receipt.added_rule_ids::jsonb
-              AND event.payload_json->'changed_rule_ids' =
-                  receipt.changed_rule_ids::jsonb
-              AND event.payload_json->'removed_rule_ids' =
-                  receipt.removed_rule_ids::jsonb
+              AND event.payload_json->'added_metric_ids' =
+                  receipt.added_metric_ids::jsonb
+              AND event.payload_json->'changed_metric_ids' =
+                  receipt.changed_metric_ids::jsonb
+              AND event.payload_json->'removed_metric_ids' =
+                  receipt.removed_metric_ids::jsonb
               AND event.payload_json->>'actor_id' = NEW.adopted_by
               AND event.payload_json->>'actor_type' = event.actor_type
               AND (
                   event.payload_json->>'occurred_at'
               )::timestamptz = NEW.adopted_at
               AND event.payload_json::jsonb = jsonb_build_object(
-                  'event_schema_version', 'guideline-impact/v1',
+                  'event_schema_version', 'guideline-impact/v2',
                   'event_id', NEW.event_id,
                   'operation', 'adopt',
                   'board_id', NEW.board_id,
@@ -9500,9 +12538,9 @@ BEGIN
                   'policy_set_digest_after',
                       receipt.policy_set_digest_after,
                   'policy_set_digest', receipt.policy_set_digest_after,
-                  'added_rule_ids', receipt.added_rule_ids::jsonb,
-                  'changed_rule_ids', receipt.changed_rule_ids::jsonb,
-                  'removed_rule_ids', receipt.removed_rule_ids::jsonb,
+                  'added_metric_ids', receipt.added_metric_ids::jsonb,
+                  'changed_metric_ids', receipt.changed_metric_ids::jsonb,
+                  'removed_metric_ids', receipt.removed_metric_ids::jsonb,
                   'actor_id', NEW.adopted_by,
                   'actor_type', event.actor_type,
                   'occurred_at', event.payload_json->'occurred_at'
@@ -9524,9 +12562,29 @@ BEGIN
              AND previous.board_id = NEW.board_id
              AND previous.guideline_id = NEW.guideline_id
              AND previous.state = 'active'
+            JOIN semantic_guideline_binding_configurations AS configuration
+              ON configuration.binding_id = binding.binding_id
+             AND configuration.binding_revision =
+                 binding.binding_revision
+            JOIN semantic_guideline_binding_configurations
+                 AS previous_configuration
+              ON previous_configuration.binding_id =
+                 previous.binding_id
+             AND previous_configuration.binding_revision =
+                 previous.binding_revision
+             AND previous_configuration.revision_digest =
+                 configuration.revision_digest
+             AND previous_configuration.enforcement =
+                 configuration.enforcement
+             AND previous_configuration.minimum_confidence =
+                 configuration.minimum_confidence
+             AND previous_configuration.metric_threshold_overrides::jsonb =
+                 configuration.metric_threshold_overrides::jsonb
+             AND previous_configuration.configuration_digest =
+                 configuration.configuration_digest
             JOIN domain_events AS event
               ON event.id = NEW.event_id
-             AND event.event_type = 'board.policy_adoption_changed.v1'
+             AND event.event_type = 'board.semantic_guideline_adoption_changed.v2'
              AND event.board_id = NEW.board_id
              AND event.actor_id = NEW.unlinked_by
              AND event.actor_type = NEW.actor_type
@@ -9554,8 +12612,8 @@ BEGIN
               AND binding.semantic_version = previous.semantic_version
               AND binding.revision_digest = previous.revision_digest
               AND binding.priority = previous.priority
-              AND binding.default_enforcement =
-                  previous.default_enforcement
+              AND binding.enforcement =
+                  previous.enforcement
               AND binding.source_kind = previous.source_kind
               AND binding.binding_origin = previous.binding_origin
               AND binding.legacy_source_id
@@ -9577,7 +12635,7 @@ BEGIN
               AND event.actor_type IN ('agent', 'user', 'system')
               AND activity.actor_name = NEW.unlinked_by
               AND event.payload_json->>'event_schema_version' =
-                  'guideline-impact/v1'
+                  'guideline-impact/v2'
               AND event.payload_json->>'event_id' = NEW.event_id
               AND event.payload_json->>'operation' = 'unlink'
               AND event.payload_json->>'board_id' = NEW.board_id
@@ -9593,7 +12651,7 @@ BEGIN
               AND event.payload_json->>'from_semantic_version' =
                   previous.semantic_version
               AND event.payload_json->>'from_revision_digest' =
-                  previous.revision_digest
+                  previous_configuration.revision_digest
               AND event.payload_json ? 'to_revision_id'
               AND event.payload_json->'to_revision_id' = 'null'::jsonb
               AND event.payload_json ? 'to_semantic_version'
@@ -9619,17 +12677,17 @@ BEGIN
                   NEW.policy_set_digest_after
               AND event.payload_json->>'policy_set_digest' =
                   NEW.policy_set_digest_after
-              AND event.payload_json->'added_rule_ids' = '[]'::jsonb
-              AND event.payload_json->'changed_rule_ids' = '[]'::jsonb
-              AND event.payload_json->'removed_rule_ids' =
-                  NEW.removed_rule_ids::jsonb
+              AND event.payload_json->'added_metric_ids' = '[]'::jsonb
+              AND event.payload_json->'changed_metric_ids' = '[]'::jsonb
+              AND event.payload_json->'removed_metric_ids' =
+                  NEW.removed_metric_ids::jsonb
               AND event.payload_json->>'actor_id' = NEW.unlinked_by
               AND event.payload_json->>'actor_type' = NEW.actor_type
               AND (
                   event.payload_json->>'occurred_at'
               )::timestamptz = NEW.unlinked_at
               AND event.payload_json::jsonb = jsonb_build_object(
-                  'event_schema_version', 'guideline-impact/v1',
+                  'event_schema_version', 'guideline-impact/v2',
                   'event_id', NEW.event_id,
                   'operation', 'unlink',
                   'board_id', NEW.board_id,
@@ -9641,7 +12699,8 @@ BEGIN
                   'from_revision_id', previous.revision_id,
                   'from_semantic_version',
                       previous.semantic_version,
-                  'from_revision_digest', previous.revision_digest,
+                  'from_revision_digest',
+                      previous_configuration.revision_digest,
                   'to_revision_id', NULL,
                   'to_semantic_version', NULL,
                   'to_revision_digest', NULL,
@@ -9659,9 +12718,9 @@ BEGIN
                       NEW.policy_set_digest_after,
                   'policy_set_digest',
                       NEW.policy_set_digest_after,
-                  'added_rule_ids', '[]'::jsonb,
-                  'changed_rule_ids', '[]'::jsonb,
-                  'removed_rule_ids', NEW.removed_rule_ids::jsonb,
+                  'added_metric_ids', '[]'::jsonb,
+                  'changed_metric_ids', '[]'::jsonb,
+                  'removed_metric_ids', NEW.removed_metric_ids::jsonb,
                   'actor_id', NEW.unlinked_by,
                   'actor_type', NEW.actor_type,
                   'occurred_at', event.payload_json->'occurred_at'
@@ -9686,10 +12745,15 @@ BEGIN
              AND binding.state = 'active'
              AND binding.revision_id = NEW.revision_id
              AND binding.semantic_version = NEW.semantic_version
-             AND binding.revision_digest = NEW.revision_digest
+            JOIN semantic_guideline_binding_configurations AS configuration
+              ON configuration.binding_id = binding.binding_id
+             AND configuration.binding_revision =
+                 binding.binding_revision
+             AND configuration.revision_id = NEW.revision_id
+             AND configuration.revision_digest = NEW.revision_digest
             JOIN domain_events AS event
               ON event.id = NEW.event_id
-             AND event.event_type = 'board.policy_retirement_changed.v1'
+             AND event.event_type = 'board.semantic_guideline_retirement_changed.v2'
              AND event.board_id = NEW.board_id
              AND event.actor_id = NEW.retired_by
              AND event.actor_type = NEW.actor_type
@@ -9722,7 +12786,7 @@ BEGIN
                     AND later.binding_revision > binding.binding_revision
               )
               AND event.payload_json->>'event_schema_version' =
-                  'guideline-impact/v1'
+                  'guideline-impact/v2'
               AND event.payload_json->>'event_id' = NEW.event_id
               AND event.payload_json->>'operation' = 'retire'
               AND event.payload_json->>'board_id' = NEW.board_id
@@ -9765,8 +12829,8 @@ BEGIN
                   NEW.policy_set_digest_after
               AND event.payload_json->>'policy_set_digest' =
                   NEW.policy_set_digest_after
-              AND event.payload_json->'removed_rule_ids' =
-                  NEW.removed_rule_ids::jsonb
+              AND event.payload_json->'removed_metric_ids' =
+                  NEW.removed_metric_ids::jsonb
               AND event.payload_json->>'actor_id' = NEW.retired_by
               AND event.payload_json->>'actor_type' = NEW.actor_type
               AND (
@@ -9775,7 +12839,7 @@ BEGIN
               AND event.payload_json->>'request_digest' =
                   NEW.request_digest
               AND event.payload_json::jsonb = jsonb_build_object(
-                  'event_schema_version', 'guideline-impact/v1',
+                  'event_schema_version', 'guideline-impact/v2',
                   'event_id', NEW.event_id,
                   'operation', 'retire',
                   'board_id', NEW.board_id,
@@ -9802,7 +12866,7 @@ BEGIN
                       NEW.policy_set_digest_after,
                   'policy_set_digest',
                       NEW.policy_set_digest_after,
-                  'removed_rule_ids', NEW.removed_rule_ids::jsonb,
+                  'removed_metric_ids', NEW.removed_metric_ids::jsonb,
                   'actor_id', NEW.retired_by,
                   'actor_type', NEW.actor_type,
                   'occurred_at', event.payload_json->'occurred_at',
@@ -9823,7 +12887,7 @@ $$
         contracts = {
             (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{receipt_table}_guard"): (
                 receipt_table,
-                "UPDATE OR DELETE",
+                "INSERT OR UPDATE OR DELETE",
             ),
             (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{item_table}_guard"): (
                 item_table,
@@ -10016,7 +13080,7 @@ $$
               ) = 28
               AND json_extract(
                   event."payload_json", '$.event_schema_version'
-              ) = 'guideline-impact/v1'
+              ) = 'guideline-impact/v2'
               AND json_extract(event."payload_json", '$.event_id') =
                   adoption."event_id"
               AND json_extract(event."payload_json", '$.operation') =
@@ -10110,14 +13174,14 @@ $$
                   event."payload_json", '$.policy_set_digest'
               ) = receipt."policy_set_digest_after"
               AND json(json_extract(
-                  event."payload_json", '$.added_rule_ids'
-              )) = json(receipt."added_rule_ids")
+                  event."payload_json", '$.added_metric_ids'
+              )) = json(receipt."added_metric_ids")
               AND json(json_extract(
-                  event."payload_json", '$.changed_rule_ids'
-              )) = json(receipt."changed_rule_ids")
+                  event."payload_json", '$.changed_metric_ids'
+              )) = json(receipt."changed_metric_ids")
               AND json(json_extract(
-                  event."payload_json", '$.removed_rule_ids'
-              )) = json(receipt."removed_rule_ids")
+                  event."payload_json", '$.removed_metric_ids'
+              )) = json(receipt."removed_metric_ids")
               AND json_extract(event."payload_json", '$.actor_id') =
                   adoption."adopted_by"
               AND json_extract(event."payload_json", '$.actor_type') =
@@ -10130,7 +13194,7 @@ $$
               AND activity."details"::jsonb =
                   event."payload_json"::jsonb
               AND event."payload_json"->>'event_schema_version' =
-                  'guideline-impact/v1'
+                  'guideline-impact/v2'
               AND event."payload_json"->>'event_id' =
                   adoption."event_id"
               AND event."payload_json"->>'operation' = 'adopt'
@@ -10208,12 +13272,12 @@ $$
                   receipt."policy_set_digest_after"
               AND event."payload_json"->>'policy_set_digest' =
                   receipt."policy_set_digest_after"
-              AND event."payload_json"->'added_rule_ids' =
-                  receipt."added_rule_ids"::jsonb
-              AND event."payload_json"->'changed_rule_ids' =
-                  receipt."changed_rule_ids"::jsonb
-              AND event."payload_json"->'removed_rule_ids' =
-                  receipt."removed_rule_ids"::jsonb
+              AND event."payload_json"->'added_metric_ids' =
+                  receipt."added_metric_ids"::jsonb
+              AND event."payload_json"->'changed_metric_ids' =
+                  receipt."changed_metric_ids"::jsonb
+              AND event."payload_json"->'removed_metric_ids' =
+                  receipt."removed_metric_ids"::jsonb
               AND event."payload_json"->>'actor_id' =
                   adoption."adopted_by"
               AND event."payload_json"->>'actor_type' =
@@ -10222,7 +13286,7 @@ $$
                   event."payload_json"->>'occurred_at'
               )::timestamptz = adoption."adopted_at"
               AND event."payload_json"::jsonb = jsonb_build_object(
-                  'event_schema_version', 'guideline-impact/v1',
+                  'event_schema_version', 'guideline-impact/v2',
                   'event_id', adoption."event_id",
                   'operation', 'adopt',
                   'board_id', adoption."board_id",
@@ -10253,11 +13317,11 @@ $$
                       receipt."policy_set_digest_after",
                   'policy_set_digest',
                       receipt."policy_set_digest_after",
-                  'added_rule_ids', receipt."added_rule_ids"::jsonb,
-                  'changed_rule_ids',
-                      receipt."changed_rule_ids"::jsonb,
-                  'removed_rule_ids',
-                      receipt."removed_rule_ids"::jsonb,
+                  'added_metric_ids', receipt."added_metric_ids"::jsonb,
+                  'changed_metric_ids',
+                      receipt."changed_metric_ids"::jsonb,
+                  'removed_metric_ids',
+                      receipt."removed_metric_ids"::jsonb,
                   'actor_id', adoption."adopted_by",
                   'actor_type', event."actor_type",
                   'occurred_at',
@@ -10283,8 +13347,8 @@ WHERE NOT EXISTS (
      AND binding."semantic_version" = receipt."to_semantic_version"
      AND binding."revision_digest" = receipt."to_revision_digest"
      AND binding."priority" = receipt."proposed_priority"
-     AND binding."default_enforcement" =
-         receipt."proposed_default_enforcement"
+     AND binding."enforcement" =
+         receipt."proposed_enforcement"
      AND binding."binding_revision" =
          COALESCE(receipt."expected_binding_revision", 0) + 1
      AND binding."adopted_by" = adoption."adopted_by"
@@ -10293,7 +13357,7 @@ WHERE NOT EXISTS (
      AND binding."request_digest" = adoption."request_digest"
     JOIN "domain_events" AS event
       ON event."id" = adoption."event_id"
-     AND event."event_type" = 'board.policy_adoption_changed.v1'
+     AND event."event_type" = 'board.semantic_guideline_adoption_changed.v2'
      AND event."board_id" = adoption."board_id"
      AND event."actor_id" = adoption."adopted_by"
      AND event."occurred_at" = adoption."adopted_at"
@@ -10390,7 +13454,7 @@ WHERE NOT EXISTS (
                 'LEFT JOIN "domain_events" AS event '
                 'ON event."id" = unlink."event_id" '
                 'AND event."event_type" = '
-                "'board.policy_adoption_changed.v1' "
+                "'board.semantic_guideline_adoption_changed.v2' "
                 'AND event."board_id" = unlink."board_id" '
                 'AND event."actor_id" = unlink."unlinked_by" '
                 'AND event."actor_type" = unlink."actor_type" '
@@ -10411,8 +13475,8 @@ WHERE NOT EXISTS (
                 'OR binding."revision_digest" <> '
                 'previous."revision_digest" '
                 'OR binding."priority" <> previous."priority" '
-                'OR binding."default_enforcement" <> '
-                'previous."default_enforcement" '
+                'OR binding."enforcement" <> '
+                'previous."enforcement" '
                 'OR binding."source_kind" <> previous."source_kind" '
                 'OR binding."binding_origin" <> '
                 'previous."binding_origin" '
@@ -10441,7 +13505,7 @@ WHERE NOT EXISTS (
                 'LEFT JOIN "domain_events" AS event '
                 'ON event."id" = impact."event_id" '
                 'AND event."event_type" = '
-                "'board.policy_retirement_changed.v1' "
+                "'board.semantic_guideline_retirement_changed.v2' "
                 'AND event."board_id" = impact."board_id" '
                 'AND event."actor_id" = impact."retired_by" '
                 'AND event."actor_type" = impact."actor_type" '
@@ -10500,7 +13564,7 @@ WHERE NOT EXISTS (
                 adopted_at = adopted_at.astimezone(timezone.utc)
             expected_request_digest = canonical_sha256(
                 {
-                    "contract": "guideline-impact/v1",
+                    "contract": "guideline-impact/v2",
                     "operation": "adopt",
                     "receipt_id": row["impact_receipt_id"],
                     "impact_digest": row["impact_digest"],
@@ -10540,7 +13604,7 @@ WHERE NOT EXISTS (
                 return value.replace(tzinfo=timezone.utc)
             return value.astimezone(timezone.utc)
 
-        def _canonical_rule_ids(value: object) -> list[str] | None:
+        def _canonical_metric_ids(value: object) -> list[str] | None:
             if not isinstance(value, list | tuple) or any(
                 not isinstance(item, str) or not item.strip() for item in value
             ):
@@ -10561,6 +13625,9 @@ WHERE NOT EXISTS (
 
         unlink_current = aliased(GuidelineBoardBindingRow)
         unlink_previous = aliased(GuidelineBoardBindingRow)
+        unlink_previous_configuration = aliased(
+            SemanticGuidelineBindingConfigurationRow
+        )
         unlink_digest_rows = (
             (
                 await conn.execute(
@@ -10576,7 +13643,7 @@ WHERE NOT EXISTS (
                         GuidelineImpactUnlinkRow.binding_head_digest_after,
                         GuidelineImpactUnlinkRow.policy_set_digest_before,
                         GuidelineImpactUnlinkRow.policy_set_digest_after,
-                        GuidelineImpactUnlinkRow.removed_rule_ids,
+                        GuidelineImpactUnlinkRow.removed_metric_ids,
                         GuidelineImpactUnlinkRow.unlinked_by,
                         GuidelineImpactUnlinkRow.actor_type,
                         GuidelineImpactUnlinkRow.unlinked_at,
@@ -10589,15 +13656,26 @@ WHERE NOT EXISTS (
                         unlink_previous.semantic_version.label(
                             "previous_semantic_version"
                         ),
-                        unlink_previous.revision_digest.label(
+                        unlink_previous_configuration.revision_digest.label(
                             "previous_revision_digest"
                         ),
                         unlink_previous.priority.label("previous_priority"),
-                        unlink_previous.default_enforcement.label(
-                            "previous_default_enforcement"
+                        unlink_previous_configuration.enforcement.label(
+                            "previous_enforcement"
                         ),
                         unlink_previous.state.label("previous_state"),
-                        unlink_previous.source_kind.label("previous_source_kind"),
+                        unlink_previous.binding_origin.label(
+                            "previous_source_kind"
+                        ),
+                        unlink_previous_configuration.minimum_confidence.label(
+                            "previous_minimum_confidence"
+                        ),
+                        unlink_previous_configuration.metric_threshold_overrides.label(
+                            "previous_metric_threshold_overrides"
+                        ),
+                        unlink_previous_configuration.configuration_digest.label(
+                            "previous_configuration_digest"
+                        ),
                         unlink_current.idempotency_key.label("binding_idempotency_key"),
                         unlink_current.request_digest.label("binding_request_digest"),
                         unlink_current.adopted_by.label("binding_actor_id"),
@@ -10640,6 +13718,17 @@ WHERE NOT EXISTS (
                         ),
                     )
                     .join(
+                        unlink_previous_configuration,
+                        (
+                            unlink_previous_configuration.binding_id
+                            == unlink_previous.binding_id
+                        )
+                        & (
+                            unlink_previous_configuration.binding_revision
+                            == unlink_previous.binding_revision
+                        ),
+                    )
+                    .join(
                         DomainEventRow,
                         DomainEventRow.id == GuidelineImpactUnlinkRow.event_id,
                     )
@@ -10654,30 +13743,31 @@ WHERE NOT EXISTS (
         )
         invalid_unlink_digests = 0
         for row in unlink_digest_rows:
-            removed_rule_ids = _canonical_rule_ids(row["removed_rule_ids"])
-            if removed_rule_ids is None:
+            removed_metric_ids = _canonical_metric_ids(row["removed_metric_ids"])
+            if removed_metric_ids is None:
                 invalid_unlink_digests += 1
                 continue
             unlinked_at = _utc_datetime(row["unlinked_at"])
-            expected_binding_digest = canonical_sha256(
-                {
-                    "contract": "guideline-impact/v1",
-                    "kind": "binding_fence",
-                    "board_id": row["board_id"],
-                    "guideline_id": row["guideline_id"],
-                    "binding_id": row["binding_id"],
-                    "binding_revision": row["previous_binding_revision"],
-                    "revision_id": row["previous_revision_id"],
-                    "semantic_version": row["previous_semantic_version"],
-                    "revision_digest": row["previous_revision_digest"],
-                    "priority": row["previous_priority"],
-                    "default_enforcement": row["previous_default_enforcement"],
-                    "state": row["previous_state"],
-                    "source_kind": row["previous_source_kind"],
-                }
+            expected_binding_digest = _guideline_binding_fence_digest_v2(
+                board_id=row["board_id"],
+                guideline_id=row["guideline_id"],
+                binding_id=row["binding_id"],
+                binding_revision=row["previous_binding_revision"],
+                revision_id=row["previous_revision_id"],
+                semantic_version=row["previous_semantic_version"],
+                revision_digest=row["previous_revision_digest"],
+                priority=row["previous_priority"],
+                enforcement=row["previous_enforcement"],
+                minimum_confidence=row["previous_minimum_confidence"],
+                metric_threshold_overrides=(
+                    row["previous_metric_threshold_overrides"]
+                ),
+                configuration_digest=row["previous_configuration_digest"],
+                state=row["previous_state"],
+                source_kind=row["previous_source_kind"],
             )
             expected_payload = {
-                "event_schema_version": "guideline-impact/v1",
+                "event_schema_version": "guideline-impact/v2",
                 "event_id": row["event_id"],
                 "operation": "unlink",
                 "board_id": row["board_id"],
@@ -10699,16 +13789,16 @@ WHERE NOT EXISTS (
                 "policy_set_digest_before": row["policy_set_digest_before"],
                 "policy_set_digest_after": row["policy_set_digest_after"],
                 "policy_set_digest": row["policy_set_digest_after"],
-                "added_rule_ids": [],
-                "changed_rule_ids": [],
-                "removed_rule_ids": removed_rule_ids,
+                "added_metric_ids": [],
+                "changed_metric_ids": [],
+                "removed_metric_ids": removed_metric_ids,
                 "actor_id": row["unlinked_by"],
                 "actor_type": row["actor_type"],
                 "occurred_at": unlinked_at.isoformat(),
             }
             expected_request_digest = canonical_sha256(
                 {
-                    "contract": "guideline-impact/v1",
+                    "contract": "guideline-impact/v2",
                     "operation": "unlink",
                     "binding_digest_before": expected_binding_digest,
                     "binding_id": row["binding_id"],
@@ -10717,7 +13807,7 @@ WHERE NOT EXISTS (
                     "binding_head_digest_after": row["binding_head_digest_after"],
                     "policy_set_digest_before": row["policy_set_digest_before"],
                     "policy_set_digest_after": row["policy_set_digest_after"],
-                    "removed_rule_ids": removed_rule_ids,
+                    "removed_metric_ids": removed_metric_ids,
                     "actor_id": row["unlinked_by"],
                     "actor_type": row["actor_type"],
                 }
@@ -10745,7 +13835,7 @@ WHERE NOT EXISTS (
                 or row["binding_request_digest"] != row["request_digest"]
                 or row["binding_actor_id"] != row["unlinked_by"]
                 or _utc_datetime(row["binding_occurred_at"]) != unlinked_at
-                or row["event_type"] != "board.policy_adoption_changed.v1"
+                or row["event_type"] != "board.semantic_guideline_adoption_changed.v2"
                 or row["event_board_id"] != row["board_id"]
                 or row["event_actor_id"] != row["unlinked_by"]
                 or row["event_actor_type"] != row["actor_type"]
@@ -10773,6 +13863,9 @@ WHERE NOT EXISTS (
             )
 
         retirement_binding = aliased(GuidelineBoardBindingRow)
+        retirement_configuration = aliased(
+            SemanticGuidelineBindingConfigurationRow
+        )
         retirement_digest_rows = (
             (
                 await conn.execute(
@@ -10794,7 +13887,7 @@ WHERE NOT EXISTS (
                         GuidelineRetirementImpactRow.binding_head_digest_after,
                         GuidelineRetirementImpactRow.policy_set_digest_before,
                         GuidelineRetirementImpactRow.policy_set_digest_after,
-                        GuidelineRetirementImpactRow.removed_rule_ids,
+                        GuidelineRetirementImpactRow.removed_metric_ids,
                         GuidelineRetirementImpactRow.retired_by,
                         GuidelineRetirementImpactRow.actor_type,
                         GuidelineRetirementImpactRow.retired_at,
@@ -10803,11 +13896,22 @@ WHERE NOT EXISTS (
                         GuidelineRetirementImpactRow.request_digest,
                         GuidelineRetirementImpactRow.impact_digest,
                         retirement_binding.priority.label("binding_priority"),
-                        retirement_binding.default_enforcement.label(
-                            "binding_default_enforcement"
+                        retirement_configuration.enforcement.label(
+                            "binding_enforcement"
                         ),
                         retirement_binding.state.label("binding_state"),
-                        retirement_binding.source_kind.label("binding_source_kind"),
+                        retirement_binding.binding_origin.label(
+                            "binding_source_kind"
+                        ),
+                        retirement_configuration.minimum_confidence.label(
+                            "binding_minimum_confidence"
+                        ),
+                        retirement_configuration.metric_threshold_overrides.label(
+                            "binding_metric_threshold_overrides"
+                        ),
+                        retirement_configuration.configuration_digest.label(
+                            "binding_configuration_digest"
+                        ),
                         GuidelineRetirementRow.retired_revision_id.label(
                             "terminal_revision_id"
                         ),
@@ -10854,6 +13958,17 @@ WHERE NOT EXISTS (
                         ),
                     )
                     .join(
+                        retirement_configuration,
+                        (
+                            retirement_configuration.binding_id
+                            == retirement_binding.binding_id
+                        )
+                        & (
+                            retirement_configuration.binding_revision
+                            == retirement_binding.binding_revision
+                        ),
+                    )
+                    .join(
                         GuidelineRetirementRow,
                         GuidelineRetirementRow.retirement_id
                         == GuidelineRetirementImpactRow.retirement_id,
@@ -10873,30 +13988,31 @@ WHERE NOT EXISTS (
         )
         invalid_retirement_digests = 0
         for row in retirement_digest_rows:
-            removed_rule_ids = _canonical_rule_ids(row["removed_rule_ids"])
-            if removed_rule_ids is None:
+            removed_metric_ids = _canonical_metric_ids(row["removed_metric_ids"])
+            if removed_metric_ids is None:
                 invalid_retirement_digests += 1
                 continue
             retired_at = _utc_datetime(row["retired_at"])
-            expected_binding_digest = canonical_sha256(
-                {
-                    "contract": "guideline-impact/v1",
-                    "kind": "binding_fence",
-                    "board_id": row["board_id"],
-                    "guideline_id": row["guideline_id"],
-                    "binding_id": row["binding_id"],
-                    "binding_revision": row["binding_revision"],
-                    "revision_id": row["revision_id"],
-                    "semantic_version": row["semantic_version"],
-                    "revision_digest": row["revision_digest"],
-                    "priority": row["binding_priority"],
-                    "default_enforcement": row["binding_default_enforcement"],
-                    "state": row["binding_state"],
-                    "source_kind": row["binding_source_kind"],
-                }
+            expected_binding_digest = _guideline_binding_fence_digest_v2(
+                board_id=row["board_id"],
+                guideline_id=row["guideline_id"],
+                binding_id=row["binding_id"],
+                binding_revision=row["binding_revision"],
+                revision_id=row["revision_id"],
+                semantic_version=row["semantic_version"],
+                revision_digest=row["revision_digest"],
+                priority=row["binding_priority"],
+                enforcement=row["binding_enforcement"],
+                minimum_confidence=row["binding_minimum_confidence"],
+                metric_threshold_overrides=(
+                    row["binding_metric_threshold_overrides"]
+                ),
+                configuration_digest=row["binding_configuration_digest"],
+                state=row["binding_state"],
+                source_kind=row["binding_source_kind"],
             )
             expected_payload = {
-                "event_schema_version": "guideline-impact/v1",
+                "event_schema_version": "guideline-impact/v2",
                 "event_id": row["event_id"],
                 "operation": "retire",
                 "board_id": row["board_id"],
@@ -10916,34 +14032,31 @@ WHERE NOT EXISTS (
                 "policy_set_digest_before": row["policy_set_digest_before"],
                 "policy_set_digest_after": row["policy_set_digest_after"],
                 "policy_set_digest": row["policy_set_digest_after"],
-                "removed_rule_ids": removed_rule_ids,
+                "removed_metric_ids": removed_metric_ids,
                 "actor_id": row["retired_by"],
                 "actor_type": row["actor_type"],
                 "occurred_at": retired_at.isoformat(),
                 "request_digest": row["request_digest"],
             }
-            expected_request_digest = canonical_sha256(
-                {
-                    "contract": "guideline-request-digest/v1",
-                    "operation": "retire",
-                    "scope_id": row["guideline_id"],
-                    "payload": {
-                        "guideline_id": row["guideline_id"],
-                        "expected_head_revision": row["terminal_head_revision"],
-                        "retired_revision_id": row["terminal_revision_id"],
-                        "retired_revision_number": row["terminal_revision_number"],
-                        "retired_semantic_version": row["terminal_semantic_version"],
-                        "retired_revision_digest": row["terminal_revision_digest"],
-                        "status": row["retirement_status"],
-                        "reason": row["terminal_reason"],
-                        "superseded_by_guideline_id": row["superseded_by_guideline_id"],
-                        "actor_id": row["retired_by"],
-                    },
-                }
+            expected_request_digest = guideline_request_digest_v1(
+                operation="retire",
+                scope_id=row["guideline_id"],
+                payload={
+                    "guideline_id": row["guideline_id"],
+                    "expected_head_revision": row["terminal_head_revision"],
+                    "retired_revision_id": row["terminal_revision_id"],
+                    "retired_revision_number": row["terminal_revision_number"],
+                    "retired_semantic_version": row["terminal_semantic_version"],
+                    "retired_revision_digest": row["terminal_revision_digest"],
+                    "status": row["retirement_status"],
+                    "reason": row["terminal_reason"],
+                    "superseded_by_guideline_id": row["superseded_by_guideline_id"],
+                    "actor_id": row["retired_by"],
+                },
             )
             expected_impact_digest = canonical_sha256(
                 {
-                    "contract": "guideline-impact/v1",
+                    "contract": "guideline-impact/v2",
                     "operation": "retire",
                     "event": expected_payload,
                 }
@@ -10953,7 +14066,7 @@ WHERE NOT EXISTS (
                 or row["request_digest"] != expected_request_digest
                 or row["terminal_request_digest"] != expected_request_digest
                 or row["impact_digest"] != expected_impact_digest
-                or row["event_type"] != "board.policy_retirement_changed.v1"
+                or row["event_type"] != "board.semantic_guideline_retirement_changed.v2"
                 or row["event_board_id"] != row["board_id"]
                 or row["event_actor_id"] != row["retired_by"]
                 or row["event_actor_type"] != row["actor_type"]
@@ -11428,33 +14541,23 @@ WHERE NOT trigger.tgisinternal
 
 
 async def _migrate_policy_waiver_v1_schema() -> str | None:
-    """Converge append-only B09 waiver heads, events, and DB guards."""
+    """Converge the retired policy/v1 waiver audit substrate.
+
+    The legacy rows remain physically auditable and immutable so existing
+    databases upgrade safely, but they are no longer reconstructed through the
+    retired policy/v1 runtime.  The following semantic-governance migration
+    records every legacy head as an ineffective waiver without granting it gate
+    authority.
+    """
 
     from sqlalchemy import inspect as sa_inspect
-    from sqlalchemy import select as sa_select
     from sqlalchemy import text as sa_text
-    from types import SimpleNamespace
 
     from okto_pulse.community.adapters.sqlalchemy_models import (
         PolicyComplianceFindingRow,
         PolicyComplianceReceiptRow,
         PolicyWaiverEventRow,
         PolicyWaiverRow,
-    )
-    from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
-        _validate_waiver_pair,
-        _verified_waiver_head,
-        _waiver_event_from_row,
-        _waiver_from_rows,
-    )
-    from okto_pulse.core.domain.guideline_policy import (
-        GuidelinePolicyContractError,
-        PolicyWaiverEventType,
-        PolicyWaiverExpireReasonCode,
-        PolicyWaiverStatus,
-    )
-    from okto_pulse.core.ports.guideline_policy import (
-        GuidelinePolicyDigestConflict,
     )
 
     engine = get_engine()
@@ -11543,147 +14646,6 @@ WHERE event.event_id IS NULL
                 "policy waiver migration found inconsistent head/event "
                 f"lineages: {inconsistent_heads}"
             )
-
-        head_snapshots = tuple(
-            SimpleNamespace(**dict(row))
-            for row in (
-                (await conn.execute(sa_select(PolicyWaiverRow.__table__)))
-                .mappings()
-                .all()
-            )
-        )
-        event_snapshots = tuple(
-            SimpleNamespace(**dict(row))
-            for row in (
-                (await conn.execute(sa_select(PolicyWaiverEventRow.__table__)))
-                .mappings()
-                .all()
-            )
-        )
-        events_by_waiver: dict[str, list[SimpleNamespace]] = {}
-        for event in event_snapshots:
-            events_by_waiver.setdefault(event.waiver_id, []).append(event)
-        try:
-            for head in head_snapshots:
-                lineage = sorted(
-                    events_by_waiver.get(head.waiver_id, ()),
-                    key=lambda event: event.waiver_revision,
-                )
-                if len(lineage) != head.waiver_revision:
-                    raise GuidelinePolicyDigestConflict(
-                        "policy_waiver_event_chain_invalid"
-                    )
-                previous_head = None
-                for index, event_row in enumerate(lineage, start=1):
-                    event = _waiver_event_from_row(event_row)
-                    event_head = _waiver_from_rows(head, event_row)
-                    _validate_waiver_pair(
-                        waiver=event_head,
-                        event=event,
-                    )
-                    if (
-                        event.waiver_revision != index
-                        or index == 1
-                        and (
-                            event.event_type is not PolicyWaiverEventType.REQUEST
-                            or event_row.predecessor_event_id is not None
-                            or event.actor_id != head.requested_by
-                            or event.occurred_at != head.requested_at
-                            or event.reason != head.justification
-                            or tuple(event.evidence_refs) != tuple(head.evidence_refs)
-                            or event.expires_at != head.original_expires_at
-                            or event_row.idempotency_key != head.idempotency_key
-                            or event_row.request_digest != head.request_digest
-                        )
-                        or index > 1
-                        and (
-                            previous_head is None
-                            or event_row.predecessor_event_id
-                            != lineage[index - 2].event_id
-                            or event.from_status is not previous_head.status
-                            or (
-                                event.event_type is PolicyWaiverEventType.REVALIDATE
-                                and event.expires_at <= previous_head.expires_at
-                            )
-                            or (
-                                event.event_type is PolicyWaiverEventType.REVALIDATE
-                                and previous_head.status is PolicyWaiverStatus.APPROVED
-                                and event.occurred_at >= previous_head.expires_at
-                            )
-                            or (
-                                event.event_type is PolicyWaiverEventType.REVALIDATE
-                                and previous_head.status is PolicyWaiverStatus.EXPIRED
-                                and previous_head.expire_reason_code
-                                is not (PolicyWaiverExpireReasonCode.SCHEDULED_EXPIRY)
-                            )
-                            or (
-                                event.event_type is not PolicyWaiverEventType.REVALIDATE
-                                and event.expires_at != previous_head.expires_at
-                            )
-                        )
-                    ):
-                        raise GuidelinePolicyDigestConflict(
-                            "policy_waiver_event_chain_invalid"
-                        )
-                    if event.event_type in {
-                        PolicyWaiverEventType.APPROVE,
-                        PolicyWaiverEventType.REJECT,
-                        PolicyWaiverEventType.REVALIDATE,
-                    } and (
-                        event.actor_id != event_row.reviewed_by
-                        or event.occurred_at != event_row.reviewed_at
-                        or event.reason != event_row.review_reason
-                    ):
-                        raise GuidelinePolicyDigestConflict(
-                            "policy_waiver_event_review_mismatch"
-                        )
-                    if event.event_type is PolicyWaiverEventType.REVOKE and (
-                        event.actor_id != event_row.revoked_by
-                        or event.occurred_at != event_row.revoked_at
-                    ):
-                        raise GuidelinePolicyDigestConflict(
-                            "policy_waiver_event_revocation_mismatch"
-                        )
-                    if (
-                        previous_head is not None
-                        and event.event_type
-                        not in {
-                            PolicyWaiverEventType.APPROVE,
-                            PolicyWaiverEventType.REJECT,
-                            PolicyWaiverEventType.REVALIDATE,
-                        }
-                        and (
-                            event_head.reviewed_by != previous_head.reviewed_by
-                            or event_head.reviewed_at != previous_head.reviewed_at
-                            or event_head.review_reason != previous_head.review_reason
-                        )
-                    ):
-                        raise GuidelinePolicyDigestConflict(
-                            "policy_waiver_event_review_changed"
-                        )
-                    if (
-                        previous_head is not None
-                        and event.event_type is PolicyWaiverEventType.REVALIDATE
-                        and previous_head.expire_reason_code
-                        not in {
-                            None,
-                            PolicyWaiverExpireReasonCode.SCHEDULED_EXPIRY,
-                        }
-                    ):
-                        raise GuidelinePolicyDigestConflict(
-                            "policy_waiver_structural_invalidation_terminal"
-                        )
-                    previous_head = event_head
-                _verified_waiver_head(head, lineage[-1])
-        except (
-            GuidelinePolicyContractError,
-            GuidelinePolicyDigestConflict,
-            TypeError,
-            ValueError,
-        ) as exc:
-            raise RuntimeError(
-                "policy waiver migration found corrupt event history"
-            ) from exc
 
         if dialect == "sqlite":
             predecessor_rows = (
@@ -11875,6 +14837,1710 @@ WHERE NOT trigger.tgisinternal
                     raise RuntimeError(
                         "policy waiver PostgreSQL trigger is corrupt: " + trigger_name
                     )
+
+    return None if changed else "skipped"
+
+
+def semantic_guideline_owned_tables() -> tuple[object, ...]:
+    """Return the single ORM-owned manifest for all semantic v2 tables."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SemanticGuidelineAssessmentReceiptRow,
+        SemanticGuidelineBindingConfigurationRow,
+        SemanticGuidelineFindingRow,
+        SemanticGuidelineLegacyMigrationRow,
+        SemanticGuidelineMetricResultRow,
+        SemanticGuidelineRevisionRow,
+        SemanticGuidelineSkipRow,
+        SemanticGuidelineWaiverEventRow,
+        SemanticGuidelineWaiverRow,
+        SemanticSubjectVersionEventRow,
+        SemanticSubjectVersionRow,
+    )
+
+    return (
+        SemanticGuidelineRevisionRow.__table__,
+        SemanticGuidelineBindingConfigurationRow.__table__,
+        SemanticSubjectVersionEventRow.__table__,
+        SemanticSubjectVersionRow.__table__,
+        SemanticGuidelineAssessmentReceiptRow.__table__,
+        SemanticGuidelineMetricResultRow.__table__,
+        SemanticGuidelineFindingRow.__table__,
+        SemanticGuidelineWaiverRow.__table__,
+        SemanticGuidelineWaiverEventRow.__table__,
+        SemanticGuidelineSkipRow.__table__,
+        SemanticGuidelineLegacyMigrationRow.__table__,
+    )
+
+
+def _postgresql_catalog_char(value: object) -> str:
+    """Normalize PostgreSQL's internal ``\"char\"`` across DBAPI drivers."""
+
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, bytes):
+        return value.decode("ascii")
+    return str(value)
+
+
+def audit_semantic_guideline_postgresql_trigger_rows(
+    rows: list[dict[str, object]],
+    *,
+    expected_schema: str,
+    trigger_specs: dict[str, tuple[str, str, int]] | None = None,
+) -> tuple[str, ...]:
+    """Audit exact non-internal PostgreSQL trigger identity and enabled state.
+
+    Missing triggers are returned so the migration can install them. Any
+    unexpected, disabled, misbound, or wrong-operation trigger is corruption
+    and fails closed.
+    """
+
+    if not isinstance(expected_schema, str) or not expected_schema.strip():
+        raise RuntimeError(
+            "semantic guideline PostgreSQL trigger schema is invalid"
+        )
+    expected = trigger_specs
+    if expected is None:
+        _function_sql, expected = semantic_guideline_postgresql_ddl()
+    existing = {
+        str(row["trigger_name"]): row
+        for row in rows
+    }
+    if len(existing) != len(rows):
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for row in rows:
+            trigger_name = str(row["trigger_name"])
+            if trigger_name in seen:
+                duplicates.add(trigger_name)
+            seen.add(trigger_name)
+        raise RuntimeError(
+            "semantic guideline has duplicate PostgreSQL trigger names: "
+            + ", ".join(sorted(duplicates))
+        )
+    unexpected = set(existing) - set(expected)
+    if unexpected:
+        raise RuntimeError(
+            "semantic guideline has unexpected PostgreSQL triggers: "
+            + ", ".join(sorted(unexpected))
+        )
+    missing: list[str] = []
+    for trigger_name, (
+        table_name,
+        _operation_clause,
+        expected_type,
+    ) in expected.items():
+        observed = existing.get(trigger_name)
+        if observed is None:
+            missing.append(trigger_name)
+            continue
+        if (
+            str(observed["table_name"]) != table_name
+            or str(observed["table_schema"]) != expected_schema
+            or str(observed["function_name"]) != "semantic_guideline_guard_v3"
+            or str(observed["function_schema"]) != expected_schema
+            or int(observed["trigger_type"]) != expected_type
+            or _postgresql_catalog_char(observed["trigger_enabled"]) != "O"
+            or bool(observed["has_when_clause"])
+            or int(observed["argument_count"]) != 0
+            or str(observed["update_columns"]).strip()
+        ):
+            raise RuntimeError(
+                "semantic guideline PostgreSQL trigger is corrupt: "
+                + trigger_name
+            )
+    return tuple(missing)
+
+
+async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
+    """Backfill the permanent assessor fence and every derived waiver digest."""
+
+    from sqlalchemy import select as sa_select
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SemanticGuidelineAssessmentReceiptRow,
+        SemanticGuidelineWaiverEventRow,
+        SemanticGuidelineWaiverRow,
+    )
+    from okto_pulse.core.domain.guideline_policy import (
+        PolicyEntityType,
+        PolicySubjectRef,
+    )
+    from okto_pulse.core.domain.guideline_semantic_currentness import (
+        SemanticAssessmentCurrentnessReason,
+    )
+    from okto_pulse.core.domain.guideline_semantic_exceptions import (
+        SemanticMetricWaiverAnchor,
+        SemanticMetricWaiverEventType,
+        SemanticMetricWaiverExpireReason,
+        SemanticMetricWaiverRevalidationReason,
+        SemanticMetricWaiverRevalidationStatus,
+        request_semantic_metric_waiver,
+        revalidate_semantic_metric_waiver,
+        transition_semantic_metric_waiver,
+    )
+    from okto_pulse.core.domain.quality_assessment import EvidenceRef
+
+    waiver_table = SemanticGuidelineWaiverRow.__table__
+    event_table = SemanticGuidelineWaiverEventRow.__table__
+    receipt_table = SemanticGuidelineAssessmentReceiptRow.__table__
+    heads = (
+        await conn.execute(
+            sa_select(waiver_table).order_by(waiver_table.c.waiver_id)
+        )
+    ).mappings().all()
+    if not heads:
+        return False
+
+    for head in heads:
+        assessor_id = (
+            await conn.execute(
+                sa_select(receipt_table.c.assessor_agent_id).where(
+                    receipt_table.c.receipt_id == head["receipt_id"],
+                    receipt_table.c.board_id == head["board_id"],
+                    receipt_table.c.receipt_digest
+                    == head["receipt_digest"],
+                    receipt_table.c.sealed.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        if assessor_id is None:
+            raise RuntimeError(
+                "semantic waiver assessor backfill cannot resolve its "
+                f"sealed receipt: {head['waiver_id']}"
+            )
+        anchor = SemanticMetricWaiverAnchor(
+            metric_result_id=head["metric_result_id"],
+            metric_result_digest=head["metric_result_digest"],
+            finding_id=head["finding_id"],
+            finding_digest=head["finding_digest"],
+            receipt_id=head["receipt_id"],
+            receipt_digest=head["receipt_digest"],
+            subject=PolicySubjectRef(
+                board_id=head["board_id"],
+                entity_type=PolicyEntityType(head["subject_type"]),
+                subject_id=head["subject_id"],
+                subject_version=head["subject_version"],
+            ),
+            subject_content_digest=head["subject_content_digest"],
+            guideline_id=head["guideline_id"],
+            guideline_revision_id=head["revision_id"],
+            guideline_revision_digest=head["revision_digest"],
+            binding_id=head["binding_id"],
+            binding_revision=head["binding_revision"],
+            binding_configuration_digest=head["configuration_digest"],
+            metric_id=head["metric_id"],
+            metric_code=head["metric_code"],
+            assessment_assessor_id=assessor_id,
+        )
+        events = (
+            await conn.execute(
+                sa_select(event_table)
+                .where(event_table.c.waiver_id == head["waiver_id"])
+                .order_by(event_table.c.waiver_revision)
+            )
+        ).mappings().all()
+        if not events or events[0]["event_type"] != "request":
+            raise RuntimeError(
+                "semantic waiver assessor backfill found an invalid event "
+                f"lineage: {head['waiver_id']}"
+            )
+
+        def evidence(raw: object) -> tuple[EvidenceRef, ...]:
+            return tuple(EvidenceRef(**item) for item in (raw or ()))
+
+        first = events[0]
+        mutation = request_semantic_metric_waiver(
+            waiver_id=head["waiver_id"],
+            event_id=first["event_id"],
+            anchor=anchor,
+            justification=head["justification"],
+            evidence_refs=evidence(first["evidence_refs"]),
+            requested_by=head["requested_by"],
+            requested_at=head["requested_at"],
+            expires_at=head["original_expires_at"],
+            idempotency_key=first["idempotency_key"],
+        )
+        rebuilt = [mutation]
+        for raw in events[1:]:
+            event_type = SemanticMetricWaiverEventType(raw["event_type"])
+            if event_type is SemanticMetricWaiverEventType.REVALIDATE:
+                if (
+                    raw["evaluated_at"] is None
+                    or raw["revalidation_status"] is None
+                    or raw["revalidation_current"] is None
+                    or raw["revalidation_reason_code"] is None
+                ):
+                    raise RuntimeError(
+                        "legacy semantic waiver revalidation cannot be "
+                        "silently upgraded; recreate the development waiver: "
+                        f"{head['waiver_id']}"
+                    )
+                mutation = revalidate_semantic_metric_waiver(
+                    mutation.waiver,
+                    event_id=raw["event_id"],
+                    expected_waiver_revision=(
+                        mutation.waiver.waiver_revision
+                    ),
+                    actor_id=raw["actor_id"],
+                    occurred_at=raw["occurred_at"],
+                    evaluated_at=raw["evaluated_at"],
+                    status=SemanticMetricWaiverRevalidationStatus(
+                        raw["revalidation_status"]
+                    ),
+                    reason_code=SemanticMetricWaiverRevalidationReason(
+                        raw["revalidation_reason_code"]
+                    ),
+                    currentness_reasons=tuple(
+                        SemanticAssessmentCurrentnessReason(item)
+                        for item in raw["currentness_reasons"]
+                    ),
+                    scheduled_expiry_observed=bool(
+                        raw["scheduled_expiry_observed"]
+                    ),
+                    evidence_refs=evidence(raw["evidence_refs"]),
+                    idempotency_key=raw["idempotency_key"],
+                )
+            else:
+                transition_kwargs: dict[str, object] = {}
+                if event_type is SemanticMetricWaiverEventType.APPROVE:
+                    transition_kwargs["expires_at"] = raw["expires_at"]
+                if event_type is SemanticMetricWaiverEventType.EXPIRE:
+                    transition_kwargs["expire_reason"] = (
+                        SemanticMetricWaiverExpireReason(
+                            raw["expire_reason_code"]
+                        )
+                    )
+                mutation = transition_semantic_metric_waiver(
+                    mutation.waiver,
+                    event_id=raw["event_id"],
+                    expected_waiver_revision=(
+                        mutation.waiver.waiver_revision
+                    ),
+                    event_type=event_type,
+                    actor_id=raw["actor_id"],
+                    occurred_at=raw["occurred_at"],
+                    reason=raw["reason"],
+                    evidence_refs=evidence(raw["evidence_refs"]),
+                    idempotency_key=raw["idempotency_key"],
+                    **transition_kwargs,
+                )
+            if (
+                mutation.waiver.waiver_revision
+                != raw["waiver_revision"]
+                or mutation.waiver.status.value != raw["to_status"]
+            ):
+                raise RuntimeError(
+                    "semantic waiver assessor backfill would rewrite its "
+                    f"lifecycle: {head['waiver_id']}"
+                )
+            rebuilt.append(mutation)
+
+        anchor_fields = {
+            "metric_result_id": anchor.metric_result_id,
+            "metric_result_digest": anchor.metric_result_digest,
+            "finding_id": anchor.finding_id,
+            "finding_digest": anchor.finding_digest,
+            "receipt_id": anchor.receipt_id,
+            "receipt_digest": anchor.receipt_digest,
+            "board_id": anchor.subject.board_id,
+            "subject_type": anchor.subject.entity_type.value,
+            "subject_id": anchor.subject.subject_id,
+            "subject_version": anchor.subject.subject_version,
+            "subject_content_digest": anchor.subject_content_digest,
+            "guideline_id": anchor.guideline_id,
+            "revision_id": anchor.guideline_revision_id,
+            "revision_digest": anchor.guideline_revision_digest,
+            "binding_id": anchor.binding_id,
+            "binding_revision": anchor.binding_revision,
+            "configuration_digest": (
+                anchor.binding_configuration_digest
+            ),
+            "metric_id": anchor.metric_id,
+            "metric_code": anchor.metric_code,
+        }
+        final = rebuilt[-1].waiver
+        expected_head = {
+            **anchor_fields,
+            "waiver_id": final.waiver_id,
+            "justification": final.justification,
+            "requested_by": final.requested_by,
+            "requested_at": final.requested_at,
+            "original_expires_at": final.original_expires_at,
+            "status": final.status.value,
+            "waiver_revision": final.waiver_revision,
+            "expires_at": final.expires_at,
+            "last_event_id": final.last_event_id,
+            "last_event_type": final.last_event_type.value,
+            "last_event_at": final.last_event_at,
+            "reviewed_by": final.reviewed_by,
+            "reviewed_at": final.reviewed_at,
+            "review_reason": final.review_reason,
+            "revoked_by": final.revoked_by,
+            "revoked_at": final.revoked_at,
+            "expire_reason_code": (
+                final.expire_reason.value
+                if final.expire_reason is not None
+                else None
+            ),
+            "idempotency_key": rebuilt[0].event.idempotency_key,
+        }
+        for field_name, expected_value in expected_head.items():
+            if head[field_name] != expected_value:
+                raise RuntimeError(
+                    "semantic waiver assessor backfill found corrupted "
+                    f"head field {field_name}: {head['waiver_id']}"
+                )
+        if evidence(head["evidence_refs"]) != final.evidence_refs:
+            raise RuntimeError(
+                "semantic waiver assessor backfill found corrupted head "
+                f"evidence: {head['waiver_id']}"
+            )
+
+        for raw, item in zip(events, rebuilt, strict=True):
+            event = item.event
+            waiver = item.waiver
+            expected_event = {
+                "event_id": event.event_id,
+                "predecessor_event_id": event.predecessor_event_id,
+                "waiver_id": event.waiver_id,
+                "board_id": waiver.anchor.subject.board_id,
+                "waiver_revision": event.waiver_revision,
+                "event_type": event.event_type.value,
+                "from_status": (
+                    event.from_status.value
+                    if event.from_status is not None
+                    else None
+                ),
+                "to_status": event.to_status.value,
+                "actor_id": event.actor_id,
+                "occurred_at": event.occurred_at,
+                "reason": event.reason,
+                "expires_at": event.expires_at,
+                "reviewed_by": waiver.reviewed_by,
+                "reviewed_at": waiver.reviewed_at,
+                "review_reason": waiver.review_reason,
+                "revoked_by": waiver.revoked_by,
+                "revoked_at": waiver.revoked_at,
+                "expire_reason_code": (
+                    event.expire_reason.value
+                    if event.expire_reason is not None
+                    else None
+                ),
+                "evaluated_at": event.evaluated_at,
+                "revalidation_status": (
+                    event.revalidation_status.value
+                    if event.revalidation_status is not None
+                    else None
+                ),
+                "revalidation_current": event.revalidation_current,
+                "revalidation_reason_code": (
+                    event.revalidation_reason_code.value
+                    if event.revalidation_reason_code is not None
+                    else None
+                ),
+                "currentness_reasons": [
+                    reason.value
+                    for reason in event.currentness_reasons
+                ],
+                "scheduled_expiry_observed": (
+                    event.scheduled_expiry_observed
+                ),
+                "idempotency_key": event.idempotency_key,
+            }
+            for field_name, expected_value in expected_event.items():
+                if raw[field_name] != expected_value:
+                    raise RuntimeError(
+                        "semantic waiver assessor backfill found corrupted "
+                        f"event field {field_name}: {event.event_id}"
+                    )
+            if evidence(raw["evidence_refs"]) != event.evidence_refs:
+                raise RuntimeError(
+                    "semantic waiver assessor backfill found corrupted "
+                    f"event evidence: {event.event_id}"
+                )
+            await conn.execute(
+                event_table.update()
+                .where(event_table.c.event_id == raw["event_id"])
+                .values(
+                    reason=event.reason,
+                    expires_at=event.expires_at,
+                    scope_digest=event.scope_digest,
+                    waiver_digest=event.waiver_digest,
+                    reviewed_by=waiver.reviewed_by,
+                    reviewed_at=waiver.reviewed_at,
+                    review_reason=waiver.review_reason,
+                    revoked_by=waiver.revoked_by,
+                    revoked_at=waiver.revoked_at,
+                    expire_reason_code=(
+                        event.expire_reason.value
+                        if event.expire_reason is not None
+                        else None
+                    ),
+                    evaluated_at=event.evaluated_at,
+                    revalidation_status=(
+                        event.revalidation_status.value
+                        if event.revalidation_status is not None
+                        else None
+                    ),
+                    revalidation_current=event.revalidation_current,
+                    revalidation_reason_code=(
+                        event.revalidation_reason_code.value
+                        if event.revalidation_reason_code is not None
+                        else None
+                    ),
+                    currentness_reasons=[
+                        reason.value
+                        for reason in event.currentness_reasons
+                    ],
+                    scheduled_expiry_observed=(
+                        event.scheduled_expiry_observed
+                    ),
+                    request_digest=event.request_digest,
+                )
+            )
+
+        await conn.execute(
+            waiver_table.update()
+            .where(waiver_table.c.waiver_id == head["waiver_id"])
+            .values(
+                assessment_assessor_id=assessor_id,
+                scope_digest=final.scope_digest,
+                status=final.status.value,
+                waiver_revision=final.waiver_revision,
+                expires_at=final.expires_at,
+                last_event_id=final.last_event_id,
+                last_event_type=final.last_event_type.value,
+                last_event_at=final.last_event_at,
+                last_event_idempotency_key=(
+                    final.last_event_idempotency_key
+                ),
+                reviewed_by=final.reviewed_by,
+                reviewed_at=final.reviewed_at,
+                review_reason=final.review_reason,
+                revoked_by=final.revoked_by,
+                revoked_at=final.revoked_at,
+                expire_reason_code=(
+                    final.expire_reason.value
+                    if final.expire_reason is not None
+                    else None
+                ),
+                last_revalidation_status=(
+                    final.last_revalidation_status.value
+                    if final.last_revalidation_status is not None
+                    else None
+                ),
+                last_revalidation_current=(
+                    final.last_revalidation_current
+                ),
+                last_revalidation_reason_code=(
+                    final.last_revalidation_reason_code.value
+                    if final.last_revalidation_reason_code is not None
+                    else None
+                ),
+                last_revalidation_evaluated_at=(
+                    final.last_revalidation_evaluated_at
+                ),
+                last_revalidation_currentness_reasons=[
+                    reason.value
+                    for reason in (
+                        final.last_revalidation_currentness_reasons
+                    )
+                ],
+                last_revalidation_scheduled_expiry_observed=(
+                    final
+                    .last_revalidation_scheduled_expiry_observed
+                ),
+                head_digest=final.head_digest,
+                request_digest=rebuilt[0].event.request_digest,
+            )
+        )
+    return True
+
+
+def _semantic_waiver_upgrade_column_definitions(
+    dialect: object,
+) -> dict[str, dict[str, str]]:
+    """Return append-only predecessor columns using canonical ORM SQL types."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SemanticGuidelineWaiverEventRow,
+        SemanticGuidelineWaiverRow,
+    )
+
+    waiver_table = SemanticGuidelineWaiverRow.__table__
+    event_table = SemanticGuidelineWaiverEventRow.__table__
+
+    def sql_type(table: object, column_name: str) -> str:
+        column = table.c[column_name]
+        return str(column.type.compile(dialect=dialect))
+
+    return {
+        waiver_table.name: {
+            "assessment_assessor_id": sql_type(
+                waiver_table,
+                "assessment_assessor_id",
+            ),
+            "last_event_idempotency_key": sql_type(
+                waiver_table,
+                "last_event_idempotency_key",
+            ),
+            "last_revalidation_status": sql_type(
+                waiver_table,
+                "last_revalidation_status",
+            ),
+            "last_revalidation_current": sql_type(
+                waiver_table,
+                "last_revalidation_current",
+            ),
+            "last_revalidation_reason_code": sql_type(
+                waiver_table,
+                "last_revalidation_reason_code",
+            ),
+            "last_revalidation_evaluated_at": sql_type(
+                waiver_table,
+                "last_revalidation_evaluated_at",
+            ),
+            "last_revalidation_currentness_reasons": (
+                f"{sql_type(waiver_table, 'last_revalidation_currentness_reasons')} "
+                "NOT NULL DEFAULT '[]'"
+            ),
+            "last_revalidation_scheduled_expiry_observed": (
+                f"{sql_type(waiver_table, 'last_revalidation_scheduled_expiry_observed')} "
+                "NOT NULL DEFAULT false"
+            ),
+        },
+        event_table.name: {
+            "evaluated_at": sql_type(event_table, "evaluated_at"),
+            "revalidation_status": sql_type(
+                event_table,
+                "revalidation_status",
+            ),
+            "revalidation_current": sql_type(
+                event_table,
+                "revalidation_current",
+            ),
+            "revalidation_reason_code": sql_type(
+                event_table,
+                "revalidation_reason_code",
+            ),
+            "currentness_reasons": (
+                f"{sql_type(event_table, 'currentness_reasons')} "
+                "NOT NULL DEFAULT '[]'"
+            ),
+            "scheduled_expiry_observed": (
+                f"{sql_type(event_table, 'scheduled_expiry_observed')} "
+                "NOT NULL DEFAULT false"
+            ),
+        },
+    }
+
+
+async def _converge_semantic_guideline_waiver_contract() -> bool:
+    """Upgrade the unreleased semantic waiver schema without dropping evidence."""
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.schema import AddConstraint
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SemanticGuidelineWaiverEventRow,
+        SemanticGuidelineWaiverRow,
+    )
+
+    engine = get_engine()
+    waiver_table = SemanticGuidelineWaiverRow.__table__
+    event_table = SemanticGuidelineWaiverEventRow.__table__
+    changed = False
+
+    predecessor_waiver_columns = {
+        "assessment_assessor_id",
+        "last_event_idempotency_key",
+        "last_revalidation_status",
+        "last_revalidation_current",
+        "last_revalidation_reason_code",
+        "last_revalidation_evaluated_at",
+        "last_revalidation_currentness_reasons",
+        "last_revalidation_scheduled_expiry_observed",
+    }
+    predecessor_event_columns = {
+        "evaluated_at",
+        "revalidation_status",
+        "revalidation_current",
+        "revalidation_reason_code",
+        "currentness_reasons",
+        "scheduled_expiry_observed",
+    }
+    new_waiver_checks = {
+        "ck_sg_waiver_revalidation_shape",
+        "ck_sg_waiver_revalidation_decision",
+    }
+    new_event_checks = {
+        "ck_sg_waiver_event_revalidation_shape",
+        "ck_sg_waiver_event_revalidation_decision",
+    }
+    predecessor_event_checks = {
+        "ck_sg_waiver_event_transition": (
+            "(event_type = 'request' AND from_status IS NULL "
+            "AND to_status = 'requested' AND waiver_revision = 1) "
+            "OR (event_type = 'approve' AND from_status = 'requested' "
+            "AND to_status = 'approved' AND waiver_revision > 1) "
+            "OR (event_type = 'reject' AND from_status = 'requested' "
+            "AND to_status = 'rejected' AND waiver_revision > 1) "
+            "OR (event_type = 'revoke' AND from_status = 'approved' "
+            "AND to_status = 'revoked' AND waiver_revision > 1) "
+            "OR (event_type = 'expire' AND from_status = 'approved' "
+            "AND to_status = 'expired' AND waiver_revision > 1) "
+            "OR (event_type = 'revalidate' "
+            "AND from_status IN ('approved', 'expired') "
+            "AND to_status = 'approved' AND waiver_revision > 1)"
+        ),
+        "ck_sg_waiver_event_expire": (
+            "(event_type = 'expire' AND expire_reason_code IN "
+            "('scheduled_expiry', 'subject_scope_changed', "
+            "'guideline_revision_changed', "
+            "'binding_configuration_changed', 'metric_result_changed')) "
+            "OR (event_type <> 'expire' AND expire_reason_code IS NULL)"
+        ),
+    }
+
+    def _sql_tokens(value: object) -> tuple[str, ...]:
+        return tuple(
+            token.lower()
+            for token in re.findall(
+                r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_]*|"
+                r"<>|<=|>=|=|<|>|\d+",
+                str(value),
+            )
+        )
+
+    def predecessor_contract(
+        contract: dict[str, dict[str, object]],
+        *,
+        table_kind: str,
+        dialect: str,
+    ) -> dict[str, object]:
+        expected = dict(contract["expected"])
+        removed_columns = (
+            predecessor_waiver_columns
+            if table_kind == "waiver"
+            else predecessor_event_columns
+        )
+        expected["columns"] = tuple(
+            column
+            for column in expected["columns"]
+            if column[0] not in removed_columns
+        )
+        removed_checks = (
+            new_waiver_checks
+            if table_kind == "waiver"
+            else new_event_checks
+        )
+        checks = {
+            name: expression
+            for name, expression in expected["checks"]
+            if name not in removed_checks
+        }
+        if table_kind == "event":
+            for name, expression in predecessor_event_checks.items():
+                checks[name] = (
+                    _normalize_sqlite_contract_ddl(expression)
+                    if dialect == "sqlite"
+                    else _sql_tokens(expression)
+                )
+        expected["checks"] = tuple(sorted(checks.items(), key=repr))
+        return expected
+
+    def is_predecessor(
+        contract: dict[str, dict[str, object]],
+        *,
+        table_kind: str,
+        dialect: str,
+    ) -> bool:
+        observed = dict(contract["observed"])
+        expected = predecessor_contract(
+            contract,
+            table_kind=table_kind,
+            dialect=dialect,
+        )
+        if dialect == "postgresql" and table_kind == "event":
+            observed_checks = {
+                name: expression
+                for name, expression in observed["checks"]
+            }
+            expected_checks = dict(expected["checks"])
+            for name in predecessor_event_checks:
+                expression = observed_checks.get(name)
+                if expression is None or _sql_tokens(expression) != (
+                    expected_checks[name]
+                ):
+                    return False
+                observed_checks[name] = expected_checks[name]
+            observed["checks"] = tuple(
+                sorted(observed_checks.items(), key=repr)
+            )
+        return observed == expected
+
+    def classify_contracts(sync_conn: object) -> str:
+        inspector = sa_inspect(sync_conn)
+        names = set(inspector.get_table_names())
+        if waiver_table.name not in names or event_table.name not in names:
+            return "missing"
+        waiver_contract = (
+            _sqlite_owned_table_contract(sync_conn, waiver_table)
+            if sync_conn.dialect.name == "sqlite"
+            else _postgresql_owned_table_contract(sync_conn, waiver_table)
+        )
+        event_contract = (
+            _sqlite_owned_table_contract(sync_conn, event_table)
+            if sync_conn.dialect.name == "sqlite"
+            else _postgresql_owned_table_contract(sync_conn, event_table)
+        )
+        waiver_current = (
+            waiver_contract["observed"] == waiver_contract["expected"]
+        )
+        event_current = (
+            event_contract["observed"] == event_contract["expected"]
+        )
+        if waiver_current and event_current:
+            return "current"
+        dialect = sync_conn.dialect.name
+        if is_predecessor(
+            waiver_contract,
+            table_kind="waiver",
+            dialect=dialect,
+        ) and is_predecessor(
+            event_contract,
+            table_kind="event",
+            dialect=dialect,
+        ):
+            return "predecessor"
+        raise RuntimeError(
+            "semantic waiver convergence found unrecognized schema drift"
+        )
+
+    async with engine.connect() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "semantic waiver convergence supports only SQLite and "
+                "PostgreSQL"
+            )
+        contract_state = await conn.run_sync(classify_contracts)
+        if contract_state in {"missing", "current"}:
+            return False
+        if dialect == "sqlite":
+            observed_triggers = set(
+                (
+                    await conn.exec_driver_sql(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'trigger' "
+                        "AND name LIKE "
+                        f"'{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}%'"
+                    )
+                ).scalars()
+            )
+            current_trigger_names = set(
+                semantic_guideline_sqlite_trigger_manifest()
+            )
+            predecessor_trigger_names = (
+                current_trigger_names
+                - {
+                    f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}"
+                    "_waiver_scope_insert"
+                }
+            ) | {
+                f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}"
+                "_waiver_revalidate_scope"
+            }
+            if observed_triggers not in (
+                set(),
+                predecessor_trigger_names,
+            ):
+                raise RuntimeError(
+                    "semantic waiver convergence found unrecognized "
+                    "SQLite trigger drift"
+                )
+        else:
+            _function_sql, trigger_specs = (
+                semantic_guideline_postgresql_ddl()
+            )
+            expected_schema = str(
+                (
+                    await conn.exec_driver_sql(
+                        "SELECT current_schema()"
+                    )
+                ).scalar_one()
+            )
+            trigger_rows = list(
+                (
+                    await conn.exec_driver_sql(
+                        """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       relation_namespace.nspname AS table_schema,
+       function.proname AS function_name,
+       function_namespace.nspname AS function_schema,
+       trigger.tgtype AS trigger_type,
+       trigger.tgenabled AS trigger_enabled,
+       trigger.tgqual IS NOT NULL AS has_when_clause,
+       trigger.tgnargs AS argument_count,
+       trigger.tgattr::text AS update_columns
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_namespace AS relation_namespace
+  ON relation_namespace.oid = relation.relnamespace
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+JOIN pg_namespace AS function_namespace
+  ON function_namespace.oid = function.pronamespace
+WHERE NOT trigger.tgisinternal
+  AND relation_namespace.nspname = current_schema()
+  AND trigger.tgname LIKE 'trg_sgv3_%'
+"""
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            audit_semantic_guideline_postgresql_trigger_rows(
+                trigger_rows,
+                expected_schema=expected_schema,
+                trigger_specs=trigger_specs,
+            )
+        await conn.rollback()
+        if dialect == "sqlite":
+            original_foreign_keys = int(
+                (
+                    await conn.exec_driver_sql("PRAGMA foreign_keys")
+                ).scalar_one()
+            )
+            await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        else:
+            await conn.begin()
+        try:
+            if dialect == "sqlite":
+                trigger_names = (
+                    await conn.exec_driver_sql(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'trigger' "
+                        "AND name LIKE "
+                        f"'{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}%'"
+                    )
+                ).scalars().all()
+                for trigger_name in trigger_names:
+                    await conn.exec_driver_sql(
+                        f'DROP TRIGGER "{trigger_name}"'
+                    )
+            else:
+                _function_sql, trigger_specs = (
+                    semantic_guideline_postgresql_ddl()
+                )
+                for trigger_name, (table_name, _ops, _type) in (
+                    trigger_specs.items()
+                ):
+                    await conn.exec_driver_sql(
+                        f'DROP TRIGGER IF EXISTS "{trigger_name}" '
+                        f'ON "{table_name}"'
+                    )
+
+            def column_names(sync_conn: object, table_name: str) -> set[str]:
+                return {
+                    str(column["name"])
+                    for column in sa_inspect(sync_conn).get_columns(
+                        table_name
+                    )
+                }
+
+            waiver_columns = await conn.run_sync(
+                lambda sync_conn: column_names(
+                    sync_conn,
+                    waiver_table.name,
+                )
+            )
+            event_columns = await conn.run_sync(
+                lambda sync_conn: column_names(
+                    sync_conn,
+                    event_table.name,
+                )
+            )
+            definitions = _semantic_waiver_upgrade_column_definitions(
+                conn.dialect
+            )
+            observed_by_table = {
+                waiver_table.name: waiver_columns,
+                event_table.name: event_columns,
+            }
+            for table_name, columns in definitions.items():
+                for column_name, definition in columns.items():
+                    if column_name in observed_by_table[table_name]:
+                        continue
+                    await conn.exec_driver_sql(
+                        f'ALTER TABLE "{table_name}" '
+                        f'ADD COLUMN "{column_name}" {definition}'
+                    )
+                    changed = True
+
+            changed = (
+                await _backfill_semantic_guideline_waiver_digests(conn)
+                or changed
+            )
+
+            if dialect == "sqlite":
+                def rebuild_tables(sync_conn: object) -> None:
+                    waiver_backup_name = (
+                        f"{waiver_table.name}__skb3_contract_upgrade"
+                    )
+                    event_backup_name = (
+                        f"{event_table.name}__skb3_contract_upgrade"
+                    )
+                    inspector = sa_inspect(sync_conn)
+                    existing = set(inspector.get_table_names())
+                    if {
+                        waiver_backup_name,
+                        event_backup_name,
+                    } & existing:
+                        raise RuntimeError(
+                            "semantic waiver convergence found stale "
+                            "temporary tables"
+                        )
+                    for table in (waiver_table, event_table):
+                        for index in inspector.get_indexes(table.name):
+                            index_name = str(index.get("name") or "")
+                            if (
+                                index_name
+                                and not index_name.startswith(
+                                    "sqlite_autoindex_"
+                                )
+                            ):
+                                sync_conn.exec_driver_sql(
+                                    f'DROP INDEX "{index_name}"'
+                                )
+                    sync_conn.exec_driver_sql(
+                        f'ALTER TABLE "{event_table.name}" RENAME TO '
+                        f'"{event_backup_name}"'
+                    )
+                    sync_conn.exec_driver_sql(
+                        f'ALTER TABLE "{waiver_table.name}" RENAME TO '
+                        f'"{waiver_backup_name}"'
+                    )
+                    waiver_table.create(sync_conn, checkfirst=False)
+                    event_table.create(sync_conn, checkfirst=False)
+                    for table, backup_name in (
+                        (waiver_table, waiver_backup_name),
+                        (event_table, event_backup_name),
+                    ):
+                        columns = ", ".join(
+                            f'"{column.name}"'
+                            for column in table.columns
+                        )
+                        sync_conn.exec_driver_sql(
+                            f'INSERT INTO "{table.name}" ({columns}) '
+                            f'SELECT {columns} FROM "{backup_name}"'
+                        )
+                    sync_conn.exec_driver_sql(
+                        f'DROP TABLE "{event_backup_name}"'
+                    )
+                    sync_conn.exec_driver_sql(
+                        f'DROP TABLE "{waiver_backup_name}"'
+                    )
+
+                await conn.run_sync(rebuild_tables)
+                changed = True
+            else:
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{waiver_table.name}" '
+                    'ALTER COLUMN "assessment_assessor_id" SET NOT NULL'
+                )
+                await conn.exec_driver_sql(
+                    f'ALTER TABLE "{waiver_table.name}" '
+                    'ALTER COLUMN "last_event_idempotency_key" SET NOT NULL'
+                )
+                changed_constraints = {
+                    "ck_sg_waiver_revalidation_shape",
+                    "ck_sg_waiver_revalidation_decision",
+                    "ck_sg_waiver_event_transition",
+                    "ck_sg_waiver_event_expire",
+                    "ck_sg_waiver_event_revalidation_shape",
+                    "ck_sg_waiver_event_revalidation_decision",
+                }
+                for table in (waiver_table, event_table):
+                    constraints = {
+                        str(item.name): item
+                        for item in table.constraints
+                        if item.name in changed_constraints
+                    }
+                    for name, constraint in constraints.items():
+                        await conn.exec_driver_sql(
+                            f'ALTER TABLE "{table.name}" '
+                            f'DROP CONSTRAINT IF EXISTS "{name}"'
+                        )
+                        await conn.execute(AddConstraint(constraint))
+                changed = True
+
+            def audit_current_waiver_contracts(
+                sync_conn: object,
+            ) -> None:
+                contract_reader = (
+                    _sqlite_owned_table_contract
+                    if sync_conn.dialect.name == "sqlite"
+                    else _postgresql_owned_table_contract
+                )
+                for table in (waiver_table, event_table):
+                    contract = contract_reader(sync_conn, table)
+                    if contract["observed"] != contract["expected"]:
+                        raise RuntimeError(
+                            "semantic waiver convergence produced a "
+                            "non-canonical table contract: " + table.name
+                        )
+
+            await conn.run_sync(audit_current_waiver_contracts)
+
+            if dialect == "sqlite":
+                manifest = semantic_guideline_sqlite_trigger_manifest()
+                for _trigger_name, (
+                    _table_name,
+                    trigger_sql,
+                ) in manifest.items():
+                    await conn.exec_driver_sql(trigger_sql)
+                rows = (
+                    (
+                        await conn.exec_driver_sql(
+                            "SELECT name, tbl_name, sql "
+                            "FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE "
+                            f"'{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}%'"
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                observed = {
+                    str(row["name"]): row
+                    for row in rows
+                }
+                if set(observed) != set(manifest):
+                    raise RuntimeError(
+                        "semantic waiver convergence produced a "
+                        "non-canonical SQLite trigger manifest"
+                    )
+                for trigger_name, (
+                    table_name,
+                    trigger_sql,
+                ) in manifest.items():
+                    row = observed[trigger_name]
+                    if (
+                        str(row["tbl_name"]) != table_name
+                        or normalize_global_discovery_source_revision_trigger_sql(
+                            row["sql"]
+                        )
+                        != normalize_global_discovery_source_revision_trigger_sql(
+                            trigger_sql
+                        )
+                    ):
+                        raise RuntimeError(
+                            "semantic waiver convergence produced a corrupt "
+                            "SQLite trigger: " + trigger_name
+                        )
+                violations = list(
+                    (
+                        await conn.exec_driver_sql(
+                            "PRAGMA foreign_key_check"
+                        )
+                    ).all()
+                )
+                if violations:
+                    raise RuntimeError(
+                        "semantic waiver convergence left foreign-key "
+                        "violations: " + repr(violations[:10])
+                    )
+            else:
+                function_sql, trigger_specs = (
+                    semantic_guideline_postgresql_ddl()
+                )
+                expected_schema = str(
+                    (
+                        await conn.exec_driver_sql(
+                            "SELECT current_schema()"
+                        )
+                    ).scalar_one()
+                )
+                await conn.exec_driver_sql(function_sql)
+                for trigger_name, (
+                    table_name,
+                    operation_clause,
+                    _expected_type,
+                ) in trigger_specs.items():
+                    await conn.exec_driver_sql(
+                        f'CREATE TRIGGER "{trigger_name}" '
+                        f"BEFORE {operation_clause} "
+                        f'ON "{table_name}" FOR EACH ROW '
+                        "EXECUTE FUNCTION "
+                        "semantic_guideline_guard_v3()"
+                    )
+                trigger_rows = list(
+                    (
+                        await conn.exec_driver_sql(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       relation_namespace.nspname AS table_schema,
+       function.proname AS function_name,
+       function_namespace.nspname AS function_schema,
+       trigger.tgtype AS trigger_type,
+       trigger.tgenabled AS trigger_enabled,
+       trigger.tgqual IS NOT NULL AS has_when_clause,
+       trigger.tgnargs AS argument_count,
+       trigger.tgattr::text AS update_columns
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_namespace AS relation_namespace
+  ON relation_namespace.oid = relation.relnamespace
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+JOIN pg_namespace AS function_namespace
+  ON function_namespace.oid = function.pronamespace
+WHERE NOT trigger.tgisinternal
+  AND relation_namespace.nspname = current_schema()
+  AND trigger.tgname LIKE 'trg_sgv3_%'
+"""
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                missing = audit_semantic_guideline_postgresql_trigger_rows(
+                    trigger_rows,
+                    expected_schema=expected_schema,
+                    trigger_specs=trigger_specs,
+                )
+                if missing:
+                    raise RuntimeError(
+                        "semantic waiver convergence failed to install "
+                        "PostgreSQL triggers: " + ", ".join(missing)
+                    )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
+        finally:
+            if dialect == "sqlite":
+                await conn.exec_driver_sql(
+                    f"PRAGMA foreign_keys={original_foreign_keys}"
+                )
+    return changed
+
+
+async def _migrate_semantic_guideline_governance_schema() -> str | None:
+    """Install semantic authority and retire unreleased policy/v1 evidence.
+
+    Legacy predicates are never translated to metrics.  Every historical
+    revision receives an explicit context-only or incompatible semantic
+    authority row with ``metrics=[]`` and a newly computed v2 revision digest.
+    Existing bindings, receipts and waivers remain physically auditable but
+    receive only inert/stale migration records; none is copied into the new
+    executable binding or assessment authority.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select as sa_select
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Guideline,
+        GuidelineBoardBindingRow,
+        GuidelineRevisionRow,
+        PolicyComplianceReceiptRow,
+        PolicyWaiverRow,
+        SemanticGuidelineBindingConfigurationRow,
+        SemanticGuidelineLegacyMigrationRow,
+        SemanticGuidelineRevisionRow,
+    )
+    from okto_pulse.core.domain.guideline_policy import (
+        GUIDELINE_REVISION_DIGEST_CONTRACT_VERSION,
+        guideline_revision_digest_v2,
+    )
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+
+    engine = get_engine()
+    changed = await _converge_semantic_guideline_waiver_contract()
+    tables = semantic_guideline_owned_tables()
+
+    def _table_names(sync_conn: object) -> set[str]:
+        return set(sa_inspect(sync_conn).get_table_names())
+
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "semantic guideline migration supports only SQLite and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        table_names = await conn.run_sync(_table_names)
+        if GuidelineBoardBindingRow.__tablename__ in table_names:
+            await conn.exec_driver_sql(
+                'CREATE UNIQUE INDEX IF NOT EXISTS '
+                '"uq_guideline_binding_exact_authority" ON '
+                '"guideline_board_bindings" '
+                '("binding_id", "binding_revision", "board_id", '
+                '"guideline_id", "revision_id")'
+            )
+        for table in tables:
+            if table.name not in table_names:
+                await conn.run_sync(
+                    lambda sync_conn, owned=table: owned.create(
+                        sync_conn,
+                        checkfirst=True,
+                    )
+                )
+                table_names.add(table.name)
+                changed = True
+            contract = await conn.run_sync(
+                (
+                    lambda sync_conn, owned=table: (
+                        _sqlite_owned_table_contract(sync_conn, owned)
+                    )
+                )
+                if dialect == "sqlite"
+                else (
+                    lambda sync_conn, owned=table: (
+                        _postgresql_owned_table_contract(sync_conn, owned)
+                    )
+                )
+            )
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "semantic guideline table has a non-canonical contract: "
+                    + table.name
+                )
+
+        revision_source = (
+            GuidelineRevisionRow.__table__.join(
+                Guideline.__table__,
+                Guideline.__table__.c.id
+                == GuidelineRevisionRow.__table__.c.guideline_id,
+            )
+        )
+        revision_rows = (
+            (
+                await conn.execute(
+                    sa_select(
+                        GuidelineRevisionRow.__table__,
+                        Guideline.__table__.c.board_id.label(
+                            "source_board_id"
+                        ),
+                    )
+                    .select_from(revision_source)
+                    .order_by(
+                        GuidelineRevisionRow.__table__.c.guideline_id.asc(),
+                        GuidelineRevisionRow.__table__.c.revision_number.asc(),
+                        GuidelineRevisionRow.__table__.c.revision_id.asc(),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+        async def _insert_migration_audit(
+            *,
+            source_type: str,
+            source_id: str,
+            board_id: str | None,
+            guideline_id: str | None,
+            migration_state: str,
+            source_digest: str,
+            details: dict[str, object],
+            migrated_at: object,
+        ) -> bool:
+            audit_table = SemanticGuidelineLegacyMigrationRow.__table__
+            migration_id = canonical_sha256(
+                {
+                    "contract": "semantic-guideline-legacy-migration/v1",
+                    "source_type": source_type,
+                    "source_id": source_id,
+                }
+            )
+            expected = {
+                "migration_id": migration_id,
+                "source_type": source_type,
+                "source_id": source_id,
+                "board_id": board_id,
+                "guideline_id": guideline_id,
+                "migration_state": migration_state,
+                "source_digest": source_digest,
+                "details": details,
+                "migrated_at": migrated_at,
+            }
+            existing = (
+                (
+                    await conn.execute(
+                        sa_select(audit_table).where(
+                            audit_table.c.source_type == source_type,
+                            audit_table.c.source_id == source_id,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is None:
+                await conn.execute(audit_table.insert().values(**expected))
+                return True
+            for key, value in expected.items():
+                observed = existing[key]
+                if key == "details":
+                    matches = canonical_sha256(observed) == canonical_sha256(value)
+                else:
+                    matches = observed == value
+                if not matches:
+                    raise RuntimeError(
+                        "semantic guideline legacy migration audit conflict: "
+                        f"{source_type}:{source_id}:{key}"
+                    )
+            return False
+
+        semantic_revision_table = SemanticGuidelineRevisionRow.__table__
+        for row in revision_rows:
+            existing = (
+                (
+                    await conn.execute(
+                        sa_select(semantic_revision_table).where(
+                            semantic_revision_table.c.revision_id
+                            == row["revision_id"]
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                if (
+                    existing["guideline_id"] != row["guideline_id"]
+                    or existing["source_revision_digest"]
+                    != row["content_digest"]
+                ):
+                    raise RuntimeError(
+                        "semantic guideline revision source fence conflict: "
+                        + str(row["revision_id"])
+                    )
+                # Native revisions were written atomically by the semantic
+                # adapter and are not legacy migration candidates.
+                if existing["authority_state"] == "native":
+                    continue
+            else:
+                rules = row["rules"]
+                rules_are_empty = isinstance(rules, list) and not rules
+                legacy_rules_payload = rules if isinstance(rules, list) else {
+                    "invalid_legacy_rules_payload": repr(rules)
+                }
+                authority_state = (
+                    "legacy_context_only"
+                    if rules_are_empty
+                    else "legacy_incompatible"
+                )
+                try:
+                    revision_digest = guideline_revision_digest_v2(
+                        semantic_version=row["semantic_version"],
+                        title=row["title"],
+                        content=row["content"],
+                        metrics=(),
+                        tags=tuple(row["tags"] or ()),
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "semantic guideline legacy revision cannot be "
+                        "canonicalized: " + str(row["revision_id"])
+                    ) from exc
+                expected_revision = {
+                    "revision_id": row["revision_id"],
+                    "guideline_id": row["guideline_id"],
+                    "contract_version": (
+                        GUIDELINE_REVISION_DIGEST_CONTRACT_VERSION
+                    ),
+                    "metrics": [],
+                    "revision_digest": revision_digest,
+                    "source_revision_digest": row["content_digest"],
+                    "authority_state": authority_state,
+                    "legacy_rules_digest": canonical_sha256(
+                        legacy_rules_payload
+                    ),
+                    "created_by": row["created_by"],
+                    "created_at": row["created_at"],
+                }
+                await conn.execute(
+                    semantic_revision_table.insert().values(
+                        **expected_revision
+                    )
+                )
+                existing = expected_revision
+                changed = True
+
+            migration_state = (
+                "context_only"
+                if existing["authority_state"] == "legacy_context_only"
+                else "legacy_incompatible"
+            )
+            if await _insert_migration_audit(
+                source_type="revision",
+                source_id=str(row["revision_id"]),
+                board_id=row["source_board_id"],
+                guideline_id=row["guideline_id"],
+                migration_state=migration_state,
+                source_digest=row["content_digest"],
+                details={
+                    "semantic_revision_digest": existing["revision_digest"],
+                    "legacy_rules_digest": existing["legacy_rules_digest"],
+                    "metrics": [],
+                    "executable": migration_state == "context_only",
+                    "remediation": (
+                        "author_semantic_metrics_and_create_a_new_revision"
+                        if migration_state == "legacy_incompatible"
+                        else "adopt_the_semantic_context_only_revision"
+                    ),
+                },
+                migrated_at=row["created_at"],
+            ):
+                changed = True
+
+        semantic_binding_table = (
+            SemanticGuidelineBindingConfigurationRow.__table__
+        )
+        binding_rows = (
+            (
+                await conn.execute(
+                    sa_select(GuidelineBoardBindingRow.__table__).order_by(
+                        GuidelineBoardBindingRow.__table__.c.board_id.asc(),
+                        GuidelineBoardBindingRow.__table__.c.guideline_id.asc(),
+                        GuidelineBoardBindingRow.__table__.c.binding_revision.asc(),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for row in binding_rows:
+            semantic_binding_exists = (
+                await conn.execute(
+                    sa_select(semantic_binding_table.c.binding_id).where(
+                        semantic_binding_table.c.binding_id == row["binding_id"],
+                        semantic_binding_table.c.binding_revision
+                        == row["binding_revision"],
+                    )
+                )
+            ).first()
+            if semantic_binding_exists is not None:
+                continue
+            source_id = (
+                f'{row["binding_id"]}:{int(row["binding_revision"])}'
+            )
+            source_digest = canonical_sha256(
+                {
+                    "binding_id": row["binding_id"],
+                    "binding_revision": row["binding_revision"],
+                    "board_id": row["board_id"],
+                    "guideline_id": row["guideline_id"],
+                    "revision_id": row["revision_id"],
+                    "legacy_revision_digest": row["revision_digest"],
+                    "priority": row["priority"],
+                    "enforcement": row["enforcement"],
+                    "state": row["state"],
+                }
+            )
+            if await _insert_migration_audit(
+                source_type="binding",
+                source_id=source_id,
+                board_id=row["board_id"],
+                guideline_id=row["guideline_id"],
+                migration_state="inert_binding",
+                source_digest=source_digest,
+                details={
+                    "legacy_binding_revision": row["binding_revision"],
+                    "semantic_configuration_created": False,
+                    "executable": False,
+                    "remediation": "preview_and_adopt_semantic_configuration",
+                },
+                migrated_at=row["adopted_at"],
+            ):
+                changed = True
+
+        receipt_rows = (
+            (
+                await conn.execute(
+                    sa_select(PolicyComplianceReceiptRow.__table__)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for row in receipt_rows:
+            if await _insert_migration_audit(
+                source_type="receipt",
+                source_id=row["receipt_id"],
+                board_id=row["board_id"],
+                guideline_id=None,
+                migration_state="stale_receipt",
+                source_digest=row["receipt_digest"],
+                details={
+                    "legacy_contract": "policy-compliance/v1",
+                    "semantic_currentness": "stale",
+                    "gate_authority": False,
+                    "remediation": "run_semantic_guideline_assessment",
+                },
+                migrated_at=row["evaluated_at"],
+            ):
+                changed = True
+
+        waiver_rows = (
+            (
+                await conn.execute(sa_select(PolicyWaiverRow.__table__))
+            )
+            .mappings()
+            .all()
+        )
+        for row in waiver_rows:
+            if await _insert_migration_audit(
+                source_type="waiver",
+                source_id=row["waiver_id"],
+                board_id=row["board_id"],
+                guideline_id=row["guideline_id"],
+                migration_state="ineffective_waiver",
+                source_digest=row["head_digest"],
+                details={
+                    "legacy_contract": "waiver-event/v1",
+                    "semantic_effective": False,
+                    "gate_authority": False,
+                    "remediation": (
+                        "request_a_waiver_for_a_current_semantic_metric_result"
+                    ),
+                },
+                migrated_at=row["last_event_at"],
+            ):
+                changed = True
+
+        if dialect == "sqlite":
+            expected = semantic_guideline_sqlite_trigger_manifest()
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {
+                            "prefix": (
+                                f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}%"
+                            )
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["name"]): row for row in rows}
+            unexpected = set(existing) - set(expected)
+            if unexpected:
+                raise RuntimeError(
+                    "semantic guideline has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in expected.items():
+                row = existing.get(trigger_name)
+                if row is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                if (
+                    str(row["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        row["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "semantic guideline owned trigger is corrupt: "
+                        + trigger_name
+                    )
+            violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if violations:
+                raise RuntimeError(
+                    "semantic guideline migration left foreign-key violations: "
+                    + repr(violations[:10])
+                )
+        else:
+            function_sql, trigger_specs = (
+                semantic_guideline_postgresql_ddl()
+            )
+            function_name = "semantic_guideline_guard_v3"
+            expected_schema = str(
+                (
+                    await conn.exec_driver_sql(
+                        "SELECT current_schema()"
+                    )
+                ).scalar_one()
+            )
+            await conn.execute(sa_text(function_sql))
+            trigger_rows = list(
+                (
+                    await conn.execute(
+                        sa_text(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       relation_namespace.nspname AS table_schema,
+       function.proname AS function_name,
+       function_namespace.nspname AS function_schema,
+       trigger.tgtype AS trigger_type,
+       trigger.tgenabled AS trigger_enabled,
+       trigger.tgqual IS NOT NULL AS has_when_clause,
+       trigger.tgnargs AS argument_count,
+       trigger.tgattr::text AS update_columns
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_namespace AS relation_namespace
+  ON relation_namespace.oid = relation.relnamespace
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+JOIN pg_namespace AS function_namespace
+  ON function_namespace.oid = function.pronamespace
+WHERE NOT trigger.tgisinternal
+  AND relation_namespace.nspname = current_schema()
+  AND trigger.tgname LIKE :prefix
+"""
+                        ),
+                        {"prefix": "trg_sgv3_%"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            missing_triggers = set(
+                audit_semantic_guideline_postgresql_trigger_rows(
+                    trigger_rows,
+                    expected_schema=expected_schema,
+                    trigger_specs=trigger_specs,
+                )
+            )
+            for trigger_name, (
+                table_name,
+                operation_clause,
+                _expected_type,
+            ) in trigger_specs.items():
+                if trigger_name in missing_triggers:
+                    await conn.execute(
+                        sa_text(
+                            f'CREATE TRIGGER "{trigger_name}" '
+                            f"BEFORE {operation_clause} "
+                            f'ON "{table_name}" FOR EACH ROW '
+                            f"EXECUTE FUNCTION {function_name}()"
+                        )
+                    )
+                    changed = True
 
     return None if changed else "skipped"
 
@@ -12146,6 +16812,745 @@ async def _migrate_agent_permissions() -> None:
 _RKG04_FIXTURE_BOARD_RE = re.compile(r"^(?:rkg04-[0-9a-f]{10}|rkg04mcp-[0-9a-f]{8})$")
 _FIXTURE_POLLUTION_FIRST_DAY = "2026-06-27"
 _FIXTURE_POLLUTION_LAST_DAY = "2026-07-02"
+
+
+async def _migrate_ensure_guideline_binding_exact_authority_index() -> str | None:
+    """Backfill the 5-column unique authority index on migrated databases.
+
+    Fresh ``create_all`` schemas declare
+    ``uq_guideline_binding_exact_authority`` (unique over binding_id,
+    binding_revision, board_id, guideline_id, revision_id) on
+    guideline_board_bindings, and the SK-B3 child table
+    semantic_guideline_binding_configurations carries a composite FK
+    referencing exactly those five columns. A database migrated from an
+    older shape has the table but NOT the unique index, which makes the FK
+    structurally invalid — SQLite raises ``foreign key mismatch`` the moment
+    ``PRAGMA foreign_key_check`` runs (the fixture FK-orphan repair step
+    below) and startup fails closed. The index is safe to backfill
+    unconditionally: (binding_id, binding_revision) is already the table's
+    primary key, so uniqueness over the five-column superset can never
+    conflict on existing rows.
+    """
+
+    engine = get_engine()
+    async with engine.begin() as conn:
+        if conn.dialect.name != "sqlite":
+            return "skipped"
+        await conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "uq_guideline_binding_exact_authority "
+            "ON guideline_board_bindings "
+            "(binding_id, binding_revision, board_id, guideline_id, revision_id)"
+        )
+    return None
+
+
+async def _migrate_rebuild_guideline_import_candidates_semantic_shape() -> str | None:
+    """Rebuild the legacy import-candidate table into the semantic shape.
+
+    The SK-B3 semantic migration renamed ``source_default_enforcement`` to
+    ``source_enforcement`` and repointed the exact-revision FK from the
+    legacy ``guideline_revisions`` quadruple to
+    ``semantic_guideline_revisions`` (guideline_id, revision_id,
+    revision_digest) on ``guideline_import_binding_candidates``. Fresh
+    ``create_all`` schemas already have the canonical shape, but a migrated
+    database keeps the legacy table, and the strict B03 substrate audit then
+    fails closed with "non-canonical contract" at startup. SQLite cannot
+    ALTER a column rename plus an FK repoint in place, so the legacy table is
+    rebuilt: copy rows with the column renamed, drop the legacy table (its
+    owned triggers drop with it; the substrate step recreates the canonical
+    ones), and recreate from the ORM DDL. Deferred FK enforcement validates
+    every copied row against ``semantic_guideline_revisions`` at commit, so a
+    row whose resolved revision never reached the semantic ledger still fails
+    closed instead of being silently rewired.
+    """
+
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        GuidelineImportBindingCandidateRow,
+    )
+
+    engine = get_engine()
+    async with engine.begin() as conn:
+        if conn.dialect.name != "sqlite":
+            return "skipped"
+        columns = {
+            str(row[1])
+            for row in (
+                await conn.exec_driver_sql(
+                    "PRAGMA table_info(guideline_import_binding_candidates)"
+                )
+            ).all()
+        }
+        if not columns or "source_enforcement" in columns:
+            return "skipped"
+        if "source_default_enforcement" not in columns:
+            raise RuntimeError(
+                "guideline import candidate table has an unrecognized legacy "
+                "shape; refusing to rebuild"
+            )
+        legacy_rows = (
+            await conn.exec_driver_sql(
+                "SELECT * FROM guideline_import_binding_candidates"
+            )
+        ).mappings().all()
+        await conn.exec_driver_sql(
+            "DROP TABLE guideline_import_binding_candidates"
+        )
+        await conn.run_sync(
+            lambda sync_conn: GuidelineImportBindingCandidateRow.__table__.create(
+                sync_conn
+            )
+        )
+        if legacy_rows:
+            canonical_columns = [
+                str(column.name)
+                for column in GuidelineImportBindingCandidateRow.__table__.columns
+            ]
+            for row in legacy_rows:
+                values = dict(row)
+                values["source_enforcement"] = values.pop(
+                    "source_default_enforcement"
+                )
+                missing = set(canonical_columns) - set(values)
+                if missing:
+                    raise RuntimeError(
+                        "guideline import candidate rebuild cannot map legacy "
+                        "row; missing canonical columns: "
+                        + ", ".join(sorted(missing))
+                    )
+                placeholders = ", ".join(f":{name}" for name in canonical_columns)
+                await conn.execute(
+                    sa_text(
+                        "INSERT INTO guideline_import_binding_candidates ("
+                        + ", ".join(canonical_columns)
+                        + f") VALUES ({placeholders})"
+                    ),
+                    {name: values[name] for name in canonical_columns},
+                )
+    return None
+
+
+async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | None:
+    """Rebuild the legacy guideline v1 family into the SK-B3 semantic shape.
+
+    The SK-B3 closure renamed the enforcement/rule columns
+    (``default_enforcement`` -> ``enforcement``, ``*_rule_ids`` ->
+    ``*_metric_ids``, ``proposed_default_enforcement`` ->
+    ``proposed_enforcement``), added the semantic proposal columns
+    (``proposed_minimum_confidence``, ``proposed_metric_threshold_overrides``)
+    and repointed the impact/retirement exact-revision FKs from the legacy
+    ``guideline_revisions`` quadruple to ``semantic_guideline_revisions``.
+    Fresh ``create_all`` schemas are canonical, but a migrated database keeps
+    the legacy tables and the strict B03/B08 audits then fail closed at
+    startup ("non-canonical contract"). SQLite cannot express these changes
+    as ALTERs, so each legacy table is rebuilt from the ORM DDL with an
+    explicit row mapping. Semantic revision targets for surviving impact
+    receipts are seeded first using EXACTLY the legacy-bridge construction of
+    ``_migrate_semantic_guideline_governance_schema`` (same digest function,
+    same authority-state classification, same source fence), so when that
+    later step enumerates the same legacy revisions it passes its fences
+    instead of conflicting. ``proposed_minimum_confidence`` is backfilled
+    with 70 — the product default used by the semantic adoption paths — and
+    the overrides with an empty object; historical ``*_rule_ids`` values are
+    carried into the renamed columns as immutable ledger history. FK
+    enforcement is re-enabled and a scoped ``foreign_key_check`` over the
+    rebuilt tables fails closed on any violation.
+    """
+
+    from sqlalchemy import select as sa_select, text as sa_text
+
+    from okto_pulse.core.domain.guideline_policy import (
+        GUIDELINE_REVISION_DIGEST_CONTRACT_VERSION,
+        guideline_revision_digest_v2,
+    )
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        GuidelineBoardBindingRow,
+        GuidelineImpactReceiptRow,
+        GuidelineImpactUnlinkRow,
+        GuidelineRetirementImpactRow,
+        GuidelineRetirementRow,
+        GuidelineRevisionRow,
+        SemanticGuidelineRevisionRow,
+    )
+
+    rename_by_table = {
+        "guideline_board_bindings": (
+            GuidelineBoardBindingRow,
+            {"default_enforcement": "enforcement"},
+            "default_enforcement",
+            {},
+        ),
+        "guideline_impact_receipts": (
+            GuidelineImpactReceiptRow,
+            {
+                "added_rule_ids": "added_metric_ids",
+                "changed_rule_ids": "changed_metric_ids",
+                "removed_rule_ids": "removed_metric_ids",
+                "proposed_default_enforcement": "proposed_enforcement",
+            },
+            "added_rule_ids",
+            {
+                # Product default used by the semantic adoption paths
+                # (core services adopt with minimum_confidence=70).
+                "proposed_minimum_confidence": 70,
+                "proposed_metric_threshold_overrides": "{}",
+            },
+        ),
+        "guideline_impact_unlinks": (
+            GuidelineImpactUnlinkRow,
+            {"removed_rule_ids": "removed_metric_ids"},
+            "removed_rule_ids",
+            {},
+        ),
+        "guideline_retirement_impacts": (
+            GuidelineRetirementImpactRow,
+            {"removed_rule_ids": "removed_metric_ids"},
+            "removed_rule_ids",
+            {},
+        ),
+        "guideline_retirements": (
+            GuidelineRetirementRow,
+            {},
+            None,
+            {},
+        ),
+    }
+
+    engine = get_engine()
+    rebuilt: list[str] = []
+    digest_rewrites = 0
+    async with engine.begin() as conn:
+        if conn.dialect.name != "sqlite":
+            return "skipped"
+
+        # The driver defers BEGIN until the first DML statement, so this
+        # PRAGMA executes outside the transaction and enforcement is
+        # genuinely off for the digest rewrite and the rebuilds below (the
+        # family holds RESTRICT FKs in both directions, so no in-place order
+        # satisfies them). A scoped foreign_key_check with enforcement
+        # restored runs at the end and fails closed.
+        await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+
+        async def _columns(table_name: str) -> set[str]:
+            return {
+                str(row[1])
+                for row in (
+                    await conn.exec_driver_sql(
+                        f"PRAGMA table_info({table_name})"
+                    )
+                ).all()
+            }
+
+        legacy_tables: list[str] = []
+        for table_name, (_, _, marker, _) in rename_by_table.items():
+            columns = await _columns(table_name)
+            if not columns:
+                continue
+            if marker is not None:
+                if marker in columns:
+                    legacy_tables.append(table_name)
+                continue
+            # guideline_retirements keeps its columns; the legacy variant is
+            # detected by its FK still targeting guideline_revisions.
+            ddl = (
+                await conn.exec_driver_sql(
+                    "SELECT sql FROM sqlite_master WHERE name = "
+                    f"'{table_name}'"
+                )
+            ).scalar_one_or_none() or ""
+            if (
+                "retired_revision_id" in ddl
+                and "semantic_guideline_revisions" not in ddl
+            ):
+                legacy_tables.append(table_name)
+        # Phase 0 — digest realignment. Pre-I9 databases store revision
+        # content digests produced by the RETIRED policy/v1 algorithm; the
+        # closure recomputes every digest with guideline-revision-digest/v2
+        # from the stored canonical fields (content is the authority — the
+        # old algorithm no longer exists to verify against) and the strict
+        # baseline audit in _migrate_guideline_policy_v1_schema requires the
+        # v2 value. Bindings carry the digest in their exact-revision FK and
+        # are updated in lockstep; for migrated-legacy baselines the audited
+        # request_digest is recomputed with the SAME payload construction the
+        # audit itself uses.
+        import hashlib as _hashlib
+        import json as _json
+
+        def _aligned_request_digest(payload: object) -> str:
+            encoded = _json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+            return _hashlib.sha256(encoded).hexdigest()
+
+        revision_table = GuidelineRevisionRow.__table__
+        revision_rows = (
+            (await conn.execute(sa_select(revision_table))).mappings().all()
+        )
+        # The revision/binding ledgers are guarded by immutability triggers;
+        # the digest realignment is the sanctioned rewrite point, so the
+        # exact observed triggers are captured, dropped, and recreated
+        # byte-identically after the updates.
+        guard_triggers = (
+            await conn.exec_driver_sql(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+                "AND tbl_name IN ('guideline_revisions', "
+                "'guideline_board_bindings') AND sql IS NOT NULL"
+            )
+        ).all()
+        for trigger_name, _trigger_sql in guard_triggers:
+            await conn.exec_driver_sql(f"DROP TRIGGER {trigger_name}")
+        semantic_ledger_table = SemanticGuidelineRevisionRow.__table__
+        for revision_row in revision_rows:
+            semantic_row = (
+                (
+                    await conn.execute(
+                        sa_select(
+                            semantic_ledger_table.c.authority_state
+                        ).where(
+                            semantic_ledger_table.c.revision_id
+                            == revision_row["revision_id"]
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                semantic_row is not None
+                and semantic_row["authority_state"] == "native"
+            ):
+                # Native semantic revisions carry METRICS in their digest;
+                # recomputing here with metrics=() would be a false rewrite.
+                # The semantic adapter wrote their digest atomically — it is
+                # the authority, never a legacy realignment candidate.
+                continue
+            recomputed = guideline_revision_digest_v2(
+                semantic_version=revision_row["semantic_version"],
+                title=revision_row["title"],
+                content=revision_row["content"],
+                metrics=(),
+                tags=tuple(revision_row["tags"] or ()),
+            )
+            if recomputed == revision_row["content_digest"]:
+                continue
+            updates: dict[str, object] = {"content_digest": recomputed}
+            if (
+                revision_row["revision_number"] == 1
+                and revision_row["legacy_version"] is not None
+            ):
+                guideline_row = (
+                    (
+                        await conn.exec_driver_sql(
+                            "SELECT title, content, version, tags "
+                            "FROM guidelines WHERE id = "
+                            f"'{revision_row['guideline_id']}'"
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if guideline_row is None:
+                    raise RuntimeError(
+                        "guideline v1 semantic alignment: baseline revision "
+                        "without its guideline: "
+                        + str(revision_row["guideline_id"])
+                    )
+                updates["request_digest"] = _aligned_request_digest(
+                    {
+                        "guideline_id": revision_row["guideline_id"],
+                        "revision_id": revision_row["revision_id"],
+                        "title": str(guideline_row["title"]).strip(),
+                        "content": str(guideline_row["content"]).strip(),
+                        "legacy_title": guideline_row["title"],
+                        "legacy_content": guideline_row["content"],
+                        "content_digest": recomputed,
+                        "legacy_version": guideline_row["version"],
+                        "legacy_tags": _json.loads(guideline_row["tags"])
+                        if isinstance(guideline_row["tags"], str)
+                        else guideline_row["tags"],
+                    }
+                )
+            await conn.execute(
+                revision_table.update()
+                .where(
+                    revision_table.c.revision_id
+                    == revision_row["revision_id"]
+                )
+                .values(**updates)
+            )
+            digest_rewrites += 1
+
+        if digest_rewrites:
+            # Migrated-legacy bindings embed the revision digest in their
+            # audited request_digest, which cannot be recomputed here without
+            # replicating the whole legacy transcription. They are fully
+            # deterministic from board_guidelines/guidelines/revision rows and
+            # carry no dependents (adoptions/configs reference native
+            # bindings only, and their impact columns are NULL), so the
+            # sanctioned path is deletion: the strict v1 step re-creates each
+            # one canonically when it finds no existing row. Fail closed if a
+            # dependent exists after all.
+            dependents = (
+                await conn.exec_driver_sql(
+                    "SELECT COUNT(*) FROM guideline_board_bindings b WHERE "
+                    "b.source_kind != 'native' AND ("
+                    "b.impact_receipt_id IS NOT NULL OR "
+                    "b.impact_adoption_id IS NOT NULL OR "
+                    "b.impact_unlink_id IS NOT NULL OR EXISTS ("
+                    "SELECT 1 FROM semantic_guideline_binding_configurations "
+                    "c WHERE c.binding_id = b.binding_id) OR EXISTS ("
+                    "SELECT 1 FROM guideline_impact_adoptions a WHERE "
+                    "a.binding_id = b.binding_id))"
+                )
+            ).scalar_one()
+            if int(dependents):
+                raise RuntimeError(
+                    "guideline v1 semantic alignment: legacy bindings still "
+                    "have dependents; refusing to realign by deletion"
+                )
+            await conn.exec_driver_sql(
+                "DELETE FROM guideline_board_bindings "
+                "WHERE source_kind != 'native'"
+            )
+
+        for _trigger_name, trigger_sql in guard_triggers:
+            # guideline_board_bindings triggers die with the table rebuild
+            # below when its legacy shape is detected; recreating them here
+            # first keeps the digest-only path guarded, and DROP TABLE
+            # removes them again cleanly before the canonical rebuild.
+            await conn.exec_driver_sql(trigger_sql)
+
+        if not legacy_tables and not digest_rewrites:
+            return "skipped"
+
+        # 1. Seed semantic revision targets for surviving impact receipts.
+        semantic_digest_by_revision: dict[str, str] = {}
+        if "guideline_impact_receipts" in legacy_tables:
+            referenced = (
+                await conn.exec_driver_sql(
+                    "SELECT DISTINCT guideline_id, revision_id FROM ("
+                    "SELECT guideline_id, from_revision_id AS revision_id "
+                    "FROM guideline_impact_receipts "
+                    "WHERE from_revision_id IS NOT NULL "
+                    "UNION SELECT guideline_id, to_revision_id "
+                    "FROM guideline_impact_receipts "
+                    "WHERE to_revision_id IS NOT NULL)"
+                )
+            ).all()
+            revision_table = GuidelineRevisionRow.__table__
+            semantic_table = SemanticGuidelineRevisionRow.__table__
+            for guideline_id, revision_id in referenced:
+                legacy_row = (
+                    (
+                        await conn.execute(
+                            sa_select(revision_table).where(
+                                revision_table.c.guideline_id == guideline_id,
+                                revision_table.c.revision_id == revision_id,
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if legacy_row is None:
+                    raise RuntimeError(
+                        "guideline v1 semantic alignment: impact receipt "
+                        "references a missing legacy revision: "
+                        f"{revision_id}"
+                    )
+                existing = (
+                    (
+                        await conn.execute(
+                            sa_select(semantic_table).where(
+                                semantic_table.c.revision_id == revision_id
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing is not None:
+                    if (
+                        existing["guideline_id"] != legacy_row["guideline_id"]
+                        or existing["source_revision_digest"]
+                        != legacy_row["content_digest"]
+                    ):
+                        raise RuntimeError(
+                            "guideline v1 semantic alignment: semantic "
+                            "revision source fence conflict: "
+                            + str(revision_id)
+                        )
+                    semantic_digest_by_revision[str(revision_id)] = str(
+                        existing["revision_digest"]
+                    )
+                    continue
+                rules = legacy_row["rules"]
+                rules_are_empty = isinstance(rules, list) and not rules
+                legacy_rules_payload = (
+                    rules
+                    if isinstance(rules, list)
+                    else {"invalid_legacy_rules_payload": repr(rules)}
+                )
+                revision_digest = guideline_revision_digest_v2(
+                    semantic_version=legacy_row["semantic_version"],
+                    title=legacy_row["title"],
+                    content=legacy_row["content"],
+                    metrics=(),
+                    tags=tuple(legacy_row["tags"] or ()),
+                )
+                await conn.execute(
+                    semantic_table.insert().values(
+                        revision_id=legacy_row["revision_id"],
+                        guideline_id=legacy_row["guideline_id"],
+                        contract_version=(
+                            GUIDELINE_REVISION_DIGEST_CONTRACT_VERSION
+                        ),
+                        metrics=[],
+                        revision_digest=revision_digest,
+                        source_revision_digest=legacy_row["content_digest"],
+                        authority_state=(
+                            "legacy_context_only"
+                            if rules_are_empty
+                            else "legacy_incompatible"
+                        ),
+                        legacy_rules_digest=canonical_sha256(
+                            legacy_rules_payload
+                        ),
+                        created_by=legacy_row["created_by"],
+                        created_at=legacy_row["created_at"],
+                    )
+                )
+                semantic_digest_by_revision[str(revision_id)] = revision_digest
+
+        # 2. Rebuild each legacy table from the canonical ORM DDL.
+        for table_name in legacy_tables:
+            row_class, renames, _, backfills = rename_by_table[table_name]
+            table = row_class.__table__
+            legacy_rows = (
+                (await conn.exec_driver_sql(f"SELECT * FROM {table_name}"))
+                .mappings()
+                .all()
+            )
+            await conn.exec_driver_sql(f"DROP TABLE {table_name}")
+            await conn.run_sync(
+                lambda sync_conn, owned=table: owned.create(sync_conn)
+            )
+            canonical_columns = [str(column.name) for column in table.columns]
+            for legacy_row in legacy_rows:
+                values = dict(legacy_row)
+                for old_name, new_name in renames.items():
+                    values[new_name] = values.pop(old_name)
+                for column_name, backfill in backfills.items():
+                    values.setdefault(column_name, backfill)
+                if table_name == "guideline_impact_receipts":
+                    for prefix in ("from", "to"):
+                        revision_id = values.get(f"{prefix}_revision_id")
+                        if revision_id is None:
+                            continue
+                        digest = semantic_digest_by_revision.get(
+                            str(revision_id)
+                        )
+                        if digest is None:
+                            raise RuntimeError(
+                                "guideline v1 semantic alignment: no "
+                                "semantic digest for receipt revision "
+                                + str(revision_id)
+                            )
+                        values[f"{prefix}_revision_digest"] = digest
+                missing = set(canonical_columns) - set(values)
+                if missing:
+                    raise RuntimeError(
+                        f"guideline v1 semantic alignment: {table_name} "
+                        "legacy row lacks canonical columns: "
+                        + ", ".join(sorted(missing))
+                    )
+                placeholders = ", ".join(
+                    f":{name}" for name in canonical_columns
+                )
+                await conn.execute(
+                    sa_text(
+                        f"INSERT INTO {table_name} ("
+                        + ", ".join(canonical_columns)
+                        + f") VALUES ({placeholders})"
+                    ),
+                    {name: values[name] for name in canonical_columns},
+                )
+            rebuilt.append(table_name)
+
+    # New transaction: the PRAGMA executes before the deferred BEGIN, so
+    # enforcement is restored on the pooled connection, then the rebuilt
+    # tables must pass a scoped integrity check or startup fails closed.
+    checked_tables = sorted(
+        set(rebuilt)
+        | (
+            {"guideline_revisions", "guideline_board_bindings"}
+            if digest_rewrites
+            else set()
+        )
+    )
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+        for table_name in checked_tables:
+            violations = (
+                await conn.exec_driver_sql(
+                    f"PRAGMA foreign_key_check({table_name})"
+                )
+            ).all()
+            if violations:
+                raise RuntimeError(
+                    "guideline v1 semantic alignment left FK violations in "
+                    f"{table_name}: {violations[:5]!r}"
+                )
+    return None
+
+
+async def _migrate_drop_retired_guideline_impact_v1_triggers() -> str | None:
+    """Drop the retired trg_guideline_impact_v1_* guard family.
+
+    The SK-B3 closure replaced the guideline-impact/v1 event contract with
+    guideline-impact/v2 semantic events, and the v2 trigger manifest guards
+    every surface the v1 family guarded (activity logs, domain events,
+    handler executions, adoptions, items) with the v2 shapes. A migrated
+    database keeps BOTH families, and the v1 policy-constraint execution
+    guard then rejects every v2 semantic adoption/retirement event
+    (policy_constraint_execution_event_invalid raised on the handler
+    execution insert), making semantic adoption impossible at runtime.
+    Fresh schemas never install the v1 family; dropping it on upgraded
+    databases converges both worlds.
+    """
+
+    engine = get_engine()
+    dropped = 0
+    async with engine.begin() as conn:
+        if conn.dialect.name != "sqlite":
+            return "skipped"
+        names = [
+            str(row[0])
+            for row in (
+                await conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                    "AND name LIKE 'trg_guideline_impact_v1_%'"
+                )
+            ).all()
+        ]
+        for name in names:
+            await conn.exec_driver_sql(f'DROP TRIGGER "{name}"')
+            dropped += 1
+    return None if dropped else "skipped"
+
+
+async def _migrate_seed_semantic_configurations_for_legacy_bindings() -> str | None:
+    """Give every binding the semantic configuration the read path requires.
+
+    The semantic governance migration deliberately leaves migrated legacy
+    bindings "inert" (audit remediation: preview_and_adopt), but the SK-B3
+    binding hydration fails closed whenever ANY binding lacks its
+    semantic_guideline_binding_configurations row
+    (guideline_semantic_binding_configuration_inventory_incomplete) — so on
+    an upgraded database every board-guidelines listing 500s permanently.
+    This convergence seeds the missing configuration with the semantically
+    inert equivalent: the binding's own enforcement (advisory for legacy
+    rows), the product-default minimum confidence of 70, no overrides, and
+    the guideline's seeded context-only semantic revision. A context-only
+    revision carries zero metrics, so the seeded configuration grants no
+    executable authority the operator never adopted — compliance still
+    resolves not_applicable until a real preview+adopt — while the closed
+    read contract becomes satisfiable. Fails closed when a binding's
+    guideline has no semantic revision to pin.
+    """
+
+    from sqlalchemy import select as sa_select
+
+    from okto_pulse.core.domain.guideline_policy import (
+        GuidelineEnforcement,
+        guideline_binding_configuration_digest_v1,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        GuidelineBoardBindingRow,
+        SemanticGuidelineBindingConfigurationRow,
+        SemanticGuidelineRevisionRow,
+    )
+
+    engine = get_engine()
+    seeded = 0
+    async with engine.begin() as conn:
+        if conn.dialect.name != "sqlite":
+            return "skipped"
+        binding_table = GuidelineBoardBindingRow.__table__
+        config_table = SemanticGuidelineBindingConfigurationRow.__table__
+        semantic_table = SemanticGuidelineRevisionRow.__table__
+        binding_rows = (
+            (await conn.execute(sa_select(binding_table))).mappings().all()
+        )
+        for binding in binding_rows:
+            existing = (
+                await conn.execute(
+                    sa_select(config_table.c.binding_id).where(
+                        config_table.c.binding_id == binding["binding_id"],
+                        config_table.c.binding_revision
+                        == binding["binding_revision"],
+                    )
+                )
+            ).first()
+            if existing is not None:
+                continue
+            semantic_revision = (
+                (
+                    await conn.execute(
+                        sa_select(semantic_table).where(
+                            semantic_table.c.guideline_id
+                            == binding["guideline_id"],
+                            semantic_table.c.revision_id
+                            == binding["revision_id"],
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if semantic_revision is None:
+                raise RuntimeError(
+                    "semantic configuration seeding: binding references a "
+                    "revision with no semantic ledger row: "
+                    + str(binding["binding_id"])
+                )
+            enforcement = GuidelineEnforcement(binding["enforcement"])
+            configuration_digest = guideline_binding_configuration_digest_v1(
+                binding_id=binding["binding_id"],
+                board_id=binding["board_id"],
+                guideline_id=binding["guideline_id"],
+                revision_id=binding["revision_id"],
+                revision_digest=semantic_revision["revision_digest"],
+                priority=binding["priority"],
+                enforcement=enforcement,
+                minimum_confidence=70,
+                metric_threshold_overrides={},
+            )
+            await conn.execute(
+                config_table.insert().values(
+                    binding_id=binding["binding_id"],
+                    binding_revision=binding["binding_revision"],
+                    board_id=binding["board_id"],
+                    guideline_id=binding["guideline_id"],
+                    revision_id=binding["revision_id"],
+                    revision_digest=semantic_revision["revision_digest"],
+                    enforcement=binding["enforcement"],
+                    minimum_confidence=70,
+                    metric_threshold_overrides={},
+                    configuration_digest=configuration_digest,
+                    configured_by=binding["adopted_by"],
+                    configured_at=binding["adopted_at"],
+                )
+            )
+            seeded += 1
+    return None if seeded else "skipped"
 
 
 async def _migrate_repair_known_fixture_fk_orphans() -> str | None:
@@ -12613,6 +18018,118 @@ def _quality_c7_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
     return manifest
 
 
+def research_decision_postgresql_ddl(
+) -> tuple[str, dict[str, tuple[str, str, int]]]:
+    """Return permit-aware PostgreSQL append-only guards for the RDL.
+
+    Entry, history, snapshot, and derivation rows are immutable on every
+    supported database. DELETE remains available only inside the explicit
+    board/subject erasure protocols, matching the SQLite C7 contract.
+    """
+
+    function_name = "pulse_research_decision_immutable_guard"
+    function_sql = f'''CREATE OR REPLACE FUNCTION "{function_name}"()
+RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (
+            SELECT 1
+            FROM "kg_board_erasure_permits" AS permit
+            WHERE permit."board_id" = OLD."board_id"
+        ) THEN
+            RETURN OLD;
+        END IF;
+        IF TG_TABLE_NAME = 'research_decision_derivations' THEN
+            IF EXISTS (
+                SELECT 1
+                FROM "quality_assessment_subject_erasure_permits" AS permit
+                WHERE permit."board_id" = OLD."board_id"
+                  AND (
+                      (
+                          permit."subject_type" = 'spec'
+                          AND permit."subject_id" =
+                              (to_jsonb(OLD) ->> 'spec_id')
+                      )
+                      OR (
+                          permit."subject_type" = 'refinement'
+                          AND permit."subject_id" =
+                              (to_jsonb(OLD) ->> 'source_refinement_id')
+                      )
+                  )
+            ) THEN
+                RETURN OLD;
+            END IF;
+        ELSIF EXISTS (
+            SELECT 1
+            FROM "quality_assessment_subject_erasure_permits" AS permit
+            WHERE permit."board_id" = OLD."board_id"
+              AND permit."subject_type" = 'refinement'
+              AND permit."subject_id" =
+                  (to_jsonb(OLD) ->> 'refinement_id')
+        ) THEN
+            RETURN OLD;
+        END IF;
+    END IF;
+    RAISE EXCEPTION 'research_decision_entry_immutable';
+END;
+$$ LANGUAGE plpgsql'''
+    tables = (
+        ("entries", "research_decision_entries"),
+        ("history", "research_decision_history"),
+        ("snapshots", "research_decision_snapshots"),
+        ("derivations", "research_decision_derivations"),
+    )
+    return function_sql, {
+        f"trg_rdl_{suffix}_immutable": (
+            table_name,
+            "UPDATE OR DELETE",
+            27,
+        )
+        for suffix, table_name in tables
+    }
+
+
+def audit_research_decision_postgresql_trigger_rows(
+    rows: list[dict[str, object]],
+    *,
+    trigger_specs: dict[str, tuple[str, str, int]] | None = None,
+) -> tuple[str, ...]:
+    """Audit exact RDL trigger identity, operations, function and state."""
+
+    expected = trigger_specs
+    if expected is None:
+        _function_sql, expected = research_decision_postgresql_ddl()
+    existing = {str(row["trigger_name"]): row for row in rows}
+    unexpected = set(existing) - set(expected)
+    if unexpected:
+        raise RuntimeError(
+            "research decision ledger has unexpected PostgreSQL triggers: "
+            + ", ".join(sorted(unexpected))
+        )
+    missing: list[str] = []
+    for trigger_name, (
+        table_name,
+        _operation_clause,
+        expected_type,
+    ) in expected.items():
+        observed = existing.get(trigger_name)
+        if observed is None:
+            missing.append(trigger_name)
+            continue
+        if (
+            str(observed["table_name"]) != table_name
+            or str(observed["function_name"])
+            != "pulse_research_decision_immutable_guard"
+            or int(observed["trigger_type"]) != expected_type
+            or _postgresql_catalog_char(observed["trigger_enabled"]) != "O"
+        ):
+            raise RuntimeError(
+                "research decision ledger PostgreSQL trigger is corrupt: "
+                + trigger_name
+            )
+    return tuple(missing)
+
+
 async def _migrate_quality_assessment_c7_schema() -> None:
     """Converge additive Q&A fields and permit-aware immutable ledgers."""
 
@@ -12655,9 +18172,56 @@ async def _migrate_quality_assessment_c7_schema() -> None:
                 )
             )
 
+        if conn.dialect.name == "postgresql":
+            function_sql, trigger_specs = research_decision_postgresql_ddl()
+            await conn.execute(sa_text(function_sql))
+            trigger_rows = list(
+                (
+                    await conn.execute(
+                        sa_text(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       function.proname AS function_name,
+       trigger.tgtype AS trigger_type,
+       trigger.tgenabled AS trigger_enabled
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+WHERE NOT trigger.tgisinternal
+  AND trigger.tgname LIKE :prefix
+"""
+                        ),
+                        {"prefix": "trg_rdl_%"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            missing = set(
+                audit_research_decision_postgresql_trigger_rows(
+                    trigger_rows,
+                    trigger_specs=trigger_specs,
+                )
+            )
+            for trigger_name, (
+                table_name,
+                operation_clause,
+                _trigger_type,
+            ) in trigger_specs.items():
+                if trigger_name not in missing:
+                    continue
+                await conn.execute(
+                    sa_text(
+                        f'CREATE TRIGGER "{trigger_name}" '
+                        f"BEFORE {operation_clause} "
+                        f'ON "{table_name}" FOR EACH ROW '
+                        "EXECUTE FUNCTION "
+                        '"pulse_research_decision_immutable_guard"()'
+                    )
+                )
+            return
         if conn.dialect.name != "sqlite":
-            # Metadata provides additive tables/constraints for PostgreSQL.
-            # Community v1's runtime immutability guards are SQLite-owned.
             return
 
         manifest = _quality_c7_sqlite_trigger_manifest()
@@ -12732,6 +18296,18 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_board_guideline_provenance": _migrate_add_board_guideline_provenance,
     "_migrate_add_cancellation_columns": _migrate_add_cancellation_columns,
     "_migrate_pagination_indices_and_positions": _migrate_pagination_indices_and_positions,
+    "_migrate_ensure_guideline_binding_exact_authority_index": (
+        _migrate_ensure_guideline_binding_exact_authority_index
+    ),
+    "_migrate_rebuild_guideline_import_candidates_semantic_shape": (
+        _migrate_rebuild_guideline_import_candidates_semantic_shape
+    ),
+    "_migrate_rebuild_guideline_policy_v1_semantic_alignment": (
+        _migrate_rebuild_guideline_policy_v1_semantic_alignment
+    ),
+    "_migrate_drop_retired_guideline_impact_v1_triggers": (
+        _migrate_drop_retired_guideline_impact_v1_triggers
+    ),
     "_migrate_repair_known_fixture_fk_orphans": _migrate_repair_known_fixture_fk_orphans,
     "_migrate_guideline_policy_lifecycle_substrate": (
         _migrate_guideline_policy_lifecycle_substrate
@@ -12741,6 +18317,12 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_guideline_impact_v1_schema": (_migrate_guideline_impact_v1_schema),
     "_migrate_policy_compliance_v1_schema": (_migrate_policy_compliance_v1_schema),
     "_migrate_policy_waiver_v1_schema": _migrate_policy_waiver_v1_schema,
+    "_migrate_semantic_guideline_governance_schema": (
+        _migrate_semantic_guideline_governance_schema
+    ),
+    "_migrate_seed_semantic_configurations_for_legacy_bindings": (
+        _migrate_seed_semantic_configurations_for_legacy_bindings
+    ),
     "_migrate_quality_assessment_c7_schema": _migrate_quality_assessment_c7_schema,
     "_migrate_agent_permissions": _migrate_agent_permissions,
 }

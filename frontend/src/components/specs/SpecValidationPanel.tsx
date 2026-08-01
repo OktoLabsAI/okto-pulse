@@ -230,6 +230,8 @@ export function SpecValidationPanel({
             boardId={boardId}
             entityType="spec"
             subjectId={specId}
+            subjectVersion={specVersion}
+            transitionPreview={policyTransitionPreview}
             refreshKey={specVersion}
             onEvaluated={onPolicyEvaluated}
             onRefreshed={onPolicyEvaluated}

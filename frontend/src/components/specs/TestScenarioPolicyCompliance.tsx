@@ -245,6 +245,7 @@ export function TestScenarioPolicyCompliance({
             boardId={boardId}
             entityType="test_scenario"
             subjectId={scenario.id}
+            transitionPreview={authority.preview}
             evaluationEnabled={!specArchived}
             evaluationUnavailableReason={
               specArchived

@@ -13,6 +13,7 @@ import okto_pulse.community.app as _community_app  # noqa: F401
 import okto_pulse.core.infra.database as database_module
 from okto_pulse.community.adapters.relational_schema_steps import (
     _migrate_guideline_policy_v1_schema,
+    _migrate_semantic_guideline_governance_schema,
     audit_guideline_policy_postgresql_trigger_rows,
     guideline_policy_postgresql_immutability_ddl,
     guideline_policy_postgresql_trigger_contracts,
@@ -24,7 +25,6 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
     guideline_revision_content_digest,
-    guideline_rule_from_payload,
 )
 from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
     CommunitySqlAlchemyKGGovernanceStore,
@@ -52,7 +52,6 @@ from okto_pulse.core.ports.guideline_policy import (
     GuidelinePolicyDigestConflict,
     GuidelinePolicyHeadConflict,
     GuidelinePolicyIdempotencyConflict,
-    GuidelinePolicyRevisionConflict,
     GuidelineRevisionListQuery,
 )
 
@@ -153,6 +152,7 @@ async def test_b03_backfill_replay_guards_defaults_and_board_erasure(
         await session.commit()
 
     assert await _migrate_guideline_policy_v1_schema() is None
+    assert await _migrate_semantic_guideline_governance_schema() is None
     async with get_session_factory()() as session:
         first_ids = tuple(
             (
@@ -237,7 +237,7 @@ async def test_b03_backfill_replay_guards_defaults_and_board_erasure(
             revision_id=global_revision.revision_id,
         )
         assert rehydrated is not None
-        assert rehydrated.content_digest == global_revision.content_digest
+        assert rehydrated.revision_digest == global_revision.content_digest
 
     assert await _migrate_guideline_policy_v1_schema() == "skipped"
     async with get_session_factory()() as session:
@@ -324,7 +324,7 @@ async def test_b03_backfill_replay_guards_defaults_and_board_erasure(
                 priority=0,
                 adopted_by="owner-b03",
                 adopted_at=observed_at,
-                default_enforcement="advisory",
+                enforcement="advisory",
                 idempotency_key="invalid-binding",
                 request_digest="f" * 64,
             )
@@ -498,6 +498,7 @@ async def test_b03_inline_default_active_rolls_back_and_inactive_stays_unpinned(
         await session.commit()
 
     assert await _migrate_guideline_policy_v1_schema() is None
+    assert await _migrate_semantic_guideline_governance_schema() is None
     async with get_session_factory()() as session:
         default = await session.get(DefaultBoardConfiguration, default_id)
         historical = default.guideline_default_refs[0]
@@ -555,6 +556,7 @@ async def test_b03_binding_insert_guards_lineage_sequence_and_scope(
         )
         await session.commit()
     assert await _migrate_guideline_policy_v1_schema() is None
+    assert await _migrate_semantic_guideline_governance_schema() is None
 
     async with get_session_factory()() as session:
         global_revision = (
@@ -602,7 +604,7 @@ async def test_b03_binding_insert_guards_lineage_sequence_and_scope(
                 priority=0,
                 adopted_by="actor-b03",
                 adopted_at=now,
-                default_enforcement="advisory",
+                enforcement="advisory",
                 source_kind="native",
                 idempotency_key=key,
                 request_digest=guideline_revision_content_digest(
@@ -726,12 +728,13 @@ def _revision(
         semantic_version=f"{number}.0.0",
         title=title,
         content=content,
-        content_digest=guideline_revision_content_digest(
+        revision_digest=guideline_revision_content_digest(
+            semantic_version=f"{number}.0.0",
             title=title,
             content=content,
             tags=tags,
         ),
-        rules=(),
+        metrics=(),
         created_by="actor-b03",
         created_at=created_at,
         parent_revision_id=parent_revision_id,
@@ -926,12 +929,12 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
             guideline_id=guideline_id,
             revision_id=revision_1.revision_id,
             semantic_version=revision_1.semantic_version,
-            revision_digest=revision_1.content_digest,
+            revision_digest=revision_1.revision_digest,
             priority=2,
             binding_revision=1,
             adopted_by="actor-b03",
             adopted_at=now + timedelta(hours=1),
-            default_enforcement=GuidelineEnforcement.ADVISORY,
+            enforcement=GuidelineEnforcement.ADVISORY,
         )
         assert (
             await adapter.append_binding_cas(
@@ -949,12 +952,12 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
         guideline_id=guideline_id,
         revision_id=revision_3.revision_id,
         semantic_version=revision_3.semantic_version,
-        revision_digest=revision_3.content_digest,
+        revision_digest=revision_3.revision_digest,
         priority=1,
         binding_revision=2,
         adopted_by="actor-b03",
         adopted_at=now + timedelta(hours=2),
-        default_enforcement=GuidelineEnforcement.BLOCKING,
+        enforcement=GuidelineEnforcement.BLOCKING,
     )
     async with get_session_factory()() as session:
         adapter = CommunitySqlAlchemyGuidelinePolicy(session)
@@ -993,7 +996,7 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
                     guideline_id=guideline_id,
                     revision_id=revision_3.revision_id,
                     semantic_version=revision_3.semantic_version,
-                    revision_digest=revision_3.content_digest,
+                    revision_digest=revision_3.revision_digest,
                     priority=0,
                     binding_revision=2,
                     adopted_by="actor-b03",
@@ -1013,11 +1016,12 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
                     semantic_version="3.1.0",
                     title="Stale title 3",
                     content="Stale content 3",
-                    content_digest=guideline_revision_content_digest(
+                    revision_digest=guideline_revision_content_digest(
+                        semantic_version="3.1.0",
                         title="Stale title 3",
                         content="Stale content 3",
                     ),
-                    rules=(),
+                    metrics=(),
                     created_by="actor-b03",
                     created_at=now + timedelta(minutes=3),
                     parent_revision_id="adapter-revision-2",
@@ -1051,33 +1055,7 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
         await session.rollback()
 
 
-def test_b03_rule_deserialization_and_postgresql_guards_fail_closed() -> None:
-    valid = {
-        "rule_id": "rule-1",
-        "code": "rule.code",
-        "title": "Rule",
-        "description": "Rule description",
-        "target_entity_types": ["spec"],
-        "predicates": [
-            {
-                "predicate_code": "field.present",
-                "parameters": [["field", "description"]],
-            }
-        ],
-        "enforcement": "blocking",
-        "operator": "all",
-        "waivable": True,
-        "policy_class": "standard",
-    }
-    assert guideline_rule_from_payload(valid).waivable is True
-    for invalid in (
-        {**valid, "predicates": ["silently-filtered-before"]},
-        {**valid, "waivable": "false"},
-        {**valid, "target_entity_types": "spec"},
-    ):
-        with pytest.raises(GuidelinePolicyRevisionConflict):
-            guideline_rule_from_payload(invalid)
-
+def test_b03_postgresql_guards_fail_closed() -> None:
     ddl = "\n".join(guideline_policy_postgresql_immutability_ddl())
     assert "BoardErasurePermit".lower() not in ddl.lower()
     assert "board_erasure_permits" in ddl

@@ -3,6 +3,7 @@ import {
   Check,
   Info,
   LoaderCircle,
+  TriangleAlert,
   X,
 } from 'lucide-react';
 import toast, {
@@ -92,26 +93,19 @@ function toastTone(item: Toast) {
   if (item.type === 'success') {
     return {
       label: 'Success',
-      icon: <Check size={29} strokeWidth={2.75} aria-hidden="true" />,
+      icon: <Check size={17} strokeWidth={2.5} aria-hidden="true" />,
       iconClass:
-        'bg-emerald-600 text-white shadow-emerald-950/20 '
-        + 'dark:bg-emerald-500 dark:shadow-black/40',
+        'bg-emerald-100 text-emerald-600 '
+        + 'dark:bg-emerald-500/15 dark:text-emerald-300',
     };
   }
   if (item.type === 'error') {
     return {
       label: 'Error',
-      icon: (
-        <span
-          className="font-display text-[2rem] font-semibold leading-none"
-          aria-hidden="true"
-        >
-          !
-        </span>
-      ),
+      icon: <TriangleAlert size={16} strokeWidth={2.25} aria-hidden="true" />,
       iconClass:
-        'bg-red-600 text-white shadow-red-950/25 '
-        + 'dark:bg-red-500 dark:shadow-black/40',
+        'bg-red-100 text-red-600 '
+        + 'dark:bg-red-500/15 dark:text-red-300',
     };
   }
   if (item.type === 'loading') {
@@ -119,22 +113,22 @@ function toastTone(item: Toast) {
       label: 'In progress',
       icon: (
         <LoaderCircle
-          size={27}
+          size={16}
           className="animate-spin"
           aria-hidden="true"
         />
       ),
       iconClass:
-        'bg-accent-600 text-white shadow-accent-950/20 '
-        + 'dark:bg-accent-500 dark:shadow-black/40',
+        'bg-accent-100 text-accent-600 '
+        + 'dark:bg-accent-500/15 dark:text-accent-300',
     };
   }
   return {
     label: 'Notice',
-    icon: item.icon ?? <Info size={27} aria-hidden="true" />,
+    icon: item.icon ?? <Info size={16} aria-hidden="true" />,
     iconClass:
-      'bg-surface-700 text-white shadow-surface-950/20 '
-      + 'dark:bg-surface-500 dark:shadow-black/40',
+      'bg-surface-100 text-surface-600 '
+      + 'dark:bg-surface-500/15 dark:text-surface-300',
   };
 }
 
@@ -203,77 +197,57 @@ export function PulseToastCard({ item }: { item: Toast }) {
       data-toast-type={item.type}
       data-expanded={detailsOpen ? 'true' : 'false'}
       className={[
-        'pulse-toast pointer-events-auto relative isolate',
-        'w-[min(25rem,calc(100vw-1.5rem))] overflow-visible',
+        'pulse-toast pointer-events-auto',
+        'w-[min(24rem,calc(100vw-1.5rem))]',
       ].join(' ')}
     >
-      <button
-        type="button"
-        aria-label="Dismiss notification"
-        title="Dismiss"
-        onClick={() => toast.dismiss(item.id)}
-        className={[
-          'absolute -left-4 -top-2 z-30 inline-flex h-7 w-7 items-center',
-          'justify-center rounded-full border border-surface-300 bg-white',
-          'text-surface-500 shadow-sm transition hover:bg-surface-100',
-          'hover:text-surface-900 focus:outline-none focus-visible:ring-2',
-          'focus-visible:ring-accent-500 dark:border-surface-600',
-          'dark:bg-surface-900 dark:text-surface-300',
-          'dark:hover:bg-surface-800 dark:hover:text-white',
-        ].join(' ')}
-      >
-        <X size={14} strokeWidth={2.5} aria-hidden="true" />
-      </button>
-
-      <div
-        data-testid="pulse-toast-status-icon"
-        className={[
-          'absolute left-2 top-2 z-20 flex h-16 w-16 items-center',
-          'justify-center rounded-full shadow-lg ring-4 ring-white',
-          'dark:ring-surface-900',
-          tone.iconClass,
-        ].join(' ')}
-        aria-hidden="true"
-      >
-        {tone.icon}
-      </div>
-
       <div
         className={[
-          'min-h-20 rounded-l-[2.5rem] rounded-r-none border-y border-l',
-          'border-r-0 border-surface-300 bg-white pl-20 pr-4',
-          'py-3 text-surface-900',
-          'shadow-[0_18px_45px_-18px_rgba(15,23,42,0.5)]',
+          'flex items-start gap-3 rounded-xl border border-surface-200',
+          'bg-white p-3.5 text-surface-900',
+          'shadow-lg shadow-surface-950/10',
           'dark:border-surface-700 dark:bg-surface-900',
-          'dark:text-surface-50',
-          'dark:shadow-[0_18px_50px_-18px_rgba(0,0,0,0.85)]',
+          'dark:text-surface-50 dark:shadow-black/40',
         ].join(' ')}
       >
-        <div className="min-w-0" {...messageAriaProps}>
-          <span className="sr-only">{tone.label}: </span>
-          <div className="break-words text-sm font-semibold leading-5">
-            {errorText?.summary ?? resolvedMessage}
+        <span
+          data-testid="pulse-toast-status-icon"
+          className={[
+            'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center',
+            'rounded-lg',
+            tone.iconClass,
+          ].join(' ')}
+          aria-hidden="true"
+        >
+          {tone.icon}
+        </span>
+
+        <div className="min-w-0 flex-1 pt-1">
+          <div className="min-w-0" {...messageAriaProps}>
+            <span className="sr-only">{tone.label}: </span>
+            <div className="break-words text-sm font-medium leading-5">
+              {errorText?.summary ?? resolvedMessage}
+            </div>
+
+            {errorText?.details && detailsOpen && (
+              <pre
+                id={detailsId}
+                aria-label="Error details"
+                tabIndex={0}
+                className={[
+                  'mt-1.5 max-h-44 overflow-auto whitespace-pre-wrap',
+                  'break-words font-sans text-xs font-normal leading-[1.125rem]',
+                  'text-surface-600 outline-none focus-visible:ring-2',
+                  'focus-visible:ring-accent-500 dark:text-surface-300',
+                ].join(' ')}
+              >
+                {errorText.details}
+              </pre>
+            )}
           </div>
 
-          {errorText?.details && detailsOpen && (
-            <pre
-              id={detailsId}
-              aria-label="Error details"
-              tabIndex={0}
-              className={[
-                'mt-1.5 max-h-44 overflow-auto whitespace-pre-wrap',
-                'break-words font-sans text-xs font-normal leading-[1.125rem]',
-                'text-surface-600 outline-none focus-visible:ring-2',
-                'focus-visible:ring-accent-500 dark:text-surface-300',
-              ].join(' ')}
-            >
-              {errorText.details}
-            </pre>
-          )}
-        </div>
-
-        {errorText?.details && (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+          {errorText?.details && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
             <button
               type="button"
               aria-label={copyState === 'copied'
@@ -283,12 +257,12 @@ export function PulseToastCard({ item }: { item: Toast }) {
                   : 'Copy error'}
               onClick={handleCopy}
               className={[
-                'inline-flex min-h-7 items-center rounded-full border',
-                'border-surface-300 px-3 py-1 text-[11px] font-semibold',
+                'inline-flex min-h-7 items-center rounded-lg border',
+                'border-surface-300 px-2.5 py-1 text-[11px] font-medium',
                 'text-surface-600 transition hover:bg-surface-100',
                 'hover:text-surface-900 focus:outline-none',
                 'focus-visible:ring-2 focus-visible:ring-accent-500',
-                'dark:border-surface-600 dark:text-surface-300',
+                'dark:border-surface-700 dark:text-surface-300',
                 'dark:hover:bg-surface-800 dark:hover:text-white',
               ].join(' ')}
             >
@@ -308,19 +282,37 @@ export function PulseToastCard({ item }: { item: Toast }) {
               aria-controls={detailsId}
               onClick={() => setDetailsOpen((open) => !open)}
               className={[
-                'inline-flex min-h-7 items-center rounded-full border',
-                'border-surface-300 px-3 py-1 text-[11px] font-semibold',
+                'inline-flex min-h-7 items-center rounded-lg border',
+                'border-surface-300 px-2.5 py-1 text-[11px] font-medium',
                 'text-surface-600 transition hover:bg-surface-100',
                 'hover:text-surface-900 focus:outline-none',
                 'focus-visible:ring-2 focus-visible:ring-accent-500',
-                'dark:border-surface-600 dark:text-surface-300',
+                'dark:border-surface-700 dark:text-surface-300',
                 'dark:hover:bg-surface-800 dark:hover:text-white',
               ].join(' ')}
             >
               {detailsOpen ? 'Less' : 'Details'}
             </button>
-          </div>
-        )}
+            </div>
+          )}
+        </div>
+
+        <button
+          type="button"
+          aria-label="Dismiss notification"
+          title="Dismiss"
+          onClick={() => toast.dismiss(item.id)}
+          className={[
+            'inline-flex h-7 w-7 shrink-0 items-center justify-center',
+            'rounded-lg text-surface-400 transition',
+            'hover:bg-surface-100 hover:text-surface-700',
+            'focus:outline-none focus-visible:ring-2',
+            'focus-visible:ring-accent-500 dark:text-surface-500',
+            'dark:hover:bg-surface-800 dark:hover:text-surface-200',
+          ].join(' ')}
+        >
+          <X size={15} strokeWidth={2.25} aria-hidden="true" />
+        </button>
       </div>
     </article>
   );

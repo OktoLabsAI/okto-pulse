@@ -2534,7 +2534,9 @@ export interface BoardGuidelineEntry {
    * Exact policy-binding fields. Optional only for backwards-compatible
    * deserialization; policy mutation UIs must fail closed when they are absent.
    */
-  default_enforcement?: 'advisory' | 'blocking';
+  enforcement?: 'advisory' | 'blocking';
+  minimum_confidence?: number;
+  metric_threshold_overrides?: Record<string, number>;
   binding_state?: 'active' | 'unlinked';
   source_kind?: 'native' | 'default_materialization';
 }

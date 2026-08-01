@@ -56,6 +56,10 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
 from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
     is_knowledge_creation_race_error,
 )
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    bind_semantic_subject_actor,
+    unbind_semantic_subject_actor,
+)
 from okto_pulse.core.ports.knowledge_propagation import KnowledgeTargetKey
 
 if TYPE_CHECKING:
@@ -196,6 +200,7 @@ class CommunityUnitOfWork:
         self.realm_id = self.realm_scope.realm_id
         self.actor = actor
         self._session.info["realm_scope"] = self.realm_scope
+        bind_semantic_subject_actor(self._session, actor)
         self._application_persistence = (
             application_persistence or CommunitySqlAlchemyApplicationPersistence()
         )
@@ -275,7 +280,10 @@ class CommunityUnitOfWork:
         )
 
     async def close(self) -> None:
-        await self._session.close()
+        try:
+            await self._session.close()
+        finally:
+            unbind_semantic_subject_actor(self._session)
 
 
 class _CommunityUnitOfWorkContext:

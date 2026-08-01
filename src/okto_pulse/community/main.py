@@ -1323,9 +1323,39 @@ def _build_module_app():
         raise
 
 
-# Module-level app created on import — uvicorn needs "module:app" reference.
-# The print was moved to cmd_serve in cli.py to avoid showing wrong port.
-app = _build_module_app()
+# String annotations: tests monkeypatch AccessLogQueryRedactionMiddleware with
+# a plain function and re-import this module; a runtime-evaluated union
+# (`X | None`) would then raise TypeError at import.
+_MODULE_APP: "AccessLogQueryRedactionMiddleware | None" = None
+
+
+def get_module_app() -> "AccessLogQueryRedactionMiddleware":
+    """Build (ONCE) and return the module ASGI boundary.
+
+    Memoized because ``create_community_app()`` is NOT idempotent: it registers
+    process runtime values (configure_community_database,
+    register_relational_application_adapter, the KG/scheduler seams) and
+    freezes the MCP catalog. Two calls would mean two engines and a second
+    freeze attempt.
+
+    Lazy (instead of the old module-level ``app = _build_module_app()``)
+    because importing ``okto_pulse.community.main`` used to run the whole
+    composition root at pytest collection time — creating an AsyncEngine with
+    no running loop and publishing the relational adapter into a ContextVar
+    binding that later tests replace. See the comment in
+    tests/test_af09_mcp_trace_sink_adapter.py.
+    """
+
+    global _MODULE_APP
+    if _MODULE_APP is None:
+        _MODULE_APP = _build_module_app()
+    return _MODULE_APP
+
+
+def __getattr__(name: str):  # PEP 562 — covers `from ... import app` and `mod.app`
+    if name == "app":
+        return get_module_app()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 async def _wait_for_server_started(
@@ -1525,8 +1555,11 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     lifespan, and the request-scoped MCP credential provider — so the MCP sub-app
     sees a fully-initialised runtime.
     """
-    composition = app.state.runtime_composition
-    transaction = app.state.mcp_cold_start_transaction
+    # Build here, already inside the server loop (PEP 562 lazy module app);
+    # _build_module_app/create_community_app roll back on BaseException.
+    module_app = get_module_app()
+    composition = module_app.state.runtime_composition
+    transaction = module_app.state.mcp_cold_start_transaction
 
     try:
         from okto_pulse.community.adapters.mcp_host import (
@@ -1562,7 +1595,7 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
             )
 
         api_config = uvicorn.Config(
-            app,
+            module_app,
             host=settings.host,
             port=api_port,
             ws="wsproto",

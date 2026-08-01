@@ -27,7 +27,9 @@ from okto_pulse.community.adapters.ska_observability import (
 )
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     lock_policy_board,
+    queue_semantic_subject_mutation,
 )
+from okto_pulse.core.domain.guideline_policy import PolicyEntityType
 from okto_pulse.core.domain.enums import RefinementStatus
 from okto_pulse.core.domain.research_decision_ledger import (
     RESEARCH_DECISION_LEDGER_CONTRACT_VERSION,
@@ -881,6 +883,13 @@ class CommunitySqlAlchemyResearchDecisionLedger(ResearchDecisionLedgerPersistenc
             .execution_options(synchronize_session=False)
         )
         if int(result.rowcount or 0) == 1:
+            queue_semantic_subject_mutation(
+                self._session,
+                entity_type=PolicyEntityType.REFINEMENT,
+                board_id=bundle.entry.board_id,
+                subject_id=bundle.entry.refinement_id,
+                expected_actor_id=bundle.entry.created_by,
+            )
             return
         row = await self._session.scalar(
             select(Refinement).where(

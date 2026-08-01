@@ -588,7 +588,7 @@ describe('RefinementModal ambiguity gate', () => {
       settings: { require_refinement_ambiguity_gate: false },
     };
     permissionState.flags = new Set([
-      'guidelines.compliance.read',
+      'guidelines.assessments.read',
     ]);
 
     render(

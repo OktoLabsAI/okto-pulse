@@ -203,10 +203,15 @@ def _consume_bootstrap_key_handoff(source: str | Path) -> str:
     try:
         try:
             claimed_metadata = os.lstat(claimed)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, PermissionError) as exc:
             # Windows may report a successful racing rename to more than one
-            # caller while only one claim remains addressable. Treat a vanished
-            # claim as the losing consumer; it must never fall back to the DB.
+            # caller while only one claim remains addressable. The vanished
+            # claim surfaces as FileNotFoundError, or — while the winner's
+            # unlink leaves it delete-pending — as PermissionError. Either
+            # way this is the losing consumer; it must never fall back to
+            # the DB. A genuine POSIX permission problem stays fatal.
+            if isinstance(exc, PermissionError) and os.name != "nt":
+                raise
             raise RuntimeError(
                 "bootstrap credential handoff is missing or was already consumed"
             ) from exc
@@ -218,7 +223,19 @@ def _consume_bootstrap_key_handoff(source: str | Path) -> str:
             )
 
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(claimed, flags)
+        try:
+            descriptor = os.open(claimed, flags)
+        except (FileNotFoundError, PermissionError) as exc:
+            # Same Windows racing-rename anomaly handled at the lstat above:
+            # the losing consumer's claim can also vanish (FileNotFoundError)
+            # or turn delete-pending (PermissionError) between lstat and
+            # open. It must never fall back to the DB. A genuine POSIX
+            # permission problem stays fatal.
+            if isinstance(exc, PermissionError) and os.name != "nt":
+                raise
+            raise RuntimeError(
+                "bootstrap credential handoff is missing or was already consumed"
+            ) from exc
         opened_metadata = os.fstat(descriptor)
         if (
             opened_metadata.st_dev != claimed_metadata.st_dev
@@ -960,9 +977,9 @@ def cmd_serve(args):
         )
 
     # Ports go via env so create_community_app + the MCP runner read them.
-    # MUST be set BEFORE importing okto_pulse.community.main — that module
-    # evaluates `app = create_community_app()` at import time, which reads
-    # the env vars to inject /config.js with the correct API_URL/MCP_URL.
+    # MUST be set BEFORE _serve_dual calls get_module_app() — the lazy
+    # composition build reads the env vars to inject /config.js with the
+    # correct API_URL/MCP_URL.
     os.environ["OKTO_PULSE_PORT"] = str(api_port)
     os.environ["OKTO_PULSE_MCP_PORT"] = str(mcp_port)
 

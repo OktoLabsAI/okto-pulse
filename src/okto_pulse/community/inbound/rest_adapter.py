@@ -53,6 +53,7 @@ class RESTAdapterContract:
         return ActorContext(
             user_id,
             "rest",
+            actor_kind="human",
             board_id=board_id,
             # Community is local-first by product definition. Other editions
             # provide their own inbound adapter and must pass an explicit realm.

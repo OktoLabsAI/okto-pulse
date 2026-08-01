@@ -34,7 +34,7 @@ EXPECTED_VERSION = "0.3.1"
 EXPECTED_MCP_TOOL_COUNT = 312
 EXPECTED_CANONICAL_TOOL_COUNT = 304
 EXPECTED_TOOL_ALIAS_COUNT = 8
-EXPECTED_RESOURCE_COUNT = 52
+EXPECTED_RESOURCE_COUNT = 53
 MINIMUM_SUPPORTED_PYTHON = (3, 11)
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT_ENV = "OKTO_PULSE_WORKSPACE_ROOT"
@@ -592,7 +592,7 @@ assert under(resource_manifest_path, venv), resource_manifest_path
 tool_manifest = json.loads(tool_manifest_path.read_text(encoding="utf-8"))
 resource_manifest = json.loads(resource_manifest_path.read_text(encoding="utf-8"))
 assert tool_manifest["tool_count"] == 11
-assert resource_manifest["resource_count"] == 18
+assert resource_manifest["resource_count"] == 21
 
 bad_sys_path = []
 for value in sys.path:

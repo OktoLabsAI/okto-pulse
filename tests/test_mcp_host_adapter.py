@@ -333,8 +333,12 @@ async def test_community_host_narrows_live_policy_board_schema_only_locally() ->
 
     def assert_closed(value: object) -> None:
         if isinstance(value, dict):
-            if value.get("type") == "object" or "properties" in value:
+            if "properties" in value:
                 assert value.get("additionalProperties") is False, value
+            elif value.get("type") == "object":
+                # Typed mappings (for example metric-code -> threshold) have
+                # dynamic domain keys but still close every mapped value.
+                assert isinstance(value.get("additionalProperties"), dict), value
             for child in value.values():
                 assert_closed(child)
         elif isinstance(value, list):

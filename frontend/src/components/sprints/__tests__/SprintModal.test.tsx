@@ -184,14 +184,36 @@ function policyDecision(allowed: boolean) {
     ],
     decision_digest: 'a'.repeat(64),
     fence_digest: 'b'.repeat(64),
-    receipt_id: 'receipt-sprint-1',
+    receipt_ids: ['receipt-sprint-1'],
     currentness: 'current',
     currentness_reasons: [],
-    applicable_rule_count: 2,
-    applicable_blocking_rule_count: 1,
-    blocking_rule_count: allowed ? 0 : 1,
-    waived_rule_count: 0,
+    applicable_metric_count: 2,
+    applicable_blocking_metric_count: 2,
+    failed_metric_count: allowed ? 0 : 1,
+    blocking_metric_count: allowed ? 0 : 1,
+    waived_metric_count: 0,
     advisory_issue_count: 0,
+    skipped_binding_count: 0,
+    diagnostic_codes: allowed ? [] : ['policy_metric_threshold_failed'],
+    binding_decisions: [{
+      binding_id: 'binding-sprint-1',
+      guideline_id: 'guideline-sprint-1',
+      enforcement: 'blocking',
+      applicable_metric_count: 2,
+      allowed,
+      assessment_available: true,
+      receipt_id: 'receipt-sprint-1',
+      currentness: 'current',
+      currentness_reasons: [],
+      inadmissibility_cause: null,
+      failed_metric_count: allowed ? 0 : 1,
+      waived_metric_count: 0,
+      blocking_metric_count: allowed ? 0 : 1,
+      advisory_issue_count: 0,
+      skipped: false,
+      diagnostic_codes:
+        allowed ? [] : ['policy_metric_threshold_failed'],
+    }],
   };
 }
 
@@ -255,16 +277,37 @@ function structuredPolicyRejection() {
       reason_codes: ['policy_compliance_blocked'],
       decision_digest: 'c'.repeat(64),
       fence_digest: 'd'.repeat(64),
-      receipt_id: 'receipt-sprint-1',
+      receipt_ids: ['receipt-sprint-1'],
       currentness: 'current',
       currentness_reasons: [],
       counts: {
-        applicable_rules: 2,
-        applicable_blocking_rules: 1,
-        blocking_rules: 1,
-        waived_rules: 0,
+        applicable_metrics: 2,
+        applicable_blocking_metrics: 2,
+        failed_metrics: 1,
+        blocking_metrics: 1,
+        waived_metrics: 0,
         advisory_issues: 0,
+        skipped_bindings: 0,
       },
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+      binding_decisions: [{
+        binding_id: 'binding-sprint-1',
+        guideline_id: 'guideline-sprint-1',
+        enforcement: 'blocking',
+        applicable_metric_count: 2,
+        allowed: false,
+        assessment_available: true,
+        receipt_id: 'receipt-sprint-1',
+        currentness: 'current',
+        currentness_reasons: [],
+        inadmissibility_cause: null,
+        failed_metric_count: 1,
+        waived_metric_count: 0,
+        blocking_metric_count: 1,
+        advisory_issue_count: 0,
+        skipped: false,
+        diagnostic_codes: ['policy_metric_threshold_failed'],
+      }],
       transition: {
         entity_type: 'sprint',
         subject_id: 'sprint-1',
@@ -508,7 +551,7 @@ describe('SprintModal Policy Compliance', () => {
   });
 
   it('exposes accessible Evaluation subtabs only with the exact read permission', async () => {
-    permissionState.flags = new Set(['guidelines.compliance.read']);
+    permissionState.flags = new Set(['guidelines.assessments.read']);
     await renderSprint({ status: 'review', version: 7 });
 
     fireEvent.click(screen.getByRole('button', { name: /^Evaluations/i }));
@@ -609,7 +652,7 @@ describe('SprintModal Policy Compliance', () => {
   });
 
   it('removes every lifecycle control when the authority envelope is malformed', async () => {
-    permissionState.flags = new Set(['guidelines.compliance.read']);
+    permissionState.flags = new Set(['guidelines.assessments.read']);
     apiMock.getAllowedTransitions.mockResolvedValue({
       ...transitionResponse('review', defaultTransitions('review')),
       source: 'untrusted_source',
@@ -662,7 +705,7 @@ describe('SprintModal Policy Compliance', () => {
   });
 
   it('persists a structured 409 rejection and refreshes transition authority', async () => {
-    permissionState.flags = new Set(['guidelines.compliance.read']);
+    permissionState.flags = new Set(['guidelines.assessments.read']);
     apiMock.moveSprint.mockRejectedValue(structuredPolicyRejection());
     await renderSprint({ status: 'review' });
 
@@ -691,7 +734,7 @@ describe('SprintModal Policy Compliance', () => {
   });
 
   it('refreshes evidence and lifecycle authority even when sprint.version is unchanged', async () => {
-    permissionState.flags = new Set(['guidelines.compliance.read']);
+    permissionState.flags = new Set(['guidelines.assessments.read']);
     await renderSprint({ status: 'review', version: 4 });
 
     fireEvent.click(screen.getByRole('button', { name: /^Evaluations/i }));

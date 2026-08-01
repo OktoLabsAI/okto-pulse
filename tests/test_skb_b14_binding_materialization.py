@@ -76,12 +76,13 @@ def _revision(
         semantic_version=f"{number}.0.0",
         title=title,
         content=content,
-        content_digest=guideline_revision_content_digest(
+        revision_digest=guideline_revision_content_digest(
             title=title,
             content=content,
             tags=(),
+            semantic_version=f"{number}.0.0",
         ),
-        rules=(),
+        metrics=(),
         created_by="agent-b14",
         created_at=NOW + timedelta(minutes=number),
         parent_revision_id=parent_revision_id,
@@ -114,12 +115,12 @@ def _binding(
         guideline_id=revision.guideline_id,
         revision_id=revision.revision_id,
         semantic_version=revision.semantic_version,
-        revision_digest=revision.content_digest,
+        revision_digest=revision.revision_digest,
         priority=1,
         binding_revision=binding_revision,
         adopted_by="agent-b14",
         adopted_at=adopted_at,
-        default_enforcement=GuidelineEnforcement.ADVISORY,
+        enforcement=GuidelineEnforcement.ADVISORY,
         state=state,
         source_kind=source_kind,
     )
@@ -162,7 +163,7 @@ async def test_b14_inline_default_materialization_is_atomic_closed_and_erasable(
                         "revision_id": default_v1.revision_id,
                         "revision_number": 1,
                         "semantic_version": default_v1.semantic_version,
-                        "revision_digest": default_v1.content_digest,
+                        "revision_digest": default_v1.revision_digest,
                         "priority": 1,
                     }
                 ],
@@ -260,7 +261,10 @@ async def test_b14_inline_default_materialization_is_atomic_closed_and_erasable(
                 await session.execute(
                     select(DomainEventHandlerExecution).where(
                         DomainEventHandlerExecution.handler_name
-                        == "PolicyConstraintProjectionHandler"
+                        == "PolicyConstraintProjectionHandler",
+                        DomainEventHandlerExecution.event_id.in_(
+                            event.id for event in events
+                        ),
                     )
                 )
             ).scalars()

@@ -178,8 +178,12 @@ async def test_budget_counts_loaders_direct_sql_and_autoflush(rig) -> None:
         await session.execute(text("SELECT 1"))
         assert budget.used == 3
         # Flush DML is charged at the DRIVER level (the round-3 gap: the ORM
-        # event only saw 1 of the 2 statements): the INSERT emitted by flush
-        # counts, and so does the SELECT after it.
+        # event only saw 1 of the 2 statements). With the process-wide semantic
+        # subject versioning listeners installed (the production world; conftest
+        # installs them deterministically), flushing a NEW Card costs 4 driver
+        # statements: 2 subject-snapshot SELECTs + the per-board serialization
+        # UPDATE on boards (the semantic board mutex) + the INSERT itself — and
+        # the budget charges every one of them.
         session.add(
             models.Card(
                 id="bg-autoflush",
@@ -189,9 +193,9 @@ async def test_budget_counts_loaders_direct_sql_and_autoflush(rig) -> None:
             )
         )
         await session.flush()
-        assert budget.used == 4  # +INSERT via flush
+        assert budget.used == 7  # +2 snapshot SELECTs +board mutex UPDATE +INSERT
         await session.execute(text("SELECT 1"))
-        assert budget.used == 5
+        assert budget.used == 8
     await session.rollback()
 
 

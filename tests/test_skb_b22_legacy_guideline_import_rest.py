@@ -1,4 +1,4 @@
-"""REST preflight regression for the schema-v1 guideline importer."""
+"""REST regression for the governed guideline import/export compatibility URL."""
 
 from __future__ import annotations
 
@@ -39,15 +39,11 @@ def _empty_envelope() -> dict:
 def test_legacy_guideline_import_denies_before_parsing_or_use_case(
     monkeypatch,
 ) -> None:
-    def _poison_parse(*_args, **_kwargs):
-        raise AssertionError("denied import parsed the envelope")
-
     async def _poison_execute(*_args, **_kwargs):
         raise AssertionError("denied import entered the use case")
 
-    monkeypatch.setattr(guidelines_api, "parse_import_envelope", _poison_parse)
     monkeypatch.setattr(
-        guidelines_api.ImportGuidelinesUseCase,
+        guidelines_api.ImportGuidelinePolicyUseCase,
         "execute",
         _poison_execute,
     )
@@ -76,16 +72,16 @@ def test_legacy_guideline_import_uses_authorized_principal(
     async def _execute(_self, command, *, actor, uow):
         seen.update(command=command, actor=actor, uow=uow)
         return SimpleNamespace(
-            payload=lambda *, dry_run: {
+            result={
                 "created": 0,
                 "skipped": [],
                 "errors": [],
-                "dry_run": dry_run,
+                "dry_run": command.dry_run,
             }
         )
 
     monkeypatch.setattr(
-        guidelines_api.ImportGuidelinesUseCase,
+        guidelines_api.ImportGuidelinePolicyUseCase,
         "execute",
         _execute,
     )
@@ -113,6 +109,61 @@ def test_legacy_guideline_import_uses_authorized_principal(
 
     assert response.status_code == 200
     assert response.json()["dry_run"] is True
+    command = seen["command"]
+    assert command.envelope == _empty_envelope()
+    assert command.target_board_id == "board-b22"
+    actor = seen["actor"]
+    assert actor.actor_id == principal.subject
+    assert actor.board_id == "board-b22"
+    assert seen["uow"] is uow
+
+
+def test_legacy_guideline_export_delegates_to_lossless_v3(
+    monkeypatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def _execute(_self, command, *, actor, uow):
+        seen.update(command=command, actor=actor, uow=uow)
+        return SimpleNamespace(envelope=object())
+
+    monkeypatch.setattr(
+        guidelines_api.ExportGuidelinePolicyV3UseCase,
+        "execute",
+        _execute,
+    )
+    monkeypatch.setattr(
+        guidelines_api,
+        "guideline_export_payload",
+        lambda _envelope: {
+            "contract_version": "guideline-export/v3",
+            "schema_version": "3",
+            "kind": "guidelines",
+            "guidelines": [],
+        },
+    )
+    principal = Principal(
+        subject="authorized-exporter",
+        realm_id="local",
+        claims={
+            "permissions": {
+                "guidelines": {
+                    "read": True,
+                    "revisions": {"read": True},
+                },
+            }
+        },
+    )
+    uow = SimpleNamespace(marker="lossless-uow")
+
+    response = _client(principal, uow).get(
+        "/api/v1/guidelines/export?board_id=board-b22"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["schema_version"] == "3"
+    command = seen["command"]
+    assert command.board_id == "board-b22"
     actor = seen["actor"]
     assert actor.actor_id == principal.subject
     assert actor.board_id == "board-b22"

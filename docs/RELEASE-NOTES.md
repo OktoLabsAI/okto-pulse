@@ -14,7 +14,7 @@ Spec checklist execution state.
 - Test-scenario inputs are closed across REST and UI; `negative` is a supported
   first-class type.
 - Paired-wheel provenance and installed inventory gates ratchet the exposed MCP
-  contract to 292 tools (284 canonical and 8 aliases).
+  contract to 312 tools (304 canonical and 8 aliases).
 
 
 ### 0.3.0

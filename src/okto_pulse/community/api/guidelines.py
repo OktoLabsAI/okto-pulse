@@ -10,6 +10,7 @@ maps the typed use-case errors back to the EXACT legacy HTTP status + detail
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.encoders import jsonable_encoder
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases import (
@@ -41,16 +42,11 @@ from okto_pulse.core.application.use_cases.guidelines_crud import (
     UpdateGuidelineCommand,
     UpdateGuidelineUseCase,
 )
-from okto_pulse.core.application.use_cases.import_export import (
-    KIND_GUIDELINES,
-    EnvelopeError,
-    ExportGuidelinesCommand,
-    ExportGuidelinesUseCase,
-    ImportGuidelinesCommand,
-    ImportGuidelinesUseCase,
-    ImportItemError,
-    parse_import_envelope,
-    validate_items,
+from okto_pulse.core.application.use_cases.guideline_import_export import (
+    ExportGuidelinePolicyCommand,
+    ExportGuidelinePolicyV3UseCase,
+    ImportGuidelinePolicyCommand,
+    ImportGuidelinePolicyUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_principal, require_user
@@ -59,6 +55,7 @@ from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 from okto_pulse.core.ports.guideline_policy import (
     GuidelinePolicyBindingConflict,
 )
+from okto_pulse.core.domain.guideline_import_export import guideline_export_payload
 from okto_pulse.core.models.schemas import (
     BoardGuidelineLinkRequest,
     GuidelineCreate,
@@ -98,16 +95,24 @@ def _legacy_policy_actor(
     try:
         require_policy_governance_capabilities(actor, capability)
     except PermissionDeniedError as error:
-        from okto_pulse.core.inbound.guideline_policy_error import (
-            guideline_policy_http_status,
-            project_guideline_policy_error,
-        )
-
-        raise HTTPException(
-            status_code=guideline_policy_http_status(error),
-            detail=project_guideline_policy_error(error),
-        )
+        raise _policy_http_error(error)
     return actor
+
+
+def _policy_http_error(error: Exception) -> HTTPException:
+    """Project governed guideline errors through the bounded Core contract."""
+
+    from okto_pulse.core.inbound.guideline_policy_error import (
+        guideline_policy_http_status,
+        project_guideline_policy_error,
+    )
+
+    try:
+        http_status = guideline_policy_http_status(error)
+        detail = project_guideline_policy_error(error)
+    except TypeError:
+        raise error
+    return HTTPException(status_code=http_status, detail=detail)
 
 
 def _require_board_guideline_adoption_manager(
@@ -199,19 +204,25 @@ async def create_guideline(
 @router.get("/guidelines/export")
 async def export_guidelines(
     board_id: str | None = Query(None),
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Export the actor's global guidelines + (if board_id) the board's inline
-    guidelines as a schema_version-1 envelope (kind=guidelines)."""
+    """Compatibility URL for the lossless governed ``guideline-export/v3``."""
+
+    actor = _legacy_policy_actor(
+        principal,
+        capability="guidelines.revisions.read",
+        board_id=board_id,
+    )
     try:
-        return await ExportGuidelinesUseCase().execute(
-            ExportGuidelinesCommand(board_id=board_id),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+        result = await ExportGuidelinePolicyV3UseCase().execute(
+            ExportGuidelinePolicyCommand(board_id=board_id),
+            actor=actor,
             uow=uow,
         )
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except Exception as error:
+        raise _policy_http_error(error)
+    return guideline_export_payload(result.envelope)
 
 
 @router.post("/guidelines/import")
@@ -222,47 +233,33 @@ async def import_guidelines(
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Import a kind=guidelines envelope. Items are validated against the same
-    ``GuidelineCreate`` schema as POST /guidelines; identical titles in the
-    target partition are skipped as duplicates; any invalid item → 400 and
-    NOTHING is mutated (all-or-nothing). ``dry_run=true`` validates and reports
-    without persisting. ``board_id`` retargets inline items to that board."""
-    # Authorize before parsing the document or entering a use-case read path.
-    # The use case repeats this capability check as defense in depth.
+    """Compatibility URL for atomic governed v1/v2/v3 guideline imports.
+
+    Schema v1 becomes context-only, rule-empty v2 becomes context-only, v2
+    executable rules are rejected atomically, and v3 preserves semantic
+    metrics.  ``board_id`` remains the optional target-board remap.
+    """
+    # Authorize before the governed codec interprets the document.  The use
+    # case repeats the check and additionally requires metrics.author when a
+    # v3 envelope contains semantic metrics.
     actor = _legacy_policy_actor(
         principal,
         capability="guidelines.revisions.create",
         board_id=board_id,
     )
     try:
-        raw_items = parse_import_envelope(envelope, kind=KIND_GUIDELINES)
-    except EnvelopeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "invalid_envelope", "message": str(exc)},
-        )
-    parsed, errors = validate_items(raw_items, GuidelineCreate.model_validate)
-    if errors:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"created": 0, "skipped": [], "errors": errors},
-        )
-    try:
-        result = await ImportGuidelinesUseCase().execute(
-            ImportGuidelinesCommand(items=parsed, board_id=board_id, dry_run=dry_run),
+        result = await ImportGuidelinePolicyUseCase().execute(
+            ImportGuidelinePolicyCommand(
+                envelope=envelope,
+                target_board_id=board_id,
+                dry_run=dry_run,
+            ),
             actor=actor,
             uow=uow,
         )
-    except ImportItemError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "created": 0,
-                "skipped": [],
-                "errors": [{"index": exc.index, "detail": exc.detail}],
-            },
-        )
-    return result.payload(dry_run=dry_run)
+    except Exception as error:
+        raise _policy_http_error(error)
+    return jsonable_encoder(result.result)
 
 
 @router.get("/guidelines/{guideline_id}", response_model=GuidelineResponse)

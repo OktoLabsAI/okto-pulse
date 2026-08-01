@@ -25,7 +25,7 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     assert module.EXPECTED_MCP_TOOL_COUNT == 312
     assert module.EXPECTED_CANONICAL_TOOL_COUNT == 304
     assert module.EXPECTED_TOOL_ALIAS_COUNT == 8
-    assert module.EXPECTED_RESOURCE_COUNT == 52
+    assert module.EXPECTED_RESOURCE_COUNT == 53
     assert module.MINIMUM_SUPPORTED_PYTHON == (3, 11)
     assert module.CORE_REPO.name == "okto-pulse-core"
     assert "site-packages" not in str(module.CORE_REPO).lower()
@@ -134,7 +134,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     origin = evidence["installed"]["origin_probe"]
     assert origin["about_version"] == "0.3.1"
     assert origin["ska_contract_manifests"]["tool_count"] == 11
-    assert origin["ska_contract_manifests"]["resource_count"] == 18
+    assert origin["ska_contract_manifests"]["resource_count"] == 21
     assert len(origin["required_core_resources"]) == 2
     for distribution in ("core", "community"):
         provenance = evidence["installed"]["payload_provenance"][distribution]
@@ -197,6 +197,6 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert mcp_http["tool_count"] == 312
     assert mcp_http["canonical_tool_count"] == 304
     assert mcp_http["tool_alias_count"] == 8
-    assert mcp_http["resource_count"] == 52
+    assert mcp_http["resource_count"] == 53
     assert mcp_http["ska_tool_count"] == 11
     assert (work_dir / "release-artifact-evidence.json").is_file()

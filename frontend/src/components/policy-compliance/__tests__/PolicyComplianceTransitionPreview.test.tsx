@@ -1,9 +1,56 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import type { AllowedTransition } from '@/types';
+import type {
+  AllowedTransition,
+  PolicyComplianceTransitionDecision,
+} from '@/types';
 
 import { PolicyComplianceTransitionPreview } from '../PolicyComplianceTransitionPreview';
+
+function semanticDecision(
+  overrides: Partial<PolicyComplianceTransitionDecision> = {},
+): PolicyComplianceTransitionDecision {
+  const receiptId = overrides.receipt_ids?.[0] ?? 'receipt-authoritative';
+  return {
+    state: 'policy_compliance_ready',
+    allowed: true,
+    policy_compliance_required: true,
+    reason_codes: ['policy_compliance_ready'],
+    decision_digest: 'a'.repeat(64),
+    fence_digest: 'b'.repeat(64),
+    receipt_ids: [receiptId],
+    currentness: 'current',
+    currentness_reasons: [],
+    applicable_metric_count: 4,
+    applicable_blocking_metric_count: 4,
+    failed_metric_count: 0,
+    blocking_metric_count: 0,
+    waived_metric_count: 0,
+    advisory_issue_count: 0,
+    skipped_binding_count: 0,
+    diagnostic_codes: [],
+    binding_decisions: [{
+      binding_id: 'binding-hexagonal',
+      guideline_id: 'guideline-hexagonal',
+      enforcement: 'blocking',
+      applicable_metric_count: 4,
+      allowed: true,
+      assessment_available: true,
+      receipt_id: receiptId,
+      currentness: 'current',
+      currentness_reasons: [],
+      inadmissibility_cause: null,
+      failed_metric_count: 0,
+      waived_metric_count: 0,
+      blocking_metric_count: 0,
+      advisory_issue_count: 0,
+      skipped: false,
+      diagnostic_codes: [],
+    }],
+    ...overrides,
+  };
+}
 
 function governed(): AllowedTransition {
   return {
@@ -16,22 +63,32 @@ function governed(): AllowedTransition {
     effects: [],
     reason_codes: [],
     policy_compliance: true,
-    policy_compliance_decision: {
+    policy_compliance_decision: semanticDecision({
       state: 'policy_compliance_ready_with_waivers',
       allowed: true,
-      policy_compliance_required: true,
       reason_codes: ['policy_compliance_ready_with_waivers'],
-      decision_digest: 'a'.repeat(64),
-      fence_digest: 'b'.repeat(64),
-      receipt_id: 'receipt-authoritative',
-      currentness: 'current',
-      currentness_reasons: [],
-      applicable_rule_count: 4,
-      applicable_blocking_rule_count: 2,
-      blocking_rule_count: 0,
-      waived_rule_count: 1,
-      advisory_issue_count: 1,
-    },
+      failed_metric_count: 1,
+      waived_metric_count: 1,
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+      binding_decisions: [{
+        binding_id: 'binding-hexagonal',
+        guideline_id: 'guideline-hexagonal',
+        enforcement: 'blocking',
+        applicable_metric_count: 4,
+        allowed: true,
+        assessment_available: true,
+        receipt_id: 'receipt-authoritative',
+        currentness: 'current',
+        currentness_reasons: [],
+        inadmissibility_cause: null,
+        failed_metric_count: 1,
+        waived_metric_count: 1,
+        blocking_metric_count: 0,
+        advisory_issue_count: 0,
+        skipped: false,
+        diagnostic_codes: ['policy_metric_threshold_failed'],
+      }],
+    }),
   };
 }
 
@@ -64,6 +121,8 @@ describe('PolicyComplianceTransitionPreview', () => {
     expect(screen.getByText('To Done')).toBeInTheDocument();
     expect(screen.getByText('receipt-authoritative')).toBeInTheDocument();
     expect(screen.getByText('Ready')).toBeInTheDocument();
+    expect(screen.getByTestId('policy-transition-done'))
+      .toHaveTextContent('1/4 failed · current');
     expect(
       screen.getByText(/Policy Compliance does not block.*Cancelled/s),
     ).toBeInTheDocument();
@@ -88,7 +147,7 @@ describe('PolicyComplianceTransitionPreview', () => {
     );
 
     expect(screen.getByRole('alert')).toHaveTextContent(
-      /metadata is unavailable/i,
+      /unknown or missing transition field/i,
     );
     expect(screen.getByRole('alert')).toHaveTextContent(
       /No admission is inferred/i,
@@ -136,22 +195,37 @@ describe('PolicyComplianceTransitionPreview', () => {
           subjectId: 'spec-1',
           fromStatus: 'approved',
           toStatus: 'validated',
-          decision: {
+          decision: semanticDecision({
             state: 'policy_compliance_blocked',
             allowed: false,
-            policy_compliance_required: true,
             reason_codes: ['policy_compliance_blocked'],
             decision_digest: 'c'.repeat(64),
             fence_digest: 'd'.repeat(64),
-            receipt_id: 'receipt-race',
-            currentness: 'current',
-            currentness_reasons: [],
-            applicable_rule_count: 2,
-            applicable_blocking_rule_count: 1,
-            blocking_rule_count: 1,
-            waived_rule_count: 0,
-            advisory_issue_count: 0,
-          },
+            receipt_ids: ['receipt-race'],
+            applicable_metric_count: 2,
+            applicable_blocking_metric_count: 2,
+            failed_metric_count: 1,
+            blocking_metric_count: 1,
+            diagnostic_codes: ['policy_metric_threshold_failed'],
+            binding_decisions: [{
+              binding_id: 'binding-hexagonal',
+              guideline_id: 'guideline-hexagonal',
+              enforcement: 'blocking',
+              applicable_metric_count: 2,
+              allowed: false,
+              assessment_available: true,
+              receipt_id: 'receipt-race',
+              currentness: 'current',
+              currentness_reasons: [],
+              inadmissibility_cause: null,
+              failed_metric_count: 1,
+              waived_metric_count: 0,
+              blocking_metric_count: 1,
+              advisory_issue_count: 0,
+              skipped: false,
+              diagnostic_codes: ['policy_metric_threshold_failed'],
+            }],
+          }),
         }}
       />,
     );
@@ -162,5 +236,131 @@ describe('PolicyComplianceTransitionPreview', () => {
       .toHaveTextContent('receipt-race');
     expect(screen.getByTestId('policy-transition-done'))
       .toHaveTextContent('receipt-authoritative');
+  });
+
+  it('renders every semantic gate outcome as a distinct accessible theme-aware state', () => {
+    const transition = (
+      decision: PolicyComplianceTransitionDecision,
+    ): AllowedTransition => ({
+      ...governed(),
+      policy_compliance_decision: decision,
+    });
+    const preview = (decision: PolicyComplianceTransitionDecision) => ({
+      status: 'ready' as const,
+      error: null,
+      transitions: [transition(decision)],
+    });
+
+    const contextOnly = semanticDecision({
+      state: 'policy_compliance_not_applicable',
+      reason_codes: ['policy_compliance_not_applicable'],
+      applicable_metric_count: 0,
+      applicable_blocking_metric_count: 0,
+      binding_decisions: [{
+        ...semanticDecision().binding_decisions[0],
+        applicable_metric_count: 0,
+      }],
+    });
+    const advisoryFailure = semanticDecision({
+      state: 'policy_compliance_advisory_only',
+      reason_codes: ['policy_compliance_advisory_only'],
+      applicable_blocking_metric_count: 0,
+      failed_metric_count: 1,
+      advisory_issue_count: 1,
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+      binding_decisions: [{
+        ...semanticDecision().binding_decisions[0],
+        enforcement: 'advisory',
+        failed_metric_count: 1,
+        advisory_issue_count: 1,
+        diagnostic_codes: ['policy_metric_threshold_failed'],
+      }],
+    });
+    const blockingFailure = semanticDecision({
+      state: 'policy_compliance_blocked',
+      allowed: false,
+      reason_codes: ['policy_compliance_blocked'],
+      failed_metric_count: 1,
+      blocking_metric_count: 1,
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+      binding_decisions: [{
+        ...semanticDecision().binding_decisions[0],
+        allowed: false,
+        failed_metric_count: 1,
+        blocking_metric_count: 1,
+        diagnostic_codes: ['policy_metric_threshold_failed'],
+      }],
+    });
+    const waivedFailure = governed().policy_compliance_decision!;
+    const skippedBinding = semanticDecision({
+      state: 'policy_compliance_ready_with_waivers',
+      reason_codes: ['policy_compliance_ready_with_waivers'],
+      skipped_binding_count: 1,
+      binding_decisions: [{
+        ...semanticDecision().binding_decisions[0],
+        skipped: true,
+      }],
+    });
+    const lowConfidence = semanticDecision({
+      state: 'policy_compliance_blocked',
+      allowed: false,
+      reason_codes: ['policy_compliance_blocked'],
+      receipt_ids: [],
+      currentness: null,
+      diagnostic_codes: ['policy_assessment_inadmissible'],
+      binding_decisions: [{
+        ...semanticDecision().binding_decisions[0],
+        allowed: false,
+        receipt_id: null,
+        currentness: null,
+        inadmissibility_cause: 'confidence_below_minimum',
+        diagnostic_codes: ['policy_assessment_inadmissible'],
+      }],
+    });
+
+    const { rerender } = render(
+      <PolicyComplianceTransitionPreview preview={preview(contextOnly)} />,
+    );
+    let state = screen.getByTestId('policy-transition-done');
+    expect(state).toHaveTextContent('policy_compliance_not_applicable');
+    expect(state).toHaveTextContent('Ready');
+    expect(state).toHaveClass('dark:border-emerald-800');
+
+    rerender(
+      <PolicyComplianceTransitionPreview preview={preview(advisoryFailure)} />,
+    );
+    state = screen.getByTestId('policy-transition-done');
+    expect(state).toHaveTextContent('policy_compliance_advisory_only');
+    expect(state).toHaveTextContent('Advisory issues: 1');
+
+    rerender(
+      <PolicyComplianceTransitionPreview preview={preview(blockingFailure)} />,
+    );
+    state = screen.getByTestId('policy-transition-done');
+    expect(state).toHaveTextContent('policy_compliance_blocked');
+    expect(state).toHaveTextContent('Blocked');
+    expect(state).toHaveClass('dark:border-red-800');
+
+    rerender(
+      <PolicyComplianceTransitionPreview preview={preview(waivedFailure)} />,
+    );
+    state = screen.getByTestId('policy-transition-done');
+    expect(state).toHaveTextContent('policy_compliance_ready_with_waivers');
+    expect(state).toHaveTextContent('Waived metrics: 1');
+
+    rerender(
+      <PolicyComplianceTransitionPreview preview={preview(skippedBinding)} />,
+    );
+    state = screen.getByTestId('policy-transition-done');
+    expect(state).toHaveTextContent('Skipped bindings: 1');
+    expect(state).toHaveTextContent('human skip active');
+
+    rerender(
+      <PolicyComplianceTransitionPreview preview={preview(lowConfidence)} />,
+    );
+    state = screen.getByTestId('policy-transition-done');
+    expect(state).toHaveTextContent('confidence_below_minimum');
+    expect(state).toHaveTextContent('Receipts: none');
+    expect(state).toHaveTextContent('Blocked');
   });
 });

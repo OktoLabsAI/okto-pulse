@@ -230,7 +230,7 @@ describe('permission layers', () => {
 
   it('composes SK-A and SK-B manifests in deterministic fail-closed order', () => {
     expect(PERMISSION_INTRODUCTION_MANIFESTS.map(({ version }) => version))
-      .toEqual(['SK-A/v1', 'SK-B/v1']);
+      .toEqual(['SK-A/v1', 'SK-B3/v1']);
     expect(INTRODUCED_PERMISSION_LEAVES).toEqual([
       ...SKA_PERMISSION_INTRODUCTION_V1_LEAVES,
       ...SKB_PERMISSION_INTRODUCTION_V1_LEAVES,
@@ -257,10 +257,10 @@ describe('permission layers', () => {
         delete: true,
         link: true,
         revisions: { read: true, create: true, retire: true },
-        rules: { author_blocking: true },
+        metrics: { author: true },
         impact: { preview: true },
         adoption: { manage: true },
-        compliance: { read: true, evaluate: true },
+        assessments: { read: true, record: true },
         waiver: {
           read: true,
           request: true,
@@ -278,10 +278,10 @@ describe('permission layers', () => {
       guidelines: {
         delete: false,
         revisions: { read: true, create: true, retire: true },
-        rules: { author_blocking: true },
+        metrics: { author: true },
         impact: { preview: true },
         adoption: { manage: true },
-        compliance: { read: true, evaluate: true },
+        assessments: { read: true, record: true },
         waiver: {
           read: true,
           request: true,
@@ -302,7 +302,7 @@ describe('permission layers', () => {
         read: true,
         delete: false,
         revisions: { read: false, create: false, retire: false },
-        compliance: { read: false, evaluate: false },
+        assessments: { read: false, record: false },
         waiver: { request: false, revoke: false },
       },
     });

@@ -127,6 +127,46 @@ from okto_pulse.core.services.ska_observability import (
 
 pytestmark = pytest.mark.asyncio
 
+
+@pytest.fixture(autouse=True)
+def _quality_adapter_isolated_from_semantic_listeners():
+    """Suspend the process-wide semantic versioning listeners for this file.
+
+    These are ADAPTER-layer unit tests of the quality-assessment persistence
+    contract built on fixed subject-version chains (seed version=7, bundles
+    pinned to exact versions). The suite-wide conftest installs the production
+    Session listeners, under which every question-proposing bundle also bumps
+    the owning spec's version (SpecQAItem insert => semantic change), turning
+    the fixed chains stale mid-test. Version-advance staleness is covered
+    explicitly by test_consolidation_projection_omits_head_stale_by_subject_
+    version; here the listeners are removed for the duration of each test and
+    always reinstalled, so the isolation is deterministic in ANY suite order.
+    """
+
+    from sqlalchemy.orm import Session as _SyncSession
+
+    from okto_pulse.community.adapters import (
+        sqlalchemy_policy_subject_versioning as _psv,
+    )
+
+    pairs = (
+        ("before_flush", _psv._before_flush),
+        ("after_flush", _psv._after_flush_collect_new_subjects),
+        ("after_commit", _psv._mark_transaction_committed),
+        ("after_transaction_end", _psv._finish_transaction_markers),
+    )
+    removed = []
+    for hook, listener in pairs:
+        if event.contains(_SyncSession, hook, listener):
+            event.remove(_SyncSession, hook, listener)
+            removed.append((hook, listener))
+    try:
+        yield
+    finally:
+        for hook, listener in removed:
+            event.listen(_SyncSession, hook, listener)
+
+
 NOW = datetime(2026, 7, 27, 15, 0, tzinfo=timezone.utc)
 BOARD_ID = "board-quality"
 OTHER_BOARD_ID = "board-other"

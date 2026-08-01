@@ -17,13 +17,14 @@ from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.guidelines import router as legacy_guidelines_router
 from okto_pulse.community.api.policy_governance import (
     CorePolicyGovernanceFacade,
-    GuidelineExportV2Request,
+    GuidelineExportV3Request,
     GuidelineImpactItemPageResponse,
     GuidelineRevisionPageResponse,
-    PolicyComplianceFindingPageResponse,
-    PolicyComplianceReceiptPageResponse,
     PolicyErrorEnvelope,
-    PolicyWaiverPageResponse,
+    SemanticAssessmentPageResponse,
+    SemanticFindingPageResponse,
+    SemanticSkipPageResponse,
+    SemanticWaiverPageResponse,
     _project_core_result,
     get_policy_governance_facade,
     router,
@@ -44,14 +45,8 @@ from okto_pulse.core.domain.guideline_compliance import PolicyProjection
 from okto_pulse.core.domain.guideline_compliance import (
     GuidelineRevisionListItem,
     GuidelineRevisionProjectionPage,
-    PolicyWaiverListItem,
 )
-from okto_pulse.core.domain.guideline_policy import (
-    GuidelineRevisionPageCursor,
-    PolicyEntityType,
-    PolicySubjectRef,
-    PolicyWaiverStatus,
-)
+from okto_pulse.core.domain.guideline_policy import GuidelineRevisionPageCursor
 from okto_pulse.core.domain.guideline_lifecycle import GuidelineVersionBump
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.inbound.guideline_policy_cursor import (
@@ -152,7 +147,7 @@ def _client(
             "permissions": {
                 "guidelines": {
                     "revisions": {"read": True, "create": True, "retire": True},
-                    "rules": {"author_blocking": True},
+                    "metrics": {"author": True},
                     "impact": {"preview": True},
                     "adoption": {"manage": True},
                     "compliance": {"read": True, "evaluate": True},
@@ -174,11 +169,11 @@ def _client(
     return TestClient(app, raise_server_exceptions=False), uow
 
 
-def _minimal_v2_envelope() -> dict:
+def _minimal_v3_envelope() -> dict:
     created_at = "2026-07-29T18:00:00Z"
     return {
-        "contract_version": "guideline-export/v2",
-        "schema_version": "2",
+        "contract_version": "guideline-export/v3",
+        "schema_version": "3",
         "kind": "guidelines",
         "exported_at": created_at,
         "source_board_id": "board-b13",
@@ -201,8 +196,8 @@ def _minimal_v2_envelope() -> dict:
                         "semantic_version": "1.0.0",
                         "title": "B13",
                         "content": "Closed export.",
-                        "content_digest": "b" * 64,
-                        "rules": [],
+                        "revision_digest": "b" * 64,
+                        "metrics": [],
                         "created_by": "owner-b13",
                         "created_at": created_at,
                         "parent_revision_id": None,
@@ -231,37 +226,35 @@ def _minimal_v2_envelope() -> dict:
     }
 
 
-def _blocking_v2_envelope() -> dict:
+def _metric_v3_envelope() -> dict:
     from okto_pulse.core.domain.guideline_import_export import (
         GuidelineExportAggregate,
         GuidelineExportRevision,
-        build_guideline_export_v2,
+        GuidelineExportSnapshot,
+        build_guideline_export_v3,
         guideline_export_payload,
-    )
-    from okto_pulse.core.domain.guideline_lifecycle import (
-        guideline_revision_content_digest_v1,
     )
     from okto_pulse.core.domain.guideline_policy import (
         Guideline,
-        GuidelineEnforcement,
         GuidelineHead,
-        GuidelinePredicate,
+        GuidelineMetric,
+        GuidelineMetricDirection,
         GuidelineRevision,
-        GuidelineRule,
         GuidelineScope,
         PolicyEntityType,
+        guideline_revision_digest_v2,
     )
 
     now = datetime(2026, 7, 29, 18, tzinfo=timezone.utc)
-    rule = GuidelineRule(
-        rule_id="rule-b13",
-        code="require_title",
-        title="Require title",
-        description="A blocking import authorization fixture.",
+    metric = GuidelineMetric(
+        metric_id="metric-b13",
+        code="architecture_segregation",
+        title="Architecture segregation",
+        description="A semantic import authorization fixture.",
+        evaluation_rubric="Assess segregation from 0 to 100.",
         target_entity_types=(PolicyEntityType.SPEC,),
-        predicates=(GuidelinePredicate("field_present", (("field", "title"),)),),
-        enforcement=GuidelineEnforcement.BLOCKING,
-        waivable=True,
+        direction=GuidelineMetricDirection.MINIMUM,
+        default_threshold=80,
     )
     revision = GuidelineRevision(
         revision_id="revision-b13",
@@ -270,13 +263,14 @@ def _blocking_v2_envelope() -> dict:
         semantic_version="1.0.0",
         title="Blocking B13",
         content="One blocking policy.",
-        content_digest=guideline_revision_content_digest_v1(
+        revision_digest=guideline_revision_digest_v2(
+            semantic_version="1.0.0",
             title="Blocking B13",
             content="One blocking policy.",
-            rules=(rule,),
+            metrics=(metric,),
             tags=(),
         ),
-        rules=(rule,),
+        metrics=(metric,),
         created_by="owner-b13",
         created_at=now,
     )
@@ -299,10 +293,12 @@ def _blocking_v2_envelope() -> dict:
         ),
     )
     return guideline_export_payload(
-        build_guideline_export_v2(
-            (aggregate,),
+        build_guideline_export_v3(
+            GuidelineExportSnapshot(
+                aggregates=(aggregate,),
+                source_board_id="board-b13",
+            ),
             exported_at=now,
-            source_board_id="board-b13",
         )
     )
 
@@ -313,9 +309,9 @@ def test_literal_governance_routes_are_registered_before_legacy_param_routes() -
     board_import = "/boards/{board_id}/guidelines/import"
     assert paths[:2] == [board_export, board_import]
     assert (
-        paths.index("/boards/{board_id}/policy-compliance/receipts/current")
+        paths.index("/boards/{board_id}/semantic-guideline-assessments/current")
         < paths.index(
-            "/boards/{board_id}/policy-compliance/receipts/{receipt_id}"
+            "/boards/{board_id}/semantic-guideline-assessments/{receipt_id}"
         )
     )
     assert (
@@ -369,7 +365,7 @@ def test_revision_projection_and_closed_body_plumb_to_one_facade() -> None:
         "title": "Second revision",
         "content": None,
         "tags": None,
-        "rules": None,
+        "metrics": None,
     }
 
     unknown = client.post(
@@ -393,7 +389,8 @@ def test_governance_request_validation_is_structured_and_never_calls_facade() ->
         "/api/v1/boards/board-b13/guidelines/guideline-b13/impact-previews",
         json={
             "proposed_priority": 1,
-            "proposed_default_enforcement": "sometimes",
+            "proposed_enforcement": "sometimes",
+            "proposed_minimum_confidence": 80,
             "idempotency_key": "impact:b13",
         },
     )
@@ -414,8 +411,8 @@ def test_governance_request_validation_is_structured_and_never_calls_facade() ->
     assert facade.calls == []
 
 
-def test_import_v2_schema_is_recursively_closed_before_core_or_uow() -> None:
-    payload = _minimal_v2_envelope()
+def test_import_v3_schema_is_recursively_closed_before_core_or_uow() -> None:
+    payload = _minimal_v3_envelope()
     payload["guidelines"][0]["identity"]["unexpected"] = "must fail"
     facade = _Facade()
     client, _ = _client(facade)
@@ -428,12 +425,12 @@ def test_import_v2_schema_is_recursively_closed_before_core_or_uow() -> None:
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "validation_failed"
     with pytest.raises(ValueError):
-        GuidelineExportV2Request.model_validate(payload)
+        GuidelineExportV3Request.model_validate(payload)
     assert facade.calls == []
 
 
 def test_export_preserves_required_nullable_fields_for_import_roundtrip() -> None:
-    payload = _minimal_v2_envelope()
+    payload = _minimal_v3_envelope()
     payload["source_board_id"] = None
     aggregate = payload["guidelines"][0]
     aggregate["identity"]["scope"] = "global"
@@ -450,7 +447,7 @@ def test_export_preserves_required_nullable_fields_for_import_roundtrip() -> Non
         if route.path == "/boards/{board_id}/guidelines/export"
     )
     assert export_route.response_model_exclude_none is False
-    projected = GuidelineExportV2Request.model_validate(payload).model_dump(
+    projected = GuidelineExportV3Request.model_validate(payload).model_dump(
         mode="json",
         exclude_none=export_route.response_model_exclude_none,
     )
@@ -461,7 +458,7 @@ def test_export_preserves_required_nullable_fields_for_import_roundtrip() -> Non
     assert projected["guidelines"][0]["revisions"][0][
         "parent_revision_id"
     ] is None
-    GuidelineExportV2Request.model_validate(projected)
+    GuidelineExportV3Request.model_validate(projected)
 
 
 @pytest.mark.parametrize(
@@ -555,7 +552,24 @@ def test_real_auth_dependency_failures_use_closed_policy_envelope(
         assert response.headers["www-authenticate"] == "Bearer"
 
 
-def test_real_uow_dependency_failure_is_bounded_and_canonical() -> None:
+def test_real_uow_dependency_failure_is_bounded_and_canonical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Construct the missing-provider condition EXPLICITLY instead of relying
+    # on the ambient registry being empty: under full-suite order a leaked
+    # factory elsewhere let the request reach the endpoint body, whose own
+    # 503 (facade/cursor sources) is generic — masking this test's actual
+    # target, the deps -> HTTPException -> governed canonical envelope path.
+    from okto_pulse.community.api import deps as _deps
+
+    def _missing_provider(*, preferred=None):
+        del preferred
+        raise RuntimeError(
+            "No relational UnitOfWorkFactory provider is registered "
+            "(R01B FR3 fail-closed)."
+        )
+
+    monkeypatch.setattr(_deps, "resolve_unit_of_work_factory", _missing_provider)
     try:
         previous = get_auth_provider()
     except RuntimeError:
@@ -661,74 +675,6 @@ def test_untrusted_dependency_error_code_cannot_escape_or_break_projection() -> 
     assert response.status_code == 503
     assert envelope.detail.code == "service_unavailable"
     assert "private" not in json.dumps(response.json())
-
-
-def test_list_surfaces_close_projection_limit_and_cursor_plumbing() -> None:
-    facade = _Facade()
-    client, _ = _client(facade)
-    evaluated_at = "2026-07-29T18:00:00Z"
-
-    assert (
-        client.get(
-            "/api/v1/boards/board-b13/policy-compliance/receipts",
-            params={"projection": "full"},
-        ).status_code
-        == 400
-    )
-    assert (
-        client.get(
-            "/api/v1/boards/board-b13/policy-compliance/findings",
-            params={"limit": 201},
-        ).status_code
-        == 400
-    )
-    response = client.get(
-        "/api/v1/boards/board-b13/policy-waivers",
-        params={
-            "evaluated_at": evaluated_at,
-            "projection": "detail",
-            "cursor": "opaque.cursor",
-            "status": "approved",
-        },
-    )
-    assert response.status_code == 200
-    operation, values, _, _ = facade.calls[-1]
-    assert operation == "list_waivers"
-    assert values["cursor"] == "opaque.cursor"
-    assert values["projection"] == "detail"
-    assert values["status"] == "approved"
-    assert values["evaluated_at"] == datetime(
-        2026, 7, 29, 18, tzinfo=timezone.utc
-    )
-
-
-def test_waiver_action_routes_are_distinct_and_closed() -> None:
-    facade = _Facade(EntityNotFoundError("policy_waiver", "waiver-b13"))
-    client, _ = _client(facade)
-    base = "/api/v1/boards/board-b13/policy-waivers/waiver-b13"
-    common = {
-        "reason": "Independently reviewed.",
-        "evidence_refs": ["kb:b13-review"],
-        "expected_waiver_revision": 1,
-        "idempotency_key": "waiver:b13:action",
-    }
-
-    assert client.post(f"{base}/review", json={**common, "decision": "approve"}).status_code == 404
-    assert facade.calls[-1][0] == "review_waiver"
-    assert client.post(f"{base}/revoke", json=common).status_code == 404
-    assert facade.calls[-1][0] == "revoke_waiver"
-    assert (
-        client.post(
-            f"{base}/revalidate",
-            json={**common, "new_expires_at": "2026-08-29T18:00:00Z"},
-        ).status_code
-        == 404
-    )
-    assert facade.calls[-1][0] == "revalidate_waiver"
-    assert client.get(f"{base}/events").status_code == 404
-    assert facade.calls[-1][0] == "list_waiver_events"
-    assert client.get(base).status_code == 404
-    assert facade.calls[-1][0] == "get_waiver"
 
 
 def test_missing_cursor_secret_fails_closed_as_503() -> None:
@@ -851,9 +797,9 @@ def test_revision_projection_is_slim_or_detailed_without_none_leaks() -> None:
     detail_item = GuidelineRevisionListItem(
         projection=PolicyProjection.DETAIL,
         content="Detailed content.",
-        content_digest="c" * 64,
+        revision_digest="c" * 64,
         tags=("policy",),
-        rules=(),
+        metrics=(),
         **common,
     )
 
@@ -880,12 +826,12 @@ def test_revision_projection_is_slim_or_detailed_without_none_leaks() -> None:
         codec=codec,
     )
 
-    assert not {"content", "content_digest", "tags", "rules"}.intersection(
+    assert not {"content", "revision_digest", "tags", "metrics"}.intersection(
         summary["items"][0]
     )
     assert detail["items"][0]["content"] == "Detailed content."
     assert detail["items"][0]["tags"] == ["policy"]
-    assert detail["items"][0]["rules"] == []
+    assert detail["items"][0]["metrics"] == []
 
 
 def test_initial_revision_keeps_required_nullable_parent_for_validation() -> None:
@@ -907,9 +853,9 @@ def test_initial_revision_keeps_required_nullable_parent_for_validation() -> Non
         created_at=datetime(2026, 7, 29, 18, tzinfo=timezone.utc),
         parent_revision_id=None,
         content="Initial policy content.",
-        content_digest="d" * 64,
+        revision_digest="d" * 64,
         tags=("policy",),
-        rules=(),
+        metrics=(),
     )
 
     projected = _project_core_result(
@@ -939,71 +885,6 @@ def test_initial_revision_keeps_required_nullable_parent_for_validation() -> Non
     assert response.status_code == 200
     assert response.json()["items"][0]["parent_revision_id"] is None
     assert response.json()["next_cursor"] is None
-
-
-def test_non_expired_waiver_keeps_required_nullable_reason_for_validation() -> None:
-    codec = policy_cursor_codec_from_settings(
-        CoreSettings(
-            guideline_policy_cursor_signing_key="waiver-b13-secret-key-00000000000001"
-        )
-    )
-    requested_at = datetime(2026, 7, 29, 18, tzinfo=timezone.utc)
-    item = PolicyWaiverListItem(
-        projection=PolicyProjection.SUMMARY,
-        waiver_id="waiver-b13",
-        board_id="board-b13",
-        finding_id="finding-b13",
-        receipt_id="receipt-b13",
-        guideline_id="guideline-b13",
-        revision_id="revision-b13",
-        rule_id="rule-b13",
-        subject=PolicySubjectRef(
-            board_id="board-b13",
-            entity_type=PolicyEntityType.SPEC,
-            subject_id="spec-b13",
-            subject_version=1,
-        ),
-        status=PolicyWaiverStatus.REQUESTED,
-        source_current=True,
-        effective=False,
-        requested_by="owner-b13",
-        requested_at=requested_at,
-        expires_at=datetime(2026, 8, 29, 18, tzinfo=timezone.utc),
-        waiver_revision=1,
-        last_event_at=requested_at,
-        expire_reason_code=None,
-    )
-    page = SimpleNamespace(
-        items=(item,),
-        limit=25,
-        next_cursor=None,
-        has_more=False,
-    )
-
-    projected = _project_core_result(
-        SimpleNamespace(page=page),
-        codec=codec,
-    )
-
-    assert projected["items"][0]["expire_reason_code"] is None
-    validated = PolicyWaiverPageResponse.model_validate(projected)
-    wire = validated.model_dump(mode="json", exclude_unset=True)
-    assert wire["items"][0]["expire_reason_code"] is None
-    assert wire["next_cursor"] is None
-    assert "justification" not in wire["items"][0]
-
-    client, _ = _client(_Facade(results={"list_waivers": projected}))
-    response = client.get(
-        "/api/v1/boards/board-b13/policy-waivers",
-        params={
-            "projection": "summary",
-            "evaluated_at": "2026-07-29T18:00:00Z",
-        },
-    )
-    assert response.status_code == 200
-    assert response.json()["items"][0]["expire_reason_code"] is None
-    assert response.json()["next_cursor"] is None
-    assert "justification" not in response.json()["items"][0]
 
 
 def test_revision_cursor_is_bound_to_projection_profile() -> None:
@@ -1097,9 +978,10 @@ def test_paginated_routes_preserve_required_nulls_and_omit_unset_projection_fiel
     page_models = {
         GuidelineImpactItemPageResponse,
         GuidelineRevisionPageResponse,
-        PolicyComplianceFindingPageResponse,
-        PolicyComplianceReceiptPageResponse,
-        PolicyWaiverPageResponse,
+        SemanticAssessmentPageResponse,
+        SemanticFindingPageResponse,
+        SemanticSkipPageResponse,
+        SemanticWaiverPageResponse,
     }
     page_routes = [
         route
@@ -1107,7 +989,7 @@ def test_paginated_routes_preserve_required_nulls_and_omit_unset_projection_fiel
         if route.response_model in page_models
     ]
 
-    assert len(page_routes) == 5
+    assert len(page_routes) == 6
     assert all(route.response_model_exclude_unset is True for route in page_routes)
     assert all(route.response_model_exclude_none is False for route in page_routes)
 
@@ -1128,7 +1010,7 @@ def test_projection_enum_remains_exactly_summary_and_detail() -> None:
 
 
 def test_import_rejects_unsupported_nested_enum_before_application_work() -> None:
-    payload = _minimal_v2_envelope()
+    payload = _minimal_v3_envelope()
     payload["guidelines"][0]["identity"]["scope"] = "workspace"
     client, _ = _client(_Facade())
 
@@ -1193,44 +1075,38 @@ def test_revision_storage_boundaries_reject_boundary_plus_one_before_facade() ->
     assert len(facade.calls) == 1
 
 
-def test_rule_and_priority_storage_boundaries_are_closed_at_rest() -> None:
+def test_metric_and_priority_storage_boundaries_are_closed_at_rest() -> None:
     facade = _Facade()
     client, _ = _client(facade)
     revision_route = (
         "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions"
     )
-    rule = {
-        "rule_id": "r" * 64,
-        "code": "require_title",
-        "title": "Require title",
-        "description": "A durable executable rule.",
+    metric = {
+        "metric_id": "m" * 64,
+        "code": "architecture_segregation",
+        "title": "Architecture segregation",
+        "description": "A bounded semantic metric.",
+        "evaluation_rubric": "Score segregation from 0 to 100.",
         "target_entity_types": ["spec"],
-        "predicates": [
-            {
-                "predicate_code": "field_present",
-                "parameters": {"field": "title"},
-            }
-        ],
-        "enforcement": "advisory",
-        "operator": "all",
-        "waivable": False,
+        "direction": "minimum",
+        "default_threshold": 80,
     }
-    accepted_rule = client.post(
+    accepted_metric = client.post(
         revision_route,
         json={
-            "idempotency_key": "rule:boundary",
-            "patch": {"rules": [rule]},
+            "idempotency_key": "metric:boundary",
+            "patch": {"metrics": [metric]},
         },
     )
-    rejected_rule = client.post(
+    rejected_metric = client.post(
         revision_route,
         json={
-            "idempotency_key": "rule:boundary:invalid",
-            "patch": {"rules": [{**rule, "rule_id": "r" * 65}]},
+            "idempotency_key": "metric:boundary:invalid",
+            "patch": {"metrics": [{**metric, "metric_id": "m" * 65}]},
         },
     )
-    assert accepted_rule.status_code == 201
-    assert rejected_rule.status_code == 400
+    assert accepted_metric.status_code == 201
+    assert rejected_metric.status_code == 400
     assert len(facade.calls) == 1
 
     impact_facade = _Facade(EntityNotFoundError("guideline", "guideline-b13"))
@@ -1239,7 +1115,8 @@ def test_rule_and_priority_storage_boundaries_are_closed_at_rest() -> None:
         "/api/v1/boards/board-b13/guidelines/guideline-b13/impact-previews"
     )
     common = {
-        "proposed_default_enforcement": "advisory",
+        "proposed_enforcement": "advisory",
+        "proposed_minimum_confidence": 80,
         "idempotency_key": "impact:boundary",
     }
     accepted_priority = impact_client.post(
@@ -1269,7 +1146,7 @@ def test_path_and_import_ids_reject_storage_boundary_plus_one() -> None:
     assert len(facade.calls) == 1
     assert uow.dependency_entries == 1
 
-    payload = _minimal_v2_envelope()
+    payload = _minimal_v3_envelope()
     payload["guidelines"][0]["identity"]["guideline_id"] = "g" * 37
     imported = client.post(
         "/api/v1/boards/board-b13/guidelines/import",
@@ -1287,12 +1164,12 @@ def test_path_and_import_ids_reject_storage_boundary_plus_one() -> None:
 def test_import_board_ids_enforce_community_physical_boundary(
     board_id_location: str,
 ) -> None:
-    accepted = _minimal_v2_envelope()
+    accepted = _minimal_v3_envelope()
     accepted["source_board_id"] = "b" * 36
     accepted["guidelines"][0]["identity"]["board_id"] = "b" * 36
-    GuidelineExportV2Request.model_validate(accepted)
+    GuidelineExportV3Request.model_validate(accepted)
 
-    rejected = _minimal_v2_envelope()
+    rejected = _minimal_v3_envelope()
     if board_id_location == "source":
         rejected["source_board_id"] = "b" * 37
     else:
@@ -1341,7 +1218,7 @@ def test_import_accepts_36_character_board_ids_through_rest(
         "ImportGuidelinePolicyUseCase",
         ImportUseCase,
     )
-    payload = _minimal_v2_envelope()
+    payload = _minimal_v3_envelope()
     payload["source_board_id"] = "s" * 36
     payload["guidelines"][0]["identity"]["board_id"] = "i" * 36
     client, uow = _client(_Facade())
@@ -1574,7 +1451,7 @@ def test_import_and_export_require_capabilities_before_uow_access() -> None:
     exported = client.get("/api/v1/boards/board-b13/guidelines/export")
     imported = client.post(
         "/api/v1/boards/board-b13/guidelines/import",
-        json=_minimal_v2_envelope(),
+        json=_minimal_v3_envelope(),
     )
 
     assert exported.status_code == imported.status_code == 403
@@ -1600,7 +1477,7 @@ def test_import_and_export_require_capabilities_before_uow_access() -> None:
         raise_server_exceptions=False,
     ).post(
         "/api/v1/boards/board-b13/guidelines/import",
-        json=_blocking_v2_envelope(),
+        json=_metric_v3_envelope(),
     )
     assert blocking.status_code == 403
     assert blocking.json()["detail"]["code"] == "permission_denied"
@@ -1676,10 +1553,8 @@ def test_every_governance_success_schema_is_recursively_closed_and_exact() -> No
     visit(route_schema, visited)
 
     assert "ClosedGuidelineRevisionListItem" in visited
-    assert "ClosedPolicyWaiverListItem" not in visited
     assert "ClosedGuidelineImpactItem" not in visited
-    assert "ClosedPolicyComplianceReceiptListItem" not in visited
-    assert "PolicyWaiverPageResponse" not in json.dumps(route_schema)
+    assert "SemanticWaiverPageResponse" not in json.dumps(route_schema)
     create_responses = document["paths"][
         "/api/v1/boards/{board_id}/guidelines/{guideline_id}/revisions"
     ]["post"]["responses"]

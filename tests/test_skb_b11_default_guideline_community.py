@@ -85,11 +85,12 @@ def _revision(
         semantic_version=f"1.0.{number - 1}",
         title=title,
         content=content,
-        content_digest=guideline_revision_content_digest(
+        revision_digest=guideline_revision_content_digest(
             title=title,
             content=content,
+            semantic_version=f"1.0.{number - 1}",
         ),
-        rules=(),
+        metrics=(),
         created_by=OWNER_ID,
         created_at=at,
         parent_revision_id=(
@@ -175,7 +176,7 @@ def _pin(
         "revision_id": revision.revision_id,
         "revision_number": revision.revision_number,
         "semantic_version": revision.semantic_version,
-        "revision_digest": revision.content_digest,
+        "revision_digest": revision.revision_digest,
     }
 
 
@@ -475,7 +476,7 @@ async def test_b11_store_resolves_head_historical_pin_and_retirement(
                 retired_revision_id=revision_2.revision_id,
                 retired_revision_number=revision_2.revision_number,
                 retired_semantic_version=revision_2.semantic_version,
-                retired_revision_digest=revision_2.content_digest,
+                retired_revision_digest=revision_2.revision_digest,
                 retired_head_revision=revision_2.revision_number,
                 reason="No longer applicable.",
                 retired_by=OWNER_ID,

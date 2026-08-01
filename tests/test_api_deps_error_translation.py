@@ -8,11 +8,21 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 import okto_pulse.community.api.deps as deps
+from okto_pulse.community.api.auth_deps import require_principal
+from okto_pulse.core.ports.authentication import Principal
+
+
+_TEST_PRINCIPAL = Principal(subject="deps-test-user", realm_id="local")
+
+
+def _authorize(app: FastAPI) -> None:
+    app.dependency_overrides[require_principal] = lambda: _TEST_PRINCIPAL
 
 
 def _app_with_factory(factory: object, *, raise_after_yield: bool = False) -> FastAPI:
     app = FastAPI()
     app.state.runtime_composition = SimpleNamespace(uow_factory=factory)
+    _authorize(app)
 
     @app.get("/probe")
     async def probe(_uow=Depends(deps.get_unit_of_work)):
@@ -30,6 +40,7 @@ def test_missing_uow_provider_remains_http_503(monkeypatch) -> None:
 
     monkeypatch.setattr(deps, "resolve_unit_of_work_factory", missing_provider)
     app = FastAPI()
+    _authorize(app)
 
     @app.get("/probe")
     async def probe(_uow=Depends(deps.get_unit_of_work)):
@@ -53,8 +64,9 @@ def test_uow_provider_open_failure_remains_http_503() -> None:
         def resolve_realm_scope():
             return object()
 
-        def __call__(self, *, realm_scope):
+        def __call__(self, *, realm_scope, actor):
             del realm_scope
+            assert actor.actor_id == _TEST_PRINCIPAL.subject
 
             @asynccontextmanager
             async def fail_on_enter():
@@ -83,8 +95,9 @@ def test_route_runtime_error_after_uow_yield_is_not_remapped() -> None:
         def resolve_realm_scope():
             return object()
 
-        def __call__(self, *, realm_scope):
+        def __call__(self, *, realm_scope, actor):
             del realm_scope
+            assert actor.actor_id == _TEST_PRINCIPAL.subject
 
             @asynccontextmanager
             async def opened():
