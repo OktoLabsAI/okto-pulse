@@ -299,7 +299,7 @@ def test_r5_schema_migration_is_in_the_canonical_lifecycle_ledger() -> None:
     # semantic-shape rebuild, the guideline v1 family semantic alignment,
     # the retired v1 trigger drop, and the legacy-binding semantic
     # configuration seeding).
-    assert len([step for step in ledger if step.step_id.startswith("_migrate_")]) == 60
+    assert len([step for step in ledger if step.step_id.startswith("_migrate_")]) == 61
 
 
 def test_preparation_persists_not_null_sentinels_but_authorizes_by_state(

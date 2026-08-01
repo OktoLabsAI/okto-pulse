@@ -17553,6 +17553,121 @@ async def _migrate_seed_semantic_configurations_for_legacy_bindings() -> str | N
     return None if seeded else "skipped"
 
 
+async def _migrate_recompute_cognitive_source_fingerprints_v2() -> str | None:
+    """Recompute the durable cognitive-source ledger under fingerprint v2.
+
+    Fingerprint v1 hashed the FULL node payload while ``source_revision``
+    derives from ``attestation_count`` — so read-side usage drift
+    (query_hits/last_queried_at/relevance_score change on every KG query)
+    made an identical knowledge replay diverge from its own stored revision
+    and permanently poisoned consolidation with
+    ``cognitive_source_replay_conflict`` (observed live on
+    decision_059d5828). Fingerprint v2 excludes the volatile usage fields
+    from the IDENTITY hash (stored payloads keep them for literal rebuild
+    restoration). This convergence rewrites every stored
+    ``record_fingerprint`` under v2 so replays of drifted-but-identical
+    knowledge resolve idempotently against the migrated ledger.
+    """
+
+    import json as _json
+
+    from sqlalchemy import select as sa_select
+
+    from okto_pulse.core.ports.kg_cognitive_source import (
+        canonical_cognitive_source_fingerprint,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        KGCognitiveSource,
+        KGCognitiveSourceRevision,
+    )
+
+    def _mapping(value: object) -> dict:
+        if isinstance(value, str):
+            value = _json.loads(value)
+        return dict(value or {})
+
+    def _refs(value: object) -> tuple[str, ...]:
+        if isinstance(value, str):
+            parsed = _json.loads(value)
+            value = parsed if isinstance(parsed, list) else (parsed,)
+        return tuple(str(ref) for ref in (value or ()))
+
+    _IMMUTABLE_UPDATE_TRIGGER = (
+        "trg_kg_cognitive_source_immutable_"
+        "kg_cognitive_source_revisions_update"
+    )
+
+    rewritten = 0
+    async with get_engine().begin() as conn:
+        # The ledger is guarded by an immutability trigger that (correctly)
+        # aborts every UPDATE. This convergence is the one governed writer
+        # allowed to touch record_fingerprint: capture the trigger DDL,
+        # drop it for the scope of this transaction, and recreate it
+        # byte-identically afterwards (same pattern as the guideline
+        # revision digest realignment).
+        trigger_sql = (
+            await conn.exec_driver_sql(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='trigger' AND name=?",
+                (_IMMUTABLE_UPDATE_TRIGGER,),
+            )
+        ).scalar()
+        if trigger_sql:
+            await conn.exec_driver_sql(
+                f'DROP TRIGGER "{_IMMUTABLE_UPDATE_TRIGGER}"'
+            )
+        bases = {
+            str(row.id): row
+            for row in (
+                await conn.execute(
+                    sa_select(
+                        KGCognitiveSource.id,
+                        KGCognitiveSource.board_id,
+                        KGCognitiveSource.node_id,
+                        KGCognitiveSource.node_type,
+                        KGCognitiveSource.generation,
+                    )
+                )
+            ).all()
+        }
+        revisions = (
+            await conn.execute(
+                sa_select(
+                    KGCognitiveSourceRevision.id,
+                    KGCognitiveSourceRevision.cognitive_source_id,
+                    KGCognitiveSourceRevision.record_fingerprint,
+                    KGCognitiveSourceRevision.payload,
+                    KGCognitiveSourceRevision.evidence_refs,
+                )
+            )
+        ).all()
+        for revision in revisions:
+            base = bases.get(str(revision.cognitive_source_id))
+            if base is None:
+                # Orphan revision: leave untouched; the FK repair step and
+                # ledger integrity checks own that failure mode.
+                continue
+            fingerprint = canonical_cognitive_source_fingerprint(
+                board_id=str(base.board_id),
+                node_id=str(base.node_id),
+                node_type=str(base.node_type),
+                generation=int(base.generation),
+                payload=_mapping(revision.payload),
+                evidence_refs=_refs(revision.evidence_refs),
+            )
+            if fingerprint == str(revision.record_fingerprint):
+                continue
+            await conn.execute(
+                KGCognitiveSourceRevision.__table__.update()
+                .where(KGCognitiveSourceRevision.id == revision.id)
+                .values(record_fingerprint=fingerprint)
+            )
+            rewritten += 1
+        if trigger_sql:
+            await conn.exec_driver_sql(str(trigger_sql))
+    return None if rewritten else "skipped"
+
+
 async def _migrate_repair_known_fixture_fk_orphans() -> str | None:
     """Remove only historical data written by pre-isolation test fixtures.
 
@@ -18322,6 +18437,9 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     ),
     "_migrate_seed_semantic_configurations_for_legacy_bindings": (
         _migrate_seed_semantic_configurations_for_legacy_bindings
+    ),
+    "_migrate_recompute_cognitive_source_fingerprints_v2": (
+        _migrate_recompute_cognitive_source_fingerprints_v2
     ),
     "_migrate_quality_assessment_c7_schema": _migrate_quality_assessment_c7_schema,
     "_migrate_agent_permissions": _migrate_agent_permissions,

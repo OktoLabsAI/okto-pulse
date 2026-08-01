@@ -165,10 +165,10 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # plus the SK-B3 closure backfill of the 5-column unique authority index
     # on guideline_board_bindings (structural prerequisite of the
     # binding-configuration composite FK on migrated databases).
-    assert len(migrate_names) == 60, (
+    assert len(migrate_names) == 61, (
         f"expected 60 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 60
+    assert len(ledger_migrate_ids) == 61
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -464,6 +464,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_rebuild_guideline_policy_v1_semantic_alignment",
         "_migrate_drop_retired_guideline_impact_v1_triggers",
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
+        "_migrate_recompute_cognitive_source_fingerprints_v2",
     }
     replay_skip_steps = {
         repair_step,
@@ -484,6 +485,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_rebuild_guideline_policy_v1_semantic_alignment",
         "_migrate_drop_retired_guideline_impact_v1_triggers",
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
+        "_migrate_recompute_cognitive_source_fingerprints_v2",
     }
 
     # First run: clean databases skip fixture repair and convergence steps

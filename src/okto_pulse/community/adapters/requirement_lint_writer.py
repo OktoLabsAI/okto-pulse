@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
+    Board,
     QualityAssessmentHeadRow,
     QualityAssessmentReceiptRow,
     SpecQAItem,
@@ -43,6 +44,62 @@ from okto_pulse.core.services.ambiguity_assessment import (
 )
 
 
+_LINT_LANGUAGE_LOCALES = {
+    "pt-BR": RequirementLocale.PT,
+    "en-US": RequirementLocale.EN,
+    "es-ES": RequirementLocale.ES,
+    "de-DE": RequirementLocale.DE,
+    "fr-FR": RequirementLocale.FR,
+}
+
+
+async def _board_lint_locales(
+    session: AsyncSession,
+    board_id: str,
+) -> tuple[RequirementLocale, ...]:
+    """Resolve BoardSettings.lint_languages to the analyzer profile.
+
+    Read-side legacy compatibility: an absent/malformed settings payload or
+    an unknown code resolves to the empty profile (neutral-only), exactly
+    the pre-feature behavior. Write-side validation owns rejecting invalid
+    codes.
+    """
+
+    settings = (
+        await session.execute(
+            select(Board.settings).where(Board.id == board_id)
+        )
+    ).scalar_one_or_none()
+    if not isinstance(settings, dict):
+        return ()
+    codes = settings.get("lint_languages")
+    if not isinstance(codes, list):
+        return ()
+    profile: list[RequirementLocale] = []
+    for code in codes:
+        locale = _LINT_LANGUAGE_LOCALES.get(str(code))
+        if locale is not None and locale not in profile:
+            profile.append(locale)
+    return tuple(profile)
+
+
+def _digests_resolver_for_profile(
+    default_locales: tuple[RequirementLocale, ...],
+):
+    """Rederive normative digests under the SAME profile as the bundle."""
+
+    def _resolve(_session: AsyncSession, bundle: Any):
+        digests = bundle.receipt.digests
+        return requirement_lint_normative_digests_v1(
+            content_digest=digests.content_digest,
+            clarification_digest=digests.clarification_digest,
+            default_locale=RequirementLocale.UNKNOWN,
+            default_locales=default_locales,
+        )
+
+    return _resolve
+
+
 def _authority_from_bundle(_session: AsyncSession, bundle: Any):
     receipt = bundle.receipt
     subject = receipt.subject
@@ -52,17 +109,6 @@ def _authority_from_bundle(_session: AsyncSession, bundle: Any):
         spec_version=subject.subject_version,
         actor_id=receipt.created_by,
         channel=receipt.channel,
-    )
-
-
-def _digests_from_bundle(_session: AsyncSession, bundle: Any):
-    """Rederive normative identities; content/Q&A are fenced independently."""
-
-    digests = bundle.receipt.digests
-    return requirement_lint_normative_digests_v1(
-        content_digest=digests.content_digest,
-        clarification_digest=digests.clarification_digest,
-        default_locale=RequirementLocale.UNKNOWN,
     )
 
 
@@ -97,6 +143,10 @@ class CommunityRequirementLintWriterHook(RequirementLintWriterHook):
             .all()
         )
         qa_items = tuple(ambiguity_qa_payload(qa_rows))
+        default_locales = await _board_lint_locales(
+            context,
+            command.board_id,
+        )
         normative_digests = requirement_lint_normative_digests_v1(
             content_digest=semantic_content_digest_v1(
                 AssessmentSubjectType.SPEC,
@@ -104,6 +154,7 @@ class CommunityRequirementLintWriterHook(RequirementLintWriterHook):
             ),
             clarification_digest=clarification_digest_v1(qa_items),
             default_locale=RequirementLocale.UNKNOWN,
+            default_locales=default_locales,
         )
         natural_key = requirement_lint_natural_idempotency_key(
             command,
@@ -151,6 +202,7 @@ class CommunityRequirementLintWriterHook(RequirementLintWriterHook):
             ),
             qa_items=qa_items,
             default_locale=RequirementLocale.UNKNOWN,
+            default_locales=default_locales,
             current_head_revision=current_head_revision,
             current_head_receipt_id=current_head_receipt_id,
         )
@@ -158,7 +210,9 @@ class CommunityRequirementLintWriterHook(RequirementLintWriterHook):
         persistence = CommunitySqlAlchemyQualityAssessment(
             context,
             authority_resolver=_authority_from_bundle,
-            input_digest_resolver=_digests_from_bundle,
+            input_digest_resolver=_digests_resolver_for_profile(
+                default_locales
+            ),
         )
         return await commit_requirement_lint_assessment(
             bundle,

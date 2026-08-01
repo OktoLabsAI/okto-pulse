@@ -817,7 +817,13 @@ function HistoryItems({ page }: { page: PageEnvelope<QualityAssessmentListItem> 
   );
 }
 
-function FindingItems({ page }: { page: PageEnvelope<QualityFinding> }) {
+function FindingItems({
+  page,
+  anchorTexts,
+}: {
+  page: PageEnvelope<QualityFinding>;
+  anchorTexts?: Record<string, string>;
+}) {
   if (page.items.length === 0) return null;
   return (
     <ol className="space-y-2" data-testid="quality-findings">
@@ -852,6 +858,15 @@ function FindingItems({ page }: { page: PageEnvelope<QualityFinding> }) {
           <p className="mt-1 whitespace-pre-wrap text-xs text-surface-700 dark:text-surface-300">
             {finding.detail}
           </p>
+          {finding.anchor.anchor_ref
+            && anchorTexts?.[finding.anchor.anchor_ref] && (
+            <blockquote
+              data-testid="quality-finding-requirement"
+              className="mt-2 border-l-2 border-violet-300 bg-surface-50 py-1 pl-2 pr-1 text-xs text-surface-800 dark:border-violet-700 dark:bg-surface-900/60 dark:text-surface-100"
+            >
+              {anchorTexts[finding.anchor.anchor_ref]}
+            </blockquote>
+          )}
           <p className="mt-2 text-[11px] text-surface-500 dark:text-surface-400">
             Anchor: {finding.anchor.anchor_type.split('_').join(' ')}
             {finding.anchor.anchor_ref ? ` · ${finding.anchor.anchor_ref}` : ''}
@@ -877,6 +892,12 @@ export interface QualityPanelProps {
   canRead: boolean;
   canAssess: boolean;
   canProposeQuestions: boolean;
+  /**
+   * Requirement text by stable structured-child id (fr_/ac_/tr_...). When
+   * provided, each anchored finding quotes the actual requirement instead
+   * of exposing only its opaque id.
+   */
+  anchorTexts?: Record<string, string>;
   onAssessmentRecorded?: () => void;
   onOpenHelp?: () => void;
   refreshKey?: number;
@@ -923,6 +944,7 @@ export function QualityPanel({
   canRead,
   canAssess,
   canProposeQuestions,
+  anchorTexts,
   onAssessmentRecorded,
   onOpenHelp,
   refreshKey = 0,
@@ -1327,7 +1349,7 @@ export function QualityPanel({
             Current receipt only
           </label>
         </div>
-        <FindingItems page={findings} />
+        <FindingItems page={findings} anchorTexts={anchorTexts} />
         <AccessiblePaginator
           page={findingPage}
           pageSize={findingPageSize}

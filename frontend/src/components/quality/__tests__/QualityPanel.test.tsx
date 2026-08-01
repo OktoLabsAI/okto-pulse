@@ -808,4 +808,32 @@ describe('QualityPanel', () => {
     expect(screen.queryByTestId('quality-read-only')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Record assessment' })).not.toBeInTheDocument();
   });
+
+  it('quotes the anchored requirement text when anchorTexts provides it', async () => {
+    render(
+      <QualityPanel
+        subjectType="ideation"
+        subjectId="ideation-1"
+        subjectVersion={7}
+        subjectStatus="evaluating"
+        subjectArchived={false}
+        canRead
+        canAssess={false}
+        canProposeQuestions={false}
+        anchorTexts={{
+          problem_statement:
+            'AC-1: Given a legacy board, the move succeeds unchanged.',
+        }}
+      />,
+    );
+
+    await screen.findByTestId('quality-score-ring');
+    fireEvent.click(screen.getByTestId('quality-findings-toggle'));
+
+    const quote = await screen.findByTestId('quality-finding-requirement');
+    expect(quote).toHaveTextContent(
+      'AC-1: Given a legacy board, the move succeeds unchanged.',
+    );
+  });
+
 });

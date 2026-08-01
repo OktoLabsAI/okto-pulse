@@ -7,9 +7,9 @@
 //   - Global Default passes createActiveTemplateVersion (new template version)
 // Both receive a Partial<BoardSettings> patch from the same controls.
 import { type ReactNode, useEffect, useState } from 'react';
-import { BookOpen, Image, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
+import { BookOpen, Image, Languages, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
 import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
-import type { BoardSettings, SpecResourceAutoDeriveType } from '@/types';
+import type { BoardSettings, LintLanguageCode, SpecResourceAutoDeriveType } from '@/types';
 
 interface SettingsToggleProps {
   checked: boolean;
@@ -112,6 +112,18 @@ const SPEC_RESOURCE_OPTIONS: Array<{
 ];
 
 const DEFAULT_SPEC_RESOURCE_TYPES = SPEC_RESOURCE_OPTIONS.map((option) => option.type);
+
+const LINT_LANGUAGE_OPTIONS: Array<{
+  code: LintLanguageCode;
+  label: string;
+  title: string;
+}> = [
+  { code: 'pt-BR', label: 'PT-BR', title: 'Português (Brasil)' },
+  { code: 'en-US', label: 'EN-US', title: 'English (US)' },
+  { code: 'es-ES', label: 'ES', title: 'Español' },
+  { code: 'de-DE', label: 'DE', title: 'Deutsch' },
+  { code: 'fr-FR', label: 'FR', title: 'Français' },
+];
 export const DESIGN_SYSTEM_GATE_MODES = ['off', 'advisory', 'blocking'] as const;
 export type DesignSystemGateMode = (typeof DESIGN_SYSTEM_GATE_MODES)[number];
 
@@ -180,6 +192,15 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
     onChange({ auto_derive_spec_resource_types: nextTypes });
   };
 
+  const lintLanguages = settings.lint_languages ?? [];
+
+  const toggleLintLanguage = (code: LintLanguageCode) => {
+    const next = lintLanguages.includes(code)
+      ? lintLanguages.filter((item) => item !== code)
+      : [...lintLanguages, code];
+    onChange({ lint_languages: next });
+  };
+
   const commitNumericSetting = (key: NumericSettingKey, raw: string) => {
     const parsed = Math.min(100, Math.max(0, Number(raw)));
     const current = (settings[key] ?? 0) as number;
@@ -227,6 +248,35 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
               </button>
             ))}
           </div>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Requirement Lint Languages"
+        description="Languages the deterministic requirement lint analyzes with native lexicons. Requirements are checked against the union of the selected languages; with none selected, only language-neutral signals (numbers, comparators, units) are detected."
+        icon={<Languages size={12} />}
+      >
+        <div className="grid grid-cols-5 gap-2" aria-label="Requirement lint languages" data-testid="lint-languages">
+          {LINT_LANGUAGE_OPTIONS.map(({ code, label, title }) => {
+            const checked = lintLanguages.includes(code);
+            return (
+              <button
+                key={code}
+                type="button"
+                title={title}
+                aria-pressed={checked}
+                data-testid={`lint-language-${code}`}
+                onClick={() => toggleLintLanguage(code)}
+                className={`flex h-9 min-w-0 items-center justify-center rounded border px-2 text-[11px] font-medium transition-colors ${
+                  checked
+                    ? 'border-violet-400 bg-violet-50 text-violet-700 dark:border-violet-500/70 dark:bg-violet-500/15 dark:text-violet-200'
+                    : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                }`}
+              >
+                <span className="truncate">{label}</span>
+              </button>
+            );
+          })}
         </div>
       </SettingsSection>
 

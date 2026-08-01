@@ -2326,7 +2326,13 @@ export interface BoardSettings {
   design_system_gate_mode?: 'off' | 'advisory' | 'blocking';
   // NC-9 evidence gate bypass (Wave 2 spec 873e98cc, frontend spec 5cb09dbc)
   skip_test_evidence_global?: boolean;
+  // Requirement lint language profile. The deterministic lint analyzes
+  // requirements against the union of the declared languages' lexicons;
+  // empty/absent = neutral-only signals (numbers, comparators, units).
+  lint_languages?: LintLanguageCode[];
 }
+
+export type LintLanguageCode = 'pt-BR' | 'en-US' | 'es-ES' | 'de-DE' | 'fr-FR';
 
 // Spec Validation Gate
 export interface SpecValidation {

@@ -1628,3 +1628,158 @@ async def test_board_source_root_hash_ignores_clarification_stale_quality_head(
     )
 
     assert second_root_hash == first_root_hash
+
+async def test_requirement_lint_new_receipt_never_duplicates_existing_questions(
+    rig,
+) -> None:
+    """Regression: every semantic write issues a NEW lint receipt (new natural
+    key). Before the materialization dedupe, each new receipt re-created
+    byte-identical operational Q&A rows (observed live: 300 duplicates of 19
+    findings on one spec). Receipt-owned proposal rows remain immutable per
+    receipt; only the subject Q&A materialization is deduplicated by text."""
+
+    payload = _spec_payload()
+    command = RequirementLintWriteCommand(
+        board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+        spec_version=7,
+        actor_id="agent-quality",
+        writer=RequirementLintWriter.BULK_UPDATE,
+        spec_status="in_progress",
+        spec_archived=False,
+        changed_fields=("functional_requirements",),
+        spec_payload=payload,
+    )
+    hook = CommunityRequirementLintWriterHook()
+    async with rig() as session:
+        first = await hook.stage_requirement_lint(session, command)
+        assert not first.replayed
+        qa_after_first = await _count(session, SpecQAItem)
+        assert qa_after_first > 0
+        await session.commit()
+
+    changed_payload = _spec_payload()
+    changed_payload["version"] = 8
+    changed_payload["description"] = "Different content, same findings."
+    changed = RequirementLintWriteCommand(
+        board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+        spec_version=8,
+        actor_id="agent-quality",
+        writer=RequirementLintWriter.BULK_UPDATE,
+        spec_status="in_progress",
+        spec_archived=False,
+        changed_fields=("description",),
+        spec_payload=changed_payload,
+    )
+    async with rig() as session:
+        spec = await session.get(Spec, SPEC_ID)
+        assert spec is not None
+        spec.version = 8
+        spec.description = "Different content, same findings."
+        await session.flush()
+        second = await hook.stage_requirement_lint(session, changed)
+        assert not second.replayed
+        assert second.receipt_id != first.receipt_id
+        assert await _count(session, QualityAssessmentReceiptRow) == 2
+        # The second receipt still owns its immutable proposal rows...
+        proposal_rows = await _count(session, QualityProposedQuestionRow)
+        assert proposal_rows > qa_after_first
+        # ...but the operational Q&A board gains ZERO duplicate questions.
+        assert await _count(session, SpecQAItem) == qa_after_first
+        questions = (
+            await session.execute(select(SpecQAItem.question))
+        ).scalars().all()
+        assert len(questions) == len(set(questions))
+
+async def test_board_lint_languages_activate_language_lexicons(rig) -> None:
+    """BoardSettings.lint_languages drives the analyzer profile end to end.
+
+    Without a declared language the neutral-only profile cannot see the
+    Portuguese vague term in the seeded FR ("O fluxo deve ser fácil"), so no
+    vague finding exists. Declaring pt-BR on the board activates the PT
+    lexicon and the fr_vague_without_observable_outcome rule fires — and the
+    natural idempotency key changes with the profile, so both receipts
+    coexist as distinct assessments."""
+
+    payload = _spec_payload()
+    # German AC WITHOUT an explicit child locale and without any neutral
+    # signal (no numbers/comparators): only the declared board profile can
+    # see its condition/observable/error vocabulary.
+    payload["acceptance_criteria"] = list(payload["acceptance_criteria"]) + [
+        {
+            "id": "ac_de_profile",
+            "text": (
+                "Wenn der Benutzer speichert, liefert das System einen "
+                "Fehler."
+            ),
+            "status": "active",
+        }
+    ]
+    command = RequirementLintWriteCommand(
+        board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+        spec_version=7,
+        actor_id="agent-quality",
+        writer=RequirementLintWriter.BULK_UPDATE,
+        spec_status="in_progress",
+        spec_archived=False,
+        changed_fields=("acceptance_criteria",),
+        spec_payload=payload,
+    )
+    hook = CommunityRequirementLintWriterHook()
+
+    def _de_signal_findings(keys):
+        return [
+            key
+            for key in keys
+            if ":ac_de_profile:ac_verifiable_signal_missing" in key
+        ]
+
+    async with rig() as session:
+        spec = await session.get(Spec, SPEC_ID)
+        assert spec is not None
+        spec.acceptance_criteria = payload["acceptance_criteria"]
+        await session.flush()
+        neutral = await hook.stage_requirement_lint(session, command)
+        neutral_findings = (
+            (
+                await session.execute(
+                    select(QualityFindingRow.finding_key).where(
+                        QualityFindingRow.receipt_id == neutral.receipt_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Neutral-only profile: the German error/state vocabulary is
+        # invisible, so the verifiable-signal rule fires.
+        assert _de_signal_findings(neutral_findings)
+        await session.commit()
+
+    async with rig() as session:
+        board = await session.get(Board, BOARD_ID)
+        assert board is not None
+        settings = dict(board.settings or {})
+        settings["lint_languages"] = ["de-DE"]
+        board.settings = settings
+        await session.flush()
+
+        localized = await hook.stage_requirement_lint(session, command)
+        assert not localized.replayed
+        assert localized.receipt_id != neutral.receipt_id
+        localized_findings = (
+            (
+                await session.execute(
+                    select(QualityFindingRow.finding_key).where(
+                        QualityFindingRow.receipt_id == localized.receipt_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # de-DE profile: "liefert"/"Fehler" are observable/error signals, so
+        # the same AC is no longer flagged.
+        assert not _de_signal_findings(localized_findings)

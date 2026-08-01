@@ -1224,9 +1224,11 @@ export function PolicyCompliancePanel({
       cancelled = true;
       controller.abort();
     };
-    // resetScope covers boardId/entityType/subjectId/refresh keys.
+    // resetScope covers boardId/entityType/subjectId/refresh keys. The api
+    // hooks are intentionally excluded: an unstable hook identity must never
+    // refire this effect (root cause of the guidelines request loop).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canRead, resetScope, dashboardApi, api]);
+  }, [canRead, resetScope]);
 
   useEffect(() => {
     setHistoryExpanded(false);
@@ -1556,70 +1558,54 @@ export function PolicyCompliancePanel({
                     <EnforcementBadge enforcement={binding.enforcement} />
                     <ComplianceStateChip assessment={assessment} />
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[28rem] text-left text-xs">
-                      <thead>
-                        <tr className="text-[10px] uppercase tracking-wide text-surface-400 dark:text-surface-500">
-                          <th className="py-1 pr-2 font-medium">Metric</th>
-                          <th className="py-1 pr-2 font-medium">Score</th>
-                          <th className="py-1 pr-2 font-medium">Threshold</th>
-                          <th className="py-1 font-medium">Result</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {binding.metrics.map((metric) => {
-                          const result = resultByMetric.get(metric.metricId);
-                          return (
-                            <tr
-                              key={metric.metricId}
-                              className="border-t border-surface-100 dark:border-surface-800"
-                            >
-                              <td className="py-1.5 pr-2">
-                                <span
-                                  title={metric.description}
-                                  className="cursor-help text-surface-800 underline decoration-dotted underline-offset-2 dark:text-surface-100"
-                                >
-                                  {metric.title}
-                                </span>{' '}
-                                <code className="text-[10px] text-surface-400 dark:text-surface-500">
-                                  {metric.code}
-                                </code>
-                              </td>
-                              <td className="py-1.5 pr-2 font-semibold text-surface-800 dark:text-surface-100">
-                                {result ? result.score : '—'}
-                              </td>
-                              <td className="py-1.5 pr-2 text-surface-600 dark:text-surface-300">
-                                {metric.direction === 'minimum' ? '≥' : '≤'}{' '}
-                                {metric.effectiveThreshold}
-                                {metric.overridden ? ' (board override)' : ''}
-                              </td>
-                              <td className="py-1.5">
-                                {result ? (
-                                  result.outcome === 'pass' ? (
-                                    <span className="inline-flex items-center gap-1 font-medium text-emerald-700 dark:text-emerald-300">
-                                      <CheckCircle2
-                                        size={13}
-                                        aria-hidden="true"
-                                      />
-                                      Pass
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex items-center gap-1 font-medium text-red-700 dark:text-red-300">
-                                      <ShieldX size={13} aria-hidden="true" />
-                                      Fail
-                                    </span>
-                                  )
-                                ) : (
-                                  <span className="text-surface-400 dark:text-surface-500">
-                                    Not assessed
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                  <div className="flex flex-wrap items-start justify-start gap-x-6 gap-y-3 pt-1">
+                    {binding.metrics.map((metric) => {
+                      const result = resultByMetric.get(metric.metricId);
+                      return (
+                        <div
+                          key={metric.metricId}
+                          title={metric.description}
+                          data-testid={`guideline-metric-${binding.bindingId}-${metric.metricId}`}
+                          className="w-32 cursor-help"
+                        >
+                          {result ? (
+                            <MetricScoreRing
+                              label={metric.title}
+                              value={result.score}
+                              direction={semanticMetricDirection(
+                                metric.direction,
+                              )}
+                              threshold={metric.effectiveThreshold}
+                              testId={`guideline-metric-ring-${metric.metricId}`}
+                            />
+                          ) : (
+                            <div className="flex min-w-0 flex-col items-center text-center">
+                              <div
+                                data-testid={`guideline-metric-ring-${metric.metricId}`}
+                                data-status="neutral"
+                                className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-4 border-dashed border-surface-300 text-surface-400 dark:border-surface-600 dark:text-surface-500"
+                              >
+                                <span className="text-2xl font-bold leading-none">
+                                  —
+                                </span>
+                              </div>
+                              <p className="mt-2 text-xs font-semibold text-surface-700 dark:text-surface-200">
+                                {metric.title}
+                              </p>
+                              <p className="mt-1 text-[10px] text-surface-500 dark:text-surface-400">
+                                {metric.direction === 'minimum' ? 'Minimum' : 'Maximum'}{' '}
+                                {metric.effectiveThreshold} · Not assessed
+                              </p>
+                            </div>
+                          )}
+                          {metric.overridden && (
+                            <p className="mt-0.5 text-center text-[10px] text-surface-400 dark:text-surface-500">
+                              Board override
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                   {assessment && (
                     <p className="flex flex-wrap items-center gap-2 text-[11px] text-surface-500 dark:text-surface-400">

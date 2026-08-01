@@ -443,6 +443,15 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "inventory is satisfiable on upgraded databases.",
     ),
     (
+        "_migrate_recompute_cognitive_source_fingerprints_v2",
+        "post_create_all",
+        False,
+        "Rewrite every durable cognitive-source revision fingerprint under "
+        "the v2 identity contract (volatile usage statistics excluded) so "
+        "replays of drifted-but-identical knowledge resolve idempotently "
+        "instead of poisoning consolidation with replay conflicts.",
+    ),
+    (
         "_migrate_quality_assessment_c7_schema",
         "post_create_all",
         False,

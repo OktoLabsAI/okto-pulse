@@ -1099,10 +1099,32 @@ describe('guideline compliance summary', () => {
     expect(
       within(card).getByTitle('Business vs technical separation.'),
     ).toHaveTextContent('Segregation');
-    expect(within(card).getByText(/≥ 75/)).toBeVisible();
-    expect(within(card).getByText('Pass')).toBeVisible();
+    const ring = within(card).getByTestId('guideline-metric-ring-metric-1');
+    expect(ring).toHaveAttribute('data-status', 'met');
+    expect(within(card).getByText(/Minimum 75/)).toBeVisible();
     expect(
       within(card).queryByText('Runtime provenance'),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('guideline authority loader stability', () => {
+  it('fetches board guidelines exactly once per subject (no request loop)', async () => {
+    const { rerender } = renderPanel();
+
+    expect(
+      await screen.findByTestId('guideline-compliance-none'),
+    ).toBeVisible();
+
+    rerender(
+      <PolicyCompliancePanel
+        boardId="board-1"
+        entityType="spec"
+        subjectId="spec-1"
+      />,
+    );
+    await waitFor(() => {
+      expect(dashboardApiMock.getBoardGuidelines).toHaveBeenCalledTimes(1);
+    });
   });
 });

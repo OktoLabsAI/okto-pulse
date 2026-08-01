@@ -5,6 +5,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -1417,6 +1418,27 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     'guidelines.assessments.read',
   );
   const [spec, setSpec] = useState<Spec | null>(null);
+  const specAnchorTexts = useMemo(() => {
+    if (!spec) return undefined;
+    const map: Record<string, string> = {};
+    const collect = (items: unknown) => {
+      if (!Array.isArray(items)) return;
+      for (const item of items) {
+        if (
+          item
+          && typeof item === 'object'
+          && typeof (item as { id?: unknown }).id === 'string'
+          && typeof (item as { text?: unknown }).text === 'string'
+        ) {
+          map[(item as { id: string }).id] = (item as { text: string }).text;
+        }
+      }
+    };
+    collect(spec.functional_requirements);
+    collect(spec.acceptance_criteria);
+    collect(spec.technical_requirements);
+    return map;
+  }, [spec]);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<SpecStatus | null>(null);
   const [nextStatuses, setNextStatuses] = useState<SpecStatus[]>([]);
@@ -2730,6 +2752,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
           )}
           {activeTab === 'validation' && spec && (
             <SpecValidationPanel
+              anchorTexts={specAnchorTexts}
               boardId={spec.board_id}
               specId={specId}
               specVersion={spec.version}

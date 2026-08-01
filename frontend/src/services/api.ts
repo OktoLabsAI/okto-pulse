@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 /**
  * API Service - all API calls centralized
  */
@@ -319,9 +320,7 @@ export interface ActivityLogEntry {
   details?: Record<string, unknown> | null;
 }
 
-export function useDashboardApi() {
-  const apiClient = useApiClient();
-
+function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
   return {
     // ==================== QUALITY ASSESSMENTS ====================
 
@@ -2396,4 +2395,13 @@ export function useDashboardApi() {
       );
     },
   };
+}
+
+export function useDashboardApi() {
+  const apiClient = useApiClient();
+
+  // One stable identity per client: effects depending on this hook must
+  // not refire on every render (a fresh object here caused the Policy
+  // Compliance guidelines request loop).
+  return useMemo(() => createDashboardApi(apiClient), [apiClient]);
 }

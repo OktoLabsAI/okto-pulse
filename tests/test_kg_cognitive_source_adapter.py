@@ -591,3 +591,68 @@ async def test_store_failure_raises_structured_error(tmp_path):
         await adapter.enumerate(BOARD)
     assert excinfo2.value.failure_reason == "cognitive_source_enumerate_failed"
     await engine.dispose()
+
+
+async def test_replay_with_drifted_usage_statistics_is_idempotent(store):
+    """Regression: read-side stats (query_hits/last_queried_at/
+    relevance_score/priority_boost/last_attested_at) drift on every KG query
+    without advancing attestation_count/source_revision. Under fingerprint v1
+    that turned the replay of IDENTICAL knowledge into
+    cognitive_source_replay_conflict and permanently poisoned consolidation
+    (observed live on decision_059d5828). Usage drift must resolve
+    idempotently; real content divergence must still conflict."""
+
+    adapter, factory = store
+    original = _record("decision_stat_drift", title="Stable assertion")
+    base_payload = {
+        **original.payload,
+        "query_hits": 1,
+        "last_queried_at": "2026-08-01T16:00:00+00:00",
+        "relevance_score": 0.4,
+        "priority_boost": 0.0,
+        "last_attested_at": "2026-08-01T16:29:00+00:00",
+    }
+    first = await adapter.append(
+        replace(original, payload=base_payload, record_fingerprint="")
+    )
+
+    drifted = {
+        **base_payload,
+        "query_hits": 42,
+        "last_queried_at": "2026-08-02T09:00:00+00:00",
+        "relevance_score": 0.97,
+        "priority_boost": 2.0,
+        "last_attested_at": "2026-08-02T09:00:01+00:00",
+    }
+    second = await adapter.append(
+        replace(
+            original,
+            payload=drifted,
+            record_fingerprint="",
+            source_session_id="sess-retry",
+            committed_at="2026-08-02T09:00:02+00:00",
+        )
+    )
+    assert first == second
+
+    with pytest.raises(CognitiveSourceConflict) as excinfo:
+        await adapter.append(
+            replace(
+                original,
+                payload={**drifted, "content": "diverged assertion"},
+                record_fingerprint="",
+            )
+        )
+    assert excinfo.value.failure_reason == "cognitive_source_replay_conflict"
+
+    async with factory() as session:
+        count = len(
+            (
+                await session.execute(
+                    select(KGCognitiveSource).where(
+                        KGCognitiveSource.node_id == "decision_stat_drift"
+                    )
+                )
+            ).scalars().all()
+        )
+    assert count == 1

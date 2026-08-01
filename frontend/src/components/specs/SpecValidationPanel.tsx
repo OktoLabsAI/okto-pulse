@@ -33,6 +33,8 @@ interface SpecValidationPanelProps {
   canReadValidation: boolean;
   canReadQuality: boolean;
   canReadPolicyCompliance: boolean;
+  /** Requirement text by stable child id, quoted inside lint findings. */
+  anchorTexts?: Record<string, string>;
   policyTransitionPreview: PolicyTransitionPreviewLoadState;
   policyTransitionRejection?: PolicyTransitionRejection | null;
   specArchived: boolean;
@@ -82,6 +84,7 @@ export function SpecValidationPanel({
   canReadValidation,
   canReadQuality,
   canReadPolicyCompliance,
+  anchorTexts,
   policyTransitionPreview,
   policyTransitionRejection = null,
   specArchived,
@@ -209,6 +212,7 @@ export function SpecValidationPanel({
             canRead={canReadQuality}
             canAssess={false}
             canProposeQuestions={false}
+            anchorTexts={anchorTexts}
             onAssessmentRecorded={onAssessmentRecorded}
             onOpenHelp={onOpenRequirementLintHelp}
           />

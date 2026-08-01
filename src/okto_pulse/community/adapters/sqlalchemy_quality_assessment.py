@@ -1003,7 +1003,13 @@ class CommunitySqlAlchemyQualityAssessment:
             await self._session.flush()
 
             await self._advance_head(bundle)
-            self._stage_children(bundle)
+            existing_question_texts = await self._existing_question_texts(
+                bundle
+            )
+            self._stage_children(
+                bundle,
+                existing_question_texts=existing_question_texts,
+            )
             await self._session.flush()
             self._stage_links(bundle)
             self._stage_audit_rows(bundle)
@@ -1474,7 +1480,43 @@ class CommunitySqlAlchemyQualityAssessment:
         if result.rowcount != 1:
             raise AssessmentHeadRevisionConflict("assessment_head_cas_conflict")
 
-    def _stage_children(self, bundle: AssessmentWriteBundle) -> None:
+    @staticmethod
+    def _normalized_question_text(value: object) -> str:
+        return " ".join(str(value or "").split()).casefold()
+
+    async def _existing_question_texts(
+        self,
+        bundle: AssessmentWriteBundle,
+    ) -> frozenset[str]:
+        """Texts already materialized on the subject's operational Q&A.
+
+        Every semantic write re-issues the advisory lint receipt; without
+        this fence each NEW receipt re-materialized byte-identical questions
+        (observed live: 300 duplicates of 19 findings on one spec).  The
+        receipt-owned proposal rows stay immutable per receipt — only the
+        operational subject Q&A row is deduplicated, by normalized text.
+        """
+
+        subject = bundle.receipt.subject
+        binding = _SUBJECT_BINDINGS[subject.subject_type]
+        rows = await self._session.execute(
+            select(binding.qa_model.question).where(
+                getattr(binding.qa_model, binding.subject_fk)
+                == subject.subject_id
+            )
+        )
+        return frozenset(
+            self._normalized_question_text(value)
+            for value in rows.scalars()
+            if value is not None
+        )
+
+    def _stage_children(
+        self,
+        bundle: AssessmentWriteBundle,
+        *,
+        existing_question_texts: frozenset[str] = frozenset(),
+    ) -> None:
         receipt = bundle.receipt
         subject = receipt.subject
         binding = _SUBJECT_BINDINGS[subject.subject_type]
@@ -1519,6 +1561,7 @@ class CommunitySqlAlchemyQualityAssessment:
                     rule_code=finding.rule_code,
                 )
             )
+        staged_question_texts = set(existing_question_texts)
         for question in bundle.proposed_questions:
             choices = list(question.choices)
             # The immutable quality contract names free-form proposals
@@ -1553,6 +1596,12 @@ class CommunitySqlAlchemyQualityAssessment:
                     created_at=question.created_at,
                 )
             )
+            normalized_text = self._normalized_question_text(
+                question.question
+            )
+            if normalized_text in staged_question_texts:
+                continue
+            staged_question_texts.add(normalized_text)
             self._session.add(
                 binding.qa_model(
                     id=question.qa_id,
