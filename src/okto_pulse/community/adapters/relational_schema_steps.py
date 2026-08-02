@@ -17562,11 +17562,15 @@ async def _migrate_recompute_cognitive_source_fingerprints_v2() -> str | None:
     made an identical knowledge replay diverge from its own stored revision
     and permanently poisoned consolidation with
     ``cognitive_source_replay_conflict`` (observed live on
-    decision_059d5828). Fingerprint v2 excludes the volatile usage fields
-    from the IDENTITY hash (stored payloads keep them for literal rebuild
-    restoration). This convergence rewrites every stored
-    ``record_fingerprint`` under v2 so replays of drifted-but-identical
-    knowledge resolve idempotently against the migrated ledger.
+    decision_059d5828). The volatile exclusion set is versioned in core
+    (v2: five query-side stats; v3 additionally excludes the commit-hook
+    recompute stamps ``last_recomputed_at`` and
+    ``pre_cancellation_relevance_score``, which re-poisoned the SAME node
+    after every relevance recompute). Stored payloads keep every field for
+    literal rebuild restoration. This convergence step runs at every boot
+    and rewrites any stored ``record_fingerprint`` that differs from the
+    CURRENT core contract, so replays of drifted-but-identical knowledge
+    resolve idempotently against the migrated ledger.
     """
 
     import json as _json

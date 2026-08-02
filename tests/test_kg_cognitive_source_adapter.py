@@ -623,6 +623,11 @@ async def test_replay_with_drifted_usage_statistics_is_idempotent(store):
         "relevance_score": 0.97,
         "priority_boost": 2.0,
         "last_attested_at": "2026-08-02T09:00:01+00:00",
+        # v3 regression: the commit-hook relevance recompute stamps these on
+        # EVERY consolidation pass (primitives protect-list); under v2 they
+        # re-poisoned the same node the audit had just healed.
+        "last_recomputed_at": "2026-08-02T09:00:02+00:00",
+        "pre_cancellation_relevance_score": 0.4,
     }
     second = await adapter.append(
         replace(
