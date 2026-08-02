@@ -2326,6 +2326,11 @@ export interface BoardSettings {
   design_system_gate_mode?: 'off' | 'advisory' | 'blocking';
   // NC-9 evidence gate bypass (Wave 2 spec 873e98cc, frontend spec 5cb09dbc)
   skip_test_evidence_global?: boolean;
+  // Impact-evidence enforcement on execution reports (SK-B2-S1 FR-5).
+  // off = no effect; advisory = gated moves succeed but a missing block is
+  // recorded in the activity log; require = gated moves reject a conclusion
+  // without a minimally populated block.
+  impact_evidence_mode?: 'off' | 'advisory' | 'require';
   // Requirement lint language profile. The deterministic lint analyzes
   // requirements against the union of the declared languages' lexicons;
   // empty/absent = neutral-only signals (numbers, comparators, units).

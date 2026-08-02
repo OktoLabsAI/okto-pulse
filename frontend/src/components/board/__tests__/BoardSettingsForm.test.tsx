@@ -55,3 +55,53 @@ describe('BoardSettingsForm — requirement lint languages', () => {
     expect(onChange).toHaveBeenCalledWith({ lint_languages: ['de-DE'] });
   });
 });
+
+describe('BoardSettingsForm — execution report evidence mode', () => {
+  it('defaults to off and offers the three modes', () => {
+    render(<BoardSettingsForm settings={baseSettings} onChange={vi.fn()} />);
+    const group = screen.getByTestId('impact-evidence-mode');
+    expect(group.querySelectorAll('button')).toHaveLength(3);
+    expect(screen.getByTestId('impact-evidence-mode-off')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  it('selecting a mode patches impact_evidence_mode', () => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    fireEvent.click(screen.getByTestId('impact-evidence-mode-advisory'));
+    expect(onChange).toHaveBeenCalledWith({ impact_evidence_mode: 'advisory' });
+  });
+
+  it('the shortcut toggle flips between require and off', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <BoardSettingsForm settings={baseSettings} onChange={onChange} />,
+    );
+    fireEvent.click(screen.getByTestId('toggle-impact-evidence-gate'));
+    expect(onChange).toHaveBeenCalledWith({ impact_evidence_mode: 'require' });
+
+    rerender(
+      <BoardSettingsForm
+        settings={{ ...baseSettings, impact_evidence_mode: 'require' }}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('toggle-impact-evidence-gate'));
+    expect(onChange).toHaveBeenLastCalledWith({ impact_evidence_mode: 'off' });
+  });
+
+  it('an unknown persisted value reads as off instead of breaking the screen', () => {
+    render(
+      <BoardSettingsForm
+        settings={{ ...baseSettings, impact_evidence_mode: 'banana' as never }}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('impact-evidence-mode-off')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+});

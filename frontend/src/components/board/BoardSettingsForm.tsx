@@ -7,7 +7,7 @@
 //   - Global Default passes createActiveTemplateVersion (new template version)
 // Both receive a Partial<BoardSettings> patch from the same controls.
 import { type ReactNode, useEffect, useState } from 'react';
-import { BookOpen, Image, Languages, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
+import { BookOpen, ClipboardCheck, Image, Languages, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
 import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
 import type { BoardSettings, LintLanguageCode, SpecResourceAutoDeriveType } from '@/types';
 
@@ -124,6 +124,17 @@ const LINT_LANGUAGE_OPTIONS: Array<{
   { code: 'de-DE', label: 'DE', title: 'Deutsch' },
   { code: 'fr-FR', label: 'FR', title: 'Français' },
 ];
+export const IMPACT_EVIDENCE_MODES = ['off', 'advisory', 'require'] as const;
+export type ImpactEvidenceMode = (typeof IMPACT_EVIDENCE_MODES)[number];
+
+export function normalizeImpactEvidenceMode(value: unknown): ImpactEvidenceMode {
+  // Mirrors the backend resolver: anything unknown reads as 'off' instead of
+  // failing the screen (invalid_value_fail_compat).
+  return IMPACT_EVIDENCE_MODES.includes(value as ImpactEvidenceMode)
+    ? (value as ImpactEvidenceMode)
+    : 'off';
+}
+
 export const DESIGN_SYSTEM_GATE_MODES = ['off', 'advisory', 'blocking'] as const;
 export type DesignSystemGateMode = (typeof DESIGN_SYSTEM_GATE_MODES)[number];
 
@@ -598,6 +609,71 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             </div>
           </div>
         )}
+      </SettingsSection>
+
+      <SettingsSection
+        title="Execution Report Evidence"
+        description="Controls declared impact evidence (files, symbols, surfaces, tests) on the execution report of a card."
+        icon={<ClipboardCheck size={12} />}
+      >
+        <SettingRow
+          label="Require declared impact evidence"
+          description="Blocking mode rejects a gated move whose conclusion has no populated evidence section."
+        >
+          <SettingsToggle
+            checked={normalizeImpactEvidenceMode(settings.impact_evidence_mode) === 'require'}
+            onChange={() =>
+              onChange({
+                impact_evidence_mode:
+                  normalizeImpactEvidenceMode(settings.impact_evidence_mode) === 'require'
+                    ? 'off'
+                    : 'require',
+              })
+            }
+            ariaLabel="Require declared impact evidence"
+            testId="toggle-impact-evidence-gate"
+          />
+        </SettingRow>
+
+        <div
+          className="grid grid-cols-3 gap-2"
+          aria-label="Impact evidence mode"
+          data-testid="impact-evidence-mode"
+        >
+          {IMPACT_EVIDENCE_MODES.map((mode) => {
+            const checked = normalizeImpactEvidenceMode(settings.impact_evidence_mode) === mode;
+            const labels: Record<ImpactEvidenceMode, string> = {
+              off: 'Off',
+              advisory: 'Advisory',
+              require: 'Require',
+            };
+            const titles: Record<ImpactEvidenceMode, string> = {
+              off: 'No effect on moves.',
+              advisory: 'Gated moves succeed; a missing block is recorded in the activity log.',
+              require: 'Gated moves are rejected without at least one populated section.',
+            };
+            return (
+              <button
+                key={mode}
+                type="button"
+                title={titles[mode]}
+                aria-pressed={checked}
+                data-testid={`impact-evidence-mode-${mode}`}
+                onClick={() => onChange({ impact_evidence_mode: mode })}
+                className={`h-9 rounded border px-2 text-[11px] font-medium transition-colors ${
+                  checked
+                    ? 'border-violet-400 bg-violet-50 text-violet-700 dark:border-violet-500/70 dark:bg-violet-500/15 dark:text-violet-200'
+                    : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                }`}
+              >
+                {labels[mode]}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+          Test cards and validator-approved completions stay exempt in every mode.
+        </p>
       </SettingsSection>
 
       <SettingsSection
