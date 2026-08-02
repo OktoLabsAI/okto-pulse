@@ -38,19 +38,11 @@ from okto_pulse.core.services.requirement_lint_assessment import (
     requirement_lint_authority_snapshot_v1,
     requirement_lint_natural_idempotency_key,
     requirement_lint_normative_digests_v1,
+    resolve_lint_language_profile,
 )
 from okto_pulse.core.services.ambiguity_assessment import (
     ambiguity_qa_payload,
 )
-
-
-_LINT_LANGUAGE_LOCALES = {
-    "pt-BR": RequirementLocale.PT,
-    "en-US": RequirementLocale.EN,
-    "es-ES": RequirementLocale.ES,
-    "de-DE": RequirementLocale.DE,
-    "fr-FR": RequirementLocale.FR,
-}
 
 
 async def _board_lint_locales(
@@ -59,10 +51,9 @@ async def _board_lint_locales(
 ) -> tuple[RequirementLocale, ...]:
     """Resolve BoardSettings.lint_languages to the analyzer profile.
 
-    Read-side legacy compatibility: an absent/malformed settings payload or
-    an unknown code resolves to the empty profile (neutral-only), exactly
-    the pre-feature behavior. Write-side validation owns rejecting invalid
-    codes.
+    Delegates the code->locale mapping to the core resolver shared with the
+    read-side currentness evaluator — the two sides MUST resolve identically
+    or every profiled receipt is born stale (policy_changed).
     """
 
     settings = (
@@ -70,17 +61,9 @@ async def _board_lint_locales(
             select(Board.settings).where(Board.id == board_id)
         )
     ).scalar_one_or_none()
-    if not isinstance(settings, dict):
-        return ()
-    codes = settings.get("lint_languages")
-    if not isinstance(codes, list):
-        return ()
-    profile: list[RequirementLocale] = []
-    for code in codes:
-        locale = _LINT_LANGUAGE_LOCALES.get(str(code))
-        if locale is not None and locale not in profile:
-            profile.append(locale)
-    return tuple(profile)
+    return resolve_lint_language_profile(
+        settings if isinstance(settings, dict) else None
+    )
 
 
 def _digests_resolver_for_profile(
