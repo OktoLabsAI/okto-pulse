@@ -16,6 +16,12 @@ import {
 } from '@dnd-kit/core';
 import { Filter, Search, X, Check } from 'lucide-react';
 import toast from 'react-hot-toast';
+import {
+  ImpactEvidenceEditor,
+  buildImpactEvidencePayload,
+  emptyImpactEvidenceDraft,
+  type ImpactEvidenceDraft,
+} from '@/components/cards/ImpactEvidenceEditor';
 import { type BoardColumnsQuery, useDashboardApi } from '@/services/api';
 import {
   useDashboardStore,
@@ -114,6 +120,9 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   const [conclusionCompletenessJustification, setConclusionCompletenessJustification] = useState('');
   const [conclusionDrift, setConclusionDrift] = useState(0);
   const [conclusionDriftJustification, setConclusionDriftJustification] = useState('');
+  const [conclusionImpactDraft, setConclusionImpactDraft] = useState<ImpactEvidenceDraft>(emptyImpactEvidenceDraft());
+  // AC-16: gate rejection renders inline and the modal stays open.
+  const [conclusionGateError, setConclusionGateError] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [specFilter, setSpecFilter] = useState<Set<string>>(new Set());
   const [cardTypeFilters, setCardTypeFilters] = useState<CardTypeFiltersByStatus>(
@@ -142,6 +151,8 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     setConclusionCompletenessJustification('');
     setConclusionDrift(0);
     setConclusionDriftJustification('');
+    setConclusionImpactDraft(emptyImpactEvidenceDraft());
+    setConclusionGateError(null);
   };
 
   const requiresExecutionReport = (
@@ -453,9 +464,10 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     const { cardId, destination } = conclusionPending;
     const { targetStatus, targetIndex } = destination;
 
-    optimisticMoveCard(cardId, targetStatus, targetIndex);
-    setConclusionPending(null);
-
+    // AC-16: the modal only closes after the move SUCCEEDS. A gate rejection
+    // (409 impact_evidence_required) renders its remediation inline and every
+    // typed field/row stays intact for correction.
+    setConclusionGateError(null);
     try {
       await apiRef.current.moveCard(cardId, {
         ...destination.request,
@@ -464,12 +476,25 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
         completeness_justification: conclusionCompletenessJustification.trim(),
         drift: conclusionDrift,
         drift_justification: conclusionDriftJustification.trim(),
+        ...(buildImpactEvidencePayload(conclusionImpactDraft)
+          ? { impact_evidence: buildImpactEvidencePayload(conclusionImpactDraft) }
+          : {}),
       });
+      optimisticMoveCard(cardId, targetStatus, targetIndex);
+      setConclusionPending(null);
+      resetConclusionFields();
       toast.success(`Card moved to ${STATUS_LABELS[targetStatus]}`);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : `Failed to move card to ${STATUS_LABELS[targetStatus]}`);
-    } finally {
       refreshColumns();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : `Failed to move card to ${STATUS_LABELS[targetStatus]}`;
+      if (message.includes('impact_evidence_required') || message.toLowerCase().includes('impact evidence')) {
+        setConclusionGateError(message);
+      } else {
+        toast.error(message);
+        setConclusionPending(null);
+        resetConclusionFields();
+        refreshColumns();
+      }
     }
   };
 
@@ -803,6 +828,20 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
                   rows={2}
                 />
               </div>
+              {/* AC-16: the shared editor renders collapsed with its own
+                  internal scroll — the modal keeps max-w-lg. */}
+              <ImpactEvidenceEditor
+                draft={conclusionImpactDraft}
+                onChange={setConclusionImpactDraft}
+              />
+              {conclusionGateError && (
+                <p
+                  className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
+                  data-testid="impact-evidence-gate-error"
+                >
+                  {conclusionGateError}
+                </p>
+              )}
             </div>
             <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
               <button

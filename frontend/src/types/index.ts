@@ -2627,6 +2627,72 @@ export interface UpdateCardRequest {
   skip_task_requirement_link_gate?: boolean;
 }
 
+// SK-B2-S1 — declared impact evidence (schema v1). A CLAIM, not authority:
+// validators keep diffing declared vs real. Mirrors the closed core shape.
+export type ImpactEvidenceRepo = 'core' | 'community';
+export type ImpactEvidenceChangeKind =
+  | 'created'
+  | 'modified'
+  | 'deleted'
+  | 'renamed';
+export type ImpactEvidenceSymbolKind =
+  | 'function'
+  | 'class'
+  | 'method'
+  | 'component'
+  | 'port'
+  | 'other';
+export type ImpactEvidenceSymbolAction = 'created' | 'modified' | 'deleted';
+export type ImpactEvidenceSurfaceKind =
+  | 'rest_route'
+  | 'mcp_tool'
+  | 'mcp_resource'
+  | 'ui_component'
+  | 'table'
+  | 'cli_command'
+  | 'event'
+  | 'migration'
+  | 'other';
+export type ImpactEvidenceTestAction = 'added' | 'updated';
+
+export interface ImpactEvidenceFile {
+  repo: ImpactEvidenceRepo;
+  path: string;
+  change_kind: ImpactEvidenceChangeKind;
+  previous_path?: string | null;
+  note?: string | null;
+}
+
+export interface ImpactEvidenceSymbol {
+  name: string;
+  kind: ImpactEvidenceSymbolKind;
+  action: ImpactEvidenceSymbolAction;
+  repo: ImpactEvidenceRepo;
+  file: string;
+}
+
+export interface ImpactEvidenceSurface {
+  kind: ImpactEvidenceSurfaceKind;
+  identifier: string;
+}
+
+export interface ImpactEvidenceTest {
+  action: ImpactEvidenceTestAction;
+  repo: ImpactEvidenceRepo;
+  test_file_path: string;
+  test_function?: string | null;
+  scenario_id?: string | null;
+}
+
+export interface ImpactEvidence {
+  schema_version: 1;
+  files: ImpactEvidenceFile[];
+  symbols: ImpactEvidenceSymbol[];
+  surfaces: ImpactEvidenceSurface[];
+  tests: ImpactEvidenceTest[];
+  evidence_refs: string[];
+}
+
 export interface ConclusionEntry {
   text: string;
   author_id: string;
@@ -2637,6 +2703,7 @@ export interface ConclusionEntry {
   drift_justification: string;
   source?: 'move_to_validation' | 'move_to_done' | 'task_validation' | string;
   validation_id?: string;
+  impact_evidence?: ImpactEvidence | null;
 }
 
 export interface MoveCardRequest {
@@ -2652,6 +2719,8 @@ export interface MoveCardRequest {
   drift_justification?: string;
   /** Required when status === 'cancelled'; ignored otherwise. */
   cancellation_reason?: string;
+  /** Optional declared impact block; omit entirely when no rows (AC-10). */
+  impact_evidence?: ImpactEvidence;
 }
 
 export type BugWorkflowRemediationPath =

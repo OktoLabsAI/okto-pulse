@@ -13,9 +13,15 @@ import {
   useIsCardModalOpen,
   useColumns,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence } from '@/types';
 import { STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
+import {
+  ImpactEvidenceEditor,
+  buildImpactEvidencePayload,
+  emptyImpactEvidenceDraft,
+  type ImpactEvidenceDraft,
+} from '@/components/cards/ImpactEvidenceEditor';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
@@ -322,6 +328,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const [conclusionCompletenessJustification, setConclusionCompletenessJustification] = useState('');
   const [conclusionDrift, setConclusionDrift] = useState(0);
   const [conclusionDriftJustification, setConclusionDriftJustification] = useState('');
+  const [conclusionImpactDraft, setConclusionImpactDraft] = useState<ImpactEvidenceDraft>(emptyImpactEvidenceDraft());
+  // AC-16: the 409 impact_evidence_required remediation renders inline and
+  // the prompt stays open with its state preserved.
+  const [conclusionGateError, setConclusionGateError] = useState<string | null>(null);
   const originTask = card?.origin_task_id
     ? allBoardCards.find((candidate) => candidate.id === card.origin_task_id) || null
     : null;
@@ -392,6 +402,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     setConclusionCompletenessJustification('');
     setConclusionDrift(0);
     setConclusionDriftJustification('');
+    setConclusionImpactDraft(emptyImpactEvidenceDraft());
+    setConclusionGateError(null);
   };
 
   const requiresExecutionReport = (status: CardStatus) => {
@@ -741,13 +753,13 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     },
   );
 
-  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string) => {
-    if (!card || status === card.status) return;
+  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string, impactEvidence?: ImpactEvidence): Promise<boolean> => {
+    if (!card || status === card.status) return false;
 
     // ITEM 17: cancelling requires a justification — intercept with the dialog.
     if (status === 'cancelled' && !cancellationReason) {
       setShowCancelDialog(true);
-      return;
+      return false;
     }
 
     // Intercept Validation/Done — require executor report
@@ -755,7 +767,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       setConclusionTargetStatus(status);
       setShowConclusionPrompt(true);
       resetConclusionPrompt();
-      return;
+      return false;
     }
 
     setMovingStatus(status);
@@ -769,6 +781,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
         drift: metrics?.drift,
         drift_justification: metrics?.drift_justification,
         ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
+        ...(impactEvidence ? { impact_evidence: impactEvidence } : {}),
       });
       applyCardUpdate(updated);
       if (updated.status === 'cancelled') {
@@ -780,6 +793,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
         }, 0);
       }
       toast.success('Status updated');
+      return true;
     } catch (err) {
       const rejection = readPolicyTransitionRejection(err, {
         boardId: card.board_id,
@@ -800,6 +814,12 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
             ? err.message
             : 'Failed to update status',
       );
+      // AC-16: surface the gate remediation inside the still-open prompt.
+      const gateMessage = err instanceof Error ? err.message : '';
+      if (gateMessage.includes('impact_evidence_required') || gateMessage.toLowerCase().includes('impact evidence')) {
+        setConclusionGateError(gateMessage);
+      }
+      return false;
     } finally {
       setMovingStatus(null);
     }
@@ -2092,17 +2112,32 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                 </div>
               </div>
             </div>
+            <ImpactEvidenceEditor
+              draft={conclusionImpactDraft}
+              onChange={setConclusionImpactDraft}
+            />
+            {conclusionGateError && (
+              <p
+                className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
+                data-testid="impact-evidence-gate-error"
+              >
+                {conclusionGateError}
+              </p>
+            )}
             <div className="flex justify-end gap-2 mt-3">
               <button onClick={() => setShowConclusionPrompt(false)} className="btn btn-secondary text-xs">Cancel</button>
               <button
-                onClick={() => {
-                  setShowConclusionPrompt(false);
-                  handleStatusChange(conclusionTargetStatus, conclusionDraft.trim(), {
+                onClick={async () => {
+                  setConclusionGateError(null);
+                  const ok = await handleStatusChange(conclusionTargetStatus, conclusionDraft.trim(), {
                     completeness: conclusionCompleteness,
                     completeness_justification: conclusionCompletenessJustification.trim(),
                     drift: conclusionDrift,
                     drift_justification: conclusionDriftJustification.trim(),
-                  });
+                  }, undefined, buildImpactEvidencePayload(conclusionImpactDraft));
+                  // AC-16: only a successful move closes the prompt — a gate
+                  // rejection keeps every typed row intact.
+                  if (ok) setShowConclusionPrompt(false);
                 }}
                 disabled={!conclusionDraft.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
                 className={`btn text-xs ${conclusionDraft.trim() && conclusionCompletenessJustification.trim() && conclusionDriftJustification.trim() ? 'btn-primary' : 'btn-secondary opacity-50'}`}
@@ -2348,6 +2383,78 @@ function ExecutionReportsPanel({ card }: { card: Card }) {
           </div>
 
           <Md>{report.text}</Md>
+
+          {report.impact_evidence && (
+            <div
+              className="mt-3 rounded-lg border border-gray-100 bg-gray-50/60 p-3 dark:border-gray-700/50 dark:bg-gray-900/20"
+              data-testid="impact-evidence-readonly"
+            >
+              <p className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
+                Impact evidence (declared claim)
+              </p>
+              <div className="mt-2 space-y-2 text-[11px] text-gray-600 dark:text-gray-300">
+                {report.impact_evidence.files.length > 0 && (
+                  <div>
+                    <p className="font-medium text-gray-500 dark:text-gray-400">Files</p>
+                    <ul className="mt-0.5 space-y-0.5">
+                      {report.impact_evidence.files.map((f, i) => (
+                        <li key={i} className="font-mono">
+                          [{f.repo}] {f.change_kind}: {f.path}
+                          {f.previous_path ? ` (was ${f.previous_path})` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {report.impact_evidence.symbols.length > 0 && (
+                  <div>
+                    <p className="font-medium text-gray-500 dark:text-gray-400">Symbols</p>
+                    <ul className="mt-0.5 space-y-0.5">
+                      {report.impact_evidence.symbols.map((sym, i) => (
+                        <li key={i} className="font-mono">
+                          {sym.kind}/{sym.action}: {sym.name} — [{sym.repo}] {sym.file}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {report.impact_evidence.surfaces.length > 0 && (
+                  <div>
+                    <p className="font-medium text-gray-500 dark:text-gray-400">Surfaces</p>
+                    <ul className="mt-0.5 space-y-0.5">
+                      {report.impact_evidence.surfaces.map((sf, i) => (
+                        <li key={i} className="font-mono">{sf.kind}: {sf.identifier}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {report.impact_evidence.tests.length > 0 && (
+                  <div>
+                    <p className="font-medium text-gray-500 dark:text-gray-400">Tests</p>
+                    <ul className="mt-0.5 space-y-0.5">
+                      {report.impact_evidence.tests.map((t, i) => (
+                        <li key={i} className="font-mono">
+                          {t.action} [{t.repo}] {t.test_file_path}
+                          {t.test_function ? `::${t.test_function}` : ''}
+                          {t.scenario_id ? ` (${t.scenario_id})` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {report.impact_evidence.evidence_refs.length > 0 && (
+                  <div>
+                    <p className="font-medium text-gray-500 dark:text-gray-400">Evidence refs</p>
+                    <ul className="mt-0.5 space-y-0.5">
+                      {report.impact_evidence.evidence_refs.map((ref, i) => (
+                        <li key={i} className="font-mono">{ref}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="mt-4 grid gap-4 border-t border-gray-100 pt-4 sm:grid-cols-2 dark:border-gray-700/50">
             <div className="flex gap-4">
