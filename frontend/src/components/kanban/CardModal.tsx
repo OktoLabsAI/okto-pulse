@@ -2341,7 +2341,8 @@ function CardLineagePanel({
   );
 }
 
-function ExecutionReportsPanel({ card }: { card: Card }) {
+// Exported for focused component tests (SK-B2-S1 TS-11 read-only block).
+export function ExecutionReportsPanel({ card }: { card: Card }) {
   const reports = card.conclusions || [];
 
   if (reports.length === 0) {

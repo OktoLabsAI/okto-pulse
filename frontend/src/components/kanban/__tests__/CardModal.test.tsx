@@ -1602,3 +1602,180 @@ describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)'
     expect(badges[1]).toHaveAttribute('data-unsupported', 'true');
   });
 });
+
+// SK-B2-S1 — TS-11: ExecutionReportsPanel renders the declared impact block
+// read-only (no edit controls) and skips it entirely when absent.
+describe('ExecutionReportsPanel impact evidence (TS-11)', () => {
+  const baseCard = {
+    id: 'card-ie',
+    board_id: 'board-1',
+    spec_id: 'spec-1',
+    title: 'IE card',
+    description: null,
+    details: null,
+    status: 'validation',
+    priority: 'high',
+    position: 0,
+    assignee_id: null,
+    created_by: 'agent-1',
+    created_at: '2026-08-02T00:00:00Z',
+    updated_at: '2026-08-02T00:00:00Z',
+    due_date: null,
+    labels: [],
+    card_type: 'normal',
+    archived: false,
+  } as unknown as import('@/types').Card;
+
+  it('renders every declared section read-only', async () => {
+    const { ExecutionReportsPanel } = await import('../CardModal');
+    const card = {
+      ...baseCard,
+      conclusions: [
+        {
+          text: 'done',
+          author_id: 'agent-1',
+          created_at: '2026-08-02T00:00:00Z',
+          completeness: 100,
+          completeness_justification: 'ok',
+          drift: 0,
+          drift_justification: 'ok',
+          source: 'move_to_validation',
+          impact_evidence: {
+            schema_version: 1,
+            files: [
+              {
+                repo: 'core',
+                path: 'src/okto_pulse/core/models/schemas.py',
+                change_kind: 'modified',
+              },
+            ],
+            symbols: [
+              {
+                name: 'ImpactEvidence',
+                kind: 'class',
+                action: 'created',
+                repo: 'core',
+                file: 'src/okto_pulse/core/models/schemas.py',
+              },
+            ],
+            surfaces: [
+              { kind: 'mcp_tool', identifier: 'okto_pulse_move_card' },
+            ],
+            tests: [
+              {
+                action: 'added',
+                repo: 'core',
+                test_file_path: 'tests/test_impact_evidence_shape.py',
+                scenario_id: 'ts_8138a59f',
+              },
+            ],
+            evidence_refs: ['ts_8138a59f'],
+          },
+        },
+      ],
+    } as unknown as import('@/types').Card;
+    render(<ExecutionReportsPanel card={card} />);
+    const block = screen.getByTestId('impact-evidence-readonly');
+    expect(block).toHaveTextContent('[core] modified: src/okto_pulse/core/models/schemas.py');
+    expect(block).toHaveTextContent('class/created: ImpactEvidence');
+    expect(block).toHaveTextContent('mcp_tool: okto_pulse_move_card');
+    expect(block).toHaveTextContent('ts_8138a59f');
+    expect(within(block).queryByRole('button')).toBeNull();
+    expect(within(block).queryByRole('textbox')).toBeNull();
+  });
+
+  it('omits the section entirely when the conclusion has no block', async () => {
+    const { ExecutionReportsPanel } = await import('../CardModal');
+    const card = {
+      ...baseCard,
+      conclusions: [
+        {
+          text: 'legacy',
+          author_id: 'agent-1',
+          created_at: '2026-08-02T00:00:00Z',
+          completeness: 100,
+          completeness_justification: 'ok',
+          drift: 0,
+          drift_justification: 'ok',
+        },
+      ],
+    } as unknown as import('@/types').Card;
+    render(<ExecutionReportsPanel card={card} />);
+    expect(screen.queryByTestId('impact-evidence-readonly')).toBeNull();
+  });
+});
+
+// SK-B2-S1 — TS-16: under 'require', the 409 impact_evidence_required
+// remediation renders IN-PLACE and the prompt keeps its state; the same
+// submit succeeds after the gate clears.
+describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', () => {
+  it('shows the remediation without closing and retries successfully', async () => {
+    const normalCard = {
+      ...cardForType('normal'),
+      status: 'in_progress',
+    } as Card;
+    storeMock.selectedCardId = normalCard.id;
+    apiMock.getCard.mockResolvedValue(normalCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope(normalCard.id, 'in_progress', [
+        allowedTransition('validation'),
+        allowedTransition('on_hold'),
+      ]),
+    );
+    apiMock.moveCard
+      .mockRejectedValueOnce(
+        new Error(
+          'impact_evidence_required: This board requires declared impact evidence on the execution report',
+        ),
+      )
+      .mockResolvedValueOnce({ ...normalCard, status: 'validation' });
+
+    render(<CardModal boardId="board-1" />);
+
+    const status = await screen.findByRole('combobox', {
+      name: 'Card status',
+    });
+    await waitFor(() => expect(status).not.toBeDisabled());
+    fireEvent.change(status, { target: { value: 'validation' } });
+
+    // The executor-report prompt opens instead of calling the API.
+    expect(
+      await screen.findByText('Execution Report Required'),
+    ).toBeInTheDocument();
+    fireEvent.change(
+      screen.getByPlaceholderText(/## Implementation Summary/),
+      { target: { value: 'Executor claim' } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText('Justify the completeness score...'),
+      { target: { value: 'complete' } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText('Justify the drift score...'),
+      { target: { value: 'no drift' } },
+    );
+
+    const submit = screen.getByRole('button', {
+      name: /Complete & Move to/,
+    });
+    fireEvent.click(submit);
+
+    // Gate rejection: remediation in-place, prompt still open, state intact.
+    expect(
+      await screen.findByTestId('impact-evidence-gate-error'),
+    ).toHaveTextContent('impact_evidence_required');
+    expect(screen.getByText('Execution Report Required')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText(/## Implementation Summary/),
+    ).toHaveValue('Executor claim');
+
+    // Same submit succeeds once the block/gate situation is resolved.
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Execution Report Required'),
+      ).not.toBeInTheDocument(),
+    );
+    expect(apiMock.moveCard).toHaveBeenCalledTimes(2);
+  });
+});
