@@ -467,6 +467,31 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                         and incoming_hash is not None
                         and stored_hash != incoming_hash
                     ):
+                        # Idempotency FIRST: a retry of the same evolved
+                        # assertion must resolve to the revision already in
+                        # the ledger. The anchor for revision 0 is always the
+                        # BASE row, so without this lookup every retry would
+                        # append another identical revision and grow the
+                        # ledger without bound (observed live: D-8 rev 2 and
+                        # rev 3 byte-identical).
+                        existing_evolution = (
+                            await session.execute(
+                                select(KGCognitiveSourceRevision)
+                                .where(
+                                    KGCognitiveSourceRevision.cognitive_source_id
+                                    == source_id,
+                                    KGCognitiveSourceRevision.record_fingerprint
+                                    == fingerprint,
+                                )
+                                .order_by(
+                                    KGCognitiveSourceRevision.source_revision
+                                )
+                                .limit(1)
+                            )
+                        ).scalar_one_or_none()
+                        if existing_evolution is not None:
+                            resolved[revision_key] = existing_evolution
+                            continue
                         evolved_revision = (
                             max(
                                 maxima.get(source_id, 0),

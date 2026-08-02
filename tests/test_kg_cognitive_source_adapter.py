@@ -724,6 +724,43 @@ async def test_artifact_evolution_appends_next_revision(store):
         # The base row keeps the ORIGINAL assertion untouched.
         assert base.payload["source_content_hash"] == "a" * 64
 
+    # Retrying the SAME evolved assertion is IDEMPOTENT: it resolves to the
+    # revision already in the ledger instead of appending a duplicate.
+    # (Observed live before this guard: D-8 grew rev 2 and rev 3 with
+    # byte-identical payloads, one per consolidation retry.)
+    replayed_id = await adapter.append(
+        replace(
+            original,
+            payload=evolved_payload,
+            record_fingerprint="",
+            source_session_id="sess-retry-2",
+        )
+    )
+    assert replayed_id == evolved_id
+    async with factory() as session:
+        base = (
+            await session.execute(
+                select(KGCognitiveSource).where(
+                    KGCognitiveSource.node_id == "decision_evolution"
+                )
+            )
+        ).scalar_one()
+        revisions = (
+            (
+                await session.execute(
+                    select(KGCognitiveSourceRevision).where(
+                        KGCognitiveSourceRevision.cognitive_source_id
+                        == str(base.id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [r.source_revision for r in revisions] == [1], (
+            "a retry must not append a duplicate revision"
+        )
+
     # Same-key divergence WITHOUT source evolution stays fail-closed.
     tampered = {
         **first_payload,
