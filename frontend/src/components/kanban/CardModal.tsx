@@ -814,11 +814,13 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
             ? err.message
             : 'Failed to update status',
       );
-      // AC-16: surface the gate remediation inside the still-open prompt.
-      const gateMessage = err instanceof Error ? err.message : '';
-      if (gateMessage.includes('impact_evidence_required') || gateMessage.toLowerCase().includes('impact evidence')) {
-        setConclusionGateError(gateMessage);
-      }
+      // AC-16: surface the rejection inside the still-open prompt. ANY
+      // rejection keeps the typed report and evidence rows — a 422 from the
+      // shape contract is as correctable as the 409 gate, and discarding the
+      // author's work would be the worse failure.
+      setConclusionGateError(
+        err instanceof Error ? err.message : 'Failed to update status',
+      );
       return false;
     } finally {
       setMovingStatus(null);

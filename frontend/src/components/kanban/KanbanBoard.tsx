@@ -486,15 +486,12 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
       toast.success(`Card moved to ${STATUS_LABELS[targetStatus]}`);
       refreshColumns();
     } catch (err) {
+      // The modal holds a long hand-typed report plus every declared evidence
+      // row: NO rejection may discard it. Show the reason in place and keep
+      // the form open — the author corrects and resubmits, or cancels
+      // explicitly. (A rejected move never mutated anything server-side.)
       const message = err instanceof Error ? err.message : `Failed to move card to ${STATUS_LABELS[targetStatus]}`;
-      if (message.includes('impact_evidence_required') || message.toLowerCase().includes('impact evidence')) {
-        setConclusionGateError(message);
-      } else {
-        toast.error(message);
-        setConclusionPending(null);
-        resetConclusionFields();
-        refreshColumns();
-      }
+      setConclusionGateError(message);
     }
   };
 
