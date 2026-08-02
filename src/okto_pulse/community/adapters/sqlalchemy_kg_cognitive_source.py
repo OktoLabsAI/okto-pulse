@@ -9,6 +9,7 @@ one short transaction for the complete batch.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -445,6 +446,49 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                 )
             if exact is not None:
                 if exact[1] != fingerprint:
+                    # Artifact EVOLUTION vs divergent replay (story e80edf05,
+                    # observed live on decision_059d5828): consolidation
+                    # re-derives node candidates from the CURRENT artifact, so
+                    # when the source content itself changed between commits
+                    # the incoming assertion is NEW KNOWLEDGE, not a replay of
+                    # the stored one. The ledger stays append-only: evolution
+                    # lands as the NEXT revision; nothing is ever overwritten.
+                    # A divergent payload with the SAME source_content_hash
+                    # remains a true integrity conflict (fail-closed).
+                    stored_payload = getattr(exact[0], "payload", None) or {}
+                    if not isinstance(stored_payload, dict):
+                        stored_payload = {}
+                    stored_hash = stored_payload.get("source_content_hash")
+                    incoming_hash = dict(record.payload or {}).get(
+                        "source_content_hash"
+                    )
+                    if (
+                        stored_hash is not None
+                        and incoming_hash is not None
+                        and stored_hash != incoming_hash
+                    ):
+                        evolved_revision = (
+                            max(
+                                maxima.get(source_id, 0),
+                                record.source_revision,
+                            )
+                            + 1
+                        )
+                        revision_row = _new_revision_row(
+                            base,
+                            replace(
+                                record, source_revision=evolved_revision
+                            ),
+                            fingerprint,
+                        )
+                        session.add(revision_row)
+                        maxima[source_id] = evolved_revision
+                        exact_versions[(source_id, evolved_revision)] = (
+                            revision_row,
+                            fingerprint,
+                        )
+                        resolved[revision_key] = revision_row
+                        continue
                     raise _conflict(
                         record,
                         remediation=(

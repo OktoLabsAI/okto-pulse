@@ -661,3 +661,76 @@ async def test_replay_with_drifted_usage_statistics_is_idempotent(store):
             ).scalars().all()
         )
     assert count == 1
+
+
+async def test_artifact_evolution_appends_next_revision(store):
+    """Story e80edf05 (observed live on decision_059d5828): consolidation
+    re-derives node candidates from the CURRENT artifact, so a changed
+    source_content_hash at an existing (node, generation, revision) is NEW
+    KNOWLEDGE, not a divergent replay. It must append as the next immutable
+    revision - never overwrite, never poison the queue fail-closed."""
+
+    adapter, factory = store
+    original = _record("decision_evolution", title="Assertion v1")
+    first_payload = {
+        **original.payload,
+        "source_content_hash": "a" * 64,
+        "created_at": "2026-08-01T16:27:29+00:00",
+    }
+    await adapter.append(
+        replace(original, payload=first_payload, record_fingerprint="")
+    )
+
+    evolved_payload = {
+        **original.payload,
+        "content": "body updated after the spec was edited",
+        "source_content_hash": "b" * 64,
+        "created_at": "2026-08-02T00:24:29+00:00",
+    }
+    evolved_id = await adapter.append(
+        replace(
+            original,
+            payload=evolved_payload,
+            record_fingerprint="",
+            source_session_id="sess-retry",
+        )
+    )
+    assert evolved_id
+
+    async with factory() as session:
+        base = (
+            await session.execute(
+                select(KGCognitiveSource).where(
+                    KGCognitiveSource.node_id == "decision_evolution"
+                )
+            )
+        ).scalar_one()
+        revisions = (
+            (
+                await session.execute(
+                    select(KGCognitiveSourceRevision)
+                    .where(
+                        KGCognitiveSourceRevision.cognitive_source_id
+                        == str(base.id)
+                    )
+                    .order_by(KGCognitiveSourceRevision.source_revision)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [r.source_revision for r in revisions] == [1]
+        assert revisions[0].payload["source_content_hash"] == "b" * 64
+        # The base row keeps the ORIGINAL assertion untouched.
+        assert base.payload["source_content_hash"] == "a" * 64
+
+    # Same-key divergence WITHOUT source evolution stays fail-closed.
+    tampered = {
+        **first_payload,
+        "content": "tampered body, same source hash",
+    }
+    with pytest.raises(CognitiveSourceConflict) as excinfo:
+        await adapter.append(
+            replace(original, payload=tampered, record_fingerprint="")
+        )
+    assert excinfo.value.failure_reason == "cognitive_source_replay_conflict"
