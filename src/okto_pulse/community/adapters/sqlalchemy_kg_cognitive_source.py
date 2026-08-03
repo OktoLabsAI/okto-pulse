@@ -602,6 +602,48 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                 ),
             ) from exc
 
+    async def sealed_birth_payloads_in_context(
+        self,
+        context: object,
+        board_id: str,
+        keys: tuple[tuple[str, str, int], ...],
+    ) -> dict[tuple[str, str, int], dict[str, Any]]:
+        """Return the birth payload already sealed for each requested key.
+
+        The base row is written once and never updated, so its payload IS the
+        assertion's birth. Reads go through ``context`` so this never opens a
+        second connection against the caller's SQLite writer slot.
+        """
+
+        if not keys:
+            return {}
+        by_semantic: dict[SemanticKey, tuple[str, str, int]] = {
+            (node_id, generation): (node_type, node_id, generation)
+            for node_type, node_id, generation in keys
+        }
+        try:
+            rows = await _load_base_rows(context, tuple(by_semantic))
+        except SQLAlchemyError as exc:
+            raise CognitiveSourceError(
+                "cognitive_source_birth_lookup_failed",
+                board_id=board_id,
+                remediation=(
+                    "Check the application relational database; consolidation "
+                    "may not re-mint a birth stamp the ledger already sealed."
+                ),
+            ) from exc
+        sealed: dict[tuple[str, str, int], dict[str, Any]] = {}
+        for semantic_key, row in rows.items():
+            requested = by_semantic.get(semantic_key)
+            if requested is None or str(row.board_id) != board_id:
+                continue
+            if str(row.node_type) != requested[0]:
+                continue
+            payload = getattr(row, "payload", None)
+            if isinstance(payload, dict):
+                sealed[requested] = dict(payload)
+        return sealed
+
     async def append_many(
         self,
         records: tuple[CognitiveSourceRecord, ...],

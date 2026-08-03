@@ -18,10 +18,12 @@ import { STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } 
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import {
   ImpactEvidenceEditor,
+} from '@/components/cards/ImpactEvidenceEditor';
+import {
   buildImpactEvidencePayload,
   emptyImpactEvidenceDraft,
   type ImpactEvidenceDraft,
-} from '@/components/cards/ImpactEvidenceEditor';
+} from '@/components/cards/impactEvidenceModel';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';

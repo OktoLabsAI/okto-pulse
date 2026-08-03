@@ -19,7 +19,10 @@ import {
 
 import { useDashboardApi } from '@/services/api';
 import { useImportExportApi } from '@/services/import-export-api';
-import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
+import {
+  ExportItemButton,
+  ImportExportButtons,
+} from '@/components/shared/ImportExportButtons';
 import { canonicalDefaultGuidelineRefs } from '@/components/guidelines/defaultGuidelineRefs';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import type {
@@ -380,7 +383,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
             <ImportExportButtons
               kind="design_systems"
               onExport={() => importExportRef.current.exportDesignSystems()}
-              onImport={(envelope) => importExportRef.current.importDesignSystems(envelope)}
+              onImport={(envelope, options) => importExportRef.current.importDesignSystems(envelope, options)}
               onImported={() => load()}
             />
             <button
@@ -513,6 +516,12 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                   </p>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-1">
+                                  <ExportItemButton
+                                    kind="design_systems"
+                                    itemId={d.id}
+                                    itemLabel={d.title}
+                                    onExport={() => importExportRef.current.exportDesignSystem(d.id)}
+                                  />
                                   <button
                                     type="button"
                                     disabled={busy || d.scope !== 'global' || d.status !== 'active'}
@@ -654,6 +663,12 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                   </div>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-1">
+                                  <ExportItemButton
+                                    kind="design_systems"
+                                    itemId={d.id}
+                                    itemLabel={d.title}
+                                    onExport={() => importExportRef.current.exportDesignSystem(d.id)}
+                                  />
                                   {linked ? (
                                     <button
                                       type="button"

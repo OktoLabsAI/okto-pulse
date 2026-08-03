@@ -1191,6 +1191,7 @@ function validateExport(value: unknown): GuidelineExportEnvelopeV3 {
 function downloadEnvelope(
   boardId: string,
   envelope: GuidelineExportEnvelopeV3,
+  itemLabel?: string,
 ): void {
   const blob = new Blob(
     [JSON.stringify(envelope, null, 2)],
@@ -1200,7 +1201,13 @@ function downloadEnvelope(
   try {
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `guideline-policy-${boardId}.json`;
+    const safeLabel = itemLabel
+      ?.trim()
+      .replace(/[^a-z0-9_-]+/gi, '-')
+      .replace(/^-+|-+$/g, '');
+    anchor.download = safeLabel
+      ? `guideline-policy-${safeLabel}.json`
+      : `guideline-policy-${boardId}.json`;
     anchor.click();
   } finally {
     URL.revokeObjectURL(url);
@@ -1246,28 +1253,47 @@ export function GuidelinePolicyTransfer({
     }
   };
 
-  const importPolicy = async (file: File) => {
+  const importPolicy = async (files: File[]) => {
     if (!canImport || busy) return;
     setBusy('import');
     setStatus(null);
     try {
-      const parsed = parseEnvelope(await file.text());
-      if (parsed.containsSemanticMetrics && !canAuthorMetrics) {
+      const parsedFiles = await Promise.all(
+        files.map(async (file) => parseEnvelope(await file.text())),
+      );
+      if (
+        parsedFiles.some((parsed) => parsed.containsSemanticMetrics)
+        && !canAuthorMetrics
+      ) {
         throw new Error(
           'Importing semantic metrics requires guidelines.metrics.author.',
         );
       }
-      validateDryRun(await api.importGuidelinePolicy(
-        boardId,
-        parsed.envelope,
-        { dryRun: true },
-      ));
-      const result = validateCommittedImport(
-        await api.importGuidelinePolicy(boardId, parsed.envelope),
+      // Validate every selected document before the first commit.
+      for (const parsed of parsedFiles) {
+        validateDryRun(await api.importGuidelinePolicy(
+          boardId,
+          parsed.envelope,
+          { dryRun: true },
+        ));
+      }
+      const results: GuidelineImportResult[] = [];
+      for (const parsed of parsedFiles) {
+        results.push(validateCommittedImport(
+          await api.importGuidelinePolicy(boardId, parsed.envelope),
+        ));
+      }
+      const created = results.reduce(
+        (total, result) => total + result.created_count,
+        0,
+      );
+      const skipped = results.reduce(
+        (total, result) => total + result.skip_identical_count,
+        0,
       );
       setStatus(
-        `Imported ${result.created_count}; skipped `
-        + `${result.skip_identical_count} identical aggregate(s).`,
+        `Imported ${created}; skipped ${skipped} identical aggregate(s).`
+        + (files.length > 1 ? ` Processed ${files.length} files.` : ''),
       );
       await onImported();
     } catch (error) {
@@ -1313,13 +1339,14 @@ export function GuidelinePolicyTransfer({
       <input
         ref={fileInputRef}
         type="file"
+        multiple
         accept="application/json,.json"
         data-testid="guidelines-import-input"
         className="hidden"
         aria-label="Import semantic guideline policy v3"
         onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (file) void importPolicy(file);
+          const files = Array.from(event.target.files ?? []);
+          if (files.length > 0) void importPolicy(files);
         }}
       />
       {status && (
@@ -1328,5 +1355,60 @@ export function GuidelinePolicyTransfer({
         </span>
       )}
     </div>
+  );
+}
+
+interface GuidelinePolicyExportButtonProps {
+  boardId: string;
+  guidelineId: string;
+  guidelineTitle: string;
+}
+
+/** Per-row export for one complete governed guideline aggregate. */
+export function GuidelinePolicyExportButton({
+  boardId,
+  guidelineId,
+  guidelineTitle,
+}: GuidelinePolicyExportButtonProps) {
+  const api = usePolicyGovernanceApi();
+  const permissions = usePermissions(boardId);
+  const [busy, setBusy] = useState(false);
+  const canExport = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('guidelines.revisions.read')
+  );
+
+  const handleExport = async () => {
+    if (!canExport || busy) return;
+    setBusy(true);
+    try {
+      const envelope = validateExport(await api.exportGuidelinePolicy(
+        boardId,
+        { guidelineIds: [guidelineId] },
+      ));
+      downloadEnvelope(boardId, envelope, guidelineTitle);
+      toast.success(`Exported ${guidelineTitle}`);
+    } catch (error) {
+      toast.error(policyTransferError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      disabled={!canExport || busy}
+      onClick={() => void handleExport()}
+      data-testid={`guidelines-export-${guidelineId}`}
+      aria-label={`Export ${guidelineTitle}`}
+      title="Export this complete guideline, including policies and custom metrics"
+      className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-[11px] font-semibold text-gray-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-40 dark:border-gray-600 dark:text-gray-200 dark:hover:border-blue-800 dark:hover:bg-blue-900/20 dark:hover:text-blue-200"
+    >
+      <Download size={12} />
+      {busy ? 'Exporting…' : 'Export'}
+    </button>
   );
 }

@@ -836,10 +836,11 @@ async def test_default_config_diff_includes_local_checklist_mode_override(
         activate=True,
     )
     actor = ActorContext("diff-board-owner", "rest")
+    request_uow = CommunityUnitOfWork(session, actor=actor)
     result = await CreateBoardUseCase().execute(
         CreateBoardCommand(BoardCreate(name="Checklist diff")),
         actor=actor,
-        uow=CommunityUnitOfWork(session),
+        uow=request_uow,
     )
 
     adapter = CommunitySqlAlchemyChecklist(session)
@@ -864,7 +865,7 @@ async def test_default_config_diff_includes_local_checklist_mode_override(
     diff = await GetBoardDefaultConfigDiffUseCase().execute(
         DefaultBoardConfigCommand(board_id=result.board.id),
         actor=actor,
-        uow=CommunityUnitOfWork(session),
+        uow=request_uow,
     )
     checklist_field = next(
         field
@@ -881,7 +882,7 @@ async def test_default_config_diff_includes_local_checklist_mode_override(
     mcp_diff = await McpGetBoardDefaultConfigDiffUseCase().execute(
         McpGetBoardDefaultConfigDiffCommand(result.board.id),
         actor=ActorContext("diff-board-agent", "mcp"),
-        uow=CommunityUnitOfWork(session),
+        uow=request_uow,
     )
     assert mcp_diff.data == diff.data
 

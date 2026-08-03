@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases import (
@@ -79,6 +79,15 @@ class PresetUpdate(BaseModel):
         return value
 
 
+class PresetImportItem(PresetCreate):
+    id: str | None = Field(None, min_length=1)
+    description: str | None = None
+    is_builtin: bool = False
+    base_preset_id: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class PresetResponse(BaseModel):
     id: str
     owner_id: str | None
@@ -147,18 +156,32 @@ async def export_presets(
     )
 
 
+@router.get("/{preset_id}/export")
+async def export_preset(
+    preset_id: str,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Export one permission preset as a one-item envelope."""
+    try:
+        return await ExportPresetsUseCase().execute(
+            ExportPresetsCommand(preset_id=preset_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=404, detail="Preset not found") from None
+
+
 @router.post("/import")
 async def import_presets(
     envelope: dict,
     dry_run: bool = False,
+    replace_existing: bool = False,
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Import a kind=presets envelope. Items are validated against the same
-    ``PresetCreate`` schema as POST /presets and always create CUSTOM presets;
-    names matching a preset the user can already see (built-in or custom) are
-    skipped as duplicates; any invalid item → 400 and NOTHING is mutated
-    (all-or-nothing). ``dry_run=true`` validates and reports without persisting."""
+    """Import presets, replacing matching custom ids only after confirmation."""
     try:
         raw_items = parse_import_envelope(envelope, kind=KIND_PRESETS)
     except EnvelopeError as exc:
@@ -166,7 +189,7 @@ async def import_presets(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "invalid_envelope", "message": str(exc)},
         )
-    parsed, errors = validate_items(raw_items, PresetCreate.model_validate)
+    parsed, errors = validate_items(raw_items, PresetImportItem.model_validate)
     if errors:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -174,7 +197,11 @@ async def import_presets(
         )
     try:
         result = await ImportPresetsUseCase().execute(
-            ImportPresetsCommand(items=parsed, dry_run=dry_run),
+            ImportPresetsCommand(
+                items=parsed,
+                dry_run=dry_run,
+                replace_existing=replace_existing,
+            ),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )

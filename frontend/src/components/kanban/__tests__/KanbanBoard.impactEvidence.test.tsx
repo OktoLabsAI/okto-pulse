@@ -205,6 +205,48 @@ describe('KanbanBoard DnD execution report — impact evidence (TS-16)', () => {
     expect(mocks.dashboardState.optimisticMoveCard).not.toHaveBeenCalled();
   });
 
+  it('shows the structured remediation the gate returned, not just the refusal', async () => {
+    const rejection = Object.assign(
+      new Error('impact_evidence_required: declared impact evidence missing'),
+      {
+        details: {
+          code: 'impact_evidence_required',
+          remediation:
+            'Re-enumerate what the execution touched and resubmit the move '
+            + 'with impact_evidence (schema_version=1).',
+        },
+      },
+    );
+    mocks.moveCard.mockRejectedValueOnce(rejection);
+    render(<KanbanBoard boardId="board-1" refreshKey={0} />);
+    await waitFor(() => expect(mocks.dragHandlers.onDragEnd).toBeDefined());
+    dropOnValidation();
+    await fillReport();
+
+    fireEvent.click(screen.getByRole('button', { name: /Complete & Move to/ }));
+
+    expect(
+      await screen.findByTestId('impact-evidence-gate-remediation'),
+    ).toHaveTextContent('Re-enumerate what the execution touched');
+  });
+
+  it('omits the remediation line when the rejection carries none', async () => {
+    mocks.moveCard.mockRejectedValueOnce(new Error('plain failure'));
+    render(<KanbanBoard boardId="board-1" refreshKey={0} />);
+    await waitFor(() => expect(mocks.dragHandlers.onDragEnd).toBeDefined());
+    dropOnValidation();
+    await fillReport();
+
+    fireEvent.click(screen.getByRole('button', { name: /Complete & Move to/ }));
+
+    expect(
+      await screen.findByTestId('impact-evidence-gate-error'),
+    ).toHaveTextContent('plain failure');
+    expect(
+      screen.queryByTestId('impact-evidence-gate-remediation'),
+    ).not.toBeInTheDocument();
+  });
+
   it('never discards the report on a shape rejection (422) either', async () => {
     // Independent review of I4 caught this: FR-2 violations are reachable
     // ONLY through the UI, and the old else-branch closed the modal and wiped

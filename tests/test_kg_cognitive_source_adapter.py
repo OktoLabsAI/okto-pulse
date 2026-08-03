@@ -771,3 +771,128 @@ async def test_artifact_evolution_appends_next_revision(store):
             replace(original, payload=tampered, record_fingerprint="")
         )
     assert excinfo.value.failure_reason == "cognitive_source_replay_conflict"
+
+
+async def test_sealed_birth_payloads_returns_the_base_row_payload(store):
+    """Story e80edf05: the base row is written once, so it IS the birth."""
+
+    adapter, factory = store
+    original = _record("decision_birth_lookup", title="Assertion at birth")
+    sealed_payload = {**original.payload, "created_at": "2026-08-01T16:27:29.303151"}
+    await adapter.append(
+        replace(original, payload=sealed_payload, record_fingerprint="")
+    )
+
+    async with factory() as session:
+        found = await adapter.sealed_birth_payloads_in_context(
+            session,
+            BOARD,
+            (
+                ("Learning", "decision_birth_lookup", 0),
+                ("Learning", "decision_never_written", 0),
+                ("Learning", "decision_birth_lookup", 7),
+            ),
+        )
+
+    assert set(found) == {("Learning", "decision_birth_lookup", 0)}
+    assert (
+        found[("Learning", "decision_birth_lookup", 0)]["created_at"]
+        == "2026-08-01T16:27:29.303151"
+    )
+
+
+async def test_sealed_birth_payloads_refuse_a_foreign_board_or_type(store):
+    """The lookup is keyed by node_id+generation, so scope must be re-checked."""
+
+    adapter, factory = store
+    await adapter.append(_record("decision_scoped", title="Scoped assertion"))
+
+    async with factory() as session:
+        wrong_board = await adapter.sealed_birth_payloads_in_context(
+            session, "some-other-board", (("Learning", "decision_scoped", 0),)
+        )
+        wrong_type = await adapter.sealed_birth_payloads_in_context(
+            session, BOARD, (("Decision", "decision_scoped", 0),)
+        )
+        empty = await adapter.sealed_birth_payloads_in_context(session, BOARD, ())
+
+    assert wrong_board == {}
+    assert wrong_type == {}
+    assert empty == {}
+
+
+async def test_rematerialized_node_is_idempotent_once_core_restores_the_birth(store):
+    """The live failure (decision_059d5828) end to end over the real adapter.
+
+    The graph lost the node, consolidation re-derived it with a fresh
+    ``created_at`` and the SAME ``source_content_hash``. Un-reconciled that is
+    a divergent replay of an immutable revision and poisons the queue; after
+    the core restoration the append is a byte-identical retry.
+    """
+
+    from okto_pulse.core.ports.kg_cognitive_source import restore_sealed_birth_fields
+
+    adapter, factory = store
+    original = _record("decision_rematerialized", title="Assertion v1")
+    sealed_payload = {
+        **original.payload,
+        "source_content_hash": "d" * 64,
+        "created_at": "2026-08-01T16:27:29.303151",
+        "attestation_count": 1,
+    }
+    await adapter.append(
+        replace(original, payload=sealed_payload, record_fingerprint="")
+    )
+
+    # Consolidation believes the node is new: fresh birth, unchanged artifact.
+    rederived_payload = {**sealed_payload, "created_at": "2026-08-02T04:31:04.185244"}
+    with pytest.raises(CognitiveSourceConflict):
+        await adapter.append(
+            replace(original, payload=rederived_payload, record_fingerprint="")
+        )
+
+    async with factory() as session:
+        sealed = await adapter.sealed_birth_payloads_in_context(
+            session, BOARD, (("Learning", "decision_rematerialized", 0),)
+        )
+    reconciled, restorations = restore_sealed_birth_fields(
+        (
+            {
+                "node_id": original.node_id,
+                "board_id": original.board_id,
+                "node_type": original.node_type,
+                "generation": original.generation,
+                "source_revision": 0,
+                "payload": rederived_payload,
+                "evidence_refs": original.evidence_refs,
+                "source_session_id": "sess-rematerialize",
+                "committed_at": "2026-08-02T04:31:04.185244",
+            },
+        ),
+        sealed,
+    )
+    assert [r.field for r in restorations] == ["created_at"]
+
+    await adapter.append(CognitiveSourceRecord(**reconciled[0]))
+
+    async with factory() as session:
+        base = (
+            await session.execute(
+                select(KGCognitiveSource).where(
+                    KGCognitiveSource.node_id == "decision_rematerialized"
+                )
+            )
+        ).scalar_one()
+        revisions = (
+            (
+                await session.execute(
+                    select(KGCognitiveSourceRevision).where(
+                        KGCognitiveSourceRevision.cognitive_source_id == str(base.id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert revisions == [], "a re-materialization must not grow the ledger"
+    assert base.payload["created_at"] == "2026-08-01T16:27:29.303151"

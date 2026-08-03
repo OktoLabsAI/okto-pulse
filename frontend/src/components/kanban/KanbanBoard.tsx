@@ -18,10 +18,12 @@ import { Filter, Search, X, Check } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   ImpactEvidenceEditor,
+} from '@/components/cards/ImpactEvidenceEditor';
+import {
   buildImpactEvidencePayload,
   emptyImpactEvidenceDraft,
   type ImpactEvidenceDraft,
-} from '@/components/cards/ImpactEvidenceEditor';
+} from '@/components/cards/impactEvidenceModel';
 import { type BoardColumnsQuery, useDashboardApi } from '@/services/api';
 import {
   useDashboardStore,
@@ -60,6 +62,20 @@ const CARD_TYPE_FILTERS: KanbanCardFilterType[] = ['task', 'test', 'bug'];
 const KANBAN_COLUMN_LIMIT = 10;
 
 type CardTypeFiltersByStatus = Record<CardStatus, Set<KanbanCardFilterType>>;
+
+/**
+ * Typed gate rejections carry a `remediation` string alongside the message.
+ * authFetch parks the whole backend detail object on `details`, so read it
+ * from there rather than re-parsing the message.
+ */
+function extractRemediation(error: unknown): string | null {
+  const details = (error as { details?: unknown } | null)?.details;
+  if (!details || typeof details !== 'object') return null;
+  const remediation = (details as Record<string, unknown>).remediation;
+  return typeof remediation === 'string' && remediation.trim()
+    ? remediation
+    : null;
+}
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
@@ -122,7 +138,9 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   const [conclusionDriftJustification, setConclusionDriftJustification] = useState('');
   const [conclusionImpactDraft, setConclusionImpactDraft] = useState<ImpactEvidenceDraft>(emptyImpactEvidenceDraft());
   // AC-16: gate rejection renders inline and the modal stays open.
-  const [conclusionGateError, setConclusionGateError] = useState<string | null>(null);
+  const [conclusionGateError, setConclusionGateError] = useState<
+    { message: string; remediation: string | null } | null
+  >(null);
   const [showArchived, setShowArchived] = useState(false);
   const [specFilter, setSpecFilter] = useState<Set<string>>(new Set());
   const [cardTypeFilters, setCardTypeFilters] = useState<CardTypeFiltersByStatus>(
@@ -491,7 +509,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
       // the form open — the author corrects and resubmits, or cancels
       // explicitly. (A rejected move never mutated anything server-side.)
       const message = err instanceof Error ? err.message : `Failed to move card to ${STATUS_LABELS[targetStatus]}`;
-      setConclusionGateError(message);
+      setConclusionGateError({ message, remediation: extractRemediation(err) });
     }
   };
 
@@ -832,12 +850,23 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
                 onChange={setConclusionImpactDraft}
               />
               {conclusionGateError && (
-                <p
+                <div
                   className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
                   data-testid="impact-evidence-gate-error"
                 >
-                  {conclusionGateError}
-                </p>
+                  <p>{conclusionGateError.message}</p>
+                  {conclusionGateError.remediation && (
+                    // The backend already says exactly what to do; showing only
+                    // the rejection wastes it and makes the author guess.
+                    <p
+                      className="mt-1.5 border-t border-red-200 pt-1.5 dark:border-red-800/70"
+                      data-testid="impact-evidence-gate-remediation"
+                    >
+                      <span className="font-semibold">How to fix: </span>
+                      {conclusionGateError.remediation}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
             <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">

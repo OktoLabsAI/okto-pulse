@@ -37,7 +37,10 @@ import {
   currentDefaultGuidelineRefs,
   defaultGuidelineRefFromCandidate,
 } from './defaultGuidelineRefs';
-import { GuidelinePolicyTransfer } from './GuidelinePolicyTransfer';
+import {
+  GuidelinePolicyExportButton,
+  GuidelinePolicyTransfer,
+} from './GuidelinePolicyTransfer';
 import {
   GuidelineImpactDialog,
   type AdoptedGuidelineBindingAuthority,
@@ -1000,9 +1003,14 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                           >
                             <MarkdownContent content={entry.guideline.content} />
                             {tagBadges(entry.guideline.tags)}
-                            <div className="mt-3 grid gap-2 border-t border-gray-100 pt-3 sm:grid-cols-3 dark:border-gray-700/50">
+                            <div className="mt-3 grid gap-2 border-t border-gray-100 pt-3 sm:grid-cols-4 dark:border-gray-700/50">
                               {canReadRevisions && (
                                 <>
+                                  <GuidelinePolicyExportButton
+                                    boardId={boardId}
+                                    guidelineId={entry.guideline.id}
+                                    guidelineTitle={entry.guideline.title}
+                                  />
                                   <button
                                     type="button"
                                     onClick={() => openRevisionEditor(entry.guideline, entry)}
@@ -1149,6 +1157,11 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
                             {tagBadges(g.tags)}
                           </div>
                           <div className="flex max-w-[25rem] flex-wrap items-center justify-end gap-1.5 shrink-0">
+                            <GuidelinePolicyExportButton
+                              boardId={boardId}
+                              guidelineId={g.id}
+                              guidelineTitle={g.title}
+                            />
                             {linkedToBoard ? (
                               <>
                                 <button

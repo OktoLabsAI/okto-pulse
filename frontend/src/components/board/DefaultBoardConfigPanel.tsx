@@ -465,7 +465,7 @@ export function DefaultBoardConfigPanel({
           <ImportExportButtons
             kind="board_config"
             onExport={() => importExportRef.current.exportBoardConfig()}
-            onImport={(envelope) => importExportRef.current.importBoardConfig(envelope)}
+            onImport={(envelope, options) => importExportRef.current.importBoardConfig(envelope, options)}
             onImported={() => load()}
           />
           {isDirty && (

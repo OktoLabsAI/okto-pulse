@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases.admin_catalog import (
@@ -67,6 +67,11 @@ class UpdateDesignSystemRequest(BaseModel):
     title: str | None = None
     payload: dict[str, Any] | None = None
     status: str | None = None
+
+
+class DesignSystemImportItem(CreateDesignSystemRequest):
+    id: str | None = Field(None, min_length=1)
+    version: int = Field(1, ge=1)
 
 
 class LinkDesignSystemRequest(BaseModel):
@@ -170,11 +175,11 @@ async def import_design_systems(
     db: PulseUnitOfWork = Depends(get_unit_of_work),
     actor: str = Depends(require_user),
 ) -> dict[str, Any]:
-    """Import a kind=design_systems envelope. Items are validated against the
-    same ``CreateDesignSystemRequest`` schema (+ bypass-field rejection) as
-    POST /design-systems; matching titles in the same catalog partition are
-    skipped as duplicates; any invalid item → 400 and NOTHING is mutated
-    (all-or-nothing). ``dry_run=true`` validates and reports without persisting."""
+    """Import one or more Design Systems into the GLOBAL catalog.
+
+    Matching ids advance the existing version; new ids are preserved. Source
+    inline provenance never controls the destination.
+    """
     try:
         raw_items = parse_import_envelope(envelope, kind=KIND_DESIGN_SYSTEMS)
     except EnvelopeError as exc:
@@ -184,11 +189,12 @@ async def import_design_systems(
         )
 
     def _validate(raw: dict[str, Any]) -> dict[str, Any]:
+        create_payload = {**raw, "scope": "global", "board_id": None}
         try:
-            reject_bypass_fields(raw)
+            reject_bypass_fields(create_payload)
         except AmendmentRevisionApiError as exc:
             raise ImportItemError(-1, exc.to_dict())
-        return CreateDesignSystemRequest.model_validate(raw).model_dump()
+        return DesignSystemImportItem.model_validate(create_payload).model_dump()
 
     parsed, errors = validate_items(raw_items, _validate)
     if errors:

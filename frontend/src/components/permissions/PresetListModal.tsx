@@ -6,8 +6,14 @@ import { useEffect, useState } from 'react';
 import { X, Plus, Shield, Copy, Pencil, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
-import { useImportExportApi } from '@/services/import-export-api';
-import { ImportExportButtons } from '@/components/shared/ImportExportButtons';
+import {
+  type ImportExportEnvelope,
+  useImportExportApi,
+} from '@/services/import-export-api';
+import {
+  ExportItemButton,
+  ImportExportButtons,
+} from '@/components/shared/ImportExportButtons';
 import { countPerEntity, ENTITY_LABELS, countAllFlags } from './PermissionFlagsEditor';
 import { PresetEditorModal } from './PresetEditorModal';
 import type { FlagsMap } from './PermissionFlagsEditor';
@@ -96,8 +102,9 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
               <ImportExportButtons
                 kind="presets"
                 onExport={() => importExportApi.exportPresets()}
-                onImport={(envelope) => importExportApi.importPresets(envelope)}
+                onImport={(envelope, options) => importExportApi.importPresets(envelope, options)}
                 onImported={() => loadPresets()}
+                confirmReplacements
               />
               <button
                 onClick={() => setEditorPreset('new')}
@@ -127,6 +134,7 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
                     presets={presets}
                     onView={() => setEditorPreset(preset)}
                     onClone={() => handleClone(preset)}
+                    onExport={() => importExportApi.exportPreset(preset.id)}
                   />
                 ))}
 
@@ -142,6 +150,7 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
                       presets={presets}
                       onView={() => setEditorPreset(preset)}
                       onClone={() => handleClone(preset)}
+                      onExport={() => importExportApi.exportPreset(preset.id)}
                       onEdit={() => setEditorPreset(preset)}
                       onDelete={() => handleDelete(preset)}
                     />
@@ -186,6 +195,7 @@ function PresetCard({
   onClone,
   onEdit,
   onDelete,
+  onExport,
 }: {
   preset: PermissionPreset;
   presets: readonly PermissionPreset[];
@@ -193,6 +203,7 @@ function PresetCard({
   onClone: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
+  onExport: () => Promise<ImportExportEnvelope>;
 }) {
   const flags = preset.flags as FlagsMap;
   const perEntity = countPerEntity(flags);
@@ -238,6 +249,12 @@ function PresetCard({
           }`}>
             {enabled}/{total}
           </span>
+          <ExportItemButton
+            kind="presets"
+            itemId={preset.id}
+            itemLabel={preset.name}
+            onExport={onExport}
+          />
           {onEdit && (
             <button onClick={onEdit} className="p-1 text-gray-400 hover:text-blue-500" title="Edit">
               <Pencil size={13} />

@@ -127,7 +127,7 @@ const LINT_LANGUAGE_OPTIONS: Array<{
 export const IMPACT_EVIDENCE_MODES = ['off', 'advisory', 'require'] as const;
 export type ImpactEvidenceMode = (typeof IMPACT_EVIDENCE_MODES)[number];
 
-export function normalizeImpactEvidenceMode(value: unknown): ImpactEvidenceMode {
+function normalizeImpactEvidenceMode(value: unknown): ImpactEvidenceMode {
   // Mirrors the backend resolver: anything unknown reads as 'off' instead of
   // failing the screen (invalid_value_fail_compat).
   return IMPACT_EVIDENCE_MODES.includes(value as ImpactEvidenceMode)

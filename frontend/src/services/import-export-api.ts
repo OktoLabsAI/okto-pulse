@@ -26,6 +26,8 @@ export interface ImportExportEnvelope {
 
 export interface ImportSummary {
   created: number;
+  updated?: number;
+  replaced?: number;
   skipped: Array<Record<string, unknown>>;
   errors: Array<Record<string, unknown>>;
   dry_run?: boolean;
@@ -33,6 +35,7 @@ export interface ImportSummary {
 
 export interface ImportOptions {
   dryRun?: boolean;
+  replaceExisting?: boolean;
 }
 
 /** guidelines-20260710.json */
@@ -88,6 +91,7 @@ export function useImportExportApi() {
     ): Promise<ImportSummary> {
       const params = new URLSearchParams();
       if (options.dryRun) params.set('dry_run', 'true');
+      if (options.replaceExisting) params.set('replace_existing', 'true');
       return post('/design-systems/import', envelope, params);
     },
 
@@ -97,12 +101,17 @@ export function useImportExportApi() {
       return apiClient.fetchJson<ImportExportEnvelope>('/presets/export');
     },
 
+    async exportPreset(presetId: string): Promise<ImportExportEnvelope> {
+      return apiClient.fetchJson<ImportExportEnvelope>(`/presets/${presetId}/export`);
+    },
+
     async importPresets(
       envelope: ImportExportEnvelope,
       options: ImportOptions = {},
     ): Promise<ImportSummary> {
       const params = new URLSearchParams();
       if (options.dryRun) params.set('dry_run', 'true');
+      if (options.replaceExisting) params.set('replace_existing', 'true');
       return post('/presets/import', envelope, params);
     },
 

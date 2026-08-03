@@ -41,6 +41,7 @@ vi.mock('@/hooks/usePermissions', () => ({
 vi.mock('react-hot-toast', () => ({ default: toastMock }));
 
 import { GuidelinesPanel } from '../GuidelinesPanel';
+import { GuidelinePolicyExportButton } from '../GuidelinePolicyTransfer';
 
 const ENVELOPE = {
   contract_version: 'guideline-export/v3' as const,
@@ -219,6 +220,32 @@ describe('GuidelinesPanel immutable policy import/export', () => {
     clickSpy.mockRestore();
   });
 
+  it('exports one complete guideline aggregate by stable id', async () => {
+    policyApiMock.exportGuidelinePolicy.mockResolvedValue(ENVELOPE);
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+
+    render(
+      <GuidelinePolicyExportButton
+        boardId="b1"
+        guidelineId="g1"
+        guidelineTitle="Architecture policy"
+      />,
+    );
+    fireEvent.click(screen.getByTestId('guidelines-export-g1'));
+
+    await waitFor(() => {
+      expect(policyApiMock.exportGuidelinePolicy).toHaveBeenCalledWith(
+        'b1',
+        { guidelineIds: ['g1'] },
+      );
+    });
+    const anchor = clickSpy.mock.instances[0] as HTMLAnchorElement;
+    expect(anchor.download).toBe('guideline-policy-Architecture-policy.json');
+    clickSpy.mockRestore();
+  });
+
   it('fails closed when export returns an unknown v3 envelope shape', async () => {
     policyApiMock.exportGuidelinePolicy.mockResolvedValue({
       ...ENVELOPE,
@@ -288,6 +315,69 @@ describe('GuidelinesPanel immutable policy import/export', () => {
         dashboardApiMock.getBoardGuidelines.mock.calls.length,
       ).toBeGreaterThan(boardReadsBefore);
     });
+  });
+
+  it('accepts multiple v3 files and dry-runs all before the first commit', async () => {
+    const secondEnvelope = {
+      ...ENVELOPE,
+      content_digest: 'b'.repeat(64),
+    };
+    policyApiMock.importGuidelinePolicy
+      .mockResolvedValueOnce({
+        transaction_status: 'dry_run',
+        created_count: 1,
+        skip_identical_count: 0,
+        conflict_count: 0,
+        overwritten_row_count: 0,
+        dry_run: true,
+      })
+      .mockResolvedValueOnce({
+        transaction_status: 'dry_run',
+        created_count: 2,
+        skip_identical_count: 0,
+        conflict_count: 0,
+        overwritten_row_count: 0,
+        dry_run: true,
+      })
+      .mockResolvedValueOnce({
+        transaction_status: 'committed',
+        created_count: 1,
+        skip_identical_count: 0,
+        conflict_count: 0,
+        overwritten_row_count: 0,
+        dry_run: false,
+      })
+      .mockResolvedValueOnce({
+        transaction_status: 'committed',
+        created_count: 2,
+        skip_identical_count: 0,
+        conflict_count: 0,
+        overwritten_row_count: 0,
+        dry_run: false,
+      });
+
+    render(<GuidelinesPanel boardId="b1" onClose={() => {}} />);
+    fireEvent.change(await screen.findByTestId('guidelines-import-input'), {
+      target: {
+        files: [
+          new File([JSON.stringify(ENVELOPE)], 'one.json', { type: 'application/json' }),
+          new File([JSON.stringify(secondEnvelope)], 'two.json', { type: 'application/json' }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(policyApiMock.importGuidelinePolicy).toHaveBeenCalledTimes(4);
+    });
+    expect(policyApiMock.importGuidelinePolicy.mock.calls.map((call) => call[2])).toEqual([
+      { dryRun: true },
+      { dryRun: true },
+      undefined,
+      undefined,
+    ]);
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Imported 3; skipped 0 identical aggregate(s). Processed 2 files.',
+    );
   });
 
   it('stops after a conflicting dry-run and never overwrites history', async () => {

@@ -1,13 +1,13 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { ImpactEvidenceEditor } from '../ImpactEvidenceEditor';
 import {
-  ImpactEvidenceEditor,
   buildImpactEvidencePayload,
   emptyImpactEvidenceDraft,
   impactDraftRowCount,
   type ImpactEvidenceDraft,
-} from '../ImpactEvidenceEditor';
+} from '../impactEvidenceModel';
 
 describe('ImpactEvidenceEditor (SK-B2-S1 shared surface)', () => {
   it('starts collapsed with zero rows and never pre-populates content', () => {
@@ -55,6 +55,91 @@ describe('ImpactEvidenceEditor (SK-B2-S1 shared surface)', () => {
             file: '',
           },
         ],
+      }),
+    );
+  });
+
+  it('note and test_function are reachable, not just serializable', () => {
+    const onChange = vi.fn();
+    const draft: ImpactEvidenceDraft = {
+      ...emptyImpactEvidenceDraft(),
+      files: [
+        {
+          repo: 'core',
+          path: 'src/a.py',
+          change_kind: 'modified',
+          previous_path: '',
+          note: '',
+        },
+      ],
+      tests: [
+        {
+          action: 'added',
+          repo: 'core',
+          test_file_path: 'tests/test_a.py',
+          test_function: '',
+          scenario_id: '',
+        },
+      ],
+    };
+    render(<ImpactEvidenceEditor draft={draft} onChange={onChange} />);
+
+    fireEvent.change(screen.getByLabelText('file 0 note'), {
+      target: { value: 'moved the gate into the report_target block' },
+    });
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        files: [
+          expect.objectContaining({
+            note: 'moved the gate into the report_target block',
+          }),
+        ],
+      }),
+    );
+
+    fireEvent.change(screen.getByLabelText('test 0 function'), {
+      target: { value: 'test_require_mode_blocks_without_evidence' },
+    });
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        tests: [
+          expect.objectContaining({
+            test_function: 'test_require_mode_blocks_without_evidence',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('a new row inherits the repo of the previous one', () => {
+    const onChange = vi.fn();
+    const draft: ImpactEvidenceDraft = {
+      ...emptyImpactEvidenceDraft(),
+      files: [
+        {
+          repo: 'community',
+          path: 'frontend/src/x.tsx',
+          change_kind: 'modified',
+          previous_path: '',
+          note: '',
+        },
+      ],
+    };
+    render(<ImpactEvidenceEditor draft={draft} onChange={onChange} />);
+    fireEvent.click(screen.getByTestId('impact-add-file'));
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        files: [
+          expect.anything(),
+          expect.objectContaining({ repo: 'community' }),
+        ],
+      }),
+    );
+    // An empty section still starts on core.
+    fireEvent.click(screen.getByTestId('impact-add-test'));
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        tests: [expect.objectContaining({ repo: 'core' })],
       }),
     );
   });

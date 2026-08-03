@@ -9,7 +9,6 @@
 import { useMemo } from 'react';
 import { ChevronRight, Plus, X } from 'lucide-react';
 import type {
-  ImpactEvidence,
   ImpactEvidenceChangeKind,
   ImpactEvidenceRepo,
   ImpactEvidenceSurfaceKind,
@@ -17,8 +16,14 @@ import type {
   ImpactEvidenceSymbolKind,
   ImpactEvidenceTestAction,
 } from '@/types';
+import {
+  impactDraftRowCount,
+  nextImpactRepo,
+  type ImpactEvidenceDraft,
+} from './impactEvidenceModel';
 
 const REPOS: ImpactEvidenceRepo[] = ['core', 'community'];
+
 const CHANGE_KINDS: ImpactEvidenceChangeKind[] = [
   'created',
   'modified',
@@ -50,102 +55,6 @@ const SURFACE_KINDS: ImpactEvidenceSurfaceKind[] = [
   'other',
 ];
 const TEST_ACTIONS: ImpactEvidenceTestAction[] = ['added', 'updated'];
-
-export interface ImpactFileRow {
-  repo: ImpactEvidenceRepo;
-  path: string;
-  change_kind: ImpactEvidenceChangeKind;
-  previous_path: string;
-  note: string;
-}
-
-export interface ImpactSymbolRow {
-  name: string;
-  kind: ImpactEvidenceSymbolKind;
-  action: ImpactEvidenceSymbolAction;
-  repo: ImpactEvidenceRepo;
-  file: string;
-}
-
-export interface ImpactSurfaceRow {
-  kind: ImpactEvidenceSurfaceKind;
-  identifier: string;
-}
-
-export interface ImpactTestRow {
-  action: ImpactEvidenceTestAction;
-  repo: ImpactEvidenceRepo;
-  test_file_path: string;
-  test_function: string;
-  scenario_id: string;
-}
-
-export interface ImpactEvidenceDraft {
-  files: ImpactFileRow[];
-  symbols: ImpactSymbolRow[];
-  surfaces: ImpactSurfaceRow[];
-  tests: ImpactTestRow[];
-  evidence_refs: string[];
-}
-
-export function emptyImpactEvidenceDraft(): ImpactEvidenceDraft {
-  return { files: [], symbols: [], surfaces: [], tests: [], evidence_refs: [] };
-}
-
-export function impactDraftRowCount(draft: ImpactEvidenceDraft): number {
-  return (
-    draft.files.length
-    + draft.symbols.length
-    + draft.surfaces.length
-    + draft.tests.length
-    + draft.evidence_refs.length
-  );
-}
-
-/** AC-10: a submit with zero rows returns undefined — the move payload then
- * omits the field entirely instead of sending an empty block. */
-export function buildImpactEvidencePayload(
-  draft: ImpactEvidenceDraft,
-): ImpactEvidence | undefined {
-  if (impactDraftRowCount(draft) === 0) return undefined;
-  return {
-    schema_version: 1,
-    files: draft.files.map((row) => ({
-      repo: row.repo,
-      path: row.path.trim(),
-      change_kind: row.change_kind,
-      ...(row.change_kind === 'renamed' && row.previous_path.trim()
-        ? { previous_path: row.previous_path.trim() }
-        : {}),
-      ...(row.note.trim() ? { note: row.note.trim() } : {}),
-    })),
-    symbols: draft.symbols.map((row) => ({
-      name: row.name.trim(),
-      kind: row.kind,
-      action: row.action,
-      repo: row.repo,
-      file: row.file.trim(),
-    })),
-    surfaces: draft.surfaces.map((row) => ({
-      kind: row.kind,
-      identifier: row.identifier.trim(),
-    })),
-    tests: draft.tests.map((row) => ({
-      action: row.action,
-      repo: row.repo,
-      test_file_path: row.test_file_path.trim(),
-      ...(row.test_function.trim()
-        ? { test_function: row.test_function.trim() }
-        : {}),
-      ...(row.scenario_id.trim()
-        ? { scenario_id: row.scenario_id.trim() }
-        : {}),
-    })),
-    evidence_refs: draft.evidence_refs
-      .map((ref) => ref.trim())
-      .filter(Boolean),
-  };
-}
 
 const inputCls =
   'w-full rounded border border-gray-300 px-2 py-1 font-mono text-[11px] '
@@ -254,7 +163,7 @@ export function ImpactEvidenceEditor({
                 files: [
                   ...draft.files,
                   {
-                    repo: 'core',
+                    repo: nextImpactRepo(draft.files),
                     path: '',
                     change_kind: 'modified',
                     previous_path: '',
@@ -329,6 +238,17 @@ export function ImpactEvidenceEditor({
                   }}
                 />
               )}
+              <input
+                className={inputCls}
+                placeholder="why (optional)"
+                value={row.note}
+                aria-label={`file ${i} note`}
+                onChange={(e) => {
+                  const files = [...draft.files];
+                  files[i] = { ...row, note: e.target.value };
+                  patch({ files });
+                }}
+              />
               <RemoveButton
                 label={`remove file ${i}`}
                 disabled={disabled}
@@ -353,7 +273,7 @@ export function ImpactEvidenceEditor({
                     name: '',
                     kind: 'function',
                     action: 'created',
-                    repo: 'core',
+                    repo: nextImpactRepo(draft.symbols),
                     file: '',
                   },
                 ],
@@ -524,7 +444,7 @@ export function ImpactEvidenceEditor({
                   ...draft.tests,
                   {
                     action: 'added',
-                    repo: 'core',
+                    repo: nextImpactRepo(draft.tests),
                     test_file_path: '',
                     test_function: '',
                     scenario_id: '',
@@ -581,6 +501,17 @@ export function ImpactEvidenceEditor({
                 onChange={(e) => {
                   const tests = [...draft.tests];
                   tests[i] = { ...row, test_file_path: e.target.value };
+                  patch({ tests });
+                }}
+              />
+              <input
+                className={inputCls}
+                placeholder="test_function (optional)"
+                value={row.test_function}
+                aria-label={`test ${i} function`}
+                onChange={(e) => {
+                  const tests = [...draft.tests];
+                  tests[i] = { ...row, test_function: e.target.value };
                   patch({ tests });
                 }}
               />
