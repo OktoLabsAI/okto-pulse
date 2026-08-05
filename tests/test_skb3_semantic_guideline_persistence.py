@@ -67,6 +67,9 @@ from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment impo
     _new_waiver_event_row,
     _new_waiver_row,
 )
+from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
+    CommunityUnitOfWork,
+)
 from okto_pulse.community.adapters.sqlalchemy_policy_constraint_projection import (
     CommunitySqlAlchemyPolicyConstraintProjection,
 )
@@ -100,6 +103,7 @@ from okto_pulse.core.domain.guideline_semantic_assessment import (
     SemanticMetricAssessment,
     SemanticMetricOutcome,
     record_semantic_guideline_assessment,
+    semantic_binding_head_digest_v1,
 )
 from okto_pulse.core.domain.guideline_semantic_currentness import (
     SemanticAssessmentCurrentnessReason,
@@ -145,6 +149,9 @@ from okto_pulse.core.ports.guideline_policy import (
 from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.application.use_cases.policy_governance import (
     ASSESSMENTS_READ,
+    ASSESSMENTS_RECORD,
+    RecordSemanticGuidelineAssessmentCommand,
+    RecordSemanticGuidelineAssessmentUseCase,
 )
 from okto_pulse.core.application.use_cases.semantic_guideline_governance import (
     ListSemanticGuidelineAssessmentsCommand,
@@ -1255,6 +1262,137 @@ async def _seed_semantic_authority(
     return board_id, ideation_id, revision, binding
 
 
+async def _seed_unlinked_semantic_binding_head(
+    session: AsyncSession,
+    *,
+    board_id: str,
+) -> BoardGuidelineBinding:
+    guideline_id = _id()
+    revision_id = _id()
+    binding_id = _id()
+    timestamp = _now()
+    revision = GuidelineRevision(
+        revision_id=revision_id,
+        guideline_id=guideline_id,
+        revision_number=1,
+        semantic_version="1.0.0",
+        title="Unlinked historical policy",
+        content="Preserve this binding head as an authority fence.",
+        metrics=(),
+        created_by="guideline-author",
+        created_at=timestamp,
+    )
+    legacy_digest = canonical_sha256(
+        {
+            "contract": "legacy-guideline-revision-test/v1",
+            "revision_id": revision_id,
+        }
+    )
+    binding = BoardGuidelineBinding(
+        binding_id=binding_id,
+        board_id=board_id,
+        guideline_id=guideline_id,
+        revision_id=revision_id,
+        semantic_version=revision.semantic_version,
+        revision_digest=revision.revision_digest,
+        priority=1,
+        binding_revision=1,
+        adopted_by="board-owner",
+        adopted_at=timestamp,
+        enforcement=GuidelineEnforcement.BLOCKING,
+        minimum_confidence=80,
+        state=GuidelineBindingState.UNLINKED,
+        source_kind=GuidelineBindingProvenance.NATIVE,
+    )
+    session.add_all(
+        [
+            Guideline(
+                id=guideline_id,
+                title=revision.title,
+                content=revision.content,
+                tags=[],
+                scope="global",
+                board_id=None,
+                owner_id="guideline-author",
+                version=1,
+            ),
+            GuidelineRevisionRow(
+                revision_id=revision_id,
+                guideline_id=guideline_id,
+                revision_number=1,
+                semantic_version=revision.semantic_version,
+                title=revision.title,
+                content=revision.content,
+                content_digest=legacy_digest,
+                tags=[],
+                rules=[],
+                created_by="guideline-author",
+                created_at=timestamp,
+                published_head_revision=1,
+                published_head_updated_at=timestamp,
+                parent_revision_id=None,
+                legacy_version=None,
+                legacy_version_unresolvable=False,
+                legacy_tags=None,
+                idempotency_key=None,
+                request_digest=None,
+                legacy_version_text=None,
+            ),
+        ]
+    )
+    await session.flush()
+    session.add_all(
+        [
+            GuidelineBoardBindingRow(
+                binding_id=binding_id,
+                binding_revision=1,
+                board_id=board_id,
+                guideline_id=guideline_id,
+                revision_id=revision_id,
+                semantic_version=revision.semantic_version,
+                revision_digest=legacy_digest,
+                priority=1,
+                adopted_by="board-owner",
+                adopted_at=timestamp,
+                enforcement="blocking",
+                source_kind="native",
+                binding_origin="native",
+                state="unlinked",
+            ),
+            SemanticGuidelineRevisionRow(
+                revision_id=revision_id,
+                guideline_id=guideline_id,
+                metrics=[],
+                revision_digest=revision.revision_digest,
+                source_revision_digest=legacy_digest,
+                authority_state="native",
+                legacy_rules_digest=None,
+                created_by="guideline-author",
+                created_at=timestamp,
+            ),
+        ]
+    )
+    await session.flush()
+    session.add(
+        SemanticGuidelineBindingConfigurationRow(
+            binding_id=binding_id,
+            binding_revision=1,
+            board_id=board_id,
+            guideline_id=guideline_id,
+            revision_id=revision_id,
+            revision_digest=revision.revision_digest,
+            enforcement="blocking",
+            minimum_confidence=80,
+            metric_threshold_overrides={},
+            configuration_digest=binding.configuration_digest,
+            configured_by="board-owner",
+            configured_at=timestamp,
+        )
+    )
+    await session.flush()
+    return binding
+
+
 async def _subject_digest(
     session: AsyncSession,
     *,
@@ -1381,6 +1519,137 @@ async def _record_failed_semantic_assessment(
             if finding.receipt_id == persisted.receipt.receipt_id
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_record_assessment_uses_authoritative_unlinked_binding_heads(
+    tmp_path,
+    semantic_relational_application_adapter,
+):
+    engine = _sqlite_engine(tmp_path / "semantic-unlinked-head-fence.db")
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await _install_semantic_triggers(engine)
+
+    async with factory() as session, session.begin():
+        board_id, ideation_id, revision, active_binding = (
+            await _seed_semantic_authority(session, metric_count=1)
+        )
+        board = await session.get(Board, board_id)
+        assert board is not None
+        board.realm_id = "local"
+        unlinked_binding = await _seed_unlinked_semantic_binding_head(
+            session,
+            board_id=board_id,
+        )
+        subject = await CommunitySqlAlchemySemanticGuidelineAssessment(
+            session
+        ).record_semantic_subject_mutation(
+            board_id=board_id,
+            entity_type=PolicyEntityType.IDEATION,
+            subject_id=ideation_id,
+            actor_id="artifact-author",
+            idempotency_key="subject-before-unlinked-head-assessment",
+            request_digest=canonical_sha256(
+                {"subject": "before-unlinked-head-assessment"}
+            ),
+            changed_at=_now(),
+        )
+
+    actor = ActorContext(
+        "board-owner",
+        "mcp",
+        board_id=board_id,
+        permissions=(ASSESSMENTS_RECORD, "guidelines.read"),
+    )
+    async with factory() as session:
+        policy = CommunitySqlAlchemyGuidelinePolicy(session)
+        semantic = CommunitySqlAlchemySemanticGuidelineAssessment(session)
+        active_bindings = await policy.list_bindings(board_id=board_id)
+        assert tuple(item.binding_id for item in active_bindings) == (
+            active_binding.binding_id,
+        )
+        assert unlinked_binding.binding_id not in {
+            item.binding_id for item in active_bindings
+        }
+        policy_set_digest, authoritative_head_digest = (
+            await semantic.semantic_current_fences(board_id=board_id)
+        )
+        assert authoritative_head_digest != semantic_binding_head_digest_v1(
+            active_bindings
+        )
+
+        metric = revision.metrics[0]
+        result = await RecordSemanticGuidelineAssessmentUseCase(
+            clock=_now,
+        ).execute(
+            RecordSemanticGuidelineAssessmentCommand(
+                board_id=board_id,
+                receipt_id="receipt-unlinked-head-fence",
+                submission=SemanticGuidelineAssessmentSubmission(
+                    subject=subject.subject,
+                    binding_id=active_binding.binding_id,
+                    expected_binding_revision=(
+                        active_binding.binding_revision
+                    ),
+                    guideline_revision_id=revision.revision_id,
+                    idempotency_key="assessment-unlinked-head-fence",
+                    confidence=92,
+                    assessor=SemanticAssessmentAssessor(
+                        agent_id="board-owner",
+                        model_id="test-model",
+                    ),
+                    metric_results=(
+                        SemanticMetricAssessment(
+                            metric_id=metric.metric_id,
+                            score=80,
+                            rationale=(
+                                "The ideation provides independently "
+                                "verifiable semantic evidence."
+                            ),
+                            evidence_refs=(
+                                EvidenceRef(
+                                    source_type="ideation",
+                                    source_id=ideation_id,
+                                    source_version=(
+                                        subject.subject.subject_version
+                                    ),
+                                    content_hash=subject.content_digest,
+                                ),
+                            ),
+                            pinpoints=(
+                                UnboundFindingAnchor(
+                                    anchor_type=FindingAnchorType.FIELD,
+                                    anchor_ref="description",
+                                    excerpt_hash=canonical_sha256(
+                                        {"field": "description"}
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            actor=actor,
+            uow=CommunityUnitOfWork(session, actor=actor),
+        )
+
+        receipt = result.assessment.receipt
+        assert receipt.policy_set_digest == policy_set_digest
+        assert receipt.binding_head_digest == authoritative_head_digest
+        stored = await session.get(
+            SemanticGuidelineAssessmentReceiptRow,
+            receipt.receipt_id,
+        )
+        assert stored is not None
+        assert stored.sealed is True
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
