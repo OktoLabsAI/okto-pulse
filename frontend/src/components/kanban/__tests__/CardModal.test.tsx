@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CardModal, TestEvidenceTab } from '../CardModal';
 import type {
@@ -15,6 +15,7 @@ import { AuthenticatedFetchError } from '@/lib/authFetch';
 const apiMock = vi.hoisted(() => ({
   getCard: vi.fn(),
   getSpec: vi.fn(),
+  getSprint: vi.fn(),
   getSpecKnowledge: vi.fn(),
   getAllowedTransitions: vi.fn(),
   listAgentsForBoard: vi.fn(),
@@ -45,6 +46,14 @@ const apiMock = vi.hoisted(() => ({
 const storeMock = vi.hoisted(() => ({
   selectedCardId: 'bug-1',
   isCardModalOpen: true,
+  currentBoard: {
+    id: 'board-1',
+    settings: {
+      min_confidence: 70,
+      min_completeness: 80,
+      max_drift: 50,
+    },
+  },
   columns: {} as Record<CardStatus, CardSummary[]>,
   closeCardModal: vi.fn(),
   removeCardFromColumn: vi.fn(),
@@ -99,6 +108,7 @@ vi.mock('@/store/dashboard', () => ({
   useSelectedCard: () => storeMock.selectedCardId,
   useIsCardModalOpen: () => storeMock.isCardModalOpen,
   useColumns: () => storeMock.columns,
+  useCurrentBoard: () => storeMock.currentBoard,
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -222,6 +232,24 @@ const emptyColumns = (): Record<CardStatus, CardSummary[]> => ({
   done: [],
   cancelled: [],
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks() {
+  await act(async () => {
+    for (let index = 0; index < 8; index += 1) {
+      await Promise.resolve();
+    }
+  });
+}
 
 const bugCard: Card = {
   id: 'bug-1',
@@ -430,6 +458,11 @@ describe('CardModal', () => {
     permissionsMock.has.mockImplementation((_permission: string) => true);
     storeMock.selectedCardId = 'bug-1';
     storeMock.isCardModalOpen = true;
+    storeMock.currentBoard.settings = {
+      min_confidence: 70,
+      min_completeness: 80,
+      max_drift: 50,
+    };
     storeMock.columns = emptyColumns();
     storeMock.columns.in_progress = [
       {
@@ -489,6 +522,11 @@ describe('CardModal', () => {
       api_contracts: [],
       technical_requirements: [],
       knowledge_bases: [],
+    });
+    apiMock.getSprint.mockResolvedValue({
+      id: 'sprint-1',
+      spec_id: 'spec-1',
+      board_id: 'board-1',
     });
     apiMock.getSpecKnowledge.mockResolvedValue(null);
     apiMock.listAgentsForBoard.mockResolvedValue([]);
@@ -1107,6 +1145,270 @@ describe('CardModal', () => {
         },
       );
     });
+  });
+
+  it('shows the active board thresholds in the task-validation form', async () => {
+    const validationCard: Card = {
+      ...cardForType('normal'),
+      id: 'validation-thresholds-1',
+      status: 'validation',
+    };
+    storeMock.currentBoard.settings = {
+      min_confidence: 85,
+      min_completeness: 90,
+      max_drift: 10,
+    };
+    storeMock.selectedCardId = validationCard.id;
+    apiMock.getCard.mockResolvedValue(validationCard);
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+
+    expect(
+      await screen.findByRole('img', {
+        name: /Confidence score 80 out of 100.*Minimum 85.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: /Completeness score 80 out of 100.*Minimum 90.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: /Drift score 20 out of 100.*Maximum 10.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No threshold configured')).not.toBeInTheDocument();
+  });
+
+  it('resolves each task-validation threshold through sprint, spec, and board overrides', async () => {
+    const validationCard: Card = {
+      ...cardForType('normal'),
+      id: 'validation-mixed-thresholds-1',
+      status: 'validation',
+      sprint_id: 'sprint-1',
+    };
+    storeMock.currentBoard.settings = {
+      min_confidence: 70,
+      min_completeness: 80,
+      max_drift: 12,
+    };
+    storeMock.selectedCardId = validationCard.id;
+    apiMock.getCard.mockResolvedValue(validationCard);
+    apiMock.getSpec.mockResolvedValue({
+      id: 'spec-1',
+      title: 'Stories spec',
+      validation_min_confidence: 88,
+      validation_min_completeness: 92,
+      validation_max_drift: null,
+      test_scenarios: [],
+      business_rules: [],
+      api_contracts: [],
+      technical_requirements: [],
+      knowledge_bases: [],
+    });
+    apiMock.getSprint.mockResolvedValue({
+      id: 'sprint-1',
+      spec_id: 'spec-1',
+      board_id: 'board-1',
+      validation_min_confidence: 95,
+      validation_min_completeness: null,
+      validation_max_drift: null,
+    });
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+
+    expect(
+      await screen.findByRole('img', {
+        name: /Confidence score 80 out of 100.*Minimum 95.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: /Completeness score 80 out of 100.*Minimum 92.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: /Drift score 20 out of 100.*Maximum 12.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('task-validation-confidence-threshold-source'))
+      .toHaveTextContent('Threshold source: sprint');
+    expect(screen.getByTestId('task-validation-completeness-threshold-source'))
+      .toHaveTextContent('Threshold source: spec');
+    expect(screen.getByTestId('task-validation-drift-threshold-source'))
+      .toHaveTextContent('Threshold source: board');
+    expect(apiMock.getSprint).toHaveBeenCalledWith('sprint-1');
+  });
+
+  it('fails closed when threshold authority cannot load and retries explicitly', async () => {
+    const validationCard: Card = {
+      ...cardForType('normal'),
+      id: 'validation-threshold-retry-1',
+      status: 'validation',
+      sprint_id: 'sprint-threshold-retry',
+    };
+    storeMock.selectedCardId = validationCard.id;
+    apiMock.getCard.mockResolvedValue(validationCard);
+    apiMock.getSprint.mockRejectedValueOnce(new Error('sprint unavailable'));
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not load the authoritative Spec/Sprint validation thresholds.',
+    );
+    expect(
+      screen.queryByRole('button', { name: /Submit Validation/ }),
+    ).not.toBeInTheDocument();
+
+    apiMock.getSprint.mockResolvedValue({
+      id: 'sprint-threshold-retry',
+      spec_id: 'spec-1',
+      board_id: 'board-1',
+      validation_min_confidence: 96,
+      validation_min_completeness: 94,
+      validation_max_drift: 6,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry thresholds' }));
+
+    expect(
+      await screen.findByRole('img', {
+        name: /Confidence score 80 out of 100.*Minimum 96.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('ignores an older same-card polling response that finishes last', async () => {
+    vi.useFakeTimers();
+    const staleRefresh = deferred<Card>();
+    const currentRefresh = deferred<Card>();
+    const initialCard: Card = {
+      ...cardForType('normal'),
+      id: 'validation-poll-generation-1',
+      status: 'validation',
+      updated_at: '2026-08-06T10:00:00Z',
+    };
+    const staleCard = {
+      ...initialCard,
+      updated_at: '2026-08-06T10:01:00Z',
+    };
+    const currentCard = {
+      ...initialCard,
+      updated_at: '2026-08-06T10:02:00Z',
+    };
+    const initialSpec = {
+      id: 'spec-1',
+      title: 'Initial authority',
+      validation_min_confidence: 71,
+      test_scenarios: [],
+      business_rules: [],
+      api_contracts: [],
+      technical_requirements: [],
+      knowledge_bases: [],
+    };
+    const currentSpec = {
+      ...initialSpec,
+      title: 'Current authority',
+      validation_min_confidence: 97,
+    };
+    const currentSpecResponse = deferred<typeof currentSpec>();
+    storeMock.selectedCardId = initialCard.id;
+    apiMock.getCard
+      .mockResolvedValueOnce(initialCard)
+      .mockImplementationOnce(() => staleRefresh.promise)
+      .mockImplementationOnce(() => currentRefresh.promise);
+    apiMock.getSpec
+      .mockResolvedValueOnce(initialSpec)
+      .mockImplementationOnce(() => currentSpecResponse.promise);
+
+    const view = render(<CardModal boardId="board-1" />);
+    try {
+      await flushMicrotasks();
+      fireEvent.click(screen.getByRole('tab', { name: /^Validation/ }));
+      fireEvent.click(screen.getByRole('tab', { name: /^Task validation/ }));
+      expect(
+        screen.getByRole('img', {
+          name: /Confidence score 80 out of 100.*Minimum 71.*threshold met/i,
+        }),
+      ).toBeInTheDocument();
+      fireEvent.change(
+        screen.getByPlaceholderText('Justify the confidence score...'),
+        { target: { value: 'Current confidence evidence.' } },
+      );
+      fireEvent.change(
+        screen.getByPlaceholderText('Justify the completeness score...'),
+        { target: { value: 'Current completeness evidence.' } },
+      );
+      fireEvent.change(
+        screen.getByPlaceholderText('Justify the drift score...'),
+        { target: { value: 'Current drift evidence.' } },
+      );
+      fireEvent.change(
+        screen.getByPlaceholderText('Overall validation summary...'),
+        { target: { value: 'Current authoritative validation summary.' } },
+      );
+      expect(
+        screen.getByRole('button', { name: 'Submit Validation (Approve)' }),
+      ).toBeEnabled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(apiMock.getCard).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(apiMock.getCard).toHaveBeenCalledTimes(3);
+
+      currentRefresh.resolve(currentCard);
+      await flushMicrotasks();
+      expect(screen.getByRole('status')).toHaveTextContent(
+        'Refreshing authoritative Task Validation thresholds.',
+      );
+      expect(
+        screen.getByRole('button', { name: 'Submit Validation (Approve)' }),
+      ).toBeDisabled();
+      expect(
+        screen.getByRole('img', {
+          name: /Confidence score 80 out of 100.*Minimum 71.*threshold met/i,
+        }),
+      ).toBeInTheDocument();
+
+      currentSpecResponse.resolve(currentSpec);
+      await flushMicrotasks();
+      expect(
+        screen.getByRole('img', {
+          name: /Confidence score 80 out of 100.*Minimum 97.*threshold not met/i,
+        }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Submit Validation (Approve)' }),
+      ).toBeEnabled();
+
+      staleRefresh.resolve(staleCard);
+      await flushMicrotasks();
+      expect(
+        screen.getByRole('img', {
+          name: /Confidence score 80 out of 100.*Minimum 97.*threshold not met/i,
+        }),
+      ).toBeInTheDocument();
+      expect(apiMock.getSpec).toHaveBeenCalledTimes(2);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it('renders validation history against the thresholds captured at submission time', async () => {

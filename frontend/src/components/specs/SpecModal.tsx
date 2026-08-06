@@ -2413,14 +2413,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               {/* Validation Gate Override */}
               <ValidationGateOverride
                 title="Validation Gate"
-                requireValue={(spec as any).require_task_validation ?? null}
-                minConfidence={(spec as any).validation_min_confidence ?? null}
-                minCompleteness={(spec as any).validation_min_completeness ?? null}
-                maxDrift={(spec as any).validation_max_drift ?? null}
+                requireValue={spec.require_task_validation ?? null}
+                minConfidence={spec.validation_min_confidence ?? null}
+                minCompleteness={spec.validation_min_completeness ?? null}
+                maxDrift={spec.validation_max_drift ?? null}
                 parentLabel="Board default"
                 onUpdate={async (patch) => {
                   try {
-                    const updated = await api.updateSpec(specId, patch as any);
+                    const updated = await api.updateSpec(specId, patch);
                     setSpec(updated);
                   } catch { toast.error('Failed to update validation gate'); }
                 }}

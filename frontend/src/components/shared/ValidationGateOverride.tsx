@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
+import type { TaskValidationGateOverride } from '@/types';
 
 type GateState = 'inherit' | 'required' | 'disabled';
 
@@ -10,12 +11,7 @@ interface ValidationGateOverrideProps {
   minCompleteness: number | null;
   maxDrift: number | null;
   parentLabel: string; // "Board default" or "Spec/Board"
-  onUpdate: (patch: {
-    require_task_validation?: boolean | null;
-    validation_min_confidence?: number | null;
-    validation_min_completeness?: number | null;
-    validation_max_drift?: number | null;
-  }) => Promise<void>;
+  onUpdate: (patch: TaskValidationGateOverride) => Promise<void>;
 }
 
 function toState(value: boolean | null): GateState {
@@ -37,32 +33,33 @@ export function ValidationGateOverride({
   parentLabel,
   onUpdate,
 }: ValidationGateOverrideProps) {
+  const inputIdPrefix = useId();
   const currentState = toState(requireValue);
   const [localConf, setLocalConf] = useState<string>(minConfidence !== null ? String(minConfidence) : '');
   const [localCompl, setLocalCompl] = useState<string>(minCompleteness !== null ? String(minCompleteness) : '');
   const [localDrift, setLocalDrift] = useState<string>(maxDrift !== null ? String(maxDrift) : '');
 
+  useEffect(() => {
+    setLocalConf(minConfidence !== null ? String(minConfidence) : '');
+  }, [minConfidence]);
+  useEffect(() => {
+    setLocalCompl(minCompleteness !== null ? String(minCompleteness) : '');
+  }, [minCompleteness]);
+  useEffect(() => {
+    setLocalDrift(maxDrift !== null ? String(maxDrift) : '');
+  }, [maxDrift]);
+
   const handleStateChange = async (newState: GateState) => {
     if (newState === currentState) return;
     const newRequire = fromState(newState);
-    const patch: any = { require_task_validation: newRequire };
-    // When moving away from "required", clear threshold overrides
-    if (newState !== 'required') {
-      patch.validation_min_confidence = null;
-      patch.validation_min_completeness = null;
-      patch.validation_max_drift = null;
-      setLocalConf('');
-      setLocalCompl('');
-      setLocalDrift('');
-    }
-    await onUpdate(patch);
+    await onUpdate({ require_task_validation: newRequire });
   };
 
   const handleThresholdBlur = async (field: 'conf' | 'compl' | 'drift', rawValue: string) => {
     const trimmed = rawValue.trim();
     const parsed = trimmed === '' ? null : Number(trimmed);
     if (parsed !== null && (isNaN(parsed) || parsed < 0 || parsed > 100)) return;
-    const patch: any = {};
+    const patch: TaskValidationGateOverride = {};
     if (field === 'conf') patch.validation_min_confidence = parsed;
     if (field === 'compl') patch.validation_min_completeness = parsed;
     if (field === 'drift') patch.validation_max_drift = parsed;
@@ -114,17 +111,22 @@ export function ValidationGateOverride({
         <span className="text-[10px] font-medium text-violet-600 dark:text-violet-400">{resolvedLabel}</span>
       </div>
 
-      {/* Threshold overrides when Required */}
-      {currentState === 'required' && (
-        <div className="bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-lg p-3 space-y-2.5">
-          <p className="text-[10px] text-violet-500 font-medium">
-            Override thresholds (leave empty to inherit from {parentLabel.toLowerCase()})
-          </p>
+      {/* Threshold inheritance is independent from the required/disabled flag. */}
+      <div className="bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-lg p-3 space-y-2.5">
+        <p className="text-[10px] text-violet-500 font-medium">
+          Override thresholds independently (leave empty to inherit from {parentLabel.toLowerCase()})
+        </p>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-1">
-              <label className="text-[10px] text-gray-500 dark:text-gray-400">Min Confidence</label>
-              <input
+        <div className="grid grid-cols-3 gap-3">
+          <div className="space-y-1">
+            <label
+              htmlFor={`${inputIdPrefix}-confidence`}
+              className="text-[10px] text-gray-500 dark:text-gray-400"
+            >
+              Min Confidence
+            </label>
+            <input
+                id={`${inputIdPrefix}-confidence`}
                 type="number"
                 min={0}
                 max={100}
@@ -133,11 +135,17 @@ export function ValidationGateOverride({
                 onBlur={(e) => handleThresholdBlur('conf', e.target.value)}
                 placeholder="70"
                 className="w-full text-center text-xs font-mono border border-violet-200 dark:border-violet-700 rounded px-1.5 py-1 bg-white dark:bg-gray-800 text-gray-800 dark:text-white"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] text-gray-500 dark:text-gray-400">Min Completeness</label>
-              <input
+            />
+          </div>
+          <div className="space-y-1">
+            <label
+              htmlFor={`${inputIdPrefix}-completeness`}
+              className="text-[10px] text-gray-500 dark:text-gray-400"
+            >
+              Min Completeness
+            </label>
+            <input
+                id={`${inputIdPrefix}-completeness`}
                 type="number"
                 min={0}
                 max={100}
@@ -146,11 +154,17 @@ export function ValidationGateOverride({
                 onBlur={(e) => handleThresholdBlur('compl', e.target.value)}
                 placeholder="80"
                 className="w-full text-center text-xs font-mono border border-violet-200 dark:border-violet-700 rounded px-1.5 py-1 bg-white dark:bg-gray-800 text-gray-800 dark:text-white"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] text-gray-500 dark:text-gray-400">Max Drift</label>
-              <input
+            />
+          </div>
+          <div className="space-y-1">
+            <label
+              htmlFor={`${inputIdPrefix}-drift`}
+              className="text-[10px] text-gray-500 dark:text-gray-400"
+            >
+              Max Drift
+            </label>
+            <input
+                id={`${inputIdPrefix}-drift`}
                 type="number"
                 min={0}
                 max={100}
@@ -159,12 +173,13 @@ export function ValidationGateOverride({
                 onBlur={(e) => handleThresholdBlur('drift', e.target.value)}
                 placeholder="50"
                 className="w-full text-center text-xs font-mono border border-violet-200 dark:border-violet-700 rounded px-1.5 py-1 bg-white dark:bg-gray-800 text-gray-800 dark:text-white"
-              />
-            </div>
+            />
           </div>
-          <p className="text-[10px] text-gray-400">Empty = inherit (70 / 80 / 50)</p>
         </div>
-      )}
+        <p className="text-[10px] text-gray-400">
+          Thresholds remain configured independently of the gate requirement.
+        </p>
+      </div>
 
       {currentState === 'disabled' && (
         <p className="text-[10px] text-gray-500 dark:text-gray-400 italic">

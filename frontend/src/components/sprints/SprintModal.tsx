@@ -518,14 +518,14 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
               <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
                 <ValidationGateOverride
                   title="Validation Gate"
-                  requireValue={(sprint as any).require_task_validation ?? null}
-                  minConfidence={(sprint as any).validation_min_confidence ?? null}
-                  minCompleteness={(sprint as any).validation_min_completeness ?? null}
-                  maxDrift={(sprint as any).validation_max_drift ?? null}
+                  requireValue={sprint.require_task_validation ?? null}
+                  minConfidence={sprint.validation_min_confidence ?? null}
+                  minCompleteness={sprint.validation_min_completeness ?? null}
+                  maxDrift={sprint.validation_max_drift ?? null}
                   parentLabel="Spec/Board"
                   onUpdate={async (patch) => {
                     try {
-                      await api.updateSprint(sprintId, patch as any);
+                      await api.updateSprint(sprintId, patch);
                       loadSprint();
                     } catch {
                       toast.error('Failed to update validation gate');

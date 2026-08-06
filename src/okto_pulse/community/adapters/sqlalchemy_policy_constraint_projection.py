@@ -13,6 +13,7 @@ any that are still active.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -126,6 +127,32 @@ SEMANTIC_GUIDELINE_SOURCE_REMOVED_REASON = (
     "semantic_guideline_relational_source_removed"
 )
 _SEMANTIC_SOURCE_PREFIX = "semantic-guideline:"
+_SEMANTIC_CONTEXT_PREFIX = "json:"
+_SEMANTIC_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_SEMANTIC_KINDS = frozenset(
+    {
+        "revision",
+        "metric_definition",
+        "binding_configuration",
+        "assessment_receipt",
+        "metric_result",
+        "waiver",
+        "skip",
+    }
+)
+
+
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +173,8 @@ class _SemanticGraphNode:
     node_id: str
     source_artifact_ref: str
     created_by_agent: str
-    source_content_hash: str
+    source_content_hash: str | None
+    authority_digest: str
     title: str
     content: str
     context: str
@@ -204,17 +232,79 @@ def _waiver_projection_state(
     return True, None
 
 
-def _semantic_context(kind: str, payload: dict[str, Any]) -> str:
-    return json.dumps(
-        {
-            "contract": SEMANTIC_GUIDELINE_KG_CONTRACT,
-            "kind": kind,
-            **payload,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
+def _semantic_context(
+    kind: str,
+    payload: dict[str, Any],
+    *,
+    authority_digest: str,
+) -> str:
+    """Encode semantic authority without Ladybug/Kuzu STRUCT coercion.
+
+    A bound string whose first byte is ``{`` is inferred by the Python driver
+    as a STRUCT before it reaches a STRING property. Its round-trip value is a
+    pseudo-map (``{contract: ..., kind: ...}``) that is not JSON. The stable
+    text envelope prevents that coercion while keeping the payload strict and
+    independently decodable.
+    """
+
+    try:
+        canonical_json = json.dumps(
+            {
+                **payload,
+                # Envelope authority is reserved and cannot be shadowed by a
+                # relational payload key.
+                "contract": SEMANTIC_GUIDELINE_KG_CONTRACT,
+                "kind": kind,
+                "authority_digest": authority_digest,
+            },
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise PolicyConstraintProjectionConflict(
+            "semantic_guideline_graph_context_invalid"
+        ) from exc
+    return f"{_SEMANTIC_CONTEXT_PREFIX}{canonical_json}"
+
+
+def _decode_semantic_context(value: object) -> dict[str, Any]:
+    """Decode the current envelope and valid pre-envelope JSON providers.
+
+    Raw JSON is a narrow compatibility path for graph providers that persisted
+    the original v1 string byte-for-byte. Ladybug's lossy pseudo-map is not
+    parsed: it cannot prove quoted values or nested payload boundaries.
+    """
+
+    if not isinstance(value, str) or not value:
+        raise PolicyConstraintProjectionConflict(
+            "semantic_guideline_graph_context_invalid"
+        )
+    serialized = (
+        value[len(_SEMANTIC_CONTEXT_PREFIX) :]
+        if value.startswith(_SEMANTIC_CONTEXT_PREFIX)
+        else value
     )
+    try:
+        context = json.loads(
+            serialized,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_non_finite_json_constant,
+        )
+    except (TypeError, ValueError) as exc:
+        raise PolicyConstraintProjectionConflict(
+            "semantic_guideline_graph_context_invalid"
+        ) from exc
+    if (
+        not isinstance(context, dict)
+        or context.get("contract") != SEMANTIC_GUIDELINE_KG_CONTRACT
+        or not isinstance(context.get("kind"), str)
+    ):
+        raise PolicyConstraintProjectionConflict(
+            "semantic_guideline_graph_context_invalid"
+        )
+    return context
 
 
 def _desired_semantic_node(
@@ -233,8 +323,20 @@ def _desired_semantic_node(
     created_at: datetime,
     projected_at: datetime,
 ) -> _SemanticDesiredNode:
+    if kind not in _SEMANTIC_KINDS:
+        raise PolicyConstraintProjectionConflict(
+            "semantic_guideline_kind_invalid"
+        )
+    if not isinstance(digest, str) or _SEMANTIC_DIGEST.fullmatch(digest) is None:
+        raise PolicyConstraintProjectionConflict(
+            "semantic_guideline_authority_digest_invalid"
+        )
     node_id = _semantic_node_id(kind, identity)
-    context = _semantic_context(kind, payload)
+    context = _semantic_context(
+        kind,
+        payload,
+        authority_digest=digest,
+    )
     terminal_reason = None if active else (reason or "semantic_guideline_ended")
     attrs = {
         "title": title,
@@ -258,7 +360,10 @@ def _desired_semantic_node(
         "revocation_reason": terminal_reason,
         "human_curated": False,
         "generation": generation,
-        "source_content_hash": digest,
+        # This column belongs to Core's consolidation provenance recipe.
+        # Semantic-guideline authority is relational and carries its digest in
+        # the versioned context envelope instead.
+        "source_content_hash": None,
         "kind_of": f"SemanticGuideline{kind.title().replace('_', '')}",
     }
     return _SemanticDesiredNode(
@@ -302,16 +407,33 @@ def _semantic_graph_nodes(scope: Any) -> tuple[_SemanticGraphNode, ...]:
             raise PolicyConstraintProjectionConflict(
                 "semantic_guideline_graph_identity_invalid"
             )
-        try:
-            context = json.loads(str(row[6] or ""))
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise PolicyConstraintProjectionConflict(
-                "semantic_guideline_graph_context_invalid"
-            ) from exc
+        node_kind, separator, node_identity = node_id[
+            len(_SEMANTIC_SOURCE_PREFIX) :
+        ].partition(":")
         if (
-            not isinstance(context, dict)
-            or context.get("contract") != SEMANTIC_GUIDELINE_KG_CONTRACT
-            or not isinstance(context.get("kind"), str)
+            not separator
+            or not node_identity
+            or node_kind not in _SEMANTIC_KINDS
+        ):
+            raise PolicyConstraintProjectionConflict(
+                "semantic_guideline_graph_identity_invalid"
+            )
+        raw_context = row[6]
+        context = _decode_semantic_context(raw_context)
+        source_content_hash = None if row[3] is None else str(row[3])
+        authority_digest = context.get("authority_digest")
+        # A valid raw-JSON v1 node from a provider that did not coerce the
+        # original payload may predate the envelope. Its former digest column
+        # is a bounded migration source; reconcile immediately moves it into
+        # context and clears the provenance-only column.
+        if authority_digest is None and not str(raw_context).startswith(
+            _SEMANTIC_CONTEXT_PREFIX
+        ):
+            authority_digest = source_content_hash
+        if (
+            context.get("kind") != node_kind
+            or not isinstance(authority_digest, str)
+            or _SEMANTIC_DIGEST.fullmatch(authority_digest) is None
         ):
             raise PolicyConstraintProjectionConflict(
                 "semantic_guideline_graph_context_invalid"
@@ -322,7 +444,8 @@ def _semantic_graph_nodes(scope: Any) -> tuple[_SemanticGraphNode, ...]:
                 node_id=node_id,
                 source_artifact_ref=source_ref,
                 created_by_agent=actor,
-                source_content_hash=str(row[3] or ""),
+                source_content_hash=source_content_hash,
+                authority_digest=authority_digest,
                 title=str(row[4] or ""),
                 content=str(row[5] or ""),
                 context=str(row[6] or ""),
@@ -371,7 +494,8 @@ def _semantic_node_matches(
     attrs = desired.attrs
     return (
         current.created_by_agent == SEMANTIC_GUIDELINE_KG_ACTOR
-        and current.source_content_hash == desired.digest
+        and current.authority_digest == desired.digest
+        and current.source_content_hash is None
         and current.title == attrs["title"]
         and current.content == attrs["content"]
         and current.context == attrs["context"]

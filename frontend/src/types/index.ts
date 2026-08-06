@@ -442,7 +442,14 @@ export const SPRINT_STATUS_COLORS: Record<SprintStatus, string> = {
   cancelled: 'bg-red-500',
 };
 
-export interface Sprint {
+export interface TaskValidationGateOverride {
+  require_task_validation?: boolean | null;
+  validation_min_confidence?: number | null;
+  validation_min_completeness?: number | null;
+  validation_max_drift?: number | null;
+}
+
+export interface Sprint extends TaskValidationGateOverride {
   id: string;
   spec_id: string;
   board_id: string;
@@ -538,6 +545,26 @@ export interface CreateSprintRequest {
   start_date?: string;
   end_date?: string;
   labels?: string[];
+}
+
+export interface UpdateSprintRequest extends TaskValidationGateOverride {
+  title?: string;
+  description?: string | null;
+  objective?: string | null;
+  expected_outcome?: string | null;
+  lane_type?: SprintLaneType;
+  origin_sprint_id?: string | null;
+  origin_bug_id?: string | null;
+  test_scenario_ids?: string[];
+  business_rule_ids?: string[];
+  start_date?: string | null;
+  end_date?: string | null;
+  labels?: string[];
+  skip_test_coverage?: boolean;
+  skip_rules_coverage?: boolean;
+  skip_qualitative_validation?: boolean;
+  validation_threshold?: number | null;
+  expected_version?: number;
 }
 
 export interface MoveSprintRequest {
@@ -1823,7 +1850,7 @@ export interface SpecKnowledgeSummary {
 }
 
 // Spec
-export interface Spec {
+export interface Spec extends TaskValidationGateOverride {
   id: string;
   board_id: string;
   ideation_id: string | null;
@@ -3132,7 +3159,7 @@ export interface CreateSpecRequest {
   refinement_id?: string;
 }
 
-export interface UpdateSpecRequest {
+export interface UpdateSpecRequest extends TaskValidationGateOverride {
   title?: string;
   description?: string;
   context?: string;

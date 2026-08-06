@@ -67,6 +67,7 @@ import type {
   AllowedTransitionEntityType,
   AllowedTransitionsResponse,
   Spec,
+  Sprint,
   SpecStructuredEntityMutationRequest,
   SpecStructuredEntityMutationResult,
   SpecStructuredEntityOperation,
@@ -74,6 +75,7 @@ import type {
   SpecSummary,
   CreateSpecRequest,
   UpdateSpecRequest,
+  UpdateSprintRequest,
   MoveSpecRequest,
   SpecKnowledge,
   SpecKnowledgeSummary,
@@ -2249,12 +2251,12 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       });
     },
 
-    async getSprint(sprintId: string): Promise<any> {
-      return apiClient.fetchJson(`/sprints/${sprintId}`);
+    async getSprint(sprintId: string): Promise<Sprint> {
+      return apiClient.fetchJson<Sprint>(`/sprints/${sprintId}`);
     },
 
-    async updateSprint(sprintId: string, data: any): Promise<any> {
-      return apiClient.fetchJson(`/sprints/${sprintId}`, {
+    async updateSprint(sprintId: string, data: UpdateSprintRequest): Promise<Sprint> {
+      return apiClient.fetchJson<Sprint>(`/sprints/${sprintId}`, {
         method: 'PATCH', body: JSON.stringify(data),
       });
     },

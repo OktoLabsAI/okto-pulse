@@ -12,8 +12,9 @@ import {
   useSelectedCard,
   useIsCardModalOpen,
   useColumns,
+  useCurrentBoard,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, Sprint, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence } from '@/types';
 import { STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import {
@@ -52,6 +53,11 @@ import type {
   CardModalTab,
 } from '@/components/shared/tabRouting';
 import { CardResourcesPanel } from './CardResourcesPanel';
+import {
+  resolveTaskValidationThresholds,
+  type ResolvedTaskValidationThresholds,
+  type TaskValidationThresholdSource,
+} from './taskValidationThresholds';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -278,6 +284,14 @@ interface CardModalProps {
   onEscape?: () => void;
 }
 
+interface TaskValidationHierarchySnapshot {
+  cardId: string;
+  specId: string | null;
+  sprintId: string | null;
+  spec: Spec | null;
+  sprint: Sprint | null;
+}
+
 export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const api = useDashboardApi();
   const perms = usePermissions(boardId);
@@ -286,9 +300,11 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const selectedCardIdRef = useRef(selectedCardId);
   selectedCardIdRef.current = selectedCardId;
   const cardLoadGenerationRef = useRef(0);
+  const cardDataGenerationRef = useRef(0);
   const isOpen = useIsCardModalOpen();
   const { closeCardModal, removeCardFromColumn, updateCardInColumn } = useDashboardStore();
   const columns = useColumns();
+  const currentBoard = useCurrentBoard();
 
   // Flat list of all cards on the board for dependency picker
   const allBoardCards = Object.values(columns).flat();
@@ -310,6 +326,12 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const [dependents, setDependents] = useState<{ id: string; title: string; status: string }[]>([]);
   const [parentSpec, setParentSpec] = useState<{ id: string; title: string } | null>(null);
   const [fullSpec, setFullSpec] = useState<Spec | null>(null);
+  const [taskValidationHierarchy, setTaskValidationHierarchy] =
+    useState<TaskValidationHierarchySnapshot | null>(null);
+  const [taskValidationHierarchyLoading, setTaskValidationHierarchyLoading] =
+    useState(false);
+  const [taskValidationHierarchyError, setTaskValidationHierarchyError] =
+    useState<string | null>(null);
   const [specScenarios, setSpecScenarios] = useState<TestScenario[]>([]);
   const [specRules, setSpecRules] = useState<any[]>([]);
   const [specContracts, setSpecContracts] = useState<any[]>([]);
@@ -334,6 +356,20 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   // AC-16: the 409 impact_evidence_required remediation renders inline and
   // the prompt stays open with its state preserved.
   const [conclusionGateError, setConclusionGateError] = useState<string | null>(null);
+  const taskValidationThresholdsReady = Boolean(
+    card
+    && currentBoard?.id === card.board_id
+    && taskValidationHierarchy?.cardId === card.id
+    && taskValidationHierarchy.specId === (card.spec_id ?? null)
+    && taskValidationHierarchy.sprintId === (card.sprint_id ?? null),
+  );
+  const taskValidationThresholds = taskValidationThresholdsReady
+    ? resolveTaskValidationThresholds({
+        boardSettings: currentBoard?.settings,
+        spec: taskValidationHierarchy?.spec,
+        sprint: taskValidationHierarchy?.sprint,
+      })
+    : null;
   const originTask = card?.origin_task_id
     ? allBoardCards.find((candidate) => candidate.id === card.origin_task_id) || null
     : null;
@@ -418,13 +454,21 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
 
   const loadCard = (cardId: string) => {
     const loadGeneration = ++cardLoadGenerationRef.current;
-    const isCurrentLoad = () =>
+    const dataGeneration = ++cardDataGenerationRef.current;
+    const isCurrentFullLoad = () =>
       loadGeneration === cardLoadGenerationRef.current
       && selectedCardIdRef.current === cardId;
+    const isCurrentLoad = () =>
+      isCurrentFullLoad()
+      && dataGeneration === cardDataGenerationRef.current;
     setIsLoading(true);
     setBugRegressionPreview(null);
     setAmendmentRevisions(null);
+    setFullSpec(null);
     setSpecKBsFull([]);
+    setTaskValidationHierarchy(null);
+    setTaskValidationHierarchyLoading(true);
+    setTaskValidationHierarchyError(null);
     api.getCard(cardId)
       .then((data) => {
         if (!isCurrentLoad()) return;
@@ -446,58 +490,76 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
               if (isCurrentLoad()) setAmendmentRevisions(null);
             });
         }
-        if (data.spec_id) {
-          api.getSpec(data.spec_id)
-            .then((spec) => {
-              if (!isCurrentLoad()) return;
-              setParentSpec({ id: spec.id, title: spec.title });
-              setFullSpec(spec);
-              setSpecScenarios(spec.test_scenarios || []);
-              setSpecRules(spec.business_rules || []);
-              setSpecContracts(spec.api_contracts || []);
-              setSpecIRs(spec.integration_requirements || []);
-              setSpecORs(spec.observability_requirements || []);
-              setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
-              // Load full KB content for knowledge tab
-              Promise.all(
-                (spec.knowledge_bases || []).map((kb: any) => api.getSpecKnowledge(spec.id, kb.id).catch(() => null))
-              ).then((kbs) => {
-                if (isCurrentLoad()) {
-                  setSpecKBsFull(kbs.filter(Boolean) as any[]);
-                }
-              }).catch(() => {
-                if (isCurrentLoad()) setSpecKBsFull([]);
-              });
-            })
-            .catch(() => {
-              if (!isCurrentLoad()) return;
-              setParentSpec(null);
-              setFullSpec(null);
-              setSpecScenarios([]);
-              setSpecRules([]);
-              setSpecContracts([]);
-              setSpecIRs([]);
-              setSpecORs([]);
-              setSpecTRs([]);
-              setSpecKBsFull([]);
+        const specRequest: Promise<Spec | null | undefined> = data.spec_id
+          ? api.getSpec(data.spec_id).catch(() => undefined)
+          : Promise.resolve(null);
+        const sprintRequest: Promise<Sprint | null | undefined> = data.sprint_id
+          ? api.getSprint(data.sprint_id).catch(() => undefined)
+          : Promise.resolve(null);
+        void Promise.all([specRequest, sprintRequest]).then(([spec, sprint]) => {
+          if (!isCurrentLoad()) return;
+
+          if (spec) {
+            setParentSpec({ id: spec.id, title: spec.title });
+            setFullSpec(spec);
+            setSpecScenarios(spec.test_scenarios || []);
+            setSpecRules(spec.business_rules || []);
+            setSpecContracts(spec.api_contracts || []);
+            setSpecIRs(spec.integration_requirements || []);
+            setSpecORs(spec.observability_requirements || []);
+            setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
+            // Knowledge bodies are not part of the threshold authority, but
+            // remain guarded by the same full-load generation.
+            void Promise.all(
+              (spec.knowledge_bases || []).map((kb: any) => api.getSpecKnowledge(spec.id, kb.id).catch(() => null))
+            ).then((kbs) => {
+              if (isCurrentLoad()) {
+                setSpecKBsFull(kbs.filter(Boolean) as any[]);
+              }
+            }).catch(() => {
+              if (isCurrentLoad()) setSpecKBsFull([]);
             });
-        } else {
-          setParentSpec(null);
-          setFullSpec(null);
-          setSpecScenarios([]);
-          setSpecRules([]);
-          setSpecContracts([]);
-          setSpecIRs([]);
-          setSpecORs([]);
-          setSpecTRs([]);
-          setSpecKBsFull([]);
-        }
+          } else {
+            setParentSpec(null);
+            setFullSpec(null);
+            setSpecScenarios([]);
+            setSpecRules([]);
+            setSpecContracts([]);
+            setSpecIRs([]);
+            setSpecORs([]);
+            setSpecTRs([]);
+            setSpecKBsFull([]);
+          }
+          if (spec === undefined || sprint === undefined) {
+            setTaskValidationHierarchy(null);
+            setTaskValidationHierarchyError(
+              'Could not load the authoritative Spec/Sprint validation thresholds.',
+            );
+          } else {
+            setTaskValidationHierarchy({
+              cardId: data.id,
+              specId: data.spec_id ?? null,
+              sprintId: data.sprint_id ?? null,
+              spec,
+              sprint,
+            });
+            setTaskValidationHierarchyError(null);
+          }
+          setTaskValidationHierarchyLoading(false);
+        });
       })
       .catch(() => {
-        if (isCurrentLoad()) toast.error('Failed to load card');
+        if (isCurrentLoad()) {
+          setTaskValidationHierarchy(null);
+          setTaskValidationHierarchyLoading(false);
+          setTaskValidationHierarchyError(
+            'Could not load the card validation thresholds.',
+          );
+          toast.error('Failed to load card');
+        }
       })
       .finally(() => {
-        if (isCurrentLoad()) setIsLoading(false);
+        if (isCurrentFullLoad()) setIsLoading(false);
       });
     api.listAgentsForBoard(boardId)
       .then((agents) => {
@@ -525,36 +587,43 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
 
   // Silent refresh — updates card data without showing loading spinner
   const silentRefresh = useCallback((cardId: string) => {
+    if (isLoading || taskValidationHierarchyLoading) return;
+    const dataGeneration = ++cardDataGenerationRef.current;
+    const isCurrentRefresh = () =>
+      dataGeneration === cardDataGenerationRef.current
+      && selectedCardIdRef.current === cardId;
     api.getCard(cardId)
       .then((data) => {
-        if (selectedCardIdRef.current !== cardId) return;
+        if (!isCurrentRefresh()) return;
         const subjectChanged =
           card?.id === data.id
           && card.updated_at !== data.updated_at;
         setCard(data);
+        setTaskValidationHierarchyLoading(true);
+        setTaskValidationHierarchyError(null);
         if (subjectChanged) {
           notePolicySubjectChanged();
         }
         if (data.card_type === 'bug') {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
             .then((preview) => {
-              if (selectedCardIdRef.current === cardId) {
+              if (isCurrentRefresh()) {
                 setBugRegressionPreview(preview);
               }
             })
             .catch(() => {
-              if (selectedCardIdRef.current === cardId) {
+              if (isCurrentRefresh()) {
                 setBugRegressionPreview(null);
               }
             });
           api.listAmendmentRevisions(data.board_id, data.id)
             .then((revisions) => {
-              if (selectedCardIdRef.current === cardId) {
+              if (isCurrentRefresh()) {
                 setAmendmentRevisions(revisions);
               }
             })
             .catch(() => {
-              if (selectedCardIdRef.current === cardId) {
+              if (isCurrentRefresh()) {
                 setAmendmentRevisions(null);
               }
             });
@@ -562,42 +631,81 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
           setBugRegressionPreview(null);
           setAmendmentRevisions(null);
         }
-        if (data.spec_id) {
-          api.getSpec(data.spec_id)
-            .then((spec) => {
-              if (selectedCardIdRef.current !== cardId) return;
-              setParentSpec({ id: spec.id, title: spec.title });
-              setSpecScenarios(spec.test_scenarios || []);
-              setSpecRules(spec.business_rules || []);
-              setSpecContracts(spec.api_contracts || []);
-              setSpecIRs(spec.integration_requirements || []);
-              setSpecORs(spec.observability_requirements || []);
-              setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
-            })
-            .catch(() => {});
-        }
+        const specRequest: Promise<Spec | null | undefined> = data.spec_id
+          ? api.getSpec(data.spec_id).catch(() => undefined)
+          : Promise.resolve(null);
+        const sprintRequest: Promise<Sprint | null | undefined> = data.sprint_id
+          ? api.getSprint(data.sprint_id).catch(() => undefined)
+          : Promise.resolve(null);
+        void Promise.all([specRequest, sprintRequest]).then(([spec, sprint]) => {
+          if (!isCurrentRefresh()) return;
+          if (spec) {
+            setParentSpec({ id: spec.id, title: spec.title });
+            setFullSpec(spec);
+            setSpecScenarios(spec.test_scenarios || []);
+            setSpecRules(spec.business_rules || []);
+            setSpecContracts(spec.api_contracts || []);
+            setSpecIRs(spec.integration_requirements || []);
+            setSpecORs(spec.observability_requirements || []);
+            setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
+          } else {
+            setParentSpec(null);
+            setFullSpec(null);
+            setSpecScenarios([]);
+            setSpecRules([]);
+            setSpecContracts([]);
+            setSpecIRs([]);
+            setSpecORs([]);
+            setSpecTRs([]);
+          }
+          if (spec === undefined || sprint === undefined) {
+            setTaskValidationHierarchy(null);
+            setTaskValidationHierarchyError(
+              'Could not refresh the authoritative Spec/Sprint validation thresholds.',
+            );
+          } else {
+            setTaskValidationHierarchy({
+              cardId: data.id,
+              specId: data.spec_id ?? null,
+              sprintId: data.sprint_id ?? null,
+              spec,
+              sprint,
+            });
+            setTaskValidationHierarchyError(null);
+          }
+          setTaskValidationHierarchyLoading(false);
+        });
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!isCurrentRefresh()) return;
+        setTaskValidationHierarchy(null);
+        setTaskValidationHierarchyLoading(false);
+        setTaskValidationHierarchyError(
+          'Could not refresh the card validation thresholds.',
+        );
+      });
     api.getCardSeenStatus(cardId)
       .then((data) => {
-        if (selectedCardIdRef.current === cardId) setSeenStatus(data.items);
+        if (isCurrentRefresh()) setSeenStatus(data.items);
       })
       .catch(() => {});
     api.getCardDependencies(cardId)
       .then((items) => {
-        if (selectedCardIdRef.current === cardId) setDependencies(items);
+        if (isCurrentRefresh()) setDependencies(items);
       })
       .catch(() => {});
     api.getCardDependents(cardId)
       .then((items) => {
-        if (selectedCardIdRef.current === cardId) setDependents(items);
+        if (isCurrentRefresh()) setDependents(items);
       })
       .catch(() => {});
   }, [
     api,
     card?.id,
     card?.updated_at,
+    isLoading,
     notePolicySubjectChanged,
+    taskValidationHierarchyLoading,
   ]);
 
   // Path B safe actions (spec be089cd3). User-click only — NO auto-mutation on
@@ -640,8 +748,12 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       loadCard(selectedCardId);
     } else {
       cardLoadGenerationRef.current += 1;
+      cardDataGenerationRef.current += 1;
       setCard(null);
       setSpecKBsFull([]);
+      setTaskValidationHierarchy(null);
+      setTaskValidationHierarchyLoading(false);
+      setTaskValidationHierarchyError(null);
     }
   }, [selectedCardId, isOpen]);
 
@@ -724,7 +836,12 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   // Auto-refresh every 10s while modal is open
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
-    if (selectedCardId && isOpen) {
+    if (
+      selectedCardId
+      && isOpen
+      && !isLoading
+      && !taskValidationHierarchyLoading
+    ) {
       intervalRef.current = setInterval(() => {
         silentRefresh(selectedCardId);
       }, 10000);
@@ -732,7 +849,13 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [selectedCardId, isOpen, silentRefresh]);
+  }, [
+    selectedCardId,
+    isOpen,
+    isLoading,
+    silentRefresh,
+    taskValidationHierarchyLoading,
+  ]);
 
   const handleRefresh = () => {
     if (selectedCardId) loadCard(selectedCardId);
@@ -1973,6 +2096,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                           api={api}
                           members={boardMembers}
                           canSubmit={canSubmitValidation}
+                          thresholds={taskValidationThresholds}
+                          thresholdsLoading={taskValidationHierarchyLoading}
+                          thresholdsError={taskValidationHierarchyError}
+                          onRetryThresholds={() => loadCard(card.id)}
                         />
                       </AccessibleTabPanel>
                     )}
@@ -3162,6 +3289,8 @@ function ValidationMetricInput({
   label,
   value,
   direction,
+  threshold,
+  thresholdSource,
   justification,
   onValueChange,
   onJustificationChange,
@@ -3170,6 +3299,8 @@ function ValidationMetricInput({
   label: string;
   value: number;
   direction: 'higher-is-better' | 'lower-is-better';
+  threshold: number;
+  thresholdSource: TaskValidationThresholdSource;
   justification: string;
   onValueChange: (value: number) => void;
   onJustificationChange: (value: string) => void;
@@ -3180,10 +3311,17 @@ function ValidationMetricInput({
         label={label}
         value={value}
         direction={direction}
+        threshold={threshold}
         tone="info"
         testId={`${id}-score`}
       />
       <div className="min-w-0 flex-1">
+        <p
+          className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-violet-500 dark:text-violet-300"
+          data-testid={`${id}-threshold-source`}
+        >
+          Threshold source: {thresholdSource}
+        </p>
         <label
           htmlFor={id}
           className="text-xs font-medium text-gray-600 dark:text-gray-400"
@@ -3267,12 +3405,20 @@ function ValidationsTab({
   api,
   members,
   canSubmit,
+  thresholds,
+  thresholdsLoading,
+  thresholdsError,
+  onRetryThresholds,
 }: {
   card: Card;
   onCardChanged: (card: Card) => void;
   api: ReturnType<typeof useDashboardApi>;
   members: { id: string; name: string }[];
   canSubmit: boolean;
+  thresholds: ResolvedTaskValidationThresholds | null;
+  thresholdsLoading: boolean;
+  thresholdsError: string | null;
+  onRetryThresholds: () => void;
 }) {
   const [confidence, setConfidence] = useState(80);
   const [completeness, setCompleteness] = useState(80);
@@ -3292,7 +3438,7 @@ function ValidationsTab({
     && generalJustification.trim().length >= 20;
 
   const handleSubmit = async () => {
-    if (!formValid) return;
+    if (!formValid || !thresholds || thresholdsLoading || thresholdsError) return;
     setSubmitting(true);
     try {
       const data = {
@@ -3340,12 +3486,24 @@ function ValidationsTab({
   return (
     <div className="space-y-6">
       {/* Section A: Submit Validation Form — only when status === 'validation' */}
-      {card.status === 'validation' && canSubmit && (
-        <div className="bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-700 rounded-xl p-5 space-y-5">
+      {card.status === 'validation' && canSubmit && thresholds && (
+        <div
+          className="bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-700 rounded-xl p-5 space-y-5"
+          aria-busy={thresholdsLoading}
+        >
           <h3 className="text-sm font-semibold text-violet-800 dark:text-violet-200 flex items-center gap-2">
             <Shield size={16} />
             Submit Validation
           </h3>
+
+          {thresholdsLoading && (
+            <div
+              role="status"
+              className="rounded-lg border border-violet-300 bg-white/70 px-3 py-2 text-xs text-violet-800 dark:border-violet-700 dark:bg-gray-900/40 dark:text-violet-200"
+            >
+              Refreshing authoritative Task Validation thresholds. Submission is temporarily disabled.
+            </div>
+          )}
 
           <div className="grid gap-4 xl:grid-cols-3">
             <ValidationMetricInput
@@ -3353,6 +3511,8 @@ function ValidationsTab({
               label="Confidence"
               value={confidence}
               direction="higher-is-better"
+              threshold={thresholds.min_confidence}
+              thresholdSource={thresholds.resolved_sources.min_confidence}
               justification={confidenceJustification}
               onValueChange={setConfidence}
               onJustificationChange={setConfidenceJustification}
@@ -3362,6 +3522,8 @@ function ValidationsTab({
               label="Completeness"
               value={completeness}
               direction="higher-is-better"
+              threshold={thresholds.min_completeness}
+              thresholdSource={thresholds.resolved_sources.min_completeness}
               justification={completenessJustification}
               onValueChange={setCompleteness}
               onJustificationChange={setCompletenessJustification}
@@ -3371,6 +3533,8 @@ function ValidationsTab({
               label="Drift"
               value={drift}
               direction="lower-is-better"
+              threshold={thresholds.max_drift}
+              thresholdSource={thresholds.resolved_sources.max_drift}
               justification={driftJustification}
               onValueChange={setDrift}
               onJustificationChange={setDriftJustification}
@@ -3420,7 +3584,7 @@ function ValidationsTab({
           {/* Submit */}
           <button
             onClick={handleSubmit}
-            disabled={submitting || !formValid}
+            disabled={submitting || !formValid || thresholdsLoading || Boolean(thresholdsError)}
             className={`w-full py-2.5 rounded-lg text-sm font-medium transition-colors ${
               recommendation === 'approve'
                 ? 'bg-green-600 hover:bg-green-700 text-white'
@@ -3437,6 +3601,28 @@ function ValidationsTab({
               the general justification requires at least 20.
             </p>
           )}
+        </div>
+      )}
+      {card.status === 'validation' && canSubmit && !thresholds && thresholdsError && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/20 dark:text-red-200"
+        >
+          <p>{thresholdsError} Retry before submitting Task Validation.</p>
+          <button
+            type="button"
+            onClick={onRetryThresholds}
+            className="mt-2 rounded-md border border-current/30 px-2.5 py-1 text-xs font-semibold hover:bg-red-100 dark:hover:bg-red-900/30"
+          >
+            Retry thresholds
+          </button>
+        </div>
+      )}
+      {card.status === 'validation' && canSubmit && !thresholds && !thresholdsError && (
+        <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-800 dark:border-violet-800 dark:bg-violet-950/20 dark:text-violet-200">
+          {thresholdsLoading
+            ? 'Resolving effective Task Validation thresholds…'
+            : 'Task Validation thresholds are not available yet.'}
         </div>
       )}
       {card.status === 'validation' && !canSubmit && (
