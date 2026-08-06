@@ -15,6 +15,8 @@ unavailable is not zero").
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -119,6 +121,84 @@ class StorageFootprintProxy(BaseModel):
     configured_max_db_size_bytes: int | None = None
     configured_max_db_size_gb: int | None = None
     is_direct_memory_telemetry: bool = False
+    description: str
+    tooltip: str
+    unavailable_reason: str | None = None
+
+
+class NativeRuntimeBudgetRequested(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    board_buffer_pool_mb: int | None = None
+    global_buffer_pool_mb: int | None = None
+    max_db_size_gb: int | None = None
+    connection_pool_size: int | None = None
+
+
+class NativeRuntimeBudgetNormalized(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    board_buffer_pool_cap_mb: int | None = None
+    max_db_size_cap_gb: int | None = None
+    resident_board_slots: int | None = None
+
+
+class NativeRuntimeBudgetEffective(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    board_buffer_pool_mb: int | None = None
+    global_buffer_pool_mb: int | None = None
+    max_db_size_gb: int | None = None
+    resident_board_slots: int | None = None
+
+
+class NativeRuntimeBudgetSources(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    board_buffer_pool_cap: Literal[
+        "operational_default", "explicit_env", "invalid_env_fallback"
+    ] | None = None
+    max_db_size_cap: Literal[
+        "operational_default", "explicit_env", "invalid_env_fallback"
+    ] | None = None
+    resident_board_slots: Literal[
+        "operational_default", "explicit_env", "configured_pool"
+    ] | None = None
+
+
+class NativeRuntimeBudgetProcessEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resident_board_slots: int | None = None
+    resident_board_count: int | None = None
+    board_buffer_pool_total_mb: int | None = None
+    global_buffer_pool_mb: int | None = None
+    max_derived_buffer_envelope_mb: int | None = None
+
+
+class NativeRuntimeBudget(BaseModel):
+    """Deterministic runtime capacity envelope; never direct RSS telemetry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["runtime_capability"] = "runtime_capability"
+    status: Literal["available", "unavailable"] = "unavailable"
+    requested: NativeRuntimeBudgetRequested = Field(
+        default_factory=NativeRuntimeBudgetRequested
+    )
+    normalized: NativeRuntimeBudgetNormalized = Field(
+        default_factory=NativeRuntimeBudgetNormalized
+    )
+    effective: NativeRuntimeBudgetEffective = Field(
+        default_factory=NativeRuntimeBudgetEffective
+    )
+    sources: NativeRuntimeBudgetSources = Field(
+        default_factory=NativeRuntimeBudgetSources
+    )
+    process_envelope: NativeRuntimeBudgetProcessEnvelope = Field(
+        default_factory=NativeRuntimeBudgetProcessEnvelope
+    )
+    is_direct_memory_telemetry: Literal[False] = False
     description: str
     tooltip: str
     unavailable_reason: str | None = None
@@ -246,6 +326,7 @@ class KGHealthResponse(BaseModel):
     # scalar fields.
     decay_scheduler_diagnostics: DecaySchedulerDiagnostics
     storage_footprint_proxy: StorageFootprintProxy
+    native_runtime_budget: NativeRuntimeBudget
     probe_diagnostics: dict = Field(default_factory=dict)
     orphan_integrity: OrphanIntegrityProjection = Field(
         default_factory=OrphanIntegrityProjection

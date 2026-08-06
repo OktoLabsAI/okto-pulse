@@ -71,20 +71,6 @@ from okto_pulse.core.runtime_context import (  # noqa: E402
 #: Registry unico da sessao.  A IDENTIDADE nunca muda.
 _SESSION_RUNTIME_VALUES = RuntimeValueRegistry()
 
-# Mundo DETERMINISTICO de listeners semanticos: em producao,
-# build_community_session_factory SEMPRE instala os Session-listeners de
-# versionamento semantico (processo-global, once). Sem esta linha a suite
-# bifurca em dois mundos — testes que criam async_sessionmaker direto rodam
-# SEM listeners (verdes por vacuidade) ate que qualquer teste anterior os
-# instale, e ai o bridge falha closed (semantic_subject_mutation_actor_required)
-# ou constantes calibradas no mundo vazio divergem (budget de statements,
-# currentness). Instalar aqui fixa o mundo de producao para TODA ordem.
-from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (  # noqa: E402
-    install_policy_subject_versioning,
-)
-
-install_policy_subject_versioning()
-
 #: Vira ERRO em vez de silencio quando um teste deixa chaves para tras.
 #: Rode com OKTO_PULSE_TEST_STRICT_RUNTIME_LEAKS=1 para cacar contaminacao
 #: nova; mantenha desligado no default ate o backlog de conversao dos

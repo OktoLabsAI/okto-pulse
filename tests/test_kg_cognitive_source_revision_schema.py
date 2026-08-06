@@ -21,17 +21,23 @@ from okto_pulse.community.adapters.relational_schema_lifecycle import (
 from okto_pulse.community.adapters.relational_schema_steps import (
     COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX,
     _migrate_cognitive_source_revision_ledger,
+    _migrate_recompute_cognitive_source_fingerprints_v2,
     cognitive_source_immutability_trigger_manifest,
 )
+from okto_pulse.community.adapters.sqlalchemy_base import Base
 from okto_pulse.community.adapters.sqlalchemy_models import (
     GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES,
     GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
+    KGCognitiveSourceFingerprintEpochPermit,
+    KGCognitiveSourceFingerprintEpochReceipt,
     KGCognitiveSourceRevision,
 )
 from okto_pulse.community.adapters.sqlalchemy_schema_contract import (
     COMMUNITY_SCHEMA_EXTENSION_TABLES,
 )
 from okto_pulse.core.ports.kg_cognitive_source import (
+    COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
+    COGNITIVE_SOURCE_FINGERPRINT_CONTRACT_V3,
     canonical_cognitive_source_fingerprint,
 )
 from okto_pulse.core.kg.rebuild_sources import cognitive_durable_digest_from_rows
@@ -124,6 +130,436 @@ def test_revision_model_is_additive_and_has_the_exact_owned_contract() -> None:
     )
 
 
+def test_fingerprint_epoch_models_have_exact_permit_and_receipt_contracts() -> None:
+    permit = KGCognitiveSourceFingerprintEpochPermit.__table__
+    receipt = KGCognitiveSourceFingerprintEpochReceipt.__table__
+
+    assert permit.name == "kg_cognitive_source_fingerprint_epoch_permits"
+    assert tuple(column.name for column in permit.columns) == (
+        "revision_id",
+        "epoch",
+        "old_fingerprint",
+        "new_fingerprint",
+        "created_at",
+    )
+    assert next(iter(permit.foreign_key_constraints)).elements[0].target_fullname == (
+        "kg_cognitive_source_revisions.id"
+    )
+    assert receipt.name == "kg_cognitive_source_fingerprint_epoch_receipts"
+    assert tuple(column.name for column in receipt.columns) == (
+        "epoch",
+        "fingerprint_contract",
+        "rows_scanned",
+        "rows_rewritten",
+        "before_digest",
+        "after_digest",
+        "completed_at",
+    )
+    assert permit.name in COMMUNITY_SCHEMA_EXTENSION_TABLES
+    assert receipt.name in COMMUNITY_SCHEMA_EXTENSION_TABLES
+
+
+async def _seed_unsealed_fingerprint_epoch(
+    database_path: Path,
+    *,
+    revision_count: int = 1,
+) -> list[str]:
+    database_module.create_database(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+    engine = database_module.get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await _migrate_cognitive_source_revision_ledger()
+    expected: list[str] = []
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(
+            "INSERT INTO kg_cognitive_sources "
+            "(id, board_id, node_id, node_type, generation, payload, "
+            "evidence_refs, source_session_id, committed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (
+                "epoch-source",
+                "epoch-board",
+                "epoch-node",
+                "Decision",
+                0,
+                json.dumps({"title": "base"}),
+                json.dumps(["spec:base"]),
+                "epoch-session",
+            ),
+        )
+        for revision in range(1, revision_count + 1):
+            payload = {"title": f"revision-{revision}", "query_hits": revision}
+            evidence = [f"spec:{revision}"]
+            expected.append(
+                _fingerprint(
+                    board_id="epoch-board",
+                    node_id="epoch-node",
+                    payload=payload,
+                    evidence_refs=evidence,
+                )
+            )
+            await conn.exec_driver_sql(
+                "INSERT INTO kg_cognitive_source_revisions "
+                "(id, cognitive_source_id, source_revision, record_fingerprint, "
+                "payload, evidence_refs, source_session_id, committed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (
+                    f"epoch-revision-{revision}",
+                    "epoch-source",
+                    revision,
+                    str(revision) * 64,
+                    json.dumps(payload),
+                    json.dumps(evidence),
+                    "epoch-session",
+                ),
+            )
+    return expected
+
+
+def test_fingerprint_epoch_is_guarded_durable_and_one_shot(tmp_path: Path) -> None:
+    database_path = tmp_path / "fingerprint-epoch.sqlite3"
+
+    async def execute() -> tuple[str | None, str | None, list[str]]:
+        expected = await _seed_unsealed_fingerprint_epoch(database_path)
+        first = await _migrate_recompute_cognitive_source_fingerprints_v2()
+        await database_module.get_engine().dispose()
+        database_module.create_database(
+            f"sqlite+aiosqlite:///{database_path.as_posix()}"
+        )
+        second = await _migrate_recompute_cognitive_source_fingerprints_v2()
+        await database_module.get_engine().dispose()
+        return first, second, expected
+
+    first, second, expected = asyncio.run(execute())
+    assert (first, second) == (None, "skipped")
+
+    connection = sqlite3.connect(database_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        receipt = connection.execute(
+            "SELECT * FROM kg_cognitive_source_fingerprint_epoch_receipts"
+        ).fetchone()
+        assert receipt is not None
+        assert receipt["epoch"] == COGNITIVE_SOURCE_FINGERPRINT_CONTRACT
+        assert receipt["fingerprint_contract"] == COGNITIVE_SOURCE_FINGERPRINT_CONTRACT
+        assert receipt["rows_scanned"] == 1
+        assert receipt["rows_rewritten"] == 1
+        assert len(receipt["before_digest"]) == 64
+        assert len(receipt["after_digest"]) == 64
+        assert (
+            connection.execute(
+                "SELECT record_fingerprint FROM kg_cognitive_source_revisions"
+            ).fetchone()[0]
+            == expected[0]
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM kg_cognitive_source_fingerprint_epoch_permits"
+            ).fetchone()[0]
+            == 0
+        )
+
+        update_guard = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (
+                f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_"
+                "kg_cognitive_source_revisions_update",
+            ),
+        ).fetchone()[0]
+        assert "kg_cognitive_source_fingerprint_epoch_permits" in update_guard
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "UPDATE kg_cognitive_source_revisions "
+                "SET record_fingerprint = ? WHERE id = 'epoch-revision-1'",
+                ("f" * 64,),
+            )
+        connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError, match="epoch_sealed"):
+            connection.execute(
+                "INSERT INTO kg_cognitive_source_fingerprint_epoch_permits "
+                "(revision_id, epoch, old_fingerprint, new_fingerprint) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    "epoch-revision-1",
+                    COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
+                    expected[0],
+                    "f" * 64,
+                ),
+            )
+        connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "UPDATE kg_cognitive_source_fingerprint_epoch_receipts "
+                "SET rows_rewritten = 0"
+            )
+    finally:
+        connection.close()
+
+
+def test_fingerprint_epoch_failure_rolls_back_permits_updates_and_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "fingerprint-epoch-rollback.sqlite3"
+
+    async def execute() -> None:
+        await _seed_unsealed_fingerprint_epoch(database_path, revision_count=2)
+        import okto_pulse.core.ports.kg_cognitive_source as source_port
+
+        original = source_port.canonical_cognitive_source_fingerprint
+        calls = 0
+
+        def fail_second(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("injected fingerprint epoch failure")
+            return original(**kwargs)
+
+        monkeypatch.setattr(
+            source_port,
+            "canonical_cognitive_source_fingerprint",
+            fail_second,
+        )
+        with pytest.raises(RuntimeError, match="injected"):
+            await _migrate_recompute_cognitive_source_fingerprints_v2()
+        await database_module.get_engine().dispose()
+
+    asyncio.run(execute())
+
+    connection = sqlite3.connect(database_path)
+    try:
+        assert connection.execute(
+            "SELECT record_fingerprint FROM kg_cognitive_source_revisions "
+            "ORDER BY source_revision"
+        ).fetchall() == [("1" * 64,), ("2" * 64,)]
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM kg_cognitive_source_fingerprint_epoch_permits"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM kg_cognitive_source_fingerprint_epoch_receipts"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        connection.close()
+
+
+def test_fingerprint_epoch_upgrades_exact_v3_trigger_to_v4_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "fingerprint-epoch-v3-to-v4.sqlite3"
+    v4_contract = "cognitive-source-fingerprint/v4"
+
+    async def execute() -> tuple[str | None, str | None, str | None, str | None]:
+        await _seed_unsealed_fingerprint_epoch(database_path)
+        first_v3 = await _migrate_recompute_cognitive_source_fingerprints_v2()
+
+        import okto_pulse.core.ports.kg_cognitive_source as source_port
+
+        monkeypatch.setattr(
+            source_port,
+            "COGNITIVE_SOURCE_FINGERPRINT_CONTRACT",
+            v4_contract,
+        )
+        first_upgrade = await _migrate_cognitive_source_revision_ledger()
+        replay_upgrade = await _migrate_cognitive_source_revision_ledger()
+        first_v4 = await _migrate_recompute_cognitive_source_fingerprints_v2()
+        replay_v4 = await _migrate_recompute_cognitive_source_fingerprints_v2()
+        await database_module.get_engine().dispose()
+        assert first_v3 is None
+        assert first_upgrade is None
+        return (
+            replay_upgrade,
+            first_v4,
+            replay_v4,
+            source_port.COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
+        )
+
+    replay_upgrade, first_v4, replay_v4, observed_contract = asyncio.run(execute())
+    assert (replay_upgrade, first_v4, replay_v4, observed_contract) == (
+        "skipped",
+        None,
+        "skipped",
+        v4_contract,
+    )
+
+    update_trigger = (
+        f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_"
+        "kg_cognitive_source_revisions_update"
+    )
+    connection = sqlite3.connect(database_path)
+    try:
+        trigger_rows = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (update_trigger,),
+        ).fetchall()
+        assert len(trigger_rows) == 1
+        assert v4_contract in str(trigger_rows[0][0])
+        assert COGNITIVE_SOURCE_FINGERPRINT_CONTRACT_V3 not in str(trigger_rows[0][0])
+        assert connection.execute(
+            "SELECT epoch, COUNT(*) "
+            "FROM kg_cognitive_source_fingerprint_epoch_receipts "
+            "GROUP BY epoch ORDER BY epoch"
+        ).fetchall() == [
+            (COGNITIVE_SOURCE_FINGERPRINT_CONTRACT_V3, 1),
+            (v4_contract, 1),
+        ]
+        assert connection.execute(
+            "SELECT rows_scanned, rows_rewritten "
+            "FROM kg_cognitive_source_fingerprint_epoch_receipts "
+            "WHERE epoch = ?",
+            (v4_contract,),
+        ).fetchone() == (1, 1)
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM kg_cognitive_source_fingerprint_epoch_permits"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        connection.close()
+
+
+def test_v4_upgrade_rejects_tampered_v3_trigger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "fingerprint-epoch-v3-tampered.sqlite3"
+    _initialize_schema(database_path)
+    update_trigger = (
+        f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_"
+        "kg_cognitive_source_revisions_update"
+    )
+    v3_sql = cognitive_source_immutability_trigger_manifest(
+        fingerprint_contract=COGNITIVE_SOURCE_FINGERPRINT_CONTRACT_V3,
+    )[update_trigger][1]
+    tampered_sql = v3_sql.replace(
+        "permit.new_fingerprint = NEW.record_fingerprint",
+        "permit.new_fingerprint <> NEW.record_fingerprint",
+    )
+    assert tampered_sql != v3_sql
+
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute(f'DROP TRIGGER "{update_trigger}"')
+        connection.execute(tampered_sql)
+        connection.commit()
+    finally:
+        connection.close()
+
+    import okto_pulse.core.ports.kg_cognitive_source as source_port
+
+    monkeypatch.setattr(
+        source_port,
+        "COGNITIVE_SOURCE_FINGERPRINT_CONTRACT",
+        "cognitive-source-fingerprint/v4",
+    )
+
+    async def upgrade() -> None:
+        database_module.create_database(
+            f"sqlite+aiosqlite:///{database_path.as_posix()}"
+        )
+        with pytest.raises(RuntimeError, match=f"{update_trigger} is corrupt"):
+            await _migrate_cognitive_source_revision_ledger()
+        await database_module.get_engine().dispose()
+
+    asyncio.run(upgrade())
+
+    connection = sqlite3.connect(database_path)
+    try:
+        observed_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (update_trigger,),
+        ).fetchone()[0]
+        assert "permit.new_fingerprint <> NEW.record_fingerprint" in observed_sql
+        assert "cognitive-source-fingerprint/v4" not in observed_sql
+    finally:
+        connection.close()
+
+
+def test_v4_trigger_swap_rolls_back_when_final_inventory_is_corrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "fingerprint-epoch-v3-swap-rollback.sqlite3"
+    asyncio.run(_seed_unsealed_fingerprint_epoch(database_path))
+    update_trigger = (
+        f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_"
+        "kg_cognitive_source_revisions_update"
+    )
+    receipt_update_trigger = (
+        f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_"
+        "kg_cognitive_source_fingerprint_epoch_receipts_update"
+    )
+    v3_manifest = cognitive_source_immutability_trigger_manifest(
+        fingerprint_contract=COGNITIVE_SOURCE_FINGERPRINT_CONTRACT_V3,
+    )
+    tampered_receipt_sql = v3_manifest[receipt_update_trigger][1].replace(
+        "RAISE(ABORT, 'kg_cognitive_source_immutable')",
+        "RAISE(ABORT, 'kg_cognitive_source_tampered')",
+    )
+
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute(f'DROP TRIGGER "{receipt_update_trigger}"')
+        connection.execute(tampered_receipt_sql)
+        connection.commit()
+    finally:
+        connection.close()
+
+    import okto_pulse.core.ports.kg_cognitive_source as source_port
+
+    monkeypatch.setattr(
+        source_port,
+        "COGNITIVE_SOURCE_FINGERPRINT_CONTRACT",
+        "cognitive-source-fingerprint/v4",
+    )
+
+    async def upgrade() -> None:
+        database_module.create_database(
+            f"sqlite+aiosqlite:///{database_path.as_posix()}"
+        )
+        with pytest.raises(RuntimeError, match=f"{receipt_update_trigger} is corrupt"):
+            await _migrate_cognitive_source_revision_ledger()
+        await database_module.get_engine().dispose()
+
+    asyncio.run(upgrade())
+
+    connection = sqlite3.connect(database_path)
+    try:
+        update_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (update_trigger,),
+        ).fetchone()[0]
+        receipt_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (receipt_update_trigger,),
+        ).fetchone()[0]
+        assert COGNITIVE_SOURCE_FINGERPRINT_CONTRACT_V3 in update_sql
+        assert "cognitive-source-fingerprint/v4" not in update_sql
+        assert "kg_cognitive_source_tampered" in receipt_sql
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM kg_cognitive_source_fingerprint_epoch_permits"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM kg_cognitive_source_fingerprint_epoch_receipts"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        connection.close()
+
+
 def test_migration_installs_guards_and_child_insert_advances_global_fence(
     tmp_path: Path,
 ) -> None:
@@ -144,7 +580,9 @@ def test_migration_installs_guards_and_child_insert_advances_global_fence(
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     try:
-        expected_guards = cognitive_source_immutability_trigger_manifest()
+        expected_guards = cognitive_source_immutability_trigger_manifest(
+            fingerprint_contract=COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
+        )
         guard_rows = connection.execute(
             "SELECT name, tbl_name FROM sqlite_master "
             "WHERE type = 'trigger' AND name LIKE ?",
@@ -251,6 +689,7 @@ def test_migration_upgrades_exact_pre_erasure_delete_guards(tmp_path: Path) -> N
     database_path = tmp_path / "cognitive-erasure-guard-upgrade.sqlite3"
     _initialize_schema(database_path)
     predecessor = cognitive_source_immutability_trigger_manifest(
+        fingerprint_contract=COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
         allow_board_erasure=False,
     )
 
@@ -282,8 +721,15 @@ def test_migration_upgrades_exact_pre_erasure_delete_guards(tmp_path: Path) -> N
             "AND name LIKE ? AND name LIKE '%_delete'",
             (f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}%",),
         ).fetchall()
-        assert len(delete_guards) == 2
-        assert all("kg_board_erasure_permits" in str(row[0]) for row in delete_guards)
+        assert len(delete_guards) == 3
+        assert (
+            sum("kg_board_erasure_permits" in str(row[0]) for row in delete_guards) == 2
+        )
+        assert any(
+            "fingerprint_epoch_receipts" in str(row[0])
+            and "kg_board_erasure_permits" not in str(row[0])
+            for row in delete_guards
+        )
     finally:
         connection.close()
 

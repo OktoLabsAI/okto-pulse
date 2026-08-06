@@ -29,6 +29,9 @@ from okto_pulse.community.adapters.relational_application import (
     CommunityRelationalApplicationAdapter,
 )
 from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_architecture_persistence import (
     CommunitySqlAlchemyArchitecturePersistence,
 )
@@ -149,6 +152,7 @@ async def spec_b_runtime(tmp_path) -> _Runtime:
     sessions = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:

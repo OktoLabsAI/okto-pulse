@@ -28,6 +28,9 @@ from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     CommunityUnitOfWork,
     build_community_unit_of_work_factory,
 )
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
     Base,
@@ -120,7 +123,11 @@ async def session() -> AsyncSession:
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
+    factory = async_sessionmaker(
+        engine,
+        sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False,
+    )
     async with factory() as active:
         active.add(
             Board(

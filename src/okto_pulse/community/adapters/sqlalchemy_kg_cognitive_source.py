@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from sqlalchemy import func, select, text, tuple_
+from sqlalchemy import select, text, tuple_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -23,15 +23,15 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.ports.kg_cognitive_source import (
     CognitiveSourceConflict,
     CognitiveSourceError,
+    CognitiveSourcePersistedRevision,
     CognitiveSourceRecord,
     canonical_cognitive_source_fingerprint,
+    decide_cognitive_source_append,
 )
 
 logger = logging.getLogger("okto_pulse.community.kg_cognitive_source")
 
 SemanticKey = tuple[str, int]
-RevisionKey = tuple[str, int, int]
-PersistedVersion = tuple[Any, str]
 
 
 def _committed_at(raw: str | None) -> datetime:
@@ -45,10 +45,6 @@ def _committed_at(raw: str | None) -> datetime:
 
 def _record_key(record: CognitiveSourceRecord) -> SemanticKey:
     return (record.node_id, record.generation)
-
-
-def _revision_key(record: CognitiveSourceRecord) -> RevisionKey:
-    return (record.node_id, record.generation, record.source_revision)
 
 
 def _row_key(row: KGCognitiveSource) -> SemanticKey:
@@ -238,64 +234,31 @@ async def _load_revision_rows(
     return tuple(rows)
 
 
-async def _load_append_revision_state(
+async def _load_append_revision_metadata(
     session: Any,
     source_ids: tuple[str, ...],
-    requested_revisions: tuple[tuple[str, int], ...],
-) -> tuple[
-    dict[str, int],
-    dict[tuple[str, int], KGCognitiveSourceRevision],
-]:
-    """Load only MAX + exact batch revisions while holding SQLite's writer.
-
-    Full revision payloads include embeddings and grow without bound.  Append
-    validation needs the latest integer and the exact immutable keys being
-    retried, never the complete history.
-    """
+) -> tuple[Any, ...]:
+    """Load durable revision identity without reading unbounded payloads."""
 
     if not source_ids:
-        return {}, {}
-    maximum_rows = (
-        await session.execute(
-            select(
-                KGCognitiveSourceRevision.cognitive_source_id,
-                func.max(KGCognitiveSourceRevision.source_revision),
-            )
-            .where(
-                KGCognitiveSourceRevision.cognitive_source_id.in_(source_ids)
-            )
-            .group_by(KGCognitiveSourceRevision.cognitive_source_id)
-        )
-    ).all()
-    maxima = {
-        str(source_id): int(maximum)
-        for source_id, maximum in maximum_rows
-        if maximum is not None
-    }
-
-    positive_keys = tuple(
-        dict.fromkeys(
-            (str(source_id), int(revision))
-            for source_id, revision in requested_revisions
-            if int(revision) > 0
-        )
-    )
-    if not positive_keys:
-        return maxima, {}
-    exact_rows = (
-        await session.execute(
-            select(KGCognitiveSourceRevision).where(
-                tuple_(
+        return ()
+    return tuple(
+        (
+            await session.execute(
+                select(
+                    KGCognitiveSourceRevision.id,
                     KGCognitiveSourceRevision.cognitive_source_id,
                     KGCognitiveSourceRevision.source_revision,
-                ).in_(positive_keys)
+                    KGCognitiveSourceRevision.record_fingerprint,
+                )
+                .where(KGCognitiveSourceRevision.cognitive_source_id.in_(source_ids))
+                .order_by(
+                    KGCognitiveSourceRevision.cognitive_source_id.asc(),
+                    KGCognitiveSourceRevision.source_revision.asc(),
+                )
             )
-        )
-    ).scalars().all()
-    return maxima, {
-        (str(row.cognitive_source_id), int(row.source_revision)): row
-        for row in exact_rows
-    }
+        ).all()
+    )
 
 
 async def _begin_short_write_transaction(session: Any) -> None:
@@ -318,31 +281,6 @@ def _is_missing_revision_ledger(exc: BaseException) -> bool:
     )
 
 
-def _prepare_unique_records(
-    records: tuple[CognitiveSourceRecord, ...],
-) -> tuple[
-    dict[RevisionKey, CognitiveSourceRecord],
-    dict[RevisionKey, str],
-]:
-    unique: dict[RevisionKey, CognitiveSourceRecord] = {}
-    fingerprints: dict[RevisionKey, str] = {}
-    for record in records:
-        key = _revision_key(record)
-        fingerprint = _record_fingerprint(record)
-        prior = unique.get(key)
-        if prior is not None and fingerprints[key] != fingerprint:
-            raise _conflict(
-                record,
-                remediation=(
-                    "The append batch contains divergent records for the same "
-                    "immutable (node_id, generation, source_revision) key."
-                ),
-            )
-        unique.setdefault(key, record)
-        fingerprints.setdefault(key, fingerprint)
-    return unique, fingerprints
-
-
 class CommunitySqlAlchemyCognitiveSourceStore:
     """Atomic append-only store over the Community relational database."""
 
@@ -359,20 +297,8 @@ class CommunitySqlAlchemyCognitiveSourceStore:
     ) -> tuple[str, ...]:
         """Stage one verified batch without completing the owning UOW."""
 
-        unique, fingerprints = _prepare_unique_records(records)
-        ordered = tuple(
-            sorted(
-                unique.values(),
-                key=lambda record: (
-                    record.node_id,
-                    record.generation,
-                    record.source_revision,
-                ),
-            )
-        )
-        semantic_keys = tuple(
-            dict.fromkeys(_record_key(record) for record in ordered)
-        )
+        fingerprints = tuple(_record_fingerprint(record) for record in records)
+        semantic_keys = tuple(dict.fromkeys(_record_key(record) for record in records))
 
         # Fail before touching the compatibility base when startup has not
         # yet installed the additive revision ledger.
@@ -380,7 +306,7 @@ class CommunitySqlAlchemyCognitiveSourceStore:
 
         bases = await _load_base_rows(session, semantic_keys)
         seed_by_key: dict[SemanticKey, CognitiveSourceRecord] = {}
-        for record in ordered:
+        for record in records:
             seed_by_key.setdefault(_record_key(record), record)
         for key in semantic_keys:
             if key in bases:
@@ -394,34 +320,38 @@ class CommunitySqlAlchemyCognitiveSourceStore:
 
         base_by_id = {str(base.id): base for base in bases.values()}
         source_ids = tuple(base_by_id)
-        requested_revisions = tuple(
-            (str(bases[_record_key(record)].id), record.source_revision)
-            for record in ordered
-        )
-        maxima, exact_rows = await _load_append_revision_state(
-            session,
-            source_ids,
-            requested_revisions,
-        )
+        revision_metadata = await _load_append_revision_metadata(session, source_ids)
         base_fingerprints = {
-            key: _record_fingerprint(_base_record(base))
+            key: _record_fingerprint(_base_record(base)) for key, base in bases.items()
+        }
+        history_by_key: dict[SemanticKey, list[CognitiveSourcePersistedRevision]] = {
+            key: [
+                CognitiveSourcePersistedRevision(
+                    storage_id=str(base.id),
+                    source_revision=0,
+                    record_fingerprint=base_fingerprints[key],
+                )
+            ]
             for key, base in bases.items()
         }
-        exact_versions: dict[tuple[str, int], PersistedVersion] = {}
-        for exact_key, row in exact_rows.items():
-            base = base_by_id[exact_key[0]]
-            revision_record = _revision_record(base, row)
-            exact_versions[exact_key] = (
-                row,
-                revision_record.record_fingerprint,
+        key_by_source_id = {str(base.id): key for key, base in bases.items()}
+        for row in revision_metadata:
+            source_id = str(row.cognitive_source_id)
+            semantic_key = key_by_source_id.get(source_id)
+            if semantic_key is None:
+                continue
+            history_by_key[semantic_key].append(
+                CognitiveSourcePersistedRevision(
+                    storage_id=str(row.id),
+                    source_revision=int(row.source_revision),
+                    record_fingerprint=str(row.record_fingerprint),
+                )
             )
 
-        resolved: dict[RevisionKey, Any] = {}
-        for record in ordered:
+        resolved_ids: list[str] = []
+        for record, fingerprint in zip(records, fingerprints, strict=True):
             semantic_key = _record_key(record)
-            revision_key = _revision_key(record)
             base = bases[semantic_key]
-            source_id = str(base.id)
             if (
                 str(base.board_id) != record.board_id
                 or str(base.node_type) != record.node_type
@@ -434,119 +364,34 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                     ),
                 )
 
-            fingerprint = fingerprints[revision_key]
-            if record.source_revision == 0:
-                exact: PersistedVersion | None = (
-                    base,
-                    base_fingerprints[semantic_key],
-                )
-            else:
-                exact = exact_versions.get(
-                    (source_id, record.source_revision)
-                )
-            if exact is not None:
-                if exact[1] != fingerprint:
-                    # Artifact EVOLUTION vs divergent replay (story e80edf05,
-                    # observed live on decision_059d5828): consolidation
-                    # re-derives node candidates from the CURRENT artifact, so
-                    # when the source content itself changed between commits
-                    # the incoming assertion is NEW KNOWLEDGE, not a replay of
-                    # the stored one. The ledger stays append-only: evolution
-                    # lands as the NEXT revision; nothing is ever overwritten.
-                    # A divergent payload with the SAME source_content_hash
-                    # remains a true integrity conflict (fail-closed).
-                    stored_payload = getattr(exact[0], "payload", None) or {}
-                    if not isinstance(stored_payload, dict):
-                        stored_payload = {}
-                    stored_hash = stored_payload.get("source_content_hash")
-                    incoming_hash = dict(record.payload or {}).get(
-                        "source_content_hash"
-                    )
-                    if (
-                        stored_hash is not None
-                        and incoming_hash is not None
-                        and stored_hash != incoming_hash
-                    ):
-                        # Idempotency FIRST: a retry of the same evolved
-                        # assertion must resolve to the revision already in
-                        # the ledger. The anchor for revision 0 is always the
-                        # BASE row, so without this lookup every retry would
-                        # append another identical revision and grow the
-                        # ledger without bound (observed live: D-8 rev 2 and
-                        # rev 3 byte-identical).
-                        existing_evolution = (
-                            await session.execute(
-                                select(KGCognitiveSourceRevision)
-                                .where(
-                                    KGCognitiveSourceRevision.cognitive_source_id
-                                    == source_id,
-                                    KGCognitiveSourceRevision.record_fingerprint
-                                    == fingerprint,
-                                )
-                                .order_by(
-                                    KGCognitiveSourceRevision.source_revision
-                                )
-                                .limit(1)
-                            )
-                        ).scalar_one_or_none()
-                        if existing_evolution is not None:
-                            resolved[revision_key] = existing_evolution
-                            continue
-                        evolved_revision = (
-                            max(
-                                maxima.get(source_id, 0),
-                                record.source_revision,
-                            )
-                            + 1
-                        )
-                        revision_row = _new_revision_row(
-                            base,
-                            replace(
-                                record, source_revision=evolved_revision
-                            ),
-                            fingerprint,
-                        )
-                        session.add(revision_row)
-                        maxima[source_id] = evolved_revision
-                        exact_versions[(source_id, evolved_revision)] = (
-                            revision_row,
-                            fingerprint,
-                        )
-                        resolved[revision_key] = revision_row
-                        continue
-                    raise _conflict(
-                        record,
-                        remediation=(
-                            "Do not overwrite an immutable cognitive source "
-                            "revision. Reconcile the revision identity before "
-                            "retrying."
-                        ),
-                    )
-                resolved[revision_key] = exact[0]
+            decision = decide_cognitive_source_append(
+                persisted_revisions=history_by_key[semantic_key],
+                incoming_fingerprint=fingerprint,
+            )
+            if decision.outcome == "semantic_noop":
+                resolved_ids.append(str(decision.storage_id))
                 continue
 
-            latest_revision = maxima.get(source_id, 0)
-            if record.source_revision <= latest_revision:
-                raise _conflict(
-                    record,
-                    remediation=(
-                        "The requested source revision is stale relative to "
-                        "the durable ledger. Replay the current graph snapshot "
-                        "with a strictly newer revision."
-                    ),
-                )
-
-            revision_row = _new_revision_row(base, record, fingerprint)
-            session.add(revision_row)
-            maxima[source_id] = record.source_revision
-            exact_versions[(source_id, record.source_revision)] = (
-                revision_row,
+            revision_row = _new_revision_row(
+                base,
+                replace(record, source_revision=decision.source_revision),
                 fingerprint,
             )
-            resolved[revision_key] = revision_row
+            session.add(revision_row)
+            # Allocate the row ID now so later items in the same stable batch
+            # can resolve an identical fingerprint to this exact durable row.
+            await session.flush()
+            resolved_ids.append(str(revision_row.id))
+            history_by_key[semantic_key].append(
+                CognitiveSourcePersistedRevision(
+                    storage_id=str(revision_row.id),
+                    source_revision=decision.source_revision,
+                    record_fingerprint=fingerprint,
+                )
+            )
 
         await session.flush()
-        return tuple(str(resolved[_revision_key(record)].id) for record in records)
+        return tuple(resolved_ids)
 
     async def append_many_in_context(
         self,

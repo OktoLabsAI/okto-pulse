@@ -41,7 +41,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Sprint,
 )
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
-    install_policy_subject_versioning,
+    CommunitySemanticSession,
 )
 from okto_pulse.community.adapters.sqlalchemy_research_decision_ledger import (
     CommunitySqlAlchemyResearchDecisionLedger,
@@ -135,18 +135,19 @@ def _sqlite_engine(path):
 
 
 async def _database(path, *, semantic_triggers: bool = False):
-    install_policy_subject_versioning()
     engine = _sqlite_engine(path)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
         if semantic_triggers:
-            for _name, (_table, ddl) in (
-                semantic_guideline_sqlite_trigger_manifest().items()
-            ):
+            for _name, (
+                _table,
+                ddl,
+            ) in semantic_guideline_sqlite_trigger_manifest().items():
                 await connection.execute(text(ddl))
     return engine, async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
 
@@ -442,8 +443,8 @@ async def _assert_blocking_assessment_can_be_saved(
     )
     assert snapshot is not None
     assert snapshot.last_semantic_editor_id == expected_editor
-    policy_set_digest, binding_head_digest = (
-        await adapter.semantic_current_fences(board_id=seed.board_id)
+    policy_set_digest, binding_head_digest = await adapter.semantic_current_fences(
+        board_id=seed.board_id
     )
     context = SemanticGuidelineAssessmentContext(
         subject_snapshot=snapshot,
@@ -515,10 +516,28 @@ async def test_factory_writers_bridge_all_six_subjects_and_assessment(
     factory = CommunityUnitOfWorkFactory(sessions)
     writer = ActorContext("mcp-writer", "mcp", board_id=seed.board_id)
     mutations = (
-        (PolicyEntityType.IDEATION, seed.ideation_id, "ideation", "description", "Changed ideation"),
-        (PolicyEntityType.REFINEMENT, seed.refinement_id, "refinement", "analysis", "Changed refinement"),
+        (
+            PolicyEntityType.IDEATION,
+            seed.ideation_id,
+            "ideation",
+            "description",
+            "Changed ideation",
+        ),
+        (
+            PolicyEntityType.REFINEMENT,
+            seed.refinement_id,
+            "refinement",
+            "analysis",
+            "Changed refinement",
+        ),
         (PolicyEntityType.SPEC, seed.spec_id, "spec", "context", "Changed spec"),
-        (PolicyEntityType.SPRINT, seed.sprint_id, "sprint", "objective", "Changed sprint"),
+        (
+            PolicyEntityType.SPRINT,
+            seed.sprint_id,
+            "sprint",
+            "objective",
+            "Changed sprint",
+        ),
         (PolicyEntityType.CARD, seed.card_id, "card", "details", "Changed card"),
     )
     for _entity_type, subject_id, entity, field, value in mutations:
@@ -644,16 +663,22 @@ async def test_subject_mutation_without_authenticated_actor_rolls_back(tmp_path)
         ideation = await session.get(Ideation, seed.ideation_id)
         assert ideation is not None
         assert ideation.description == "Initial ideation"
-        assert await session.scalar(
-            select(func.count())
-            .select_from(SemanticSubjectVersionRow)
-            .where(SemanticSubjectVersionRow.board_id == seed.board_id)
-        ) == 0
-        assert await session.scalar(
-            select(func.count())
-            .select_from(SemanticSubjectVersionEventRow)
-            .where(SemanticSubjectVersionEventRow.board_id == seed.board_id)
-        ) == 0
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(SemanticSubjectVersionRow)
+                .where(SemanticSubjectVersionRow.board_id == seed.board_id)
+            )
+            == 0
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(SemanticSubjectVersionEventRow)
+                .where(SemanticSubjectVersionEventRow.board_id == seed.board_id)
+            )
+            == 0
+        )
 
     await engine.dispose()
 
@@ -701,8 +726,7 @@ async def test_savepoint_markers_rollback_merge_and_deduplicate_flushes(
         assert not sync_session.info.get("semantic_subject_bridge_pending")
 
     assert not any(
-        key.startswith("semantic_subject_bridge")
-        for key in sync_session.info
+        key.startswith("semantic_subject_bridge") for key in sync_session.info
     )
     async with sessions() as session:
         ideation = await session.get(Ideation, seed.ideation_id)
@@ -715,12 +739,10 @@ async def test_savepoint_markers_rollback_merge_and_deduplicate_flushes(
             (
                 await session.scalars(
                     select(SemanticSubjectVersionEventRow).where(
-                        SemanticSubjectVersionEventRow.board_id
-                        == seed.board_id,
+                        SemanticSubjectVersionEventRow.board_id == seed.board_id,
                         SemanticSubjectVersionEventRow.subject_type
                         == PolicyEntityType.IDEATION.value,
-                        SemanticSubjectVersionEventRow.subject_id
-                        == seed.ideation_id,
+                        SemanticSubjectVersionEventRow.subject_id == seed.ideation_id,
                     )
                 )
             ).all()
@@ -741,8 +763,7 @@ async def test_materialization_failure_rolls_back_writer_and_prior_event(
         seed = await _seed_subjects(session)
 
     original = (
-        CommunitySqlAlchemySemanticGuidelineAssessment
-        .record_semantic_subject_mutation
+        CommunitySqlAlchemySemanticGuidelineAssessment.record_semantic_subject_mutation
     )
     calls = 0
 
@@ -784,16 +805,22 @@ async def test_materialization_failure_rolls_back_writer_and_prior_event(
         assert ideation is not None and refinement is not None
         assert ideation.description == "Initial ideation"
         assert refinement.analysis is None
-        assert await session.scalar(
-            select(func.count())
-            .select_from(SemanticSubjectVersionRow)
-            .where(SemanticSubjectVersionRow.board_id == seed.board_id)
-        ) == 0
-        assert await session.scalar(
-            select(func.count())
-            .select_from(SemanticSubjectVersionEventRow)
-            .where(SemanticSubjectVersionEventRow.board_id == seed.board_id)
-        ) == 0
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(SemanticSubjectVersionRow)
+                .where(SemanticSubjectVersionRow.board_id == seed.board_id)
+            )
+            == 0
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(SemanticSubjectVersionEventRow)
+                .where(SemanticSubjectVersionEventRow.board_id == seed.board_id)
+            )
+            == 0
+        )
 
     await engine.dispose()
 
@@ -830,9 +857,7 @@ async def test_research_decision_bulk_version_writer_queues_refinement_head(
                 unknown="Which boundary owns retries?",
                 status=ResearchDecisionStatus.OPEN,
                 anchor=ResearchDecisionAnchor(
-                    anchor_type=(
-                        ResearchDecisionAnchorType.FUNCTIONAL_REQUIREMENT
-                    ),
+                    anchor_type=(ResearchDecisionAnchorType.FUNCTIONAL_REQUIREMENT),
                     anchor_ref="fr_retry",
                 ),
                 alternatives=("domain policy", "adapter policy"),
@@ -915,9 +940,7 @@ async def test_q_and_a_writer_updates_owner_head(
     qa_entity,
     owner_field,
 ):
-    engine, sessions = await _database(
-        tmp_path / f"qa-{entity_type.value}.db"
-    )
+    engine, sessions = await _database(tmp_path / f"qa-{entity_type.value}.db")
     async with sessions() as session, session.begin():
         seed = await _seed_subjects(session)
 
@@ -981,9 +1004,7 @@ async def test_q_and_a_writer_updates_owner_head(
 @pytest.mark.asyncio
 async def test_architecture_payload_writer_updates_parent_head(tmp_path):
     engine, sessions = await _database(tmp_path / "architecture-payload.db")
-    register_architecture_persistence_port(
-        CommunitySqlAlchemyArchitecturePersistence()
-    )
+    register_architecture_persistence_port(CommunitySqlAlchemyArchitecturePersistence())
     async with sessions() as session, session.begin():
         seed = await _seed_subjects(session)
     async with sessions() as session:

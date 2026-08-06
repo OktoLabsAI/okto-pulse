@@ -28,6 +28,9 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
     statement_budget,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import Base
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
@@ -147,7 +150,10 @@ async def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         previous = None
     register_application_persistence_port(adapter)
     try:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(
+            engine,
+            sync_session_class=CommunitySemanticSession,
+        ) as session:
             session.info["realm_scope"] = REALM
             yield engine, adapter, session
     finally:

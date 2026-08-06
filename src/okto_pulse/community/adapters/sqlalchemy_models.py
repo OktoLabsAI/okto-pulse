@@ -7381,6 +7381,77 @@ class KGCognitiveSourceRevision(Base):
     )
 
 
+class KGCognitiveSourceFingerprintEpochPermit(Base):
+    """Ephemeral exact authority for one governed fingerprint rewrite."""
+
+    __tablename__ = "kg_cognitive_source_fingerprint_epoch_permits"
+    __table_args__ = (
+        CheckConstraint(
+            "length(old_fingerprint) = 64",
+            name="ck_kg_cognitive_source_fingerprint_permit_old_length",
+        ),
+        CheckConstraint(
+            "length(new_fingerprint) = 64",
+            name="ck_kg_cognitive_source_fingerprint_permit_new_length",
+        ),
+    )
+
+    revision_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "kg_cognitive_source_revisions.id",
+            name="fk_kg_cognitive_source_fingerprint_permit_revision",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        primary_key=True,
+    )
+    epoch: Mapped[str] = mapped_column(String(64), nullable=False)
+    old_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    new_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class KGCognitiveSourceFingerprintEpochReceipt(Base):
+    """Immutable proof that one fingerprint-contract epoch completed."""
+
+    __tablename__ = "kg_cognitive_source_fingerprint_epoch_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "rows_scanned >= 0",
+            name="ck_kg_cognitive_source_fingerprint_receipt_scanned",
+        ),
+        CheckConstraint(
+            "rows_rewritten >= 0 AND rows_rewritten <= rows_scanned",
+            name="ck_kg_cognitive_source_fingerprint_receipt_rewritten",
+        ),
+        CheckConstraint(
+            "length(before_digest) = 64",
+            name="ck_kg_cognitive_source_fingerprint_receipt_before_length",
+        ),
+        CheckConstraint(
+            "length(after_digest) = 64",
+            name="ck_kg_cognitive_source_fingerprint_receipt_after_length",
+        ),
+    )
+
+    epoch: Mapped[str] = mapped_column(String(64), primary_key=True)
+    fingerprint_contract: Mapped[str] = mapped_column(String(64), nullable=False)
+    rows_scanned: Mapped[int] = mapped_column(Integer, nullable=False)
+    rows_rewritten: Mapped[int] = mapped_column(Integer, nullable=False)
+    before_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    after_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class KGEquivalenceLedger(Base):
     """Off-graph, append-only ledger of node-equivalence decisions
     (merges) — spec MKG-C-S1.

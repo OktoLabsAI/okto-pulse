@@ -4462,13 +4462,26 @@ $$ LANGUAGE plpgsql
 
 def cognitive_source_immutability_trigger_manifest(
     *,
+    fingerprint_contract: str,
     allow_board_erasure: bool = True,
+    allow_fingerprint_epoch: bool = True,
 ) -> dict[str, tuple[str, str]]:
     """Return the exact SQLite guard manifest for the append-only ledger."""
+
+    if (
+        re.fullmatch(
+            r"cognitive-source-fingerprint/v[1-9][0-9]*",
+            fingerprint_contract,
+        )
+        is None
+    ):
+        raise ValueError("invalid cognitive source fingerprint contract")
 
     from okto_pulse.community.adapters.sqlalchemy_models import (
         BoardErasurePermit,
         KGCognitiveSource,
+        KGCognitiveSourceFingerprintEpochPermit,
+        KGCognitiveSourceFingerprintEpochReceipt,
         KGCognitiveSourceRevision,
     )
 
@@ -4502,12 +4515,89 @@ def cognitive_source_immutability_trigger_manifest(
                         "    WHERE source.id = OLD.cognitive_source_id\n"
                         ")"
                     )
-            trigger_sql = f'''CREATE TRIGGER "{trigger_name}"
+            if (
+                allow_fingerprint_epoch
+                and table_name == KGCognitiveSourceRevision.__tablename__
+                and operation == "update"
+            ):
+                invariant = "\n        AND ".join(
+                    f"NEW.{column} IS OLD.{column}"
+                    for column in (
+                        "id",
+                        "cognitive_source_id",
+                        "source_revision",
+                        "payload",
+                        "evidence_refs",
+                        "source_session_id",
+                        "committed_at",
+                    )
+                )
+                trigger_sql = f"""CREATE TRIGGER "{trigger_name}"
+BEFORE UPDATE ON "{table_name}"
+WHEN NOT (
+    {invariant}
+    AND EXISTS (
+        SELECT 1
+        FROM "{KGCognitiveSourceFingerprintEpochPermit.__tablename__}" AS permit
+        WHERE permit.revision_id = OLD.id
+          AND permit.epoch = '{fingerprint_contract}'
+          AND permit.old_fingerprint = OLD.record_fingerprint
+          AND permit.new_fingerprint = NEW.record_fingerprint
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');
+END"""
+            else:
+                trigger_sql = f"""CREATE TRIGGER "{trigger_name}"
 BEFORE {operation.upper()} ON "{table_name}"{erasure_guard}
 BEGIN
     SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');
-END'''
+END"""
             expected[trigger_name] = (table_name, trigger_sql)
+
+    if allow_fingerprint_epoch:
+        permit_table = KGCognitiveSourceFingerprintEpochPermit.__tablename__
+        receipt_table = KGCognitiveSourceFingerprintEpochReceipt.__tablename__
+        permit_insert = (
+            f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_{permit_table}_insert"
+        )
+        expected[permit_insert] = (
+            permit_table,
+            f"""CREATE TRIGGER "{permit_insert}"
+BEFORE INSERT ON "{permit_table}"
+WHEN EXISTS (
+    SELECT 1 FROM "{receipt_table}" AS receipt
+    WHERE receipt.epoch = NEW.epoch
+)
+BEGIN
+    SELECT RAISE(ABORT, 'kg_cognitive_source_epoch_sealed');
+END""",
+        )
+        permit_update = (
+            f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_{permit_table}_update"
+        )
+        expected[permit_update] = (
+            permit_table,
+            f"""CREATE TRIGGER "{permit_update}"
+BEFORE UPDATE ON "{permit_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');
+END""",
+        )
+        for operation in ("update", "delete"):
+            trigger_name = (
+                f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_"
+                f"{receipt_table}_{operation}"
+            )
+            expected[trigger_name] = (
+                receipt_table,
+                f"""CREATE TRIGGER "{trigger_name}"
+BEFORE {operation.upper()} ON "{receipt_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');
+END""",
+            )
     return expected
 
 
@@ -7252,11 +7342,19 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
 
     from okto_pulse.community.adapters.sqlalchemy_models import (
         KGCognitiveSource,
+        KGCognitiveSourceFingerprintEpochPermit,
+        KGCognitiveSourceFingerprintEpochReceipt,
         KGCognitiveSourceRevision,
+    )
+    from okto_pulse.core.ports.kg_cognitive_source import (
+        COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
+        COGNITIVE_SOURCE_FINGERPRINT_CONTRACT_V3,
     )
 
     base_table = KGCognitiveSource.__table__
     revision_table = KGCognitiveSourceRevision.__table__
+    permit_table = KGCognitiveSourceFingerprintEpochPermit.__table__
+    receipt_table = KGCognitiveSourceFingerprintEpochReceipt.__table__
     changed = False
     async with get_engine().begin() as conn:
         if conn.dialect.name != "sqlite":
@@ -7272,6 +7370,8 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
         missing_tables = {
             base_table.name,
             revision_table.name,
+            permit_table.name,
+            receipt_table.name,
         } - table_names
         if missing_tables:
             raise RuntimeError(
@@ -7280,18 +7380,45 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
                 + ", ".join(sorted(missing_tables))
             )
 
-        contract = await conn.run_sync(
-            lambda sync_conn: _sqlite_owned_table_contract(sync_conn, revision_table)
-        )
-        if contract["observed"] != contract["expected"]:
-            raise RuntimeError(
-                "cognitive source revision table has a non-canonical contract"
+        for owned_table in (revision_table, permit_table, receipt_table):
+            contract = await conn.run_sync(
+                lambda sync_conn, table=owned_table: _sqlite_owned_table_contract(
+                    sync_conn, table
+                )
             )
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "cognitive source ledger table has a non-canonical contract: "
+                    + owned_table.name
+                )
 
-        expected_triggers = cognitive_source_immutability_trigger_manifest()
-        predecessor_triggers = cognitive_source_immutability_trigger_manifest(
-            allow_board_erasure=False,
+        expected_triggers = cognitive_source_immutability_trigger_manifest(
+            fingerprint_contract=COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
         )
+        predecessor_manifests = [
+            cognitive_source_immutability_trigger_manifest(
+                fingerprint_contract=COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
+                allow_board_erasure=False,
+            ),
+            cognitive_source_immutability_trigger_manifest(
+                fingerprint_contract=COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
+                allow_fingerprint_epoch=False,
+            ),
+            cognitive_source_immutability_trigger_manifest(
+                fingerprint_contract=COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
+                allow_board_erasure=False,
+                allow_fingerprint_epoch=False,
+            ),
+        ]
+        if (
+            COGNITIVE_SOURCE_FINGERPRINT_CONTRACT
+            != COGNITIVE_SOURCE_FINGERPRINT_CONTRACT_V3
+        ):
+            predecessor_manifests.append(
+                cognitive_source_immutability_trigger_manifest(
+                    fingerprint_contract=COGNITIVE_SOURCE_FINGERPRINT_CONTRACT_V3,
+                )
+            )
         trigger_rows = (
             (
                 await conn.execute(
@@ -7326,10 +7453,17 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
                 normalize_global_discovery_source_revision_trigger_sql(trigger_sql)
             ):
                 continue
-            predecessor_table, predecessor_sql = predecessor_triggers[trigger_name]
-            if observed_table == predecessor_table and observed_sql == (
-                normalize_global_discovery_source_revision_trigger_sql(predecessor_sql)
-            ):
+            predecessor_matches = [
+                manifest[trigger_name]
+                for manifest in predecessor_manifests
+                if trigger_name in manifest
+                and observed_table == manifest[trigger_name][0]
+                and observed_sql
+                == normalize_global_discovery_source_revision_trigger_sql(
+                    manifest[trigger_name][1]
+                )
+            ]
+            if predecessor_matches:
                 await conn.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
                 await conn.execute(sa_text(trigger_sql))
                 changed = True
@@ -7363,7 +7497,9 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
                 observed["tbl_name"]
             ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
                 observed["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
+            ) != normalize_global_discovery_source_revision_trigger_sql(
+                trigger_sql
+            ):
                 raise RuntimeError(
                     "cognitive source immutability trigger audit failed: "
                     + trigger_name
@@ -17554,35 +17690,30 @@ async def _migrate_seed_semantic_configurations_for_legacy_bindings() -> str | N
 
 
 async def _migrate_recompute_cognitive_source_fingerprints_v2() -> str | None:
-    """Recompute the durable cognitive-source ledger under fingerprint v2.
+    """Seal the current fingerprint contract as one durable guarded epoch.
 
-    Fingerprint v1 hashed the FULL node payload while ``source_revision``
-    derives from ``attestation_count`` — so read-side usage drift
-    (query_hits/last_queried_at/relevance_score change on every KG query)
-    made an identical knowledge replay diverge from its own stored revision
-    and permanently poisoned consolidation with
-    ``cognitive_source_replay_conflict`` (observed live on
-    decision_059d5828). The volatile exclusion set is versioned in core
-    (v2: five query-side stats; v3 additionally excludes the commit-hook
-    recompute stamps ``last_recomputed_at`` and
-    ``pre_cancellation_relevance_score``, which re-poisoned the SAME node
-    after every relevance recompute). Stored payloads keep every field for
-    literal rebuild restoration. This convergence step runs at every boot
-    and rewrites any stored ``record_fingerprint`` that differs from the
-    CURRENT core contract, so replays of drifted-but-identical knowledge
-    resolve idempotently against the migrated ledger.
+    The historical step ID is retained for upgrade-plan compatibility. Unlike
+    its predecessor, this implementation never drops the immutable revision
+    trigger and never rewrites on every boot. Each changed row receives one
+    exact permit; permit cleanup and the immutable receipt commit in the same
+    SQLite transaction. A later process observes the receipt and performs no
+    fingerprint update.
     """
 
+    import hashlib as _hashlib
     import json as _json
 
     from sqlalchemy import select as sa_select
 
-    from okto_pulse.core.ports.kg_cognitive_source import (
-        canonical_cognitive_source_fingerprint,
-    )
     from okto_pulse.community.adapters.sqlalchemy_models import (
         KGCognitiveSource,
+        KGCognitiveSourceFingerprintEpochPermit,
+        KGCognitiveSourceFingerprintEpochReceipt,
         KGCognitiveSourceRevision,
+    )
+    from okto_pulse.core.ports.kg_cognitive_source import (
+        COGNITIVE_SOURCE_FINGERPRINT_CONTRACT,
+        canonical_cognitive_source_fingerprint,
     )
 
     def _mapping(value: object) -> dict:
@@ -17596,30 +17727,87 @@ async def _migrate_recompute_cognitive_source_fingerprints_v2() -> str | None:
             value = parsed if isinstance(parsed, list) else (parsed,)
         return tuple(str(ref) for ref in (value or ()))
 
-    _IMMUTABLE_UPDATE_TRIGGER = (
-        "trg_kg_cognitive_source_immutable_"
-        "kg_cognitive_source_revisions_update"
-    )
+    def _manifest_digest(entries: list[dict[str, object]]) -> str:
+        encoded = _json.dumps(
+            entries,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return _hashlib.sha256(encoded).hexdigest()
 
-    rewritten = 0
+    epoch = COGNITIVE_SOURCE_FINGERPRINT_CONTRACT
+    permit_table = KGCognitiveSourceFingerprintEpochPermit.__table__
+    receipt_table = KGCognitiveSourceFingerprintEpochReceipt.__table__
+    revision_table = KGCognitiveSourceRevision.__table__
+    update_trigger = (
+        f"{COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX}_"
+        f"{KGCognitiveSourceRevision.__tablename__}_update"
+    )
+    expected_trigger_sql = cognitive_source_immutability_trigger_manifest(
+        fingerprint_contract=epoch,
+    )[update_trigger][1]
+
     async with get_engine().begin() as conn:
-        # The ledger is guarded by an immutability trigger that (correctly)
-        # aborts every UPDATE. This convergence is the one governed writer
-        # allowed to touch record_fingerprint: capture the trigger DDL,
-        # drop it for the scope of this transaction, and recreate it
-        # byte-identically afterwards (same pattern as the guideline
-        # revision digest realignment).
-        trigger_sql = (
+        if conn.dialect.name != "sqlite":
+            raise RuntimeError(
+                "cognitive fingerprint epoch requires SQLite trigger semantics"
+            )
+        await conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        observed_trigger = (
             await conn.exec_driver_sql(
-                "SELECT sql FROM sqlite_master "
-                "WHERE type='trigger' AND name=?",
-                (_IMMUTABLE_UPDATE_TRIGGER,),
+                "SELECT sql FROM sqlite_master " "WHERE type='trigger' AND name=?",
+                (update_trigger,),
             )
         ).scalar()
-        if trigger_sql:
-            await conn.exec_driver_sql(
-                f'DROP TRIGGER "{_IMMUTABLE_UPDATE_TRIGGER}"'
+        if observed_trigger is None or (
+            normalize_global_discovery_source_revision_trigger_sql(observed_trigger)
+            != normalize_global_discovery_source_revision_trigger_sql(
+                expected_trigger_sql
             )
+        ):
+            raise RuntimeError(
+                "cognitive fingerprint epoch requires the canonical immutable trigger"
+            )
+
+        permit_count = int(
+            (
+                await conn.exec_driver_sql(
+                    f'SELECT COUNT(*) FROM "{permit_table.name}"'
+                )
+            ).scalar_one()
+        )
+        receipt = (
+            await conn.execute(
+                sa_select(
+                    KGCognitiveSourceFingerprintEpochReceipt.epoch,
+                    KGCognitiveSourceFingerprintEpochReceipt.fingerprint_contract,
+                    KGCognitiveSourceFingerprintEpochReceipt.rows_scanned,
+                    KGCognitiveSourceFingerprintEpochReceipt.rows_rewritten,
+                    KGCognitiveSourceFingerprintEpochReceipt.before_digest,
+                    KGCognitiveSourceFingerprintEpochReceipt.after_digest,
+                ).where(KGCognitiveSourceFingerprintEpochReceipt.epoch == epoch)
+            )
+        ).first()
+        if receipt is not None:
+            if permit_count:
+                raise RuntimeError(
+                    "sealed cognitive fingerprint epoch retains active permits"
+                )
+            if (
+                str(receipt.fingerprint_contract) != epoch
+                or int(receipt.rows_scanned) < 0
+                or int(receipt.rows_rewritten) < 0
+                or int(receipt.rows_rewritten) > int(receipt.rows_scanned)
+                or len(str(receipt.before_digest)) != 64
+                or len(str(receipt.after_digest)) != 64
+            ):
+                raise RuntimeError("cognitive fingerprint epoch receipt is corrupt")
+            return "skipped"
+        if permit_count:
+            raise RuntimeError("unsealed cognitive fingerprint epoch has stale permits")
+
         bases = {
             str(row.id): row
             for row in (
@@ -17639,19 +17827,25 @@ async def _migrate_recompute_cognitive_source_fingerprints_v2() -> str | None:
                 sa_select(
                     KGCognitiveSourceRevision.id,
                     KGCognitiveSourceRevision.cognitive_source_id,
+                    KGCognitiveSourceRevision.source_revision,
                     KGCognitiveSourceRevision.record_fingerprint,
                     KGCognitiveSourceRevision.payload,
                     KGCognitiveSourceRevision.evidence_refs,
-                )
+                ).order_by(KGCognitiveSourceRevision.id.asc())
             )
         ).all()
+
+        before_manifest: list[dict[str, object]] = []
+        after_manifest: list[dict[str, object]] = []
+        targets: list[tuple[object, str, str]] = []
         for revision in revisions:
             base = bases.get(str(revision.cognitive_source_id))
             if base is None:
-                # Orphan revision: leave untouched; the FK repair step and
-                # ledger integrity checks own that failure mode.
-                continue
-            fingerprint = canonical_cognitive_source_fingerprint(
+                raise RuntimeError(
+                    "cognitive fingerprint epoch found an orphan revision"
+                )
+            old_fingerprint = str(revision.record_fingerprint)
+            new_fingerprint = canonical_cognitive_source_fingerprint(
                 board_id=str(base.board_id),
                 node_id=str(base.node_id),
                 node_type=str(base.node_type),
@@ -17659,17 +17853,90 @@ async def _migrate_recompute_cognitive_source_fingerprints_v2() -> str | None:
                 payload=_mapping(revision.payload),
                 evidence_refs=_refs(revision.evidence_refs),
             )
-            if fingerprint == str(revision.record_fingerprint):
-                continue
+            common = {
+                "revision_id": str(revision.id),
+                "cognitive_source_id": str(revision.cognitive_source_id),
+                "source_revision": int(revision.source_revision),
+            }
+            before_manifest.append({**common, "record_fingerprint": old_fingerprint})
+            after_manifest.append({**common, "record_fingerprint": new_fingerprint})
+            if old_fingerprint != new_fingerprint:
+                targets.append((revision.id, old_fingerprint, new_fingerprint))
+
+        for revision_id, old_fingerprint, new_fingerprint in targets:
             await conn.execute(
-                KGCognitiveSourceRevision.__table__.update()
-                .where(KGCognitiveSourceRevision.id == revision.id)
-                .values(record_fingerprint=fingerprint)
+                permit_table.insert().values(
+                    revision_id=revision_id,
+                    epoch=epoch,
+                    old_fingerprint=old_fingerprint,
+                    new_fingerprint=new_fingerprint,
+                )
             )
-            rewritten += 1
-        if trigger_sql:
-            await conn.exec_driver_sql(str(trigger_sql))
-    return None if rewritten else "skipped"
+            updated = await conn.execute(
+                revision_table.update()
+                .where(
+                    KGCognitiveSourceRevision.id == revision_id,
+                    KGCognitiveSourceRevision.record_fingerprint == old_fingerprint,
+                )
+                .values(record_fingerprint=new_fingerprint)
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError(
+                    "cognitive fingerprint epoch lost its exact revision target"
+                )
+            deleted = await conn.execute(
+                permit_table.delete().where(
+                    KGCognitiveSourceFingerprintEpochPermit.revision_id == revision_id
+                )
+            )
+            if deleted.rowcount != 1:
+                raise RuntimeError(
+                    "cognitive fingerprint epoch failed to consume its permit"
+                )
+
+        if int(
+            (
+                await conn.exec_driver_sql(
+                    f'SELECT COUNT(*) FROM "{permit_table.name}"'
+                )
+            ).scalar_one()
+        ):
+            raise RuntimeError(
+                "cognitive fingerprint epoch permit cleanup is incomplete"
+            )
+
+        live_manifest = [
+            {
+                "revision_id": str(row.id),
+                "cognitive_source_id": str(row.cognitive_source_id),
+                "source_revision": int(row.source_revision),
+                "record_fingerprint": str(row.record_fingerprint),
+            }
+            for row in (
+                await conn.execute(
+                    sa_select(
+                        KGCognitiveSourceRevision.id,
+                        KGCognitiveSourceRevision.cognitive_source_id,
+                        KGCognitiveSourceRevision.source_revision,
+                        KGCognitiveSourceRevision.record_fingerprint,
+                    ).order_by(KGCognitiveSourceRevision.id.asc())
+                )
+            ).all()
+        ]
+        if live_manifest != after_manifest:
+            raise RuntimeError("cognitive fingerprint epoch after-manifest mismatch")
+
+        await conn.execute(
+            receipt_table.insert().values(
+                epoch=epoch,
+                fingerprint_contract=epoch,
+                rows_scanned=len(revisions),
+                rows_rewritten=len(targets),
+                before_digest=_manifest_digest(before_manifest),
+                after_digest=_manifest_digest(after_manifest),
+            )
+        )
+    return None
 
 
 async def _migrate_repair_known_fixture_fk_orphans() -> str | None:

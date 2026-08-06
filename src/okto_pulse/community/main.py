@@ -18,6 +18,7 @@ import math
 import os
 import re
 import signal
+import sys
 import time
 from pathlib import Path
 from typing import AsyncGenerator, Callable
@@ -78,6 +79,39 @@ _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15.0
 _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S = 10.0
 _RECOVERY_NATIVE_DRAIN_TIMEOUT_S = 5.0
 _DEFAULT_METRICS_BEACON_INTERVAL_SECONDS = 3600.0
+
+
+def _log_native_runtime_budget() -> None:
+    """Publish one structured post-composition native runtime budget event."""
+
+    from okto_pulse.community.adapters.kg_runtime import (
+        build_native_runtime_budget_snapshot,
+    )
+
+    snapshot = build_native_runtime_budget_snapshot()
+    requested = dict(snapshot.requested)
+    normalized = dict(snapshot.normalized)
+    effective = dict(snapshot.effective)
+    sources = dict(snapshot.sources)
+    process_envelope = dict(snapshot.process_envelope)
+    _STARTUP_LOGGER.info(
+        "kg.native_runtime_budget effective=%s process_envelope=%s",
+        effective,
+        process_envelope,
+        extra={
+            "event": "kg.native_runtime_budget",
+            "source": snapshot.source,
+            "status": snapshot.status,
+            "requested": requested,
+            "normalized": normalized,
+            "effective": effective,
+            "sources": sources,
+            "process_envelope": process_envelope,
+            "is_direct_memory_telemetry": False,
+        },
+    )
+
+
 _DEFAULT_METRICS_BEACON_STARTUP_DELAY_SECONDS = 60.0
 _METRICS_LOG_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 
@@ -871,6 +905,7 @@ def create_community_app():
         )
 
         await apply_persisted_settings_to_core_settings()
+        _log_native_runtime_budget()
 
         from okto_pulse.community.adapters.kg_events import (
             register_community_kg_events_reader,
@@ -1131,9 +1166,7 @@ def create_community_app():
     )
 
     register_quality_assessment_preflight_reader(
-        CommunitySqlAlchemyQualityAssessmentPreflightReader(
-            _rc_session_factory
-        )
+        CommunitySqlAlchemyQualityAssessmentPreflightReader(_rc_session_factory)
     )
 
     def _cancel_safe_rc_scope():
@@ -1266,10 +1299,8 @@ def create_community_app():
             register_and_freeze_community_resource_catalog,
         )
 
-        mcp_cold_start_transaction = (
-            register_and_freeze_community_resource_catalog(
-                runtime_composition.runtime_values
-            )
+        mcp_cold_start_transaction = register_and_freeze_community_resource_catalog(
+            runtime_composition.runtime_values
         )
 
     try:
@@ -1777,7 +1808,7 @@ async def _lock_heartbeat_loop() -> None:
         raise
 
 
-def run():
+def run() -> int:
     """Run the community API + Frontend + MCP server (single process,
     two ports). Reads ``OKTO_PULSE_PORT`` / ``OKTO_PULSE_MCP_PORT`` env
     vars (set by the CLI) and falls back to the settings defaults.
@@ -1786,9 +1817,18 @@ def run():
         ServeAlreadyRunningError,
         acquire_serve_lock,
     )
+    from okto_pulse.community.data_home import (
+        UninitializedDefaultDataHomeError,
+        assert_serve_data_home_ready,
+    )
 
-    _enable_native_crash_diagnostics()
     settings = CommunitySettings()
+    try:
+        assert_serve_data_home_ready(settings)
+    except UninitializedDefaultDataHomeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _enable_native_crash_diagnostics()
     api_port = int(
         os.environ.get("PORT", os.environ.get("OKTO_PULSE_PORT", str(settings.port)))
     )
@@ -1800,8 +1840,8 @@ def run():
     try:
         serve_lock = acquire_serve_lock(settings)
     except ServeAlreadyRunningError as exc:
-        print(str(exc))
-        return
+        print(str(exc), file=sys.stderr)
+        return 2
     with serve_lock:
         try:
             run_async_server(_serve_dual(api_port, mcp_port))
@@ -1809,7 +1849,8 @@ def run():
             # Ctrl+C / SIGINT — shutdown is graceful from here; suppress the
             # default Python traceback for a clean CLI exit.
             print("\nOkto Pulse stopped.")
+    return 0
 
 
 if __name__ == "__main__":
-    run()
+    raise SystemExit(run())

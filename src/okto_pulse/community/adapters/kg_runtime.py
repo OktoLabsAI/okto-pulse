@@ -38,6 +38,9 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphLockContention,
     GraphUnavailable,
 )
+from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+    GraphRuntimeBudgetSnapshot,
+)
 
 logger = logging.getLogger("okto_pulse.kg.schema")
 
@@ -300,20 +303,94 @@ _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV = "OKTO_PULSE_COMMUNITY_KG_MAX_DB_SIZE_CA
 _GRAPH_MAX_DB_SIZE_ALLOWED_GB = frozenset({2, 4, 8, 16, 32, 64})
 
 
-def _board_db_cache_cap() -> int:
-    raw = os.environ.get("KG_DB_CACHE_CAP")
-    if raw:
+@dataclass(frozen=True)
+class _ResolvedOperationalLimit:
+    value: int
+    source: str
+
+
+def _resolve_board_buffer_pool_operational_cap(
+    raw: str | None,
+) -> _ResolvedOperationalLimit:
+    """Resolve the board-pool ceiling without logging or mutating state."""
+
+    if raw is None or raw.strip() == "":
+        return _ResolvedOperationalLimit(
+            _BOARD_BUFFER_POOL_OPERATIONAL_CAP_MB_DEFAULT,
+            "operational_default",
+        )
+    try:
+        cap = int(raw)
+    except ValueError:
+        cap = 0
+    if cap > 0:
+        return _ResolvedOperationalLimit(cap, "explicit_env")
+    return _ResolvedOperationalLimit(
+        _BOARD_BUFFER_POOL_OPERATIONAL_CAP_MB_DEFAULT,
+        "invalid_env_fallback",
+    )
+
+
+def _resolve_graph_max_db_size_operational_cap(
+    raw: str | None,
+) -> _ResolvedOperationalLimit:
+    """Resolve the supported max-DB ceiling without emitting warnings."""
+
+    if raw is None or raw.strip() == "":
+        return _ResolvedOperationalLimit(
+            _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT,
+            "operational_default",
+        )
+    try:
+        cap = int(raw)
+    except ValueError:
+        cap = 0
+    if cap in _GRAPH_MAX_DB_SIZE_ALLOWED_GB:
+        return _ResolvedOperationalLimit(cap, "explicit_env")
+    return _ResolvedOperationalLimit(
+        _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT,
+        "invalid_env_fallback",
+    )
+
+
+def _resolve_resident_board_slots(
+    raw: str | None,
+    configured_pool_size: int,
+) -> _ResolvedOperationalLimit:
+    """Resolve the resident Database-slot cap from env then configured pool."""
+
+    if raw is not None and raw.strip() != "":
         try:
-            return max(1, int(raw))
+            explicit = int(raw)
         except ValueError:
             pass
+        else:
+            # Preserve the pre-observability admission contract: every
+            # syntactically valid explicit integer is authoritative and is
+            # normalized to at least one resident slot.  Falling through for
+            # zero/negative values would silently widen the live cache back to
+            # the configured/default cap while the snapshot claimed a
+            # different provenance.
+            return _ResolvedOperationalLimit(max(1, explicit), "explicit_env")
+    configured = max(1, int(configured_pool_size))
+    effective = min(configured, _BOARD_DB_CACHE_CAP_DEFAULT)
+    source = (
+        "configured_pool"
+        if effective < _BOARD_DB_CACHE_CAP_DEFAULT
+        else "operational_default"
+    )
+    return _ResolvedOperationalLimit(effective, source)
+
+
+def _board_db_cache_cap() -> int:
+    raw = os.environ.get("KG_DB_CACHE_CAP")
     try:
         from okto_pulse.core import get_settings
 
         configured = max(1, int(get_settings().kg_connection_pool_size))
     except Exception:
         configured = _BOARD_DB_CACHE_CAP_DEFAULT
-    return min(configured, _BOARD_DB_CACHE_CAP_DEFAULT)
+    return _resolve_resident_board_slots(raw, configured).value
 
 
 def _board_buffer_pool_operational_cap_mb() -> int:
@@ -325,13 +402,8 @@ def _board_buffer_pool_operational_cap_mb() -> int:
     """
 
     raw = os.environ.get(_BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV)
-    if raw is not None and raw.strip() != "":
-        try:
-            cap = int(raw)
-            if cap > 0:
-                return cap
-        except ValueError:
-            pass
+    resolved = _resolve_board_buffer_pool_operational_cap(raw)
+    if resolved.source == "invalid_env_fallback":
         logger.warning(
             "kg.db_open.invalid_board_buffer_pool_cap var=%s value=%r falling_back=%d",
             _BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV,
@@ -344,7 +416,7 @@ def _board_buffer_pool_operational_cap_mb() -> int:
                 "fallback_mb": _BOARD_BUFFER_POOL_OPERATIONAL_CAP_MB_DEFAULT,
             },
         )
-    return _BOARD_BUFFER_POOL_OPERATIONAL_CAP_MB_DEFAULT
+    return resolved.value
 
 
 def _graph_max_db_size_operational_cap_gb() -> int:
@@ -359,13 +431,8 @@ def _graph_max_db_size_operational_cap_gb() -> int:
     """
 
     raw = os.environ.get(_GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV)
-    if raw is not None and raw.strip() != "":
-        try:
-            cap = int(raw)
-            if cap in _GRAPH_MAX_DB_SIZE_ALLOWED_GB:
-                return cap
-        except ValueError:
-            pass
+    resolved = _resolve_graph_max_db_size_operational_cap(raw)
+    if resolved.source == "invalid_env_fallback":
         logger.warning(
             "kg.db_open.invalid_max_db_size_cap var=%s value=%r falling_back=%d",
             _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV,
@@ -378,7 +445,7 @@ def _graph_max_db_size_operational_cap_gb() -> int:
                 "effective_cap_gb": (_GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT),
             },
         )
-    return _GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_GB_DEFAULT
+    return resolved.value
 
 
 def _effective_graph_max_db_size_gb(configured_gb: int) -> tuple[int, int]:
@@ -388,6 +455,84 @@ def _effective_graph_max_db_size_gb(configured_gb: int) -> tuple[int, int]:
         raise ValueError("kg_kuzu_max_db_size_gb must be one of 2, 4, 8, 16, 32, 64 GB")
     operational_cap_gb = _graph_max_db_size_operational_cap_gb()
     return min(configured_gb, operational_cap_gb), operational_cap_gb
+
+
+def build_native_runtime_budget_snapshot(
+    settings: Any | None = None,
+) -> GraphRuntimeBudgetSnapshot:
+    """Build the deterministic, non-live process envelope used by constructors.
+
+    This observer reuses the pure operational-limit resolvers and never opens a
+    graph.  It publishes only a bounded resident count; cache keys and board
+    identities intentionally remain private to the Community adapter.
+    """
+
+    if settings is None:
+        from okto_pulse.core import get_settings
+
+        settings = get_settings()
+
+    requested_board_mb = int(settings.kg_kuzu_buffer_pool_mb)
+    requested_global_mb = int(
+        getattr(settings, "kg_global_kuzu_buffer_pool_mb", 128)
+    )
+    requested_max_db_gb = int(settings.kg_kuzu_max_db_size_gb)
+    requested_pool_size = max(1, int(settings.kg_connection_pool_size))
+
+    board_cap = _resolve_board_buffer_pool_operational_cap(
+        os.environ.get(_BOARD_BUFFER_POOL_OPERATIONAL_CAP_ENV)
+    )
+    max_db_cap = _resolve_graph_max_db_size_operational_cap(
+        os.environ.get(_GRAPH_MAX_DB_SIZE_OPERATIONAL_CAP_ENV)
+    )
+    resident_slots = _resolve_resident_board_slots(
+        os.environ.get("KG_DB_CACHE_CAP"),
+        requested_pool_size,
+    )
+
+    effective_board_mb = min(requested_board_mb, board_cap.value)
+    effective_max_db_gb = min(requested_max_db_gb, max_db_cap.value)
+    with _board_db_cache_lock:
+        resident_board_count = min(len(_board_db_cache), resident_slots.value)
+    board_buffer_pool_total_mb = effective_board_mb * resident_slots.value
+    max_derived_buffer_envelope_mb = (
+        board_buffer_pool_total_mb + requested_global_mb
+    )
+
+    return GraphRuntimeBudgetSnapshot(
+        source="runtime_capability",
+        status="available",
+        requested={
+            "board_buffer_pool_mb": requested_board_mb,
+            "global_buffer_pool_mb": requested_global_mb,
+            "max_db_size_gb": requested_max_db_gb,
+            "connection_pool_size": requested_pool_size,
+        },
+        normalized={
+            "board_buffer_pool_cap_mb": board_cap.value,
+            "max_db_size_cap_gb": max_db_cap.value,
+            "resident_board_slots": resident_slots.value,
+        },
+        effective={
+            "board_buffer_pool_mb": effective_board_mb,
+            "global_buffer_pool_mb": requested_global_mb,
+            "max_db_size_gb": effective_max_db_gb,
+            "resident_board_slots": resident_slots.value,
+        },
+        sources={
+            "board_buffer_pool_cap": board_cap.source,
+            "max_db_size_cap": max_db_cap.source,
+            "resident_board_slots": resident_slots.source,
+        },
+        process_envelope={
+            "resident_board_slots": resident_slots.value,
+            "resident_board_count": resident_board_count,
+            "board_buffer_pool_total_mb": board_buffer_pool_total_mb,
+            "global_buffer_pool_mb": requested_global_mb,
+            "max_derived_buffer_envelope_mb": max_derived_buffer_envelope_mb,
+        },
+        unavailable_reason=None,
+    )
 
 
 def _raise_board_db_cache_admission_pressure(

@@ -67,6 +67,9 @@ from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment impo
     _new_waiver_event_row,
     _new_waiver_row,
 )
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     CommunityUnitOfWork,
 )
@@ -545,6 +548,7 @@ async def test_semantic_metric_json_guard_matches_core_closed_shape(tmp_path):
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -661,6 +665,7 @@ async def test_guideline_lifecycle_persists_and_rehydrates_semantic_overlay(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -870,6 +875,7 @@ async def test_impact_preview_and_adoption_persist_v2_semantic_configuration(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -1530,6 +1536,7 @@ async def test_record_assessment_uses_authoritative_unlinked_binding_heads(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -1661,6 +1668,7 @@ async def test_semantic_transition_runtime_is_authoritative_end_to_end(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -1992,6 +2000,7 @@ async def test_canonical_resource_agent_journey_reassesses_stale_subject(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -2089,6 +2098,7 @@ async def test_composite_revision_adoption_assessment_cas_and_replay(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -2297,6 +2307,7 @@ async def test_semantic_subject_q_and_a_change_updates_digest(tmp_path):
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -2360,6 +2371,7 @@ async def test_semantic_subject_kb_attach_content_version_and_unlink(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -2438,6 +2450,7 @@ async def test_semantic_subject_architecture_includes_diagram_payload_hashes(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -2520,6 +2533,7 @@ async def test_semantic_subject_mockup_tracks_authored_and_lineage_fields(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -2590,6 +2604,7 @@ async def test_semantic_subject_ignores_timestamps_actors_and_quality_flags(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -2720,6 +2735,7 @@ async def test_semantic_receipt_round_trip_replay_and_currentness(tmp_path):
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -2985,6 +3001,7 @@ async def test_unsealed_receipt_hides_findings_from_exact_and_list(tmp_path):
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -3041,6 +3058,7 @@ async def test_semantic_receipt_keyset_pagination_and_initial_seal_guard(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -3201,6 +3219,7 @@ async def test_semantic_assessment_and_finding_keysets_exceed_200_without_leakag
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -3413,6 +3432,7 @@ async def test_semantic_schema_rejects_incompatible_binding_and_mutation(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -3550,6 +3570,7 @@ async def test_semantic_waiver_lifecycle_replay_nullable_expiry_and_listing(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -3864,6 +3885,7 @@ async def test_expired_waiver_revalidation_never_conflicts_or_reactivates(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -4084,6 +4106,7 @@ async def test_anchor_stale_revalidation_round_trips_complete_decision(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -4220,6 +4243,7 @@ async def test_semantic_list_limits_share_closed_one_to_two_hundred_contract(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -4279,6 +4303,7 @@ async def test_semantic_skip_is_append_only_revocable_lifecycle(tmp_path):
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -4515,6 +4540,7 @@ async def test_semantic_skip_head_cursor_uses_immutable_creation_key(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -4608,6 +4634,7 @@ async def test_board_erasure_purges_every_semantic_guideline_row(tmp_path):
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -4942,6 +4969,7 @@ async def test_semantic_waiver_predecessor_schema_converges_losslessly(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -5188,6 +5216,7 @@ async def test_semantic_waiver_convergence_rejects_corrupted_event_lineage_atomi
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -5372,6 +5401,7 @@ async def test_semantic_waiver_convergence_rejects_incomplete_legacy_revalidatio
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:
@@ -5504,6 +5534,7 @@ async def test_legacy_policy_rows_migrate_inert_without_metric_synthesis(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:

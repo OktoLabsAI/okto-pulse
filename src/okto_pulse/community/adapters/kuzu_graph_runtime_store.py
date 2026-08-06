@@ -12,6 +12,7 @@ from pathlib import Path
 
 from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphPurgeResult,
+    GraphRuntimeBudgetSnapshot,
     GraphRuntimeObservationState,
     GraphRuntimeState,
     GraphStorageFootprint,
@@ -340,6 +341,13 @@ class CommunityKuzuGraphRuntimeStore:
             percentage=pct,
             unavailable_reason=None,
         )
+
+    def budget_snapshot(self) -> GraphRuntimeBudgetSnapshot:
+        from okto_pulse.community.adapters.kg_runtime import (
+            build_native_runtime_budget_snapshot,
+        )
+
+        return build_native_runtime_budget_snapshot()
 
 
 __all__ = ["CommunityKuzuGraphRuntimeStore"]

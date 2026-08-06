@@ -2,8 +2,11 @@
 
 import os
 from pathlib import Path
+from typing import Literal
+
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import DotEnvSettingsSource
 from okto_pulse.core import CoreSettings
 from okto_pulse.community.adapters.embedding import (
     COMMUNITY_DEFAULT_EMBEDDING_DIM,
@@ -15,6 +18,7 @@ from okto_pulse.community.adapters.telemetry_effect_config import (
 )
 
 GRAPH_DB_MAX_SIZE_GB_VALUES: tuple[int, ...] = (2, 4, 8, 16, 32, 64)
+DataDirOrigin = Literal["explicit", "DATA_DIR", "OKTO_PULSE_HOME", "default"]
 
 
 def validate_graph_db_max_size_gb(value: int) -> int:
@@ -24,6 +28,7 @@ def validate_graph_db_max_size_gb(value: int) -> int:
             "2, 4, 8, 16, 32, 64 GB (a power of 2)"
         )
     return value
+
 
 class CommunitySettings(CoreSettings, BaseSettings):
     """Settings for the community edition (local-first, single-user)."""
@@ -43,6 +48,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     upload_dir: str = ""
     max_upload_size: int = 10 * 1024 * 1024
     data_dir: str = ""  # Default set in validator
+    data_dir_origin: DataDirOrigin = Field(default="default", exclude=True)
     metrics_dir: str = ""
     metrics_beacon_url: str = COMMUNITY_DEFAULT_METRICS_BEACON_URL
     mcp_server_name: str = "okto-pulse"
@@ -80,6 +86,58 @@ class CommunitySettings(CoreSettings, BaseSettings):
         validation_alias="OKTO_PULSE_LEGACY_OFFSET",
     )
 
+    def __init__(self, **values: object) -> None:
+        """Resolve the data-home path and its provenance as one identity.
+
+        The legacy ``OKTO_PULSE_HOME`` environment variable intentionally
+        outranks ``DATA_DIR`` loaded from dotenv. Resolve that cross-source
+        precedence before BaseSettings merges its sources, then pass the path
+        and provenance together as authoritative init values. Empty and
+        whitespace-only candidates are absent, and ``DATA_DIR_ORIGIN`` can
+        never spoof the result.
+        """
+
+        prepared = dict(values)
+        supplied_data_dir = str(prepared.get("data_dir") or "").strip()
+        environment_data_dir = (os.environ.get("DATA_DIR") or "").strip()
+        legacy_environment_home = (os.environ.get("OKTO_PULSE_HOME") or "").strip()
+
+        env_file = prepared.get("_env_file", self.model_config.get("env_file"))
+        env_file_encoding = prepared.get(
+            "_env_file_encoding",
+            self.model_config.get("env_file_encoding"),
+        )
+        dotenv_values = (
+            DotEnvSettingsSource(
+                type(self),
+                env_file=env_file,
+                env_file_encoding=env_file_encoding,
+            )()
+            if env_file is not None
+            else {}
+        )
+        dotenv_data_dir = str(dotenv_values.get("data_dir") or "").strip()
+
+        if supplied_data_dir:
+            origin: DataDirOrigin = "explicit"
+            resolved_data_dir = supplied_data_dir
+        elif environment_data_dir:
+            origin = "DATA_DIR"
+            resolved_data_dir = environment_data_dir
+        elif legacy_environment_home:
+            origin = "OKTO_PULSE_HOME"
+            resolved_data_dir = legacy_environment_home
+        elif dotenv_data_dir:
+            origin = "DATA_DIR"
+            resolved_data_dir = dotenv_data_dir
+        else:
+            origin = "default"
+            resolved_data_dir = str(Path.home() / ".okto-pulse")
+
+        prepared["data_dir"] = resolved_data_dir
+        prepared["data_dir_origin"] = origin
+        super().__init__(**prepared)
+
     @field_validator("kg_kuzu_max_db_size_gb")
     @classmethod
     def _validate_graph_db_max_size_gb(cls, value: int) -> int:
@@ -88,9 +146,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [
-            origin.strip()
-            for origin in self.cors_origins.split(",")
-            if origin.strip()
+            origin.strip() for origin in self.cors_origins.split(",") if origin.strip()
         ]
 
     @model_validator(mode="after")
@@ -102,7 +158,10 @@ class CommunitySettings(CoreSettings, BaseSettings):
         data_path = Path(self.data_dir).expanduser().resolve()
         self.data_dir = str(data_path)
         # Only override if still unset or at the legacy core default value.
-        if not self.database_url or self.database_url == "sqlite+aiosqlite:///./dashboard.db":
+        if (
+            not self.database_url
+            or self.database_url == "sqlite+aiosqlite:///./dashboard.db"
+        ):
             db_path = data_path / "data" / "pulse.db"
             self.database_url = f"sqlite+aiosqlite:///{db_path}"
         if not self.upload_dir or self.upload_dir == "./uploads":

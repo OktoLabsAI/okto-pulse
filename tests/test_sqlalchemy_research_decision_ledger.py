@@ -18,6 +18,9 @@ from sqlalchemy.ext.asyncio import (
 )
 
 import okto_pulse.community.adapters.sqlalchemy_research_decision_ledger as rdl_adapter_module
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     Board,
@@ -170,6 +173,7 @@ async def rig(tmp_path: Path):
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with factory() as session:

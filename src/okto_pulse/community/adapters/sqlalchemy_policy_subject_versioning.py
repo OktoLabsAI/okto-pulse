@@ -15,7 +15,7 @@ import uuid
 
 from sqlalchemy import event, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.domain.guideline_policy import PolicyEntityType
@@ -49,6 +49,7 @@ from .sqlalchemy_models import (
 
 
 _INSTALLED = False
+_GUARDS_INSTALLED = False
 _BUMPED_KEY = "policy_subject_versioning_bumped"
 _COMMITTED_KEY = "policy_subject_versioning_committed_transactions"
 _SEMANTIC_BRIDGE_ENABLED_KEY = "semantic_subject_bridge_enabled"
@@ -62,6 +63,75 @@ _SEMANTIC_ENTITY_BY_MODEL: dict[type, str] = {
     Sprint: "sprint",
     Card: "card",
 }
+
+_CARD_NON_SEMANTIC_OPERATIONAL_FIELDS = frozenset(
+    {
+        "policy_version",
+        "position",
+        "updated_at",
+    }
+)
+
+
+class CommunitySemanticSession(Session):
+    """Synchronous Session owned by the Community semantic composition root.
+
+    ``AsyncSession`` delegates ORM work to a synchronous Session instance.  A
+    dedicated class gives the Community edition a stable event target without
+    mutating ``sqlalchemy.orm.Session`` process-wide.
+    """
+
+
+_PROTECTED_SEMANTIC_MODELS: tuple[type, ...] = (
+    Ideation,
+    Refinement,
+    Spec,
+    Sprint,
+    Card,
+    CardDependency,
+    Attachment,
+    ArchitectureDesign,
+    ArchitectureDiagramPayload,
+    IdeationQAItem,
+    RefinementQAItem,
+    SpecQAItem,
+    SprintQAItem,
+    QAItem,
+    IdeationKnowledgeBase,
+    RefinementKnowledgeBase,
+    SpecKnowledgeBase,
+    PolicyWaiverRow,
+    PolicyWaiverEventRow,
+)
+
+
+def _require_composed_semantic_session(
+    _mapper: object,
+    _connection: object,
+    target: object,
+) -> None:
+    """Reject protected ORM DML outside the Community composition root."""
+
+    session = object_session(target)
+    if session is not None and not isinstance(session, CommunitySemanticSession):
+        raise RuntimeError("semantic_subject_session_not_composed")
+
+
+def _install_semantic_model_guards() -> None:
+    """Install mapper guards once; mapper events do not contaminate Session."""
+
+    global _GUARDS_INSTALLED
+    if _GUARDS_INSTALLED:
+        return
+    for model in _PROTECTED_SEMANTIC_MODELS:
+        for event_name in ("before_insert", "before_update", "before_delete"):
+            if not event.contains(
+                model,
+                event_name,
+                _require_composed_semantic_session,
+            ):
+                event.listen(model, event_name, _require_composed_semantic_session)
+    _GUARDS_INSTALLED = True
 
 
 def bind_semantic_subject_actor(
@@ -257,12 +327,8 @@ def _queue_semantic_target(
 ) -> None:
     if not session.info.get(_SEMANTIC_BRIDGE_ENABLED_KEY):
         return
-    normalized_board_id = (
-        board_id.strip() if isinstance(board_id, str) else ""
-    )
-    normalized_subject_id = (
-        subject_id.strip() if isinstance(subject_id, str) else ""
-    )
+    normalized_board_id = board_id.strip() if isinstance(board_id, str) else ""
+    normalized_subject_id = subject_id.strip() if isinstance(subject_id, str) else ""
     if not normalized_board_id or not normalized_subject_id:
         return
     transaction = _active_transaction(session)
@@ -291,9 +357,7 @@ def queue_semantic_subject_mutation(
         return
     if expected_actor_id is not None:
         normalized_expected = (
-            expected_actor_id.strip()
-            if isinstance(expected_actor_id, str)
-            else ""
+            expected_actor_id.strip() if isinstance(expected_actor_id, str) else ""
         )
         if not normalized_expected:
             raise ValueError("semantic_subject_bridge_expected_actor_required")
@@ -363,9 +427,7 @@ def _collect_architecture_owners(
         if design.ideation_id:
             direct_version_targets[Ideation].add(str(design.ideation_id))
         if design.refinement_id:
-            direct_version_targets[Refinement].add(
-                str(design.refinement_id)
-            )
+            direct_version_targets[Refinement].add(str(design.refinement_id))
         if design.spec_id:
             direct_version_targets[Spec].add(str(design.spec_id))
         if design.card_id:
@@ -460,7 +522,7 @@ def _before_flush(
             if "test_scenarios" in changed and instance.id:
                 scenario_spec_ids.add(instance.id)
         if isinstance(instance, Card):
-            semantic_changes = changed - {"policy_version", "updated_at"}
+            semantic_changes = changed - _CARD_NON_SEMANTIC_OPERATIONAL_FIELDS
             if semantic_changes and instance.id:
                 card_ids.add(instance.id)
             if "status" in changed and instance.id:
@@ -526,9 +588,7 @@ def _before_flush(
                 _changed_attribute_names(relation) - {"created_at"}
             ):
                 continue
-            direct_version_targets[Spec].update(
-                _history_values(relation, "spec_id")
-            )
+            direct_version_targets[Spec].update(_history_values(relation, "spec_id"))
         elif isinstance(relation, SprintQAItem):
             if relation in session.dirty and not (
                 _changed_attribute_names(relation) - {"created_at"}
@@ -695,9 +755,7 @@ async def materialize_pending_semantic_subject_mutations(
     batch_id = uuid.uuid4().hex
     for entity_value, board_id, subject_id in sorted(targets):
         entity_type = PolicyEntityType(entity_value)
-        idempotency_key = (
-            f"semantic-subject-uow:{batch_id}:{entity_value}:{subject_id}"
-        )
+        idempotency_key = f"semantic-subject-uow:{batch_id}:{entity_value}:{subject_id}"
         request_digest = canonical_sha256(
             {
                 "contract": "semantic-subject-uow-mutation/v1",
@@ -749,30 +807,43 @@ def _finish_transaction_markers(
         # inside it because their corresponding token updates were reverted.
         markers.setdefault(parent, set()).update(child_markers)
     if transaction in committed and child_semantic_markers:
-        semantic_markers.setdefault(parent, set()).update(
-            child_semantic_markers
-        )
+        semantic_markers.setdefault(parent, set()).update(child_semantic_markers)
     committed.discard(transaction)
 
 
 def install_policy_subject_versioning() -> None:
-    """Install process-wide Session listeners exactly once."""
+    """Install listeners on the Community Session class exactly once."""
 
     global _INSTALLED
     if _INSTALLED:
         return
-    event.listen(Session, "before_flush", _before_flush)
-    event.listen(Session, "after_flush", _after_flush_collect_new_subjects)
-    event.listen(Session, "after_commit", _mark_transaction_committed)
+    event.listen(CommunitySemanticSession, "before_flush", _before_flush)
     event.listen(
-        Session,
+        CommunitySemanticSession,
+        "after_flush",
+        _after_flush_collect_new_subjects,
+    )
+    event.listen(
+        CommunitySemanticSession,
+        "after_commit",
+        _mark_transaction_committed,
+    )
+    event.listen(
+        CommunitySemanticSession,
         "after_transaction_end",
         _finish_transaction_markers,
     )
     _INSTALLED = True
 
 
+# Mapper guards and subclass listeners are deterministic at import time.  They
+# do not attach any callback to sqlalchemy.orm.Session itself.
+_install_semantic_model_guards()
+install_policy_subject_versioning()
+
+
 __all__ = [
+    "CommunitySemanticSession",
     "bind_semantic_subject_actor",
     "install_policy_subject_versioning",
     "lock_policy_board",

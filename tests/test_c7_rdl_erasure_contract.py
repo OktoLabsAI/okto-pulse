@@ -51,6 +51,9 @@ from okto_pulse.community.adapters.sqlalchemy_quality_assessment_lifecycle impor
 from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
     CommunitySqlAlchemyDomainEventPublisher,
 )
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
     Base,
@@ -218,6 +221,7 @@ async def _create_factory(
     return engine, async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
 

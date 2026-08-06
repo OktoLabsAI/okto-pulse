@@ -18,6 +18,9 @@ from okto_pulse.community.adapters.relational_effects import (
     CommunitySqlAlchemyRelationalEffects,
 )
 from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
     CommunitySqlAlchemyDomainEventPublisher,
 )
@@ -93,6 +96,7 @@ async def _rig(tmp_path: Path):
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with factory() as session:

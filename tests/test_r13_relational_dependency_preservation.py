@@ -9,6 +9,9 @@ import sys
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import okto_pulse.community.adapters.sqlalchemy_database as _db
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.core.domain.realm import RealmScope
 
 
@@ -66,6 +69,7 @@ def test_r13_session_factory_preserves_async_session_kwargs(monkeypatch) -> None
     assert captured["args"] == (sentinel_engine,)
     assert captured["kwargs"] == {
         "class_": AsyncSession,
+        "sync_session_class": CommunitySemanticSession,
         "expire_on_commit": False,
         "info": {"realm_scope": RealmScope.local()},
     }

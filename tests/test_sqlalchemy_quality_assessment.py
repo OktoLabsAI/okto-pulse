@@ -57,6 +57,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     CommunitySqlAlchemyQualityAssessment,
 )
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_consolidation import (
     CommunitySqlAlchemyConsolidationPersistence,
 )
@@ -130,20 +133,18 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture(autouse=True)
 def _quality_adapter_isolated_from_semantic_listeners():
-    """Suspend the process-wide semantic versioning listeners for this file.
+    """Suspend Community semantic versioning callbacks for fixed-chain tests.
 
     These are ADAPTER-layer unit tests of the quality-assessment persistence
     contract built on fixed subject-version chains (seed version=7, bundles
-    pinned to exact versions). The suite-wide conftest installs the production
-    Session listeners, under which every question-proposing bundle also bumps
-    the owning spec's version (SpecQAItem insert => semantic change), turning
-    the fixed chains stale mid-test. Version-advance staleness is covered
-    explicitly by test_consolidation_projection_omits_head_stale_by_subject_
-    version; here the listeners are removed for the duration of each test and
-    always reinstalled, so the isolation is deterministic in ANY suite order.
+    pinned to exact versions). Its local factory uses the production
+    CommunitySemanticSession, under which every question-proposing bundle also
+    bumps the owning spec's version (SpecQAItem insert => semantic change),
+    turning the fixed chains stale mid-test. Version-advance staleness is
+    covered explicitly by test_consolidation_projection_omits_head_stale_by_
+    subject_version; here the subclass listeners are removed for each test and
+    always reinstalled, so isolation is deterministic in any suite order.
     """
-
-    from sqlalchemy.orm import Session as _SyncSession
 
     from okto_pulse.community.adapters import (
         sqlalchemy_policy_subject_versioning as _psv,
@@ -157,14 +158,14 @@ def _quality_adapter_isolated_from_semantic_listeners():
     )
     removed = []
     for hook, listener in pairs:
-        if event.contains(_SyncSession, hook, listener):
-            event.remove(_SyncSession, hook, listener)
+        if event.contains(_psv.CommunitySemanticSession, hook, listener):
+            event.remove(_psv.CommunitySemanticSession, hook, listener)
             removed.append((hook, listener))
     try:
         yield
     finally:
         for hook, listener in removed:
-            event.listen(_SyncSession, hook, listener)
+            event.listen(_psv.CommunitySemanticSession, hook, listener)
 
 
 NOW = datetime(2026, 7, 27, 15, 0, tzinfo=timezone.utc)
@@ -413,8 +414,9 @@ async def _schema_engine(path: Path) -> AsyncEngine:
     return engine
 
 
-async def test_parent_summary_permission_denial_is_omission_without_quality_io(
-) -> None:
+async def test_parent_summary_permission_denial_is_omission_without_quality_io() -> (
+    None
+):
     reset_ska_metric_samples_for_tests()
     services = SimpleNamespace(
         resolve_user_permissions=AsyncMock(return_value=[]),
@@ -429,9 +431,7 @@ async def test_parent_summary_permission_denial_is_omission_without_quality_io(
 
     assert summaries is None
     assert quality_summary_field(SPEC_ID, summaries) == {}
-    assert quality_summary_field(SPEC_ID, {}) == {
-        "quality_summaries": {}
-    }
+    assert quality_summary_field(SPEC_ID, {}) == {"quality_summaries": {}}
     services.resolve_user_permissions.assert_awaited_once_with(
         "reader-without-quality",
         BOARD_ID,
@@ -452,6 +452,7 @@ async def rig(tmp_path: Path):
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     payload = _spec_payload()
@@ -780,10 +781,8 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
         assert reconstructed.subject_id == SPEC_ID
         execution = await session.scalar(
             select(DomainEventHandlerExecution).where(
-                DomainEventHandlerExecution.event_id
-                == receipt_row.event_id,
-                DomainEventHandlerExecution.handler_name
-                == "ConsolidationEnqueuer",
+                DomainEventHandlerExecution.event_id == receipt_row.event_id,
+                DomainEventHandlerExecution.handler_name == "ConsolidationEnqueuer",
             )
         )
         assert execution is not None
@@ -1320,14 +1319,12 @@ async def test_consolidation_projection_loads_only_current_quality_head_in_one_q
             record_statement,
         )
         try:
-            projection = (
-                await CommunitySqlAlchemyConsolidationPersistence().load_projection_inputs(
-                    session,
-                    board_id=BOARD_ID,
-                    artifact_type="spec",
-                    artifact_id=SPEC_ID,
-                    artifact=artifact,
-                )
+            projection = await CommunitySqlAlchemyConsolidationPersistence().load_projection_inputs(
+                session,
+                board_id=BOARD_ID,
+                artifact_type="spec",
+                artifact_id=SPEC_ID,
+                artifact=artifact,
             )
         finally:
             event.remove(
@@ -1362,9 +1359,7 @@ async def test_consolidation_projection_loads_only_current_quality_head_in_one_q
             board_id=BOARD_ID,
         )
     projection_key = (BOARD_ID, "spec", SPEC_ID)
-    assert rebuild_fingerprints[projection_key] == (
-        current.projection_fingerprint,
-    )
+    assert rebuild_fingerprints[projection_key] == (current.projection_fingerprint,)
     assert projected_root_content_hash(
         "a" * 64,
         quality_head_fingerprints=(current.projection_fingerprint,),
@@ -1629,6 +1624,7 @@ async def test_board_source_root_hash_ignores_clarification_stale_quality_head(
 
     assert second_root_hash == first_root_hash
 
+
 async def test_requirement_lint_new_receipt_never_duplicates_existing_questions(
     rig,
 ) -> None:
@@ -1687,10 +1683,9 @@ async def test_requirement_lint_new_receipt_never_duplicates_existing_questions(
         assert proposal_rows > qa_after_first
         # ...but the operational Q&A board gains ZERO duplicate questions.
         assert await _count(session, SpecQAItem) == qa_after_first
-        questions = (
-            await session.execute(select(SpecQAItem.question))
-        ).scalars().all()
+        questions = (await session.execute(select(SpecQAItem.question))).scalars().all()
         assert len(questions) == len(set(questions))
+
 
 async def test_board_lint_languages_activate_language_lexicons(rig) -> None:
     """BoardSettings.lint_languages drives the analyzer profile end to end.
@@ -1710,8 +1705,7 @@ async def test_board_lint_languages_activate_language_lexicons(rig) -> None:
         {
             "id": "ac_de_profile",
             "text": (
-                "Wenn der Benutzer speichert, liefert das System einen "
-                "Fehler."
+                "Wenn der Benutzer speichert, liefert das System einen " "Fehler."
             ),
             "status": "active",
         }
@@ -1731,9 +1725,7 @@ async def test_board_lint_languages_activate_language_lexicons(rig) -> None:
 
     def _de_signal_findings(keys):
         return [
-            key
-            for key in keys
-            if ":ac_de_profile:ac_verifiable_signal_missing" in key
+            key for key in keys if ":ac_de_profile:ac_verifiable_signal_missing" in key
         ]
 
     async with rig() as session:

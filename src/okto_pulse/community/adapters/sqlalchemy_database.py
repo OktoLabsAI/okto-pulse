@@ -347,6 +347,7 @@ def build_community_session_factory(
     repositories keep read-after-write semantics on committed instances.
     """
     from .sqlalchemy_policy_subject_versioning import (
+        CommunitySemanticSession,
         install_policy_subject_versioning,
     )
 
@@ -354,6 +355,7 @@ def build_community_session_factory(
     return async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
         info={"realm_scope": RealmScope.local()},
     )
@@ -546,7 +548,9 @@ def install_community_pool_observability(engine: AsyncEngine) -> None:
             )
 
     @event.listens_for(sync_engine, "before_cursor_execute")
-    def _on_cursor_execute(conn, _cursor, statement, _parameters, _context, _many):  # noqa: ANN001
+    def _on_cursor_execute(
+        conn, _cursor, statement, _parameters, _context, _many
+    ):  # noqa: ANN001
         record_id = conn.info.get("pulse_checkout_record_id")
         observation = checked_out.get(record_id)
         if observation is None:
