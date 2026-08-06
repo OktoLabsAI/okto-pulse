@@ -2285,6 +2285,7 @@ export interface AgentBoardGrant {
 
 // Board
 export type SpecResourceAutoDeriveType = 'knowledge_base' | 'architecture' | 'mockup';
+export type ReviewerSeparationMode = 'off' | 'warn' | 'enforce';
 
 export interface BoardSettings {
   max_scenarios_per_card: number;
@@ -2300,6 +2301,12 @@ export interface BoardSettings {
   allow_agent_self_answering?: boolean;
   require_full_context_for_critical_actions?: boolean;
   qa_require_role_separation?: boolean;
+  /**
+   * Independent-review policy for task validation and sprint evaluation.
+   * Missing legacy values resolve to `off`; newly created boards/templates
+   * materialize `enforce` in the backend.
+   */
+  reviewer_separation_mode?: ReviewerSeparationMode;
   require_task_validation: boolean;
   min_confidence: number;
   min_completeness: number;

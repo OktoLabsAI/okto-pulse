@@ -139,6 +139,7 @@ const baseSettings: BoardSettings = {
   skip_cognitive_consolidation: false,
   allow_agent_self_answering: false,
   require_full_context_for_critical_actions: true,
+  reviewer_separation_mode: 'enforce',
   require_task_validation: true,
   min_confidence: 70,
   min_completeness: 80,
@@ -460,11 +461,28 @@ describe('Header Board settings resource automation', () => {
     expect(screen.getByText('Agent Governance')).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'Allow agent self-answering' })).toHaveAttribute('aria-checked', 'false');
     expect(screen.getByRole('switch', { name: 'Require full context for critical actions' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('reviewer-separation-mode-enforce')).toHaveAttribute('aria-pressed', 'true');
 
     const warning = await screen.findByTestId('board-context-warning');
     expect(warning).toHaveTextContent('Board description is empty');
     expect(warning).toHaveTextContent('Board guidelines are empty');
     expect(apiMock.getBoardGuidelines).toHaveBeenCalledWith('board-1');
+  });
+
+  it('persists the independent reviewer policy through the board update flow', async () => {
+    renderOpenHeader();
+
+    fireEvent.click(screen.getByTestId('reviewer-separation-mode-warn'));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          reviewer_separation_mode: 'warn',
+        }),
+      }),
+    );
   });
 
   it('persists agent self-answering through the existing board update flow', async () => {

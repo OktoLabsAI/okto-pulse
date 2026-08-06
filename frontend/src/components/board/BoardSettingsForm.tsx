@@ -9,7 +9,16 @@
 import { type ReactNode, useEffect, useState } from 'react';
 import { BookOpen, ClipboardCheck, Image, Languages, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
 import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
-import type { BoardSettings, LintLanguageCode, SpecResourceAutoDeriveType } from '@/types';
+import {
+  normalizeReviewerSeparationMode,
+  REVIEWER_SEPARATION_MODES,
+} from '@/components/board/reviewerSeparationSettings';
+import type {
+  BoardSettings,
+  LintLanguageCode,
+  ReviewerSeparationMode,
+  SpecResourceAutoDeriveType,
+} from '@/types';
 
 interface SettingsToggleProps {
   checked: boolean;
@@ -406,6 +415,66 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
               testId="toggle-full-context-critical-actions"
             />
           </SettingRow>
+        </div>
+
+        <div>
+          <div className="mb-2">
+            <p
+              id="reviewer-separation-mode-label"
+              className="block text-xs font-medium text-gray-700 dark:text-gray-300"
+            >
+              Independent reviewer policy
+            </p>
+            <p
+              id="reviewer-separation-mode-description"
+              className="mt-0.5 text-[10px] leading-4 text-gray-400 dark:text-gray-500"
+            >
+              Controls whether a task creator, assignee or executor may submit its validation.
+            </p>
+          </div>
+          <div
+            className="grid grid-cols-3 gap-2"
+            role="group"
+            aria-labelledby="reviewer-separation-mode-label"
+            aria-describedby="reviewer-separation-mode-description"
+            data-testid="reviewer-separation-mode"
+          >
+            {REVIEWER_SEPARATION_MODES.map((mode) => {
+              const checked = normalizeReviewerSeparationMode(
+                settings.reviewer_separation_mode,
+              ) === mode;
+              const labels: Record<ReviewerSeparationMode, string> = {
+                off: 'Off',
+                warn: 'Warn',
+                enforce: 'Enforce',
+              };
+              const titles: Record<ReviewerSeparationMode, string> = {
+                off: 'Allow validation while retaining conflict details in the audit trail.',
+                warn: 'Allow validation and persist a reviewer-separation warning.',
+                enforce: 'Block validation when the reviewer created, owns or executed the task.',
+              };
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  title={titles[mode]}
+                  aria-pressed={checked}
+                  data-testid={`reviewer-separation-mode-${mode}`}
+                  onClick={() => onChange({ reviewer_separation_mode: mode })}
+                  className={`h-9 rounded border px-2 text-[11px] font-medium transition-colors ${
+                    checked
+                      ? 'border-violet-400 bg-violet-50 text-violet-700 dark:border-violet-500/70 dark:bg-violet-500/15 dark:text-violet-200'
+                      : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {labels[mode]}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-2 text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+            Enforce is the safe default for new boards. Legacy boards without a stored value remain Off until explicitly changed.
+          </p>
         </div>
 
         {contextWarnings}

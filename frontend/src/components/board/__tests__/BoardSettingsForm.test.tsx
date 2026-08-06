@@ -13,11 +13,58 @@ const baseSettings: BoardSettings = {
   skip_ir_coverage_global: false,
   skip_or_coverage_global: false,
   skip_decisions_coverage_global: false,
+  reviewer_separation_mode: 'enforce',
   require_task_validation: false,
   min_confidence: 70,
   min_completeness: 70,
   max_drift: 30,
 };
+
+describe('BoardSettingsForm — independent reviewer policy', () => {
+  it('renders the persisted mode and offers all three policies', () => {
+    render(<BoardSettingsForm settings={baseSettings} onChange={vi.fn()} />);
+
+    const group = screen.getByTestId('reviewer-separation-mode');
+    expect(group.querySelectorAll('button')).toHaveLength(3);
+    expect(screen.getByTestId('reviewer-separation-mode-enforce')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  it('patches reviewer_separation_mode when a policy is selected', () => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+
+    fireEvent.click(screen.getByTestId('reviewer-separation-mode-warn'));
+
+    expect(onChange).toHaveBeenCalledWith({ reviewer_separation_mode: 'warn' });
+  });
+
+  it('projects an absent or unknown legacy value as off', () => {
+    const { rerender } = render(
+      <BoardSettingsForm
+        settings={{ ...baseSettings, reviewer_separation_mode: undefined }}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('reviewer-separation-mode-off')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    rerender(
+      <BoardSettingsForm
+        settings={{ ...baseSettings, reviewer_separation_mode: 'invalid' as never }}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('reviewer-separation-mode-off')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+});
 
 describe('BoardSettingsForm — requirement lint languages', () => {
   it('renders the five supported languages with none selected by default', () => {

@@ -14,6 +14,7 @@ import {
   BoardSettingsForm,
   normalizeDesignSystemGateMode,
 } from '@/components/board/BoardSettingsForm';
+import { normalizeReviewerSeparationMode } from '@/components/board/reviewerSeparationSettings';
 import { ChecklistModeSelector } from '@/components/board/ChecklistModeSelector';
 import {
   canonicalDefaultGuidelineRefs,
@@ -57,6 +58,7 @@ const DEFAULT_TEMPLATE_SETTINGS: Record<string, unknown> = {
   allow_agent_self_answering: false,
   require_full_context_for_critical_actions: true,
   qa_require_role_separation: false,
+  reviewer_separation_mode: 'enforce',
   design_system_gate_mode: 'off',
   require_task_validation: true,
   min_confidence: 70,
@@ -136,6 +138,7 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
     allow_agent_self_answering: bool('allow_agent_self_answering', false),
     require_full_context_for_critical_actions: bool('require_full_context_for_critical_actions', true),
     qa_require_role_separation: bool('qa_require_role_separation', false),
+    reviewer_separation_mode: normalizeReviewerSeparationMode(raw.reviewer_separation_mode),
     skip_test_evidence_global: bool('skip_test_evidence_global', false),
     require_task_validation: bool('require_task_validation', true),
     min_confidence: num('min_confidence', 70),

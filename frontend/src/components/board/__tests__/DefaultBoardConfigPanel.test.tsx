@@ -138,6 +138,7 @@ describe('DefaultBoardConfigPanel', () => {
         settings_payload: {
           max_scenarios_per_card: 5,
           require_task_validation: true,
+          reviewer_separation_mode: 'enforce',
           min_confidence: 70,
           require_spec_validation: true,
           design_system_gate_mode: 'advisory',
@@ -552,6 +553,28 @@ describe('DefaultBoardConfigPanel', () => {
         require_task_validation: false,
         min_confidence: 70,
         design_system_gate_mode: 'advisory',
+      }),
+    }));
+  });
+
+  it('versions the independent reviewer policy in Global Default', async () => {
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    expect(await screen.findByTestId('reviewer-separation-mode-enforce')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    fireEvent.click(screen.getByTestId('reviewer-separation-mode-warn'));
+
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+    expect(screen.getByTestId('dbc-template-dirty')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(expect.objectContaining({
+      activate: true,
+      settings_payload: expect.objectContaining({
+        reviewer_separation_mode: 'warn',
       }),
     }));
   });
