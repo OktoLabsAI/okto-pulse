@@ -2248,6 +2248,13 @@ export interface LookupPage {
   limit: number;
 }
 
+// Permission flags are backend-owned and may introduce groups at arbitrary
+// depth (for example spec.structured_entity.<type>.<action>).
+export type PermissionFlagTree = {
+  [key: string]: boolean | PermissionFlagTree;
+};
+export type PermissionFlags = Record<string, PermissionFlagTree>;
+
 // Permission Preset
 export interface PermissionPreset {
   id: string;
@@ -2256,7 +2263,7 @@ export interface PermissionPreset {
   description: string | null;
   is_builtin: boolean;
   base_preset_id: string | null;
-  flags: Record<string, Record<string, Record<string, boolean>>>;
+  flags: PermissionFlags;
   owner_review_required: boolean;
   review_reason: string | null;
   created_at: string;
@@ -2271,7 +2278,7 @@ export interface Agent {
   objective: string | null;
   is_active: boolean;
   permissions: string[] | null;
-  permission_flags: Record<string, Record<string, Record<string, boolean>>> | null;
+  permission_flags: PermissionFlags | null;
   preset_id: string | null;
   created_by: string;
   created_at: string;
@@ -3083,7 +3090,7 @@ export interface CreateAgentRequest {
   objective?: string;
   permissions?: string[];
   preset_id?: string;
-  permission_flags?: Record<string, Record<string, Record<string, boolean>>>;
+  permission_flags?: PermissionFlags;
 }
 
 export interface UpdateAgentRequest {
