@@ -8,8 +8,7 @@ use-case errors back to the EXACT legacy HTTP status + detail
 (``EntityNotFoundError`` → the per-entity 404 string, ``SprintOperationError`` →
 400 ``to_dict()``, ``ValueError`` → 400 ``str``), and shapes the response
 payloads (the sprint re-fetch, the evaluation envelope, the assign/unassign lane
-envelope). The legacy sprint endpoints carried no permission gate, so neither do
-these.
+envelope), including structured 403 details from permission-aware mutations.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -25,11 +24,17 @@ from okto_pulse.community.api.pagination import (
     search_groups,
     validate_pagination_query,
 )
+from okto_pulse.community.api.permission_errors import (
+    permission_denied_http_error,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
 )
-from okto_pulse.core.application.use_cases import EntityNotFoundError
+from okto_pulse.core.application.use_cases import (
+    EntityNotFoundError,
+    PermissionDeniedError,
+)
 from okto_pulse.core.application.use_cases.sprints_crud import (
     AssignSprintTasksCommand,
     AssignSprintTasksUseCase,
@@ -209,6 +214,8 @@ async def create_sprint(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return result.sprint
 
 
@@ -315,6 +322,8 @@ async def update_sprint(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return result.sprint
 
 
@@ -362,6 +371,8 @@ async def delete_sprint(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
 
 
 @router.post("/sprints/{sprint_id}/evaluations")
@@ -384,6 +395,8 @@ async def submit_evaluation(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     sprint = result.sprint
     return {"success": True, "evaluation_id": sprint.evaluations[-1]["id"] if sprint.evaluations else None}
 
@@ -411,6 +424,8 @@ async def assign_tasks(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     count = result.assigned
     sprint = result.sprint
     lane_type = sprint.lane_type.value if sprint else None
@@ -449,6 +464,8 @@ async def unassign_tasks(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return {"success": True, "unassigned": result.unassigned}
 
 
