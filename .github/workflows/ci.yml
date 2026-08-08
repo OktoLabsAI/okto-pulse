@@ -27,7 +27,7 @@ jobs:
   build-verify:
     name: docker build verify
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       OKTO_PULSE_CORE_REPO: ${{ github.workspace }}/okto-pulse-core
 
