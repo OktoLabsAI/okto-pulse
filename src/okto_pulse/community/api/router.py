@@ -4,6 +4,10 @@ from fastapi import APIRouter
 
 from okto_pulse.community.api.boards import router as boards_router
 from okto_pulse.community.api.cards import router as cards_router
+from okto_pulse.community.api.checklists import router as checklists_router
+from okto_pulse.community.api.quality_assessments import (
+    router as quality_assessments_router,
+)
 from okto_pulse.community.api.agents import router as agents_router
 from okto_pulse.community.api.attachments import router as attachments_router
 from okto_pulse.community.api.qa import router as qa_router
@@ -11,6 +15,9 @@ from okto_pulse.community.api.comments import router as comments_router
 from okto_pulse.community.api.ideations import router as ideations_router
 from okto_pulse.community.api.refinements import router as refinements_router
 from okto_pulse.community.api.guidelines import router as guidelines_router
+from okto_pulse.community.api.policy_governance import (
+    router as policy_governance_router,
+)
 from okto_pulse.community.api.specs import router as specs_router
 from okto_pulse.community.api.stories import router as stories_router
 from okto_pulse.community.api.analytics import router as analytics_router
@@ -81,6 +88,8 @@ api_router.include_router(ideations_router, tags=["ideations"])
 api_router.include_router(stories_router, tags=["stories"])
 api_router.include_router(refinements_router, tags=["refinements"])
 api_router.include_router(specs_router, tags=["specs"])
+api_router.include_router(checklists_router, tags=["checklists"])
+api_router.include_router(quality_assessments_router, tags=["quality-assessments"])
 api_router.include_router(allowed_transitions_router, tags=["allowed-transitions"])
 # `default_board_config_router` MUST be registered before `guidelines_router`: it owns
 # the literal GET /guidelines/default-candidates, which would otherwise be shadowed by
@@ -88,6 +97,11 @@ api_router.include_router(allowed_transitions_router, tags=["allowed-transitions
 # match routes in registration order, so the param route would swallow the literal path
 # and return 404 "Guideline not found"). Regression: test_guidelines_route_order.py.
 api_router.include_router(default_board_config_router, tags=["default-board-config"])
+# Board-scoped policy governance owns literal import/export and action routes.
+# Keep it before the historical guideline router: Starlette route matching is
+# registration-ordered and `/guidelines/{guideline_id}` must never capture a
+# governance literal.
+api_router.include_router(policy_governance_router, tags=["policy-governance"])
 api_router.include_router(guidelines_router, tags=["guidelines"])
 api_router.include_router(agents_router, prefix="/agents", tags=["agents"])
 api_router.include_router(

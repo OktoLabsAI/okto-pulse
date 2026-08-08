@@ -82,6 +82,8 @@ export function PathBRemediationPanel({
   onCreateAmendment,
   onAssociate,
   busy = false,
+  canCreate = true,
+  canAssociate = true,
 }: {
   revisions: AmendmentRevision[];
   pathBResolution: AmendmentPathBResolution | null;
@@ -89,6 +91,8 @@ export function PathBRemediationPanel({
   onCreateAmendment: () => void;
   onAssociate: (amendmentId: string) => void;
   busy?: boolean;
+  canCreate?: boolean;
+  canAssociate?: boolean;
 }) {
   const [showResolver, setShowResolver] = useState(false);
 
@@ -200,7 +204,8 @@ export function PathBRemediationPanel({
                       )}
                       <button
                         type="button"
-                        disabled={busy}
+                        disabled={busy || !canAssociate}
+                        title={canAssociate ? undefined : 'Missing permission: amendment.revision.associate'}
                         onClick={() => onAssociate(rev.id)}
                         data-testid={`associate-${rev.id}`}
                         className="inline-flex items-center gap-1 rounded border border-gray-300 dark:border-gray-600 px-2 py-0.5 text-[10px] font-medium disabled:opacity-50"
@@ -222,7 +227,8 @@ export function PathBRemediationPanel({
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || !canCreate}
+              title={canCreate ? undefined : 'Missing permission: amendment.revision.create'}
               onClick={onCreateAmendment}
               data-testid="create-amendment-action"
               className="inline-flex items-center gap-1.5 rounded bg-gray-900 dark:bg-gray-100 px-3 py-1.5 text-xs font-medium text-white dark:text-gray-900 disabled:opacity-50"

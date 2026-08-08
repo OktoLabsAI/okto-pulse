@@ -10,16 +10,31 @@ import {
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { exportSprint, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
-import type { AllowedTransition, Sprint, SprintStatus } from '@/types';
+import type { Sprint, SprintStatus } from '@/types';
 import { SPRINT_STATUS_LABELS, SPRINT_STATUS_COLORS } from '@/types';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 import { EditableField } from '@/components/shared/EditableField';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
+import {
+  AccessibleTabList,
+  AccessibleTabPanel,
+} from '@/components/shared/AccessibleTabs';
+import { HorizontalOverflowNav } from '@/components/shared/HorizontalOverflowNav';
+import {
+  PolicyCompliancePanel,
+  PolicyComplianceTransitionPreview,
+  usePolicyTransitionAuthority,
+} from '@/components/policy-compliance';
 import { openLineageGraph } from '@/components/traceability';
 import { deriveSprintDisplayCounts, normalizeSprintCardType } from './sprintDisplayCounts';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import {
+  hasPermissionWithState,
+  usePermissions,
+} from '@/hooks/usePermissions';
 
 type SprintTab = 'details' | 'scope' | 'cards' | 'evaluations' | 'qa' | 'history' | 'cancellation';
+type SprintEvaluationTab = 'sprint-evaluation' | 'policy-compliance';
 
 const SPRINT_ACTION_LABELS: Record<string, string> = {
   created: 'Created',
@@ -169,7 +184,31 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
   const [specCards, setSpecCards] = useState<any[]>([]);
   const [parentSpec, setParentSpec] = useState<any>(null);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
-  const [allowedTransitions, setAllowedTransitions] = useState<AllowedTransition[]>([]);
+  const [evaluationTab, setEvaluationTab] =
+    useState<SprintEvaluationTab>('sprint-evaluation');
+  const [policyRefreshGeneration, setPolicyRefreshGeneration] = useState(0);
+  const permissions = usePermissions(sprint?.board_id);
+  const canMutateSprint = (action: string) => hasPermissionWithState(
+    permissions.has,
+    action,
+    'sprint',
+    sprint?.status,
+  );
+  const canEditSprintFields = canMutateSprint('sprint.entity.edit_fields');
+  const canEditSprintCoverage = canMutateSprint(
+    'sprint.entity.edit_coverage_flags',
+  );
+  const canAssignSprintCards = canMutateSprint('sprint.tasks.assign');
+  const canReadPolicyCompliance = permissions.has(
+    'guidelines.assessments.read',
+  );
+  const transitionAuthority = usePolicyTransitionAuthority({
+    boardId: sprint?.board_id,
+    entityType: 'sprint',
+    subjectId: sprint?.id,
+    currentStatus: sprint?.status,
+    refreshKey: policyRefreshGeneration,
+  });
 
   useEscapeToClose(onEscape ?? onClose);
 
@@ -180,18 +219,28 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
     }
   }, [activeTab, sprint?.status]);
 
+  useEffect(() => {
+    if (
+      evaluationTab === 'policy-compliance'
+      && !canReadPolicyCompliance
+    ) {
+      setEvaluationTab('sprint-evaluation');
+    }
+  }, [canReadPolicyCompliance, evaluationTab]);
+
+  useEffect(() => {
+    if (!canAssignSprintCards) setShowAssign(false);
+  }, [canAssignSprintCards]);
+
   const loadSprint = async () => {
     try {
       setLoading(true);
       const data = await api.getSprint(sprintId);
       setSprint(data);
-      if (typeof api.getAllowedTransitions === 'function') {
-        api.getAllowedTransitions(data.board_id, {
-          entity_type: 'sprint',
-          entity_id: data.id,
-        }).then((response) => setAllowedTransitions(response.allowed_transitions))
-          .catch(() => setAllowedTransitions([]));
-      }
+      // A sprint snapshot includes derived card/scenario facts whose digest can
+      // change without a visible sprint version bump. Every authoritative reload
+      // therefore refreshes Policy Compliance even when data.version is stable.
+      setPolicyRefreshGeneration((current) => current + 1);
       // Load parent spec for scope resolution
       if (data.spec_id) {
         api.getSpec(data.spec_id).then(setParentSpec).catch(() => setParentSpec(null));
@@ -207,7 +256,9 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
 
   const performMove = async (status: SprintStatus, cancellationReason?: string) => {
     if (!sprint) return;
+    if (!canMutateSprint(`sprint.move.${sprint.status}_to_${status}`)) return;
     setMovingTo(status);
+    transitionAuthority.clearRejection();
     try {
       await api.moveSprint(sprintId, {
         status,
@@ -215,9 +266,18 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
         ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
       });
       toast.success(`Sprint moved to ${SPRINT_STATUS_LABELS[status]}`);
-      loadSprint();
+      await loadSprint();
     } catch (e: any) {
-      toast.error(e.message || `Failed to move sprint`);
+      const policyRejected =
+        await transitionAuthority.handleTransitionError(e, status);
+      if (!policyRejected) {
+        await transitionAuthority.refresh();
+      }
+      toast.error(
+        policyRejected
+          ? 'Policy Compliance rejected this sprint transition.'
+          : e?.message || 'Failed to move sprint',
+      );
     } finally {
       setMovingTo(null);
     }
@@ -234,6 +294,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
   };
 
   const handleSprintTextSave = async (field: 'objective' | 'expected_outcome', value: string) => {
+    if (!canEditSprintFields) return;
     try {
       await api.updateSprint(sprintId, {
         [field]: value.trim() || null,
@@ -258,12 +319,24 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
 
   // The action comes from the same Core registry enforced by the mutation.
   const currentRank = FLOW_STATUSES.indexOf(sprint.status);
-  const forward = allowedTransitions.find((transition) => {
+  const forward = transitionAuthority.actionableTransitions.find((transition) => {
     const rank = FLOW_STATUSES.indexOf(transition.to_status as SprintStatus);
-    return rank > currentRank;
+    return rank > currentRank
+      && canMutateSprint(
+        `sprint.move.${sprint.status}_to_${transition.to_status}`,
+      );
   });
-  const selectedTransition = forward || allowedTransitions.find(
-    (transition) => transition.capabilities?.includes('reopen'),
+  const selectedTransition = forward || transitionAuthority.actionableTransitions.find(
+    (transition) => transition.capabilities?.includes('reopen')
+      && canMutateSprint(
+        `sprint.move.${sprint.status}_to_${transition.to_status}`,
+      ),
+  );
+  const cancelTransition = transitionAuthority.actionableTransitions.find(
+    (transition) => transition.to_status === 'cancelled'
+      && canMutateSprint(
+        `sprint.move.${sprint.status}_to_${transition.to_status}`,
+      ),
   );
   const action = selectedTransition
     ? {
@@ -273,6 +346,18 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
     : null;
   const currentIdx = FLOW_STATUSES.indexOf(sprint.status as any);
   const displayCounts = deriveSprintDisplayCounts(sprint.cards || []);
+  const evaluationTabs = [
+    {
+      id: 'sprint-evaluation' as const,
+      label: 'Sprint Evaluation',
+    },
+    ...(canReadPolicyCompliance
+      ? [{
+          id: 'policy-compliance' as const,
+          label: 'Policy Compliance',
+        }]
+      : []),
+  ];
 
   const tabs: { id: SprintTab; label: string; icon: React.ReactNode; count?: number }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
@@ -359,7 +444,10 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
         </div>
 
         {/* Tabs */}
-        <div className="px-6 pt-3 flex gap-1 border-b border-gray-200 dark:border-gray-700 overflow-x-auto">
+        <HorizontalOverflowNav
+          controlsLabel="sprint sections"
+          className="px-6 pt-3 flex gap-1 border-b border-gray-200 dark:border-gray-700 overflow-x-auto"
+        >
           {tabs.map(tab => (
             <button
               key={tab.id}
@@ -382,7 +470,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
               )}
             </button>
           ))}
-        </div>
+        </HorizontalOverflowNav>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
@@ -393,6 +481,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                 <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">Objective</h4>
                 <EditableField
                   value={sprint.objective || ''}
+                  disabled={!canEditSprintFields}
                   onSave={(value) => handleSprintTextSave('objective', value)}
                   multiline
                   placeholder="What is this sprint trying to achieve?"
@@ -407,6 +496,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                 <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">Expected Outcome</h4>
                 <EditableField
                   value={sprint.expected_outcome || ''}
+                  disabled={!canEditSprintFields}
                   onSave={(value) => handleSprintTextSave('expected_outcome', value)}
                   multiline
                   placeholder="What should be deliverable at the end of this sprint?"
@@ -424,8 +514,8 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
               )}
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
-                  <span className="text-xs text-gray-500">Spec Version</span>
-                  <p className="font-medium text-gray-900 dark:text-white">v{sprint.spec_version}</p>
+                  <span className="text-xs text-gray-500">Spec revision</span>
+                  <p className="font-medium text-gray-900 dark:text-white">r{sprint.spec_version}</p>
                 </div>
                 <div>
                   <span className="text-xs text-gray-500">Sprint Version</span>
@@ -459,14 +549,16 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
               <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
                 <ValidationGateOverride
                   title="Validation Gate"
-                  requireValue={(sprint as any).require_task_validation ?? null}
-                  minConfidence={(sprint as any).validation_min_confidence ?? null}
-                  minCompleteness={(sprint as any).validation_min_completeness ?? null}
-                  maxDrift={(sprint as any).validation_max_drift ?? null}
+                  requireValue={sprint.require_task_validation ?? null}
+                  minConfidence={sprint.validation_min_confidence ?? null}
+                  minCompleteness={sprint.validation_min_completeness ?? null}
+                  maxDrift={sprint.validation_max_drift ?? null}
                   parentLabel="Spec/Board"
+                  disabled={!canEditSprintCoverage}
                   onUpdate={async (patch) => {
+                    if (!canEditSprintCoverage) return;
                     try {
-                      await api.updateSprint(sprintId, patch as any);
+                      await api.updateSprint(sprintId, patch);
                       loadSprint();
                     } catch {
                       toast.error('Failed to update validation gate');
@@ -724,7 +816,9 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                   {displayCounts.tasks} tasks and {displayCounts.bugs} bugs assigned
                 </span>
                 <button
+                  disabled={!canAssignSprintCards}
                   onClick={async () => {
+                    if (!canAssignSprintCards) return;
                     if (!showAssign && sprint.spec_id) {
                       try {
                         const spec = await api.getSpec(sprint.spec_id);
@@ -733,7 +827,8 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                     }
                     setShowAssign(!showAssign);
                   }}
-                  className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800"
+                  className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={canAssignSprintCards ? undefined : 'Missing permission: sprint.tasks.assign'}
                 >
                   {showAssign ? 'Done' : '+ Assign Cards'}
                 </button>
@@ -754,7 +849,9 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                           {cardType === 'bug' && <span className="text-[9px] px-1 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded">bug</span>}
                         </div>
                         <button
+                          disabled={!canAssignSprintCards}
                           onClick={async () => {
+                            if (!canAssignSprintCards) return;
                             try {
                               if (isAssigned) {
                                 await api.unassignTasksFromSprint(sprintId, [c.id]);
@@ -768,7 +865,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                               setSpecCards((spec.cards || []).filter((x: any) => !x.sprint_id || x.sprint_id === sprintId));
                             } catch (e: any) { toast.error(e?.message || 'Failed'); }
                           }}
-                          className={`text-xs px-2 py-0.5 rounded ${isAssigned ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20' : 'text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20'}`}
+                          className={`text-xs px-2 py-0.5 rounded disabled:cursor-not-allowed disabled:opacity-40 ${isAssigned ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20' : 'text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20'}`}
                         >
                           {isAssigned ? 'Remove' : '+ Add'}
                         </button>
@@ -806,26 +903,74 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
           )}
 
           {activeTab === 'evaluations' && (
-            <div className="space-y-3">
-              {sprint.evaluations && sprint.evaluations.length > 0 ? (
-                sprint.evaluations.map((ev: any) => (
-                  <div key={ev.id} className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-gray-900 dark:text-white">{ev.evaluator_name}</span>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${
-                        ev.recommendation === 'approve' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
-                        ev.recommendation === 'reject' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' :
-                        'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
-                      }`}>
-                        {ev.recommendation}
-                      </span>
+            <div className="space-y-4">
+              <AccessibleTabList
+                idBase={`sprint-${sprint.id}-evaluations`}
+                ariaLabel="Sprint evaluation sections"
+                items={evaluationTabs}
+                value={evaluationTab}
+                onValueChange={setEvaluationTab}
+                variant="secondary"
+              />
+
+              <AccessibleTabPanel
+                idBase={`sprint-${sprint.id}-evaluations`}
+                tabId="sprint-evaluation"
+                value={evaluationTab}
+                mount="lazy-keep"
+                className="space-y-3"
+              >
+                {sprint.evaluations && sprint.evaluations.length > 0 ? (
+                  sprint.evaluations.map((ev: any) => (
+                    <div key={ev.id} className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-gray-900 dark:text-white">{ev.evaluator_name}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${
+                          ev.recommendation === 'approve' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
+                          ev.recommendation === 'reject' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' :
+                          'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+                        }`}>
+                          {ev.recommendation}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500">Score: {ev.overall_score}/100</div>
+                      {ev.stale && <span className="text-xs text-amber-500">Stale</span>}
                     </div>
-                    <div className="text-xs text-gray-500">Score: {ev.overall_score}/100</div>
-                    {ev.stale && <span className="text-xs text-amber-500">Stale</span>}
-                  </div>
-                ))
-              ) : (
-                <p className="text-sm text-gray-400 text-center py-6">No evaluations yet</p>
+                  ))
+                ) : (
+                  <p className="text-sm text-gray-400 text-center py-6">No evaluations yet</p>
+                )}
+              </AccessibleTabPanel>
+
+              {canReadPolicyCompliance && (
+                <AccessibleTabPanel
+                  idBase={`sprint-${sprint.id}-evaluations`}
+                  tabId="policy-compliance"
+                  value={evaluationTab}
+                  mount="lazy-keep"
+                  className="space-y-4"
+                >
+                  <PolicyComplianceTransitionPreview
+                    preview={transitionAuthority.preview}
+                    rejection={transitionAuthority.rejection}
+                  />
+                  <PolicyCompliancePanel
+                    boardId={sprint.board_id}
+                    entityType="sprint"
+                    subjectId={sprint.id}
+                    subjectVersion={sprint.version}
+                    transitionPreview={transitionAuthority.preview}
+                    refreshKey={policyRefreshGeneration}
+                    onEvaluated={() => {
+                      transitionAuthority.clearRejection();
+                      void transitionAuthority.refresh();
+                    }}
+                    onRefreshed={() => {
+                      transitionAuthority.clearRejection();
+                      void transitionAuthority.refresh();
+                    }}
+                  />
+                </AccessibleTabPanel>
               )}
             </div>
           )}
@@ -863,22 +1008,26 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
         </div>
 
         {/* Footer */}
-        {action && (
+        {(action || cancelTransition) && (
           <div className="px-6 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
-            <button
-              onClick={() => handleMove('cancelled')}
-              disabled={movingTo !== null}
-              className="text-xs text-red-500 hover:text-red-600"
-            >
-              Cancel Sprint
-            </button>
-            <button
-              onClick={() => handleMove(action.status)}
-              disabled={movingTo !== null}
-              className="px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
-            >
-              {movingTo ? 'Moving...' : action.label}
-            </button>
+            {cancelTransition ? (
+              <button
+                onClick={() => handleMove('cancelled')}
+                disabled={movingTo !== null}
+                className="text-xs text-red-500 hover:text-red-600"
+              >
+                Cancel Sprint
+              </button>
+            ) : <span />}
+            {action && (
+              <button
+                onClick={() => handleMove(action.status)}
+                disabled={movingTo !== null}
+                className="px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
+              >
+                {movingTo ? 'Moving...' : action.label}
+              </button>
+            )}
           </div>
         )}
       </div>

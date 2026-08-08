@@ -1,9 +1,13 @@
 """Spec API endpoints."""
 
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, Field, ValidationError
 
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work
@@ -31,12 +35,19 @@ from okto_pulse.community.api.pagination import (
     search_groups,
     validate_pagination_query,
 )
+from okto_pulse.community.api.quality_summary_projection import (
+    load_quality_summaries_for_page,
+    quality_summary_field,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
 )
 from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgePropagationPortError,
+)
+from okto_pulse.core.domain.guideline_policy_transition import (
+    PolicyTransitionRejected,
 )
 from okto_pulse.core.application.use_cases import (
     AnswerSpecQuestionCommand,
@@ -138,7 +149,64 @@ from okto_pulse.core.services.spec_structured_entities import (
 from okto_pulse.core.services.test_scenario_lifecycle import StatusNotMutableError
 from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
-router = APIRouter()
+_SPEC_WRITE_BODY_MODEL = "__okto_pulse_spec_write_body_model__"
+
+
+def _validate_spec_write_before_dependencies(
+    model: type[BaseModel],
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Mark a route body for validation before FastAPI resolves dependencies."""
+
+    def decorator(endpoint: Callable[..., Any]) -> Callable[..., Any]:
+        setattr(endpoint, _SPEC_WRITE_BODY_MODEL, model)
+        return endpoint
+
+    return decorator
+
+
+class _PrevalidatedSpecWriteRoute(APIRoute):
+    """Fail malformed spec writes before auth or UoW dependencies are entered.
+
+    FastAPI normally accumulates request-body errors while continuing to resolve
+    sibling dependencies. A generator dependency can therefore open a
+    transaction for a request that will ultimately return 422. Marked write
+    routes validate the same Pydantic request model at the outer route boundary;
+    the regular handler still performs FastAPI's canonical validation on valid
+    input.
+    """
+
+    def get_route_handler(self) -> Callable[[Request], Awaitable[Response]]:
+        route_handler = super().get_route_handler()
+        model = getattr(self.endpoint, _SPEC_WRITE_BODY_MODEL, None)
+        if model is None:
+            return route_handler
+
+        async def prevalidated_route_handler(request: Request) -> Response:
+            raw_body = await request.body()
+            try:
+                model.model_validate_json(raw_body)
+            except ValidationError as exc:
+                from okto_pulse.core.inbound.enum_error_envelope import (
+                    canonical_scenario_type_error,
+                )
+
+                scenario_type_error = canonical_scenario_type_error(exc.errors())
+                if scenario_type_error is not None:
+                    return JSONResponse(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        content=scenario_type_error,
+                    )
+                errors = [
+                    {**error, "loc": ("body", *error["loc"])}
+                    for error in exc.errors()
+                ]
+                raise RequestValidationError(errors, body=raw_body) from exc
+            return await route_handler(request)
+
+        return prevalidated_route_handler
+
+
+router = APIRouter(route_class=_PrevalidatedSpecWriteRoute)
 
 
 async def _spec_knowledge_error_response(
@@ -323,6 +391,7 @@ async def _run_structured_spec_entity_command(
     response_model=SpecResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@_validate_spec_write_before_dependencies(SpecCreate)
 async def create_spec(
     board_id: str,
     data: SpecCreate,
@@ -403,6 +472,15 @@ async def list_specs(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
             )
+        quality_summaries = await load_quality_summaries_for_page(
+            uow=uow,
+            user_id=user_id,
+            board_id=board_id,
+            subject_type="spec",
+            subject_ids=tuple(
+                str(record.values["id"]) for record in page.items
+            ),
+        )
         return project_page(
             page,
             lambda record: SpecPageItem(
@@ -416,6 +494,7 @@ async def list_specs(
                         "title",
                         "description",
                         "status",
+                        "edition",
                         "version",
                         "assignee_id",
                         "created_by",
@@ -424,7 +503,11 @@ async def list_specs(
                         "labels",
                         "archived",
                     ),
-                )
+                ),
+                **quality_summary_field(
+                    str(record.values["id"]),
+                    quality_summaries,
+                ),
             ),
         )
     try:
@@ -513,6 +596,7 @@ async def get_spec(
 
 
 @router.patch("/specs/{spec_id}", response_model=SpecResponse)
+@_validate_spec_write_before_dependencies(SpecUpdate)
 async def update_spec(
     spec_id: str,
     data: SpecUpdate,
@@ -690,6 +774,8 @@ async def move_spec(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
     except SprintOperationError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError:
@@ -917,6 +1003,8 @@ async def update_test_scenario_status(
         )
     except StatusNotMutableError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except PolicyTransitionRejected as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except ValueError as exc:
         msg = str(exc)
         if msg.startswith("scenario_not_found"):
@@ -1213,6 +1301,13 @@ async def submit_spec_validation(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except GateContractError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=e.to_dict(),
+        ) from e
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except (
         CommandValidationError,
         EntityNotFoundError,

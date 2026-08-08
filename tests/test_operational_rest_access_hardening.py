@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,9 @@ from okto_pulse.community.api.cognitive_action_center import (
 )
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.dead_letter import router as dead_letter_router
+import okto_pulse.community.api.kg_cognitive_badges as cognitive_badges_api
+import okto_pulse.community.api.kg_cognitive_candidates as cognitive_candidates_api
+import okto_pulse.community.api.kg_cognitive_pending as cognitive_pending_api
 from okto_pulse.community.api.kg_cognitive_badges import (
     router as cognitive_badges_router,
 )
@@ -55,11 +59,8 @@ from okto_pulse.community.api.kg_stale_canonical_parity import (
 )
 from okto_pulse.community.api.queue_health import router as queue_health_router
 from okto_pulse.community.api.settings import router as settings_router
-from okto_pulse.community.api.kg_tick import (
-    _require_global_tick_access,
-    router as kg_tick_router,
-)
-from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+import okto_pulse.community.api.kg_tick as kg_tick_api
+from okto_pulse.community.api.kg_tick import router as kg_tick_router
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 
@@ -401,7 +402,6 @@ WRITE_SURFACES = [
     ),
     ("DELETE", "/api/v1/kg/boards/board-b/kg", None),
     ("PUT", "/api/v1/kg/boards/board-b/settings", None),
-    ("POST", "/api/v1/kg/boards/board-b/cypher", None),
     (
         "POST",
         "/api/v1/kg/boards/board-b/pending/queue-1/retry",
@@ -528,7 +528,16 @@ def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
                 total=3,
             )
 
+    async def _resolved_permissions(_actor_id: str, _board_id: str):
+        return {
+            "kg": {
+                "operations": {"integrity": {"read": True}},
+                "admin": {"settings_read": True},
+            }
+        }
+
     uow.services.kg = _CanonicalDebtReader()
+    uow.services.resolve_user_permissions = _resolved_permissions
     response = _client(uow).get(
         "/api/v1/kg/canonical-debt",
         params={
@@ -583,7 +592,6 @@ def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
         "historical-cancel",
         "delete-board-kg",
         "put-board-kg-settings",
-        "cypher",
         "retry-pending",
         "boost-node",
         "audit-undo",
@@ -643,6 +651,51 @@ async def test_kg_routes_editor_or_board_admin_can_resolve_writer(permission) ->
     assert actor.actor_id == "user-a"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/kg/cognitive-pending/candidate-decisions?board_id=board-b",
+        (
+            "/api/v1/kg/cognitive-pending/badges?board_id=board-b"
+            "&source_refs=card%3A1"
+        ),
+        "/api/v1/kg/cognitive-pending?board_id=board-b",
+    ],
+    ids=["candidate-decisions", "badges", "pending-items"],
+)
+def test_direct_cognitive_readers_require_exact_permission_before_store(
+    path: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unexpected_store():
+        raise AssertionError("artifact store must not be resolved before authorization")
+
+    monkeypatch.setattr(
+        cognitive_badges_api,
+        "require_rebuild_audit_artifact_store",
+        _unexpected_store,
+    )
+    monkeypatch.setattr(
+        cognitive_candidates_api,
+        "require_rebuild_audit_artifact_store",
+        _unexpected_store,
+    )
+    monkeypatch.setattr(
+        cognitive_pending_api,
+        "require_rebuild_audit_artifact_store",
+        _unexpected_store,
+    )
+    uow = _Uow(board=OWN_BOARD)
+
+    response = _client(uow, claims={"roles": ["viewer"]}).get(path)
+
+    assert response.status_code == 403
+    detail = json.loads(response.json()["detail"])
+    assert detail["error"] == "permission_denied"
+    assert detail["required_permission"] == "kg.operations.cognitive.read"
+    assert uow.events == ["board:board-b"]
+
+
 def test_global_tick_viewer_is_denied_before_lease_or_store() -> None:
     uow = _Uow(board=None)
 
@@ -652,26 +705,51 @@ def test_global_tick_viewer_is_denied_before_lease_or_store() -> None:
     )
 
     assert response.status_code == 403
-    assert response.json() == {
-        "detail": "Global tick requires an admin or operator capability"
-    }
+    detail = json.loads(response.json()["detail"])
+    assert detail["error"] == "permission_denied"
+    assert detail["required_permission"] == "kg.operations.tick.run"
     assert uow.events == []
 
 
 @pytest.mark.parametrize(
-    "actor",
+    "permissions",
     [
-        RESTAdapterContract.actor("admin-a", roles=("admin",)),
-        RESTAdapterContract.actor("operator-a", roles=("operator",)),
-        RESTAdapterContract.actor(
-            "capability-a",
-            permissions={"kg": {"tick": {"run": {"global": True}}}},
-        ),
+        {
+            "kg": {
+                "operations": {"tick": {"run": True}},
+                "admin": {"settings_write": True},
+            }
+        },
+        ["kg.admin.settings_write"],
     ],
-    ids=["admin", "operator", "capability"],
+    ids=["canonical-with-historical-ceiling", "legacy-flat-compatibility"],
 )
-def test_global_tick_authorized_actor_passes_preflight(actor) -> None:
-    _require_global_tick_access(actor)
+def test_global_tick_authorized_actor_reaches_lease(
+    permissions, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lease_events: list[tuple[str, int]] = []
+
+    class _HeldLeaseProvider:
+        async def try_acquire(self, key: str, *, ttl_seconds: int):
+            lease_events.append((key, ttl_seconds))
+            return None
+
+    monkeypatch.setattr(
+        kg_tick_api,
+        "get_lease_provider",
+        lambda: _HeldLeaseProvider(),
+    )
+    uow = _Uow(board=None)
+
+    response = _client(uow, claims={"permissions": permissions}).post(
+        "/api/v1/kg/tick/run-now",
+        json={"force_full_rebuild": True},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "tick_already_running"
+    assert lease_events == [("kg_daily_tick", 300)]
+    assert uow.events == []
 
 
 def test_runtime_settings_viewer_gets_403_before_writer() -> None:
@@ -694,7 +772,12 @@ def test_runtime_settings_viewer_gets_403_before_writer() -> None:
     [
         {"roles": ["admin"]},
         {"roles": ["operator"]},
-        {"permissions": {"runtime": {"settings": {"write": True}}}},
+        {
+            "permissions": {
+                "runtime": {"settings": {"write": True}},
+                "kg": {"admin": {"settings_write": True}},
+            }
+        },
     ],
     ids=["admin", "operator", "capability"],
 )
@@ -725,9 +808,9 @@ def test_global_queue_viewer_gets_403_before_reader(path) -> None:
     response = _client(uow, claims={"roles": ["viewer"]}).get(path)
 
     assert response.status_code == 403
-    assert response.json() == {
-        "detail": "Global queue visibility requires an admin or operator capability"
-    }
+    detail = json.loads(response.json()["detail"])
+    assert detail["error"] == "permission_denied"
+    assert detail["required_permission"] == "kg.operations.queue.read"
     assert uow.events == []
 
 
@@ -736,7 +819,14 @@ def test_global_queue_viewer_gets_403_before_reader(path) -> None:
     [
         {"roles": ["admin"]},
         {"roles": ["operator"]},
-        {"permissions": {"queue": {"read": {"all": True}}}},
+        {
+            "permissions": {
+                "kg": {
+                    "operations": {"queue": {"read": True}},
+                    "admin": {"settings_read": True},
+                }
+            }
+        },
     ],
     ids=["admin", "operator", "capability"],
 )

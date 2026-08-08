@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from okto_pulse.community.saas_closure import (
@@ -10,36 +9,12 @@ from okto_pulse.core.application.boundary.saas_closure_report import (
     render_saas_closure_readme,
     validate_saas_closure_readmes,
 )
+from repo_layout import resolve_core_repo
 
 
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 
-
-def _resolve_core_repo() -> Path:
-    configured = os.environ.get("OKTO_PULSE_CORE_REPO")
-    candidates = [
-        Path(configured).expanduser() if configured else None,
-        COMMUNITY_REPO.parent / "okto-pulse-core",
-        COMMUNITY_REPO.parent / "okto_labs_pulse_core",
-    ]
-    checked: list[str] = []
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        resolved = candidate.resolve()
-        checked.append(str(resolved))
-        if (
-            (resolved / "pyproject.toml").is_file()
-            and (resolved / "src" / "okto_pulse" / "core").is_dir()
-        ):
-            return resolved
-    raise RuntimeError(
-        "Unable to locate the Core repository for the F16 closure test. "
-        f"Checked: {checked}. Set OKTO_PULSE_CORE_REPO explicitly."
-    )
-
-
-CORE_REPO = _resolve_core_repo()
+CORE_REPO = resolve_core_repo(COMMUNITY_REPO)
 
 
 def test_f16_real_core_community_closure_is_terminal() -> None:

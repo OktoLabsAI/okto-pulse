@@ -33,7 +33,8 @@ const specBase: Omit<SpecSummary, 'id' | 'title' | 'ideation_id' | 'refinement_i
   board_id: 'board-1',
   description: null,
   status: 'approved',
-  version: 1,
+  edition: 2,
+  version: 9,
   assignee_id: null,
   created_by: 'user-1',
   created_at: '2026-05-04T00:00:00Z',
@@ -163,6 +164,9 @@ describe('SpecsPanel grouping modes', () => {
 
     await waitFor(() => expect(screen.getByText('Spec with refinement')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText('Refinement: Refinement Alpha')).toBeInTheDocument());
+    expect(
+      screen.getAllByLabelText('Edition v2; technical revision r9'),
+    ).toHaveLength(3);
 
     expect(screen.getByTestId('specs-list-group-refinement:ref-1')).toBeInTheDocument();
     expect(screen.getByTestId('specs-list-group-ideation:idea-2')).toBeInTheDocument();

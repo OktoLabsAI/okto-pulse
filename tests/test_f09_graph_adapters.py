@@ -14,10 +14,11 @@ from okto_pulse.core.kg.interfaces.global_discovery_runtime import (
     GlobalDiscoveryRuntime,
 )
 from okto_pulse.core.kg.interfaces.graph_transaction import GraphStatementResult
+from repo_layout import resolve_core_repo
 
 
 COMMUNITY_ROOT = Path(__file__).resolve().parents[1]
-CORE_ROOT = COMMUNITY_ROOT.parent / "okto_labs_pulse_core"
+CORE_ROOT = resolve_core_repo(COMMUNITY_ROOT)
 
 
 class _NativeCursor:

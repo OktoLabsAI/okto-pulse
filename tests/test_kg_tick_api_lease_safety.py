@@ -46,8 +46,13 @@ class _ReleaseFailingLeaseProvider:
         raise RuntimeError("coordination release unavailable")
 
 
-async def _allow_access(*_args, **_kwargs):
-    return SimpleNamespace()
+async def _allow_access(board_id, *_args, **_kwargs):
+    return kg_tick_api.ActorContext(
+        "operator",
+        "rest",
+        board_id=board_id,
+        permissions=["kg.admin.settings_write"],
+    )
 
 
 async def _assert_lease_reacquirable(

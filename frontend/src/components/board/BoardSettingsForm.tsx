@@ -7,8 +7,18 @@
 //   - Global Default passes createActiveTemplateVersion (new template version)
 // Both receive a Partial<BoardSettings> patch from the same controls.
 import { type ReactNode, useEffect, useState } from 'react';
-import { BookOpen, Image, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
-import type { BoardSettings, SpecResourceAutoDeriveType } from '@/types';
+import { BookOpen, ClipboardCheck, Image, Languages, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
+import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
+import {
+  normalizeReviewerSeparationMode,
+  REVIEWER_SEPARATION_MODES,
+} from '@/components/board/reviewerSeparationSettings';
+import type {
+  BoardSettings,
+  LintLanguageCode,
+  ReviewerSeparationMode,
+  SpecResourceAutoDeriveType,
+} from '@/types';
 
 interface SettingsToggleProps {
   checked: boolean;
@@ -111,6 +121,29 @@ const SPEC_RESOURCE_OPTIONS: Array<{
 ];
 
 const DEFAULT_SPEC_RESOURCE_TYPES = SPEC_RESOURCE_OPTIONS.map((option) => option.type);
+
+const LINT_LANGUAGE_OPTIONS: Array<{
+  code: LintLanguageCode;
+  label: string;
+  title: string;
+}> = [
+  { code: 'pt-BR', label: 'PT-BR', title: 'Português (Brasil)' },
+  { code: 'en-US', label: 'EN-US', title: 'English (US)' },
+  { code: 'es-ES', label: 'ES', title: 'Español' },
+  { code: 'de-DE', label: 'DE', title: 'Deutsch' },
+  { code: 'fr-FR', label: 'FR', title: 'Français' },
+];
+export const IMPACT_EVIDENCE_MODES = ['off', 'advisory', 'require'] as const;
+export type ImpactEvidenceMode = (typeof IMPACT_EVIDENCE_MODES)[number];
+
+function normalizeImpactEvidenceMode(value: unknown): ImpactEvidenceMode {
+  // Mirrors the backend resolver: anything unknown reads as 'off' instead of
+  // failing the screen (invalid_value_fail_compat).
+  return IMPACT_EVIDENCE_MODES.includes(value as ImpactEvidenceMode)
+    ? (value as ImpactEvidenceMode)
+    : 'off';
+}
+
 export const DESIGN_SYSTEM_GATE_MODES = ['off', 'advisory', 'blocking'] as const;
 export type DesignSystemGateMode = (typeof DESIGN_SYSTEM_GATE_MODES)[number];
 
@@ -179,6 +212,15 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
     onChange({ auto_derive_spec_resource_types: nextTypes });
   };
 
+  const lintLanguages = settings.lint_languages ?? [];
+
+  const toggleLintLanguage = (code: LintLanguageCode) => {
+    const next = lintLanguages.includes(code)
+      ? lintLanguages.filter((item) => item !== code)
+      : [...lintLanguages, code];
+    onChange({ lint_languages: next });
+  };
+
   const commitNumericSetting = (key: NumericSettingKey, raw: string) => {
     const parsed = Math.min(100, Math.max(0, Number(raw)));
     const current = (settings[key] ?? 0) as number;
@@ -226,6 +268,35 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
               </button>
             ))}
           </div>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Requirement Lint Languages"
+        description="Languages the deterministic requirement lint analyzes with native lexicons. Requirements are checked against the union of the selected languages; with none selected, only language-neutral signals (numbers, comparators, units) are detected."
+        icon={<Languages size={12} />}
+      >
+        <div className="grid grid-cols-5 gap-2" aria-label="Requirement lint languages" data-testid="lint-languages">
+          {LINT_LANGUAGE_OPTIONS.map(({ code, label, title }) => {
+            const checked = lintLanguages.includes(code);
+            return (
+              <button
+                key={code}
+                type="button"
+                title={title}
+                aria-pressed={checked}
+                data-testid={`lint-language-${code}`}
+                onClick={() => toggleLintLanguage(code)}
+                className={`flex h-9 min-w-0 items-center justify-center rounded border px-2 text-[11px] font-medium transition-colors ${
+                  checked
+                    ? 'border-violet-400 bg-violet-50 text-violet-700 dark:border-violet-500/70 dark:bg-violet-500/15 dark:text-violet-200'
+                    : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                }`}
+              >
+                <span className="truncate">{label}</span>
+              </button>
+            );
+          })}
         </div>
       </SettingsSection>
 
@@ -344,6 +415,66 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
               testId="toggle-full-context-critical-actions"
             />
           </SettingRow>
+        </div>
+
+        <div>
+          <div className="mb-2">
+            <p
+              id="reviewer-separation-mode-label"
+              className="block text-xs font-medium text-gray-700 dark:text-gray-300"
+            >
+              Independent reviewer policy
+            </p>
+            <p
+              id="reviewer-separation-mode-description"
+              className="mt-0.5 text-[10px] leading-4 text-gray-400 dark:text-gray-500"
+            >
+              Controls whether a task creator, assignee or executor may submit its validation.
+            </p>
+          </div>
+          <div
+            className="grid grid-cols-3 gap-2"
+            role="group"
+            aria-labelledby="reviewer-separation-mode-label"
+            aria-describedby="reviewer-separation-mode-description"
+            data-testid="reviewer-separation-mode"
+          >
+            {REVIEWER_SEPARATION_MODES.map((mode) => {
+              const checked = normalizeReviewerSeparationMode(
+                settings.reviewer_separation_mode,
+              ) === mode;
+              const labels: Record<ReviewerSeparationMode, string> = {
+                off: 'Off',
+                warn: 'Warn',
+                enforce: 'Enforce',
+              };
+              const titles: Record<ReviewerSeparationMode, string> = {
+                off: 'Allow validation while retaining conflict details in the audit trail.',
+                warn: 'Allow validation and persist a reviewer-separation warning.',
+                enforce: 'Block validation when the reviewer created, owns or executed the task.',
+              };
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  title={titles[mode]}
+                  aria-pressed={checked}
+                  data-testid={`reviewer-separation-mode-${mode}`}
+                  onClick={() => onChange({ reviewer_separation_mode: mode })}
+                  className={`h-9 rounded border px-2 text-[11px] font-medium transition-colors ${
+                    checked
+                      ? 'border-violet-400 bg-violet-50 text-violet-700 dark:border-violet-500/70 dark:bg-violet-500/15 dark:text-violet-200'
+                      : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {labels[mode]}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-2 text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+            Enforce is the safe default for new boards. Legacy boards without a stored value remain Off until explicitly changed.
+          </p>
         </div>
 
         {contextWarnings}
@@ -550,6 +681,71 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
       </SettingsSection>
 
       <SettingsSection
+        title="Execution Report Evidence"
+        description="Controls declared impact evidence (files, symbols, surfaces, tests) on the execution report of a card."
+        icon={<ClipboardCheck size={12} />}
+      >
+        <SettingRow
+          label="Require declared impact evidence"
+          description="Blocking mode rejects a gated move whose conclusion has no populated evidence section."
+        >
+          <SettingsToggle
+            checked={normalizeImpactEvidenceMode(settings.impact_evidence_mode) === 'require'}
+            onChange={() =>
+              onChange({
+                impact_evidence_mode:
+                  normalizeImpactEvidenceMode(settings.impact_evidence_mode) === 'require'
+                    ? 'off'
+                    : 'require',
+              })
+            }
+            ariaLabel="Require declared impact evidence"
+            testId="toggle-impact-evidence-gate"
+          />
+        </SettingRow>
+
+        <div
+          className="grid grid-cols-3 gap-2"
+          aria-label="Impact evidence mode"
+          data-testid="impact-evidence-mode"
+        >
+          {IMPACT_EVIDENCE_MODES.map((mode) => {
+            const checked = normalizeImpactEvidenceMode(settings.impact_evidence_mode) === mode;
+            const labels: Record<ImpactEvidenceMode, string> = {
+              off: 'Off',
+              advisory: 'Advisory',
+              require: 'Require',
+            };
+            const titles: Record<ImpactEvidenceMode, string> = {
+              off: 'No effect on moves.',
+              advisory: 'Gated moves succeed; a missing block is recorded in the activity log.',
+              require: 'Gated moves are rejected without at least one populated section.',
+            };
+            return (
+              <button
+                key={mode}
+                type="button"
+                title={titles[mode]}
+                aria-pressed={checked}
+                data-testid={`impact-evidence-mode-${mode}`}
+                onClick={() => onChange({ impact_evidence_mode: mode })}
+                className={`h-9 rounded border px-2 text-[11px] font-medium transition-colors ${
+                  checked
+                    ? 'border-violet-400 bg-violet-50 text-violet-700 dark:border-violet-500/70 dark:bg-violet-500/15 dark:text-violet-200'
+                    : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                }`}
+              >
+                {labels[mode]}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+          Test cards and validator-approved completions stay exempt in every mode.
+        </p>
+      </SettingsSection>
+
+      <SettingsSection
         title="Design System Gate"
         description="Controls Design System consumption checks on mockup submissions."
         icon={<Palette size={12} />}
@@ -631,6 +827,54 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
                   data-testid={`button-max-ideation-ambiguity-${n}`}
                   className={`h-8 w-8 rounded text-xs font-medium transition-colors ${
                     (settings.max_ideation_ambiguity ?? 3) === n
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </SettingsSection>
+
+      <SettingsSection
+        title="Refinement Ambiguity Gate"
+        description="Block approved→done unless the current refinement assessment meets the ambiguity threshold; this runs before Resource and Cognitive gates."
+        icon={<Shield size={12} />}
+      >
+        <SettingRow
+          label="Require refinement ambiguity gate"
+          description="Opt-in. A human can record a reasoned skip on an individual refinement."
+        >
+          <SettingsToggle
+            checked={settings.require_refinement_ambiguity_gate ?? false}
+            onChange={() => onChange({
+              require_refinement_ambiguity_gate: !(settings.require_refinement_ambiguity_gate ?? false),
+            })}
+            ariaLabel="Require refinement ambiguity gate"
+            testId="toggle-refinement-ambiguity-gate"
+          />
+        </SettingRow>
+
+        {(settings.require_refinement_ambiguity_gate ?? false) && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+              Max Ambiguity
+            </label>
+            <p className="mb-2 text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+              Highest allowed ambiguity level in the current assessment.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => onChange({ max_refinement_ambiguity: n })}
+                  data-testid={`button-max-refinement-ambiguity-${n}`}
+                  className={`h-8 w-8 rounded text-xs font-medium transition-colors ${
+                    normalizeRefinementAmbiguityThreshold(settings.max_refinement_ambiguity) === n
                       ? 'bg-blue-500 text-white'
                       : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
                   }`}

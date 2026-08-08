@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -345,6 +346,20 @@ def test_live_server_manual_restore_stays_blocked_but_compensation_is_fenced(
     assert report.open_validated is True
     assert report.board_id == BOARD_ID
     backup_dir = base / "quarantine" / str(report.backup_quarantine_id)
+    board_dir: Path = restore_env["board_dir"]
+    source_dir: Path = restore_env["quarantine_dir"]
+    # Compound compensation proves DISCARD(candidate) -> RESTORE(predecessor):
+    # candidate bytes survive only in the new quarantine while the exact
+    # predecessor bytes are live.
+    assert (backup_dir / "graph.lbug").read_bytes() == LIVE_MAIN_BYTES
+    assert (backup_dir / "graph.lbug.wal").read_bytes() == LIVE_WAL_BYTES
+    assert (board_dir / "graph.lbug").read_bytes() != LIVE_MAIN_BYTES
+    # The open-validation probe may checkpoint/replay the restored bytes, so
+    # byte equality at the live path is not stable.  The immutable predecessor
+    # source remains exact and the bounded report proves both files restored.
+    assert sorted(report.restored_files) == ["graph.lbug", "graph.lbug.wal"]
+    assert (source_dir / "graph.lbug").is_file()
+    assert (source_dir / "graph.lbug.wal").is_file()
     operation = json.loads(
         (backup_dir / "restore_operation.json").read_text(encoding="utf-8")
     )
@@ -569,6 +584,61 @@ def test_compensation_revalidates_owner_after_writer_window_without_mutation(
 
     assert probes == 2
     assert _disk_state(base) == before
+
+
+def test_candidate_discard_revalidates_owner_after_final_absence_probe(
+    tmp_path,
+    monkeypatch,
+):
+    from okto_pulse.community.adapters import kg_runtime
+
+    candidate = tmp_path / "graph.lbug"
+    candidate.write_bytes(b"failed-candidate")
+    probes = 0
+
+    def owner_probe(board_id: str, owner_token: str) -> bool:
+        nonlocal probes
+        probes += 1
+        assert board_id == BOARD_ID
+        assert owner_token == "owner-token"
+        # Initial and post-window proofs succeed; the lease expires while the
+        # governed purge/final absence check is running.
+        return probes < 3
+
+    def purge(board_id: str, *, reason: str):
+        assert board_id == BOARD_ID
+        assert reason == "failed_rebuild_candidate:rebuild-run-discard-race"
+        candidate.unlink()
+        return ((str(candidate),), "q-failed-candidate")
+
+    monkeypatch.setattr(
+        kg_runtime,
+        "board_storage_mutation_window",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(kg_runtime, "board_kuzu_path", lambda _board_id: candidate)
+    monkeypatch.setattr(
+        kg_runtime,
+        "purge_board_graph_storage_with_receipt",
+        purge,
+    )
+    adapter = CommunityQuarantineRestore(
+        base_dir=tmp_path,
+        lock_owner_probe=owner_probe,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="rebuild_candidate_discard_fence_lost",
+    ):
+        adapter.discard_rebuild_candidate(
+            expected_board_id=BOARD_ID,
+            run_id="rebuild-run-discard-race",
+            owner_token="owner-token",
+        )
+
+    assert probes == 3
+    assert not candidate.exists()
 
 
 # ---------------------------------------------------------------------------

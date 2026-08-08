@@ -81,6 +81,11 @@ class CommunityBoardRebuildIngestionAdapter:
     artifact_store: Any | None = None
     quarantine_restore: Any | None = None
     salvage_pending_provider: Callable[[str], bool] | None = None
+    # B14 is a distinct deterministic derivative of relational policy
+    # authority.  Production composition always injects this callback; the
+    # optional default exists only for legacy/unit construction of this
+    # adapter and never routes policy rows through the cognitive queue.
+    policy_constraint_rebuild: Callable[[str], Any] | None = None
     _rebuild_effect_cache: dict[str, Any] = field(
         default_factory=dict, compare=False, repr=False
     )
@@ -265,17 +270,42 @@ class CommunityBoardRebuildIngestionAdapter:
     def compensate_pending_sources(
         self, *, board_id: str, run_id: str
     ) -> dict[str, int]:
-        """Fail pending rows from this rebuild while preserving active claims."""
+        """Fence every active row from this rebuild before graph compensation."""
 
         with sqlite3.connect(str(self._path()), timeout=10.0) as conn:
+            before = conn.execute(
+                "SELECT "
+                "SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN status='claimed' THEN 1 ELSE 0 END) "
+                "FROM consolidation_queue "
+                "WHERE board_id=? AND source=? "
+                "AND status IN ('pending', 'claimed')",
+                (board_id, f"rebuild:{run_id}"),
+            ).fetchone()
             cursor = conn.execute(
                 "UPDATE consolidation_queue SET status='failed', "
-                "last_error='rebuild_compensated', next_retry_at=NULL "
-                "WHERE board_id=? AND source=? AND status='pending'",
+                "last_error='rebuild_compensated', next_retry_at=NULL, "
+                "claimed_by_session_id=NULL, claimed_at=NULL, "
+                "worker_id=NULL, claim_timeout_at=NULL "
+                "WHERE board_id=? AND source=? "
+                "AND status IN ('pending', 'claimed')",
                 (board_id, f"rebuild:{run_id}"),
             )
+            remaining = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM consolidation_queue "
+                    "WHERE board_id=? AND source=? "
+                    "AND status IN ('pending', 'claimed')",
+                    (board_id, f"rebuild:{run_id}"),
+                ).fetchone()[0]
+            )
             conn.commit()
-        return {"pending_compensated": max(0, int(cursor.rowcount or 0))}
+        return {
+            "pending_compensated": int((before or (0, 0))[0] or 0),
+            "claimed_compensated": int((before or (0, 0))[1] or 0),
+            "active_remaining": remaining,
+            "total_compensated": max(0, int(cursor.rowcount or 0)),
+        }
 
     def build_step_adapter(self, source_resolver):
         """Compose Local First effects behind the Core rebuild state machine."""
@@ -341,6 +371,7 @@ class CommunityBoardRebuildIngestionAdapter:
             quarantine = by_effect.get("quarantine")
             enqueue = by_effect.get("enqueue")
             restore = by_effect.get("restore")
+            promotion = by_effect.get("promote")
             affected_files = tuple(
                 dict(quarantine.details).get("affected_files", ())
                 if quarantine is not None
@@ -356,6 +387,42 @@ class CommunityBoardRebuildIngestionAdapter:
                 "enqueue_left_alone": int(enqueue_counts.get("left_alone", 0)),
                 "expected_by_layer": expected_layers_from_sources(sources),
             }
+            policy_projection = dict(
+                dict(promotion.details).get(
+                    "policy_constraint_projection",
+                    {
+                        "configured": (
+                            self.policy_constraint_rebuild is not None
+                        ),
+                        "status": "not_executed",
+                    },
+                )
+                if promotion is not None
+                else {
+                    "configured": self.policy_constraint_rebuild is not None,
+                    "status": "not_executed",
+                }
+            )
+            if policy_projection.get("status") == "completed":
+                merged_counts.update(
+                    {
+                        "policy_constraints_activated": int(
+                            policy_projection.get("activated_count", 0)
+                        ),
+                        "policy_constraints_ended": int(
+                            policy_projection.get("ended_count", 0)
+                        ),
+                        "policy_constraints_active": int(
+                            policy_projection.get("active_count", 0)
+                        ),
+                        "policy_constraints_unadopted_active": int(
+                            policy_projection.get(
+                                "unadopted_active_count",
+                                0,
+                            )
+                        ),
+                    }
+                )
             checkpoint = self._rebuild_checkpoint_cache.get(run_id)
             queue_drain = {
                 "idle": outcome.code is RebuildOutcomeCode.COMPLETED,
@@ -396,6 +463,7 @@ class CommunityBoardRebuildIngestionAdapter:
                         action.value for action in outcome.compensation_actions
                     ],
                 },
+                "policy_constraint_projection": policy_projection,
             }
             if outcome.code is not RebuildOutcomeCode.COMPLETED:
                 if outcome.code in {
@@ -417,7 +485,13 @@ class CommunityBoardRebuildIngestionAdapter:
                 return RebuildStepResult(
                     ok=False,
                     detail=detail,
-                    current_kg_generation_id=base_result.current_kg_generation_id,
+                    # The deterministic inner rebuild describes its candidate
+                    # as current, but the outer generation repository promotes
+                    # only after this adapter returns ``ok=True``.  Every
+                    # failure therefore leaves the previous generation current.
+                    current_kg_generation_id=(
+                        base_result.previous_kg_generation_id
+                    ),
                     previous_kg_generation_id=base_result.previous_kg_generation_id,
                     affected_files=tuple(base_result.affected_files) + affected_files,
                     structural_hash=base_result.structural_hash,

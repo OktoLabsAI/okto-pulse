@@ -35,6 +35,7 @@ import {
   submitCandidateDecisionCommand,
 } from '@/services/candidate-decisions-api';
 import { useCandidateDecisions } from '@/hooks/useCandidateDecisions';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface CandidateDecisionPanelProps {
   boardId: string | null;
@@ -70,8 +71,27 @@ const EMPTY_COMMAND: Omit<PendingCommandState, 'candidateId' | 'action'> = {
 export function CandidateDecisionPanel({
   boardId,
 }: CandidateDecisionPanelProps) {
+  const permissions = usePermissions(boardId);
+  const canReadCognitive = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.operations.cognitive.read')
+  );
+  const canCommitCognitive = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.session.commit')
+  );
+  const canCreateSpecDecision = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('spec.structured_entity.decision.create')
+  );
   const { items, counts, loading, error, refresh } = useCandidateDecisions(
-    boardId,
+    canReadCognitive ? boardId : null,
   );
   const [pending, setPending] = useState<PendingCommandState | null>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -96,6 +116,8 @@ export function CandidateDecisionPanel({
 
   const submitCommand = useCallback(async () => {
     if (!pending || !boardId) return;
+    if (!canCommitCognitive) return;
+    if (pending.action === 'promote_to_spec_decision' && !canCreateSpecDecision) return;
     const request: CandidateDecisionCommandRequest = {
       board_id: boardId,
       action: pending.action,
@@ -132,9 +154,13 @@ export function CandidateDecisionPanel({
     } finally {
       setSubmitting(false);
     }
-  }, [pending, boardId, refresh]);
+  }, [pending, boardId, refresh, canCommitCognitive, canCreateSpecDecision]);
 
-  if (!boardId) {
+  if (!boardId || permissions.isLoading) {
+    return null;
+  }
+
+  if (!canReadCognitive) {
     return null;
   }
 
@@ -214,17 +240,19 @@ export function CandidateDecisionPanel({
                     )}
                   </p>
                 </div>
-                {isProposed && !isPendingForThis && (
+                {isProposed && !isPendingForThis && canCommitCognitive && (
                   <div
                     data-testid="candidate-decision-actions"
                     className="flex flex-shrink-0 flex-wrap gap-1"
                   >
-                    <ActionButton
-                      label="Promote"
-                      onClick={() =>
-                        startCommand(candidate, 'promote_to_spec_decision')
-                      }
-                    />
+                    {canCreateSpecDecision && (
+                      <ActionButton
+                        label="Promote"
+                        onClick={() =>
+                          startCommand(candidate, 'promote_to_spec_decision')
+                        }
+                      />
+                    )}
                     <ActionButton
                       label="Link"
                       onClick={() =>

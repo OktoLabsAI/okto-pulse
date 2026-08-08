@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore, useColumns } from '@/store/dashboard';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 import type {
   BugSeverity,
   CardPriority,
@@ -42,6 +43,7 @@ interface CreateCardModalProps {
 
 export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardModalProps) {
   const api = useDashboardApi();
+  const permissions = usePermissions(boardId);
   const { addCardToColumn } = useDashboardStore();
   const columns = useColumns();
 
@@ -76,6 +78,18 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
 
   // Card type
   const [cardType, setCardType] = useState<CardType>('normal');
+  const canCreateStandardCard = permissions.has('card.entity.create');
+  const canCreateTestCard = permissions.has('card.entity.create_test');
+  const canReadBoardAgents = permissions.has('agent.board_access.read');
+  const canCreateSelectedType = cardType === 'test'
+    ? canCreateTestCard
+    : canCreateStandardCard;
+
+  useEffect(() => {
+    if (canCreateSelectedType) return;
+    if (canCreateStandardCard) setCardType('normal');
+    else if (canCreateTestCard) setCardType('test');
+  }, [canCreateSelectedType, canCreateStandardCard, canCreateTestCard]);
 
   // Test fields
   const [testScenarios, setTestScenarios] = useState<{ id: string; title: string; status: string }[]>([]);
@@ -96,10 +110,16 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
   }, [allBoardCards, selectedSpecId]);
 
   useEffect(() => {
-    api.listAgentsForBoard(boardId)
-      .then((agents) => setBoardMembers(agents.map((a) => ({ id: a.id, name: a.name }))))
-      .catch(() => {});
+    if (canReadBoardAgents) {
+      api.listAgentsForBoard(boardId)
+        .then((agents) => setBoardMembers(agents.map((a) => ({ id: a.id, name: a.name }))))
+        .catch(() => {});
+    } else {
+      setBoardMembers([]);
+    }
+  }, [boardId, canReadBoardAgents]);
 
+  useEffect(() => {
     // Load specs that accept card creation (approved + validated + in_progress for tasks, + done for bugs)
     Promise.all([
       api.listSpecs(boardId, 'approved'),
@@ -187,6 +207,15 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (!canCreateSelectedType) {
+      toast.error(`Missing permission: ${
+        cardType === 'test'
+          ? 'card.entity.create_test'
+          : 'card.entity.create'
+      }`);
+      return;
+    }
 
     if (!title.trim()) {
       toast.error('Title is required');
@@ -340,33 +369,39 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
                 <button
                   type="button"
                   onClick={() => setCardType('normal')}
+                  disabled={!canCreateStandardCard}
+                  title={canCreateStandardCard ? 'Create a task card' : 'Missing permission: card.entity.create'}
                   className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
                     cardType === 'normal'
                       ? 'bg-blue-50 border-blue-300 text-blue-700 dark:bg-blue-900/30 dark:border-blue-600 dark:text-blue-300'
                       : 'bg-white border-gray-300 text-gray-600 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-600'
-                  }`}
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
                 >
                   Task
                 </button>
                 <button
                   type="button"
                   onClick={() => setCardType('test')}
+                  disabled={!canCreateTestCard}
+                  title={canCreateTestCard ? 'Create a test card' : 'Missing permission: card.entity.create_test'}
                   className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
                     cardType === 'test'
                       ? 'bg-purple-50 border-purple-300 text-purple-700 dark:bg-purple-900/30 dark:border-purple-600 dark:text-purple-300'
                       : 'bg-white border-gray-300 text-gray-600 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-600'
-                  }`}
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
                 >
                   Test
                 </button>
                 <button
                   type="button"
                   onClick={() => setCardType('bug')}
+                  disabled={!canCreateStandardCard}
+                  title={canCreateStandardCard ? 'Create a bug card' : 'Missing permission: card.entity.create'}
                   className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors inline-flex items-center justify-center gap-1.5 ${
                     cardType === 'bug'
                       ? 'bg-red-50 border-red-300 text-red-700 dark:bg-red-900/30 dark:border-red-600 dark:text-red-300'
                       : 'bg-white border-gray-300 text-gray-600 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-600'
-                  }`}
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
                 >
                   <Bug size={14} />
                   Bug
@@ -670,7 +705,12 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
             <button type="button" onClick={onClose} disabled={isLoading} className="btn btn-secondary">
               Cancel
             </button>
-            <button type="submit" disabled={isLoading} className="btn btn-primary">
+            <button
+              type="submit"
+              disabled={isLoading || !canCreateSelectedType}
+              title={canCreateSelectedType ? undefined : 'You do not have permission to create this card type'}
+              className="btn btn-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
               {isLoading ? 'Creating...' : cardType === 'bug' ? 'Create Bug' : 'Create Card'}
             </button>
           </div>

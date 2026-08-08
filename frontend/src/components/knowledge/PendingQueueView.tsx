@@ -6,6 +6,7 @@
 import { useState, useEffect } from 'react';
 import * as kgApi from '@/services/kg-api';
 import { KGRefreshButton } from './KGRefreshButton';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface Props {
   boardId: string;
@@ -37,15 +38,29 @@ const PRIORITY_ICON: Record<string, string> = {
 };
 
 export function PendingQueueView({ boardId }: Props) {
+  const permissions = usePermissions(boardId);
+  const canReadQueue = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.operations.queue.read')
+  );
   const [entries, setEntries] = useState<QueueEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadPending();
-  }, [boardId]);
+    if (permissions.isLoading) return;
+    if (!canReadQueue) {
+      setLoading(false);
+      setError('You do not have permission to read the KG queue');
+      return;
+    }
+    void loadPending();
+  }, [boardId, canReadQueue, permissions.isLoading]);
 
   async function loadPending() {
+    if (!canReadQueue) return;
     setLoading(true);
     setError(null);
     try {

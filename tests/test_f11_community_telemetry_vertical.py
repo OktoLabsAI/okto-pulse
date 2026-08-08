@@ -17,6 +17,8 @@ from okto_pulse.community.adapters.telemetry_sender import (
     install_id_path,
 )
 from okto_pulse.core.infra.config import CoreSettings
+from okto_pulse.core.ports.authentication import Principal
+from okto_pulse.core.ports.permission_policy import registered_permission_flags
 from okto_pulse.core.telemetry.effect_config_registry import (
     reset_telemetry_effect_config_provider_for_tests,
 )
@@ -102,7 +104,12 @@ def test_f11_community_router_owns_local_summary_and_publish_health(
     monkeypatch.setattr(metrics_api, "get_settings", lambda: settings)
     app = FastAPI()
     app.include_router(metrics_api.router)
-    app.dependency_overrides[metrics_api.require_user] = lambda: "test-user"
+    app.dependency_overrides[metrics_api.require_principal] = lambda: Principal(
+        subject="test-user",
+        realm_id="local",
+        actor_kind="human",
+        claims={"permissions": registered_permission_flags()},
+    )
 
     client = TestClient(app)
     summary = client.get("/api/v1/metrics/local/summary")

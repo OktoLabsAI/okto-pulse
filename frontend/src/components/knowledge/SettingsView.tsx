@@ -32,15 +32,26 @@ interface BoardKGSettings {
 
 export function SettingsView({ boardId }: Props) {
   const perms = usePermissions(boardId);
+  const policyReady = !perms.isLoading && !perms.error && !perms.ownerReviewRequired;
+  const canReadSettings = policyReady && perms.has('kg.operations.settings.read');
+  const canEraseBoardKG = policyReady && perms.has('kg.operations.board.erase');
   const [settings, setSettings] = useState<BoardKGSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadSettings();
-  }, [boardId]);
+    if (perms.isLoading) return;
+    if (!canReadSettings) {
+      setSettings(null);
+      setLoading(false);
+      setError('You do not have permission to read KG settings');
+      return;
+    }
+    void loadSettings();
+  }, [boardId, canReadSettings, perms.isLoading]);
 
   async function loadSettings() {
+    if (!canReadSettings) return;
     setLoading(true);
     setError(null);
     try {
@@ -172,15 +183,16 @@ export function SettingsView({ boardId }: Props) {
         />
       </div>
 
-      {/* Danger zone — gated by kg.admin.wipe_board. Hidden entirely for
+      {/* Danger zone — gated by the exact board-erasure operation. Hidden for
           presets without write access so the button never noise-clicks to 403. */}
-      {perms.has('kg.admin.wipe_board') && (
+      {canEraseBoardKG && (
         <div className="mt-10 pt-6 border-t border-red-200 dark:border-red-900/30">
           <h3 className="text-sm font-medium text-red-600 dark:text-red-400 uppercase tracking-wider mb-3">
             Danger Zone
           </h3>
           <button
             onClick={async () => {
+              if (!canEraseBoardKG) return;
               if (!confirm('This will permanently delete all KG data for this board. Continue?')) return;
               try {
                 await kgApi.deleteKG(boardId);

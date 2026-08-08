@@ -3,6 +3,11 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RetryFromHereDialog } from '../RetryFromHereDialog';
 import type { PendingTreeNode } from '@/services/kg-api';
 
+const permissionHas = vi.hoisted(() => vi.fn((_flag: string) => true));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({ preset: 'Full Control', isLoading: false, error: null, ownerReviewRequired: false, has: permissionHas }),
+}));
+
 vi.mock('@/services/kg-api', () => ({
   retryPending: vi.fn(),
 }));

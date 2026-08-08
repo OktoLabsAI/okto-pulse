@@ -36,6 +36,7 @@ import { getKGHealth } from '@/services/kg-health-api';
 import { DeadLetterInspectorModal } from '@/components/knowledge/DeadLetterInspectorModal';
 import { useDashboardStore } from '@/store/dashboard';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface RuntimeSettingsPanelProps {
   onClose: () => void;
@@ -125,6 +126,17 @@ export function RuntimeSettingsPanel({
   // Spec ed17b1fe (Wave 2 NC 1ede3471) — DLQ Inspector modal state.
   const [showDeadLetter, setShowDeadLetter] = useState(false);
   const currentBoard = useDashboardStore((s) => s.currentBoard);
+  const permissions = usePermissions(currentBoard?.id);
+  const policyReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadRuntime = policyReady && permissions.has('runtime.settings.read');
+  const canWriteRuntime = policyReady && permissions.has('runtime.settings.write');
+  const canReadKGHealth = policyReady && permissions.has('kg.operations.health.read');
+  const canRunKGTick = policyReady && permissions.has('kg.operations.tick.run');
+  const canReadKGQueue = policyReady && permissions.has('kg.operations.queue.read');
   // Bug fix — true quando o advisory lock global ``kg_daily_tick`` está
   // acquired no backend. Polled enquanto o usuário está no Decay Tick tab
   // para que "Save & run now" fique disabled mesmo se o usuário tiver
@@ -132,7 +144,15 @@ export function RuntimeSettingsPanel({
   const [tickInProgress, setTickInProgress] = useState(false);
 
   useEffect(() => {
+    if (permissions.isLoading) return;
+    if (!canReadRuntime) {
+      setLoading(false);
+      setError('You do not have permission to read runtime settings');
+      return;
+    }
     let active = true;
+    setLoading(true);
+    setError(null);
     getRuntimeSettings()
       .then((data) => {
         if (!active) return;
@@ -151,7 +171,7 @@ export function RuntimeSettingsPanel({
     return () => {
       active = false;
     };
-  }, []);
+  }, [canReadRuntime, permissions.isLoading]);
 
   // Bug fix — poll do tick_in_progress só enquanto o Decay Tick tab está
   // ativo (a única superfície onde o "Save & run now" aparece). Intervalo
@@ -161,7 +181,7 @@ export function RuntimeSettingsPanel({
   // ``inFlightRef`` cooldown de 3 s + advisory lock no backend cobre o
   // gap de detecção em cliques rápidos.
   useEffect(() => {
-    if (activeTab !== 'decaytick' || !currentBoard) {
+    if (activeTab !== 'decaytick' || !currentBoard || !canReadKGHealth) {
       setTickInProgress(false);
       return;
     }
@@ -182,7 +202,7 @@ export function RuntimeSettingsPanel({
       controller.abort();
       window.clearInterval(id);
     };
-  }, [activeTab, currentBoard]);
+  }, [activeTab, currentBoard, canReadKGHealth]);
 
   const budgetMb =
     draft.kg_connection_pool_size * draft.kg_kuzu_buffer_pool_mb +
@@ -247,7 +267,7 @@ export function RuntimeSettingsPanel({
   const inFlightRef = useRef(false);
 
   const onSave = async () => {
-    if (outOfRange || migrationPlanMissing || inFlightRef.current) return;
+    if (!canWriteRuntime || outOfRange || migrationPlanMissing || inFlightRef.current) return;
     inFlightRef.current = true;
     setSaving(true);
     try {
@@ -277,7 +297,14 @@ export function RuntimeSettingsPanel({
   const onSaveAndRunNow = async () => {
     // tickInProgress vem do polling KG health (5s) e cobre cross-mount/
     // cross-tab. inFlightRef cobre clique-rápido na mesma sessão.
-    if (outOfRange || migrationPlanMissing || inFlightRef.current || tickInProgress) return;
+    if (
+      !canWriteRuntime
+      || !canRunKGTick
+      || outOfRange
+      || migrationPlanMissing
+      || inFlightRef.current
+      || tickInProgress
+    ) return;
     inFlightRef.current = true;
     setSaving(true);
     // Cooldown lock — mantém o guard por 3s além do fetch para cobrir o
@@ -391,6 +418,7 @@ export function RuntimeSettingsPanel({
             onChange={onInputChange}
             isActive={activeTab === 'eventqueue'}
             onOpenDeadLetterInspector={() => setShowDeadLetter(true)}
+            canReadQueue={canReadKGQueue}
           />
         ) : (
           <DecayTickTab draft={draft} onChange={onInputChange} />
@@ -406,13 +434,15 @@ export function RuntimeSettingsPanel({
           </button>
           <button
             onClick={onSave}
-            disabled={loading || saving || outOfRange || migrationPlanMissing}
+            disabled={loading || saving || !canWriteRuntime || outOfRange || migrationPlanMissing}
             className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
             data-testid="save-runtime-settings"
             title={
-              migrationPlanMissing
-                ? 'Changing the max DB size requires a migration plan (Graph DB tab)'
-                : undefined
+              !canWriteRuntime
+                ? 'Requires runtime.settings.write'
+                : migrationPlanMissing
+                  ? 'Changing the max DB size requires a migration plan (Graph DB tab)'
+                  : undefined
             }
           >
             {saving ? 'Saving…' : 'Save'}
@@ -420,10 +450,18 @@ export function RuntimeSettingsPanel({
           {activeTab === 'decaytick' && (
             <button
               onClick={onSaveAndRunNow}
-              disabled={loading || saving || outOfRange || migrationPlanMissing || tickInProgress}
+              disabled={loading || saving || !canWriteRuntime || !canRunKGTick || outOfRange || migrationPlanMissing || tickInProgress}
               className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 inline-flex items-center gap-1"
               data-testid="save-and-run-now"
-              title={tickInProgress && !saving ? 'Tick is already running globally (cron, MCP or another tab)' : undefined}
+              title={
+                !canWriteRuntime
+                  ? 'Requires runtime.settings.write'
+                  : !canRunKGTick
+                    ? 'Requires kg.operations.tick.run'
+                  : tickInProgress && !saving
+                    ? 'Tick is already running globally (cron, MCP or another tab)'
+                    : undefined
+              }
             >
               <Play size={11} />
               {saving
@@ -436,7 +474,7 @@ export function RuntimeSettingsPanel({
         </div>
       </div>
 
-      {showDeadLetter && currentBoard && (
+      {showDeadLetter && currentBoard && canReadKGQueue && (
         <DeadLetterInspectorModal
           boardId={currentBoard.id}
           onClose={() => setShowDeadLetter(false)}
@@ -654,6 +692,7 @@ interface EventQueueTabProps {
   onChange: (key: keyof DraftState, raw: string) => void;
   isActive: boolean;
   onOpenDeadLetterInspector: () => void;
+  canReadQueue: boolean;
 }
 
 function EventQueueTab({
@@ -661,8 +700,9 @@ function EventQueueTab({
   onChange,
   isActive,
   onOpenDeadLetterInspector,
+  canReadQueue,
 }: EventQueueTabProps) {
-  const health = useQueueHealth(isActive);
+  const health = useQueueHealth(isActive && canReadQueue);
   return (
     <>
       <div className="px-6 py-5 grid grid-cols-2 gap-x-6 gap-y-4">
@@ -712,7 +752,7 @@ function EventQueueTab({
 
       <LiveQueueHealthPanel health={health} />
 
-      <div className="px-6 pb-3">
+      {canReadQueue && <div className="px-6 pb-3">
         <button
           type="button"
           onClick={onOpenDeadLetterInspector}
@@ -722,7 +762,7 @@ function EventQueueTab({
           <Database size={10} />
           Open dead-letter inspector
         </button>
-      </div>
+      </div>}
     </>
   );
 }

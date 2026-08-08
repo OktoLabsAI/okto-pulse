@@ -37,9 +37,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.core.application.use_cases.authorize_operation import (
+    AuthorizeOperationCommand,
+    AuthorizeOperationUseCase,
+)
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.core.application.use_cases.board_access import load_accessible_board
 from okto_pulse.core.kg.cognitive_badge_resolver import (
     BADGE_LABEL_ACTIVE,
@@ -54,6 +59,7 @@ from okto_pulse.core.kg.rebuild_audit import (
     CognitiveConsolidationItemStore,
     require_rebuild_audit_artifact_store,
 )
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.repositories import PulseUnitOfWork
 
 
@@ -104,7 +110,7 @@ async def get_cognitive_pending_badges(
     board_id: str = Query(..., min_length=1),
     source_refs: list[str] = Query(default_factory=list),
     kg_generation_id: str | None = Query(default=None),
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> CognitivePendingBadgesResponse:
     """Resolve cognitive consolidation badges for a batch of source_refs.
@@ -113,9 +119,21 @@ async def get_cognitive_pending_badges(
     cacheable and proxy-friendly while honoring the api_28a22fec
     contract (no mutation, bounded batch size)."""
 
-    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+    actor = RESTAdapterContract.actor_from_principal(principal, board_id=board_id)
     if await load_accessible_board(uow, board_id, actor) is None:
         raise HTTPException(status_code=404, detail="Board not found")
+    try:
+        await AuthorizeOperationUseCase().execute(
+            AuthorizeOperationCommand(
+                "kg.operations.cognitive.read",
+                legacy_operation="kg.admin.settings_read",
+                board_id=board_id,
+            ),
+            actor=actor,
+            uow=uow,
+        )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
     requested_count = len(source_refs)
     if requested_count < MIN_SOURCE_REFS or requested_count > MAX_SOURCE_REFS:

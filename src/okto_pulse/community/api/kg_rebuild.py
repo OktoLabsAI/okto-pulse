@@ -50,6 +50,11 @@ from okto_pulse.core.application.kg_runtime_access import (
     resolve_graph_lifecycle,
 )
 from okto_pulse.core.application.use_cases.board_access import load_accessible_board
+from okto_pulse.core.application.use_cases.authorize_operation import (
+    AuthorizeOperationCommand,
+    AuthorizeOperationUseCase,
+)
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.core.ports.scheduler import SchedulerControl
 from okto_pulse.core.repositories import PulseUnitOfWork
 
@@ -111,6 +116,29 @@ async def _require_board_access(
         allowed_share_permissions=allowed,
     ) is None:
         raise HTTPException(status_code=404, detail="Board not found")
+
+
+async def _require_rebuild_authority(
+    *,
+    board_id: str,
+    user_id: str,
+    uow: PulseUnitOfWork,
+    operation: str,
+    legacy_operation: str,
+) -> None:
+    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+    try:
+        await AuthorizeOperationUseCase().execute(
+            AuthorizeOperationCommand(
+                operation,
+                legacy_operation=legacy_operation,
+                board_id=board_id,
+            ),
+            actor=actor,
+            uow=uow,
+        )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
 
 class RebuildPreflightResponse(BaseModel):
@@ -183,6 +211,13 @@ async def post_rebuild_preflight(
 
     # FR10 — per-board scope uses one non-enumerable 404 outcome.
     await _require_board_access(board_id, user_id, db)
+    await _require_rebuild_authority(
+        board_id=board_id,
+        user_id=user_id,
+        uow=db,
+        operation="kg.operations.rebuild.preflight",
+        legacy_operation="kg.admin.settings_read",
+    )
 
     # FR8 — rebuild-scoped admission gate: quarantined → 409, recovery_needed → pass.
     scheduler_control = scheduler_control_from_request(request)
@@ -301,6 +336,13 @@ async def post_rebuild_confirm(
     """
     # FR10 — per-board scope uses one non-enumerable 404 outcome.
     await _require_board_access(body.board_id, user_id, db, write=True)
+    await _require_rebuild_authority(
+        board_id=body.board_id,
+        user_id=user_id,
+        uow=db,
+        operation="kg.operations.rebuild.confirm",
+        legacy_operation="kg.admin.settings_write",
+    )
 
     from okto_pulse.core.kg.rebuild_confirmation import (
         CANONICAL_OPERATIONS,
@@ -447,6 +489,13 @@ async def post_rebuild_run(
     """
     # FR10 — per-board scope uses one non-enumerable 404 outcome.
     await _require_board_access(body.board_id, user_id, db, write=True)
+    await _require_rebuild_authority(
+        board_id=body.board_id,
+        user_id=user_id,
+        uow=db,
+        operation="kg.operations.rebuild.run",
+        legacy_operation="kg.admin.settings_write",
+    )
 
     from okto_pulse.core.kg.rebuild_confirmation import (
         RebuildConfirmationStore,

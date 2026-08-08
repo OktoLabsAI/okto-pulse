@@ -28,7 +28,6 @@ from okto_pulse.core.kg import cypher_templates as tpl
 logger = logging.getLogger("okto_pulse.kg.kuzu_graph_store")
 
 _TEMPORAL_PROPERTIES = frozenset({"created_at", "last_attested_at", "superseded_at"})
-_SOURCE_DELETED_REVOCATION_REASON = "source_deleted"
 
 
 def _property_binding(name: str, value: Any) -> str:
@@ -60,17 +59,16 @@ def _materialize_native_rows(result: Any) -> list[list[Any]]:
     return rows
 
 
-def _row_is_source_deleted_tombstone(
+def _row_is_visible_in_active_reads(
     row: list[Any],
     *,
     revocation_reason_index: int,
 ) -> bool:
-    """Keep governed-deletion tombstones out of every active lookup path."""
+    """Apply the Core tombstone contract to a materialized Kùzu row."""
 
-    return (
-        len(row) > revocation_reason_index
-        and str(row[revocation_reason_index] or "") == _SOURCE_DELETED_REVOCATION_REASON
-    )
+    if len(row) <= revocation_reason_index:
+        return True
+    return tpl.is_visible_in_active_reads(row[revocation_reason_index])
 
 
 class CommunityKuzuGraphStore:
@@ -319,14 +317,13 @@ class CommunityKuzuGraphStore:
         pool_size = max(
             filters.max_rows, filters.max_rows * DECAY_REORDER_POOL_MULTIPLIER
         )
-        from okto_pulse.core.kg.cypher_templates import superseded_filter_clause
-
         cypher = (
             f"MATCH (n:{node_type}) "
             f"WHERE n.title CONTAINS $topic "
             f"AND n.source_confidence >= $min_confidence "
             f"AND n.relevance_score >= $min_relevance "
-            f"AND {superseded_filter_clause('n')} "
+            f"AND {tpl.superseded_filter_clause('n')} "
+            f"AND {tpl.active_read_filter_clause('n')} "
             f"RETURN n.id, n.title, n.content, n.created_at, n.source_confidence, "
             f"n.relevance_score, n.superseded_by, n.query_hits, n.last_queried_at, "
             f"n.attestation_count, n.source_artifact_ref "
@@ -419,6 +416,7 @@ class CommunityKuzuGraphStore:
             f"MATCH (n:{node_type}) WHERE n.id IN $ids "
             f"AND n.source_confidence >= $min_confidence "
             f"AND n.relevance_score >= $min_relevance "
+            f"AND {tpl.active_read_filter_clause('n')} "
             f"RETURN n.id, n.title, n.content, n.created_at, "
             f"n.source_confidence, n.relevance_score, n.superseded_by, "
             f"n.source_artifact_ref",
@@ -510,11 +508,13 @@ class CommunityKuzuGraphStore:
         # scoping at the SAME in-Cypher level (single-source helpers).
         hop1_layer = (
             f"{tpl.layer_filter_clause('hop1')} "
-            f"AND {tpl.superseded_filter_clause('hop1')}"
+            f"AND {tpl.superseded_filter_clause('hop1')} "
+            f"AND {tpl.active_read_filter_clause('hop1')}"
         )
         hop2_layer = (
             f"(hop2 IS NULL OR ({tpl.layer_filter_clause('hop2')} "
-            f"AND {tpl.superseded_filter_clause('hop2')}))"
+            f"AND {tpl.superseded_filter_clause('hop2')} "
+            f"AND {tpl.active_read_filter_clause('hop2')}))"
         )
         if rel_types:
             # Kùzu doesn't expose `label(r)` as a parameter-safe filter, so we
@@ -537,6 +537,7 @@ class CommunityKuzuGraphStore:
                 f"MATCH {hop1_pat} "
                 "WHERE center.source_artifact_ref = $artifact_id "
                 "  AND center.source_confidence >= $min_confidence "
+                f"  AND {tpl.active_read_filter_clause('center')} "
                 f"  AND {hop1_layer} "
                 "RETURN center.id AS center_id, center.title AS center_title, "
                 "       hop1.id AS hop1_id, hop1.title AS hop1_title, "
@@ -549,6 +550,7 @@ class CommunityKuzuGraphStore:
                 f"MATCH {hop1_pat} "
                 "WHERE center.source_artifact_ref = $artifact_id "
                 "  AND center.source_confidence >= $min_confidence "
+                f"  AND {tpl.active_read_filter_clause('center')} "
                 f"  AND {hop1_layer} "
                 "OPTIONAL MATCH (hop1)-[r2]-(hop2) "
                 f"WHERE {hop2_layer} "
@@ -567,8 +569,8 @@ class CommunityKuzuGraphStore:
         max_depth: int = 10,
         node_type: str = "Decision",
     ) -> list[list]:
-        # Spec MKG-D-S1 (FR6): label-parametrized via allowlisted template
-        # (Decision keeps the byte-identical legacy template).
+        # Spec MKG-D-S1 (FR6): label-parametrized via allowlisted template;
+        # Decision uses the same named template and visibility contract.
         return self._exec(
             board_id,
             tpl.supersedence_chain_template(node_type),
@@ -618,13 +620,12 @@ class CommunityKuzuGraphStore:
             return []
         if graph_layer not in {"canonical", "working", "all"}:
             raise ValueError("invalid_graph_layer")
-        fetch_k = (
-            top_k
-            if include_superseded
-            else max(
-                top_k,
-                top_k * DECAY_REORDER_POOL_MULTIPLIER,
-            )
+        # Tombstones are excluded even when historical superseded nodes are
+        # requested, so always over-fetch enough candidates to backfill rows
+        # removed by either visibility rule.
+        fetch_k = max(
+            top_k,
+            top_k * DECAY_REORDER_POOL_MULTIPLIER,
         )
         indexed_rows: list[list[Any]] = []
         try:
@@ -651,7 +652,7 @@ class CommunityKuzuGraphStore:
 
         hits: list[dict[str, Any]] = []
         for row in indexed_rows:
-            if _row_is_source_deleted_tombstone(
+            if not _row_is_visible_in_active_reads(
                 row,
                 revocation_reason_index=9,
             ):
@@ -690,6 +691,7 @@ class CommunityKuzuGraphStore:
             with open_board_connection(board_id) as (_db, conn):
                 result = conn.execute(
                     f"MATCH (n:{node_type}) WHERE n.embedding IS NOT NULL "
+                    f"AND {tpl.active_read_filter_clause('n')} "
                     "RETURN n.id, n.title, n.source_artifact_ref, n.embedding, "
                     "n.superseded_by, n.graph_layer, n.content, n.context, "
                     "n.justification, n.revocation_reason LIMIT 500"
@@ -707,7 +709,7 @@ class CommunityKuzuGraphStore:
             return []
 
         for row in fallback_rows:
-            if _row_is_source_deleted_tombstone(
+            if not _row_is_visible_in_active_reads(
                 row,
                 revocation_reason_index=9,
             ):
@@ -751,15 +753,13 @@ class CommunityKuzuGraphStore:
                 f"MATCH (n:{node_type}) "
                 "WHERE n.source_artifact_ref = $source_artifact_ref "
                 "AND n.superseded_by IS NULL "
-                "AND coalesce(n.revocation_reason, '') "
-                "<> $source_deleted_reason "
+                f"AND {tpl.active_read_filter_clause('n')} "
                 "RETURN n.id, n.title, n.source_artifact_ref, n.content, "
                 "n.context, n.justification, coalesce(n.generation, 0) "
                 "ORDER BY coalesce(n.generation, 0) DESC, n.id DESC LIMIT 1"
             ),
             {
                 "source_artifact_ref": source_artifact_ref,
-                "source_deleted_reason": (_SOURCE_DELETED_REVOCATION_REASON),
             },
         )
         if not rows:

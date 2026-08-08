@@ -3,7 +3,39 @@
 Changeset per version, newest first.
 
 
-### 0.3.0 - current
+### 0.3.1 - current
+
+This is the **quality-governance release**: Community exposes receipt-backed
+ambiguity assessments and pinpoint findings in the Ideation, Refinement and Spec
+surfaces, persists the refinement research decision ledger, and presents curated
+Spec checklist execution state.
+
+- Community requires the matching `okto-pulse-core>=0.3.1` release.
+- Test-scenario inputs are closed across REST and UI; `negative` is a supported
+  first-class type.
+- Paired-wheel provenance and installed inventory gates ratchet the exposed MCP
+  contract to 312 tools (304 canonical and 8 aliases).
+
+#### Permission-governance hardening changeset — 2026-08-08
+
+- The permission editor is recursive and proves coverage of all 397 permission
+  leaves exposed by the application.
+- REST and UI routes project the centralized Core operation policy, including
+  exact denial, legacy fallback and role semantics for board sharing, presets,
+  defaults and administrative operations.
+- Reviewer separation is configurable from Board settings and Global Default
+  Board Configuration; the E2E board was validated with board enforcement off
+  and the global default set to enforce.
+- Guideline import and export cover global and inline guidelines, with and
+  without evaluation metrics, including repeated-ID imports that create a new
+  immutable version.
+- Board E2E validation proves both the traceability and semantic-guideline
+  blocks before completing the cards with current independent assessment
+  evidence. Ruff, 65 focused regressions, frontend build, distribution
+  verification and the lint ratchet pass on the reconciled release branch.
+
+
+### 0.3.0
 
 **63 commits over `v0.2.6`.** The community edition absorbed every concrete adapter the core shed
 during its hexagonal decontamination. Where 0.2.x still let core reach into infrastructure, 0.3.0

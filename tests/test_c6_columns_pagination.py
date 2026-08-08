@@ -18,11 +18,16 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
 )
 from okto_pulse.community.adapters.sqlalchemy_models import Base
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
-from okto_pulse.community.api.auth_deps import get_realm_id, require_user
+from okto_pulse.community.api.auth_deps import (
+    get_realm_id,
+    require_principal,
+    require_user,
+)
 from okto_pulse.community.api.boards import router as boards_router
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.domain.enums import CardStatus
 from okto_pulse.core.domain.realm import RealmScope
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.application_persistence import (
     get_application_persistence_port,
     register_application_persistence_port,
@@ -153,7 +158,15 @@ def columns_client(tmp_path: Path):
     async def _user(x_user: str = Header("owner")) -> str:
         return x_user
 
+    async def _principal(x_user: str = Header("owner")) -> Principal:
+        return Principal(
+            subject=x_user,
+            realm_id="local",
+            actor_kind="human",
+        )
+
     app.dependency_overrides[require_user] = _user
+    app.dependency_overrides[require_principal] = _principal
     app.dependency_overrides[get_realm_id] = lambda: None
     app.dependency_overrides[get_unit_of_work] = _uow
     try:

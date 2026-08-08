@@ -21,6 +21,9 @@ from okto_pulse.community.adapters.knowledge_propagation_backfill import (
     backfill_knowledge_propagation_v2,
 )
 from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_database import (
     install_community_sqlite_pragmas,
 )
@@ -61,6 +64,7 @@ async def legacy_database(tmp_path, monkeypatch):
     sessions = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:

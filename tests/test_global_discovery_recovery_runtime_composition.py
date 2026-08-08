@@ -35,11 +35,13 @@ from okto_pulse.community.adapters.relational_schema_lifecycle import (
     register_community_relational_schema_lifecycle,
 )
 from okto_pulse.community.adapters.relational_schema_steps import (
+    _migrate_global_discovery_recovery_control_plane,
     global_discovery_source_revision_trigger_manifest,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES,
     GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX,
+    GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
 )
 from okto_pulse.core.kg.interfaces.global_discovery_recovery import (
     GlobalDiscoveryArtifactSnapshot,
@@ -1230,11 +1232,99 @@ def test_source_revision_installs_the_exact_closed_trigger_manifest(
 
     assert set(expected) == {str(row["name"]) for row in rows}
     assert len(expected) == len(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES) * 3 + 2
+    assert len(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES) == 25
+    assert len(expected) == 77
+    assert {
+        "ideation_qa_items",
+        "quality_assessment_receipts",
+        "quality_assessment_heads",
+        "refinement_qa_items",
+        "research_decision_entries",
+        "research_decision_heads",
+        "spec_qa_items",
+    }.issubset(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES)
+    assert (
+        GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION
+        == "gdsr-trigger-manifest-v5"
+    )
     for row in rows:
         name = str(row["name"])
         assert str(row["tbl_name"]) == expected[name][0]
         if str(row["tbl_name"]) != "global_discovery_source_revision":
             assert "randomblob(32)" in str(row["sql"]).lower()
+
+
+def test_source_revision_v4_upgrade_installs_qa_inputs_and_rotates_incarnation(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "triggers-v4-upgrade.sqlite3"
+    _initialize_relational_schema(database_path)
+    new_inputs = {
+        "ideation_qa_items",
+        "refinement_qa_items",
+        "spec_qa_items",
+    }
+    expected = global_discovery_source_revision_trigger_manifest()
+    connection = sqlite3.connect(database_path)
+    try:
+        before_incarnation = str(
+            connection.execute(
+                "SELECT incarnation_id FROM global_discovery_source_revision"
+            ).fetchone()[0]
+        )
+        connection.execute(
+            "UPDATE global_discovery_source_revision "
+            "SET trigger_manifest_version = ?",
+            ("gdsr-trigger-manifest-v4",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    stale_provider = CommunityRelationalRecoverySnapshotFingerprint(
+        db_path_provider=lambda: database_path
+    )
+    with pytest.raises(CommunityGlobalDiscoveryRecoveryError) as stale:
+        stale_provider.read_fence()
+    assert stale.value.code == "global_discovery_relational_snapshot_unavailable"
+
+    connection = sqlite3.connect(database_path)
+    try:
+        for trigger_name, (table_name, _sql) in expected.items():
+            if table_name in new_inputs:
+                connection.execute(f'DROP TRIGGER "{trigger_name}"')
+        connection.commit()
+    finally:
+        connection.close()
+
+    async def upgrade() -> str | None:
+        database_module.create_database(
+            f"sqlite+aiosqlite:///{database_path.as_posix()}"
+        )
+        result = await _migrate_global_discovery_recovery_control_plane()
+        await database_module.get_engine().dispose()
+        return result
+
+    assert asyncio.run(upgrade()) is None
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT trigger_manifest_version, incarnation_id "
+            "FROM global_discovery_source_revision"
+        ).fetchone()
+        triggers = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'trigger' AND name LIKE ?",
+            (f"{GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX}%",),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert row is not None
+    assert str(row[0]) == "gdsr-trigger-manifest-v5"
+    assert str(row[1]) != before_incarnation
+    assert {str(item[0]) for item in triggers} == set(expected)
+    assert len(triggers) == 77
 
 
 def test_relational_snapshot_fingerprint_fails_closed_for_missing_schema_or_file(

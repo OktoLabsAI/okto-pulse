@@ -2,7 +2,13 @@
  * SpecModal - View and edit a spec, derive cards, manage knowledge bases
  */
 
-import { useEffect, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   X,
   ChevronRight,
@@ -57,12 +63,22 @@ import type {
   SpecStructuredEntityType,
   TechnicalRequirement,
   TestScenario,
+  TestScenarioType,
   BoardSettings,
   Decision,
 } from '@/types';
 import { SubmitSpecValidationModal } from './SubmitSpecValidationModal';
 import { EvidenceBadge } from './EvidenceBadge';
-import { SCENARIO_TYPES, ScenarioTypeBadge } from './ScenarioTypeBadge';
+import {
+  SCENARIO_TYPES,
+  ScenarioTypeBadge,
+  isSupportedScenarioType,
+} from './ScenarioTypeBadge';
+import {
+  TestScenarioPolicyCompliance,
+  TestScenarioStatusBadge,
+} from './TestScenarioPolicyCompliance';
+import { persistTestScenariosWithWriteGuard } from './scenarioWriteGuard';
 import { usePermissions } from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
 import { RulesTab } from './RulesTab';
@@ -72,7 +88,16 @@ import { DecisionsTab } from './DecisionsTab';
 import { IntegrationRequirementsTab } from './IntegrationRequirementsTab';
 import { ObservabilityRequirementsTab } from './ObservabilityRequirementsTab';
 import { KGValidationTab } from './KGValidationTab';
-import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
+import { SpecValidationPanel } from './SpecValidationPanel';
+import {
+  isAllowedTransitionActionable,
+  policyTransitionRejectionMessage,
+  readPolicyTransitionRejection,
+  requirePolicyTransitionEnvelope,
+  type PolicyTransitionRejection,
+  type PolicyTransitionPreviewLoadState,
+} from '@/components/policy-compliance';
+import { isSpecValidationAvailable } from './specValidationAvailability';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
 import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
 import { SPEC_STATUSES, SPEC_STATUS_LABELS } from '@/types';
@@ -84,15 +109,22 @@ import { RefinementModal } from '@/components/refinements/RefinementModal';
 import { EditableField } from '@/components/shared/EditableField';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 import { ActivityHistoryList } from '@/components/shared/ActivityHistoryList';
+import { SpecEditionLabel } from './SpecEditionLabel';
 import { ArchitectureTab } from '@/components/architecture';
 import {
   getAcceptanceCriterionLabel,
   isAcceptanceCriterionLinked,
   normalizeAcceptanceCriteria,
 } from './acceptanceCriteriaCoverage';
-import { ResourceGateSummary } from '@/components/resources/ResourceGateSummary';
+import { ResourceGateDisclosure } from '@/components/resources/ResourceGateDisclosure';
 import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { useOptionalModalStack } from '@/contexts/ModalStackContext';
+import { openContextualHelp } from '@/components/help';
+import {
+  AccessibleTabList,
+  AccessibleTabPanel,
+} from '@/components/shared/AccessibleTabs';
 
 interface SpecModalProps {
   specId: string;
@@ -102,7 +134,25 @@ interface SpecModalProps {
   onChanged: () => void;
 }
 
-type ModalTab = 'details' | 'tests' | 'rules' | 'contracts' | 'irs' | 'ors' | 'trs' | 'decisions' | 'mockups' | 'architecture' | 'qa' | 'knowledge' | 'cards' | 'sprints' | 'history' | 'validation' | 'kg' | 'cancellation';
+type ModalTab =
+  | 'details'
+  | 'tests'
+  | 'rules'
+  | 'contracts'
+  | 'irs'
+  | 'ors'
+  | 'trs'
+  | 'decisions'
+  | 'resources'
+  | 'qa'
+  | 'references'
+  | 'sprints'
+  | 'kg'
+  | 'validation'
+  | 'activity';
+
+type ResourceSubTab = 'mockups' | 'knowledge' | 'architecture';
+type ReferenceSubTab = 'origin' | 'cards';
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -437,17 +487,21 @@ function stableEntityPayload(item: StructuredObjectEntity): Record<string, unkno
   return JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
 }
 
-const SCENARIO_STATUSES = ['draft', 'ready', 'automated', 'passed', 'failed'] as const;
-
-const SCENARIO_STATUS_COLORS: Record<string, string> = {
-  draft: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
-  ready: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
-  automated: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  passed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
-  failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-};
-
-function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpdate: (scenarios: TestScenario[]) => void; onSpecUpdate: (data: Record<string, unknown>) => Promise<void> }) {
+function TestScenariosTab({
+  spec,
+  onUpdate,
+  onSpecUpdate,
+  onSpecRefreshed,
+  canReadPolicyCompliance,
+  policyRefreshKey,
+}: {
+  spec: Spec;
+  onUpdate: (scenarios: TestScenario[]) => void;
+  onSpecUpdate: (data: Record<string, unknown>) => Promise<void>;
+  onSpecRefreshed: (updated: Spec) => void;
+  canReadPolicyCompliance: boolean;
+  policyRefreshKey: number;
+}) {
   const api = useDashboardApi();
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -455,7 +509,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
 
   // New scenario form
   const [newTitle, setNewTitle] = useState('');
-  const [newType, setNewType] = useState<string>('integration');
+  const [newType, setNewType] = useState<TestScenarioType>('integration');
   const [newGiven, setNewGiven] = useState('');
   const [newWhen, setNewWhen] = useState('');
   const [newThen, setNewThen] = useState('');
@@ -472,7 +526,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
       id,
       title: newTitle.trim(),
       linked_criteria: newCriteria.length > 0 ? newCriteria : null,
-      scenario_type: newType as TestScenario['scenario_type'],
+      scenario_type: newType,
       given: newGiven.trim(),
       when: newWhen.trim(),
       then: newThen.trim(),
@@ -487,10 +541,6 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
 
   const handleRemove = (id: string) => {
     onUpdate(scenarios.filter((s) => s.id !== id));
-  };
-
-  const handleStatusChange = (id: string, status: string) => {
-    onUpdate(scenarios.map((s) => s.id === id ? { ...s, status: status as TestScenario['status'] } : s));
   };
 
   // Coverage matrix
@@ -586,14 +636,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
               <FlaskConical size={14} className={linkedCards > 0 ? 'text-violet-500 shrink-0' : 'text-amber-500 shrink-0'} />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{scenario.title}</span>
               <ScenarioTypeBadge scenarioType={scenario.scenario_type} />
-              <select
-                value={scenario.status}
-                onChange={(e) => { e.stopPropagation(); handleStatusChange(scenario.id, e.target.value); }}
-                onClick={(e) => e.stopPropagation()}
-                className={`text-[10px] px-1.5 py-0.5 rounded border-0 cursor-pointer ${SCENARIO_STATUS_COLORS[scenario.status] || ''}`}
-              >
-                {SCENARIO_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
+              <TestScenarioStatusBadge status={scenario.status} />
               <EvidenceBadge scenario={scenario} />
               {linkedCards > 0 ? (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 font-medium">
@@ -604,7 +647,14 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
                   no tasks
                 </span>
               )}
-              <button onClick={(e) => { e.stopPropagation(); handleRemove(scenario.id); }} className="p-0.5 text-gray-400 hover:text-red-500">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRemove(scenario.id);
+                }}
+                className="p-0.5 text-gray-400 hover:text-red-500"
+                aria-label={`Delete test scenario ${scenario.title}`}
+              >
                 <Trash2 size={12} />
               </button>
             </div>
@@ -675,7 +725,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
                                   try {
                                     await api.unlinkTaskFromScenario(spec.id, scenario.id, taskId);
                                     const updated = await api.getSpec(spec.id);
-                                    onUpdate(updated.test_scenarios || []);
+                                    onSpecRefreshed(updated);
                                     toast.success('Task unlinked');
                                   } catch { toast.error('Failed to unlink'); }
                                 }}
@@ -705,7 +755,7 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
                               try {
                                 await api.linkTaskToScenario(spec.id, scenario.id, c.id);
                                 const updated = await api.getSpec(spec.id);
-                                onUpdate(updated.test_scenarios || []);
+                                onSpecRefreshed(updated);
                                 setLinkingScenarioId(null);
                                 toast.success('Task linked');
                               } catch { toast.error('Failed to link'); }
@@ -722,6 +772,15 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
                     </div>
                   )}
                 </div>
+                <TestScenarioPolicyCompliance
+                  boardId={spec.board_id}
+                  specId={spec.id}
+                  specArchived={Boolean(spec.archived)}
+                  scenario={scenario}
+                  canReadPolicyCompliance={canReadPolicyCompliance}
+                  refreshKey={policyRefreshKey}
+                  onSpecRefreshed={onSpecRefreshed}
+                />
               </div>
             )}
           </div>
@@ -733,7 +792,15 @@ function TestScenariosTab({ spec, onUpdate, onSpecUpdate }: { spec: Spec; onUpda
         <div className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
           <div className="flex gap-2">
             <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Scenario title" className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" autoFocus />
-            <select value={newType} onChange={(e) => setNewType(e.target.value)} className="px-2 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600">
+            <select
+              value={newType}
+              onChange={(e) => {
+                if (isSupportedScenarioType(e.target.value)) {
+                  setNewType(e.target.value);
+                }
+              }}
+              className="px-2 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
+            >
               {SCENARIO_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
@@ -804,7 +871,16 @@ function HistoryTab({ specId }: { specId: string }) {
     } catch { /* ignore */ } finally { setLoading(false); }
   };
 
-  return <ActivityHistoryList entries={entries} loading={loading} />;
+  return (
+    <ActivityHistoryList
+      entries={entries}
+      loading={loading}
+      versionLabel={(version) => ({
+        text: `r${version}`,
+        title: `Technical revision r${version}`,
+      })}
+    />
+  );
 }
 
 /* ============================================================
@@ -981,7 +1057,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
 
   if (loading) return <div className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Loading Q&A...</div>;
 
-  const isAnswered = (qa: SpecQAItem) => qa.answer || (qa.selected && qa.selected.length > 0);
+  const isAnswered = (qa: SpecQAItem) => Boolean(qa.answered_at);
   const unanswered = items.filter((q) => !isAnswered(q));
   const answered = items.filter((q) => isAnswered(q));
 
@@ -1225,7 +1301,15 @@ function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<type
    Knowledge Base Tab
    ============================================================ */
 
-function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) {
+function KnowledgeTab({
+  specId,
+  boardId,
+  onChanged,
+}: {
+  specId: string;
+  boardId: string;
+  onChanged?: () => void;
+}) {
   const api = useDashboardApi();
   const [refreshGeneration, setRefreshGeneration] = useState(0);
   const [adding, setAdding] = useState(false);
@@ -1251,6 +1335,7 @@ function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) 
       setAdding(false);
       setNewTitle(''); setNewDesc(''); setNewContent('');
       refreshWorkspace();
+      onChanged?.();
     } catch { toast.error('Failed to add knowledge'); }
   };
 
@@ -1259,6 +1344,7 @@ function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) 
     try {
       await api.deleteSpecKnowledge(specId, knowledgeId);
       toast.success('Deleted');
+      onChanged?.();
       return true;
     } catch {
       toast.error('Failed to delete');
@@ -1306,6 +1392,7 @@ function KnowledgeTab({ specId, boardId }: { specId: string; boardId: string }) 
 
 export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChanged }: SpecModalProps) {
   const api = useDashboardApi();
+  const modalStack = useOptionalModalStack();
   const currentBoard = useCurrentBoard();
   const perms = usePermissions(_boardId || currentBoard?.id);
   const canStructured = (
@@ -1323,11 +1410,63 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const canDeleteOR = canStructured('observability_requirement', 'revoke');
   const canLinkORTasks = canStructured('observability_requirement', 'link_task') && perms.has('card.link_to.or');
   const canEditCoverageFlags = perms.has('spec.entity.edit_coverage_flags');
+  const canReadQuality = perms.has('spec.quality.read');
+  const canReadChecklist = perms.has('spec.checklist.read');
+  const canExecuteChecklist = perms.has('spec.checklist.execute');
+  const canReadSpecValidation = perms.has('spec.validation.read');
+  const canReadPolicyCompliance = perms.has(
+    'guidelines.assessments.read',
+  );
   const [spec, setSpec] = useState<Spec | null>(null);
+  const specAnchorTexts = useMemo(() => {
+    if (!spec) return undefined;
+    const map: Record<string, string> = {};
+    const collect = (items: unknown) => {
+      if (!Array.isArray(items)) return;
+      for (const item of items) {
+        if (
+          item
+          && typeof item === 'object'
+          && typeof (item as { id?: unknown }).id === 'string'
+          && typeof (item as { text?: unknown }).text === 'string'
+        ) {
+          map[(item as { id: string }).id] = (item as { text: string }).text;
+        }
+      }
+    };
+    collect(spec.functional_requirements);
+    collect(spec.acceptance_criteria);
+    collect(spec.technical_requirements);
+    return map;
+  }, [spec]);
   const [loading, setLoading] = useState(true);
   const [movingTo, setMovingTo] = useState<SpecStatus | null>(null);
   const [nextStatuses, setNextStatuses] = useState<SpecStatus[]>([]);
+  const [
+    policyTransitionPreview,
+    setPolicyTransitionPreview,
+  ] = useState<PolicyTransitionPreviewLoadState>({
+    status: 'loading',
+    transitions: [],
+    error: null,
+  });
+  const [
+    policyTransitionRejection,
+    setPolicyTransitionRejection,
+  ] = useState<PolicyTransitionRejection | null>(null);
+  const lastTransitionSubjectKey = useRef<string | null>(null);
+  const transitionRequestId = useRef(0);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
+  const [resourceTab, setResourceTab] =
+    useState<ResourceSubTab>('mockups');
+  const [referenceTab, setReferenceTab] =
+    useState<ReferenceSubTab>('origin');
+  const [resourceGateRefreshKey, setResourceGateRefreshKey] =
+    useState(0);
+  const [
+    testScenarioPolicyRefreshKey,
+    setTestScenarioPolicyRefreshKey,
+  ] = useState(0);
   const [detailsStructuredEditor, setDetailsStructuredEditor] = useState<{
     tab: ModalTab;
     mode: 'add' | 'edit';
@@ -1341,6 +1480,9 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const [sprintSuggestions, setSprintSuggestions] = useState<any[] | null>(null);
   const [linkedSprints, setLinkedSprints] = useState<any[]>([]);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [validationHistoryRefreshKey, setValidationHistoryRefreshKey] =
+    useState(0);
+  const currentSpecStatus = spec?.status;
 
   useEscapeToClose(onEscape ?? onClose);
   useEscapeToClose(() => setShowValidateModal(false), {
@@ -1349,12 +1491,29 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     priority: 10,
   });
 
-  // The Cancellation tab only exists while the spec is cancelled.
   useEffect(() => {
-    if (activeTab === 'cancellation' && spec && spec.status !== 'cancelled') {
+    const validationAvailable =
+      canReadQuality ||
+      canReadPolicyCompliance ||
+      Boolean(
+        currentSpecStatus &&
+        isSpecValidationAvailable(currentSpecStatus) &&
+        (canReadChecklist || canReadSpecValidation),
+      );
+    if (
+      activeTab === 'validation' &&
+      !validationAvailable
+    ) {
       setActiveTab('details');
     }
-  }, [activeTab, spec?.status]);
+  }, [
+    activeTab,
+    canReadChecklist,
+    canReadPolicyCompliance,
+    canReadQuality,
+    canReadSpecValidation,
+    currentSpecStatus,
+  ]);
 
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
@@ -1372,23 +1531,93 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const [viewingIdeationId, setViewingIdeationId] = useState<string | null>(null);
   const [viewingRefinementId, setViewingRefinementId] = useState<string | null>(null);
 
+  const openIdeationReference = (id: string) => {
+    if (modalStack) {
+      modalStack.push({ type: 'ideation', id });
+    } else {
+      setViewingIdeationId(id);
+    }
+  };
+
+  const openRefinementReference = (id: string) => {
+    if (modalStack) {
+      modalStack.push({ type: 'refinement', id });
+    } else {
+      setViewingRefinementId(id);
+    }
+  };
+
   useEffect(() => { loadSpec(); }, [specId]);
 
-  const loadAllowedTransitions = async (data: Spec) => {
+  const loadAllowedTransitions = useCallback(async (data: Spec) => {
+    const requestId = transitionRequestId.current + 1;
+    transitionRequestId.current = requestId;
+    lastTransitionSubjectKey.current = [
+      data.id,
+      data.version,
+      data.status,
+    ].join(':');
+    setPolicyTransitionRejection(null);
+    setNextStatuses([]);
+    setPolicyTransitionPreview({
+      status: 'loading',
+      transitions: [],
+      error: null,
+    });
     try {
       const response = await api.getAllowedTransitions(data.board_id, {
         entity_type: 'spec',
         entity_id: data.id,
       });
+      if (transitionRequestId.current !== requestId) {
+        return;
+      }
+      const transitions = requirePolicyTransitionEnvelope(response, {
+        boardId: data.board_id,
+        entityType: 'spec',
+        subjectId: data.id,
+        currentStatus: data.status,
+      });
+      setPolicyTransitionPreview({
+        status: 'ready',
+        transitions,
+        error: null,
+      });
       setNextStatuses(
-        response.allowed_transitions
+        transitions
+          .filter(isAllowedTransitionActionable)
           .map((item) => item.to_status)
           .filter((status): status is SpecStatus => SPEC_STATUSES.includes(status as SpecStatus))
       );
-    } catch {
+    } catch (caught) {
+      if (transitionRequestId.current !== requestId) {
+        return;
+      }
       setNextStatuses([]);
+      setPolicyTransitionPreview({
+        status: 'error',
+        transitions: [],
+        error: caught instanceof Error
+          ? caught.message
+          : 'The server transition contract could not be loaded.',
+      });
     }
-  };
+  }, [api]);
+
+  useEffect(() => {
+    if (!spec) {
+      return;
+    }
+    const subjectKey = [
+      spec.id,
+      spec.version,
+      spec.status,
+    ].join(':');
+    if (lastTransitionSubjectKey.current === subjectKey) {
+      return;
+    }
+    void loadAllowedTransitions(spec);
+  }, [loadAllowedTransitions, spec]);
 
   const loadSpec = async () => {
     setLoading(true);
@@ -1653,7 +1882,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   };
 
   const boardSettings = (currentBoard?.settings || {}) as BoardSettings;
-  const requireSpecValidation = Boolean(boardSettings.require_spec_validation);
+  const requireSpecValidation = boardSettings.require_spec_validation ?? true;
   const [showSubmitValidationModal, setShowSubmitValidationModal] = useState(false);
 
   const handleMoveSpec = async (status: SpecStatus, cancellationReason?: string) => {
@@ -1695,12 +1924,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
         }
       } catch (err: any) {
         setValidateResult({ success: false, error: err?.message || 'Validation failed' });
+        await loadAllowedTransitions(spec);
       } finally {
         setValidating(false);
       }
       return;
     }
     setMovingTo(status);
+    setPolicyTransitionRejection(null);
     try {
       const updated = await api.moveSpec(specId, {
         status,
@@ -1710,7 +1941,22 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
       await loadAllowedTransitions(updated);
       onChanged();
       toast.success(`Spec moved to ${SPEC_STATUS_LABELS[status]}`);
-    } catch (err) { toast.error(getErrorMessage(err)); } finally { setMovingTo(null); }
+    } catch (err) {
+      const rejection = readPolicyTransitionRejection(err, {
+        boardId: spec.board_id,
+        entityType: 'spec',
+        subjectId: spec.id,
+        currentStatus: spec.status,
+        toStatus: status,
+      });
+      toast.error(
+        rejection
+          ? policyTransitionRejectionMessage(rejection)
+          : getErrorMessage(err),
+      );
+      await loadAllowedTransitions(spec);
+      setPolicyTransitionRejection(rejection);
+    } finally { setMovingTo(null); }
   };
 
   const handleDelete = async () => {
@@ -1744,12 +1990,16 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   };
   const clearDetailsStructuredEditor = () => setDetailsStructuredEditor(null);
 
-  const unansweredQA = spec.qa_items?.filter((q) => !q.answer).length || 0;
+  const unansweredQA = spec.qa_items?.filter((q) => !q.answered_at).length || 0;
+  const showValidationTab =
+    canReadQuality ||
+    canReadPolicyCompliance ||
+    (
+      isSpecValidationAvailable(spec.status) &&
+      (canReadChecklist || canReadSpecValidation)
+    );
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
-    ...(spec.status === 'cancelled'
-      ? [{ id: 'cancellation' as ModalTab, label: 'Cancellation', icon: <Ban size={14} /> }]
-      : []),
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
@@ -1757,15 +2007,15 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     { id: 'ors', label: 'ORs', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0, permission: 'spec.observability_requirements.read' },
     { id: 'trs', label: 'TRs', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
     { id: 'decisions', label: 'Decisions', icon: <GitBranch size={14} />, count: spec.decisions?.length || 0 },
-    { id: 'mockups', label: 'Mockups', icon: <Monitor size={14} />, count: spec.screen_mockups?.length || 0 },
-    { id: 'architecture', label: 'Architecture', icon: <Network size={14} />, count: spec.architecture_designs?.length || 0 },
+    { id: 'resources', label: 'Resources', icon: <BookOpen size={14} /> },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: spec.qa_items?.length || 0, highlight: unansweredQA > 0 },
-    { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={14} />, count: spec.knowledge_bases?.length || 0 },
-    { id: 'cards', label: 'Cards', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
+    { id: 'references', label: 'References', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
     { id: 'sprints', label: 'Sprints', icon: <Layers size={14} />, count: linkedSprints.length },
-    { id: 'validation', label: 'Validation', icon: <ShieldCheck size={14} /> },
     { id: 'kg', label: 'KG Graph', icon: <Network size={14} /> },
-    { id: 'history', label: 'Activity', icon: <History size={14} /> },
+    ...(showValidationTab
+      ? [{ id: 'validation' as ModalTab, label: 'Validation', icon: <ShieldCheck size={14} /> }]
+      : []),
+    { id: 'activity', label: 'Activity', icon: <History size={14} /> },
   ];
   const tabs = allTabs.filter((tab) => !tab.permission || perms.has(tab.permission));
 
@@ -1780,7 +2030,11 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               {SPEC_STATUS_LABELS[spec.status]}
             </span>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{spec.title}</h2>
-            <span className="text-xs text-gray-400 shrink-0">v{spec.version}</span>
+            <SpecEditionLabel
+              edition={spec.edition}
+              technicalRevision={spec.version}
+              className="text-xs text-gray-400 shrink-0"
+            />
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -1861,7 +2115,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
             <span className="text-gray-400">From:</span>
             {parentIdeation && (
               <button
-                onClick={() => setViewingIdeationId(parentIdeation.id)}
+                onClick={() => openIdeationReference(parentIdeation.id)}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300 hover:ring-2 hover:ring-amber-300 dark:hover:ring-amber-600 transition-all cursor-pointer"
               >
                 <Lightbulb size={11} />
@@ -1872,7 +2126,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
             {parentIdeation && parentRefinement && <ChevronRight size={12} className="text-gray-300" />}
             {parentRefinement && (
               <button
-                onClick={() => setViewingRefinementId(parentRefinement.id)}
+                onClick={() => openRefinementReference(parentRefinement.id)}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300 hover:ring-2 hover:ring-blue-300 dark:hover:ring-blue-600 transition-all cursor-pointer"
               >
                 <Layers size={11} />
@@ -1884,44 +2138,42 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
         )}
 
         {/* Tabs */}
-        <div
-          className="flex items-center gap-1 px-6 pt-3 border-b border-gray-200 dark:border-gray-700 overflow-x-auto shrink-0 scrollbar-hide"
-          data-tour-id="specs.resources.tabs"
-        >
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap shrink-0 ${
-                activeTab === tab.id
-                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-              }`}
-            >
-              {tab.icon}
-              {tab.label}
-              {tab.count !== undefined && tab.count > 0 && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                  tab.highlight
-                    ? 'bg-amber-200 text-amber-700 dark:bg-amber-800 dark:text-amber-300'
-                    : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'
-                }`}>
-                  {tab.count}
-                </span>
-              )}
-            </button>
-          ))}
+        <div data-tour-id="specs.resources.tabs" className="shrink-0">
+          <AccessibleTabList
+            idBase={`spec-${specId}`}
+            ariaLabel="Spec sections"
+            items={tabs.map((tab) => ({
+              id: tab.id,
+              label: tab.label,
+              icon: tab.icon,
+              count: tab.count,
+              attention: tab.highlight,
+            }))}
+            value={activeTab}
+            onValueChange={setActiveTab}
+            className="px-6 pt-3 scrollbar-hide"
+          />
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
+          <AccessibleTabPanel
+            idBase={`spec-${specId}`}
+            tabId={activeTab}
+            value={activeTab}
+            className="outline-none"
+          >
           {activeTab === 'details' && (
             <div className="space-y-5">
-              <ResourceGateSummary
-                boardId={spec.board_id || _boardId}
-                entityType="spec"
-                entityId={specId}
-              />
+              {spec.status === 'cancelled' && (
+                <CancellationDetails
+                  id="cancellation-panel"
+                  entityLabel="spec"
+                  reason={spec.cancellation_reason}
+                  cancelledBy={spec.cancelled_by}
+                  cancelledAt={spec.cancelled_at}
+                />
+              )}
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Description</h4>
                 <EditableField
@@ -2161,14 +2413,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               {/* Validation Gate Override */}
               <ValidationGateOverride
                 title="Validation Gate"
-                requireValue={(spec as any).require_task_validation ?? null}
-                minConfidence={(spec as any).validation_min_confidence ?? null}
-                minCompleteness={(spec as any).validation_min_completeness ?? null}
-                maxDrift={(spec as any).validation_max_drift ?? null}
+                requireValue={spec.require_task_validation ?? null}
+                minConfidence={spec.validation_min_confidence ?? null}
+                minCompleteness={spec.validation_min_completeness ?? null}
+                maxDrift={spec.validation_max_drift ?? null}
                 parentLabel="Board default"
                 onUpdate={async (patch) => {
                   try {
-                    const updated = await api.updateSpec(specId, patch as any);
+                    const updated = await api.updateSpec(specId, patch);
                     setSpec(updated);
                   } catch { toast.error('Failed to update validation gate'); }
                 }}
@@ -2190,16 +2442,30 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
           {activeTab === 'tests' && spec && (
             <TestScenariosTab
               spec={spec}
+              canReadPolicyCompliance={canReadPolicyCompliance}
+              policyRefreshKey={testScenarioPolicyRefreshKey}
               onUpdate={async (scenarios) => {
                 try {
-                  const updated = await api.updateSpec(specId, { test_scenarios: scenarios });
+                  const updated = await persistTestScenariosWithWriteGuard(
+                    api.updateSpec,
+                    specId,
+                    spec.test_scenarios || [],
+                    scenarios,
+                  );
                   setSpec(updated);
+                  setTestScenarioPolicyRefreshKey((value) => value + 1);
+                  onChanged();
                 } catch (err) {
                   // Surface the backend validation message (e.g. the strict
                   // scenario_type contract) instead of a generic string so a
                   // stale client/agent can correct the request (spec ac16b3c9).
                   toast.error(err instanceof Error && err.message ? err.message : 'Failed to update test scenarios');
                 }
+              }}
+              onSpecRefreshed={(updated) => {
+                setSpec(updated);
+                setTestScenarioPolicyRefreshKey((value) => value + 1);
+                onChanged();
               }}
               onSpecUpdate={async (data) => {
                 try {
@@ -2382,77 +2648,262 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               }}
             />
           )}
-          {activeTab === 'mockups' && spec && (
-            <MockupsTab
-              screenMockups={spec.screen_mockups}
-              boardId={spec.board_id}
-              entityType="spec"
-              entityId={specId}
-              expanded={expanded}
-              onUpdate={async (mockups) => {
-                const updated = await api.updateSpec(specId, { screen_mockups: mockups });
-                setSpec(updated);
-              }}
-            />
-          )}
-          {activeTab === 'architecture' && spec && (
-            <ArchitectureTab
-              parentType="spec"
-              parentId={specId}
-              boardId={spec.board_id}
-              entityType="spec"
-              entityId={specId}
-              expanded={expanded}
-              locked={['validated', 'in_progress', 'done'].includes(spec.status)}
-              screenMockups={spec.screen_mockups || []}
-              onChanged={(items) => setSpec((current) => current ? { ...current, architecture_designs: items } : current)}
-            />
+          {activeTab === 'resources' && spec && (
+            <div className="space-y-4" data-testid="spec-resources-panel">
+              <ResourceGateDisclosure
+                boardId={spec.board_id || _boardId}
+                entityType="spec"
+                entityId={specId}
+                refreshKey={resourceGateRefreshKey}
+              />
+              <AccessibleTabList
+                idBase={`spec-${specId}-resources`}
+                ariaLabel="Spec resources"
+                items={[
+                  {
+                    id: 'mockups',
+                    label: 'Mockups',
+                    icon: <Monitor size={13} />,
+                    count: spec.screen_mockups?.length || 0,
+                  },
+                  {
+                    id: 'knowledge',
+                    label: 'Knowledge',
+                    icon: <BookOpen size={13} />,
+                    count: spec.knowledge_bases?.length || 0,
+                  },
+                  {
+                    id: 'architecture',
+                    label: 'Architecture',
+                    icon: <Network size={13} />,
+                    count: spec.architecture_designs?.length || 0,
+                  },
+                ] satisfies {
+                  id: ResourceSubTab;
+                  label: string;
+                  icon: React.ReactNode;
+                  count: number;
+                }[]}
+                value={resourceTab}
+                onValueChange={setResourceTab}
+                variant="secondary"
+                className="max-w-full"
+              />
+
+              <AccessibleTabPanel
+                idBase={`spec-${specId}-resources`}
+                tabId="mockups"
+                value={resourceTab}
+                mount="lazy-keep"
+              >
+                  <MockupsTab
+                    screenMockups={spec.screen_mockups}
+                    boardId={spec.board_id}
+                    entityType="spec"
+                    entityId={specId}
+                    expanded={expanded}
+                    onUpdate={async (mockups) => {
+                      const updated = await api.updateSpec(specId, { screen_mockups: mockups });
+                      setSpec(updated);
+                      setResourceGateRefreshKey((value) => value + 1);
+                    }}
+                  />
+              </AccessibleTabPanel>
+              <AccessibleTabPanel
+                idBase={`spec-${specId}-resources`}
+                tabId="knowledge"
+                value={resourceTab}
+                mount="lazy-keep"
+              >
+                  <KnowledgeTab
+                    specId={specId}
+                    boardId={spec.board_id}
+                    onChanged={() => {
+                      setResourceGateRefreshKey((value) => value + 1);
+                      void loadSpec();
+                    }}
+                  />
+              </AccessibleTabPanel>
+              <AccessibleTabPanel
+                idBase={`spec-${specId}-resources`}
+                tabId="architecture"
+                value={resourceTab}
+                mount="lazy-keep"
+              >
+                  <ArchitectureTab
+                    parentType="spec"
+                    parentId={specId}
+                    boardId={spec.board_id}
+                    entityType="spec"
+                    entityId={specId}
+                    expanded={expanded}
+                    locked={['validated', 'in_progress', 'done'].includes(spec.status)}
+                    screenMockups={spec.screen_mockups || []}
+                    onChanged={(items) => {
+                      setSpec((current) => current
+                        ? { ...current, architecture_designs: items }
+                        : current);
+                      setResourceGateRefreshKey((value) => value + 1);
+                      void loadSpec();
+                    }}
+                  />
+              </AccessibleTabPanel>
+            </div>
           )}
           {activeTab === 'validation' && spec && (
-            <div className="p-4 space-y-4">
-              <SpecValidationHistoryPanel specId={specId} />
-            </div>
+            <SpecValidationPanel
+              anchorTexts={specAnchorTexts}
+              boardId={spec.board_id}
+              specId={specId}
+              specVersion={spec.version}
+              specStatus={spec.status}
+              canReadChecklist={canReadChecklist}
+              canExecuteChecklist={canExecuteChecklist}
+              canReadValidation={canReadSpecValidation}
+              canReadQuality={canReadQuality}
+              canReadPolicyCompliance={canReadPolicyCompliance}
+              policyTransitionPreview={policyTransitionPreview}
+              policyTransitionRejection={policyTransitionRejection}
+              specArchived={spec.archived ?? false}
+              validationHistoryRefreshKey={
+                validationHistoryRefreshKey
+              }
+              onAssessmentRecorded={onChanged}
+              onPolicyEvaluated={() => {
+                void loadAllowedTransitions(spec);
+              }}
+              onOpenRequirementLintHelp={() =>
+                openContextualHelp('requirement-lint')}
+            />
           )}
           {activeTab === 'kg' && spec && (
             <KGValidationTab boardId={spec.board_id} specId={specId} />
           )}
-          {activeTab === 'history' && <HistoryTab specId={specId} />}
+          {activeTab === 'activity' && <HistoryTab specId={specId} />}
           {activeTab === 'qa' && <QATab specId={specId} mentionables={mentionables} />}
-          {activeTab === 'knowledge' && <KnowledgeTab specId={specId} boardId={spec.board_id} />}
-
-          {activeTab === 'cancellation' && spec.status === 'cancelled' && (
-            <CancellationDetails
-              reason={spec.cancellation_reason}
-              cancelledBy={spec.cancelled_by}
-              cancelledAt={spec.cancelled_at}
-            />
-          )}
 
           {activeTab === 'sprints' && (
             <SpecSprintsTab sprints={linkedSprints} api={api} />
           )}
 
+          {activeTab === 'references' && (
+            <div className="space-y-4" data-testid="spec-references-panel">
+              <AccessibleTabList
+                idBase={`spec-${specId}-references`}
+                ariaLabel="Spec references"
+                items={[
+                  { id: 'origin', label: 'Origin' },
+                  {
+                    id: 'cards',
+                    label: 'Derived cards',
+                    count: spec.cards?.length || 0,
+                  },
+                ] satisfies {
+                  id: ReferenceSubTab;
+                  label: string;
+                  count?: number;
+                }[]}
+                value={referenceTab}
+                onValueChange={setReferenceTab}
+                variant="secondary"
+                className="max-w-full"
+              />
 
-          {activeTab === 'cards' && (
-            <div className="space-y-2">
-              {(!spec.cards || spec.cards.length === 0) ? (
-                <div className="text-center py-6">
-                  <Link2 size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-                  <p className="text-sm text-gray-500 dark:text-gray-400">No linked cards</p>
-                  <p className="text-xs text-gray-400 mt-1">Cards are created manually and linked to this spec</p>
-                </div>
-              ) : (
-                spec.cards.map((card) => (
-                  <div key={card.id} className="flex items-center justify-between py-1.5 px-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                    <span className="text-sm text-gray-700 dark:text-gray-300 truncate">{card.title}</span>
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${CARD_STATUS_COLORS[card.status] || ''}`}>
-                      {card.status.replace('_', ' ')}
-                    </span>
-                  </div>
-                ))
-              )}
+              <AccessibleTabPanel
+                idBase={`spec-${specId}-references`}
+                tabId="origin"
+                value={referenceTab}
+                className="space-y-3"
+              >
+                  {!parentIdeation && !parentRefinement ? (
+                    <div className="rounded-xl border border-dashed border-gray-300 px-4 py-8 text-center dark:border-gray-700">
+                      <GitBranch size={28} className="mx-auto mb-2 text-gray-300 dark:text-gray-600" />
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        No origin is registered for this spec.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {parentIdeation && (
+                        <button
+                          type="button"
+                          onClick={() => openIdeationReference(parentIdeation.id)}
+                          className="flex w-full items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-3 text-left hover:bg-amber-100/70 dark:border-amber-900/60 dark:bg-amber-950/20 dark:hover:bg-amber-950/35"
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <Lightbulb size={15} className="shrink-0 text-amber-600" />
+                            <span className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
+                              {parentIdeation.title}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-xs text-amber-600 dark:text-amber-300">
+                            Ideation · v{parentIdeation.version}
+                          </span>
+                        </button>
+                      )}
+                      {parentRefinement && (
+                        <button
+                          type="button"
+                          onClick={() => openRefinementReference(parentRefinement.id)}
+                          className="flex w-full items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50/60 px-3 py-3 text-left hover:bg-blue-100/70 dark:border-blue-900/60 dark:bg-blue-950/20 dark:hover:bg-blue-950/35"
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <Layers size={15} className="shrink-0 text-blue-600" />
+                            <span className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
+                              {parentRefinement.title}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-xs text-blue-600 dark:text-blue-300">
+                            Refinement · v{parentRefinement.version}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+              </AccessibleTabPanel>
+
+              <AccessibleTabPanel
+                idBase={`spec-${specId}-references`}
+                tabId="cards"
+                value={referenceTab}
+                className="space-y-2"
+              >
+                  {(!spec.cards || spec.cards.length === 0) ? (
+                    <div className="text-center py-6">
+                      <Link2 size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
+                      <p className="text-sm text-gray-500 dark:text-gray-400">No linked cards</p>
+                      <p className="text-xs text-gray-400 mt-1">Cards are created manually and linked to this spec</p>
+                    </div>
+                  ) : (
+                    spec.cards.map((card) => {
+                      const content = (
+                        <>
+                          <span className="text-sm text-gray-700 dark:text-gray-300 truncate">{card.title}</span>
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${CARD_STATUS_COLORS[card.status] || ''}`}>
+                            {card.status.replace('_', ' ')}
+                          </span>
+                        </>
+                      );
+                      return modalStack ? (
+                        <button
+                          key={card.id}
+                          type="button"
+                          onClick={() => modalStack.push({ type: 'card', id: card.id })}
+                          className="flex w-full items-center justify-between gap-3 rounded bg-gray-50 px-2 py-1.5 text-left hover:bg-blue-50 dark:bg-gray-700/50 dark:hover:bg-blue-950/20"
+                        >
+                          {content}
+                        </button>
+                      ) : (
+                        <div key={card.id} className="flex items-center justify-between gap-3 rounded bg-gray-50 px-2 py-1.5 dark:bg-gray-700/50">
+                          {content}
+                        </div>
+                      );
+                    })
+                  )}
+              </AccessibleTabPanel>
             </div>
           )}
+          </AccessibleTabPanel>
         </div>
 
         {/* Footer */}
@@ -2586,11 +3037,16 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
         <SubmitSpecValidationModal
           specId={spec.id}
           specTitle={spec.title}
+          boardId={spec.board_id}
+          specVersion={spec.version}
           settings={boardSettings}
+          canReadChecklist={canReadChecklist}
+          canExecuteChecklist={canExecuteChecklist}
           onClose={() => setShowSubmitValidationModal(false)}
           onSubmitted={async () => {
             setShowSubmitValidationModal(false);
             await loadSpec();
+            setValidationHistoryRefreshKey((current) => current + 1);
             onChanged();
           }}
         />

@@ -135,10 +135,10 @@ function ValidationRecord({ validation, expanded, onToggleExpand }: ValidationRe
           {validation.recommendation}
         </span>
       </div>
-      <div className="grid grid-cols-3 gap-2 mb-2">
-        <ScoreCell label="Completeness" value={validation.completeness} threshold={thresholds?.min_spec_completeness} direction="min" />
-        <ScoreCell label="Assertiveness" value={validation.assertiveness} threshold={thresholds?.min_spec_assertiveness} direction="min" />
-        <ScoreCell label="Ambiguity" value={validation.ambiguity} threshold={thresholds?.max_spec_ambiguity} direction="max" />
+      <div className="mb-3 grid grid-cols-1 gap-5 sm:grid-cols-3">
+        <ScoreCell dimension="completeness" label="Completeness" value={validation.completeness} threshold={thresholds?.min_spec_completeness} direction="min" />
+        <ScoreCell dimension="assertiveness" label="Assertiveness" value={validation.assertiveness} threshold={thresholds?.min_spec_assertiveness} direction="min" />
+        <ScoreCell dimension="ambiguity" label="Ambiguity" value={validation.ambiguity} threshold={thresholds?.max_spec_ambiguity} direction="max" />
       </div>
       {validation.threshold_violations.length > 0 && (
         <div className="bg-red-100 dark:bg-red-900/30 rounded p-1.5 mb-2">
@@ -170,36 +170,60 @@ function ValidationRecord({ validation, expanded, onToggleExpand }: ValidationRe
 }
 
 interface ScoreCellProps {
+  dimension: 'completeness' | 'assertiveness' | 'ambiguity';
   label: string;
   value: number;
   threshold?: number | null;
   direction: 'min' | 'max';
 }
 
-function ScoreCell({ label, value, threshold, direction }: ScoreCellProps) {
+function ScoreCell({
+  dimension,
+  label,
+  value,
+  threshold,
+  direction,
+}: ScoreCellProps) {
   const passes = threshold == null
     ? null
     : direction === 'min'
     ? value >= threshold
     : value <= threshold;
-  const color = passes == null
-    ? 'text-gray-700 dark:text-gray-200'
+  const ringTone = passes == null
+    ? 'border-blue-400 text-blue-700 dark:border-blue-500 dark:text-blue-300'
     : passes
-    ? 'text-green-600 dark:text-green-400'
-    : 'text-red-600 dark:text-red-400';
+    ? 'border-emerald-400 text-emerald-700 dark:border-emerald-500 dark:text-emerald-300'
+    : 'border-red-400 text-red-700 dark:border-red-500 dark:text-red-300';
+  const thresholdLabel = threshold == null
+    ? 'No board threshold'
+    : `${direction === 'min' ? 'Minimum' : 'Maximum'} ${threshold}`;
+  const resultLabel = passes == null
+    ? ''
+    : passes
+      ? ', threshold met'
+      : ', threshold not met';
+
   return (
-    <div className="bg-white dark:bg-gray-800 rounded p-2 text-center">
-      <div className="text-[9px] text-gray-500 uppercase">{label}</div>
-      <div className={`text-sm font-bold ${color}`}>
-        {value}
-        {threshold != null && (
-          <span className="text-[9px] text-gray-400 ml-1">
-            {direction === 'min' ? '/' : 'max '}{threshold}
-          </span>
-        )}
-        {passes === true && <Check size={10} className="inline ml-1" />}
-        {passes === false && <X size={10} className="inline ml-1" />}
+    <div className="flex min-w-0 flex-col items-center text-center">
+      <div
+        role="img"
+        aria-label={`${label} score ${value} out of 100, ${thresholdLabel}${resultLabel}`}
+        data-testid={`spec-validation-score-${dimension}`}
+        className={`flex h-20 w-20 items-center justify-center rounded-full border-4 ${ringTone}`}
+      >
+        <span aria-hidden="true" className="text-2xl font-bold leading-none">
+          {value}
+          <span className="ml-0.5 text-sm font-semibold text-gray-400">/100</span>
+        </span>
       </div>
+      <p className="mt-2 text-xs font-semibold text-gray-700 dark:text-gray-200">
+        {label}
+      </p>
+      <p className="mt-1 flex items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400">
+        {thresholdLabel}
+        {passes === true && <Check size={11} className="text-emerald-600 dark:text-emerald-400" aria-hidden="true" />}
+        {passes === false && <X size={11} className="text-red-600 dark:text-red-400" aria-hidden="true" />}
+      </p>
     </div>
   );
 }

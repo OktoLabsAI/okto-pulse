@@ -12,6 +12,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     DefaultBoardConfigurationAudit,
     DesignSystem,
     Guideline,
+    GuidelineHeadRow,
+    GuidelineRetirementRow,
+    GuidelineRevisionRow,
 )
 from okto_pulse.core.ports.default_board_configuration import (
     DefaultBoardTemplateAudit,
@@ -32,6 +35,7 @@ def _record(row: Any) -> DefaultBoardTemplateRecord:
         guideline_default_refs=copy.deepcopy(row.guideline_default_refs),
         design_system_default_ref=copy.deepcopy(row.design_system_default_ref),
         created_by=str(row.created_by),
+        spec_checklist_mode=row.spec_checklist_mode,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -46,9 +50,61 @@ def _apply(row: Any, record: DefaultBoardTemplateRecord) -> None:
         "settings_payload",
         "guideline_default_refs",
         "design_system_default_ref",
+        "spec_checklist_mode",
         "created_by",
     ):
         setattr(row, field_name, copy.deepcopy(getattr(record, field_name)))
+
+
+def _guideline_fact(
+    guideline: Guideline,
+    head: GuidelineHeadRow | None,
+    revision: GuidelineRevisionRow | None,
+    retirement: GuidelineRetirementRow | None,
+) -> DefaultGuidelineFact:
+    """Project the current immutable pin without rewriting historical templates."""
+
+    if head is None or revision is None:
+        raise RuntimeError(
+            "guideline default projection requires immutable revision authority"
+        )
+    return DefaultGuidelineFact(
+        id=str(guideline.id),
+        title=str(revision.title),
+        scope=str(guideline.scope),
+        board_id=str(guideline.board_id) if guideline.board_id else None,
+        owner_id=str(guideline.owner_id) if guideline.owner_id else None,
+        version=int(head.revision_number),
+        revision_id=str(head.revision_id),
+        semantic_version=str(head.semantic_version),
+        revision_digest=str(revision.content_digest),
+        revision_number=int(head.revision_number),
+        retired=retirement is not None,
+    )
+
+
+def _guideline_fact_statement() -> Any:
+    return (
+        select(
+            Guideline,
+            GuidelineHeadRow,
+            GuidelineRevisionRow,
+            GuidelineRetirementRow,
+        )
+        .outerjoin(
+            GuidelineHeadRow,
+            GuidelineHeadRow.guideline_id == Guideline.id,
+        )
+        .outerjoin(
+            GuidelineRevisionRow,
+            (GuidelineRevisionRow.guideline_id == Guideline.id)
+            & (GuidelineRevisionRow.revision_id == GuidelineHeadRow.revision_id),
+        )
+        .outerjoin(
+            GuidelineRetirementRow,
+            GuidelineRetirementRow.guideline_id == Guideline.id,
+        )
+    )
 
 
 class CommunitySqlAlchemyDefaultBoardConfigurationStore:
@@ -56,15 +112,19 @@ class CommunitySqlAlchemyDefaultBoardConfigurationStore:
         self, context: Any, *, scope: str
     ) -> DefaultBoardTemplateRecord | None:
         row = (
-            await context.execute(
-                select(DefaultBoardConfiguration)
-                .where(
-                    DefaultBoardConfiguration.scope == scope,
-                    DefaultBoardConfiguration.is_active.is_(True),
+            (
+                await context.execute(
+                    select(DefaultBoardConfiguration)
+                    .where(
+                        DefaultBoardConfiguration.scope == scope,
+                        DefaultBoardConfiguration.is_active.is_(True),
+                    )
+                    .order_by(DefaultBoardConfiguration.version.desc())
                 )
-                .order_by(DefaultBoardConfiguration.version.desc())
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         return _record(row) if row is not None else None
 
     async def get_template(
@@ -106,65 +166,116 @@ class CommunitySqlAlchemyDefaultBoardConfigurationStore:
         self, context: Any, *, scope: str, exclude_template_id: str
     ) -> tuple[DefaultBoardTemplateRecord, ...]:
         rows = (
-            await context.execute(
-                select(DefaultBoardConfiguration).where(
-                    DefaultBoardConfiguration.scope == scope,
-                    DefaultBoardConfiguration.is_active.is_(True),
-                    DefaultBoardConfiguration.id != exclude_template_id,
+            (
+                await context.execute(
+                    select(DefaultBoardConfiguration).where(
+                        DefaultBoardConfiguration.scope == scope,
+                        DefaultBoardConfiguration.is_active.is_(True),
+                        DefaultBoardConfiguration.id != exclude_template_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return tuple(_record(row) for row in rows)
 
     async def list_templates(
         self, context: Any, *, scope: str
     ) -> tuple[DefaultBoardTemplateRecord, ...]:
         rows = (
-            await context.execute(
-                select(DefaultBoardConfiguration)
-                .where(DefaultBoardConfiguration.scope == scope)
-                .order_by(DefaultBoardConfiguration.version.desc())
+            (
+                await context.execute(
+                    select(DefaultBoardConfiguration)
+                    .where(DefaultBoardConfiguration.scope == scope)
+                    .order_by(DefaultBoardConfiguration.version.desc())
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return tuple(_record(row) for row in rows)
 
     async def get_guideline(
         self, context: Any, *, guideline_id: str
     ) -> DefaultGuidelineFact | None:
-        row = await context.get(Guideline, guideline_id)
+        row = (
+            await context.execute(
+                _guideline_fact_statement().where(Guideline.id == guideline_id)
+            )
+        ).one_or_none()
         if row is None:
             return None
+        return _guideline_fact(*row)
+
+    async def get_guideline_revision(
+        self,
+        context: Any,
+        *,
+        guideline_id: str,
+        revision_id: str | None = None,
+        revision_number: int | None = None,
+    ) -> DefaultGuidelineFact | None:
+        if (revision_id is None) == (revision_number is None):
+            raise ValueError("exactly one guideline revision selector is required")
+        statement = (
+            select(
+                Guideline,
+                GuidelineRevisionRow,
+                GuidelineRetirementRow,
+            )
+            .join(
+                GuidelineRevisionRow,
+                GuidelineRevisionRow.guideline_id == Guideline.id,
+            )
+            .outerjoin(
+                GuidelineRetirementRow,
+                GuidelineRetirementRow.guideline_id == Guideline.id,
+            )
+            .where(Guideline.id == guideline_id)
+        )
+        if revision_id is not None:
+            statement = statement.where(GuidelineRevisionRow.revision_id == revision_id)
+        else:
+            statement = statement.where(
+                GuidelineRevisionRow.revision_number == revision_number
+            )
+        row = (await context.execute(statement)).one_or_none()
+        if row is None:
+            return None
+        guideline, revision, retirement = row
         return DefaultGuidelineFact(
-            id=str(row.id),
-            title=str(row.title),
-            scope=str(row.scope),
-            board_id=str(row.board_id) if row.board_id else None,
-            owner_id=str(row.owner_id) if row.owner_id else None,
-            version=row.version,
+            id=str(guideline.id),
+            title=str(revision.title),
+            scope=str(guideline.scope),
+            board_id=(str(guideline.board_id) if guideline.board_id else None),
+            owner_id=(str(guideline.owner_id) if guideline.owner_id else None),
+            version=int(revision.revision_number),
+            revision_id=str(revision.revision_id),
+            semantic_version=str(revision.semantic_version),
+            revision_digest=str(revision.content_digest),
+            revision_number=int(revision.revision_number),
+            retired=retirement is not None,
         )
 
     async def list_global_guidelines(
         self, context: Any, *, owner_id: str | None
     ) -> tuple[DefaultGuidelineFact, ...]:
-        statement = select(Guideline).where(
-            Guideline.scope == "global", Guideline.board_id.is_(None)
+        statement = _guideline_fact_statement().where(
+            Guideline.scope == "global",
+            Guideline.board_id.is_(None),
         )
         if owner_id is not None:
             statement = statement.where(Guideline.owner_id == owner_id)
         rows = (
-            await context.execute(statement.order_by(Guideline.title))
-        ).scalars().all()
-        return tuple(
-            DefaultGuidelineFact(
-                id=str(row.id),
-                title=str(row.title),
-                scope=str(row.scope),
-                board_id=None,
-                owner_id=str(row.owner_id) if row.owner_id else None,
-                version=row.version,
+            await context.execute(
+                statement.order_by(
+                    GuidelineRevisionRow.title,
+                    Guideline.id,
+                )
             )
-            for row in rows
-        )
+        ).all()
+        return tuple(_guideline_fact(*row) for row in rows)
 
     async def get_design_system(
         self, context: Any, *, design_system_id: str
@@ -179,9 +290,7 @@ class CommunitySqlAlchemyDefaultBoardConfigurationStore:
             status=str(row.status),
         )
 
-    def add_audit(
-        self, context: Any, audit: DefaultBoardTemplateAudit
-    ) -> None:
+    def add_audit(self, context: Any, audit: DefaultBoardTemplateAudit) -> None:
         context.add(
             DefaultBoardConfigurationAudit(
                 template_id=audit.template_id,

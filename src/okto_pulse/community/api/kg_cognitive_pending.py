@@ -48,9 +48,14 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.core.application.use_cases.authorize_operation import (
+    AuthorizeOperationCommand,
+    AuthorizeOperationUseCase,
+)
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.core.application.use_cases.board_access import load_accessible_board
 from okto_pulse.core.kg.rebuild_audit import (
     CognitiveConsolidationItemStore,
@@ -64,6 +69,7 @@ from okto_pulse.core.kg.rebuild_audit import (
     project_item_for_api,
     require_rebuild_audit_artifact_store,
 )
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 
@@ -123,7 +129,7 @@ async def get_cognitive_pending(
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=PAGE_OFFSET_MAX),
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> CognitivePendingResponse:
     """List cognitive pending items for the KG Health UI panel.
@@ -132,9 +138,21 @@ async def get_cognitive_pending(
     storage and NEVER exposes raw artifact bodies or free-text reasons.
     """
 
-    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
+    actor = RESTAdapterContract.actor_from_principal(principal, board_id=board_id)
     if await load_accessible_board(uow, board_id, actor) is None:
         raise HTTPException(status_code=404, detail="Board not found")
+    try:
+        await AuthorizeOperationUseCase().execute(
+            AuthorizeOperationCommand(
+                "kg.operations.cognitive.read",
+                legacy_operation="kg.admin.settings_read",
+                board_id=board_id,
+            ),
+            actor=actor,
+            uow=uow,
+        )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
     status_present = status is not None
 

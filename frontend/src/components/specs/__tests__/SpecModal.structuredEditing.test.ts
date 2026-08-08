@@ -46,7 +46,10 @@ describe('SpecModal structured entity editing', () => {
   });
 
   it('drives status actions from allowed_transitions instead of a local status flow map', () => {
-    const loadBlock = sourceBlock('const loadAllowedTransitions = async', 'const loadSpec = async');
+    const loadBlock = sourceBlock(
+      'const loadAllowedTransitions = useCallback',
+      'const loadSpec = async',
+    );
     const statusFlowBlock = sourceBlock('{/* Status flow */}', '{/* Provenance breadcrumb */}');
 
     expect(loadBlock).toContain('api.getAllowedTransitions');

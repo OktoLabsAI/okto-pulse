@@ -9,6 +9,9 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
     CommunitySqlAlchemyApplicationPersistence,
 )
 from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     ApplicationQuery,
@@ -23,6 +26,7 @@ async def test_application_persistence_round_trip_includes_and_rollback(tmp_path
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
         info={"realm_scope": RealmScope.local()},
     )
@@ -141,6 +145,7 @@ async def test_ideation_derivation_pending_treats_null_complexity_as_false(tmp_p
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
         info={"realm_scope": RealmScope.local()},
     )

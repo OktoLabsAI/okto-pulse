@@ -48,10 +48,15 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Path, status
 from pydantic import BaseModel, Field
 
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.application.use_cases.board_access import load_accessible_board
+from okto_pulse.core.application.use_cases.authorize_operation import (
+    AuthorizeOperationCommand,
+    AuthorizeOperationUseCase,
+)
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.core.kg.candidate_decision_store import (
     CandidateDecisionAction,
     CandidateDecisionError,
@@ -68,6 +73,7 @@ from okto_pulse.core.kg.rebuild_audit import (
 )
 from okto_pulse.core.models.schemas import SpecUpdate
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.ports.authentication import Principal
 
 
 # Override unsafe-payload bounds — same shape used by the candidate
@@ -518,7 +524,7 @@ async def _verify_existing_decision(
 async def submit_candidate_decision_command(
     body: CandidateDecisionCommandRequest,
     candidate_id: str = Path(..., min_length=1),
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> CandidateDecisionCommandResponse:
     """Submit a lifecycle command against a candidate decision.
@@ -530,7 +536,10 @@ async def submit_candidate_decision_command(
     emits exactly one bounded counter sample.
     """
 
-    actor = RESTAdapterContract.actor(user_id, board_id=body.board_id)
+    actor = RESTAdapterContract.actor_from_principal(
+        principal,
+        board_id=body.board_id,
+    )
     if await load_accessible_board(
         db,
         body.board_id,
@@ -538,6 +547,26 @@ async def submit_candidate_decision_command(
         allowed_share_permissions={"editor", "admin"},
     ) is None:
         raise HTTPException(status_code=404, detail="Board not found")
+
+    required_operations = ["kg.session.commit"]
+    if body.action == "promote_to_spec_decision":
+        required_operations.append("spec.structured_entity.decision.create")
+        if body.supersedes_decision_id:
+            required_operations.append(
+                "spec.structured_entity.decision.supersede"
+            )
+    try:
+        for operation in required_operations:
+            await AuthorizeOperationUseCase().execute(
+                AuthorizeOperationCommand(
+                    operation,
+                    board_id=body.board_id,
+                ),
+                actor=actor,
+                uow=db,
+            )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
     store = CandidateDecisionStore(
         artifact_store=require_rebuild_audit_artifact_store()
@@ -575,7 +604,7 @@ async def submit_candidate_decision_command(
         formal_decision = await _create_formal_decision(
             service=service,
             spec_id=body.spec_id,
-            user_id=user_id,
+            user_id=actor.actor_id,
             candidate=candidate,
             body=body,
         )
@@ -671,7 +700,7 @@ async def submit_candidate_decision_command(
         board_id=body.board_id,
         candidate=updated,
         action_label=body.action,
-        user_id=user_id,
+        user_id=actor.actor_id,
         formal_decision_ref=outcome_formal_ref,
         dismissed_reason_code=outcome_reason,
     )

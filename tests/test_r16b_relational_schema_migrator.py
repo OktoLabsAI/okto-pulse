@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
@@ -51,6 +53,15 @@ CORE_DATABASE_PY = Path(_db_mod.__file__)
 STEPS_PY = Path(_steps_mod.__file__)
 PORT_PY = Path(_port_mod.__file__)
 CORE_PACKAGE_DIR = CORE_DATABASE_PY.parents[1]  # .../okto_pulse/core
+V030_SCHEMA_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "schema"
+    / "okto-pulse-community-v0.3.0.sqlite3.zip"
+)
+V030_SCHEMA_FIXTURE_SHA256 = (
+    "83fbb57d93cac37d4c7063fdabb2f6cf64951aeb0dd2f53df4295be94992e5dc"
+)
 
 _DATA_BOOTSTRAP_FUNCS = {
     "_seed_builtin_presets",
@@ -144,13 +155,36 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 44 = historical steps + pagination, governed queue, GD delivery,
-    # cognitive-source revision audit, KB governance metadata, and the
-    # selective Knowledge-propagation v2 schema.
-    assert len(migrate_names) == 44, (
-        f"expected 44 _migrate_*, found {len(migrate_names)}"
+    # 54 = the historical 44 steps plus the SK-A Refinement ambiguity-skip
+    # column, SK-A/C7 quality-assessment persistence schema, the curated Spec
+    # checklist mode, the human-facing Spec edition counter, and SK-B's
+    # immutable guideline-policy authority, its B04 lifecycle substrate, and
+    # B07 immutable compliance evidence/currentness fences, B08's ordered
+    # impact substrate + sealed evidence guards, and B09 governed append-only
+    # waiver lifecycle persistence, and SK-B3 semantic guideline authority,
+    # plus the SK-B3 closure backfill of the 5-column unique authority index
+    # on guideline_board_bindings (structural prerequisite of the
+    # binding-configuration composite FK on migrated databases).
+    assert len(migrate_names) == 61, (
+        f"expected 60 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 44
+    assert len(ledger_migrate_ids) == 61
+    ordered_ids = [step.step_id for step in ledger]
+    assert ordered_ids.index(
+        "_migrate_guideline_policy_lifecycle_substrate"
+    ) < ordered_ids.index("_migrate_guideline_impact_substrate")
+    assert ordered_ids.index("_migrate_guideline_impact_substrate") < ordered_ids.index(
+        "_migrate_guideline_policy_v1_schema"
+    )
+    assert ordered_ids.index("_migrate_guideline_policy_v1_schema") < ordered_ids.index(
+        "_migrate_guideline_impact_v1_schema"
+    )
+    assert ordered_ids.index("_migrate_guideline_impact_v1_schema") < ordered_ids.index(
+        "_migrate_policy_compliance_v1_schema"
+    )
+    assert ordered_ids.index(
+        "_migrate_policy_compliance_v1_schema"
+    ) < ordered_ids.index("_migrate_policy_waiver_v1_schema")
 
     # Exactly ONE create_all_boundary step.
     boundary = [s for s in ledger if s.phase == "create_all_boundary"]
@@ -170,6 +204,153 @@ def test_ts_7aacc71a_ledger_order_matches_community_step_registry():
         if s.step_id != CREATE_ALL_BOUNDARY_STEP_ID
     ]
     assert _step_callable_order() == ledger_migrate_order
+
+
+def test_postgresql_policy_materialization_trigger_matches_json_column_type():
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateTable
+
+    from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow
+
+    source = STEPS_PY.read_text(encoding="utf-8")
+    table_ddl = str(
+        CreateTable(DomainEventRow.__table__).compile(
+            dialect=postgresql.dialect()
+        )
+    )
+
+    # The mapped column is JSON (not JSONB), so every function in this trigger
+    # block must use PostgreSQL's JSON family unless the SQL casts explicitly.
+    assert "payload_json JSON NOT NULL" in table_ddl
+    assert "jsonb_object_length(" not in source
+    assert (
+        "SELECT COUNT(*)\n"
+        "                          FROM json_object_keys(event.payload_json)"
+    ) in source
+    assert "json_typeof(\n                          event.payload_json->" in source
+
+
+def test_legacy_default_template_table_gains_nullable_checklist_mode(
+    tmp_path,
+    _isolate_engine,
+):
+    async def drive():
+        from sqlalchemy import text
+
+        _db_mod.create_database(
+            f"sqlite+aiosqlite:///{tmp_path / 'legacy-default-template.db'}"
+        )
+        engine = _db_mod.get_engine()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE TABLE default_board_configurations ("
+                    "id VARCHAR(36) PRIMARY KEY, "
+                    "version INTEGER NOT NULL, "
+                    "status VARCHAR(20) NOT NULL, "
+                    "is_active BOOLEAN NOT NULL, "
+                    "scope VARCHAR(50) NOT NULL, "
+                    "settings_payload JSON NOT NULL, "
+                    "created_by VARCHAR(255) NOT NULL"
+                    ")"
+                )
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO default_board_configurations "
+                    "(id, version, status, is_active, scope, settings_payload, created_by) "
+                    "VALUES ('legacy', 1, 'active', 1, 'global', '{}', 'admin')"
+                )
+            )
+
+        await _steps_mod._migrate_add_default_config_spec_checklist_mode()
+        await _steps_mod._migrate_add_default_config_spec_checklist_mode()
+
+        async with engine.connect() as connection:
+            columns = {
+                row[1]
+                for row in (
+                    await connection.execute(
+                        text("PRAGMA table_info(default_board_configurations)")
+                    )
+                ).all()
+            }
+            mode = await connection.scalar(
+                text(
+                    "SELECT spec_checklist_mode "
+                    "FROM default_board_configurations WHERE id = 'legacy'"
+                )
+            )
+        await engine.dispose()
+        return columns, mode
+
+    columns, mode = asyncio.run(drive())
+    assert "spec_checklist_mode" in columns
+    assert mode is None
+
+
+def test_legacy_specs_gain_backfilled_non_null_edition(
+    tmp_path,
+    _isolate_engine,
+):
+    async def drive():
+        from sqlalchemy import text
+
+        _db_mod.create_database(
+            f"sqlite+aiosqlite:///{tmp_path / 'legacy-spec-edition.db'}"
+        )
+        engine = _db_mod.get_engine()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE TABLE specs ("
+                    "id VARCHAR(36) PRIMARY KEY, "
+                    "title VARCHAR(500) NOT NULL, "
+                    "version INTEGER NOT NULL"
+                    ")"
+                )
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO specs (id, title, version) "
+                    "VALUES ('legacy', 'Legacy spec', 321)"
+                )
+            )
+
+        await _steps_mod._migrate_add_spec_edition()
+        await _steps_mod._migrate_add_spec_edition()
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO specs (id, title, version) "
+                    "VALUES ('new-default', 'Defaulted edition', 1)"
+                )
+            )
+
+        async with engine.connect() as connection:
+            columns = {
+                row[1]: row
+                for row in (
+                    await connection.execute(text("PRAGMA table_info(specs)"))
+                ).all()
+            }
+            row = (
+                await connection.execute(
+                    text("SELECT edition, version FROM specs WHERE id = 'legacy'")
+                )
+            ).one()
+            defaulted_edition = await connection.scalar(
+                text("SELECT edition FROM specs WHERE id = 'new-default'")
+            )
+        await engine.dispose()
+        return columns, row, defaulted_edition
+
+    columns, row, defaulted_edition = asyncio.run(drive())
+    assert columns["edition"][3] == 1  # PRAGMA notnull
+    assert row.edition == 1
+    assert row.version == 321
+    assert defaulted_edition == 1
 
 
 def test_ts_7aacc71a_destructive_steps_are_explicitly_allowlisted():
@@ -276,6 +457,16 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         governed_queue_convergence_step,
         delivery_convergence_step,
         kb_governance_convergence_step,
+        "_migrate_guideline_impact_substrate",
+        # Fresh create_all already emits the canonical semantic shape, so the
+        # legacy rebuilds have nothing to do on a clean DB.
+        "_migrate_rebuild_guideline_import_candidates_semantic_shape",
+        "_migrate_rebuild_guideline_policy_v1_semantic_alignment",
+        "_migrate_drop_retired_guideline_impact_v1_triggers",
+        "_migrate_seed_semantic_configurations_for_legacy_bindings",
+        # The durable v3 epoch seals an immutable receipt even when a fresh
+        # database has zero revision rows to rewrite. Fresh instances then
+        # observe that receipt and skip without touching fingerprints.
     }
     replay_skip_steps = {
         repair_step,
@@ -283,8 +474,20 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         governed_queue_convergence_step,
         delivery_convergence_step,
         "_migrate_cognitive_source_revision_ledger",
+        "_migrate_guideline_policy_v1_schema",
+        "_migrate_guideline_policy_lifecycle_substrate",
+        "_migrate_guideline_impact_substrate",
+        "_migrate_guideline_impact_v1_schema",
+        "_migrate_policy_compliance_v1_schema",
+        "_migrate_policy_waiver_v1_schema",
+        "_migrate_semantic_guideline_governance_schema",
         kb_governance_convergence_step,
         "_migrate_knowledge_propagation_v2_schema",
+        "_migrate_rebuild_guideline_import_candidates_semantic_shape",
+        "_migrate_rebuild_guideline_policy_v1_semantic_alignment",
+        "_migrate_drop_retired_guideline_impact_v1_triggers",
+        "_migrate_seed_semantic_configurations_for_legacy_bindings",
+        "_migrate_recompute_cognitive_source_fingerprints_v2",
     }
 
     # First run: clean databases skip fixture repair and convergence steps
@@ -304,6 +507,134 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
     assert len(r3.applied_steps) == total - len(replay_skip_steps)
     assert {step.step_id for step in r3.skipped_steps} == replay_skip_steps
     assert s3 == s1
+
+
+def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
+    tmp_path,
+    _isolate_engine,
+):
+    """Exercise the current ledger over the physical tagged v0.3.0 database.
+
+    This is deliberately not a synthetic ``create_all`` baseline: the zip was
+    generated by the tagged v0.3.0 startup lifecycle and therefore preserves
+    the exact SQLite constraint/index/trigger representation seen in an
+    installed release.
+    """
+
+    assert (
+        hashlib.sha256(V030_SCHEMA_FIXTURE.read_bytes()).hexdigest()
+        == V030_SCHEMA_FIXTURE_SHA256
+    )
+    with ZipFile(V030_SCHEMA_FIXTURE) as archive:
+        assert archive.namelist() == [
+            "okto-pulse-community-v0.3.0.sqlite3"
+        ]
+        archive.extractall(tmp_path)
+    database_path = tmp_path / archive.namelist()[0]
+
+    async def drive():
+        from sqlalchemy import text
+
+        from okto_pulse.community.adapters.sqlalchemy_models import (
+            GuidelineBoardBindingRow,
+            SemanticGuidelineAssessmentReceiptRow,
+            SemanticGuidelineBindingConfigurationRow,
+            SemanticGuidelineFindingRow,
+            SemanticGuidelineLegacyMigrationRow,
+            SemanticGuidelineMetricResultRow,
+            SemanticGuidelineRevisionRow,
+            SemanticGuidelineSkipRow,
+            SemanticGuidelineWaiverEventRow,
+            SemanticGuidelineWaiverRow,
+            SemanticSubjectVersionEventRow,
+            SemanticSubjectVersionRow,
+        )
+
+        semantic_tables = (
+            SemanticGuidelineRevisionRow.__table__,
+            SemanticGuidelineBindingConfigurationRow.__table__,
+            SemanticSubjectVersionEventRow.__table__,
+            SemanticSubjectVersionRow.__table__,
+            SemanticGuidelineAssessmentReceiptRow.__table__,
+            SemanticGuidelineMetricResultRow.__table__,
+            SemanticGuidelineFindingRow.__table__,
+            SemanticGuidelineWaiverRow.__table__,
+            SemanticGuidelineWaiverEventRow.__table__,
+            SemanticGuidelineSkipRow.__table__,
+            SemanticGuidelineLegacyMigrationRow.__table__,
+        )
+        _db_mod.create_database(
+            f"sqlite+aiosqlite:///{database_path.as_posix()}"
+        )
+        first_migrator = make_community_relational_schema_migrator()
+        first = await first_migrator.aexecute(
+            first_migrator.plan(target="v0.3.0-to-semantic-v2")
+        )
+        engine = _db_mod.get_engine()
+
+        async def snapshot():
+            async with engine.connect() as connection:
+                contracts = await connection.run_sync(
+                    lambda sync_connection: {
+                        table.name: _steps_mod._sqlite_owned_table_contract(
+                            sync_connection,
+                            table,
+                        )
+                        for table in semantic_tables
+                    }
+                )
+                binding_contract = await connection.run_sync(
+                    lambda sync_connection: (
+                        _steps_mod._sqlite_owned_table_contract(
+                            sync_connection,
+                            GuidelineBoardBindingRow.__table__,
+                        )
+                    )
+                )
+                owned_schema = tuple(
+                    (
+                        str(row.type),
+                        str(row.name),
+                        str(row.tbl_name),
+                        str(row.sql),
+                    )
+                    for row in (
+                        await connection.execute(
+                            text(
+                                "SELECT type, name, tbl_name, sql "
+                                "FROM sqlite_master "
+                                "WHERE name LIKE 'semantic_%' "
+                                "OR name LIKE 'trg_sgv3_%' "
+                                "OR name = "
+                                "'uq_guideline_binding_exact_authority' "
+                                "ORDER BY type, name"
+                            )
+                        )
+                    ).all()
+                )
+            return contracts, binding_contract, owned_schema
+
+        before_replay = await snapshot()
+        replay_migrator = make_community_relational_schema_migrator()
+        replay = await replay_migrator.aexecute(
+            replay_migrator.plan(target="v0.3.0-replay")
+        )
+        after_replay = await snapshot()
+        await engine.dispose()
+        return first, replay, before_replay, after_replay
+
+    first, replay, before_replay, after_replay = asyncio.run(drive())
+    assert first.is_success
+    assert replay.is_success
+    assert before_replay == after_replay
+    semantic_contracts, binding_contract, owned_schema = before_replay
+    assert len(semantic_contracts) == 11
+    assert all(
+        contract["observed"] == contract["expected"]
+        for contract in semantic_contracts.values()
+    )
+    assert binding_contract["observed"] == binding_contract["expected"]
+    assert owned_schema
 
 
 # ===========================================================================

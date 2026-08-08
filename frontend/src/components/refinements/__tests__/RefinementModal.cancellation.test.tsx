@@ -3,9 +3,9 @@
  *
  * Covers: (1) cancelling requires a reason (dialog intercepts the move and the
  * API is only called after confirm, with cancellation_reason), (2) the
- * "Cancellation" tab appears with the recorded reason/actor/timestamp while
- * the refinement is cancelled, (3) the tab does not exist for any other
- * status (reopening therefore hides it).
+ * cancellation details appear at the top of Details with the recorded
+ * reason/actor/timestamp while the refinement is cancelled, (3) those
+ * details do not exist for any other status (reopening therefore hides them).
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -109,12 +109,18 @@ const transitionsResponse = (allowed: string[]) => ({
   entity_type: 'refinement',
   entity_id: 'refinement-1',
   current_status: 'review',
-  source: 'programmatic_backend_transition_authority',
+  source: 'core_sdlc_registry_v1',
   allowed_transitions: allowed.map((to_status) => ({
     to_status,
     label: to_status,
     gate: 'none',
     blocked_reason: null,
+    preconditions: [],
+    capabilities: [],
+    effects: [],
+    reason_codes: [],
+    policy_compliance: false,
+    policy_compliance_decision: null,
   })),
 });
 
@@ -173,7 +179,7 @@ describe('RefinementModal cancellation flow (ITEM 17)', () => {
     );
   });
 
-  it('shows the Cancellation tab with reason, actor and timestamp while cancelled', async () => {
+  it('shows cancellation details first in Details while cancelled', async () => {
     apiMock.getRefinement.mockResolvedValue({
       ...baseRefinement,
       status: 'cancelled',
@@ -188,10 +194,11 @@ describe('RefinementModal cancellation flow (ITEM 17)', () => {
     );
     await screen.findByText('My Refinement');
 
-    fireEvent.click(screen.getByText('Cancellation'));
-
     const details = await screen.findByTestId('cancellation-details');
     expect(details).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Cancellation' }),
+    ).not.toBeInTheDocument();
     // Reason renders as markdown (heading + strong), not raw text.
     expect(screen.getByRole('heading', { name: 'Motivo' })).toBeInTheDocument();
     expect(screen.getByText('duplicado').tagName).toBe('STRONG');
@@ -200,14 +207,16 @@ describe('RefinementModal cancellation flow (ITEM 17)', () => {
     expect(details.textContent).toContain(new Date('2026-07-10T09:00:00Z').getFullYear().toString());
   });
 
-  it('hides the Cancellation tab when the item is not cancelled (reopen)', async () => {
+  it('hides cancellation details when the item is not cancelled (reopen)', async () => {
     apiMock.getRefinement.mockResolvedValue(baseRefinement); // status: review
     render(
       <RefinementModal refinementId="refinement-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />,
     );
     await screen.findByText('My Refinement');
 
-    expect(screen.queryByText('Cancellation')).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Cancellation' }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByTestId('cancellation-details')).toBeNull();
   });
 });

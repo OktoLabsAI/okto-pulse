@@ -11,6 +11,7 @@ interface SidebarProps {
   onSelectBoard: (boardId: string) => void;
   onCreateBoard: () => void;
   isOpen: boolean;
+  canCreateBoard?: boolean;
 }
 
 function BoardList({
@@ -45,7 +46,7 @@ function BoardList({
   );
 }
 
-export function Sidebar({ onSelectBoard, onCreateBoard, isOpen }: SidebarProps) {
+export function Sidebar({ onSelectBoard, onCreateBoard, isOpen, canCreateBoard = true }: SidebarProps) {
   const boards = useBoards();
   const sharedBoards = useSharedBoards();
   const currentBoard = useCurrentBoard();
@@ -62,6 +63,7 @@ export function Sidebar({ onSelectBoard, onCreateBoard, isOpen }: SidebarProps) 
             <h2 className="font-semibold text-gray-700 dark:text-gray-200">Boards</h2>
             <button
               onClick={onCreateBoard}
+              disabled={!canCreateBoard}
               className="p-1 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800 rounded"
               title="New board"
             >
@@ -81,6 +83,7 @@ export function Sidebar({ onSelectBoard, onCreateBoard, isOpen }: SidebarProps) 
                 No boards created
                 <button
                   onClick={onCreateBoard}
+                  disabled={!canCreateBoard}
                   className="block mx-auto mt-2 text-blue-500 hover:text-blue-600"
                 >
                   Create first board

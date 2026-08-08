@@ -277,6 +277,27 @@ export function ContextSelector({
   );
 }
 
+type ContextQAItem = {
+  question: string;
+  answer: string | null;
+  asked_by: string;
+  answered_at: string | null;
+  choices?: { id: string; label: string }[] | null;
+  selected?: string[] | null;
+};
+
+function qaContextContent(item: ContextQAItem): string {
+  const labelsById = new Map((item.choices || []).map((choice) => [choice.id, choice.label]));
+  const selectedLabels = (item.selected || []).map(
+    (choiceId) => labelsById.get(choiceId) || choiceId,
+  );
+  return [
+    `**Q:** ${item.question}`,
+    selectedLabels.length ? `**Selected:** ${selectedLabels.join(', ')}` : '',
+    item.answer ? `**A:** ${item.answer}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 /**
  * Helper to build selectable items from an ideation
  */
@@ -286,7 +307,7 @@ export function buildIdeationItems(ideation: {
   scope_assessment?: { domains: number; ambiguity: number; dependencies: number } | null;
   complexity?: string | null;
   description?: string | null;
-  qa_items?: { question: string; answer: string | null; asked_by: string }[];
+  qa_items?: ContextQAItem[];
 }): SelectableItem[] {
   const items: SelectableItem[] = [];
 
@@ -318,18 +339,18 @@ export function buildIdeationItems(ideation: {
     const sa = ideation.scope_assessment;
     items.push({
       id: 'scope_assessment',
-      label: `Scope Assessment (D:${sa.domains} A:${sa.ambiguity} Dep:${sa.dependencies})`,
-      content: `- Domains: ${sa.domains}/5\n- Ambiguity: ${sa.ambiguity}/5\n- Dependencies: ${sa.dependencies}/5\n- Complexity: ${ideation.complexity || 'not evaluated'}`,
+      label: `Scope Assessment (D:${sa.domains} SA:${sa.ambiguity} Dep:${sa.dependencies})`,
+      content: `- Domains: ${sa.domains}/5\n- Scope Ambiguity: ${sa.ambiguity}/5\n- Dependencies: ${sa.dependencies}/5\n- Complexity: ${ideation.complexity || 'not evaluated'}`,
       category: 'Context',
     });
   }
 
-  const answered = (ideation.qa_items || []).filter((q) => q.answer);
+  const answered = (ideation.qa_items || []).filter((q) => q.answered_at != null);
   answered.forEach((qa, i) => {
     items.push({
       id: `qa_${i}`,
       label: qa.question.length > 80 ? qa.question.slice(0, 77) + '...' : qa.question,
-      content: `**Q:** ${qa.question}\n**A:** ${qa.answer}`,
+      content: qaContextContent(qa),
       category: 'Q&A Decisions',
     });
   });
@@ -346,7 +367,7 @@ export function buildRefinementItems(refinement: {
   out_of_scope?: string[] | null;
   analysis?: string | null;
   decisions?: string[] | null;
-  qa_items?: { question: string; answer: string | null; asked_by: string }[];
+  qa_items?: ContextQAItem[];
 }): SelectableItem[] {
   const items: SelectableItem[] = [];
 
@@ -366,12 +387,12 @@ export function buildRefinementItems(refinement: {
     items.push({ id: `decision_${i}`, label: d.length > 80 ? d.slice(0, 77) + '...' : d, content: d, category: 'Decisions' });
   });
 
-  const answered = (refinement.qa_items || []).filter((q) => q.answer);
+  const answered = (refinement.qa_items || []).filter((q) => q.answered_at != null);
   answered.forEach((qa, i) => {
     items.push({
       id: `qa_${i}`,
       label: qa.question.length > 80 ? qa.question.slice(0, 77) + '...' : qa.question,
-      content: `**Q:** ${qa.question}\n**A:** ${qa.answer}`,
+      content: qaContextContent(qa),
       category: 'Q&A Decisions',
     });
   });

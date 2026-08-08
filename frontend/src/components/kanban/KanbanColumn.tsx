@@ -88,6 +88,8 @@ export interface KanbanColumnProps {
   onToggleCardType?: (type: KanbanCardFilterType) => void;
   onCardClick: (cardId: string) => void;
   onAddCard: (status: CardStatus) => void;
+  canAddCard?: boolean;
+  canDragCard?: (card: CardSummary) => boolean;
   nameMap: Record<string, string>;
   /** Optional controls rendered after the cards, inside the column scroll area. */
   footer?: ReactNode;
@@ -109,6 +111,8 @@ export function KanbanColumn({
   onToggleCardType,
   onCardClick,
   onAddCard,
+  canAddCard = true,
+  canDragCard,
   nameMap,
   footer,
   cognitiveBadges,
@@ -181,8 +185,9 @@ export function KanbanColumn({
           </div>
           <button
             onClick={() => onAddCard(status)}
-            className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
-            title="Add card"
+            disabled={!canAddCard}
+            className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+            title={canAddCard ? 'Add card' : 'Missing card creation permission'}
           >
             <Plus size={16} />
           </button>
@@ -207,6 +212,7 @@ export function KanbanColumn({
                 card={card}
                 onClick={onCardClick}
                 nameMap={nameMap}
+                canDrag={canDragCard?.(card) ?? true}
                 cognitiveBadge={
                   sourceRef ? cognitiveBadges?.[sourceRef] : undefined
                 }

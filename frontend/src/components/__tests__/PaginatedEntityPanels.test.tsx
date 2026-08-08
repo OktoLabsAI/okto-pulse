@@ -150,6 +150,27 @@ describe('paginated entity panels', () => {
     );
   });
 
+  it('never falls back to legacy scope ambiguity when Quality is omitted', async () => {
+    apiMock.listIdeationsPage.mockResolvedValue(envelope([{
+      ...ideation,
+      scope_assessment: {
+        domains: 2,
+        ambiguity: 5,
+        dependencies: 3,
+      },
+      // Deliberately omitted: this is also the permission-denied projection.
+      quality_summaries: undefined,
+    }]));
+
+    render(<IdeationsPanel boardId="board-1" />);
+    await screen.findByText('Server ideation');
+
+    expect(screen.getByTitle('Domains score: 2/5')).toBeInTheDocument();
+    expect(screen.getByTitle('Dependencies score: 3/5')).toBeInTheDocument();
+    expect(screen.queryByTitle('Ambiguity score: 5/5')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quality-summary-ambiguity')).not.toBeInTheDocument();
+  });
+
   it('uses the board-wide refinement endpoint and debounces server search', async () => {
     render(<RefinementsPanel boardId="board-1" />);
     await waitFor(() => expect(apiMock.listBoardRefinementsPage).toHaveBeenCalledTimes(1));

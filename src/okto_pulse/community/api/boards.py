@@ -32,6 +32,9 @@ from okto_pulse.community.api.knowledge_propagation import (
     knowledge_propagation_error_response,
     rollback_and_record_knowledge_error,
 )
+from okto_pulse.community.api.permission_errors import (
+    permission_denied_http_error,
+)
 from okto_pulse.community.api.pagination import (
     project_page,
     resolve_window,
@@ -74,7 +77,7 @@ from okto_pulse.core.application.knowledge_propagation_projection import (
 )
 from okto_pulse.core.domain.enums import CardStatus
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_user, get_realm_id
+from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.core.models import (
     BoardCreate,
     BoardResponse,
@@ -95,6 +98,7 @@ from okto_pulse.core.models.schemas import PageEnvelope
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.application.errors import CardOperationError
 from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
+from okto_pulse.core.ports.authentication import Principal
 
 router = APIRouter()
 
@@ -102,8 +106,7 @@ router = APIRouter()
 @router.post("", response_model=BoardResponse, status_code=status.HTTP_201_CREATED)
 async def create_board(
     data: BoardCreate,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Create a new board."""
@@ -113,11 +116,14 @@ async def create_board(
     # contract with the use case. Behavior (payload/201/commit/re-fetch/effective
     # settings/realm_id) is preserved, and the get_db dependency override still
     # applies because get_unit_of_work depends on it.
-    result = await CreateBoardUseCase().execute(
-        CreateBoardCommand(data),
-        actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
-        uow=uow,
-    )
+    try:
+        result = await CreateBoardUseCase().execute(
+            CreateBoardCommand(data),
+            actor=RESTAdapterContract.actor_from_principal(principal),
+            uow=uow,
+        )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return result.board
 
 
@@ -126,14 +132,13 @@ async def list_boards(
     offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     limit: int = Query(20, ge=1, le=100),
     view: Literal["my", "shared", "all"] = Query("my"),
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List boards for the current user. view: my|shared|all."""
     result = await ListBoardsUseCase().execute(
         ListBoardsCommand(offset=offset, limit=limit, view=view),
-        actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
+        actor=RESTAdapterContract.actor_from_principal(principal),
         uow=uow,
     )
     return result.boards
@@ -146,8 +151,7 @@ async def get_board(
         False,
         description="When true, omit inline cards/agents and return only the overview envelope with counts. Default false preserves the legacy full payload for the existing frontend.",
     ),
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get a board by ID. By default returns the full board (legacy shape);
@@ -157,13 +161,17 @@ async def get_board(
     try:
         result = await GetBoardUseCase().execute(
             GetBoardCommand(board_id, compact=compact),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=uow,
         )
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return result.board
 
 
@@ -171,42 +179,48 @@ async def get_board(
 async def update_board(
     board_id: str,
     data: BoardUpdate,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Update a board."""
     try:
         result = await UpdateBoardUseCase().execute(
             UpdateBoardCommand(board_id, data),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=uow,
         )
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return result.board
 
 
 @router.delete("/{board_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_board(
     board_id: str,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Delete a board and all its cards."""
     try:
         await DeleteBoardUseCase().execute(
             DeleteBoardCommand(board_id),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=uow,
         )
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
 
 
 @router.get(
@@ -239,8 +253,7 @@ async def list_board_cards(
     include_archived: bool = Query(False),
     offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
     limit: int = Query(25),
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List a board's cards through the lean, fully filtered C7 projection."""
@@ -260,9 +273,8 @@ async def list_board_cards(
         offset=resolved_offset,
         limit=resolved_limit,
     )
-    actor = RESTAdapterContract.actor(
-        user_id,
-        realm_id=realm_id,
+    actor = RESTAdapterContract.actor_from_principal(
+        principal,
         board_id=board_id,
     )
     use_case = GetBoardColumnsUseCase()
@@ -281,6 +293,8 @@ async def list_board_cards(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "board_not_found"},
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return project_page(
         page,
         lambda record: CardPageItem(**record.values),
@@ -296,12 +310,11 @@ async def create_card(
     board_id: str,
     request: Request,
     data: CardCreate,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Create a card, preserving v1 unless propagation v2 is explicit."""
-    actor = RESTAdapterContract.actor(user_id, realm_id=realm_id)
+    actor = RESTAdapterContract.actor_from_principal(principal, board_id=board_id)
     command = CreateCardInBoardCommand(board_id, data)
 
     async def _execute(target_uow: PulseUnitOfWork):
@@ -348,6 +361,8 @@ async def create_card(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Board not found or not owned by user",
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -394,16 +409,14 @@ async def get_board_columns(
             "Legacy-compatible boolean; opt-in columns accepts strict true|false."
         ),
     ),
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get literal legacy columns or an opt-in bounded columns response."""
 
     parameters = parse_columns_parameters(request)
-    actor = RESTAdapterContract.actor(
-        user_id,
-        realm_id=realm_id,
+    actor = RESTAdapterContract.actor_from_principal(
+        principal,
         board_id=board_id,
     )
     use_case = GetBoardColumnsUseCase()
@@ -421,6 +434,8 @@ async def get_board_columns(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "board_not_found"},
             )
+        except PermissionDeniedError as exc:
+            raise permission_denied_http_error(exc) from exc
 
         session = uow.services.cards.db
         if parameters.column is not None:
@@ -519,6 +534,8 @@ async def get_board_columns(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Board not found",
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
 
     board = result.board
     columns = {card_status.value: [] for card_status in CardStatus}
@@ -571,16 +588,15 @@ async def archive_tree(
     board_id: str,
     entity_type: str,
     entity_id: str,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Archive an entity and all its descendants in cascade."""
     try:
         result = await ArchiveTreeUseCase().execute(
             ArchiveTreeCommand(board_id, entity_type, entity_id),
-            actor=RESTAdapterContract.actor(
-                user_id, realm_id=realm_id, board_id=board_id
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
             ),
             uow=uow,
         )
@@ -593,6 +609,8 @@ async def archive_tree(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
         ) from e
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return {"success": True, "archived_count": result.counts}
 
 
@@ -601,16 +619,15 @@ async def restore_tree(
     board_id: str,
     entity_type: str,
     entity_id: str,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Restore an archived entity and all its descendants."""
     try:
         result = await RestoreTreeUseCase().execute(
             RestoreTreeCommand(board_id, entity_type, entity_id),
-            actor=RESTAdapterContract.actor(
-                user_id, realm_id=realm_id, board_id=board_id
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
             ),
             uow=uow,
         )
@@ -623,6 +640,8 @@ async def restore_tree(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
         ) from e
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return {"success": True, "restored_count": result.counts}
 
 
@@ -637,18 +656,15 @@ async def restore_tree(
 async def share_board(
     board_id: str,
     data: BoardShareCreate,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Share a board with another user (owner/admin only)."""
     try:
         result = await ShareBoardUseCase().execute(
             ShareBoardCommand(board_id, data),
-            actor=RESTAdapterContract.actor(
-                user_id,
-                realm_id=realm_id,
-                board_id=board_id,
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
             ),
             uow=uow,
         )
@@ -657,27 +673,23 @@ async def share_board(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Board not found",
         ) from exc
-    except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=e.message,
-        ) from e
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return result.share
 
 
 @router.get("/{board_id}/shares", response_model=list[BoardShareResponse])
 async def list_board_shares(
     board_id: str,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all shares for a board."""
     try:
         result = await ListBoardSharesUseCase().execute(
             ListBoardSharesCommand(board_id),
-            actor=RESTAdapterContract.actor(
-                user_id, realm_id=realm_id, board_id=board_id
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
             ),
             uow=uow,
         )
@@ -685,6 +697,8 @@ async def list_board_shares(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return result.shares
 
 
@@ -693,16 +707,15 @@ async def update_board_share(
     board_id: str,
     share_id: str,
     data: BoardShareUpdate,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Update a share's permission (owner/admin only)."""
     try:
         result = await UpdateBoardShareUseCase().execute(
             UpdateBoardShareCommand(board_id, share_id, data),
-            actor=RESTAdapterContract.actor(
-                user_id, realm_id=realm_id, board_id=board_id
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
             ),
             uow=uow,
         )
@@ -711,11 +724,8 @@ async def update_board_share(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Board or share not found",
         ) from exc
-    except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=e.message,
-        ) from e
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return result.share
 
 
@@ -723,16 +733,15 @@ async def update_board_share(
 async def revoke_board_share(
     board_id: str,
     share_id: str,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Revoke a share (owner/admin can revoke, shared user can leave)."""
     try:
         await RevokeBoardShareUseCase().execute(
             RevokeBoardShareCommand(board_id, share_id),
-            actor=RESTAdapterContract.actor(
-                user_id, realm_id=realm_id, board_id=board_id
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
             ),
             uow=uow,
         )
@@ -741,8 +750,5 @@ async def revoke_board_share(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Board or share not found",
         ) from exc
-    except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=e.message,
-        ) from e
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc

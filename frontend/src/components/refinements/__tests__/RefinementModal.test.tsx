@@ -199,11 +199,11 @@ describe('RefinementModal handleMove error surfacing (AC1)', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'review',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null },
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getArchitectureDesign.mockResolvedValue(null);
@@ -230,6 +230,53 @@ describe('RefinementModal handleMove error surfacing (AC1)', () => {
     // Must NOT have been called with the old hardcoded fallback
     expect((toast as any).error).not.toHaveBeenCalledWith('Failed to move refinement');
   });
+
+  it.each([
+    {
+      caseName: 'does not highlight a receipt-backed choice-only answer',
+      qa: {
+        answer: null,
+        selected: ['safe'],
+        answered_at: '2026-07-27T12:00:00Z',
+      },
+      expectedClass: 'bg-gray-200',
+    },
+    {
+      caseName: 'highlights a payload that has no answer receipt',
+      qa: {
+        answer: 'A non-authoritative payload',
+        selected: null,
+        answered_at: null,
+      },
+      expectedClass: 'bg-amber-200',
+    },
+  ])('$caseName', async ({ qa, expectedClass }) => {
+    apiMock.getRefinement.mockResolvedValue({
+      ...baseRefinement,
+      qa_items: [
+        {
+          id: 'qa-1',
+          refinement_id: 'refinement-1',
+          question: 'Which rollout?',
+          question_type: 'single_choice',
+          choices: [{ id: 'safe', label: 'Safe rollout' }],
+          allow_free_text: false,
+          asked_by: 'agent-1',
+          answered_by: qa.answered_at ? 'user-1' : null,
+          created_at: '2026-07-27T11:00:00Z',
+          ...qa,
+        },
+      ],
+    });
+
+    render(
+      <RefinementModal refinementId="refinement-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />,
+    );
+
+    await screen.findByText('My Refinement');
+    const qaTab = screen.getByRole('tab', { name: /Q&A/ });
+    expect(qaTab.querySelector('.rounded-full')).toHaveClass(expectedClass);
+  });
 });
 
 describe('RefinementModal Markdown export', () => {
@@ -247,11 +294,11 @@ describe('RefinementModal Markdown export', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'review',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null },
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getArchitectureDesign.mockImplementation((id: string) =>
@@ -308,9 +355,9 @@ describe('RefinementModal Markdown export', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'review',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
 
@@ -345,7 +392,7 @@ describe('RefinementModal Knowledge tab markdown rendering', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'review',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [],
     });
     apiMock.getArchitectureDesign.mockResolvedValue(null);
@@ -406,7 +453,8 @@ describe('RefinementModal Knowledge tab markdown rendering', () => {
 
     await screen.findByText('My Refinement');
 
-    fireEvent.click(screen.getByText('Knowledge'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    fireEvent.click(screen.getByRole('tab', { name: /Knowledge/ }));
 
     // The bounded summary loads, then expanding hydrates one detail projection.
     const kbTitle = await screen.findByText('API Notes');
@@ -523,7 +571,7 @@ describe('RefinementModal selective Knowledge derivation', () => {
       entity_type: 'refinement',
       entity_id: 'refinement-1',
       current_status: 'done',
-      source: 'programmatic_backend_transition_authority',
+      source: 'core_sdlc_registry_v1',
       allowed_transitions: [],
     });
     apiMock.deriveSpecFromRefinement.mockResolvedValue({

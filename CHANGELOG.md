@@ -9,6 +9,56 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- A recursive permission editor that renders every one of the 397 permission
+  leaves exposed by the application, with a full-coverage regression.
+- Reviewer-separation controls in both Board settings and Global Default Board
+  Configuration.
+- Route and UI regressions for board sharing, permission presets and canonical
+  authorization projection.
+
+### Changed
+
+- REST and UI authorization now consume the centralized Core operation policy
+  and the canonical namespaces for agent, board administration and sharing,
+  permission presets, default configuration, design system, runtime, metrics,
+  amendments and Knowledge Graph operations.
+- The bundled frontend distribution was rebuilt from the reconciled source.
+
+### Fixed
+
+- Permission UI state now refreshes reliably when the selected role or board
+  changes.
+- Inline guidelines no longer present an inapplicable unlink action.
+- Guideline import and export preserve evaluation metrics, immutable identity
+  and version creation semantics for repeated IDs.
+
+### Validation
+
+- The Board E2E flow proves traceability and semantic-guideline policy blocks,
+  then completes successfully after current independent assessment evidence.
+- Ruff, 65 focused Community regressions, frontend build, distribution
+  verification and the lint ratchet pass after reconciliation with `develop`.
+
+## [0.3.1] - 2026-07-27
+
+### Added
+
+- Quality and ambiguity receipts, pinpoint findings and governed assessment
+  actions in the Ideation, Refinement and Spec UI surfaces.
+- Refinement research decision ledger UI backed by append-only Community
+  persistence, plus curated Spec checklist configuration and execution views.
+- Clean-room wheel provenance, installed MCP/resource inventory and release
+  artifact checks for the paired Core and Community distributions.
+
+### Changed
+
+- Community now requires `okto-pulse-core>=0.3.1` and exposes the 292-tool Core
+  catalog (284 canonical tools and 8 aliases).
+- Test-scenario inputs are closed across REST, MCP and UI; `negative` is a
+  supported scenario type rather than an unsupported display fallback.
+
 ## [0.3.0] - 2026-07-14
 
 Version 0.3.0 makes Community the explicit local-first edition and composition

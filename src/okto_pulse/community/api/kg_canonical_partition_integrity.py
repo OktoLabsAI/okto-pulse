@@ -21,6 +21,7 @@ from okto_pulse.core.application.use_cases.operational_rest import (
     GetCanonicalPartitionIntegrityDetailUseCase,
     ListCanonicalPartitionIntegrityUseCase,
 )
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.kg.cognitive_readiness import CognitiveReadinessError
@@ -72,6 +73,8 @@ async def list_canonical_partition_integrity_endpoint(
         return result.data
     except BoardNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Board not found") from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
 
@@ -103,5 +106,7 @@ async def get_canonical_partition_integrity_detail_endpoint(
         return result.data
     except BoardNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Board not found") from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc

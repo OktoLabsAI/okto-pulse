@@ -176,12 +176,78 @@ class CommunityQuarantineRestore:
             # insufficient by itself.
             if not owner_probe(plan.board_id, owner_token):
                 raise ValueError("rebuild_compensation_restore_fence_lost")
-            return self._apply_plan(
+            report = self._apply_plan(
                 plan,
                 allow_owned_serve_lock=True,
                 compensation_run_id=run_id,
                 mutation_fence=lambda: bool(owner_probe(plan.board_id, owner_token)),
             )
+            # The open probe may be non-trivial.  Revalidate the same owner
+            # fence immediately before authorizing compensation success.
+            if not owner_probe(plan.board_id, owner_token):
+                raise ValueError("rebuild_compensation_restore_fence_lost")
+            return report
+
+    def discard_rebuild_candidate(
+        self,
+        *,
+        expected_board_id: str,
+        run_id: str,
+        owner_token: str | None,
+    ) -> dict[str, object]:
+        """Quarantine a failed fresh-board candidate and prove it is not live.
+
+        Existing-board compensation uses ``apply_rebuild_compensation``: its
+        backup-swap removes the candidate and restores the previous graph.
+        A fresh board has no prior quarantine to restore, so it needs this
+        separate, fenced physical discard.  The invalid candidate is moved to
+        an auditable quarantine instead of being left at the live board path.
+        """
+
+        if not expected_board_id or not run_id or not owner_token:
+            raise ValueError("rebuild_candidate_discard_identity_invalid")
+        owner_probe = self._lock_owner_probe
+        if owner_probe is None:
+            from okto_pulse.core.kg.single_writer_lock import KGSingleWriterLock
+
+            owner_probe = KGSingleWriterLock().is_owner
+        if not owner_probe(expected_board_id, owner_token):
+            raise ValueError("rebuild_candidate_discard_fence_lost")
+
+        from okto_pulse.community.adapters.kg_runtime import (
+            board_kuzu_path,
+            board_storage_mutation_window,
+            purge_board_graph_storage_with_receipt,
+        )
+
+        with board_storage_mutation_window(
+            expected_board_id,
+            phase=f"rebuild_candidate_discard:{run_id}",
+        ):
+            if not owner_probe(expected_board_id, owner_token):
+                raise ValueError("rebuild_candidate_discard_fence_lost")
+            affected, quarantine_id = purge_board_graph_storage_with_receipt(
+                expected_board_id,
+                reason=f"failed_rebuild_candidate:{run_id}",
+            )
+            path = board_kuzu_path(expected_board_id)
+            live_residue = path.exists() or (
+                path.parent.exists()
+                and any(path.parent.glob(path.name + ".*"))
+            )
+            if live_residue:
+                raise RuntimeError("rebuild_candidate_discard_unverified")
+            # Purging and the final filesystem probe can take long enough for
+            # the rebuild lease to expire.  Never authorize a successful
+            # compensation receipt after ownership was lost mid-operation.
+            if not owner_probe(expected_board_id, owner_token):
+                raise ValueError("rebuild_candidate_discard_fence_lost")
+        return {
+            "status": "discarded" if affected else "already_absent",
+            "discarded_files": len(affected),
+            "quarantine_id": quarantine_id,
+            "live_absent": True,
+        }
 
     def _apply_plan(
         self,

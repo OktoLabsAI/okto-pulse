@@ -10,7 +10,6 @@ import json
 from pathlib import Path
 
 import ladybug  # noqa: F401
-import pytest
 
 import okto_pulse.community.adapters.global_discovery_recovery_worker as worker_module
 from okto_pulse.community.adapters.global_discovery_recovery import (

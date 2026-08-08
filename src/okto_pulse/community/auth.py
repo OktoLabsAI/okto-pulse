@@ -1,10 +1,13 @@
 """Local-first authentication adapter for the Community edition."""
 
+from copy import deepcopy
+
 from okto_pulse.core.ports import (
     AuthenticationPort,
     Credential,
     Principal,
 )
+from okto_pulse.core.domain.permissions import PERMISSION_REGISTRY
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 
 LOCAL_USER = {
@@ -12,6 +15,10 @@ LOCAL_USER = {
     "email": "local@okto-pulse.dev",
     "name": "Local User",
     "roles": ["admin"],
+    # Community is a single-user local edition. Its server-owned principal is
+    # the canonical Full Control preset, including forward-propagated SK-B
+    # leaves; transports must not invent or maintain a parallel capability list.
+    "permissions": deepcopy(PERMISSION_REGISTRY),
 }
 
 class LocalAuthProvider(AuthenticationPort):
@@ -26,5 +33,8 @@ class LocalAuthProvider(AuthenticationPort):
         return Principal(
             subject="local-user",
             realm_id=LOCAL_REALM_ID,
-            claims=LOCAL_USER,
+            actor_kind="human",
+            # A principal may be enriched by an inbound adapter.  Never expose
+            # the process-global Full Control template by reference.
+            claims=deepcopy(LOCAL_USER),
         )

@@ -7,6 +7,11 @@ import { GraphVisibilityMismatchState, KnowledgeGraphPage } from '../KnowledgeGr
 import type { GraphMetadata } from '@/services/kg-api';
 import type { KGHealth } from '@/services/kg-health-api';
 
+const permissionHas = vi.hoisted(() => vi.fn((_flag: string) => true));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({ preset: 'Full Control', isLoading: false, error: null, ownerReviewRequired: false, has: permissionHas }),
+}));
+
 vi.mock('../GraphCanvas', () => ({
   GraphCanvas: ({ nodes }: { nodes: unknown[] }) => (
     <div data-testid="mock-graph-canvas">canvas nodes: {nodes.length}</div>

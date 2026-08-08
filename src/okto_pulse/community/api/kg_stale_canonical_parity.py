@@ -19,7 +19,10 @@ from okto_pulse.core.application.use_cases import (
     ListStaleCanonicalParityCommand,
     ListStaleCanonicalParityUseCase,
 )
-from okto_pulse.core.application.use_cases.base import EntityNotFoundError
+from okto_pulse.core.application.use_cases.base import (
+    EntityNotFoundError,
+    PermissionDeniedError,
+)
 from okto_pulse.core.application.use_cases.operational_rest import BoardNotFoundError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
@@ -59,4 +62,6 @@ async def list_stale_canonical_parity_endpoint(
         )
     except (BoardNotFoundError, EntityNotFoundError) as exc:
         raise HTTPException(status_code=404, detail="Board not found") from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.data

@@ -23,6 +23,7 @@ export interface ActivityHistoryListProps {
   loading?: boolean;
   actionLabels?: Readonly<Record<string, string>>;
   actionColors?: Readonly<Record<string, string>>;
+  versionLabel?: (version: number) => { text: string; title?: string };
 }
 
 const DEFAULT_ACTION_LABELS: Readonly<Record<string, string>> = {
@@ -62,6 +63,7 @@ export function ActivityHistoryList({
   loading = false,
   actionLabels,
   actionColors,
+  versionLabel = (version) => ({ text: `v${version}` }),
 }: ActivityHistoryListProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -94,6 +96,9 @@ export function ActivityHistoryList({
           ?? entry.action;
         const hasChanges = Boolean(entry.changes?.length);
         const changesId = `activity-history-changes-${entry.id}`;
+        const displayedVersion = entry.version
+          ? versionLabel(entry.version)
+          : null;
 
         return (
           <div
@@ -130,7 +135,9 @@ export function ActivityHistoryList({
                 }`}>
                   {entry.actor_name}
                 </span>
-                {entry.version && <span>v{entry.version}</span>}
+                {displayedVersion && (
+                  <span title={displayedVersion.title}>{displayedVersion.text}</span>
+                )}
                 <span>{new Date(entry.created_at).toLocaleString()}</span>
               </span>
 

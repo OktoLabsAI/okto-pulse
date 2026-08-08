@@ -6,6 +6,7 @@ import ctypes
 import json
 import os
 import time
+import uuid
 from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Any
 from filelock import FileLock, Timeout as FileLockTimeout
 
 LOCK_FILENAME = ".okto-pulse-serve.lock"
+LOCK_SCHEMA_VERSION = 2
 _ACQUIRE_MUTEX_FILENAME = f"{LOCK_FILENAME}.acquire"
 
 # Heartbeat schedule. The owner refreshes `heartbeat_at` every
@@ -35,6 +37,10 @@ class ServeAlreadyRunningError(RuntimeError):
     """Raised when another local server owns the same data directory."""
 
 
+class ServeLockIntegrityError(OSError):
+    """Raised when the owner can no longer authenticate its lock payload."""
+
+
 class _UnreadableServeLock(RuntimeError):
     """An existing lock could not be decoded after bounded retries."""
 
@@ -54,8 +60,15 @@ class _ReentrantServeLock(AbstractContextManager[None]):
 class ServeInstanceLock(AbstractContextManager["ServeInstanceLock"]):
     """Filesystem PID lock scoped to one resolved Community data directory."""
 
-    def __init__(self, data_dir: str | Path):
+    def __init__(
+        self,
+        data_dir: str | Path,
+        *,
+        data_dir_origin: str = "explicit",
+    ):
         self.data_dir = Path(data_dir).expanduser().resolve()
+        self.data_dir_origin = data_dir_origin
+        self.instance_id = uuid.uuid4().hex
         self.lock_path = self.data_dir / LOCK_FILENAME
         self._fd: int | None = None
 
@@ -105,7 +118,12 @@ class ServeInstanceLock(AbstractContextManager["ServeInstanceLock"]):
                     )
                 _remove_stale_lock(self.lock_path)
                 continue
-            _write_lock_payload(self._fd, self.data_dir)
+            _write_lock_payload(
+                self._fd,
+                self.data_dir,
+                data_dir_origin=self.data_dir_origin,
+                instance_id=self.instance_id,
+            )
             _remember_active_lock(self)
             return self
 
@@ -118,7 +136,12 @@ class ServeInstanceLock(AbstractContextManager["ServeInstanceLock"]):
         """
         if self._fd is None:
             return
-        _rewrite_lock_payload(self._fd, self.data_dir)
+        _rewrite_lock_payload(
+            self._fd,
+            self.data_dir,
+            data_dir_origin=self.data_dir_origin,
+            instance_id=self.instance_id,
+        )
 
     @property
     def is_acquired(self) -> bool:
@@ -156,12 +179,18 @@ def acquire_serve_lock(settings_or_data_dir: Any) -> AbstractContextManager[Any]
     """
     global _ACTIVE_LOCK
 
-    data_dir = Path(
-        getattr(settings_or_data_dir, "data_dir", settings_or_data_dir)
-    ).expanduser().resolve()
+    data_dir = (
+        Path(getattr(settings_or_data_dir, "data_dir", settings_or_data_dir))
+        .expanduser()
+        .resolve()
+    )
     if _ACTIVE_LOCK and _ACTIVE_LOCK.data_dir == data_dir:
         return _ReentrantServeLock()
-    return ServeInstanceLock(data_dir).acquire()
+    data_dir_origin = str(getattr(settings_or_data_dir, "data_dir_origin", "explicit"))
+    return ServeInstanceLock(
+        data_dir,
+        data_dir_origin=data_dir_origin,
+    ).acquire()
 
 
 def get_active_lock() -> "ServeInstanceLock | None":
@@ -184,11 +213,20 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _build_payload(data_dir: Path, *, created_at: str | None = None) -> dict[str, Any]:
+def _build_payload(
+    data_dir: Path,
+    *,
+    data_dir_origin: str,
+    instance_id: str,
+    created_at: str | None = None,
+) -> dict[str, Any]:
     now = _now_iso()
     return {
+        "schema_version": LOCK_SCHEMA_VERSION,
+        "instance_id": instance_id,
         "pid": os.getpid(),
         "data_dir": str(data_dir),
+        "data_dir_origin": data_dir_origin,
         "created_at": created_at or now,
         "heartbeat_at": now,
         "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
@@ -196,35 +234,91 @@ def _build_payload(data_dir: Path, *, created_at: str | None = None) -> dict[str
     }
 
 
-def _write_lock_payload(fd: int, data_dir: Path) -> None:
-    payload = _build_payload(data_dir)
+def _write_lock_payload(
+    fd: int,
+    data_dir: Path,
+    *,
+    data_dir_origin: str,
+    instance_id: str,
+) -> None:
+    payload = _build_payload(
+        data_dir,
+        data_dir_origin=data_dir_origin,
+        instance_id=instance_id,
+    )
     os.write(fd, json.dumps(payload, indent=2).encode("utf-8"))
     os.fsync(fd)
 
 
-def _rewrite_lock_payload(fd: int, data_dir: Path) -> None:
+def _rewrite_lock_payload(
+    fd: int,
+    data_dir: Path,
+    *,
+    data_dir_origin: str,
+    instance_id: str,
+) -> None:
     """Rewrite the lock file content with a fresh `heartbeat_at`.
 
     Uses the same fd opened in acquire(). Preserves `created_at` so the
     operator-facing error message still shows when the server first started.
     """
-    existing_created_at: str | None = None
     try:
         os.lseek(fd, 0, os.SEEK_SET)
         existing_bytes = os.read(fd, 8192)
-        if existing_bytes:
-            try:
-                existing_payload = json.loads(existing_bytes.decode("utf-8"))
-                if isinstance(existing_payload, dict):
-                    raw = existing_payload.get("created_at")
-                    if isinstance(raw, str):
-                        existing_created_at = raw
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                existing_created_at = None
     except OSError:
-        existing_created_at = None
+        raise
 
-    payload = _build_payload(data_dir, created_at=existing_created_at)
+    try:
+        existing_payload = json.loads(existing_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ServeLockIntegrityError(
+            "serve-lock heartbeat refused: existing payload is unreadable"
+        ) from exc
+    if not isinstance(existing_payload, dict):
+        raise ServeLockIntegrityError(
+            "serve-lock heartbeat refused: existing payload is not an object"
+        )
+
+    if existing_payload.get("schema_version") != LOCK_SCHEMA_VERSION:
+        raise ServeLockIntegrityError(
+            "serve-lock heartbeat refused: schema identity changed"
+        )
+    if existing_payload.get("instance_id") != instance_id:
+        raise ServeLockIntegrityError(
+            "serve-lock heartbeat refused: instance identity changed"
+        )
+    if _payload_pid(existing_payload) != os.getpid():
+        raise ServeLockIntegrityError(
+            "serve-lock heartbeat refused: owner identity changed"
+        )
+    raw_data_dir = existing_payload.get("data_dir")
+    try:
+        existing_data_dir = Path(str(raw_data_dir)).expanduser().resolve()
+    except (OSError, TypeError, ValueError) as exc:
+        raise ServeLockIntegrityError(
+            "serve-lock heartbeat refused: data-home identity is invalid"
+        ) from exc
+    if existing_data_dir != data_dir:
+        raise ServeLockIntegrityError(
+            "serve-lock heartbeat refused: data-home identity changed"
+        )
+    if existing_payload.get("data_dir_origin") != data_dir_origin:
+        raise ServeLockIntegrityError(
+            "serve-lock heartbeat refused: data-home provenance changed"
+        )
+
+    existing_created_at = existing_payload.get("created_at")
+    if _parse_aware_timestamp(existing_created_at) is None:
+        raise ServeLockIntegrityError(
+            "serve-lock heartbeat refused: created_at is missing or invalid"
+        )
+
+    payload = _build_payload(
+        data_dir,
+        data_dir_origin=data_dir_origin,
+        instance_id=instance_id,
+        created_at=existing_created_at,
+    )
     encoded = json.dumps(payload, indent=2).encode("utf-8")
     try:
         os.lseek(fd, 0, os.SEEK_SET)
@@ -271,12 +365,134 @@ def _read_lock_payload(path: Path) -> dict[str, Any] | None:
     raise _UnreadableServeLock(str(path)) from last_error
 
 
+def inspect_serve_lock_identity(settings_or_data_dir: Any) -> dict[str, Any]:
+    """Inspect whether a lock proves the identity of a live local runtime.
+
+    An open TCP port is intentionally outside this contract. Only a matching
+    schema-v2 lock with a non-empty instance id, fresh heartbeat and live PID
+    can produce ``state=confirmed``.
+    """
+
+    data_dir = (
+        Path(getattr(settings_or_data_dir, "data_dir", settings_or_data_dir))
+        .expanduser()
+        .resolve()
+    )
+    expected_origin = str(getattr(settings_or_data_dir, "data_dir_origin", "explicit"))
+    lock_path = data_dir / LOCK_FILENAME
+    if not lock_path.exists():
+        return {
+            "state": "unknown",
+            "reason": "lock_not_found",
+            "data_dir": str(data_dir),
+        }
+    try:
+        payload = _read_lock_payload(lock_path)
+    except _UnreadableServeLock:
+        return {
+            "state": "unreadable",
+            "reason": "lock_unreadable",
+            "data_dir": str(data_dir),
+        }
+    if payload is None:
+        return {
+            "state": "unknown",
+            "reason": "lock_not_found",
+            "data_dir": str(data_dir),
+        }
+
+    if payload.get("schema_version") != LOCK_SCHEMA_VERSION:
+        return {
+            "state": "identity_mismatch",
+            "reason": "schema_version_mismatch",
+            "data_dir": str(data_dir),
+        }
+    instance_id = payload.get("instance_id")
+    if not isinstance(instance_id, str) or not instance_id.strip():
+        return {
+            "state": "identity_mismatch",
+            "reason": "instance_id_missing",
+            "data_dir": str(data_dir),
+        }
+    created_at = payload.get("created_at")
+    if _parse_aware_timestamp(created_at) is None:
+        return {
+            "state": "identity_mismatch",
+            "reason": "created_at_missing_or_invalid",
+            "data_dir": str(data_dir),
+            "instance_id": instance_id,
+        }
+    payload_data_dir = payload.get("data_dir")
+    try:
+        payload_path = Path(str(payload_data_dir)).expanduser().resolve()
+    except (OSError, TypeError, ValueError):
+        payload_path = None
+    if payload_path != data_dir:
+        return {
+            "state": "identity_mismatch",
+            "reason": "data_dir_mismatch",
+            "data_dir": str(data_dir),
+            "instance_id": instance_id,
+        }
+    payload_origin = payload.get("data_dir_origin")
+    if payload_origin != expected_origin:
+        return {
+            "state": "identity_mismatch",
+            "reason": "data_dir_origin_mismatch",
+            "data_dir": str(data_dir),
+            "instance_id": instance_id,
+            "data_dir_origin": payload_origin,
+        }
+
+    heartbeat_age = _payload_heartbeat_age_seconds(payload)
+    heartbeat_fresh = heartbeat_age is not None and heartbeat_age <= _payload_ttl(
+        payload
+    )
+    pid = _payload_pid(payload)
+    if not heartbeat_fresh:
+        return {
+            "state": "unknown",
+            "reason": "heartbeat_stale_or_missing",
+            "data_dir": str(data_dir),
+            "instance_id": instance_id,
+        }
+    if pid is None or not _pid_is_running(pid):
+        return {
+            "state": "unknown",
+            "reason": "owner_not_live",
+            "data_dir": str(data_dir),
+            "instance_id": instance_id,
+        }
+    return {
+        "state": "confirmed",
+        "reason": "matching_live_fresh_lock",
+        "data_dir": str(data_dir),
+        "data_dir_origin": payload_origin,
+        "instance_id": instance_id,
+        "pid": pid,
+        "created_at": created_at,
+        "heartbeat_at": payload.get("heartbeat_at"),
+    }
+
+
 def _payload_pid(payload: dict[str, Any]) -> int | None:
     try:
         pid = int(payload.get("pid") or 0)
     except (TypeError, ValueError):
         return None
     return pid if pid > 0 else None
+
+
+def _parse_aware_timestamp(raw: Any) -> datetime | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        stamp = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None or stamp.utcoffset() is None:
+        return None
+    return stamp
 
 
 def _acquisition_mutex(data_dir: str | Path) -> FileLock:
@@ -337,9 +553,7 @@ def _owner_is_live(payload: dict[str, Any]) -> bool:
     return _pid_is_running(pid)
 
 
-def assert_no_live_server(
-    data_dir: str | Path, *, operation: str = "cli"
-) -> None:
+def assert_no_live_server(data_dir: str | Path, *, operation: str = "cli") -> None:
     """Fast-fail guard da CLI (KGD-01 C6/S10) — nunca bloqueia (<5s).
 
     Entrypoints que abrem grafos de board (``init``, ``kg backfill --apply``,
@@ -438,9 +652,13 @@ def _format_lock_error(data_dir: Path, lock_path: Path, payload: dict[str, Any])
     pid = payload.get("pid", "unknown")
     created_at = payload.get("created_at", "unknown")
     heartbeat_at = payload.get("heartbeat_at", "unknown")
+    instance_id = payload.get("instance_id", "unknown")
+    data_dir_origin = payload.get("data_dir_origin", "unknown")
     return (
         "Another okto-pulse server is already using this data directory.\n"
         f"  Data dir: {data_dir}\n"
+        f"  Source: {data_dir_origin}\n"
+        f"  Instance ID: {instance_id}\n"
         f"  PID: {pid}\n"
         f"  Started at: {created_at}\n"
         f"  Last heartbeat: {heartbeat_at}\n"

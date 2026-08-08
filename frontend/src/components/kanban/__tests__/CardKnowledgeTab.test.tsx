@@ -94,17 +94,19 @@ function deferred<T>() {
 function renderTab({
   card = baseCard,
   specKnowledgeBases = [],
+  onUpdate = vi.fn().mockResolvedValue(undefined),
   onBusyChange = vi.fn(),
 }: {
   card?: any;
   specKnowledgeBases?: any[];
+  onUpdate?: () => Promise<void>;
   onBusyChange?: (busy: boolean) => void;
 } = {}) {
   return render(
     <CardKnowledgeTab
       card={card}
       specKnowledgeBases={specKnowledgeBases}
-      onUpdate={vi.fn()}
+      onUpdate={onUpdate}
       onBusyChange={onBusyChange}
     />,
   );
@@ -447,8 +449,10 @@ describe('CardKnowledgeTab', () => {
   });
 
   it('assigns selected stable roots with the current revision', async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
     renderTab({
       card: { ...baseCard, knowledge_bases: [] },
+      onUpdate,
       specKnowledgeBases: [
         {
           id: 'local-spec-kb',
@@ -483,12 +487,15 @@ describe('CardKnowledgeTab', () => {
       );
     });
     expect(apiMock.dropCardKnowledgeAssignments).not.toHaveBeenCalled();
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
     expect(toastMock.success).toHaveBeenCalledWith('Knowledge assignments saved');
   });
 
   it('preserves an explicit-empty DROP separately from Resource Gate N/A', async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
     renderTab({
       card: { ...baseCard, knowledge_bases: [] },
+      onUpdate,
     });
 
     await screen.findByText('revision 7');
@@ -513,12 +520,14 @@ describe('CardKnowledgeTab', () => {
     });
     expect(apiMock.replaceCardKnowledgeAssignments).not.toHaveBeenCalled();
     expect(apiMock.markResourceNotApplicable).not.toHaveBeenCalled();
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
     expect(
       screen.getByText('DROP and explicit empty do not mark Resource Gate as N/A.'),
     ).toBeInTheDocument();
   });
 
   it('refreshes only a stale snapshot by stable root ID and current revision', async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
     apiMock.getCardKnowledgeAssignments.mockResolvedValue({
       contract_version: 2,
       revision: 13,
@@ -536,6 +545,7 @@ describe('CardKnowledgeTab', () => {
 
     renderTab({
       card: { ...baseCard, knowledge_bases: [] },
+      onUpdate,
       specKnowledgeBases: [
         {
           id: 'local-stale',
@@ -562,6 +572,7 @@ describe('CardKnowledgeTab', () => {
         },
       );
     });
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
     expect(toastMock.success).toHaveBeenCalledWith('Knowledge snapshot refreshed');
   });
 

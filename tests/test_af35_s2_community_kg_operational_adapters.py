@@ -18,6 +18,9 @@ from okto_pulse.community.adapters.kg_operational import (
     register_community_kg_operational_ports,
 )
 from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     CanonicalDebt,
@@ -52,7 +55,12 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
     tmp_path,
 ):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'kg_ops.db'}")
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False,
+    )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

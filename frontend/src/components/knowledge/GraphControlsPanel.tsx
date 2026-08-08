@@ -71,9 +71,10 @@ const GRAPH_LAYER_OPTIONS: Array<{ value: GraphLayerMode; label: string }> = [
 // Maps each sub-view to the permission flag that gates its visibility.
 // Absent entry = always visible.
 const SUB_VIEW_GATES: Partial<Record<SubView, string>> = {
-  settings: 'kg.admin.settings_read',
-  pending: 'kg.session.propose',
-  pending_tree: 'kg.session.propose',
+  audit: 'kg.operations.audit.read',
+  settings: 'kg.operations.settings.read',
+  pending: 'kg.operations.queue.read',
+  pending_tree: 'kg.operations.queue.read',
   global: 'kg.query.global',
 };
 

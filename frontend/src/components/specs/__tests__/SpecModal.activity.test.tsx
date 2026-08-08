@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpecModal } from '../SpecModal';
-import type { Spec, SpecHistoryEntry } from '@/types';
+import { persistTestScenariosWithWriteGuard } from '../scenarioWriteGuard';
+import type { Spec, SpecHistoryEntry, TestScenario } from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
@@ -10,6 +11,7 @@ const apiMock = vi.hoisted(() => ({
   listSprints: vi.fn(),
   listSpecHistory: vi.fn(),
   listSpecKnowledge: vi.fn(),
+  updateSpec: vi.fn(),
 }));
 
 vi.mock('@/services/api', () => ({
@@ -74,6 +76,7 @@ const spec: Spec = {
   architecture_designs: [],
   skip_test_coverage: false,
   status: 'draft',
+  edition: 2,
   version: 3,
   assignee_id: null,
   created_by: 'user-1',
@@ -111,6 +114,7 @@ describe('SpecModal Activity tab', () => {
     apiMock.getAllowedTransitions.mockResolvedValue({ allowed_transitions: [] });
     apiMock.listSprints.mockResolvedValue([]);
     apiMock.listSpecHistory.mockResolvedValue([historyEntry]);
+    apiMock.updateSpec.mockResolvedValue(spec);
     apiMock.getEffectiveResources.mockResolvedValue({
       board_id: 'board-1',
       entity_type: 'spec',
@@ -133,13 +137,19 @@ describe('SpecModal Activity tab', () => {
     );
 
     await screen.findByText(spec.title);
-    fireEvent.click(screen.getByRole('button', { name: 'Activity' }));
+    expect(
+      screen.getByLabelText('Edition v2; technical revision r3'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Activity' }));
 
     await waitFor(() => expect(apiMock.listSpecHistory).toHaveBeenCalledWith(spec.id));
     const actionBadge = await screen.findByText('Updated');
     expect(screen.getByText(historyEntry.summary!)).toBeInTheDocument();
     expect(screen.getByText(historyEntry.actor_name)).toBeInTheDocument();
-    expect(screen.getByText('v12')).toBeInTheDocument();
+    expect(screen.getByText('r12')).toHaveAttribute(
+      'title',
+      'Technical revision r12',
+    );
 
     const entryToggle = actionBadge.closest('button');
     expect(entryToggle).not.toBeNull();
@@ -166,7 +176,8 @@ describe('SpecModal Activity tab', () => {
     );
 
     await screen.findByText(spec.title);
-    fireEvent.click(screen.getByRole('button', { name: 'Knowledge' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Knowledge' }));
 
     await waitFor(() => {
       expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
@@ -177,5 +188,243 @@ describe('SpecModal Activity tab', () => {
       );
     });
     expect(apiMock.listSpecKnowledge).not.toHaveBeenCalled();
+  });
+
+  it('uses the consolidated top-level order without Spec Versions', async () => {
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    const tabList = screen.getByRole('tablist', { name: 'Spec sections' });
+    expect(
+      within(tabList).getAllByRole('tab').map((tab) => tab.textContent),
+    ).toEqual([
+      'Details',
+      'Tests',
+      'Rules',
+      'Contracts',
+      'IRs',
+      'ORs',
+      'TRs',
+      'Decisions',
+      'Resources',
+      'Q&A',
+      'References',
+      'Sprints',
+      'KG Graph',
+      'Validation',
+      'Activity',
+    ]);
+    expect(
+      within(tabList).queryByRole('tab', { name: 'Versions' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(tabList).queryByRole('tab', { name: 'Quality' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(tabList).queryByRole('tab', { name: 'Cards' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows cancellation audit in Details without a Cancellation tab', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({
+      ...spec,
+      status: 'cancelled',
+      cancellation_reason: 'The capability is no longer required.',
+      cancelled_by: 'user-2',
+      cancelled_at: '2026-07-28T18:00:00Z',
+    });
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    expect(screen.getByTestId('cancellation-details')).toHaveTextContent(
+      'The capability is no longer required.',
+    );
+    expect(
+      screen.queryByRole('tab', { name: 'Cancellation' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('groups origin and derived cards under References', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({
+      ...spec,
+      cards: [{
+        id: 'card-1',
+        title: 'Implement deterministic lint view',
+        status: 'not_started',
+      }],
+    });
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^References/ }));
+    expect(
+      screen.getByText('No origin is registered for this spec.'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: /^Derived cards/ }));
+    expect(
+      screen.getByText('Implement deterministic lint view'),
+    ).toBeInTheDocument();
+  });
+
+  it('omits an unsupported legacy scenario type from the whole-list request', async () => {
+    const legacySpec: Spec = {
+      ...spec,
+      test_scenarios: [
+        {
+          id: 'ts-legacy',
+          title: 'Historical regression type',
+          linked_criteria: null,
+          scenario_type: 'regression',
+          given: 'legacy data exists',
+          when: 'the scenario status changes',
+          then: 'the original persisted type remains untouched',
+          notes: null,
+          status: 'draft',
+          linked_task_ids: null,
+        },
+        {
+          id: 'ts-negative',
+          title: 'Supported negative type',
+          linked_criteria: null,
+          scenario_type: 'negative',
+          given: 'invalid input',
+          when: 'it is submitted',
+          then: 'it is rejected',
+          notes: null,
+          status: 'draft',
+          linked_task_ids: null,
+        },
+      ],
+    };
+    apiMock.getSpec.mockResolvedValue(legacySpec);
+    apiMock.updateSpec.mockResolvedValue({
+      ...legacySpec,
+      test_scenarios: legacySpec.test_scenarios!.filter(
+        (scenario) => scenario.id !== 'ts-negative',
+      ),
+    });
+
+    render(
+      <SpecModal
+        specId={legacySpec.id}
+        boardId={legacySpec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(legacySpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    expect(
+      await screen.findByText('regression (unsupported)'),
+    ).toBeInTheDocument();
+
+    expect(screen.getAllByTestId('test-scenario-status-badge')).toHaveLength(2);
+    expect(screen.queryByDisplayValue('draft')).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Delete test scenario Supported negative type',
+      }),
+    );
+
+    await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledTimes(1));
+    const request = apiMock.updateSpec.mock.calls[0][1];
+    expect(request.test_scenarios).toHaveLength(1);
+    const legacyRequest = request.test_scenarios.find(
+      (scenario: { id: string }) => scenario.id === 'ts-legacy',
+    );
+    expect(legacyRequest).toMatchObject({
+      id: 'ts-legacy',
+      title: 'Historical regression type',
+      status: 'draft',
+    });
+    expect(legacyRequest).not.toHaveProperty('scenario_type');
+  });
+
+  it('blocks a tampered new scenario with an absent type before the request', async () => {
+    const updateSpec = vi.fn();
+    const scenarioWithoutType = {
+      id: 'ts-tampered',
+      title: 'Missing type',
+      linked_criteria: null,
+      given: 'invalid state',
+      when: 'the UI submits it',
+      then: 'no request is sent',
+      notes: null,
+      status: 'draft',
+      linked_task_ids: null,
+    };
+    const tamperedScenarios = [
+      scenarioWithoutType,
+      { ...scenarioWithoutType, scenario_type: undefined },
+    ] as unknown as TestScenario[];
+
+    for (const tampered of tamperedScenarios) {
+      await expect(
+        persistTestScenariosWithWriteGuard(
+          updateSpec,
+          spec.id,
+          [],
+          [tampered],
+        ),
+      ).rejects.toThrow(/Invalid scenario_type undefined for new scenario/);
+    }
+    expect(updateSpec).not.toHaveBeenCalled();
+  });
+
+  it('materializes integration explicitly for the normal create flow', async () => {
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Add Test Scenario/i }));
+    fireEvent.change(screen.getByPlaceholderText('Scenario title'), {
+      target: { value: 'Defaulted scenario' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Given: precondition...'), {
+      target: { value: 'a valid precondition' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('When: action...'), {
+      target: { value: 'the action occurs' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Then: expected result...'), {
+      target: { value: 'the result is observed' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+
+    await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledTimes(1));
+    expect(
+      apiMock.updateSpec.mock.calls[0][1].test_scenarios[0],
+    ).toHaveProperty('scenario_type', 'integration');
   });
 });

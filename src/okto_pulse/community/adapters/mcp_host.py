@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import functools
 import inspect
 import json
@@ -43,6 +44,11 @@ from okto_pulse.core.ports.mcp_resources import (
     McpResourceCatalogError,
     McpResourceManifest,
     McpResourceSpec,
+)
+
+from okto_pulse.community.inbound.physical_identity import (
+    COMMUNITY_BOARD_ID_MAX_LENGTH,
+    validate_community_board_id,
 )
 
 from .mcp_trace_middleware import install_trace_sink
@@ -385,39 +391,70 @@ class _OutcomeToolResult(ToolResult):
 class _OutcomeValidationMiddleware(Middleware):
     """Turn FastMCP/Pydantic argument failures into the same V2 envelope."""
 
+    def __init__(self, *, board_id_bounded_tools: frozenset[str]) -> None:
+        self._board_id_bounded_tools = board_id_bounded_tools
+
+    @staticmethod
+    def _validation_result(
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        issues: list[dict[str, Any]],
+    ) -> ToolResult:
+        outcome = McpToolOutcome.error(
+            code="validation_failed",
+            message="Invalid tool arguments",
+            payload={"issues": issues},
+            details={"issues": issues},
+        )
+        if arguments.get("profile") == "legacy":
+            return _OutcomeToolResult(
+                content=[TextContent(type="text", text=outcome.legacy_content())],
+                is_error=True,
+            )
+        structured = outcome.structured_content(tool_name=tool_name)
+        return _OutcomeToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=json.dumps(structured, separators=(",", ":")),
+                )
+            ],
+            structured_content=structured,
+            is_error=True,
+        )
+
     async def on_call_tool(
         self,
         context: MiddlewareContext,
         call_next: CallNext,
     ) -> ToolResult:
+        message = context.message
+        tool_name = getattr(message, "name", None) or "<unknown>"
+        arguments = getattr(message, "arguments", None) or {}
+        if (
+            tool_name in self._board_id_bounded_tools
+            and "board_id" in arguments
+        ):
+            try:
+                validate_community_board_id(arguments["board_id"])
+            except ValidationError as exc:
+                issues = exc.errors(include_url=False, include_input=False)
+                for issue in issues:
+                    issue["loc"] = ("board_id", *issue.get("loc", ()))
+                return self._validation_result(
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    issues=issues,
+                )
         try:
             return await call_next(context)
         except ValidationError as exc:
-            message = context.message
-            tool_name = getattr(message, "name", None) or "<unknown>"
-            arguments = getattr(message, "arguments", None) or {}
             issues = exc.errors(include_url=False, include_input=False)
-            outcome = McpToolOutcome.error(
-                code="validation_failed",
-                message="Invalid tool arguments",
-                payload={"issues": issues},
-                details={"issues": issues},
-            )
-            if arguments.get("profile") == "legacy":
-                return _OutcomeToolResult(
-                    content=[TextContent(type="text", text=outcome.legacy_content())],
-                    is_error=True,
-                )
-            structured = outcome.structured_content(tool_name=tool_name)
-            return _OutcomeToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=json.dumps(structured, separators=(",", ":")),
-                    )
-                ],
-                structured_content=structured,
-                is_error=True,
+            return self._validation_result(
+                tool_name=tool_name,
+                arguments=arguments,
+                issues=issues,
             )
 
 
@@ -505,9 +542,20 @@ class CommunityMcpHostProvider:
             version=catalog.version,
             instructions=catalog.instructions,
         )
-        host.add_middleware(_OutcomeValidationMiddleware())
-        for tool in _catalog_entries(catalog, "iter_tools"):
-            host.tool(
+        catalog_tools = _catalog_entries(catalog, "iter_tools")
+        board_id_bounded_tools = frozenset(
+            tool.name
+            for tool in catalog_tools
+            if getattr(tool.fn, "__mcp_closed_schema__", False)
+            and "board_id" in tool.parameters.get("properties", {})
+        )
+        host.add_middleware(
+            _OutcomeValidationMiddleware(
+                board_id_bounded_tools=board_id_bounded_tools,
+            )
+        )
+        for tool in catalog_tools:
+            materialized_tool = host.tool(
                 _transport_tool(tool.fn, tool_name=tool.name),
                 name=tool.name,
                 title=tool.title,
@@ -518,6 +566,17 @@ class CommunityMcpHostProvider:
                 output_schema=None,
                 enabled=tool.enabled,
             )
+            # Closed-schema tools opt in at the Core declaration boundary.
+            # FastMCP otherwise re-infers the wrapper signature here and drops
+            # the recursively closed schema already frozen by Core.  Preserve
+            # that exact public contract only for opted-in tools so the legacy
+            # inventory remains byte-stable.
+            if getattr(tool.fn, "__mcp_closed_schema__", False):
+                materialized_tool.parameters = copy.deepcopy(tool.parameters)
+                if tool.name in board_id_bounded_tools:
+                    materialized_tool.parameters["properties"]["board_id"][
+                        "maxLength"
+                    ] = COMMUNITY_BOARD_ID_MAX_LENGTH
         for resource in resource_specs:
             host.resource(
                 resource.uri,

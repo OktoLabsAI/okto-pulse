@@ -17,6 +17,7 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
+import { SpecEditionLabel } from '@/components/specs/SpecEditionLabel';
 
 // ---------------------------------------------------------------------------
 // Props & Types
@@ -50,6 +51,8 @@ interface SpecAnalytics {
   spec_id: string;
   title: string;
   status: string | null;
+  edition: number;
+  version: number;
   total_ac: number;
   covered_ac: number;
   ac_details?: { index: number; text: string; covered: boolean }[];
@@ -390,6 +393,11 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
             <div className="flex items-center gap-2 mb-1">
               {statusBadge(data.status)}
               <h2 className="text-lg font-bold text-gray-900 dark:text-white truncate">{data.title}</h2>
+              <SpecEditionLabel
+                edition={data.edition}
+                technicalRevision={data.version}
+                className="shrink-0 text-xs text-gray-400"
+              />
             </div>
             {(data.derivation.ideation_id || data.derivation.refinement_id) && (
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
@@ -1020,7 +1028,7 @@ function IdeationDetailView({ data }: { data: IdeationAnalytics }) {
         {scope ? (
           <div className="space-y-3 max-w-md">
             {scoreBar('Domains', scope.domains)}
-            {scoreBar('Ambiguity', scope.ambiguity)}
+            {scoreBar('Scope Ambiguity', scope.ambiguity)}
             {scoreBar('Dependencies', scope.dependencies)}
           </div>
         ) : (
@@ -1151,7 +1159,7 @@ function SprintDetailView({ data }: { data: SprintAnalytics }) {
               <h2 className="text-lg font-bold text-gray-900 dark:text-white truncate">{data.title}</h2>
             </div>
             <div className="flex items-center gap-3 mt-1 text-xs text-gray-500 dark:text-gray-400">
-              <span>Spec v{data.spec_version}</span>
+              <span>Spec revision r{data.spec_version}</span>
               <span>Tasks: {data.tasks_done}/{data.tasks_total}</span>
             </div>
           </div>

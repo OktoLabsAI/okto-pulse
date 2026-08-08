@@ -582,9 +582,12 @@ def test_legacy_json_null_permissions_replay_matches_sql_null(
         }
         for agent_id, storage in storage_before.items()
     }
-    expected_flags, _ = _data_steps.merge_permission_registry_defaults({})
-    assert flags_after["a-json-null"] == expected_flags
-    assert flags_after["a-sql-null"] == expected_flags
+    # Both legacy representations converge on the trusted Full Control
+    # sentinel instead of materializing a registry snapshot.  Keeping the
+    # direct layer as JSON null is what lets later permission introductions
+    # propagate automatically without another data rewrite.
+    assert flags_after["a-json-null"] is None
+    assert flags_after["a-sql-null"] is None
     assert flags_after_replay == flags_after
 
 

@@ -763,12 +763,18 @@ export function ArchitectureTab({
     setFocusRequest({ ...target, signal: Date.now() });
   }, []);
 
-  const loadList = useCallback(async (preferredSelectedId?: string) => {
+  const loadList = useCallback(async (
+    preferredSelectedId?: string,
+    notify = false,
+  ) => {
     setLoading(true);
     try {
       const data = await apiRef.current.listArchitectureDesigns(parentType, parentId);
       setDirectSummaries(data);
-      onChangedRef.current?.(data);
+      // Only notify the parent after a real mutation. Notifying on every read
+      // makes the parent modal reload (flipping its loading flag), which
+      // remounts this tab and re-triggers the read — an infinite loop.
+      if (notify) onChangedRef.current?.(data);
       setSelectedId((current) => {
         const requested = preferredSelectedId || current;
         if (requested) return requested;
@@ -891,8 +897,8 @@ export function ArchitectureTab({
     };
   }, [design?.diagrams, design?.entities, design?.global_description, design?.interfaces, design?.title]);
 
-  const refresh = async () => {
-    const data = await loadList(selectedId);
+  const refresh = async (notify = false) => {
+    const data = await loadList(selectedId, notify);
     await loadEffectiveResources();
     const detailId = selectedId && data.some((item) => item.id === selectedId) ? selectedId : data[0]?.id;
     if (detailId) {
@@ -931,7 +937,7 @@ export function ArchitectureTab({
       setNewTitle('');
       setNewDescription('');
       toast.success('Architecture design created');
-      await loadList(created.id);
+      await loadList(created.id, true);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to create architecture');
     } finally {
@@ -970,7 +976,7 @@ export function ArchitectureTab({
       setWarningAcknowledged(false);
       setSelectedDiagramId(resolveSelectedDiagramId(full.diagrams, selectedDiagramId, previousDiagram));
       toast.success('Architecture design saved');
-      await loadList(full.id);
+      await loadList(full.id, true);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save architecture');
     } finally {
@@ -984,7 +990,7 @@ export function ArchitectureTab({
     toast.success('Architecture design deleted');
     setDesign(null);
     setSelectedId('');
-    await loadList();
+    await loadList(undefined, true);
   };
 
   const copyFromSpec = async () => {
@@ -993,7 +999,7 @@ export function ArchitectureTab({
     try {
       const copied = await apiRef.current.copyArchitectureToCard(parentId, specIdForCopy);
       toast.success(`${copied.length} architecture design${copied.length === 1 ? '' : 's'} copied`);
-      await refresh();
+      await refresh(true);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to copy architecture');
     } finally {
@@ -1027,7 +1033,7 @@ export function ArchitectureTab({
       setSelectedId(created.id);
       setDesign(created);
       setSelectedDiagramId(resolveSelectedDiagramId(created.diagrams));
-      await loadList(created.id);
+      await loadList(created.id, true);
       return;
     }
     const previousDiagram = selectedDiagram;
@@ -1041,7 +1047,7 @@ export function ArchitectureTab({
     const full = await apiRef.current.getArchitectureDesign(updated.id, true);
     setDesign(full);
     setSelectedDiagramId(resolveSelectedDiagramId(full.diagrams, data.replaceDiagramId || undefined, previousDiagram));
-    await loadList(full.id);
+    await loadList(full.id, true);
   };
 
   const updateDiagram = (next: ArchitectureDiagram) => {
@@ -1392,7 +1398,7 @@ export function ArchitectureTab({
               <FileUp size={15} />
             </button>
           )}
-          <button type="button" onClick={refresh} className="p-1.5 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="Refresh">
+          <button type="button" onClick={() => void refresh()} className="p-1.5 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="Refresh">
             <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>

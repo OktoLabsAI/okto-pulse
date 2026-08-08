@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Header } from './Header';
+import { openContextualHelp } from '@/components/help';
 import type { Board, BoardSettings } from '@/types';
 
 const apiMock = vi.hoisted(() => ({
@@ -15,11 +16,51 @@ const apiMock = vi.hoisted(() => ({
   activateDefaultBoardConfigVersion: vi.fn(),
   deactivateDefaultBoardConfigVersion: vi.fn(),
   updateDefaultGuidelineRefs: vi.fn(),
+  getChecklistBinding: vi.fn(),
+  listChecklistTemplates: vi.fn(),
+  updateChecklistBinding: vi.fn(),
 }));
 
 const boardState = vi.hoisted(() => ({
   currentBoard: null as Board | null,
 }));
+const permissionState = vi.hoisted(() => ({
+  isLoading: false,
+  error: null as Error | null,
+  ownerReviewRequired: false,
+  allowed: new Set<string>(),
+}));
+
+const checklistBinding = {
+  id: 'a'.repeat(64),
+  board_id: 'board-1',
+  target_type: 'spec' as const,
+  phase: 'spec_validation' as const,
+  mode: 'advisory' as const,
+  version: 1,
+  expected_revision: 1,
+  digest: 'b'.repeat(64),
+  template_version_id: '/specify/v1' as const,
+};
+
+const checklistTemplates = {
+  total: 1,
+  items: [
+    {
+      template_id: 'specify',
+      version: '/specify/v1',
+      digest: 'c'.repeat(64),
+      items: Array.from({ length: 10 }, (_, index) => ({
+        item_id: `item-${index}`,
+        title_en: `Item ${index}`,
+        title_pt: `Item ${index}`,
+        description_en: 'Description',
+        description_pt: 'Descrição',
+        allow_na: false,
+      })),
+    },
+  ],
+};
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
@@ -41,6 +82,16 @@ vi.mock('@/adapters', () => ({
 
 vi.mock('@/hooks/useTheme', () => ({
   useTheme: () => ({ theme: 'light', toggle: vi.fn() }),
+}));
+
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'Custom',
+    isLoading: permissionState.isLoading,
+    error: permissionState.error,
+    ownerReviewRequired: permissionState.ownerReviewRequired,
+    has: (flag: string) => permissionState.allowed.has(flag),
+  }),
 }));
 
 vi.mock('@/components/layout/RuntimeSettingsPanel', () => ({
@@ -88,6 +139,7 @@ const baseSettings: BoardSettings = {
   skip_cognitive_consolidation: false,
   allow_agent_self_answering: false,
   require_full_context_for_critical_actions: true,
+  reviewer_separation_mode: 'enforce',
   require_task_validation: true,
   min_confidence: 70,
   min_completeness: 80,
@@ -124,6 +176,14 @@ function renderOpenHeader() {
   });
 }
 
+function grant(...permissions: string[]) {
+  permissionState.allowed = new Set(permissions);
+}
+
+function openHeaderMenu() {
+  fireEvent.click(screen.getAllByRole('button')[1]);
+}
+
 describe('Header Board settings resource automation', () => {
   beforeEach(() => {
     apiMock.updateBoard.mockReset();
@@ -156,7 +216,98 @@ describe('Header Board settings resource automation', () => {
     apiMock.activateDefaultBoardConfigVersion.mockReset();
     apiMock.deactivateDefaultBoardConfigVersion.mockReset();
     apiMock.updateDefaultGuidelineRefs.mockReset();
+    apiMock.getChecklistBinding.mockReset();
+    apiMock.getChecklistBinding.mockReturnValue(new Promise(() => {}));
+    apiMock.listChecklistTemplates.mockReset();
+    apiMock.listChecklistTemplates.mockReturnValue(new Promise(() => {}));
+    apiMock.updateChecklistBinding.mockReset();
     boardState.currentBoard = boardWith({});
+    permissionState.isLoading = false;
+    permissionState.error = null;
+    permissionState.ownerReviewRequired = false;
+    grant(
+      'guidelines.revisions.read',
+      'guidelines.adoption.manage',
+      'runtime.settings.read',
+      'metrics.local.summary.read',
+      'board.admin.edit',
+    );
+  });
+
+  it.each([
+    ['revision reader', ['guidelines.revisions.read']],
+    ['revision creator', ['guidelines.revisions.create']],
+    ['waiver reader', ['guidelines.waiver.read']],
+  ])(
+    'shows the Guidelines entry for an authorized %s',
+    (_label, permissions) => {
+      grant(...permissions);
+      render(<Header />);
+
+      openHeaderMenu();
+
+      expect(screen.getByTestId('menu-guidelines')).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    {
+      label: 'loading',
+      isLoading: true,
+      error: null,
+      ownerReviewRequired: false,
+      permissions: ['guidelines.revisions.read'],
+    },
+    {
+      label: 'permission error',
+      isLoading: false,
+      error: new Error('permission service unavailable'),
+      ownerReviewRequired: false,
+      permissions: ['guidelines.revisions.read'],
+    },
+    {
+      label: 'owner review',
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: true,
+      permissions: ['guidelines.revisions.read'],
+    },
+    {
+      label: 'explicit deny',
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: false,
+      permissions: [],
+    },
+  ])(
+    'hides the Guidelines entry while authority is $label',
+    ({
+      isLoading,
+      error,
+      ownerReviewRequired,
+      permissions,
+    }) => {
+      permissionState.isLoading = isLoading;
+      permissionState.error = error;
+      permissionState.ownerReviewRequired = ownerReviewRequired;
+      grant(...permissions);
+      render(<Header />);
+
+      openHeaderMenu();
+
+      expect(screen.queryByTestId('menu-guidelines')).not.toBeInTheDocument();
+    },
+  );
+
+  it('does not read board guidelines when revision-read authority is denied', async () => {
+    grant('guidelines.adoption.manage');
+
+    renderOpenHeader();
+
+    const warning = await screen.findByTestId('board-context-warning');
+    expect(warning).toHaveTextContent('Board description is empty');
+    expect(warning).not.toHaveTextContent('Board guidelines are empty');
+    expect(apiMock.getBoardGuidelines).not.toHaveBeenCalled();
   });
 
   it('enabling automation with no selected types sends all resource types', async () => {
@@ -214,6 +365,51 @@ describe('Header Board settings resource automation', () => {
     expect(screen.queryByTestId('settings-default-board-config')).not.toBeInTheDocument();
   });
 
+  it('opens the requested Help section through the typed contextual event', () => {
+    boardState.currentBoard = boardWith({});
+    render(<Header />);
+
+    act(() => {
+      openContextualHelp('requirement-lint');
+    });
+
+    expect(
+      screen.getByRole('heading', {
+        name: /Requirement lint — deterministic advisory analysis/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('opens contextual checklist help without discarding an unsaved mode', async () => {
+    apiMock.getChecklistBinding.mockResolvedValue(checklistBinding);
+    apiMock.listChecklistTemplates.mockResolvedValue(checklistTemplates);
+    renderOpenHeader();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('checklist-mode-advisory')).toHaveAttribute(
+        'aria-checked',
+        'true',
+      ),
+    );
+    fireEvent.click(screen.getByTestId('checklist-mode-blocking'));
+    fireEvent.click(screen.getByTestId('checklist-help-link'));
+
+    expect(screen.getByTestId('board-settings-modal')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', {
+        name: 'Curated Spec Checklist — Traceable Spec quality governance',
+      }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close help' }));
+
+    expect(screen.getByTestId('board-settings-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('checklist-mode-blocking')).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+  });
+
   it('does not send an invalid payload when removing the last active resource type', async () => {
     boardState.currentBoard = boardWith({
       auto_derive_spec_resources_enabled: true,
@@ -268,11 +464,28 @@ describe('Header Board settings resource automation', () => {
     expect(screen.getByText('Agent Governance')).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'Allow agent self-answering' })).toHaveAttribute('aria-checked', 'false');
     expect(screen.getByRole('switch', { name: 'Require full context for critical actions' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('reviewer-separation-mode-enforce')).toHaveAttribute('aria-pressed', 'true');
 
     const warning = await screen.findByTestId('board-context-warning');
     expect(warning).toHaveTextContent('Board description is empty');
     expect(warning).toHaveTextContent('Board guidelines are empty');
     expect(apiMock.getBoardGuidelines).toHaveBeenCalledWith('board-1');
+  });
+
+  it('persists the independent reviewer policy through the board update flow', async () => {
+    renderOpenHeader();
+
+    fireEvent.click(screen.getByTestId('reviewer-separation-mode-warn'));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          reviewer_separation_mode: 'warn',
+        }),
+      }),
+    );
   });
 
   it('persists agent self-answering through the existing board update flow', async () => {
@@ -384,6 +597,52 @@ describe('Header Board settings resource automation', () => {
     expect(screen.getByTestId('toggle-ideation-ambiguity-gate')).toBeInTheDocument();
   });
 
+  it('persists the refinement ambiguity policy and its bounded 1..5 threshold', async () => {
+    boardState.currentBoard = boardWith({
+      require_refinement_ambiguity_gate: true,
+      max_refinement_ambiguity: 3,
+    });
+    renderOpenHeader();
+
+    for (const value of [1, 2, 3, 4, 5]) {
+      expect(screen.getByTestId(`button-max-refinement-ambiguity-${value}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByTestId('button-max-refinement-ambiguity-0')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('button-max-refinement-ambiguity-6')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('button-max-refinement-ambiguity-5'));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({ max_refinement_ambiguity: 5 }),
+      }),
+    );
+  });
+
+  it('keeps the refinement threshold hidden until its policy is enabled', async () => {
+    renderOpenHeader();
+
+    expect(screen.getByTestId('toggle-refinement-ambiguity-gate')).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+    expect(screen.queryByTestId('button-max-refinement-ambiguity-3')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('toggle-refinement-ambiguity-gate'));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith(
+      'board-1',
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          require_refinement_ambiguity_gate: true,
+        }),
+      }),
+    );
+  });
+
   it('opens runtime settings on Decay Tick tab from the global KG Health handoff event', async () => {
     render(<Header />);
 
@@ -407,5 +666,48 @@ describe('Header Board settings resource automation', () => {
     expect(screen.getByTestId('runtime-settings-panel')).toHaveTextContent(
       'runtime settings tab: graphdb',
     );
+  });
+
+  it('does not update board settings without board.admin.edit', () => {
+    grant('guidelines.revisions.read');
+    renderOpenHeader();
+
+    const toggle = screen.getByTestId('toggle-spec-resource-automation');
+    expect(toggle).toBeDisabled();
+    fireEvent.click(toggle);
+    expect(apiMock.updateBoard).not.toHaveBeenCalled();
+  });
+
+  it('disables board admin and agent menu actions when their exact leaves are denied', () => {
+    grant();
+    const onCreateBoard = vi.fn();
+    const onDeleteBoard = vi.fn();
+    const onOpenAgents = vi.fn();
+    render(
+      <Header
+        onCreateBoard={onCreateBoard}
+        onDeleteBoard={onDeleteBoard}
+        onOpenAgents={onOpenAgents}
+      />,
+    );
+
+    openHeaderMenu();
+    const create = screen.getByRole('button', { name: 'New Dashboard' });
+    const agents = screen.getByRole('button', { name: 'Agents' });
+    expect(create).toBeDisabled();
+    expect(agents).toBeDisabled();
+    fireEvent.click(create);
+    fireEvent.click(agents);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('okto:open-board-settings'));
+    });
+    const remove = screen.getByRole('button', { name: 'Delete board' });
+    expect(remove).toBeDisabled();
+    fireEvent.click(remove);
+
+    expect(onCreateBoard).not.toHaveBeenCalled();
+    expect(onOpenAgents).not.toHaveBeenCalled();
+    expect(onDeleteBoard).not.toHaveBeenCalled();
   });
 });

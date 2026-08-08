@@ -31,9 +31,11 @@ import { SpecModal } from './SpecModal';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { QABadge } from '@/components/shared/QABadge';
+import { QualitySummaryBadges } from '@/components/quality';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
 import { usePersistedPagination } from '@/hooks/usePersistedPagination';
+import { SpecEditionLabel } from './SpecEditionLabel';
 
 interface SpecsPanelProps {
   boardId: string;
@@ -382,7 +384,11 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
                         {STATUS_ICON[spec.status]}
                         {SPEC_STATUS_LABELS[spec.status]}
                       </span>
-                      <span className="text-xs text-gray-400">v{spec.version}</span>
+                      <SpecEditionLabel
+                        edition={spec.edition}
+                        technicalRevision={spec.version}
+                        className="text-xs text-gray-400"
+                      />
                       <CognitivePendingBadge
                         badge={cognitiveBadges[`spec:${spec.id}`]}
                       />
@@ -395,6 +401,10 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
                         {sanitizePreview(spec.description)}
                       </p>
                     )}
+                    <QualitySummaryBadges
+                      summaries={spec.quality_summaries}
+                      className="mt-2"
+                    />
                     {/* Open Q&A badge on its own row, above the labels */}
                     {spec.open_qa_count ? (
                       <div className="mt-2">

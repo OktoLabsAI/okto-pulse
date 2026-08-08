@@ -7,6 +7,7 @@ import { useState, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import * as kgApi from '@/services/kg-api';
 import { KGHelpModal } from './KGHelpModal';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface Props {
   boardId: string;
@@ -14,6 +15,14 @@ interface Props {
 }
 
 export function EmptyState({ boardId, onRefresh }: Props) {
+  const permissions = usePermissions(boardId);
+  const policyReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadHistorical = policyReady && permissions.has('kg.operations.historical.read');
+  const canStartHistorical = policyReady && permissions.has('kg.operations.historical.start');
   const [loading, setLoading] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [progressInfo, setProgressInfo] = useState<kgApi.HistoricalProgress | null>(null);
@@ -21,7 +30,7 @@ export function EmptyState({ boardId, onRefresh }: Props) {
 
   // Check if there's already a consolidation in progress on mount
   useEffect(() => {
-    if (!boardId) return;
+    if (!boardId || permissions.isLoading || !canReadHistorical) return;
     kgApi.getHistoricalProgress(boardId).then((p) => {
       if (p.enabled) {
         setProgressInfo(p);
@@ -33,7 +42,7 @@ export function EmptyState({ boardId, onRefresh }: Props) {
       }
     }).catch(() => {});
     return () => stopPolling();
-  }, [boardId]);
+  }, [boardId, canReadHistorical, permissions.isLoading]);
 
   const startPolling = () => {
     if (pollRef.current) return;
@@ -66,6 +75,7 @@ export function EmptyState({ boardId, onRefresh }: Props) {
   };
 
   const handleEnableHistorical = async () => {
+    if (!canStartHistorical) return;
     if (!boardId) {
       toast.error('Board ID is required');
       return;
@@ -79,13 +89,15 @@ export function EmptyState({ boardId, onRefresh }: Props) {
         toast.success(`Historical consolidation started: ${result.total_artifacts ?? 0} artifacts queued`);
       }
       // Fetch initial progress and start polling if enabled
-      const p = await kgApi.getHistoricalProgress(boardId);
-      if (p.enabled) {
-        setProgressInfo(p);
-        if (kgApi.isHistoricalProgressTerminal(p)) {
-          onRefresh?.();
-        } else if (kgApi.isHistoricalProgressActive(p)) {
-          startPolling();
+      if (canReadHistorical) {
+        const p = await kgApi.getHistoricalProgress(boardId);
+        if (p.enabled) {
+          setProgressInfo(p);
+          if (kgApi.isHistoricalProgressTerminal(p)) {
+            onRefresh?.();
+          } else if (kgApi.isHistoricalProgressActive(p)) {
+            startPolling();
+          }
         }
       }
     } catch (err: any) {
@@ -175,7 +187,8 @@ export function EmptyState({ boardId, onRefresh }: Props) {
       <div className="flex gap-3">
         <button
           onClick={handleEnableHistorical}
-          disabled={loading || !boardId || isProgressBlocked}
+          disabled={!canStartHistorical || loading || !boardId || isProgressBlocked}
+          title={!canStartHistorical ? 'Requires kg.operations.historical.start' : undefined}
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {actionLabel}

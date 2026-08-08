@@ -10,6 +10,7 @@ def test_af41_cmd_serve_sets_api_and_mcp_ports_before_runtime_import(
     monkeypatch,
 ) -> None:
     import okto_pulse.community.cli as cli
+    import okto_pulse.community.data_home as data_home
     import okto_pulse.community.serve_lock as serve_lock
 
     calls: list[tuple[str | None, str | None]] = []
@@ -28,6 +29,7 @@ def test_af41_cmd_serve_sets_api_and_mcp_ports_before_runtime_import(
     fake_main.run = fake_run  # type: ignore[attr-defined]
     monkeypatch.setitem(__import__("sys").modules, "okto_pulse.community.main", fake_main)
     monkeypatch.setattr(cli, "_is_port_in_use", lambda _port: False)
+    monkeypatch.setattr(data_home, "assert_serve_data_home_ready", lambda _settings: None)
 
     class FakeServeLock:
         def __enter__(self):
@@ -101,6 +103,11 @@ async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
 
     async def fake_heartbeat_loop() -> None:
         await asyncio.Event().wait()
+
+    # Build the module app under the REAL settings first; the FakeSettings
+    # patch below must only affect _serve_dual's serve-config read, not the
+    # lazy get_module_app() composition build (PEP 562 module app).
+    main_mod.get_module_app()
 
     monkeypatch.setattr(main_mod, "CommunitySettings", FakeSettings)
     monkeypatch.setattr(main_mod.uvicorn, "Config", FakeConfig)

@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     CommunityUnitOfWorkFactory,
@@ -16,9 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE_ROOT = resolve_core_repo(ROOT)
 
 
-class _Session:
+class _Session(AsyncSession):
     def __init__(self) -> None:
-        self.info: dict[str, object] = {}
+        super().__init__()
         self.closed = False
 
     async def close(self) -> None:
